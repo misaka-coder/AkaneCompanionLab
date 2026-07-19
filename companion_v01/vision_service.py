@@ -337,35 +337,12 @@ class VisionObservationService:
         if not usable_frames:
             raise RuntimeError("没有可用的屏幕帧。")
 
-        content: list[dict[str, Any]] = [
-            {
-                "type": "text",
-                "text": self._build_screen_clip_user_instruction(context or {}, usable_frames),
-            }
-        ]
-        for frame in usable_frames:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": str(frame.get("data_url") or "")},
-                }
-            )
-
-        response = self._client.chat.completions.create(
-            model=self.settings.vision_model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": self._build_screen_clip_system_instruction(),
-                },
-                {
-                    "role": "user",
-                    "content": content,
-                },
-            ],
+        raw_text = self._request_vision_text(
+            system_text=self._build_screen_clip_system_instruction(),
+            user_text=self._build_screen_clip_user_instruction(context or {}, usable_frames),
+            image_urls=[str(frame.get("data_url") or "") for frame in usable_frames],
             temperature=0.45,
         )
-        raw_text = self._coerce_response_text(response)
         payload = self._extract_json_dict(raw_text)
         return self._normalize_screen_clip_observation(payload)
 
@@ -826,31 +803,60 @@ class VisionObservationService:
 
         media_type = self._guess_media_type(target.source_path)
         image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+        raw_text = self._request_vision_text(
+            system_text=self._build_system_instruction(target),
+            user_text=self._build_user_instruction(target),
+            image_urls=[image_url],
+            temperature=0.35,
+        )
+        return self._extract_json_dict(raw_text)
+
+    def _request_vision_text(
+        self,
+        *,
+        system_text: str,
+        user_text: str,
+        image_urls: list[str],
+        temperature: float,
+    ) -> str:
+        if self._client is None:
+            raise RuntimeError("视觉模型尚未配置。")
+
+        clean_images = [str(value or "").strip() for value in image_urls if str(value or "").strip()]
+        if not clean_images:
+            raise RuntimeError("没有可用的图像输入。")
+
+        protocol = str(self.settings.vision_api_protocol or "").strip().lower()
+        client_protocol = str(getattr(self._client, "_akane_protocol", "") or "").strip().lower()
+        if protocol == "responses" or client_protocol == "responses":
+            user_content: list[dict[str, Any]] = [
+                {"type": "input_text", "text": str(user_text or "")},
+                *[{"type": "input_image", "image_url": image_url} for image_url in clean_images],
+            ]
+            response = self._client.responses.create(
+                model=self.settings.vision_model_name,
+                instructions=str(system_text or ""),
+                input=[{"role": "user", "content": user_content}],
+                max_output_tokens=1600,
+                store=False,
+            )
+            return self._coerce_response_text(response)
+
         response = self._client.chat.completions.create(
             model=self.settings.vision_model_name,
             messages=[
-                {
-                    "role": "system",
-                    "content": self._build_system_instruction(target),
-                },
+                {"role": "system", "content": str(system_text or "")},
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": self._build_user_instruction(target),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_url},
-                        },
+                        {"type": "text", "text": str(user_text or "")},
+                        *[{"type": "image_url", "image_url": {"url": image_url}} for image_url in clean_images],
                     ],
                 },
             ],
-            temperature=0.35,
+            temperature=float(temperature),
         )
-        raw_text = self._coerce_response_text(response)
-        return self._extract_json_dict(raw_text)
+        return self._coerce_response_text(response)
 
     def _build_system_instruction(self, target: VisionTarget) -> str:
         if target.observation_type == "scene":
@@ -999,6 +1005,9 @@ class VisionObservationService:
         return f"{base_version}-{PROMPT_STYLE_REVISION}"
 
     def _coerce_response_text(self, response: Any) -> str:
+        output_text = getattr(response, "output_text", None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
         try:
             choice = response.choices[0]
         except Exception:

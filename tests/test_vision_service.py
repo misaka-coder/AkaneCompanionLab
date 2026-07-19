@@ -5,8 +5,10 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from companion_v01.resource_manifest import ResourceManifest
+from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.store import MemoryStore
 from companion_v01.vision_service import VisionObservationService
 
@@ -251,6 +253,65 @@ class VisionObservationServiceTests(unittest.TestCase):
         self.assertEqual(card["visible_text"], ["函数题", "第 3 题"])
         self.assertEqual(card["concrete_details"], ["页面中央是手写解题过程", "右上角有红色标记"])
         self.assertEqual(card["uncertainty"], ["小字看不清"])
+
+    def test_screen_clip_uses_responses_image_input_for_responses_protocol(self) -> None:
+        temp_dir, root = self._build_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+
+        calls: list[dict] = []
+
+        def create_response(**kwargs):
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                output_text=json.dumps(
+                    {
+                        "summary": "一位猫耳少女正闭着眼打瞌睡。",
+                        "current_state": "停在角色立绘页面。",
+                        "visible_text": [],
+                        "concrete_details": ["浅色长发", "猫耳", "闭眼困倦表情"],
+                        "changes": [],
+                        "topics": ["角色立绘"],
+                        "mood_tags": ["困倦", "安静"],
+                        "salience": 0.5,
+                        "sensitive": False,
+                        "confidence": 0.9,
+                        "uncertainty": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        settings = BotSettingsView(
+            vision_api_key="vision-key",
+            vision_base_url="https://vision.example/v1",
+            vision_model_name="vision-model",
+            vision_api_protocol="responses",
+        )
+        service = VisionObservationService(
+            root / "vision_cache",
+            store=MemoryStore(root / "db"),
+            settings=settings,
+        )
+        service._client = SimpleNamespace(
+            _akane_protocol="responses",
+            responses=SimpleNamespace(create=create_response),
+        )
+
+        observation = service.analyze_screen_clip(
+            frames=[{"data_url": "data:image/png;base64,abc"}],
+            context={"foreground": {"title": "Akane"}},
+        )
+
+        self.assertEqual(observation["summary"], "一位猫耳少女正闭着眼打瞌睡。")
+        self.assertEqual(len(calls), 1)
+        request = calls[0]
+        self.assertEqual(request["model"], "vision-model")
+        self.assertIn("一双眼睛", request["instructions"])
+        self.assertFalse(request["store"])
+        self.assertNotIn("messages", request)
+        user_content = request["input"][0]["content"]
+        self.assertEqual([item["type"] for item in user_content], ["input_text", "input_image"])
+        self.assertEqual(user_content[1]["image_url"], "data:image/png;base64,abc")
 
     def test_schedule_scene_observation_retries_stale_pending_record(self) -> None:
         temp_dir, root = self._build_assets_root()
