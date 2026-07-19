@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import config
 from companion_v01 import tool_orchestration_engine
-from companion_v01.capability_registry import WEB_SEARCH_TOOL_SPEC
+from companion_v01.capability_registry import CapabilityDisclosure, WEB_SEARCH_TOOL_SPEC
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
@@ -410,6 +410,39 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertNotIn("web_search", prompt)
         self.assertIn("send_file", prompt)
+
+    def test_native_tool_prompt_omits_transient_capability_status_from_stable_prefix(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        selection = SimpleNamespace(
+            module_names=[],
+            light_hints=["联网搜索当前可用。"],
+            tool_names=[],
+            disclosures=(
+                CapabilityDisclosure(
+                    capability_id="internet_access",
+                    state="unavailable",
+                    summary="联网搜索暂不可用。",
+                    reason="探针正在检查。",
+                    activation="检查结束后自动恢复。",
+                    tool_names=("web_search",),
+                ),
+            ),
+        )
+        engine._resolve_tool_handlers = lambda **_kwargs: {
+            "web_search": FakePromptHandler("web_search"),
+        }
+
+        prompt = engine._build_tool_prompt_context(
+            allow_tool_call=True,
+            exclude_tool_types={"web_search"},
+            capability_selection=selection,
+            include_capability_status=False,
+        )
+
+        self.assertIn("provider native tool schema", prompt)
+        self.assertNotIn("探针正在检查", prompt)
+        self.assertNotIn("联网搜索暂不可用", prompt)
+        self.assertNotIn("联网搜索当前可用", prompt)
 
     def test_final_response_context_scopes_native_tools_to_capability_selection(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)

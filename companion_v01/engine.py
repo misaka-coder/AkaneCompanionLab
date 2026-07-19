@@ -5561,6 +5561,7 @@ class AkaneMemoryEngine:
         exclude_tool_types: set[str] | None = None,
         domain_profile_id: str = "",
         capability_selection: CapabilitySelection | None = None,
+        include_capability_status: bool = True,
     ) -> str:
         if not allow_tool_call:
             return "本轮不要调用任何工具，tool_call 固定为 null。"
@@ -5581,8 +5582,11 @@ class AkaneMemoryEngine:
         ready_tool_names = tuple(handlers)
         raw_disclosures = tuple(getattr(selection, "disclosures", ()) or ())
         disclosures = (
-            resolve_capability_disclosures(selection, available_tool_names=ready_tool_names) if raw_disclosures else ()
+            resolve_capability_disclosures(selection, available_tool_names=ready_tool_names)
+            if include_capability_status and raw_disclosures
+            else ()
         )
+        capability_hints = tuple(selection.light_hints) if include_capability_status else ()
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
@@ -5595,15 +5599,15 @@ class AkaneMemoryEngine:
             latent = [item for item in disclosures if item.state == "latent"]
             unavailable = [item for item in disclosures if item.state == "unavailable"]
             disclosed_summaries = {item.summary for item in disclosures}
-            extra_ready_hints = [hint for hint in selection.light_hints if hint and hint not in disclosed_summaries]
+            extra_ready_hints = [hint for hint in capability_hints if hint and hint not in disclosed_summaries]
             if ready or extra_ready_hints:
                 parts.append("【当前可用能力概览】")
                 parts.extend(f"- {item.summary}" for item in ready)
                 parts.extend(f"- {hint}" for hint in extra_ready_hints)
                 parts.append("")
-            elif not disclosures and selection.light_hints:
+            elif not disclosures and capability_hints:
                 parts.append("【能力概览】")
-                parts.extend(f"- {hint}" for hint in selection.light_hints if hint)
+                parts.extend(f"- {hint}" for hint in capability_hints if hint)
                 parts.append("")
             if latent:
                 parts.append("【可按需激活的能力】")
@@ -5638,7 +5642,12 @@ class AkaneMemoryEngine:
                 )
 
         if not handlers:
-            if not disclosures and not selection.light_hints and not media_routing:
+            if not include_capability_status and excluded:
+                return (
+                    "本轮具体工具能力与参数以 provider native tool schema 为准；"
+                    "不要在最终表现 JSON 的 legacy tool_call 字段里手写 native 工具。"
+                )
+            if not disclosures and not capability_hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
             parts: list[str] = []
             append_capability_context(parts)

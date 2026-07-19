@@ -537,6 +537,7 @@ def prepare_context(
         exclude_tool_types=native_legacy_exclusions,
         domain_profile_id=domain_profile.id,
         capability_selection=capability_selection,
+        include_capability_status=not bool(native_tools),
     )
     if native_tools:
         tool_prompt_context = "\n\n".join(
