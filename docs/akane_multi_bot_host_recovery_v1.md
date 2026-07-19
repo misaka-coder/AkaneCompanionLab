@@ -1,6 +1,6 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
-> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A 已完成，Slice 4B 与云端迁移验收待执行
+> 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A、Slice 4B 云端 Host 切换已完成；真实群聊与媒体表现验收待用户消息
 >
 > 建档日期：2026-07-19
 >
@@ -287,6 +287,18 @@ Host 现在从 `<AKANE_DATA_ROOT>/secrets/qq_profiles.toml` 按 BotConfig 的安
 - 已发送有效流式文本且最终帧为 transient failure 时，QQ transport 不再追加通用 fallback；
 - 空的待发送消息列表不会再调用 OneBot send API；
 - 正常恢复的 speech 成为最终帧与记忆内容，不再把兜底误存为实际回复。
+
+同日已完成云端单 Host 切换：
+
+- 版本化 release 为 `6cd1527`；流式兜底修复 `b09a1c9` 已先单独上线旧双实例并验证两条 QQ 通道 connected；
+- 新 `akane-host.service` 在一个进程内加载 `personal` 与 `finance` 两个 BotRuntime；旧 `akane@personal` / `akane@finance` 已禁用并保持 inactive；
+- 旧数据根没有复制、合并或移动。首次使用 symlink 时被 `resolve_bot_data_root()` 的越界护栏正确拒绝并自动回滚；最终改用两个 systemd bind mount，把旧根映射为 Host-owned `bots/personal` 与 `bots/finance`；
+- nginx 保留原 NapCat 入站地址，personal 转发默认兼容入口，finance 转发 `/api/bots/finance/qq/napcat/event`；NapCat 主机无需改配置；
+- 两枚 webhook secret 已在服务器内部轮换，旧值失效；OneBot access token 未输出或改动；
+- finance 保存独立 PinAI `gpt-5.6-luna` model-service 配置并开启 vision；personal 继续使用 Host 默认 PinAI `gpt-5.6-sol`；
+- 每个 BotRuntime 从同一 Host cache 默认派生独立 `:bot:{bot_id}` namespace，缓存策略相同但安全域不串；
+- 受控 Host restart 后，默认 `/health` 为 `personal / valid`，personal/finance bot-scoped QQ self-check 均为 `connected`，Host 同时持有两个不同 root lock，`NRestarts=0`，当前 startup error/degraded 计数为 0；
+- 新 Host、两个 bind mount 已 enable；旧正常双 unit 与 malformed `personal\x0d` unit 均 disabled/inactive。回滚备份保留在服务器部署备份目录。
 
 ### 2.1 `app.py` 曾是单例根因
 
@@ -1186,6 +1198,7 @@ npm run build
 - `qq_gateway.py` 使用每 Bot `wake_words`；账号名 `Akane218` 不会误触发 `Akane`，同群 Bot 的重叠唤醒词在配置加载时 fail-closed。
 - canonical BotRuntime 的 `DATA_DIR/DATA_ROOT` 固定为自己的 runtime root，QQ profile、模型配置、记忆、Gateway 状态和插件存储不会回落到另一个 Bot 的共享路径。
 - `LLMRuntime` 对流式 JSON 尾部损坏执行完成字段恢复；QQ transport 对“已发送正常流式文本 + transient final failure”执行第二道兜底抑制，不再出现正常回复后追加“我在认真听你说”。
+- canonical factory 基于同一 Host 默认 namespace 为每个 Bot 派生独立 prompt-cache scope，避免多 Bot 共用 cache 安全域或统计串线。
 
 验证通过：
 
@@ -1202,8 +1215,9 @@ npm run build
 - Slice 4A 与 backend routes/QQ Gateway/instance security/Host bootstrap/BotRuntime/product contract/finance absence 组合回归：223 项。
 - 流式字段恢复与 QQ 兜底抑制聚焦回归：73 项；LLM/native tool/QQ/route/plugin reasoning 组合回归：289 项。
 - Ruff check、Ruff format check、py_compile、`git diff --check` 均通过。
-- 尚未完成云端旧进程与旧 webhook 下线、两个真实 NapCat 账号 smoke、QQ 附件/语音/文件/后台通知的双 Bot 实机验收、控制中心 Bot 管理 UI 和 DeviceExecutorHub；不能把本地 4A 测试通过误报成云端双答已经消失。
-- 未部署新 Host 代码，未修改云端模型配置、合法 personal/finance unit、NapCat、MemCore 数据或桌宠前端；只停止了无 MainPID 且反复失败的 malformed `personal\x0d` unit。用户原有 `.claude/` 未触碰。
+- 云端旧双进程与旧 finance webhook upstream 已下线，新单 Host 与两条 bot-scoped QQ runtime 已通过健康、鉴权、self_id、出站 self-check、restart 和 root-lock smoke。
+- 尚未完成真实群聊双唤醒词、QQ 附件/语音/文件/后台通知的双 Bot 用户表现验收、控制中心 Bot 管理 UI 和 DeviceExecutorHub；不能用合成群消息污染真实记忆来假装表现验收。
+- 未合并/复制 MemCore 数据，未修改 NapCat 登录、OneBot access token 或桌宠前端；用户原有 `.claude/` 未触碰。
 
 ---
 
@@ -1211,12 +1225,13 @@ npm run build
 
 后续执行不应直接继续为 personal 单独接 GPT-SoVITS 或为 finance 单独复制视觉/Satellite 配置。
 
-Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A 已完成。下一步进入 **Slice 4B 与云端迁移验收**：
+Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A 与 Slice 4B 云端切换已完成。下一步进入 **真实表现验收与 Slice 5**：
 
-1. 在云端生成不入库的 `bots.toml` 与 `secrets/qq_profiles.toml`，保存旧部署回滚点；
-2. 停止旧 personal/finance 常驻进程，清除两套 NapCat 的旧 webhook，只保留各自 bot-scoped endpoint；
-3. 用两个真实 NapCat 账号验证普通回复、同群独立唤醒、角色切换、插件命令与一条事件一次回复；
-4. 继续补齐附件、语音、文件和后台通知的双 Bot 真实链验收，再进入控制中心管理面与 DeviceExecutorHub。
+1. 在两个 Bot 同在的真实群发送 `Akane ...`，确认只有 personal 回复；发送 `金融助手 ...`，确认只有 finance 回复；
+2. 各自连续普通对话，确认 personal 不再出现“正常回复 + 我在认真听你说”双尾句，finance 插件命令只由 finance 处理；
+3. 继续补齐图片、语音、文件和后台通知的双 Bot 真实链验收；
+4. 进入 Host 级 DeviceExecutorHub，让同一台本地电脑的完整能力按授权服务所有 Bot，而不是恢复 per-Bot executor；
+5. 增加控制中心 Bot 管理面，后续新增 Bot 只注册 QQ/profile/config，不再写代码或 systemd unit。
 
 当上下文被压缩时，恢复顺序：
 
