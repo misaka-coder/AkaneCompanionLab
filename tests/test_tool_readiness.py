@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from companion_v01.capability_registry import ServerLocalOfferIndex
+from companion_v01.capability_registry import (
+    CapabilityModule,
+    CapabilityRegistry,
+    CapabilitySnapshot,
+    ServerLocalOfferIndex,
+)
+from companion_v01.client_protocol import ClientMode
 
 
 class _StatusHandler:
@@ -110,6 +116,37 @@ class ServerLocalOfferIndexTests(unittest.TestCase):
                 client_mode="desktop_pet",
             )
         )
+
+    def test_transient_unavailable_status_does_not_remove_configured_tool_schema(self) -> None:
+        handler = _StatusHandler({"enabled": False, "status": "checking", "reason": "probe_pending"})
+        index = ServerLocalOfferIndex()
+        index.replace_handlers({"web_search": handler})
+        registry = CapabilityRegistry(
+            modules=(
+                CapabilityModule(
+                    name="internet_access",
+                    layer="web",
+                    modes=(ClientMode.QQ_TEXT,),
+                    tools=("web_search",),
+                    light_hint="联网搜索",
+                    trigger=lambda _snapshot: True,
+                    unavailable_reason="搜索服务正在检查。",
+                    recovery_hint="检查完成后即可执行。",
+                ),
+            ),
+            server_offer_index=index,
+        )
+
+        selection = registry.select(
+            CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT),
+            allowed_tool_names=("web_search",),
+            profile_user_id="owner",
+            session_id="conversation",
+        )
+
+        self.assertEqual(selection.tool_names, ())
+        self.assertEqual(selection.schema_tool_names, ("web_search",))
+        self.assertIn("unavailable", {item.state for item in selection.disclosures})
 
 
 if __name__ == "__main__":

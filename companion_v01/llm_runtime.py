@@ -25,7 +25,7 @@ from capcore_provider_openai import (
 )
 from services.llm_client import build_llm_client
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
-from .runtime_settings import BotSettingsView
+from .runtime_settings import BotSettingsView, normalize_reasoning_effort
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
@@ -293,6 +293,10 @@ class _ResponsesStreamAdapter:
                 self.usage = self._get(response, "usage")
                 finish_reason = "length" if event_type == "response.incomplete" else "stop"
                 yield self._chunk(usage=self.usage, finish_reason=finish_reason)
+                # The terminal chunk already carried this Responses usage.
+                # Clear the adapter copy so the enclosing stream-finalizer does
+                # not count the same provider report a second time.
+                self.usage = None
 
     def close(self) -> None:
         close = getattr(self._raw_stream, "close", None)
@@ -612,6 +616,7 @@ class LLMRuntime:
             "native_tool_calls_truncated": 0,
             "native_tool_no_call": 0,
             "native_tool_forced_json_suppressed": 0,
+            "prompt_cache_retention_compat": 0,
         }
         self._last_error_lock = threading.RLock()
         self._last_error: dict[str, str] = {}
@@ -1644,6 +1649,10 @@ class LLMRuntime:
                 read = self._nested_usage_int(usage, "input_tokens_details", "cached_tokens")
             if not read:
                 read = self._nested_usage_int(usage, "prompt_tokens_details", "cached_tokens")
+            if not creation:
+                creation = self._nested_usage_int(usage, "input_tokens_details", "cache_write_tokens")
+            if not creation:
+                creation = self._nested_usage_int(usage, "prompt_tokens_details", "cache_write_tokens")
             if read:
                 self._record_metric("cache_read_tokens", read)
             if creation:
@@ -2036,13 +2045,12 @@ class LLMRuntime:
     def _responses_reasoning_effort(self, bundle: ModelBundle | None = None) -> str:
         client = getattr(bundle, "client", bundle)
         role = str(getattr(client, "_akane_bundle_role", "") or "").strip().lower()
-        role_setting = {
-            "aux": "LLM_AUX_REASONING_EFFORT",
-            "chat": "LLM_CHAT_REASONING_EFFORT",
+        settings = self._settings_view()
+        role_value = {
+            "aux": settings.llm_aux_reasoning_effort,
+            "chat": settings.llm_chat_reasoning_effort,
         }.get(role, "")
-        role_value = str(getattr(config, role_setting, "") or "").strip().lower() if role_setting else ""
-        value = role_value or str(getattr(config, "LLM_REASONING_EFFORT", "") or "").strip().lower()
-        return value if value in {"none", "minimal", "low", "medium", "high", "xhigh", "max"} else ""
+        return normalize_reasoning_effort(role_value or settings.llm_reasoning_effort)
 
     def _supports_deepseek_thinking_control(self, bundle: ModelBundle) -> bool:
         protocol = (
@@ -2121,6 +2129,17 @@ class LLMRuntime:
         payload: dict[str, Any] = {}
         normalized_key = self._normalize_prompt_cache_key(prompt_cache_key)
         normalized_retention = self._normalize_prompt_cache_retention(self._settings_view().prompt_cache_retention)
+        if (
+            normalized_retention == "24h"
+            and self._is_responses_protocol(bundle)
+            and self._bundle_base_host(bundle) == "api.pinaic.com"
+        ):
+            # PinAI accepts 24h but does not populate or reuse its cache in that
+            # mode. A repeated real 12k-token probe reused 11,008 tokens with
+            # in-memory and zero with 24h, so translate the no-op mode instead
+            # of silently reporting cache hints as enabled.
+            normalized_retention = "in-memory"
+            self._record_metric("prompt_cache_retention_compat")
         if normalized_key:
             payload["prompt_cache_key"] = normalized_key
         if normalized_retention:

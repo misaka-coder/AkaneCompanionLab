@@ -1813,6 +1813,7 @@ class CapabilitySelection:
     light_hints: tuple[str, ...]
     tool_names: tuple[str, ...]
     module_names: tuple[str, ...]
+    schema_tool_names: tuple[str, ...] = ()
     layer_names: tuple[str, ...] = ()
     disclosures: tuple[CapabilityDisclosure, ...] = ()
     tool_specs: tuple[CapabilityToolSpec, ...] = ()
@@ -1896,15 +1897,6 @@ def _has_deliverable_file(snapshot: CapabilitySnapshot) -> bool:
 
 def _is_web_scene(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.client_mode in {ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D}
-
-
-def _requests_external_browser_open(value: str) -> bool:
-    text = str(value or "").strip().lower()
-    if not text:
-        return False
-    open_markers = ("打开", "浏览器", "open", "launch", "给我看", "跳转")
-    target_markers = ("http://", "https://", "网页", "网站", "链接", "页面", "url")
-    return any(marker in text for marker in open_markers) and any(marker in text for marker in target_markers)
 
 
 # ── M66-E: Server-local offer index ─────────────────────────────────────────
@@ -2074,10 +2066,12 @@ class CapabilityRegistry:
     ) -> CapabilitySelection:
         hints: list[str] = []
         tools: list[str] = []
+        schema_tools: list[str] = []
         module_names: list[str] = []
         layer_names: list[str] = []
         disclosures: list[CapabilityDisclosure] = []
         seen_tools: set[str] = set()
+        seen_schema_tools: set[str] = set()
         seen_hints: set[str] = set()
         seen_layers: set[str] = set()
         allowed = (
@@ -2119,6 +2113,9 @@ class CapabilityRegistry:
 
             ready_module_tools: list[str] = []
             for tool_name in module_tools:
+                if tool_name not in seen_schema_tools:
+                    seen_schema_tools.add(tool_name)
+                    schema_tools.append(tool_name)
                 if tool_name in seen_tools:
                     ready_module_tools.append(tool_name)
                     continue
@@ -2178,10 +2175,10 @@ class CapabilityRegistry:
         if snapshot.client_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}:
             receipt = self._resolve_offer_receipt(OPEN_BROWSER_TOOL_SPEC)
             browser_allowed = "open_browser" not in hidden and (allowed is None or "open_browser" in allowed)
-            if receipt is not None and browser_allowed:
-                if "open_browser" not in seen_tools:
-                    tools.append("open_browser")
-                    seen_tools.add("open_browser")
+            if self.offer_source is not None and browser_allowed:
+                if "open_browser" not in seen_schema_tools:
+                    schema_tools.append("open_browser")
+                    seen_schema_tools.add("open_browser")
                 if "desktop_browser_open" not in module_names:
                     module_names.append("desktop_browser_open")
                 if "desktop_browser" not in seen_layers:
@@ -2191,57 +2188,79 @@ class CapabilityRegistry:
                 if hint not in seen_hints:
                     hints.append(hint)
                     seen_hints.add(hint)
-                disclosures.append(
-                    CapabilityDisclosure(
-                        capability_id="desktop_browser_open",
-                        state="ready",
-                        summary=hint,
-                        tool_names=("open_browser",),
-                    )
-                )
                 tool_specs.append(OPEN_BROWSER_TOOL_SPEC)
-                execution_receipts["open_browser"] = receipt.as_dict()
-            elif browser_allowed and _requests_external_browser_open(intent_text):
-                disclosures.append(
-                    CapabilityDisclosure(
-                        capability_id="desktop_browser_open",
-                        state="unavailable",
-                        summary="可以按用户要求把公开网页交给其电脑上的系统浏览器打开。",
-                        reason="当前没有在线且已授权的桌面执行器。",
-                        activation="桌面客户端重新连接后，这项能力会自动恢复。",
-                        tool_names=("open_browser",),
+                if receipt is not None:
+                    if "open_browser" not in seen_tools:
+                        tools.append("open_browser")
+                        seen_tools.add("open_browser")
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id="desktop_browser_open",
+                            state="ready",
+                            summary=hint,
+                            tool_names=("open_browser",),
+                        )
                     )
-                )
+                    execution_receipts["open_browser"] = receipt.as_dict()
+                else:
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id="desktop_browser_open",
+                            state="unavailable",
+                            summary=hint,
+                            reason="当前没有在线且已授权的桌面执行器。",
+                            activation="桌面客户端重新连接后，这项能力会自动恢复。",
+                            tool_names=("open_browser",),
+                        )
+                    )
             for spec in DESKTOP_SATELLITE_TOOL_SPECS:
                 tool_name = spec.capability_id
-                if tool_name in hidden or (allowed is not None and tool_name not in allowed):
+                if (
+                    self.offer_source is None
+                    or tool_name in hidden
+                    or (allowed is not None and tool_name not in allowed)
+                ):
                     continue
                 receipt = self._resolve_offer_receipt(spec)
-                if receipt is None:
-                    continue
-                if tool_name not in seen_tools:
-                    tools.append(tool_name)
-                    seen_tools.add(tool_name)
+                if tool_name not in seen_schema_tools:
+                    schema_tools.append(tool_name)
+                    seen_schema_tools.add(tool_name)
                 if spec.capability_id not in seen_layers:
                     layer_names.append(spec.capability_id)
                     seen_layers.add(spec.capability_id)
                 if spec.description not in seen_hints:
                     hints.append(spec.description)
                     seen_hints.add(spec.description)
-                disclosures.append(
-                    CapabilityDisclosure(
-                        capability_id=spec.capability_id,
-                        state="ready",
-                        summary=spec.description,
-                        tool_names=(tool_name,),
-                    )
-                )
                 tool_specs.append(spec)
-                execution_receipts[tool_name] = receipt.as_dict()
+                if receipt is not None:
+                    if tool_name not in seen_tools:
+                        tools.append(tool_name)
+                        seen_tools.add(tool_name)
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id=spec.capability_id,
+                            state="ready",
+                            summary=spec.description,
+                            tool_names=(tool_name,),
+                        )
+                    )
+                    execution_receipts[tool_name] = receipt.as_dict()
+                else:
+                    disclosures.append(
+                        CapabilityDisclosure(
+                            capability_id=spec.capability_id,
+                            state="unavailable",
+                            summary=spec.description,
+                            reason="当前没有在线且已授权的桌面执行器。",
+                            activation="桌面客户端重新连接后，这项能力会自动恢复。",
+                            tool_names=(tool_name,),
+                        )
+                    )
         return CapabilitySelection(
             light_hints=tuple(hints),
             tool_names=tuple(tools),
             module_names=tuple(module_names),
+            schema_tool_names=tuple(schema_tools),
             layer_names=tuple(layer_names),
             disclosures=tuple(disclosures),
             tool_specs=tuple(tool_specs),

@@ -494,6 +494,24 @@ def prepare_context(
     if enable_native_tools:
         from .. import tool_orchestration_engine as _toe
 
+        ready_handlers = engine._resolve_tool_handlers(
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile.id,
+            capability_selection=capability_selection,
+        )
+        schema_tool_names = tuple(
+            getattr(capability_selection, "schema_tool_names", ())
+            or getattr(capability_selection, "tool_names", ())
+            or ()
+        )
+        frozen_handlers = getattr(capability_selection, "resolved_handlers", {})
+        schema_handlers = {
+            name: frozen_handlers[name]
+            for name in schema_tool_names
+            if name in frozen_handlers
+        }
         try:
             provider_supports_native_tools = engine.llm.chat_supports_native_tools(
                 chat_model_override=chat_model_override
@@ -501,16 +519,10 @@ def prepare_context(
         except TypeError:
             provider_supports_native_tools = engine.llm.chat_supports_native_tools()
         native_plan = _toe.build_native_tool_decision_plan(
-            engine._resolve_tool_handlers(
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=domain_profile.id,
-                capability_selection=capability_selection,
-            ),
+            schema_handlers or ready_handlers,
             allow_tool_call=tool_capability_available,
             provider_supports_native_tools=provider_supports_native_tools,
-            allowed_tool_names=(capability_selection.tool_names if capability_selection is not None else ()),
+            allowed_tool_names=schema_tool_names,
         )
         if native_plan.enabled:
             native_tools = native_plan.tools

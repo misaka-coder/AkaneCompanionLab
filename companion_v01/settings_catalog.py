@@ -103,7 +103,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("PROMPT_CACHE_HINTS_ENABLED", _RET, SCOPE_RUNTIME, "启用 prompt cache hints（需模型支持）"),
     _s("PROMPT_CACHE_HINTS_FORCE", _RET, SCOPE_RUNTIME, "强制开启 cache hints（即使模型不在已知列表）"),
     _s("PROMPT_CACHE_NAMESPACE", _RET, SCOPE_RUNTIME, "缓存命名空间（区分实例，避免 key 冲突）"),
-    _s("PROMPT_CACHE_RETENTION", _RET, SCOPE_RUNTIME, "缓存保留：空/ephemeral/persistent"),
+    _s("PROMPT_CACHE_RETENTION", _RET, SCOPE_RUNTIME, "缓存保留：空/in-memory/24h（PinAI 使用 in-memory）"),
     _s("LLM_PROMPT_AUDIT_ENABLED", _RET, SCOPE_RUNTIME, "记录最终回复 prompt 的长度/hash 审计（不记原文）"),
     _s("LLM_PROMPT_AUDIT_INCLUDE_AUX", _RET, SCOPE_RUNTIME, "审计也记录辅助 LLM 调用（默认只记 chat:final）"),
     # 调试开关

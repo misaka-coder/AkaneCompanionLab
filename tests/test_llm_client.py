@@ -11,6 +11,7 @@ from unittest.mock import patch
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import (
     NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
@@ -137,7 +138,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertFalse(request["store"])
         self.assertNotIn("temperature", request)
         self.assertEqual(request["prompt_cache_key"], "akane:chat:final:reimu")
-        self.assertEqual(request["prompt_cache_retention"], "24h")
+        self.assertEqual(request["prompt_cache_retention"], "in-memory")
         # Native tool rounds keep JSON mode prompt-only so a function call can
         # coexist with the eventual structured Akane answer.
         self.assertNotIn("text", request)
@@ -155,6 +156,19 @@ class LLMClientConfigTests(unittest.TestCase):
         ), patch("config.LLM_CHAT_REASONING_EFFORT", "max"):
             self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
             self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "max"}})
+
+    def test_responses_reasoning_effort_uses_per_bot_snapshot(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_reasoning_effort="medium",
+            llm_aux_reasoning_effort="low",
+            llm_chat_reasoning_effort="high",
+        )
+        aux = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="aux"))
+        chat = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"))
+
+        self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
+        self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "high"}})
 
     def test_pinai_responses_omits_unsupported_forced_json_wire_hint(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -214,7 +228,9 @@ class LLMClientConfigTests(unittest.TestCase):
             SimpleNamespace(type="response.output_text.delta", delta='{"speech":"checking"}'),
             SimpleNamespace(type="response.completed", response=SimpleNamespace(usage=usage)),
         ]
-        chunks = list(_ResponsesStreamAdapter(events))
+        stream_adapter = _ResponsesStreamAdapter(events)
+        chunks = list(stream_adapter)
+        self.assertIsNone(stream_adapter.usage)
         parts: dict[object, dict[str, object]] = {}
         for chunk in chunks:
             runtime._collect_stream_native_tool_call_parts(chunk, parts)

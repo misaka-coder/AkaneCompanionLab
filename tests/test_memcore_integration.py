@@ -2209,7 +2209,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             value = response_builder._drop_oldest_prompt_lines(value)
         self.assertTrue(all(later < earlier for earlier, later in zip(lengths, lengths[1:])))
 
-    def test_final_prompt_cache_key_ignores_volatile_persona_state_but_partitions_scope_and_tools(self) -> None:
+    def test_final_prompt_cache_key_ignores_volatile_persona_and_tool_readiness_state(self) -> None:
         from companion_v01.prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 
         base = {
@@ -2233,7 +2233,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_state),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_tools),
         )
@@ -2253,7 +2253,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_conversation),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_tool_context),
         )

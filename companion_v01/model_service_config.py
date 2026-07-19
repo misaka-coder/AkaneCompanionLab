@@ -10,6 +10,8 @@ import requests
 
 from services.llm_client import build_llm_client, normalize_api_protocol
 
+from .runtime_settings import normalize_reasoning_effort
+
 
 MODEL_SERVICE_SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -96,6 +98,7 @@ class ModelServiceSettings:
     use_for_vision: bool = True
     vision_model: str = ""
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    chat_reasoning_effort: str = ""
 
     @property
     def configured(self) -> bool:
@@ -177,6 +180,12 @@ def settings_from_mapping(
         minimum=5,
         maximum=600,
     )
+    raw_chat_reasoning_effort = str(
+        raw.get("chatReasoningEffort", raw.get("chat_reasoning_effort", "")) or ""
+    ).strip()
+    chat_reasoning_effort = normalize_reasoning_effort(raw_chat_reasoning_effort)
+    if raw_chat_reasoning_effort and not chat_reasoning_effort:
+        raise ValueError("model_service_chat_reasoning_effort_invalid")
     settings = ModelServiceSettings(
         provider_id=provider_id if provider_id in PRESET_BY_ID else "openai_compatible",
         protocol=protocol,
@@ -186,6 +195,7 @@ def settings_from_mapping(
         use_for_vision=use_for_vision,
         vision_model=vision_model,
         timeout_seconds=timeout_seconds,
+        chat_reasoning_effort=chat_reasoning_effort,
     )
     validate_model_service_settings(settings, require_model=require_model)
     return settings
@@ -208,6 +218,9 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
         use_for_vision=bool(vision_model),
         vision_model=vision_model,
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+        chat_reasoning_effort=normalize_reasoning_effort(
+            getattr(config_module, "LLM_CHAT_REASONING_EFFORT", "")
+        ),
     )
 
 
@@ -233,6 +246,9 @@ def effective_settings_from_runtime_settings(settings: Any) -> ModelServiceSetti
         vision_model=vision_model,
         timeout_seconds=int(
             getattr(settings, "vision_request_timeout", DEFAULT_TIMEOUT_SECONDS) or DEFAULT_TIMEOUT_SECONDS
+        ),
+        chat_reasoning_effort=normalize_reasoning_effort(
+            getattr(settings, "llm_chat_reasoning_effort", "")
         ),
     )
 
@@ -273,6 +289,7 @@ def public_model_service_snapshot(
         "useForVision": settings.use_for_vision,
         "visionModel": settings.vision_model,
         "timeoutSeconds": settings.timeout_seconds,
+        "chatReasoningEffort": settings.chat_reasoning_effort,
         "providers": provider_presets_payload(),
     }
 
@@ -283,6 +300,7 @@ def apply_model_service_settings(config_module: Any, settings: ModelServiceSetti
         setattr(config_module, f"{prefix}_BASE_URL", settings.base_url)
         setattr(config_module, f"{prefix}_MODEL_NAME", settings.chat_model)
         setattr(config_module, f"{prefix}_API_PROTOCOL", settings.protocol)
+    setattr(config_module, "LLM_CHAT_REASONING_EFFORT", settings.chat_reasoning_effort)
 
     if settings.use_for_vision:
         setattr(config_module, "VISION_API_KEY", settings.api_key)

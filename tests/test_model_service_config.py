@@ -61,10 +61,12 @@ class ModelServiceConfigTests(unittest.TestCase):
                 "providerId": "pinai",
                 "apiKey": "pinai-secret",
                 "chatModel": "gpt-5.6-sol",
+                "chatReasoningEffort": "high",
             }
         )
         self.assertEqual(settings.protocol, "responses")
         self.assertEqual(settings.base_url, "https://api.pinaic.com/v1")
+        self.assertEqual(settings.chat_reasoning_effort, "high")
 
     def test_store_preserves_secret_without_public_leak(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -84,6 +86,18 @@ class ModelServiceConfigTests(unittest.TestCase):
             self.assertTrue(public["hasApiKey"])
             self.assertNotIn("sk-private", json.dumps(public, ensure_ascii=False))
             self.assertNotIn("apiKey", public)
+            self.assertEqual(public["chatReasoningEffort"], "")
+
+    def test_invalid_chat_reasoning_effort_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "model_service_chat_reasoning_effort_invalid"):
+            settings_from_mapping(
+                {
+                    "providerId": "pinai",
+                    "apiKey": "pinai-secret",
+                    "chatModel": "gpt-5.6-sol",
+                    "chatReasoningEffort": "ultra",
+                }
+            )
 
     def test_apply_one_visible_service_to_chat_aux_and_vision(self) -> None:
         config = build_config()

@@ -3864,12 +3864,14 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _final_prompt_cache_key(generation_context: dict[str, Any]) -> str:
-        """Bucket prompts by stable routing identity and tool schema.
+        """Bucket prompts only by stable routing identity.
 
         Persona reference/state text may change within one character as the
         current message selects context-library material. Keep those volatile
-        suffixes out of the routing key so the provider can still reuse the
-        exact common prefix; content matching remains the provider's authority.
+        suffixes out of the routing key. Tool readiness, selected schemas and
+        capability disclosures are also request-time state: putting them in the
+        routing key sent consecutive turns to different provider cache buckets.
+        The provider remains authoritative for exact prefix matching.
         """
 
         system_prompt = str(generation_context.get("system_prompt") or "")
@@ -3884,8 +3886,6 @@ class AkaneMemoryEngine:
             "domain_profile": generation_context.get("domain_profile") or {},
             "prompt_scope": str(generation_context.get("prompt_scope") or ""),
             "stable_system_context_hash": str(generation_context.get("stable_system_context_hash") or ""),
-            "tool_prompt_context_hash": str(generation_context.get("tool_prompt_context_hash") or ""),
-            "native_tools": list(generation_context.get("native_tools") or []),
         }
         canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()[:20]

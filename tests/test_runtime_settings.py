@@ -77,6 +77,9 @@ class BotSettingsViewTests(unittest.TestCase):
             PROMPT_CACHE_RETENTION="24h",
             LLM_CONTEXT_WINDOW=12000,
             LLM_AUTO_COMPACT_TOKEN_LIMIT=9000,
+            LLM_REASONING_EFFORT="medium",
+            LLM_AUX_REASONING_EFFORT="low",
+            LLM_CHAT_REASONING_EFFORT="high",
         )
 
         view = BotSettingsView.from_config(config_module)
@@ -88,6 +91,7 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertFalse(view.vision_auto_scene_observe)
         self.assertEqual(view.prompt_cache_namespace, "bot-a")
         self.assertEqual(view.llm_context_window, 12000)
+        self.assertEqual(view.llm_chat_reasoning_effort, "high")
         self.assertNotIn("secret", repr(view))
         self.assertNotIn("api_key", public["chat"])
         self.assertNotIn("vision-secret", repr(view))
@@ -119,11 +123,15 @@ class BotSettingsViewTests(unittest.TestCase):
                 "vision_enabled": False,
                 "prompt_cache_namespace": "bot-b",
                 "llm_context_window": 4096,
+                "llm_chat_reasoning_effort": "medium",
             }
         )
         self.assertFalse(vision_override.vision_enabled)
         self.assertEqual(vision_override.prompt_cache_namespace, "bot-b")
         self.assertEqual(vision_override.llm_context_window, 4096)
+        self.assertEqual(vision_override.llm_chat_reasoning_effort, "medium")
+        with self.assertRaisesRegex(ValueError, "bot_settings_reasoning_effort_invalid"):
+            base.overlay({"llm_chat_reasoning_effort": "ultra"})
         with self.assertRaises(ValueError) as raised:
             base.overlay({"absolute_path": "not-allowed"})
         self.assertEqual(str(raised.exception), "bot_settings_unknown_field:absolute_path")
@@ -142,6 +150,7 @@ class BotSettingsViewTests(unittest.TestCase):
                 protocol="responses",
                 use_for_vision=True,
                 vision_model="provider-vision",
+                chat_reasoning_effort="",
             )
         )
 
@@ -149,6 +158,24 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(updated.aux_model_name, "provider-chat")
         self.assertEqual(updated.vision_model_name, "provider-vision")
         self.assertEqual(updated.chat_api_protocol, "responses")
+        self.assertEqual(updated.llm_chat_reasoning_effort, "")
+
+    def test_model_service_reasoning_override_is_isolated_per_bot(self) -> None:
+        personal = BotSettingsView(llm_chat_reasoning_effort="high")
+        finance = personal.with_model_service(
+            SimpleNamespace(
+                api_key="finance-key",
+                base_url="https://api.pinaic.com/v1",
+                chat_model="gpt-5.6-luna",
+                protocol="responses",
+                use_for_vision=True,
+                vision_model="gpt-5.6-luna",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(personal.llm_chat_reasoning_effort, "high")
+        self.assertEqual(finance.llm_chat_reasoning_effort, "")
 
 
 class LLMRuntimeSettingsIsolationTests(unittest.TestCase):

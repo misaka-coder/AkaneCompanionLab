@@ -283,6 +283,13 @@ def resolve_capability_selection(
                 )
             ),
             module_names=("legacy_mode_pack",),
+            schema_tool_names=tuple(
+                name
+                for name in legacy_mode_tool_names(
+                    engine, client_context, domain_profile_id=domain_profile_id
+                )
+                if name in handlers
+            ),
         )
         return _freeze_capability_selection(selection, handlers)
     snapshot = build_capability_snapshot(
@@ -344,6 +351,7 @@ def resolve_capability_selection(
             light_hints=domain_profile.capability_hints,
             tool_names=(*selection.tool_names, *domain_handler_names),
             module_names=selection.module_names,
+            schema_tool_names=(*selection.schema_tool_names, *domain_handler_names),
             layer_names=selection.layer_names,
             disclosures=selection.disclosures,
             tool_specs=selection.tool_specs,
@@ -374,6 +382,7 @@ def resolve_capability_selection(
             ),
             tool_names=(*selection.tool_names, *dynamic_tool_names),
             module_names=(*selection.module_names, "extension_tools"),
+            schema_tool_names=(*selection.schema_tool_names, *dynamic_tool_names),
             layer_names=(*selection.layer_names, "extension"),
             disclosures=selection.disclosures,
             tool_specs=selection.tool_specs,
@@ -406,12 +415,18 @@ def _freeze_capability_selection(
     selection: CapabilitySelection,
     handlers: dict[str, Any] | Mapping[str, Any],
 ) -> CapabilitySelection:
+    schema_tool_names = selection.schema_tool_names or selection.tool_names
+    resolved_names = dict.fromkeys((*selection.tool_names, *schema_tool_names))
     resolved = {
         name: handlers[name]
-        for name in selection.tool_names
+        for name in resolved_names
         if name in handlers
     }
-    return replace(selection, resolved_handlers=MappingProxyType(resolved))
+    return replace(
+        selection,
+        schema_tool_names=tuple(schema_tool_names),
+        resolved_handlers=MappingProxyType(resolved),
+    )
 
 
 def _filter_tool_names_with_policy_extensions(

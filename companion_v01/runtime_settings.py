@@ -12,6 +12,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 
+REASONING_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+
+
+def normalize_reasoning_effort(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in REASONING_EFFORT_VALUES else ""
+
+
 @dataclass(frozen=True, slots=True)
 class BotSettingsView:
     """Effective model and speech settings for one BotRuntime.
@@ -50,6 +58,9 @@ class BotSettingsView:
     prompt_cache_retention: str = ""
     llm_context_window: int = 0
     llm_auto_compact_token_limit: int = 0
+    llm_reasoning_effort: str = ""
+    llm_aux_reasoning_effort: str = ""
+    llm_chat_reasoning_effort: str = ""
 
     # Voice/runtime settings.  These belong to a BotRuntime rather than the
     # process-wide config module so multiple Bots can use different voices and
@@ -122,6 +133,15 @@ class BotSettingsView:
             llm_auto_compact_token_limit=max(
                 0,
                 int(getattr(config_module, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0),
+            ),
+            llm_reasoning_effort=normalize_reasoning_effort(
+                getattr(config_module, "LLM_REASONING_EFFORT", "")
+            ),
+            llm_aux_reasoning_effort=normalize_reasoning_effort(
+                getattr(config_module, "LLM_AUX_REASONING_EFFORT", "")
+            ),
+            llm_chat_reasoning_effort=normalize_reasoning_effort(
+                getattr(config_module, "LLM_CHAT_REASONING_EFFORT", "")
             ),
             tts_voice=_text(getattr(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
             or "zh-CN-XiaoxiaoNeural",
@@ -210,6 +230,9 @@ class BotSettingsView:
             "prompt_cache_retention",
             "llm_context_window",
             "llm_auto_compact_token_limit",
+            "llm_reasoning_effort",
+            "llm_aux_reasoning_effort",
+            "llm_chat_reasoning_effort",
             "tts_voice",
             "tts_rate",
             "tts_volume",
@@ -251,6 +274,9 @@ class BotSettingsView:
         protocol = _text(getattr(model_settings, "protocol", "auto")) or "auto"
         use_for_vision = bool(getattr(model_settings, "use_for_vision", True))
         vision_model = _text(getattr(model_settings, "vision_model", "")) or model
+        chat_reasoning_effort = normalize_reasoning_effort(
+            getattr(model_settings, "chat_reasoning_effort", "")
+        )
         return replace(
             self,
             text_api_key=api_key,
@@ -269,6 +295,7 @@ class BotSettingsView:
             vision_base_url=base_url if use_for_vision else "",
             vision_model_name=vision_model if use_for_vision else "",
             vision_api_protocol=protocol,
+            llm_chat_reasoning_effort=chat_reasoning_effort,
         )
 
     def public_snapshot(self) -> dict[str, Any]:
@@ -329,6 +356,11 @@ class BotSettingsView:
                 "window": self.llm_context_window,
                 "auto_compact_token_limit": self.llm_auto_compact_token_limit,
             },
+            "reasoning": {
+                "default": self.llm_reasoning_effort,
+                "aux": self.llm_aux_reasoning_effort,
+                "chat": self.llm_chat_reasoning_effort,
+            },
             "voice": {
                 "voice": self.tts_voice,
                 "rate": self.tts_rate,
@@ -362,6 +394,12 @@ def _configured(api_key: str, base_url: str, model: str, protocol: str) -> bool:
 
 
 def _overlay_value(key: str, value: Any) -> Any:
+    if key in {"llm_reasoning_effort", "llm_aux_reasoning_effort", "llm_chat_reasoning_effort"}:
+        raw = str(value or "").strip()
+        normalized = normalize_reasoning_effort(raw)
+        if raw and not normalized:
+            raise ValueError(f"bot_settings_reasoning_effort_invalid:{key}")
+        return normalized
     if key in {
         "vision_enabled",
         "vision_auto_scene_observe",
@@ -471,4 +509,9 @@ def runtime_setting(settings: Any, config_module: Any, field_name: str, config_n
     return getattr(config_module, config_name, default) if config_module is not None else default
 
 
-__all__ = ["BotSettingsView", "runtime_setting"]
+__all__ = [
+    "BotSettingsView",
+    "REASONING_EFFORT_VALUES",
+    "normalize_reasoning_effort",
+    "runtime_setting",
+]
