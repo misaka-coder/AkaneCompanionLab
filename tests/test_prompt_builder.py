@@ -498,7 +498,8 @@ system = "semantic reinforcement system"
             memory_text="automatic retrieval evidence",
             current_visual_context="bounded proactive visual state",
             resource_context="",
-            extra_context="dynamic plugin instruction",
+            extra_context="stable plugin runtime",
+            volatile_extra_context="dynamic plugin instruction",
             visual_defaults={
                 "major": "home",
                 "minor": "room",
@@ -529,8 +530,12 @@ system = "semantic reinforcement system"
         self.assertNotIn("debug_enabled=", result["system_prompt"])
         self.assertLess(prompt.index("stable finance capability contract"), prompt.index("ordinary semantic memory"))
         self.assertLess(prompt.index("ordinary semantic memory"), prompt.index("ordinary episodic memory"))
+        self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("stable plugin runtime"))
+        self.assertLess(prompt.index("stable plugin runtime"), prompt.index("Assistant: earlier analysis"))
         self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("Assistant: earlier analysis"))
         self.assertLess(prompt.index("Assistant: earlier analysis"), prompt.index("dynamic plugin instruction"))
+        self.assertNotIn("stable plugin runtime", result["user_prompt"])
+        self.assertIn("dynamic plugin instruction", result["user_prompt"])
         self.assertTrue(result["stable_system_context_hash"])
 
     def test_plugin_proactive_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:

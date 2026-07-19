@@ -259,7 +259,7 @@ class PromptBuilder:
             structured_history_turns.append(
                 {"role": "user", "content": memory_context_text}
             )
-        stable_runtime_context_parts = [] if plugin_proactive_scope else [
+        stable_runtime_context_parts = [
             str(extra_context or "").strip(),
             (
                 "【本轮当前助手状态（宿主可信上下文）】\n"
@@ -283,20 +283,6 @@ class PromptBuilder:
             str(volatile_extra_context or "").strip(),
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
         ]
-        if plugin_proactive_scope:
-            dynamic_tail_parts.extend(
-                [
-                    str(extra_context or "").strip(),
-                    (
-                        "【本轮当前助手状态（宿主可信上下文）】\n"
-                        f"{persona_system or '(无额外当前状态)'}"
-                    ),
-                    (
-                        "【本轮角色表达侧面参考】\n"
-                        f"{persona_reference_context or '(无额外表达侧面参考)'}"
-                    ),
-                ]
-            )
         current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
         dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
         if not plugin_proactive_scope:
