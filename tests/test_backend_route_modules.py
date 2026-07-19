@@ -1312,6 +1312,112 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
         mocked_post.assert_called_once()
 
+    def test_qq_group_vision_switch_blocks_images_before_ingest_and_native_chat(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        ingest_calls: list[dict[str, Any]] = []
+        prepare_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(kwargs)
+                return [{"attachment_id": "should_not_exist", "kind": "image"}]
+
+            def prepare_qq_native_image_inputs(self, **kwargs):
+                prepare_calls.append(kwargs)
+                return {"ok": True, "status": "ready", "images": [], "skipped": []}
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "这个群现在没有开启识图。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 9}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+            command_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-command-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "admin", "nickname": "群管理员"},
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": "/识图关"}},
+                    ],
+                },
+            )
+            image_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-image-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "admin", "nickname": "群管理员"},
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 看看这张图"}},
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "disabled.png",
+                                "url": "http://127.0.0.1:3001/disabled.png",
+                            },
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(command_response.status_code, 200)
+        self.assertEqual(command_response.json()["reason"], "qq_group_vision_command")
+        self.assertEqual(command_response.json()["command_status"], "disabled")
+        self.assertFalse(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.json()["reason"], "group_mention", image_response.json())
+        self.assertEqual(ingest_calls, [])
+        self.assertEqual(prepare_calls, [])
+        self.assertEqual(len(process_calls), 1)
+        self.assertNotIn("native_user_images", process_calls[0])
+        self.assertIn("本群已关闭图片识别", process_calls[0]["extra_context"])
+        bypass_logs = [payload for name, payload in log_calls if name == "qq_group_vision_bypassed"]
+        self.assertEqual(len(bypass_logs), 1)
+        self.assertEqual(bypass_logs[0]["blocked_image_count"], 1)
+
     def test_qq_router_resolves_quoted_group_image_into_native_multimodal_chat(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

@@ -1462,6 +1462,18 @@ def build_qq_router(
     ) -> None:
         started_at = time.perf_counter()
         try:
+            if bool(getattr(context, "is_group", False)) and not qq_gateway.is_group_vision_enabled(
+                getattr(context, "group_id", 0)
+            ):
+                log_event(
+                    "qq_image_vision_followup_skipped",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    reason="group_vision_disabled",
+                    attachment_count=len(getattr(context, "attachments", None) or []),
+                    duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+                )
+                return
             wait_result = await asyncio.to_thread(
                 engine.wait_for_qq_attachments_settled,
                 profile_user_id=context.profile_user_id,
@@ -1657,6 +1669,44 @@ def build_qq_router(
             _qq_turn_message_override = ""
             _qq_turn_extra_context_note = ""
             _qq_native_user_images: list[dict[str, Any]] = []
+
+            group_vision_command_result = qq_gateway.handle_group_vision_command(
+                context,
+                sender_role=_qq_sender_role(event),
+            )
+            if isinstance(group_vision_command_result, dict):
+                reply = str(group_vision_command_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")) and bool(group_vision_command_result.get("ok")),
+                )
+                log_event(
+                    "qq_group_vision_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(group_vision_command_result.get("status") or ""),
+                    command_ok=bool(group_vision_command_result.get("ok")),
+                    vision_enabled=bool(group_vision_command_result.get("vision_enabled")),
+                    state_persisted=group_vision_command_result.get("state_persisted"),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") else "send_failed",
+                        "reason": "qq_group_vision_command",
+                        "command_status": str(group_vision_command_result.get("status") or ""),
+                        "command_ok": bool(group_vision_command_result.get("ok")),
+                        "vision_enabled": bool(group_vision_command_result.get("vision_enabled")),
+                        "state_persisted": group_vision_command_result.get("state_persisted"),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "send_result": send_result,
+                    }
+                )
 
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):
@@ -2111,6 +2161,30 @@ def build_qq_router(
                     ok=bool(quoted_payload.get("ok")),
                     attachment_count=len(quoted_attachments),
                 )
+
+            if context.is_group and not qq_gateway.is_group_vision_enabled(context.group_id):
+                attachments = list(context.attachments or [])
+                allowed_attachments = [
+                    item
+                    for item in attachments
+                    if not (isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image")
+                ]
+                blocked_image_count = len(attachments) - len(allowed_attachments)
+                if blocked_image_count:
+                    context = replace(context, attachments=allowed_attachments)
+                    vision_disabled_note = (
+                        "【本群识图设置】本群已关闭图片识别；本轮图片没有进入视觉分析或附件工作台。"
+                        "不要声称看到了图片；如果用户询问图片内容，请简短说明本群识图已关闭。"
+                    )
+                    _qq_turn_extra_context_note = "\n".join(
+                        part for part in (_qq_turn_extra_context_note, vision_disabled_note) if part
+                    )
+                    log_event(
+                        "qq_group_vision_bypassed",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        blocked_image_count=blocked_image_count,
+                    )
 
             attachments_registered = []
             if context.attachments:

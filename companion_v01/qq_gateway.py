@@ -171,6 +171,8 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
     "自动模式": "auto",
     "自动回复模式": "auto",
 }
+QQ_GROUP_VISION_ENABLE_COMMAND = "识图开"
+QQ_GROUP_VISION_DISABLE_COMMAND = "识图关"
 QQ_CHAT_MODEL_LIST_COMMANDS = {
     "模型列表",
     "可用模型",
@@ -343,6 +345,8 @@ class NapCatQQGateway:
         self._reply_mode_lock = threading.RLock()
         self.chat_model_overrides: dict[str, str] = {}
         self._chat_model_lock = threading.RLock()
+        self.group_vision_overrides: dict[str, bool] = {}
+        self._group_vision_lock = threading.RLock()
         self.emotion_mface_state: dict[str, dict[str, Any]] = {}
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
@@ -399,6 +403,16 @@ class NapCatQQGateway:
         with self._chat_model_lock:
             self.chat_model_overrides = model_overrides
 
+        group_vision_overrides: dict[str, bool] = {}
+        raw_group_vision = payload.get("group_vision_overrides")
+        if isinstance(raw_group_vision, dict):
+            for raw_group_id, raw_enabled in raw_group_vision.items():
+                group_id = self._safe_int(raw_group_id)
+                if group_id > 0 and raw_enabled is False:
+                    group_vision_overrides[str(group_id)] = False
+        with self._group_vision_lock:
+            self.group_vision_overrides = group_vision_overrides
+
     def _persist_gateway_state(self) -> bool:
         if self._state_path is None:
             self._state_error = ""
@@ -410,11 +424,14 @@ class NapCatQQGateway:
                 outfit_overrides = dict(self.outfit_overrides)
             with self._chat_model_lock:
                 chat_model_overrides = dict(self.chat_model_overrides)
+            with self._group_vision_lock:
+                group_vision_overrides = dict(self.group_vision_overrides)
             payload = {
                 "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
                 "character_pack_overrides": character_overrides,
                 "outfit_overrides": outfit_overrides,
                 "chat_model_overrides": chat_model_overrides,
+                "group_vision_overrides": group_vision_overrides,
                 "updated_at": int(time.time()),
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +463,9 @@ class NapCatQQGateway:
     def _persist_chat_model_overrides(self) -> bool:
         return self._persist_gateway_state()
 
+    def _persist_group_vision_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.bridge_enabled,
@@ -460,6 +480,9 @@ class NapCatQQGateway:
             "active_character_override_count": len(self.character_pack_overrides),
             "active_outfit_override_count": len(self.outfit_overrides),
             "active_chat_model_override_count": len(self.chat_model_overrides),
+            "disabled_group_vision_count": sum(
+                1 for enabled in self.group_vision_overrides.values() if enabled is False
+            ),
             "state_persistence_enabled": self._state_path is not None,
             "state_status": "error"
             if self._state_error
@@ -708,6 +731,80 @@ class NapCatQQGateway:
         value = str(getattr(config, "MASTER_QQ", "") or "").strip()
         return value if value.isdigit() else ""
 
+    def is_group_vision_enabled(self, group_id: Any) -> bool:
+        normalized_group_id = self._safe_int(group_id)
+        if normalized_group_id <= 0:
+            return True
+        with self._group_vision_lock:
+            return self.group_vision_overrides.get(str(normalized_group_id)) is not False
+
+    def set_group_vision_enabled(self, group_id: Any, enabled: bool) -> bool:
+        normalized_group_id = self._safe_int(group_id)
+        if normalized_group_id <= 0:
+            return False
+        with self._group_vision_lock:
+            if enabled:
+                self.group_vision_overrides.pop(str(normalized_group_id), None)
+            else:
+                self.group_vision_overrides[str(normalized_group_id)] = False
+        return self._persist_group_vision_overrides()
+
+    def parse_group_vision_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        if text == QQ_GROUP_VISION_ENABLE_COMMAND:
+            return {"action": "enable"}
+        if text == QQ_GROUP_VISION_DISABLE_COMMAND:
+            return {"action": "disable"}
+        return None
+
+    def handle_group_vision_command(
+        self,
+        context: QQMessageContext,
+        *,
+        sender_role: str = "",
+    ) -> dict[str, Any] | None:
+        command = self.parse_group_vision_command(context.clean_message)
+        if command is None:
+            return None
+        if not context.is_group or context.group_id <= 0:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "group_only",
+                "reply": "请在群内设置识图模式",
+                "vision_enabled": True,
+            }
+
+        vision_enabled = self.is_group_vision_enabled(context.group_id)
+        action = str(command.get("action") or "")
+        role = str(sender_role or "").strip().lower()
+        is_master = bool(self.master_qq) and str(context.user_id) == self.master_qq
+        if role not in {"owner", "admin"} and not is_master:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有群主、群管理员或 Akane 主账号可以修改本群识图开关。",
+                "vision_enabled": vision_enabled,
+            }
+
+        requested_enabled = action == "enable"
+        state_persisted = self.set_group_vision_enabled(context.group_id, requested_enabled)
+        if requested_enabled:
+            reply = "识图模式已打开"
+            status = "enabled"
+        else:
+            reply = "识图模式已关闭"
+            status = "disabled"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": status,
+            "reply": self._append_state_persistence_warning(reply, state_persisted),
+            "vision_enabled": requested_enabled,
+            "state_persisted": state_persisted,
+        }
+
     def build_message_context(self, event: dict[str, Any]) -> QQMessageContext:
         if str(event.get("post_type") or "").strip().lower() != "message":
             return self.build_notice_context(event)
@@ -740,7 +837,9 @@ class NapCatQQGateway:
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
         sender_label = self.resolve_sender_label(event=event, user_id=user_id)
         mentions_wake_word = self.message_mentions_wake_word(clean_message)
-        allow_group_attachment_buffer = self._is_group_attachment_buffer_allowed(
+        allow_group_attachment_buffer = self.is_group_vision_enabled(
+            group_id
+        ) and self._is_group_attachment_buffer_allowed(
             session_id=session_id,
             user_id=user_id,
             attachments=attachments,

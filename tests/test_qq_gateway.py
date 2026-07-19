@@ -744,6 +744,102 @@ class QQGatewayTests(unittest.TestCase):
                 "reimu",
             )
 
+    def test_group_vision_command_persists_per_group_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-disable-1",
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " /识图关"}},
+                    ],
+                }
+            )
+
+            result = gateway.handle_group_vision_command(context, sender_role="admin")
+
+            self.assertIsNotNone(result)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "disabled")
+            self.assertEqual(result["reply"], "识图模式已关闭")
+            self.assertTrue(result["state_persisted"])
+            self.assertFalse(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+            self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID + 1))
+
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            self.assertFalse(restored_gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+            self.assertEqual(restored_gateway.status()["disabled_group_vision_count"], 1)
+
+            enable_context = restored_gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-enable-1",
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " /识图开"}},
+                    ],
+                }
+            )
+            enabled = restored_gateway.handle_group_vision_command(enable_context, sender_role="admin")
+            self.assertIsNotNone(enabled)
+            self.assertEqual(enabled["status"], "enabled")
+            self.assertEqual(enabled["reply"], "识图模式已打开")
+            self.assertTrue(restored_gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+
+    def test_group_vision_command_rejects_non_admin_change(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_OTHER_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-vision-forbidden-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " /识图关"}},
+                ],
+            }
+        )
+
+        result = gateway.handle_group_vision_command(context, sender_role="member")
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "forbidden")
+        self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+
+    def test_bare_group_vision_command_does_not_wake_bot(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-vision-bare-ignored-1",
+                "raw_message": "/识图关",
+            }
+        )
+
+        self.assertFalse(context.should_respond)
+        self.assertTrue(context.should_record)
+        self.assertEqual(context.reason, "group_passive_observed")
+        self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+
     @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
     def test_builtin_character_override_persists_across_restart(self) -> None:
         service = FakeCharacterResourceService()
