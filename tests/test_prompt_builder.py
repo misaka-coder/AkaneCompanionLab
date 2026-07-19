@@ -568,6 +568,43 @@ system = "semantic reinforcement system"
         self.assertEqual(result["user_prompt"].count("current finance event"), 1)
         self.assertIn("当前用户消息", result["user_prompt"])
 
+    def test_plugin_proactive_scope_uses_exact_memcore_current_turn_when_no_retrieval_tail(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        result = builder.build_final_generation_context(
+            now_ts=1_712_400_000,
+            raw_text="Assistant: earlier analysis\nUser: exact finance event",
+            history_turns=[{"role": "assistant", "content": "Assistant: earlier analysis"}],
+            current_message_text="User: exact finance event",
+            episodic_summary_text="stable episode",
+            semantic_summary_text="stable semantic",
+            memory_text="",
+            current_visual_context="stable proactive visual",
+            resource_context="",
+            extra_context="stable proactive runtime",
+            volatile_extra_context="stable delivery limit",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context="stable tools",
+            debug_enabled=False,
+            prompt_scope="plugin_proactive",
+            current_message_in_raw=True,
+        )
+
+        self.assertTrue(result["linear_proactive_turn"])
+        self.assertEqual(result["user_prompt"], "User: exact finance event")
+        history = _history_text(result)
+        self.assertIn("stable proactive runtime", history)
+        self.assertIn("stable delivery limit", history)
+        self.assertIn("stable proactive visual", history)
+        self.assertLess(history.index("stable proactive runtime"), history.index("Assistant: earlier analysis"))
+
     def test_plugin_stable_system_hash_ignores_dynamic_finance_event(self) -> None:
         builder = PromptBuilder(load_persona_config())
         common = {

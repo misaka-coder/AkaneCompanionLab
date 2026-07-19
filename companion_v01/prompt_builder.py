@@ -248,6 +248,11 @@ class PromptBuilder:
             f"{ATTRIBUTION_RULES}\n\n"
         )
         plugin_proactive_scope = str(prompt_scope or "").strip() == "plugin_proactive"
+        linear_proactive_turn = bool(
+            plugin_proactive_scope
+            and current_message_in_raw
+            and not str(memory_text or "").strip()
+        )
         stable_user_context = (
             f"{stable_user_intro}"
             f"【本轮系统能力与工具上下文】\n{tool_context_text}"
@@ -270,6 +275,13 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
+        if linear_proactive_turn:
+            stable_runtime_context_parts.extend(
+                [
+                    str(volatile_extra_context or "").strip(),
+                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
+                ]
+            )
         runtime_context_text = "\n\n".join(part for part in stable_runtime_context_parts if part)
         if runtime_context_text:
             structured_history_turns.append(
@@ -278,17 +290,20 @@ class PromptBuilder:
         structured_history_turns.extend(
             dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
         )
-        dynamic_tail_parts = [
-            f"可用回忆片段：\n{memory_text}",
-            str(volatile_extra_context or "").strip(),
-            f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
-        ]
-        current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
-        dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
-        if not plugin_proactive_scope:
-            dynamic_tail_parts.append(f"当前时间：{current_time_text}")
-        dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
-        user_prompt = f"{dynamic_tail}\n"
+        if linear_proactive_turn:
+            user_prompt = str(current_message_text or "").strip()
+        else:
+            dynamic_tail_parts = [
+                f"可用回忆片段：\n{memory_text}",
+                str(volatile_extra_context or "").strip(),
+                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
+            ]
+            current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
+            dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
+            if not plugin_proactive_scope:
+                dynamic_tail_parts.append(f"当前时间：{current_time_text}")
+            dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
+            user_prompt = f"{dynamic_tail}\n"
         extra_context_subsections: list[dict[str, str]] = []
         for section in extra_context_audit_sections or []:
             if not isinstance(section, dict):
@@ -349,6 +364,7 @@ class PromptBuilder:
                 else ""
             ),
             "tool_prompt_context_hash": tool_context_hash,
+            "linear_proactive_turn": linear_proactive_turn,
             "history_turns": structured_history_turns,
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,
