@@ -258,11 +258,7 @@ class PromptBuilder:
             structured_history_turns.append(
                 {"role": "user", "content": memory_context_text}
             )
-        structured_history_turns.extend(
-            dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
-        )
-        dynamic_tail_parts = [
-            f"可用回忆片段：\n{memory_text}",
+        runtime_context_parts = [] if plugin_proactive_scope else [
             str(extra_context or "").strip(),
             f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
             (
@@ -274,6 +270,32 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
+        runtime_context_text = "\n\n".join(part for part in runtime_context_parts if part)
+        if runtime_context_text:
+            structured_history_turns.append(
+                {"role": "user", "content": runtime_context_text}
+            )
+        structured_history_turns.extend(
+            dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
+        )
+        dynamic_tail_parts = [
+            f"可用回忆片段：\n{memory_text}",
+        ]
+        if plugin_proactive_scope:
+            dynamic_tail_parts.extend(
+                [
+                    str(extra_context or "").strip(),
+                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
+                    (
+                        "【本轮当前助手状态（宿主可信上下文）】\n"
+                        f"{persona_system or '(无额外当前状态)'}"
+                    ),
+                    (
+                        "【本轮角色表达侧面参考】\n"
+                        f"{persona_reference_context or '(无额外表达侧面参考)'}"
+                    ),
+                ]
+            )
         current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
         dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
         if not plugin_proactive_scope:
@@ -298,6 +320,7 @@ class PromptBuilder:
                 {"name": "user.stable_context", "text": stable_user_context},
                 {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},
+                {"name": "user.runtime_context", "text": runtime_context_text},
                 {"name": "user.raw_recent_timeline", "text": raw_text or "(无)"},
                 {"name": "user.retrieval_snippets", "text": memory_text},
                 {"name": "user.extra_context", "text": extra_context},

@@ -233,7 +233,8 @@ system = "semantic reinforcement system"
             result = builder.build_final_generation_context(
                 now_ts=1712400000,
                 raw_text="User: hi",
-                current_message_text="User: hi",
+                history_turns=[{"role": "user", "content": "User: hi"}],
+                current_message_text="User: current",
                 episodic_summary_text="episode",
                 semantic_summary_text="semantic",
                 memory_text="memory",
@@ -278,7 +279,7 @@ system = "semantic reinforcement system"
             self.assertIn("- fake tool", history_text)
             self.assertNotIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertNotIn("persona state", result["system_prompt"])
-            self.assertIn("persona state", result["user_prompt"])
+            self.assertIn("persona state", history_text)
             self.assertEqual(
                 result["system_extra_blocks"],
                 [
@@ -304,13 +305,13 @@ system = "semantic reinforcement system"
                 provider_text.index("- fake tool"),
                 provider_text.index("较长期的语义记忆"),
             )
-            self.assertIn("extra", result["user_prompt"])
-            self.assertIn("persona refs", result["user_prompt"])
+            self.assertIn("extra", history_text)
+            self.assertIn("persona refs", history_text)
+            self.assertNotIn("extra", result["user_prompt"])
+            self.assertNotIn("persona refs", result["user_prompt"])
             self.assertLess(provider_text.index("较长期的语义记忆"), provider_text.index("extra"))
-            self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("当前演出状态"))
-            self.assertLess(
-                result["user_prompt"].index("persona refs"), result["user_prompt"].index("用户原始消息")
-            )
+            self.assertLess(history_text.index("extra"), history_text.index("当前演出状态"))
+            self.assertLess(history_text.index("persona refs"), history_text.index("User: hi"))
             audit_names = [section["name"] for section in result["prompt_audit_sections"]]
             self.assertIn("system.full", audit_names)
             self.assertIn("system_extra.resource_context", audit_names)
@@ -370,7 +371,7 @@ system = "semantic reinforcement system"
         self.assertIn("用户原始消息", latent["user_prompt"])
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
-    def test_volatile_persona_state_stays_after_append_only_raw_prefix(self) -> None:
+    def test_runtime_context_precedes_append_only_raw_history_and_keeps_current_tail_short(self) -> None:
         builder = PromptBuilder(load_persona_config())
         common = {
             "now_ts": 1_712_400_000,
@@ -408,7 +409,7 @@ system = "semantic reinforcement system"
                 {"role": "assistant", "content": "Assistant: first answer"},
             ],
             current_message_text="User: current B",
-            persona_system_context="persona state B",
+            persona_system_context="persona state A",
         )
 
         self.assertEqual(first["system_prompt"], second["system_prompt"])
@@ -416,7 +417,11 @@ system = "semantic reinforcement system"
         first_history = _history_text(first)
         second_history = _history_text(second)
         self.assertLess(first_history.index("stable tool contract"), first_history.index("User: first event"))
-        self.assertIn("persona state A", first["user_prompt"])
+        self.assertIn("persona state A", first_history)
+        self.assertNotIn("persona state A", first["user_prompt"])
+        self.assertNotIn("dynamic extra", first["user_prompt"])
+        self.assertNotIn("dynamic reference", first["user_prompt"])
+        self.assertIn("User: current A", first["user_prompt"])
         first_event_end = first_history.index("User: first event") + len("User: first event")
         self.assertEqual(first_history[:first_event_end], second_history[:first_event_end])
         self.assertEqual(
@@ -684,7 +689,7 @@ system = "semantic reinforcement system"
 
         self.assertIn("desktop_pet 桌宠模式", result["system_prompt"])
         self.assertNotIn("角色包身份：Mika", result["system_prompt"])
-        self.assertIn("角色包身份：Mika", result["user_prompt"])
+        self.assertIn("角色包身份：Mika", _history_text(result))
         self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
         self.assertIn("memory_metadata", result["fallback"])
