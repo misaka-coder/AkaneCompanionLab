@@ -167,6 +167,8 @@ const PET_HIT_POLYGON = [
 
 const DEFAULT_STATE = {
   instanceId: LOCAL_DEFAULT_INSTANCE_ID,
+  hostId: LOCAL_DEFAULT_INSTANCE_ID,
+  boundBotId: LOCAL_DEFAULT_INSTANCE_ID,
   x: null,
   y: null,
   width: null,
@@ -869,10 +871,14 @@ async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {})
       : persistedState?.backendUrl
   };
   const instanceId = String(loaded?.instanceId || "").trim();
-  if (String(launchBinding?.instanceId || "").trim() !== instanceId) {
+  const hostId = String(loaded?.hostId || instanceId).trim();
+  if (
+    String(launchBinding?.instanceId || "").trim() !== instanceId ||
+    String(launchBinding?.hostId || launchBinding?.instanceId || "").trim() !== hostId
+  ) {
     throw new Error("桌面客户端实例绑定与状态文件不一致。");
   }
-  bindInstanceStorage(instanceId);
+  bindInstanceStorage(hostId);
   const persistedPackId = String(loaded?.characterPackId || "").trim();
   await refreshRuntimeCharacterPacks({ silent: true, scheduleSnapshot: false });
   Object.assign(state, normalizeState(loaded));
@@ -1961,6 +1967,8 @@ function buildSettingsSnapshot() {
     character: buildCharacterSnapshot(),
     state: {
       instanceId: state.instanceId,
+      hostId: state.hostId,
+      boundBotId: state.boundBotId,
       scale: state.scale,
       opacity: state.opacity,
       skipTaskbar: state.skipTaskbar,
@@ -2080,10 +2088,13 @@ function normalizeState(value) {
   const incoming = value ?? {};
   const scale = clamp(Number(incoming.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   const _legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
+  const instanceId = String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID;
   return {
     ...DEFAULT_STATE,
     ...incoming,
-    instanceId: String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID,
+    instanceId,
+    hostId: String(incoming.hostId || instanceId).trim() || instanceId,
+    boundBotId: String(incoming.boundBotId || instanceId).trim() || instanceId,
     width: null,
     height: null,
     scale,
@@ -3400,6 +3411,8 @@ function buildPanelStatePayload() {
   const playing = media.playbackStatus === "playing";
   return {
     instanceId: state.instanceId,
+    hostId: state.hostId,
+    boundBotId: state.boundBotId,
     backendUrl: state.backendUrl,
     characterName: getProfileIdentityText("name", CHARACTER_NAME),
     emotion: state.currentEmotion || getProfileDefaultEmotion(),
@@ -3933,7 +3946,7 @@ async function verifyBackendInstance(backendUrl) {
   if (
     String(payload?.status || "") !== "ok" ||
     String(payload?.root_binding || "") !== "valid" ||
-    actualInstanceId !== state.instanceId
+    actualInstanceId !== state.hostId
   ) {
     const error = new Error("instance_id_mismatch");
     error.bindingStatus = "rejected";
@@ -3949,8 +3962,8 @@ function friendlyBackendBindingError(error) {
   const actual = String(error?.actualInstanceId || "").trim();
   if (reason === "instance_id_mismatch") {
     return actual
-      ? `目标是实例 ${actual}，当前客户端只允许 ${state.instanceId}`
-      : `后端实例身份与 ${state.instanceId} 不匹配`;
+      ? `目标是 Host ${actual}，当前客户端只允许 ${state.hostId}`
+      : `后端 Host 身份与 ${state.hostId} 不匹配`;
   }
   if (reason === "missing_admin_token") return "命名实例缺少管理凭据";
   if (reason.includes("health") || reason.includes("connect") || reason.includes("request")) {

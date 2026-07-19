@@ -43,6 +43,7 @@ use windows::Win32::{
 const STATE_FILE: &str = "pet_state.json";
 const DATA_ROOT_ENV: &str = "AKANE_DATA_ROOT";
 const INSTANCE_ID_ENV: &str = "AKANE_INSTANCE_ID";
+const BOUND_BOT_ID_ENV: &str = "AKANE_BOUND_BOT_ID";
 const ADMIN_TOKEN_ENV: &str = "AKANE_ADMIN_TOKEN";
 const SATELLITE_TOKEN_ENV: &str = "AKANE_DESKTOP_SATELLITE_TOKEN";
 const BACKEND_URL_ENV: &str = "AKANE_BACKEND_URL";
@@ -170,6 +171,8 @@ impl Default for CharacterRuntimeState {
 #[serde(rename_all = "camelCase")]
 struct PetState {
     instance_id: String,
+    host_id: String,
+    bound_bot_id: String,
     x: Option<i32>,
     y: Option<i32>,
     width: Option<u32>,
@@ -221,6 +224,8 @@ impl Default for PetState {
     fn default() -> Self {
         Self {
             instance_id: LOCAL_DEFAULT_INSTANCE_ID.to_string(),
+            host_id: String::new(),
+            bound_bot_id: String::new(),
             x: None,
             y: None,
             width: None,
@@ -269,6 +274,8 @@ struct BackendInstanceVerification {
 #[serde(rename_all = "camelCase")]
 struct ClientLaunchBinding {
     instance_id: String,
+    host_id: String,
+    bound_bot_id: String,
     backend_url: String,
     has_backend_override: bool,
 }
@@ -590,8 +597,11 @@ fn load_pet_state(app: AppHandle) -> Result<PetState, String> {
 
 #[tauri::command]
 fn get_client_launch_binding() -> Result<ClientLaunchBinding, String> {
+    let host_id = runtime_instance_id()?;
     Ok(ClientLaunchBinding {
-        instance_id: runtime_instance_id()?,
+        instance_id: host_id.clone(),
+        host_id,
+        bound_bot_id: runtime_bound_bot_id()?,
         backend_url: runtime_backend_url(),
         has_backend_override: std::env::var_os(BACKEND_URL_ENV).is_some(),
     })
@@ -645,7 +655,7 @@ async fn backend_admin_request(
         Ok(value) => value,
         Err(_) => return admin_failure("state_unavailable", "client_state_unavailable", 503),
     };
-    if state.instance_id != runtime_instance_id {
+    if state.host_id != runtime_instance_id {
         return admin_failure("instance_mismatch", "client_state_instance_mismatch", 409);
     }
 
@@ -4558,6 +4568,8 @@ fn build_system_media_track_key(
 fn default_pet_state() -> Result<PetState, String> {
     let mut state = PetState::default();
     state.instance_id = runtime_instance_id()?;
+    state.host_id = state.instance_id.clone();
+    state.bound_bot_id = runtime_bound_bot_id()?;
     state.backend_url = runtime_backend_url();
     normalize_pet_state(&mut state)?;
     Ok(state)
@@ -4565,12 +4577,13 @@ fn default_pet_state() -> Result<PetState, String> {
 
 fn normalize_pet_state(state: &mut PetState) -> Result<(), String> {
     let runtime_instance_id = runtime_instance_id()?;
-    if state.instance_id.trim().is_empty() && runtime_instance_id == LOCAL_DEFAULT_INSTANCE_ID {
-        state.instance_id = runtime_instance_id.clone();
-    }
-    if state.instance_id != runtime_instance_id {
-        return Err("client_state_instance_mismatch".to_string());
-    }
+    let runtime_bound_bot_id = runtime_bound_bot_id()?;
+    normalize_pet_binding_ids(
+        state,
+        &runtime_instance_id,
+        &runtime_bound_bot_id,
+        std::env::var_os(BOUND_BOT_ID_ENV).is_some(),
+    )?;
     state.width = None;
     state.height = None;
     state.scale = clamp(state.scale, 0.75, 1.45);
@@ -4594,6 +4607,36 @@ fn normalize_pet_state(state: &mut PetState) -> Result<(), String> {
     state.screen_vision_frame_count = state.screen_vision_frame_count.clamp(1, 5);
     for runtime in state.characters.values_mut() {
         normalize_character_runtime_state(runtime);
+    }
+    Ok(())
+}
+
+fn normalize_pet_binding_ids(
+    state: &mut PetState,
+    runtime_host_id: &str,
+    default_bound_bot_id: &str,
+    enforce_bound_bot_id: bool,
+) -> Result<(), String> {
+    if state.instance_id.trim().is_empty() && runtime_host_id == LOCAL_DEFAULT_INSTANCE_ID {
+        state.instance_id = runtime_host_id.to_string();
+    }
+    if state.instance_id != runtime_host_id {
+        return Err("client_state_instance_mismatch".to_string());
+    }
+    if state.host_id.trim().is_empty() {
+        state.host_id = state.instance_id.clone();
+    }
+    if state.host_id != runtime_host_id {
+        return Err("client_state_host_mismatch".to_string());
+    }
+    if state.bound_bot_id.trim().is_empty() {
+        state.bound_bot_id = default_bound_bot_id.to_string();
+    }
+    if !is_safe_instance_id(&state.bound_bot_id) {
+        return Err("invalid_bound_bot_id".to_string());
+    }
+    if enforce_bound_bot_id && state.bound_bot_id != default_bound_bot_id {
+        return Err("client_state_bound_bot_mismatch".to_string());
     }
     Ok(())
 }
@@ -4779,6 +4822,19 @@ fn runtime_instance_id() -> Result<String, String> {
         return Err("invalid_instance_id".to_string());
     }
     Ok(instance_id)
+}
+
+fn runtime_bound_bot_id() -> Result<String, String> {
+    let value = std::env::var(BOUND_BOT_ID_ENV).unwrap_or_default();
+    let bot_id = if value.trim().is_empty() {
+        runtime_instance_id()?
+    } else {
+        value.trim().to_string()
+    };
+    if !is_safe_instance_id(&bot_id) {
+        return Err("invalid_bound_bot_id".to_string());
+    }
+    Ok(bot_id)
 }
 
 fn runtime_backend_url() -> String {
@@ -5917,6 +5973,39 @@ mod tests {
         assert!(is_safe_instance_id("finance.prod_1"));
         assert!(!is_safe_instance_id("../finance"));
         assert!(!is_safe_instance_id(""));
+    }
+
+    #[test]
+    fn legacy_pet_state_migrates_to_host_and_bound_bot_ids() {
+        let mut state = PetState::default();
+        state.instance_id = "personal".to_string();
+
+        normalize_pet_binding_ids(&mut state, "personal", "personal", false).unwrap();
+
+        assert_eq!(state.instance_id, "personal");
+        assert_eq!(state.host_id, "personal");
+        assert_eq!(state.bound_bot_id, "personal");
+    }
+
+    #[test]
+    fn persisted_bound_bot_is_safe_and_environment_override_is_fail_closed() {
+        let mut state = PetState::default();
+        state.instance_id = "personal".to_string();
+        state.host_id = "personal".to_string();
+        state.bound_bot_id = "finance".to_string();
+
+        normalize_pet_binding_ids(&mut state, "personal", "personal", false).unwrap();
+        assert_eq!(state.bound_bot_id, "finance");
+        assert_eq!(
+            normalize_pet_binding_ids(&mut state, "personal", "personal", true),
+            Err("client_state_bound_bot_mismatch".to_string())
+        );
+
+        state.bound_bot_id = "../finance".to_string();
+        assert_eq!(
+            normalize_pet_binding_ids(&mut state, "personal", "personal", false),
+            Err("invalid_bound_bot_id".to_string())
+        );
     }
 
     #[test]

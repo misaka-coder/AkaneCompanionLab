@@ -890,6 +890,19 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("characters: HashMap<String, CharacterRuntimeState>", tauri_source)
         self.assertIn("for runtime in state.characters.values_mut()", tauri_source)
 
+    def test_next_pet_state_carries_host_and_bound_bot_identity(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        rust_source = _read("desktop_pet_next/src-tauri/src/main.rs")
+
+        self.assertIn("hostId: LOCAL_DEFAULT_INSTANCE_ID", main_source)
+        self.assertIn("boundBotId: LOCAL_DEFAULT_INSTANCE_ID", main_source)
+        self.assertIn("bindInstanceStorage(hostId)", main_source)
+        self.assertIn("actualInstanceId !== state.hostId", main_source)
+        self.assertIn("host_id: String", rust_source)
+        self.assertIn("bound_bot_id: String", rust_source)
+        self.assertIn('const BOUND_BOT_ID_ENV: &str = "AKANE_BOUND_BOT_ID"', rust_source)
+        self.assertIn("normalize_pet_binding_ids(", rust_source)
+
     def test_next_care_runtime_uses_backend_authority_and_gates_shop_projection(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         panel_html = _read("desktop_pet_next/panel.html")
