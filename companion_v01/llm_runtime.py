@@ -2248,6 +2248,7 @@ class LLMRuntime:
 
     def _create_responses_completion(self, *, bundle: ModelBundle, payload: dict[str, Any]) -> Any:
         request = self._responses_payload_from_chat(payload)
+        self._record_responses_request_audit_if_enabled(bundle=bundle, request=request)
         try:
             response = bundle.client.responses.create(**request)
         except TypeError:
@@ -2265,6 +2266,75 @@ class LLMRuntime:
         if bool(request.get("stream")):
             return _ResponsesStreamAdapter(response)
         return self._adapt_responses_result(response)
+
+    def _record_responses_request_audit_if_enabled(
+        self,
+        *,
+        bundle: ModelBundle,
+        request: dict[str, Any],
+    ) -> None:
+        cache_key = str(request.get("prompt_cache_key") or "").strip()
+        namespace = self._settings_view().prompt_cache_namespace.strip().strip(":")
+        audit_key = cache_key.removeprefix(f"{namespace}:") if namespace else cache_key
+        if not self._should_record_prompt_audit(audit_key):
+            return
+        try:
+            input_items = request.get("input") if isinstance(request.get("input"), list) else []
+            tools = request.get("tools") if isinstance(request.get("tools"), list) else []
+
+            def fingerprint(name: str, value: Any) -> dict[str, Any]:
+                return self._audit_text_section(
+                    name,
+                    json.dumps(
+                        value,
+                        ensure_ascii=False,
+                        sort_keys=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                )
+
+            self._append_prompt_audit_record(
+                {
+                    "record_type": "responses_request",
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    "instance_id": str(getattr(self, "instance_id", "local-default") or "local-default"),
+                    "runtime_object_id": f"{id(self):x}",
+                    "client_object_id": f"{id(bundle.client):x}",
+                    "bundle_role": str(getattr(bundle.client, "_akane_bundle_role", "") or ""),
+                    "prompt_cache_key": cache_key,
+                    "model": str(request.get("model") or ""),
+                    "request_field_order": [str(name) for name in request],
+                    "request_field_fingerprints": [
+                        fingerprint(f"responses.field.{name}", value) for name, value in request.items()
+                    ],
+                    "input_item_fingerprints": [
+                        {
+                            "index": index,
+                            "type": str(item.get("type") or "") if isinstance(item, dict) else "",
+                            "role": str(item.get("role") or "") if isinstance(item, dict) else "",
+                            "field_order": [str(name) for name in item] if isinstance(item, dict) else [],
+                            **fingerprint(f"responses.input.{index}", item),
+                        }
+                        for index, item in enumerate(input_items)
+                    ],
+                    "tool_fingerprints": [
+                        {
+                            "index": index,
+                            "name": str(item.get("name") or "") if isinstance(item, dict) else "",
+                            "field_order": [str(name) for name in item] if isinstance(item, dict) else [],
+                            **{
+                                key: value
+                                for key, value in fingerprint(f"responses.tools.{index}", item).items()
+                                if key != "name"
+                            },
+                        }
+                        for index, item in enumerate(tools)
+                    ],
+                }
+            )
+        except Exception:
+            pass
 
     def _responses_payload_from_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload)

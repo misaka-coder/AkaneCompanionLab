@@ -615,6 +615,52 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(record["cache_hit_ratio"], 0.8)
         self.assertEqual(record["model"], "pin-model")
 
+    def test_llm_runtime_writes_order_sensitive_responses_request_audit_without_prompt_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"),
+            model="pin-model",
+        )
+        request = {
+            "model": "pin-model",
+            "instructions": "private system prompt",
+            "input": [
+                {"role": "user", "content": "private stable input"},
+                {"type": "function_call_output", "call_id": "call-private", "output": "private output"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "private_tool",
+                    "description": "private description",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "prompt_cache_key": "akane:chat:final:conversation",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            runtime.instance_id = "personal-prod"
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.PROMPT_CACHE_NAMESPACE", "akane"):
+                    runtime._record_responses_request_audit_if_enabled(bundle=bundle, request=request)
+
+            path = next((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            record = json.loads(path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["record_type"], "responses_request")
+        self.assertEqual(record["prompt_cache_key"], "akane:chat:final:conversation")
+        self.assertEqual(record["request_field_order"], list(request))
+        self.assertEqual([item["role"] for item in record["input_item_fingerprints"]], ["user", ""])
+        self.assertEqual(record["tool_fingerprints"][0]["name"], "private_tool")
+        self.assertEqual(record["tool_fingerprints"][0]["field_order"], list(request["tools"][0]))
+        serialized = json.dumps(record, ensure_ascii=False)
+        self.assertNotIn("private system prompt", serialized)
+        self.assertNotIn("private stable input", serialized)
+        self.assertNotIn("private output", serialized)
+        self.assertNotIn("private description", serialized)
+
     def test_llm_runtime_prompt_audit_defaults_to_chat_final_only(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
