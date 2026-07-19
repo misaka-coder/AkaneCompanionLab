@@ -1292,6 +1292,47 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["message"][0]["type"], "record")
         self.assertIn("file", payload["message"][0]["data"])
 
+    def test_send_image_checks_onebot_result_and_falls_back_to_base64(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "send-image-base64-1",
+                "raw_message": "发张表情图",
+            }
+        )
+
+        class FakeResponse:
+            def __init__(self, payload: dict) -> None:
+                self.payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return dict(self.payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "happy.png"
+            image_path.write_bytes(b"fake-png-bytes")
+            failed = FakeResponse({"status": "failed", "retcode": 200})
+            succeeded = FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 9}})
+            with patch(
+                "companion_v01.qq_gateway.requests.post",
+                side_effect=[failed, failed, succeeded],
+            ) as mocked_post:
+                result = gateway.send_image(context, image_path=str(image_path), name="开心")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transport"], "base64")
+        self.assertEqual(mocked_post.call_count, 3)
+        final_file = mocked_post.call_args.kwargs["json"]["message"][0]["data"]["file"]
+        self.assertTrue(final_file.startswith("base64://"))
+        self.assertNotIn("fake-png-bytes", str(result))
+
     def test_send_mface_uses_onebot_market_face_segment(self) -> None:
         gateway = NapCatQQGateway()
         context = QQMessageContext(

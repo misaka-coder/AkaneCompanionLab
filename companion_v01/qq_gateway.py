@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -67,6 +68,7 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
 QQ_DEFAULT_WAKE_WORDS = ("Akane",)
+QQ_INLINE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 QQ_OUTFIT_LIST_COMMANDS = {
     "服装列表",
     "可用服装",
@@ -131,6 +133,18 @@ def _compile_qq_wake_word_search(wake_words: tuple[str, ...]) -> re.Pattern[str]
 def _compile_qq_wake_word_prefix(wake_words: tuple[str, ...]) -> re.Pattern[str]:
     alternatives = "|".join(re.escape(item) for item in sorted(wake_words, key=len, reverse=True))
     return re.compile(rf"^(?:{alternatives})(?:[\s,，:：;；、-]+|$)", re.IGNORECASE)
+
+
+def _onebot_action_succeeded(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get("status") or "").strip().lower()
+    retcode = payload.get("retcode")
+    if status:
+        return status == "ok" and retcode in {None, 0, "0"}
+    if retcode is not None:
+        return retcode in {0, "0"}
+    return True
 
 
 QQ_REPLY_MODE_CURRENT_COMMANDS = {
@@ -3317,9 +3331,22 @@ class NapCatQQGateway:
 
         action = "send_group_msg" if context.is_group else "send_private_msg"
         base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
-        file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
+        resolved_path = path_obj.resolve()
+        file_candidates = [
+            ("file_uri", resolved_path.as_uri()),
+            ("absolute_path", str(resolved_path)),
+        ]
+        inline_fallback_skipped = False
+        try:
+            if resolved_path.stat().st_size <= QQ_INLINE_IMAGE_MAX_BYTES:
+                encoded = base64.b64encode(resolved_path.read_bytes()).decode("ascii")
+                file_candidates.append(("base64", f"base64://{encoded}"))
+            else:
+                inline_fallback_skipped = True
+        except OSError:
+            inline_fallback_skipped = True
         last_error = ""
-        for file_value in file_candidates:
+        for transport, file_value in file_candidates:
             payload = {
                 **base_payload,
                 "message": [
@@ -3341,10 +3368,26 @@ class NapCatQQGateway:
                 )
                 response.raise_for_status()
                 data = response.json()
-                return {"ok": True, "action": action, "data": data, "file": clean_path}
+                if _onebot_action_succeeded(data):
+                    return {
+                        "ok": True,
+                        "action": action,
+                        "data": data,
+                        "file": clean_path,
+                        "transport": transport,
+                    }
+                status = str(data.get("status") or "unknown") if isinstance(data, dict) else "invalid"
+                retcode = data.get("retcode") if isinstance(data, dict) else None
+                last_error = f"onebot_send_failed:{status}:{retcode}"
             except Exception as exc:
                 last_error = str(exc)
-        return {"ok": False, "action": action, "reason": last_error, "file": clean_path}
+        return {
+            "ok": False,
+            "action": action,
+            "reason": last_error or "onebot_send_failed",
+            "file": clean_path,
+            "inline_fallback_skipped": inline_fallback_skipped,
+        }
 
     def send_voice(self, context: QQMessageContext, *, audio_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(audio_path or "").strip()
