@@ -170,7 +170,7 @@ class MultiBotDesktopRouteTests(unittest.TestCase):
             finance_health = client.get("/api/bots/finance/desktop-pet/health").json()
             self.assertEqual(finance_health["endpoints"]["think"], "/api/bots/finance/think")
             self.assertEqual(finance_health["tts"]["endpoint"], "/api/bots/finance/tts")
-            paths = {route.path for route in app.routes if hasattr(route, "path")}
+            paths = set(app.openapi().get("paths", {}))
             self.assertIn("/api/bots/finance/desktop-pet/vision/clip", paths)
             self.assertIn("/api/bots/finance/pet/turn", paths)
             self.assertIn("/api/bots/finance/capabilities", paths)
