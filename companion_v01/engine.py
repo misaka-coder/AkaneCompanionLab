@@ -162,6 +162,11 @@ from .workspace_files import WorkspaceFileService
 
 logger = logging.getLogger("akane.engine")
 
+# Bump only when the stable final-request layout changes incompatibly. Keeping
+# the version inside the routing digest prevents a provider cache bucket built
+# from an older prefix layout from shadowing a newly stabilized conversation.
+FINAL_PROMPT_CACHE_LAYOUT_VERSION = "responses-native-tools-v2"
+
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
     "- 生成字幕 → transcribe_media output_format=srt/vtt",
@@ -3879,6 +3884,7 @@ class AkaneMemoryEngine:
         fallback = generation_context.get("fallback")
         persona = fallback.get("persona") if isinstance(fallback, dict) else None
         stable_payload = {
+            "cache_layout_version": FINAL_PROMPT_CACHE_LAYOUT_VERSION,
             "system_prefix": stable_system_prefix,
             "conversation_scope": str(generation_context.get("prompt_cache_scope_hash") or ""),
             "persona_active": str(persona.get("active") or "") if isinstance(persona, dict) else "",

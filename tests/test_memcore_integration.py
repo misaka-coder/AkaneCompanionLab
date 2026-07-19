@@ -2257,6 +2257,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_tool_context),
         )
+        with patch("companion_v01.engine.FINAL_PROMPT_CACHE_LAYOUT_VERSION", "responses-next-layout"):
+            changed_layout_key = AkaneMemoryEngine._final_prompt_cache_key(base)
+        self.assertNotEqual(AkaneMemoryEngine._final_prompt_cache_key(base), changed_layout_key)
         self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:plugin_proactive:"))
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
