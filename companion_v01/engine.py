@@ -165,7 +165,7 @@ logger = logging.getLogger("akane.engine")
 # Bump only when the stable final-request layout changes incompatibly. Keeping
 # the version inside the routing digest prevents a provider cache bucket built
 # from an older prefix layout from shadowing a newly stabilized conversation.
-FINAL_PROMPT_CACHE_LAYOUT_VERSION = "responses-native-tools-v2"
+FINAL_PROMPT_CACHE_LAYOUT_VERSION = "responses-unified-timeline-v3"
 
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
@@ -4046,7 +4046,11 @@ class AkaneMemoryEngine:
         suffixes out of the routing key. Tool readiness, selected schemas and
         capability disclosures are also request-time state: putting them in the
         routing key sent consecutive turns to different provider cache buckets.
-        The provider remains authoritative for exact prefix matching.
+        ``prompt_scope`` remains available to delivery, retry and audit logic,
+        but it does not define a second provider cache family. Ordinary turns
+        and proactive external events in one conversation share one MemCore
+        timeline, so the provider remains authoritative for their exact common
+        prefix matching.
         """
 
         system_prompt = str(generation_context.get("system_prompt") or "")
@@ -4060,13 +4064,11 @@ class AkaneMemoryEngine:
             "persona_active": str(persona.get("active") or "") if isinstance(persona, dict) else "",
             "prompt_profile": generation_context.get("prompt_profile") or {},
             "domain_profile": generation_context.get("domain_profile") or {},
-            "prompt_scope": str(generation_context.get("prompt_scope") or ""),
             "stable_system_context_hash": str(generation_context.get("stable_system_context_hash") or ""),
         }
         canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()[:20]
-        key_family = "chat:plugin_proactive" if stable_payload["prompt_scope"] == "plugin_proactive" else "chat:final"
-        return f"{key_family}:{digest}"
+        return f"chat:final:{digest}"
 
     def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
         if not isinstance(output, dict):

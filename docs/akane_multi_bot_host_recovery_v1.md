@@ -21,7 +21,7 @@
 1. personal 普通对话与启用金融插件的 Bot 普通对话，使用同一个 `AkaneMemoryEngine.process_turn()`、同一个 `PromptBuilder`、同一个 `LLMRuntime`、同一个 MemCore 集成与同一个工具循环。
 2. 金融能力已经位于独立私有插件仓库，宿主侧旧金融行情实现已经删除，并有测试防止恢复。
 3. `finance_mode` 进入 Engine 后会被丢弃；`DomainProfileRegistry` 当前只返回 `default`，没有一套仍在生效的“金融对话引擎”。
-4. 金融主动推送使用独立的 `plugin_proactive` prompt/cache scope，但仍通过正常 Akane 引擎、正常工具、正常 MemCore 运行。它是事件类型差异，不是第二套 Bot 逻辑。
+4. 金融主动推送保留 `plugin_proactive` 投递/重试/审计标签，但提示词布局与 provider cache 路由已和普通消息统一；它仍通过正常 Akane 引擎、正常工具、正常 MemCore 运行。
 5. 当前 personal/finance 的能力差异主要来自运行配置漂移：模型、协议、上下文上限、压缩线、视觉配置、Satellite 配置和插件开关不同。
 6. 当前真正错误的产品边界集中在启动装配、全局配置、QQ 单绑定、Satellite 单实例绑定和缺少 Bot 管理面，不在核心对话算法。
 
@@ -113,9 +113,9 @@ This repository is the private finance plugin for Akane, not a second Akane prod
 
 - `payload.pop("finance_mode", None)`：旧 finance mode 不参与主链选择。
 - `DomainProfileRegistry.get()` 无论输入什么都返回唯一 `default`。
-- 普通对话 cache family 为 `chat:final`。
-- 插件主动事件 cache family 为 `chat:plugin_proactive`。
-- 两种 family 使用同一个 `_final_prompt_cache_key()` 算法。
+- 普通对话与插件主动事件统一使用 `chat:final` cache family。
+- `prompt_scope=plugin_proactive` 只保留为投递、重试和审计标签，不参与 PromptBuilder 布局或 provider cache key。
+- 两类输入按同一 MemCore 时间线渲染；当前消息已在 raw 且没有临时检索片段时，直接把该时间线消息作为本轮尾部。
 
 ### 1.3 金融主动推送不是旁路记忆
 
@@ -142,7 +142,7 @@ client_mode = qq_text
 - `tests/test_memcore_integration.py::test_plugin_proactive_scope_keeps_normal_akane_modules_enabled`
 - `tests/test_prompt_builder.py::test_plugin_proactive_scope_uses_stable_system_and_appends_memory_timeline_once`
 
-保留 `plugin_proactive` scope 是合理的：主动外部事件需要一段稳定的金融研究原则，而且不应把主动推送与普通用户聊天误当成同一 prompt cache 路由。但这只是同一引擎内的事件 scope，不得再次演变成 finance Bot 产品分支。
+保留 `plugin_proactive` scope 是合理的：它用于主动投递的一次尝试、审计和投递策略；金融研究原则通过稳定 system block 注册。它不再创建独立 prompt 布局或 cache 路由，也不得再次演变成 finance Bot 产品分支。
 
 ### 1.4 当前云端差异来自配置与进程版本漂移
 
@@ -735,7 +735,7 @@ receipt 仍需包含：
 必须保留：
 
 - `prompt_cache_scope_hash` 按 profile/session/character 分区；
-- `plugin_proactive` 与普通 final 分 scope；
+- `plugin_proactive` 仅作投递/重试/审计标签，与普通 final 共用同一 provider cache family；
 - stable system prefix；
 - append-only MemCore raw timeline；
 - native tool schema hash 审计。

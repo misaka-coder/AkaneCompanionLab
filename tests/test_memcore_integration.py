@@ -2286,7 +2286,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_tools),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_scope),
         )
@@ -2294,6 +2294,22 @@ class MemcoreIntegrationTests(unittest.TestCase):
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_dynamic_event),
         )
+        interleaved_keys = {
+            AkaneMemoryEngine._final_prompt_cache_key(
+                dict(
+                    base,
+                    prompt_scope=scope,
+                    user_prompt=current_message,
+                )
+            )
+            for scope, current_message in (
+                ("", "ordinary message A"),
+                ("plugin_proactive", "event.finance A"),
+                ("", "ordinary message B"),
+                ("plugin_proactive", "event.finance B"),
+            )
+        }
+        self.assertEqual(len(interleaved_keys), 1)
         self.assertNotEqual(
             AkaneMemoryEngine._final_prompt_cache_key(base),
             AkaneMemoryEngine._final_prompt_cache_key(changed_stable_system),
@@ -2309,7 +2325,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         with patch("companion_v01.engine.FINAL_PROMPT_CACHE_LAYOUT_VERSION", "responses-next-layout"):
             changed_layout_key = AkaneMemoryEngine._final_prompt_cache_key(base)
         self.assertNotEqual(AkaneMemoryEngine._final_prompt_cache_key(base), changed_layout_key)
-        self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:plugin_proactive:"))
+        self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:final:"))
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
 

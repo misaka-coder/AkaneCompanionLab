@@ -302,10 +302,11 @@ class PromptBuilder:
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"{ATTRIBUTION_RULES}\n\n"
         )
-        plugin_proactive_scope = str(prompt_scope or "").strip() == "plugin_proactive"
-        linear_proactive_turn = bool(
-            plugin_proactive_scope
-            and current_message_in_raw
+        # ``prompt_scope`` is an operational delivery/audit label. It must not
+        # select a second prompt shape: ordinary messages and external events
+        # share the same MemCore timeline and therefore the same layout rules.
+        linear_timeline_turn = bool(
+            current_message_in_raw
             and not str(memory_text or "").strip()
         )
         stable_user_context = (
@@ -330,7 +331,7 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
-        if linear_proactive_turn:
+        if linear_timeline_turn:
             stable_runtime_context_parts.extend(
                 [
                     str(volatile_extra_context or "").strip(),
@@ -345,7 +346,7 @@ class PromptBuilder:
         structured_history_turns.extend(
             dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
         )
-        if linear_proactive_turn:
+        if linear_timeline_turn:
             user_prompt = str(current_message_text or "").strip()
         else:
             dynamic_tail_parts = [
@@ -353,9 +354,8 @@ class PromptBuilder:
                 str(volatile_extra_context or "").strip(),
                 f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
             ]
-            current_label = "当前用户消息" if plugin_proactive_scope else "用户原始消息"
-            dynamic_tail_parts.append(f"{current_label}：\n{current_message_text}")
-            if not plugin_proactive_scope:
+            dynamic_tail_parts.append(f"当前时间线消息：\n{current_message_text}")
+            if not current_message_in_raw:
                 dynamic_tail_parts.append(f"当前时间：{current_time_text}")
             dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
             user_prompt = f"{dynamic_tail}\n"
@@ -403,7 +403,7 @@ class PromptBuilder:
                 },
                 {
                     "name": "user.current_time",
-                    "text": "" if plugin_proactive_scope else current_time_text,
+                    "text": "" if current_message_in_raw else current_time_text,
                 },
             ]
         )
@@ -418,7 +418,7 @@ class PromptBuilder:
                 legacy_stable_system_text=stable_system_text,
             ),
             "tool_prompt_context_hash": tool_context_hash,
-            "linear_proactive_turn": linear_proactive_turn,
+            "linear_timeline_turn": linear_timeline_turn,
             "history_turns": structured_history_turns,
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,

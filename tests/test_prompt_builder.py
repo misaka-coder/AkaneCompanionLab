@@ -28,6 +28,16 @@ def _provider_text(result: dict) -> str:
     return "\n".join(part for part in [_history_text(result), str(result.get("user_prompt") or "")] if part)
 
 
+def _provider_turns(result: dict) -> list[dict]:
+    turns = [
+        dict(turn)
+        for turn in result.get("history_turns") or []
+        if isinstance(turn, dict)
+    ]
+    turns.append({"role": "user", "content": str(result.get("user_prompt") or "")})
+    return turns
+
+
 def _build_minimal_final(
     builder: PromptBuilder,
     *,
@@ -403,7 +413,7 @@ system = "semantic reinforcement system"
         self.assertNotEqual(latent["history_turns"], ready["history_turns"])
         self.assertNotIn("上传音频后启用媒体处理", latent["system_prompt"])
         self.assertIn("【本轮系统能力与工具上下文】", _history_text(latent))
-        self.assertIn("用户原始消息", latent["user_prompt"])
+        self.assertIn("当前时间线消息", latent["user_prompt"])
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
     def test_runtime_context_precedes_append_only_raw_history_and_keeps_current_tail_short(self) -> None:
@@ -558,7 +568,7 @@ system = "semantic reinforcement system"
         self.assertIn("automatic retrieval evidence", prompt)
         self.assertIn("Assistant: earlier analysis", prompt)
         self.assertEqual(prompt.count("real finance event"), 1)
-        self.assertIn("\n当前用户消息：\n", prompt)
+        self.assertIn("\n当前时间线消息：\n", prompt)
         self.assertNotIn("当前时间：", prompt)
         self.assertNotIn("debug_enabled=", prompt)
         self.assertNotIn("debug_enabled=", result["system_prompt"])
@@ -600,7 +610,7 @@ system = "semantic reinforcement system"
         )
 
         self.assertEqual(result["user_prompt"].count("current finance event"), 1)
-        self.assertIn("当前用户消息", result["user_prompt"])
+        self.assertIn("当前时间线消息", result["user_prompt"])
 
     def test_plugin_proactive_scope_uses_exact_memcore_current_turn_when_no_retrieval_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())
@@ -631,13 +641,101 @@ system = "semantic reinforcement system"
             current_message_in_raw=True,
         )
 
-        self.assertTrue(result["linear_proactive_turn"])
+        self.assertTrue(result["linear_timeline_turn"])
         self.assertEqual(result["user_prompt"], "User: exact finance event")
         history = _history_text(result)
         self.assertIn("stable proactive runtime", history)
         self.assertIn("stable delivery limit", history)
         self.assertIn("stable proactive visual", history)
         self.assertLess(history.index("stable proactive runtime"), history.index("Assistant: earlier analysis"))
+
+    def test_normal_and_proactive_scopes_share_one_append_only_timeline_layout(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        common = {
+            "now_ts": 1_712_400_000,
+            "episodic_summary_text": "stable episode",
+            "semantic_summary_text": "stable semantic",
+            "memory_text": "",
+            "current_visual_context": "stable qq visual state",
+            "resource_context": "",
+            "extra_context": "stable runtime context",
+            "volatile_extra_context": "stable delivery context",
+            "visual_defaults": {
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            "allow_tool_call": True,
+            "tool_prompt_context": "stable tools",
+            "debug_enabled": False,
+            "stable_system_context": "stable finance research principles",
+            "current_message_in_raw": True,
+        }
+        timeline = [
+            ("[10:00] Master: 普通消息 A", "", "[10:01] Akane: 普通回复 A"),
+            (
+                "[10:02] event.finance\nsource: mock\npublished_at: 2026-04-06T10:02:00+08:00\n"
+                "title: 金融事件 A\nsummary: 摘要 A\nurl: https://example.com/a",
+                "plugin_proactive",
+                "[10:03] Akane: 金融分析 A",
+            ),
+            ("[10:04] Master: 普通消息 B", "", "[10:05] Akane: 普通回复 B"),
+            (
+                "[10:06] event.finance\nsource: mock\npublished_at: 2026-04-06T10:06:00+08:00\n"
+                "title: 金融事件 B\nsummary: 摘要 B\nurl: https://example.com/b",
+                "plugin_proactive",
+                "[10:07] Akane: 金融分析 B",
+            ),
+        ]
+        history: list[dict[str, str]] = []
+        requests: list[dict] = []
+        for current_message, prompt_scope, assistant_reply in timeline:
+            result = builder.build_final_generation_context(
+                **common,
+                raw_text="\n".join(
+                    [str(turn["content"]) for turn in history] + [current_message]
+                ),
+                history_turns=list(history),
+                current_message_text=current_message,
+                prompt_scope=prompt_scope,
+            )
+            self.assertTrue(result["linear_timeline_turn"])
+            self.assertEqual(result["user_prompt"], current_message)
+            requests.append(result)
+            history.extend(
+                [
+                    {"role": "user", "content": current_message},
+                    {"role": "assistant", "content": assistant_reply},
+                ]
+            )
+
+        for previous, current in zip(requests, requests[1:]):
+            self.assertEqual(previous["system_prompt"], current["system_prompt"])
+            self.assertEqual(previous["system_extra_blocks"], current["system_extra_blocks"])
+            previous_turns = _provider_turns(previous)
+            self.assertEqual(previous_turns, _provider_turns(current)[: len(previous_turns)])
+
+        final_prompt = _provider_text(requests[-1])
+        for current_message, _prompt_scope, _assistant_reply in timeline:
+            self.assertEqual(final_prompt.count(current_message), 1)
+
+        normal = builder.build_final_generation_context(
+            **common,
+            raw_text="same current turn",
+            current_message_text="same current turn",
+            prompt_scope="",
+        )
+        proactive = builder.build_final_generation_context(
+            **common,
+            raw_text="same current turn",
+            current_message_text="same current turn",
+            prompt_scope="plugin_proactive",
+        )
+        self.assertEqual(_provider_turns(normal), _provider_turns(proactive))
+        self.assertEqual(normal["system_prompt"], proactive["system_prompt"])
 
     def test_plugin_stable_system_hash_ignores_dynamic_finance_event(self) -> None:
         builder = PromptBuilder(load_persona_config())

@@ -286,7 +286,7 @@ memory_idempotency_key: str = ""
 - 不再固定发送 `transient_user_message=True`。
 - 不再固定发送 `transient_assistant_message=True`。
 - 不再固定关闭 `pre_retrieval_enabled`；使用正常 Akane 默认行为。
-- 继续设置 `turn_kind=plugin_proactive`，仅用于 audit/cache family，不再用于能力减法。
+- 继续设置 `turn_kind=plugin_proactive`，仅用于投递、重试和 audit，不再用于能力减法、提示词布局或 provider cache family。
 - 传递稳定 system context 和 memory idempotency key。
 - 若 Engine frame 标记 `_transient_final_failure` 或没有有效 speech，返回结构化失败，不让插件靠字符串猜“处理中”。
 
