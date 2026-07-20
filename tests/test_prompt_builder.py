@@ -642,11 +642,17 @@ system = "semantic reinforcement system"
         )
 
         self.assertTrue(result["linear_timeline_turn"])
-        self.assertEqual(result["user_prompt"], "User: exact finance event")
+        self.assertTrue(result["user_prompt"].startswith("User: exact finance event"))
+        self.assertIn("stable delivery limit", result["user_prompt"])
+        self.assertIn("stable proactive visual", result["user_prompt"])
+        self.assertLess(
+            result["user_prompt"].index("User: exact finance event"),
+            result["user_prompt"].index("stable delivery limit"),
+        )
         history = _history_text(result)
         self.assertIn("stable proactive runtime", history)
-        self.assertIn("stable delivery limit", history)
-        self.assertIn("stable proactive visual", history)
+        self.assertNotIn("stable delivery limit", history)
+        self.assertNotIn("stable proactive visual", history)
         self.assertLess(history.index("stable proactive runtime"), history.index("Assistant: earlier analysis"))
 
     def test_normal_and_proactive_scopes_share_one_append_only_timeline_layout(self) -> None:
@@ -692,6 +698,7 @@ system = "semantic reinforcement system"
         ]
         history: list[dict[str, str]] = []
         requests: list[dict] = []
+        expected_raw_histories: list[list[dict[str, str]]] = []
         for current_message, prompt_scope, assistant_reply in timeline:
             result = builder.build_final_generation_context(
                 **common,
@@ -703,7 +710,12 @@ system = "semantic reinforcement system"
                 prompt_scope=prompt_scope,
             )
             self.assertTrue(result["linear_timeline_turn"])
-            self.assertEqual(result["user_prompt"], current_message)
+            self.assertTrue(result["user_prompt"].startswith(current_message))
+            self.assertIn("stable delivery context", result["user_prompt"])
+            self.assertIn("stable qq visual state", result["user_prompt"])
+            self.assertNotIn("stable delivery context", _history_text(result))
+            self.assertNotIn("stable qq visual state", _history_text(result))
+            expected_raw_histories.append(list(history))
             requests.append(result)
             history.extend(
                 [
@@ -712,11 +724,19 @@ system = "semantic reinforcement system"
                 ]
             )
 
+        stable_prefixes: list[list[dict]] = []
+        for request, raw_history in zip(requests, expected_raw_histories):
+            history_turns = request["history_turns"]
+            if raw_history:
+                self.assertEqual(history_turns[-len(raw_history) :], raw_history)
+                stable_prefixes.append(history_turns[: -len(raw_history)])
+            else:
+                stable_prefixes.append(history_turns)
         for previous, current in zip(requests, requests[1:]):
             self.assertEqual(previous["system_prompt"], current["system_prompt"])
             self.assertEqual(previous["system_extra_blocks"], current["system_extra_blocks"])
-            previous_turns = _provider_turns(previous)
-            self.assertEqual(previous_turns, _provider_turns(current)[: len(previous_turns)])
+        for stable_prefix in stable_prefixes[1:]:
+            self.assertEqual(stable_prefixes[0], stable_prefix)
 
         final_prompt = _provider_text(requests[-1])
         for current_message, _prompt_scope, _assistant_reply in timeline:

@@ -331,13 +331,6 @@ class PromptBuilder:
                 f"{persona_reference_context or '(无额外表达侧面参考)'}"
             ),
         ]
-        if linear_timeline_turn:
-            stable_runtime_context_parts.extend(
-                [
-                    str(volatile_extra_context or "").strip(),
-                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
-                ]
-            )
         runtime_context_text = "\n\n".join(part for part in stable_runtime_context_parts if part)
         if runtime_context_text:
             structured_history_turns.append(
@@ -347,7 +340,22 @@ class PromptBuilder:
             dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
         )
         if linear_timeline_turn:
-            user_prompt = str(current_message_text or "").strip()
+            # Per-turn transport hints and visual state are still available to
+            # the model, but must follow the append-only MemCore timeline.
+            # Putting either block before raw history makes every small state
+            # change invalidate the whole conversation prefix for providers
+            # using prefix caches (notably the Responses wire protocol).
+            dynamic_tail_parts = [
+                str(current_message_text or "").strip(),
+                str(volatile_extra_context or "").strip(),
+                (
+                    "当前演出状态（本轮基准参考，不是硬锁定）：\n"
+                    f"{current_visual_context}"
+                    if str(current_visual_context or "").strip()
+                    else ""
+                ),
+            ]
+            user_prompt = "\n\n".join(part for part in dynamic_tail_parts if part)
         else:
             dynamic_tail_parts = [
                 f"可用回忆片段：\n{memory_text}",
