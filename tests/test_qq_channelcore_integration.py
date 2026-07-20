@@ -4,7 +4,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from channelcore_onebot import normalize_inbound_event
+from channelcore_onebot import normalize_inbound_event, resolve_quoted_message
 
 from companion_v01.qq_gateway import NapCatQQGateway
 
@@ -146,6 +146,92 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(kwargs["allow_attachment_follow"])
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "group_wake_word")
+
+    def test_gateway_quoted_lookup_delegates_action_and_scope_to_package(self) -> None:
+        gateway = NapCatQQGateway(wake_words=("Akane",))
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "group_id": GROUP_ID,
+            "message_id": "current-quote-1",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-1"}},
+                {"type": "text", "data": {"text": "Akane 看看图"}},
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_id": "quoted-1",
+                        "self_id": BOT_ID,
+                        "message_type": "group",
+                        "group_id": GROUP_ID,
+                        "user_id": USER_ID,
+                        "sender": {"user_id": USER_ID, "card": "伙伴"},
+                        "message": [{"type": "image", "data": {"file": "quoted.png"}}],
+                    },
+                }
+
+        with (
+            patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()),
+            patch(
+                "companion_v01.qq_gateway.resolve_onebot_quoted_message",
+                wraps=resolve_quoted_message,
+            ) as package_resolver,
+        ):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        package_resolver.assert_called_once()
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["attachments"][0]["quoted_message_id"], "quoted-1")
+        self.assertEqual(result["attachments"][0]["sender_label"], "伙伴")
+
+    def test_gateway_private_quote_fails_closed_when_scope_cannot_be_verified(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "message_id": "current-private-quote-1",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-private-1"}},
+                {"type": "text", "data": {"text": "看看"}},
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_id": "quoted-private-1",
+                        "message_type": "private",
+                        "message": [],
+                    },
+                }
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "scope_unverifiable")
+        self.assertEqual(result["attachments"], [])
 
 
 if __name__ == "__main__":

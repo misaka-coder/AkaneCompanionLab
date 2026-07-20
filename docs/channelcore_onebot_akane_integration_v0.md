@@ -1,6 +1,6 @@
 # channelcore-onebot Akane integration v0
 
-Status: inbound normalization + event-admission + group-trigger slices integrated.
+Status: inbound normalization + event-admission + group-trigger + quoted-message slices integrated.
 
 ## Decision
 
@@ -18,6 +18,7 @@ OneBot/NapCat webhook
   -> channelcore_onebot.normalize_inbound_event(...)
   -> channelcore_onebot.GroupTriggerPolicy.evaluate(...)
   -> Akane QQMessageContext product projection
+  -> channelcore_onebot.resolve_quoted_message(..., call_action=bot_transport)
   -> Akane commands, safe attachment materialization, vision, MemCore/LLM, TTS
   -> current Akane OneBot delivery path
 ```
@@ -36,6 +37,10 @@ OneBot/NapCat webhook
 - thread-safe, atomic TTL replay claims with Bot-account-isolated fingerprints;
 - neutral group mention/wake-word and same-actor attachment-follow decisions,
   keyed by Bot account, group, and actor.
+- `get_msg` action selection, OneBot status/retcode validation, quoted message
+  normalization, and group/private reply scope validation;
+- fail-closed `scope_unverifiable` for private replies without enough participant
+  data.
 
 ## Akane-owned
 
@@ -44,7 +49,7 @@ OneBot/NapCat webhook
 - session/profile/character/model/reply-mode and memory mapping;
 - group vision settings and product commands (the host only supplies the
   package's `allow_attachment_follow` strategy input);
-- quoted-message HTTP lookup and scope policy;
+- Bot-bound OneBot action transport (URL, token, HTTP status handling);
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
 - choice of response media and all outbound OneBot actions.
 
@@ -60,16 +65,17 @@ These slices are behavior-preserving. Existing Bots still use their own Akane
 profiles and product settings. The practical improvement is that their common
 message, attachment, reply, mention, wake-word, and poke shapes now pass
   through one reusable protocol authority. Replay races now have an atomic
-  winner, but no vision, reply-send, or new sticker behavior is advertised.
+  winner, and quoted attachments from another group/private peer are rejected
+  before materialization. No vision, reply-send, or new sticker behavior is
+  advertised.
 
 ## Remaining protocol slices
 
 Later work may replace, one boundary at a time:
 
-1. quoted-message lookup and quoted attachment scope validation;
-2. text/image/voice/file/mface outbound actions with one sanitized structured
+1. text/image/voice/file/mface outbound actions with one sanitized structured
    result contract;
-3. real reply-segment sending and face/mface host consumption.
+2. real reply-segment sending and face/mface host consumption.
 
 Each applied slice must delete or thin the corresponding Akane authority in the
 same change. In particular, HTTP 200 with a non-zero OneBot retcode must not be

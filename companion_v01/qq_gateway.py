@@ -25,8 +25,8 @@ from channelcore_onebot import (
     normalize_wake_words as _normalize_qq_wake_words,
     parse_attachments as parse_onebot_attachments,
     parse_cq_params as parse_onebot_cq_params,
-    parse_reply_ref as parse_onebot_reply_ref,
     render_message_text as render_onebot_message_text,
+    resolve_quoted_message as resolve_onebot_quoted_message,
 )
 
 import config
@@ -2029,10 +2029,6 @@ class NapCatQQGateway:
     def extract_attachments(self, event: dict[str, Any]) -> list[dict[str, Any]]:
         return self._legacy_attachments(parse_onebot_attachments(event))
 
-    def extract_reply_message_id(self, event: dict[str, Any]) -> str:
-        reply = parse_onebot_reply_ref(event)
-        return reply.message_id if reply is not None else ""
-
     def resolve_quoted_attachments(
         self,
         event: dict[str, Any],
@@ -2045,98 +2041,50 @@ class NapCatQQGateway:
         inbox. Callers must not log or expose it because it may contain private media
         URLs or local paths.
         """
-        reply_id = self.extract_reply_message_id(event)
-        if not reply_id:
-            return {"ok": True, "status": "not_quoted", "attachments": []}
+        inbound_result = normalize_inbound_event(
+            event,
+            bot_account_id=self.bot_qq,
+            wake_words=self._wake_words,
+        )
+        inbound = inbound_result.message
+        if inbound is None:
+            return {"ok": False, "status": "invalid_event", "attachments": []}
 
-        try:
-            response = requests.post(
-                f"{self.onebot_http_url}/get_msg",
-                json={"message_id": reply_id},
-                headers=self.onebot_headers,
-                timeout=5,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception:
-            return {"ok": False, "status": "lookup_failed", "attachments": []}
-
-        if not isinstance(payload, dict):
-            return {"ok": False, "status": "invalid_response", "attachments": []}
-        retcode = self._safe_int(payload.get("retcode"))
-        status = str(payload.get("status") or "").strip().lower()
-        if (status and status != "ok") or (payload.get("retcode") is not None and retcode != 0):
-            return {"ok": False, "status": "lookup_rejected", "attachments": []}
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            return {"ok": False, "status": "message_missing", "attachments": []}
-
-        if not self._quoted_message_matches_context(data=data, event=event, context=context):
-            return {"ok": False, "status": "scope_mismatch", "attachments": []}
-
-        quoted_event = {
-            "message_id": str(data.get("message_id") or reply_id).strip(),
-            "time": data.get("time"),
-            "message": data.get("message"),
-            "raw_message": data.get("raw_message"),
-        }
-        attachments = self.extract_attachments(quoted_event)
-        sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
-        quoted_sender_id = self._safe_int(data.get("user_id") or sender.get("user_id"))
-        quoted_sender_label = str(sender.get("card") or sender.get("nickname") or "").strip()
-        for item in attachments:
-            item["quoted_message_id"] = reply_id
-            item["source_message_id"] = str(data.get("message_id") or reply_id).strip()
-            if quoted_sender_id:
-                item["sender_id"] = str(quoted_sender_id)
-            if quoted_sender_label:
-                item["sender_label"] = quoted_sender_label
-            if context.group_id:
-                item["group_id"] = str(context.group_id)
-        return {
-            "ok": True,
-            "status": "resolved" if attachments else "no_attachments",
+        result = resolve_onebot_quoted_message(
+            inbound,
+            call_action=self._call_onebot_action,
+            timeout_seconds=5.0,
+        )
+        attachments = self._legacy_attachments(result.message.attachments if result.message is not None else ())
+        status = result.status
+        if result.ok and status in {"resolved", "no_attachments"}:
+            status = "resolved" if attachments else "no_attachments"
+        payload: dict[str, Any] = {
+            "ok": result.ok,
+            "status": status,
             "attachments": attachments,
-            "attachment_count": len(attachments),
         }
+        if result.reason:
+            payload["reason"] = result.reason
+        if result.message is not None:
+            payload["attachment_count"] = len(attachments)
+        return payload
 
-    def _quoted_message_matches_context(
+    def _call_onebot_action(
         self,
+        action: str,
+        params: dict[str, object],
         *,
-        data: dict[str, Any],
-        event: dict[str, Any],
-        context: QQMessageContext,
-    ) -> bool:
-        returned_group_id = self._safe_int(data.get("group_id"))
-        returned_type = str(data.get("message_type") or "").strip().lower()
-        if context.is_group:
-            return bool(context.group_id) and returned_group_id == int(context.group_id)
-        if returned_group_id or returned_type == "group":
-            return False
-
-        peer_id = int(context.user_id or 0)
-        bot_ids = {
-            value
-            for value in (
-                self._safe_int(event.get("self_id")),
-                self._safe_int(self.bot_qq),
-            )
-            if value
-        }
-        allowed_participants = ({peer_id} if peer_id else set()) | bot_ids
-        participant_values = {
-            self._safe_int(data.get("user_id")),
-            self._safe_int(data.get("target_id")),
-        }
-        sender = data.get("sender")
-        if isinstance(sender, dict):
-            participant_values.add(self._safe_int(sender.get("user_id")))
-        participant_values.discard(0)
-        if not participant_values:
-            return True
-        if not participant_values.issubset(allowed_participants):
-            return False
-        return peer_id in participant_values
+        timeout_seconds: float,
+    ) -> object:
+        response = requests.post(
+            f"{self.onebot_http_url}/{str(action or '').strip().lstrip('/')}",
+            json=dict(params),
+            headers=self.onebot_headers,
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
 
     @staticmethod
     def _legacy_attachments(attachments: tuple[AttachmentRef, ...]) -> list[dict[str, Any]]:
@@ -2149,20 +2097,24 @@ class NapCatQQGateway:
             }.get(attachment.kind)
             if not legacy_kind:
                 continue
-            projected.append(
-                {
-                    "kind": legacy_kind,
-                    "file": attachment.locator.file_id or attachment.name,
-                    "url": attachment.locator.url,
-                    "path": attachment.locator.path,
-                    "origin_name": attachment.name or attachment.locator.file_id,
-                    "mime_type": attachment.mime_type,
-                    "file_size": attachment.size,
-                    "source_message_id": attachment.source_message_id,
-                    "source_event_id": attachment.source_event_id,
-                    "segment_index": attachment.segment_index,
-                }
-            )
+            item = {
+                "kind": legacy_kind,
+                "file": attachment.locator.file_id or attachment.name,
+                "url": attachment.locator.url,
+                "path": attachment.locator.path,
+                "origin_name": attachment.name or attachment.locator.file_id,
+                "mime_type": attachment.mime_type,
+                "file_size": attachment.size,
+                "source_message_id": attachment.source_message_id,
+                "source_event_id": attachment.source_event_id,
+                "segment_index": attachment.segment_index,
+            }
+            metadata = attachment.metadata_dict()
+            for key in ("quoted_message_id", "sender_id", "sender_label", "group_id"):
+                value = str(metadata.get(key) or "").strip()
+                if value:
+                    item[key] = value
+            projected.append(item)
         return projected
 
     def _parse_cq_params(self, raw: str) -> dict[str, str]:

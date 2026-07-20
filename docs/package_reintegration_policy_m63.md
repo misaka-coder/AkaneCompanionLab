@@ -239,19 +239,21 @@ Authority:
 
 - `channelcore-onebot` owns the neutral inbound contracts and OneBot
   event/message-segment normalization plus the M1 self-id, stale, and atomic
-  replay admission boundary and the M2 neutral group-trigger/follow decision.
+  replay admission boundary, the M2 neutral group-trigger/follow decision,
+  and the M3 quoted-message lookup/scope boundary.
 - Akane owns webhook authentication and HTTP status mapping, session/profile mapping, product commands,
   attachment materialization, vision, MemCore, model calls, TTS, and delivery
   policy.
 - Group vision enablement remains Akane-owned and is passed into the package as
-  `allow_attachment_follow`; quoted-message HTTP lookup and outbound OneBot
-  actions remain Akane-owned until later replacement slices move each behavior
-  and remove its old implementation.
+  `allow_attachment_follow`; Akane supplies only the Bot-bound action transport
+  for quoted lookup. Outbound OneBot actions remain Akane-owned until a later
+  replacement slice moves that behavior and removes its old implementation.
 
 Old implementation status:
 
 ```text
-thin adapter for inbound normalization, admission, and group trigger policy
+thin adapter for inbound normalization, admission, group trigger policy, and
+quoted lookup projection
 ```
 
 The old parsing and replay helpers in `qq_gateway.py` are now deleted or pure
