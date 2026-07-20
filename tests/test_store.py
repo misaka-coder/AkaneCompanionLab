@@ -10,6 +10,117 @@ from companion_v01.store import MessageSourceIdCollisionError, MemoryStore
 
 
 class MemoryStoreEvalTurnTests(unittest.TestCase):
+    def test_prompt_envelopes_are_owner_scoped_and_pruned_with_visible_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            first = store.add_message(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                role="user",
+                content="first raw message",
+                timestamp=100,
+            )
+            second = store.add_message(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                role="user",
+                content="second raw message",
+                timestamp=101,
+            )
+            foreign = store.add_message(
+                profile_user_id="user_b",
+                session_id="session_b",
+                character_pack_id="akane_v1",
+                role="user",
+                content="foreign raw message",
+                timestamp=102,
+            )
+
+            stored = store.upsert_message_prompt_envelope(
+                source_id=first["source_id"],
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                prompt_text="first exact provider turn",
+            )
+            store.upsert_message_prompt_envelope(
+                source_id=second["source_id"],
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                prompt_text="second exact provider turn",
+            )
+            store.upsert_message_prompt_envelope(
+                source_id=foreign["source_id"],
+                profile_user_id="user_b",
+                session_id="session_b",
+                character_pack_id="akane_v1",
+                prompt_text="foreign exact provider turn",
+            )
+            crossed = store.upsert_message_prompt_envelope(
+                source_id=first["source_id"],
+                profile_user_id="user_b",
+                session_id="session_b",
+                character_pack_id="akane_v1",
+                prompt_text="must not overwrite",
+            )
+
+            self.assertTrue(stored["ok"])
+            self.assertEqual(crossed["status"], "namespace_mismatch")
+            self.assertEqual(
+                store.get_message_prompt_envelopes(
+                    [first["source_id"], second["source_id"], foreign["source_id"]],
+                    profile_user_id="user_a",
+                    session_id="session_a",
+                    character_pack_id="akane_v1",
+                ),
+                {
+                    first["source_id"]: "first exact provider turn",
+                    second["source_id"]: "second exact provider turn",
+                },
+            )
+
+            pruned = store.prune_message_prompt_envelopes(
+                profile_user_id="user_a",
+                session_id="session_a",
+                character_pack_id="akane_v1",
+                keep_source_ids=[second["source_id"]],
+            )
+
+            self.assertEqual(pruned, 1)
+            self.assertEqual(
+                store.get_message_prompt_envelopes(
+                    [first["source_id"], second["source_id"]],
+                    profile_user_id="user_a",
+                    session_id="session_a",
+                    character_pack_id="akane_v1",
+                ),
+                {second["source_id"]: "second exact provider turn"},
+            )
+            self.assertEqual(store.get_message_by_source_id(second["source_id"])["content"], "second raw message")
+            self.assertEqual(store.get_message_by_source_id(second["source_id"])["memory_metadata"], {})
+            store.mark_messages_summarized([second["source_id"]], "summary-1")
+            self.assertEqual(
+                store.get_message_prompt_envelopes(
+                    [second["source_id"]],
+                    profile_user_id="user_a",
+                    session_id="session_a",
+                    character_pack_id="akane_v1",
+                ),
+                {},
+            )
+            self.assertEqual(
+                store.get_message_prompt_envelopes(
+                    [foreign["source_id"]],
+                    profile_user_id="user_b",
+                    session_id="session_b",
+                    character_pack_id="akane_v1",
+                ),
+                {foreign["source_id"]: "foreign exact provider turn"},
+            )
+
     def test_legacy_database_adds_character_scope_columns_before_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "akane_memory_v01.db"
@@ -108,6 +219,8 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
                     self.assertIn("character_pack_id", columns)
                     if table_name in {"chat_messages", "memory_summaries", "memory_semantic_summaries"}:
                         self.assertIn("memory_metadata_json", columns)
+                    if table_name == "chat_messages":
+                        self.assertIn("prompt_envelope_text", columns)
 
                 summary_columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_summaries)").fetchall()}
                 self.assertIn("is_semanticized", summary_columns)

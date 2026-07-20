@@ -19,6 +19,8 @@ from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RE
 
 logger = logging.getLogger("akane.response_builder")
 
+PROMPT_USER_CONTENT_FIELD = "_akane_prompt_user_content"
+
 
 QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS = (
     "结果",
@@ -165,6 +167,13 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
+    _attach_message_prompt_envelopes(
+        engine,
+        raw_records,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+    )
     current_source_id = str(current_record.get("source_id") or "").strip()
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
@@ -679,6 +688,13 @@ def prepare_context(
             )
             if refreshed is not None and refreshed.get("ok"):
                 raw_records = [dict(record) for record in list(refreshed.get("raw") or [])]
+                _attach_message_prompt_envelopes(
+                    engine,
+                    raw_records,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
                 raw_text = str(refreshed.get("raw_text") or "")
                 episodic_summary_text = str(refreshed.get("episodic_text") or "")
                 semantic_summary_text = str(refreshed.get("semantic_text") or "")
@@ -732,6 +748,18 @@ def prepare_context(
         "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
     )
     generation_context["post_user_turns"] = effective_post_user_turns
+    _sync_current_message_prompt_envelope(
+        engine,
+        source_id=current_source_id,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        prompt_text=(
+            str(generation_context.get("user_prompt") or "")
+            if bool(generation_context.get("linear_timeline_turn"))
+            else ""
+        ),
+    )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
     generation_context["prompt_scope"] = normalized_prompt_scope
@@ -823,14 +851,102 @@ def _build_structured_history_turns(records: list[dict[str, Any]]) -> list[dict[
         content = str(record.get("content") or "").strip()
         if not content:
             continue
-        rendered = render_chat_line(
-            role=raw_role,
-            content=content,
-            timestamp=record.get("timestamp"),
+        persisted_prompt = str(record.get(PROMPT_USER_CONTENT_FIELD) or "").strip()
+        rendered = (
+            persisted_prompt
+            if persisted_prompt and not (role == "assistant" or role.startswith("assistant."))
+            else render_chat_line(
+                role=raw_role,
+                content=content,
+                timestamp=record.get("timestamp"),
+            )
         )
         output_role = "assistant" if role == "assistant" or role.startswith("assistant.") else "user"
         turns.append({"role": output_role, "content": rendered})
     return turns
+
+
+def _attach_message_prompt_envelopes(
+    engine: Any,
+    records: list[dict[str, Any]],
+    *,
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+) -> None:
+    store = getattr(engine, "store", None)
+    getter = getattr(store, "get_message_prompt_envelopes", None)
+    pruner = getattr(store, "prune_message_prompt_envelopes", None)
+    if not callable(getter):
+        return
+    source_ids = [
+        str(record.get("source_id") or "").strip()
+        for record in records
+        if isinstance(record, dict) and str(record.get("source_id") or "").strip()
+    ]
+    try:
+        envelopes = getter(
+            source_ids,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if isinstance(envelopes, dict):
+            for record in records:
+                source_id = str(record.get("source_id") or "").strip()
+                prompt_text = str(envelopes.get(source_id) or "").strip()
+                if prompt_text:
+                    record[PROMPT_USER_CONTENT_FIELD] = prompt_text
+        if callable(pruner):
+            pruner(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                keep_source_ids=source_ids,
+            )
+    except Exception as exc:
+        logger.warning("message prompt envelope load failed: %s", str(exc)[:160])
+
+
+def _sync_current_message_prompt_envelope(
+    engine: Any,
+    *,
+    source_id: str,
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    prompt_text: str,
+) -> None:
+    sid = str(source_id or "").strip()
+    if not sid:
+        return
+    store = getattr(engine, "store", None)
+    writer = getattr(store, "upsert_message_prompt_envelope", None)
+    deleter = getattr(store, "delete_message_prompt_envelope", None)
+    try:
+        if str(prompt_text or "").strip() and callable(writer):
+            result = writer(
+                source_id=sid,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                prompt_text=str(prompt_text),
+            )
+            if isinstance(result, dict) and not result.get("ok", False):
+                logger.warning(
+                    "message prompt envelope write declined status=%s reason=%s",
+                    str(result.get("status") or "unknown")[:40],
+                    str(result.get("reason") or "unknown")[:80],
+                )
+        elif callable(deleter):
+            deleter(
+                source_id=sid,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+    except Exception as exc:
+        logger.warning("message prompt envelope sync failed: %s", str(exc)[:160])
 
 
 def _trim_oldest_prompt_raw_record(

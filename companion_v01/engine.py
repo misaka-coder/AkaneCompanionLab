@@ -6306,6 +6306,9 @@ class AkaneMemoryEngine:
     @staticmethod
     def _render_memory_record_for_prompt(record: dict[str, Any]) -> str:
         role = str(record.get("role") or "user").strip()
+        persisted_prompt = str(record.get("_akane_prompt_user_content") or "").strip()
+        if persisted_prompt and not (role.lower() == "assistant" or role.lower().startswith("assistant.")):
+            return persisted_prompt
         if role.lower().startswith("event."):
             try:
                 from memcore.rendering import render_prompt_message

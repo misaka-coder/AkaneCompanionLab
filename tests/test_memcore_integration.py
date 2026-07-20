@@ -15,11 +15,13 @@ import config
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
+from companion_v01.llm_runtime import LLMRuntime
 from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
 from companion_v01.prompt_profiles import PromptModule
 from companion_v01.retrieval_types import RetrievalPipelineResult
 from companion_v01 import retrieval_engine
+from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import ReadMemoryTimelineToolHandler, ToolExecutionContext
 
 
@@ -180,9 +182,18 @@ class _CapturePromptBuilder:
     def build_final_generation_context(self, **kwargs):
         self.kwargs = dict(kwargs)
         self.calls.append(dict(kwargs))
+        linear_timeline_turn = bool(
+            kwargs.get("current_message_in_raw")
+            and not str(kwargs.get("memory_text") or "").strip()
+        )
+        dynamic_parts = [
+            str(kwargs.get("current_message_text") or "").strip(),
+            str(kwargs.get("volatile_extra_context") or "").strip(),
+            str(kwargs.get("current_visual_context") or "").strip(),
+        ]
         return {
             "system_prompt": "system",
-            "user_prompt": "user",
+            "user_prompt": "\n\n".join(part for part in dynamic_parts if part),
             "fallback": {"speech": "", "tool_call": None},
             "visual_defaults": dict(kwargs.get("visual_defaults") or {}),
             "debug_enabled": bool(kwargs.get("debug_enabled")),
@@ -190,6 +201,7 @@ class _CapturePromptBuilder:
             "system_extra_blocks": [],
             "history_turns": [],
             "prompt_audit_sections": [],
+            "linear_timeline_turn": linear_timeline_turn,
         }
 
 
@@ -1994,6 +2006,102 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_final_prompt_context_replays_and_persists_exact_turn_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            previous = store.add_message(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                role="user",
+                content="上一条消息",
+                timestamp=1712399900,
+            )
+            assistant = store.add_message(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                role="assistant",
+                content="上一条回复",
+                timestamp=1712399901,
+            )
+            current = store.add_message(
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                role="user",
+                content="现在的问题",
+                timestamp=1712400000,
+            )
+            exact_previous = "[stable timestamp] user: 上一条消息\n\n上一轮 runtime\n\n上一轮视觉状态"
+            store.upsert_message_prompt_envelope(
+                source_id=previous["source_id"],
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                prompt_text=exact_previous,
+            )
+            memcore_manager = _PromptContextMemcoreManager(
+                {
+                    "operation": "build_prompt_context",
+                    "ok": True,
+                    "status": "ok",
+                    "raw": [previous, assistant, current],
+                    "raw_text": "MEMCORE RAW",
+                    "episodic_text": "",
+                    "semantic_text": "",
+                }
+            )
+            engine = _PromptContextEngine(memcore_manager=memcore_manager)
+            engine.store = store
+            engine._split_history_records = lambda **_kwargs: ([], dict(current))
+
+            with patch.object(config, "MEMORY_BACKEND", "memcore"):
+                response_builder.prepare_context(
+                    engine,
+                    session_id="s1",
+                    profile_user_id="u1",
+                    user_message="现在的问题",
+                    recent_raw=[current],
+                    recent_episodic_summaries=[],
+                    recent_semantic_summaries=[],
+                    confirmed_snippets=[],
+                    now_ts=1712400000,
+                    character_pack_id="char",
+                )
+
+            captured = engine.prompt_builder.kwargs
+            self.assertEqual(captured["history_turns"][0]["content"], exact_previous)
+            self.assertEqual(captured["history_turns"][1]["role"], "assistant")
+            stored_current = store.get_message_prompt_envelopes(
+                [current["source_id"]],
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            self.assertEqual(
+                stored_current[current["source_id"]],
+                "User: 现在的问题\n\n(当前客户端模式不需要完整演出状态。)",
+            )
+            self.assertEqual(store.get_message_by_source_id(current["source_id"])["content"], "现在的问题")
+            self.assertEqual(store.get_message_by_source_id(current["source_id"])["memory_metadata"], {})
+
+            runtime = LLMRuntime.__new__(LLMRuntime)
+            first_request = runtime._responses_input_from_messages(
+                [
+                    {"role": "user", "content": "stable prompt context"},
+                    {"role": "user", "content": exact_previous},
+                ]
+            )
+            second_request = runtime._responses_input_from_messages(
+                [
+                    {"role": "user", "content": "stable prompt context"},
+                    *captured["history_turns"],
+                    {"role": "user", "content": stored_current[current["source_id"]]},
+                ]
+            )
+            self.assertEqual(first_request[0], second_request[0])
 
     def test_final_prompt_context_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
