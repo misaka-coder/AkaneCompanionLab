@@ -279,15 +279,12 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         )
         engine._apply_user_vector_index_policy = lambda *, user_record, **_kwargs: user_record
         engine._upsert_raw_record = lambda _record: None
-        engine._record_memcore_user_turn = lambda **_kwargs: self.fail(
-            "structured event must not use record_user_turn"
-        )
 
         def stop_after_external_event_write(**kwargs: Any) -> dict[str, Any]:
             event_calls.append(dict(kwargs))
             raise self._StopAfterUserWrite()
 
-        engine._record_memcore_external_event = stop_after_external_event_write
+        engine._record_memcore_input_turn = stop_after_external_event_write
         return engine, event_calls
 
     def test_sync_and_stream_paths_use_same_hashed_user_source_id_and_consume_raw_key(self) -> None:
@@ -394,7 +391,7 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         self.assertTrue(all(call["content"] == message for call in store.calls))
         self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
 
-    def test_sync_and_stream_paths_route_structured_event_to_memcore_external_primitive(self) -> None:
+    def test_sync_and_stream_paths_open_structured_event_as_memcore_v2_input(self) -> None:
         payload = {
             "user_id": "qq-session",
             "real_user_id": "qq-user",
@@ -420,8 +417,8 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
                         engine.process_turn(payload)
 
                 self.assertEqual(len(event_calls), 1)
-                self.assertEqual(event_calls[0]["event"]["event_type"], "finance")
-                self.assertEqual(event_calls[0]["event"]["fields"], {"title": "结构化事件"})
+                self.assertEqual(event_calls[0]["external_event"]["event_type"], "finance")
+                self.assertEqual(event_calls[0]["external_event"]["fields"], {"title": "结构化事件"})
 
     def test_transient_final_failure_is_not_persisted_as_an_assistant_turn(self) -> None:
         self.assertFalse(

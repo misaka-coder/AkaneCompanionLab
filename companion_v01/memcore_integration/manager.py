@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -192,7 +194,7 @@ class MemcoreManager:
         actor_stable_id: str = "",
         actor_display_name: str = "",
     ) -> dict[str, Any]:
-        return self._record_turn(
+        return self._append_standalone_turn(
             operation="record_user_turn",
             role="user",
             record=record,
@@ -211,7 +213,7 @@ class MemcoreManager:
         session_id: str,
         character_pack_id: str = "",
     ) -> dict[str, Any]:
-        return self._record_turn(
+        return self._append_standalone_turn(
             operation="record_assistant_turn",
             role="assistant",
             record=record,
@@ -219,6 +221,114 @@ class MemcoreManager:
             session_id=session_id,
             character_pack_id=character_pack_id,
         )
+
+    def begin_input_turn(
+        self,
+        record: dict[str, Any],
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
+        external_event: dict[str, Any] | None = None,
+        turn_id: str = "",
+    ) -> dict[str, Any]:
+        """Open one V2 model-response turn around a user or external stimulus."""
+
+        operation = "begin_input_turn"
+        source_id = str((record or {}).get("source_id") or "").strip()
+        if not source_id:
+            return self._status(operation, False, "invalid_record", reason="source_id_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
+        try:
+            entry = self._build_timeline_input(
+                role="user",
+                record=record,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
+                turn_role="stimulus",
+                external_event=external_event,
+            )
+            resolved_turn_id = str(turn_id or "").strip() or self._stable_turn_id(source_id)
+            handle = system.begin_turn(
+                stimuli=[entry],
+                annotation_target_ids=[source_id],
+                turn_id=resolved_turn_id,
+                opened_at=int((record or {}).get("timestamp") or time.time()),
+            )
+            stored = handle.stimuli[0]
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "opened" if str(handle.status) == "open" else str(handle.status),
+                    source_id=stored.source_id,
+                    index_status=stored.index_status,
+                ),
+                "turn_id": str(handle.turn_id),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
+    def append_turn_intermediate(
+        self,
+        record: dict[str, Any],
+        *,
+        turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        operation = "append_turn_intermediate"
+        source_id = str((record or {}).get("source_id") or "").strip()
+        resolved_turn_id = str(turn_id or "").strip()
+        if not source_id or not resolved_turn_id:
+            return self._status(
+                operation,
+                False,
+                "invalid_record",
+                source_id=source_id,
+                reason="source_id_and_turn_id_required",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
+        try:
+            entry = self._build_timeline_input(
+                role="assistant",
+                record=record,
+                turn_role="intermediate",
+            )
+            stored = system.append_entry(entry, turn_id=resolved_turn_id)
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "recorded",
+                    source_id=stored.source_id,
+                    index_status=stored.index_status,
+                ),
+                "turn_id": resolved_turn_id,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
 
     def record_external_event(
         self,
@@ -242,19 +352,31 @@ class MemcoreManager:
         if system is None:
             return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
         try:
-            written = system.record_external_event(
-                event_type=str(event_type or "").strip(),
-                fields=dict(fields or {}),
-                source=str(source or "").strip(),
-                timestamp=timestamp,
-                source_id=str(source_id or "").strip() or None,
+            event = {
+                "event_type": str(event_type or "").strip(),
+                "fields": dict(fields or {}),
+                "source": str(source or "").strip(),
+            }
+            record = {
+                "source_id": str(source_id or "").strip(),
+                "content": "",
+                "timestamp": int(timestamp or time.time()),
+                "memory_metadata": self._external_event_metadata(event),
+                "index_in_vector": True,
+            }
+            entry = self._build_timeline_input(
+                role="user",
+                record=record,
+                turn_role=None,
+                external_event=event,
             )
+            written = system.append_standalone_entry(entry)
             return self._status(
                 operation,
                 True,
                 "recorded",
-                source_id=str(written.get("source_id") or source_id),
-                index_status=str(written.get("index_status") or ""),
+                source_id=str(written.source_id or source_id),
+                index_status=str(written.index_status or ""),
             )
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
@@ -336,8 +458,56 @@ class MemcoreManager:
         keywords: list[str] | None = None,
         importance: float = 0.2,
         confidence: float = 1.0,
+        turn_id: str = "",
+        result_status: str = "success",
     ) -> dict[str, Any]:
-        operation = "record_tool_exchange"
+        result_payload = self.record_tool_batch(
+            exchanges=[
+                {
+                    "tool_name": tool_name,
+                    "result": result,
+                    "tool_input": tool_input,
+                    "tool_call_id": tool_call_id,
+                    "source": source,
+                    "timestamp": timestamp,
+                    "source_id_prefix": source_id_prefix,
+                    "keywords": list(keywords or []),
+                    "importance": importance,
+                    "confidence": confidence,
+                    "result_status": result_status,
+                }
+            ],
+            turn_id=turn_id,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        first = next(iter(result_payload.get("exchanges") or []), {})
+        return {
+            **dict(result_payload, operation="record_tool_exchange"),
+            "correlation_id": str(first.get("correlation_id") or ""),
+            "tool_use_source_id": str(first.get("tool_use_source_id") or ""),
+            "tool_result_source_id": str(first.get("tool_result_source_id") or ""),
+        }
+
+    def record_tool_batch(
+        self,
+        *,
+        exchanges: list[dict[str, Any]],
+        turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        """Append one logical parallel batch as all actions followed by all observations."""
+
+        operation = "record_tool_batch"
+        resolved_turn_id = str(turn_id or "").strip()
+        if not resolved_turn_id:
+            return {**self._status(operation, False, "invalid_record", reason="turn_id_required"), "exchanges": []}
+        normalized = [dict(item) for item in exchanges if isinstance(item, dict) and item]
+        if not normalized:
+            return {**self._status(operation, False, "invalid_record", reason="exchanges_required"), "exchanges": []}
         system = self._get_system_or_none(
             operation=operation,
             profile_user_id=profile_user_id,
@@ -345,31 +515,30 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
         if system is None:
-            return self._status(operation, False, "unavailable", reason=self._reason)
+            return {**self._status(operation, False, "unavailable", reason=self._reason), "exchanges": []}
         try:
-            written = system.record_tool_exchange(
-                tool_name=str(tool_name or "").strip(),
-                result=result,
-                tool_input=tool_input,
-                tool_call_id=str(tool_call_id or "").strip(),
-                source=str(source or "").strip(),
-                timestamp=timestamp,
-                source_id_prefix=str(source_id_prefix or "").strip() or None,
-                keywords=[str(item).strip() for item in (keywords or []) if str(item).strip()],
-                importance=max(0.0, min(1.0, float(importance))),
-                confidence=max(0.0, min(1.0, float(confidence))),
-            )
-            tool_use = written.get("tool_use") if isinstance(written, dict) else {}
-            tool_result = written.get("tool_result") if isinstance(written, dict) else {}
+            prepared = [self._build_tool_entry_pair(item) for item in normalized]
+            stored_actions = [system.append_entry(action, turn_id=resolved_turn_id) for action, _ in prepared]
+            stored_observations = [
+                system.append_entry(observation, turn_id=resolved_turn_id) for _, observation in prepared
+            ]
+            recorded = [
+                {
+                    "correlation_id": action.correlation_id,
+                    "tool_use_source_id": action.source_id,
+                    "tool_result_source_id": observation.source_id,
+                }
+                for action, observation in zip(stored_actions, stored_observations)
+            ]
             return {
                 **self._status(operation, True, "recorded"),
-                "tool_use_source_id": str((tool_use or {}).get("source_id") or ""),
-                "tool_result_source_id": str((tool_result or {}).get("source_id") or ""),
+                "turn_id": resolved_turn_id,
+                "exchanges": recorded,
             }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore tool exchange dual-write failed: %s", reason)
-            return self._status(operation, False, "failed", reason=reason)
+            logger.warning("memcore tool batch record failed: %s", reason)
+            return {**self._status(operation, False, "failed", reason=reason), "exchanges": []}
 
     def record_material_reference(
         self,
@@ -447,27 +616,149 @@ class MemcoreManager:
         actor_stable_id: str = "",
         actor_display_name: str = "",
     ) -> dict[str, Any]:
+        result = self.stage_turn_metadata(
+            source_id,
+            memory_metadata,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            actor_stable_id=actor_stable_id,
+            actor_display_name=actor_display_name,
+        )
+        return dict(result, operation="update_turn_metadata")
+
+    def stage_turn_metadata(
+        self,
+        source_id: str,
+        memory_metadata: dict[str, Any] | None,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
+    ) -> dict[str, Any]:
+        operation = "stage_turn_metadata"
         system = self._get_system_or_none(
-            operation="update_turn_metadata",
+            operation=operation,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
         )
         sid = str(source_id or "").strip()
         if system is None:
-            return self._status("update_turn_metadata", False, "unavailable", source_id=sid, reason=self._reason)
+            return self._status(operation, False, "unavailable", source_id=sid, reason=self._reason)
         try:
             actor = self._build_actor(actor_stable_id, actor_display_name)
-            result = system.update_turn_metadata(
+            result = system.stage_turn_metadata(
                 sid,
                 memory_metadata if isinstance(memory_metadata, dict) else {},
                 actor=actor,
             )
-            return dict(result, operation="update_turn_metadata")
+            return dict(result, operation=operation)
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore metadata dual-write failed: %s", reason)
-            return self._status("update_turn_metadata", False, "failed", source_id=sid, reason=reason)
+            logger.warning("memcore metadata staging failed: %s", reason)
+            return self._status(operation, False, "failed", source_id=sid, reason=reason)
+
+    def complete_input_turn(
+        self,
+        *,
+        turn_id: str,
+        assistant_record: dict[str, Any],
+        memory_metadata: dict[str, Any] | None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        provider_output_raw: str = "",
+        annotation_status: str = "accepted_model",
+    ) -> dict[str, Any]:
+        operation = "complete_input_turn"
+        resolved_turn_id = str(turn_id or "").strip()
+        source_id = str((assistant_record or {}).get("source_id") or "").strip()
+        if not resolved_turn_id or not source_id:
+            return self._status(
+                operation,
+                False,
+                "invalid_record",
+                source_id=source_id,
+                reason="turn_id_and_source_id_required",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
+        try:
+            result = system.complete_turn(
+                turn_id=resolved_turn_id,
+                semantic_text=str((assistant_record or {}).get("content") or ""),
+                provider_output_raw=str(provider_output_raw or ""),
+                memory_annotation=memory_metadata if isinstance(memory_metadata, dict) else None,
+                annotation_status=str(annotation_status or "missing"),
+                timestamp=int((assistant_record or {}).get("timestamp") or time.time()),
+                source_id=source_id,
+                payload={
+                    "semantic_tags": list((assistant_record or {}).get("semantic_tags") or []),
+                },
+            )
+            final_entry = getattr(result, "final_entry", None)
+            result_status = str(getattr(result, "status", "") or "")
+            return {
+                **self._status(
+                    operation,
+                    bool(getattr(result, "completed", False)) or result_status == "already_completed",
+                    result_status or "failed",
+                    source_id=str(getattr(final_entry, "source_id", "") or source_id),
+                    index_status=str(getattr(final_entry, "index_status", "") or ""),
+                    reason=str(getattr(result, "reason", "") or ""),
+                ),
+                "turn_id": resolved_turn_id,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
+    def abort_input_turn(
+        self,
+        *,
+        turn_id: str,
+        reason: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        operation = "abort_input_turn"
+        resolved_turn_id = str(turn_id or "").strip()
+        if not resolved_turn_id:
+            return self._status(operation, False, "invalid_record", reason="turn_id_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        try:
+            result = system.abort_turn(resolved_turn_id, reason=str(reason or "aborted"))
+            return {
+                **self._status(
+                    operation,
+                    str(getattr(result, "status", "")) in {"aborted", "already_aborted"},
+                    str(getattr(result, "status", "") or "failed"),
+                    reason=str(getattr(result, "reason", "") or ""),
+                ),
+                "turn_id": resolved_turn_id,
+            }
+        except Exception as exc:
+            failed_reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, failed_reason)
+            return self._status(operation, False, "failed", reason=failed_reason)
 
     def compact_due_background(
         self,
@@ -584,7 +875,7 @@ class MemcoreManager:
                     if role not in {"user", "assistant"}:
                         skipped += 1
                         continue
-                    result = self._record_turn(
+                    result = self._append_standalone_turn(
                         operation=operation,
                         role=role,
                         record=record,
@@ -1226,7 +1517,7 @@ class MemcoreManager:
             categories=base_categories,
         )
 
-    def _record_turn(
+    def _append_standalone_turn(
         self,
         *,
         operation: str,
@@ -1250,40 +1541,219 @@ class MemcoreManager:
         if system is None:
             return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
 
-        content = str((record or {}).get("content") or "")
-        timestamp = int((record or {}).get("timestamp") or time.time())
-        memory_metadata = (record or {}).get("memory_metadata")
-        if not isinstance(memory_metadata, dict):
-            memory_metadata = {}
         try:
-            if role == "assistant":
-                written = system.record_assistant_turn(
-                    content,
-                    source_id=source_id,
-                    timestamp=timestamp,
-                    memory_metadata=memory_metadata,
-                )
-            else:
-                actor = self._build_actor(actor_stable_id, actor_display_name)
-                written = system.record_user_turn(
-                    content,
-                    actor=actor,
-                    source_id=source_id,
-                    timestamp=timestamp,
-                    memory_metadata=memory_metadata,
-                    index_in_vector=bool((record or {}).get("index_in_vector", True)),
-                )
+            entry = self._build_timeline_input(
+                role=role,
+                record=record,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
+                turn_role=None,
+                legacy_import=operation == "import_legacy_raw_messages",
+            )
+            written = system.append_standalone_entry(entry)
             return self._status(
                 operation,
                 True,
                 "recorded",
-                source_id=str(written.get("source_id") or source_id),
-                index_status=str(written.get("index_status") or ""),
+                source_id=str(written.source_id or source_id),
+                index_status=str(written.index_status or ""),
             )
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore %s failed: %s", operation, reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
+    def _build_timeline_input(
+        self,
+        *,
+        role: str,
+        record: dict[str, Any],
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
+        turn_role: str | None,
+        external_event: dict[str, Any] | None = None,
+        legacy_import: bool = False,
+    ) -> Any:
+        memcore = self._memcore_module or self._import_memcore()
+        raw = dict(record or {})
+        source_id = str(raw.get("source_id") or "").strip()
+        timestamp = int(raw.get("timestamp") or time.time())
+        metadata = raw.get("memory_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        index_in_vector = bool(raw.get("index_in_vector", True))
+        is_standalone = turn_role is None
+        is_external_event = external_event is not None
+        if external_event is not None:
+            event_type = self._kind_suffix(external_event.get("event_type"), fallback="external")
+            source = str(external_event.get("source") or "").strip()
+            fields = dict(external_event.get("fields") or {})
+            payload = dict(fields)
+            if source:
+                payload["source"] = source
+            semantic_text = memcore.render_external_event_text(
+                event_type=event_type,
+                fields=fields,
+                source=source,
+            )
+            kind = f"event.{event_type}"
+            origin = memcore.EntryOrigin.ENVIRONMENT
+            compatibility_role = kind
+            metadata = metadata or self._external_event_metadata(external_event)
+        else:
+            content = str(raw.get("content") or "")
+            semantic_text = content
+            payload = {"text": content}
+            if role == "assistant":
+                kind = "message.assistant" if is_standalone else "message.assistant.intermediate"
+                origin = memcore.EntryOrigin.ASSISTANT
+                compatibility_role = "assistant"
+            else:
+                kind = "message.user"
+                origin = memcore.EntryOrigin.USER
+                compatibility_role = "user"
+        has_memory_annotation = self._has_memory_annotation(metadata)
+        retrieval_policy = (
+            memcore.RetrievalPolicy.NEVER
+            if role == "assistant" or (is_standalone and not index_in_vector)
+            else memcore.RetrievalPolicy.EXPLICIT
+            if is_standalone and is_external_event
+            else memcore.RetrievalPolicy.AUTO
+        )
+        retrieval_visibility = (
+            memcore.RetrievalVisibility.NEVER
+            if retrieval_policy is memcore.RetrievalPolicy.NEVER
+            else memcore.RetrievalVisibility.EXPLICIT
+            if is_standalone and is_external_event
+            else memcore.RetrievalVisibility.DEFAULT
+            if is_standalone and has_memory_annotation
+            else memcore.RetrievalVisibility.EXPLICIT
+        )
+        return memcore.TimelineEntryInput(
+            source_id=source_id,
+            kind=kind,
+            origin=origin,
+            turn_role=turn_role,
+            semantic_text=semantic_text,
+            timestamp=timestamp,
+            payload=payload,
+            actor=(
+                self._build_actor(actor_stable_id, actor_display_name) if origin is memcore.EntryOrigin.USER else None
+            ),
+            memory_metadata=metadata,
+            annotation_status=(
+                memcore.AnnotationStatus.ACCEPTED_LEGACY
+                if is_standalone and has_memory_annotation and legacy_import
+                else memcore.AnnotationStatus.ACCEPTED_HOST
+                if is_standalone and has_memory_annotation and not is_external_event
+                else memcore.AnnotationStatus.PLAIN
+                if is_standalone and not is_external_event
+                else memcore.AnnotationStatus.UNANNOTATED
+            ),
+            retrieval_policy=retrieval_policy,
+            retrieval_visibility=retrieval_visibility,
+            semanticize=bool(index_in_vector and role != "assistant"),
+            compatibility_role=compatibility_role,
+        )
+
+    def _build_tool_entry_pair(self, exchange: dict[str, Any]) -> tuple[Any, Any]:
+        memcore = self._memcore_module or self._import_memcore()
+        tool_name = str(exchange.get("tool_name") or "unknown").strip() or "unknown"
+        tool = self._kind_segment(tool_name, fallback="unknown")
+        prefix = str(exchange.get("source_id_prefix") or "").strip()
+        effective_ts = int(exchange.get("timestamp") or time.time())
+        correlation_id = str(exchange.get("tool_call_id") or "").strip()
+        if not correlation_id:
+            correlation_id = (
+                "call_"
+                + hashlib.sha256(f"{tool}|{prefix}|{effective_ts}".encode("utf-8", errors="ignore")).hexdigest()[:16]
+            )
+        tool_input = exchange.get("tool_input")
+        result = exchange.get("result")
+        source = str(exchange.get("source") or "").strip()
+        metadata = {
+            "categories": ["tool_trace"],
+            "keywords": [
+                item
+                for item in [
+                    tool,
+                    *[str(value).strip() for value in list(exchange.get("keywords") or [])],
+                ]
+                if item
+            ][:4],
+            "subject_scopes": ["assistant"],
+            "importance": max(0.0, min(1.0, float(exchange.get("importance", 0.2)))),
+            "confidence": max(0.0, min(1.0, float(exchange.get("confidence", 1.0)))),
+        }
+        common = {
+            "correlation_id": correlation_id,
+            "memory_metadata": metadata,
+            "retrieval_policy": memcore.RetrievalPolicy.EXPLICIT,
+            "retrieval_visibility": memcore.RetrievalVisibility.EXPLICIT,
+            "semanticize": True,
+        }
+        action = memcore.TimelineEntryInput(
+            source_id=f"{prefix}:tool_use" if prefix else "",
+            kind=f"tool.{tool}.call",
+            origin=memcore.EntryOrigin.ASSISTANT,
+            turn_role=memcore.TurnRole.ACTION,
+            semantic_text=memcore.render_tool_use_text(tool_input=tool_input),
+            timestamp=effective_ts,
+            payload={"input": tool_input},
+            trace_metadata={"tool_name": tool_name, "status": "running"},
+            compatibility_role=f"assistant.tool_call {tool} {correlation_id}",
+            **common,
+        )
+        observation = memcore.TimelineEntryInput(
+            source_id=f"{prefix}:tool_result" if prefix else "",
+            kind=f"tool.{tool}.result",
+            origin=memcore.EntryOrigin.ENVIRONMENT,
+            turn_role=memcore.TurnRole.OBSERVATION,
+            semantic_text=memcore.render_tool_result_text(result=result, source=source),
+            timestamp=effective_ts + 1,
+            payload={"output": result, "source": source},
+            trace_metadata={
+                "tool_name": tool_name,
+                "status": str(exchange.get("result_status") or "success"),
+            },
+            compatibility_role=f"tool.{tool} {correlation_id}",
+            **common,
+        )
+        return action, observation
+
+    @staticmethod
+    def _stable_turn_id(source_id: str) -> str:
+        digest = hashlib.sha256(str(source_id or "").encode("utf-8", errors="ignore")).hexdigest()[:32]
+        return f"turn:{digest}"
+
+    @staticmethod
+    def _kind_segment(value: Any, *, fallback: str) -> str:
+        normalized = re.sub(r"[^a-z0-9_-]+", "_", str(value or "").strip().lower()).strip("_-")
+        return normalized[:80] or fallback
+
+    @classmethod
+    def _kind_suffix(cls, value: Any, *, fallback: str) -> str:
+        parts = [cls._kind_segment(part, fallback="") for part in str(value or "").strip().lower().split(".")]
+        normalized = ".".join(part for part in parts if part)
+        return normalized[:120].strip(".") or fallback
+
+    @classmethod
+    def _external_event_metadata(cls, event: dict[str, Any]) -> dict[str, Any]:
+        event_type = cls._kind_suffix(event.get("event_type"), fallback="external")
+        return {
+            "categories": ["event_trace"],
+            "keywords": [event_type],
+            "subject_scopes": ["other"],
+            "importance": 0.4,
+            "confidence": 1.0,
+        }
+
+    @staticmethod
+    def _has_memory_annotation(metadata: dict[str, Any]) -> bool:
+        sequence_fields = ("keywords", "subject_scopes", "categories", "mood_tags")
+        if any(isinstance(metadata.get(key), (list, tuple)) and bool(metadata.get(key)) for key in sequence_fields):
+            return True
+        return any(metadata.get(key) not in (None, "", 0, 0.0) for key in ("importance", "confidence"))
 
     def _record_material_event(
         self,
@@ -1324,38 +1794,77 @@ class MemcoreManager:
         status_part = self._attachment_file_status(item, event_type=event_type, delete_storage=delete_storage)
         source_id = f"attachment:{attachment_id}:{event_type}:{status_part}:{effective_ts}"
         try:
+            memcore = self._memcore_module or self._import_memcore()
+            material_kind = str(item.get("kind") or "file").strip() or "file"
+            kind_label = self._kind_segment(material_kind, fallback="material")
+            file_key = self._kind_segment(file_id, fallback="file")
+            filename = self._attachment_filename(item)
+            derived_status = self._attachment_derived_status(item)
+            keywords = self._attachment_keywords(item)
             if event_type == "cleanup":
-                written = system.record_material_cleanup(
+                semantic_text = memcore.render_material_cleanup_text(
                     file_id=file_id,
-                    kind=str(item.get("kind") or "file"),
-                    filename=self._attachment_filename(item),
+                    kind=material_kind,
+                    filename=filename,
                     file_status=status_part,
-                    derived_status=self._attachment_derived_status(item),
+                    derived_status=derived_status,
                     reason=reason,
-                    timestamp=effective_ts,
-                    source_id=source_id,
-                    keywords=self._attachment_keywords(item),
                 )
+                origin = memcore.EntryOrigin.ENVIRONMENT
+                actor = None
+                compatibility_role = f"system.material_cleanup {kind_label} {file_key}"
+                subject_scopes = ["other"]
             else:
                 actor_stable_id, actor_display_name = self._attachment_actor_identity(item)
-                written = system.record_material_reference(
+                semantic_text = memcore.render_material_reference_text(
                     file_id=file_id,
-                    kind=str(item.get("kind") or "file"),
-                    actor=self._build_actor(actor_stable_id, actor_display_name),
-                    filename=self._attachment_filename(item),
+                    kind=material_kind,
+                    filename=filename,
                     mime_type=str(item.get("mime_type") or ""),
                     file_status=status_part,
-                    derived_status=self._attachment_derived_status(item),
-                    timestamp=effective_ts,
-                    source_id=source_id,
-                    keywords=self._attachment_keywords(item),
+                    derived_status=derived_status,
                 )
+                origin = memcore.EntryOrigin.USER
+                actor = self._build_actor(actor_stable_id, actor_display_name)
+                compatibility_role = f"user.attachment {kind_label} {file_key}"
+                subject_scopes = ["user"]
+            entry = memcore.TimelineEntryInput(
+                source_id=source_id,
+                kind=f"material.{event_type}",
+                origin=origin,
+                turn_role=None,
+                semantic_text=semantic_text,
+                timestamp=effective_ts,
+                payload={
+                    "file_id": file_id,
+                    "kind": material_kind,
+                    "filename": filename,
+                    "mime_type": str(item.get("mime_type") or ""),
+                    "file_status": status_part,
+                    "derived_status": derived_status,
+                    **({"reason": str(reason or "")} if event_type == "cleanup" else {}),
+                },
+                actor=actor,
+                memory_metadata={
+                    "categories": ["material_trace"],
+                    "keywords": keywords,
+                    "subject_scopes": subject_scopes,
+                    "importance": 0.25 if event_type != "cleanup" else 0.2,
+                    "confidence": 1.0,
+                },
+                annotation_status=memcore.AnnotationStatus.UNANNOTATED,
+                retrieval_policy=memcore.RetrievalPolicy.EXPLICIT,
+                retrieval_visibility=memcore.RetrievalVisibility.EXPLICIT,
+                semanticize=True,
+                compatibility_role=compatibility_role,
+            )
+            written = system.append_standalone_entry(entry)
             return self._status(
                 operation,
                 True,
                 "recorded",
-                source_id=str(written.get("source_id") or source_id),
-                index_status=str(written.get("index_status") or ""),
+                source_id=str(written.source_id or source_id),
+                index_status=str(written.index_status or ""),
             )
         except Exception as exc:
             failed_reason = str(exc) or exc.__class__.__name__

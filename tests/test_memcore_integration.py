@@ -372,39 +372,6 @@ class _CompactionMemcoreManager:
         return {"ok": True, "status": "completed", "stats": {}}
 
 
-class _MaterialFakeSystem:
-    def __init__(self) -> None:
-        self.references: list[dict[str, object]] = []
-        self.cleanups: list[dict[str, object]] = []
-
-    def record_material_reference(self, **kwargs) -> dict[str, object]:
-        self.references.append(dict(kwargs))
-        return {"source_id": str(kwargs.get("source_id") or ""), "index_status": "indexed"}
-
-    def record_material_cleanup(self, **kwargs) -> dict[str, object]:
-        self.cleanups.append(dict(kwargs))
-        return {"source_id": str(kwargs.get("source_id") or ""), "index_status": "indexed"}
-
-
-class _MaterialMemcoreManager(MemcoreManager):
-    def __init__(self) -> None:
-        self.backend = "memcore"
-        self._available = True
-        self._reason = ""
-        self._memcore_module = SimpleNamespace(
-            Actor=lambda *, stable_id, display_name: SimpleNamespace(
-                stable_id=stable_id,
-                display_name=display_name,
-            )
-        )
-        self.system = _MaterialFakeSystem()
-        self.system_calls: list[dict[str, object]] = []
-
-    def _get_system_or_none(self, **kwargs) -> _MaterialFakeSystem:
-        self.system_calls.append(dict(kwargs))
-        return self.system
-
-
 class _ActorCaptureMemcoreManager:
     enabled = True
     available = True
@@ -413,11 +380,15 @@ class _ActorCaptureMemcoreManager:
         self.user_calls: list[dict[str, object]] = []
         self.metadata_calls: list[dict[str, object]] = []
 
+    def begin_input_turn(self, record: dict[str, object], **kwargs) -> dict[str, object]:
+        self.user_calls.append({"record": dict(record), **dict(kwargs)})
+        return {"ok": True, "status": "opened", "turn_id": "turn-1"}
+
     def record_user_turn(self, record: dict[str, object], **kwargs) -> dict[str, object]:
         self.user_calls.append({"record": dict(record), **dict(kwargs)})
         return {"ok": True, "status": "recorded"}
 
-    def update_turn_metadata(
+    def stage_turn_metadata(
         self,
         source_id: str,
         memory_metadata: dict[str, object],
@@ -604,7 +575,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 embedding_provider=_FakeEmbeddingProvider(),
             )
             try:
-                user = manager.record_user_turn(
+                user = manager.begin_input_turn(
                     {"source_id": "user-1", "content": "查一下北京天气", "timestamp": 100},
                     profile_user_id="u1",
                     session_id="s1",
@@ -621,6 +592,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
+                    turn_id=str(user.get("turn_id") or ""),
                 )
                 context = manager.build_prompt_context(
                     profile_user_id="u1",
@@ -1052,9 +1024,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             records = manager._store.list_index_records(namespace=system.namespace, with_conversation=True)
             source_ids = [record["source_id"] for record in records]
             self.assertEqual(source_ids.count("old-user"), 1)
-            self.assertEqual(source_ids.count("old-assistant"), 1)
-            self.assertNotIn("other-profile", source_ids)
-            self.assertNotIn("tool-turn", source_ids)
+            self.assertIsNotNone(manager._store.get_record_by_source_id("old-assistant"))
+            self.assertIsNone(manager._store.get_record_by_source_id("other-profile"))
+            self.assertIsNone(manager._store.get_record_by_source_id("tool-turn"))
             found = manager.inspect_turn_source(
                 "old-user",
                 profile_user_id="u1",
@@ -1252,13 +1224,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "timestamp": 1_777_777_000,
                 "memory_metadata": {},
             }
-            first = manager.record_user_turn(
+            first = manager.begin_input_turn(
                 user_record,
                 profile_user_id="profile-1",
                 session_id="session-1",
                 character_pack_id="char-1",
             )
-            duplicate = manager.record_user_turn(
+            duplicate = manager.begin_input_turn(
                 user_record,
                 profile_user_id="profile-1",
                 session_id="session-1",
@@ -1272,20 +1244,22 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "importance": 0.8,
                 "confidence": 0.9,
             }
-            updated = manager.update_turn_metadata(
+            updated = manager.stage_turn_metadata(
                 "user-turn-1",
                 metadata,
                 profile_user_id="profile-1",
                 session_id="session-1",
                 character_pack_id="char-1",
             )
-            assistant = manager.record_assistant_turn(
-                {
+            assistant = manager.complete_input_turn(
+                turn_id=str(first.get("turn_id") or ""),
+                assistant_record={
                     "source_id": "assistant-turn-1",
                     "content": "我记住啦，下次聊饮料会想到冰可乐。",
                     "timestamp": 1_777_777_010,
                     "memory_metadata": {},
                 },
+                memory_metadata=metadata,
                 profile_user_id="profile-1",
                 session_id="session-1",
                 character_pack_id="char-1",
@@ -1319,6 +1293,212 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["importance"], 0.8)
             manager.close()
 
+    def test_v2_turn_keeps_parallel_tools_correlated_and_completes_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {
+                        "source_id": "stimulus-1",
+                        "content": "同时查天气和新闻。",
+                        "timestamp": 100,
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                turn_id = str(opened.get("turn_id") or "")
+                intermediate = manager.append_turn_intermediate(
+                    {
+                        "source_id": "preface-1",
+                        "content": "我一起查一下。",
+                        "timestamp": 101,
+                    },
+                    turn_id=turn_id,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "weather",
+                            "tool_call_id": "call-weather",
+                            "tool_input": {"city": "北京"},
+                            "result": "晴，25°C。",
+                            "source": "weather-api",
+                            "timestamp": 102,
+                            "source_id_prefix": "trace-weather",
+                            "result_status": "success",
+                        },
+                        {
+                            "tool_name": "web_search",
+                            "tool_call_id": "call-news",
+                            "tool_input": {"query": "北京新闻"},
+                            "result": "今天有一条公开新闻。",
+                            "source": "search-api",
+                            "timestamp": 102,
+                            "source_id_prefix": "trace-news",
+                            "result_status": "success",
+                        },
+                    ],
+                    turn_id=turn_id,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                metadata = {
+                    "keywords": ["北京", "天气", "新闻"],
+                    "categories": ["event"],
+                    "subject_scopes": ["other"],
+                    "importance": 0.6,
+                    "confidence": 0.9,
+                }
+                staged = manager.stage_turn_metadata(
+                    "stimulus-1",
+                    metadata,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                before = manager._store.get_record_by_source_id("stimulus-1")
+                completed = manager.complete_input_turn(
+                    turn_id=turn_id,
+                    assistant_record={
+                        "source_id": "final-1",
+                        "content": "北京天气晴朗，也有一条公开新闻。",
+                        "timestamp": 103,
+                    },
+                    memory_metadata=metadata,
+                    provider_output_raw="",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+
+                system = manager._get_system(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                entries = manager._store.get_turn_entries(namespace=system.namespace, turn_id=turn_id)
+                projection = system.build_context_projection(provider_profile="openai_chat")
+                visible_context = manager.build_prompt_context(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    current_user_record={"source_id": "next", "content": "刚才查到了什么？", "timestamp": 104},
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(opened["ok"], opened)
+        self.assertTrue(intermediate["ok"], intermediate)
+        self.assertTrue(batch["ok"], batch)
+        self.assertTrue(staged["ok"], staged)
+        self.assertEqual(before["annotation_status"], "unannotated")
+        self.assertEqual(before["retrieval_visibility"], "explicit")
+        self.assertTrue(completed["ok"], completed)
+        self.assertEqual(
+            [str(entry.turn_role or "") for entry in entries],
+            ["stimulus", "intermediate", "action", "action", "observation", "observation", "final"],
+        )
+        self.assertEqual(
+            [entry.correlation_id for entry in entries if str(entry.turn_role or "") == "action"],
+            ["call-weather", "call-news"],
+        )
+        trace_entries = [entry for entry in entries if str(entry.turn_role or "") in {"action", "observation"}]
+        self.assertTrue(all(str(entry.retrieval_visibility) == "explicit" for entry in trace_entries))
+        self.assertTrue(all(entry.index_status == "indexed" for entry in trace_entries))
+        openai_payloads = [message.payload for message in projection.messages]
+        tool_call_messages = [payload for payload in openai_payloads if payload.get("tool_calls")]
+        self.assertEqual(len(tool_call_messages), 1)
+        self.assertEqual(
+            [item["id"] for item in tool_call_messages[0]["tool_calls"]],
+            ["call-weather", "call-news"],
+        )
+        final = entries[-1]
+        self.assertEqual(final.semantic_text, "北京天气晴朗，也有一条公开新闻。")
+        self.assertEqual(final.payload.get("provider_output_raw"), "")
+        self.assertIn("我一起查一下", visible_context["raw_text"])
+        self.assertIn("assistant.tool_call weather call-weather", visible_context["raw_text"])
+        self.assertIn("晴,25°C", visible_context["raw_text"])
+        self.assertIn("北京天气晴朗", visible_context["raw_text"])
+
+    def test_external_event_can_open_and_complete_the_same_v2_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "finance-event-1", "content": "", "timestamp": 200},
+                    external_event={
+                        "event_type": "finance",
+                        "source": "公开快讯",
+                        "fields": {"title": "政策方向更新", "summary": "尚无执行细节。"},
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                staged = manager.stage_turn_metadata(
+                    "finance-event-1",
+                    {
+                        "keywords": ["政策"],
+                        "categories": ["event"],
+                        "subject_scopes": ["other"],
+                        "importance": 0.5,
+                        "confidence": 0.8,
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                completed = manager.complete_input_turn(
+                    turn_id=str(opened.get("turn_id") or ""),
+                    assistant_record={
+                        "source_id": "finance-final-1",
+                        "content": "这是一条方向性评论，暂时不能外推为具体刺激方案。",
+                        "timestamp": 201,
+                    },
+                    memory_metadata={
+                        "keywords": ["政策"],
+                        "categories": ["event"],
+                        "subject_scopes": ["other"],
+                        "importance": 0.5,
+                        "confidence": 0.8,
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                event = manager._store.get_record_by_source_id("finance-event-1")
+                final = manager._store.get_record_by_source_id("finance-final-1")
+            finally:
+                manager.close()
+
+        self.assertTrue(opened["ok"], opened)
+        self.assertTrue(staged["ok"], staged)
+        self.assertTrue(completed["ok"], completed)
+        self.assertEqual(event["kind"], "event.finance")
+        self.assertEqual(event["turn_id"], final["turn_id"])
+        self.assertEqual(event["annotation_status"], "accepted_model")
+
     def test_dual_write_preserves_qq_actor_during_metadata_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -1332,7 +1512,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(manager.available, manager.status())
 
-            created = manager.record_user_turn(
+            created = manager.begin_input_turn(
                 {
                     "source_id": "qq-group-turn-1",
                     "content": "我更关注稳健型基金。",
@@ -1345,7 +1525,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 actor_stable_id="qq:10001",
                 actor_display_name="张三",
             )
-            updated = manager.update_turn_metadata(
+            updated = manager.stage_turn_metadata(
                 "qq-group-turn-1",
                 {
                     "keywords": ["稳健型基金", "基金偏好"],
@@ -1416,8 +1596,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.memcore_manager = manager
 
-        recorded = engine._record_memcore_user_turn(
+        recorded = engine._record_memcore_input_turn(
             user_record={"source_id": "qq-turn-1", "content": "关注黄金", "timestamp": 100},
+            external_event=None,
             profile_user_id="qq-group-1",
             session_id="qq-group-1",
             character_pack_id="char-1",
@@ -1442,7 +1623,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
 
     def test_material_trace_bridge_records_safe_attachment_anchor(self) -> None:
-        manager = _MaterialMemcoreManager()
         item = {
             "attachment_id": "attachment::abc",
             "attachment_handle": "img_001",
@@ -1462,27 +1642,44 @@ class MemcoreIntegrationTests(unittest.TestCase):
             },
         }
 
-        reference = manager.record_material_reference(item=item, timestamp=100)
-        cleanup = manager.record_material_cleanup(
-            item=item,
-            timestamp=120,
-            reason="聊完了",
-            delete_storage=True,
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                reference = manager.record_material_reference(item=item, timestamp=100)
+                cleanup = manager.record_material_cleanup(
+                    item=item,
+                    timestamp=120,
+                    reason="聊完了",
+                    delete_storage=True,
+                )
+                stored_reference = manager._store.get_record_by_source_id(reference["source_id"])
+                stored_cleanup = manager._store.get_record_by_source_id(cleanup["source_id"])
+            finally:
+                manager.close()
 
         self.assertTrue(reference["ok"])
         self.assertTrue(cleanup["ok"])
-        self.assertEqual(manager.system_calls[0]["character_pack_id"], "akane_v1")
-        self.assertEqual(manager.system.references[0]["file_id"], "img_001")
-        self.assertEqual(manager.system.references[0]["file_status"], "ready")
-        self.assertEqual(manager.system.references[0]["derived_status"], "ready")
-        self.assertEqual(manager.system.references[0]["actor"].stable_id, "qq:10001")
-        self.assertEqual(manager.system.references[0]["actor"].display_name, "张三")
-        self.assertIn("reference:ready:100", manager.system.references[0]["source_id"])
-        self.assertNotIn("storage_relpath", manager.system.references[0])
-        self.assertNotIn("C:/Users", str(manager.system.references[0]))
-        self.assertEqual(manager.system.cleanups[0]["file_status"], "deleted")
-        self.assertEqual(manager.system.cleanups[0]["reason"], "聊完了")
+        self.assertEqual(stored_reference["kind"], "material.reference")
+        self.assertEqual(stored_reference["payload"]["file_id"], "img_001")
+        self.assertEqual(stored_reference["payload"]["file_status"], "ready")
+        self.assertEqual(stored_reference["payload"]["derived_status"], "ready")
+        self.assertEqual(stored_reference["actor_id"], "qq:10001")
+        self.assertEqual(stored_reference["actor_display_name"], "张三")
+        self.assertIn("reference:ready:100", stored_reference["source_id"])
+        self.assertNotIn("storage_relpath", stored_reference["payload"])
+        self.assertNotIn("C:/Users", str(stored_reference))
+        self.assertEqual(stored_cleanup["kind"], "material.cleanup")
+        self.assertEqual(stored_cleanup["payload"]["file_status"], "deleted")
+        self.assertEqual(stored_cleanup["payload"]["reason"], "聊完了")
+        self.assertEqual(stored_cleanup["turn_id"], "")
 
     def test_build_prompt_context_returns_memcore_visible_layers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1585,13 +1782,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
-            created = manager.record_user_turn(
+            created = manager.begin_input_turn(
                 {"source_id": "shared-source", "content": "u1 private", "timestamp": 123},
                 profile_user_id="u1",
                 session_id="s1",
                 character_pack_id="char",
             )
-            crossed = manager.update_turn_metadata(
+            crossed = manager.stage_turn_metadata(
                 "shared-source",
                 {"keywords": ["leak"], "categories": ["preference"], "importance": 0.9},
                 profile_user_id="u2",
@@ -1601,9 +1798,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             self.assertTrue(created["ok"])
             self.assertFalse(crossed["ok"])
-            self.assertEqual(crossed["status"], "failed")
+            self.assertEqual(crossed["status"], "forbidden")
             stored_user = manager._store.get_record_by_source_id("shared-source")
-            self.assertEqual(stored_user["memory_metadata"]["keywords"], [])
+            self.assertEqual(stored_user["memory_metadata"].get("keywords", []), [])
             manager.close()
 
     def test_dual_write_keeps_raw_user_turns_when_vector_index_is_disabled(self) -> None:
@@ -1636,6 +1833,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(stored)
             self.assertEqual(stored["content"], "你还记得我之前说过什么吗？")
             self.assertEqual(stored["index_status"], "skipped")
+            self.assertEqual(stored["turn_id"], "")
+            self.assertEqual(stored["relation_status"], "standalone")
             manager.close()
 
     def test_shadow_retrieve_returns_structural_hash_payload(self) -> None:

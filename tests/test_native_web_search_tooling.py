@@ -910,7 +910,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         engine.store = FakeStore()
         engine._upsert_raw_record = lambda _record: None
-        engine._record_memcore_assistant_turn = lambda **kwargs: memcore_records.append(
+        engine._append_memcore_turn_intermediate = lambda **kwargs: memcore_records.append(
             dict(kwargs["assistant_record"])
         )
         engine._memcore_owns_compaction = lambda: True
@@ -928,6 +928,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             now_ts=100,
             date_label="2026-07-13",
             time_of_day="afternoon",
+            memcore_turn_id="turn-1",
         )
 
         self.assertEqual(source_id, "assistant-preface-1")
@@ -1123,13 +1124,17 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def record_tool_exchange(self, **kwargs):
+            def record_tool_batch(self, **kwargs):
                 self.calls.append(kwargs)
                 return {
                     "ok": True,
                     "status": "recorded",
-                    "tool_use_source_id": "trace-use-1",
-                    "tool_result_source_id": "trace-result-1",
+                    "exchanges": [
+                        {
+                            "tool_use_source_id": "trace-use-1",
+                            "tool_result_source_id": "trace-result-1",
+                        }
+                    ],
                 }
 
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -1175,16 +1180,19 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 request_context={},
                 prompt_exclude_source_ids=prompt_exclusions,
                 recorded_tool_call_ids=recorded_ids,
+                memcore_turn_id="turn-1",
             )
 
         self.assertEqual(len(manager.calls), 1)
         self.assertEqual(prompt_exclusions, ["trace-use-1", "trace-result-1"])
         stored = manager.calls[0]
-        self.assertEqual(stored["tool_call_id"], "toolu_trace")
-        self.assertEqual(stored["tool_input"], {"query": "Akane"})
-        self.assertEqual(stored["source"], NATIVE_ANTHROPIC)
-        self.assertNotIn("top-secret", stored["result"])
-        self.assertIn("[redacted]", stored["result"])
+        self.assertEqual(stored["turn_id"], "turn-1")
+        exchange = stored["exchanges"][0]
+        self.assertEqual(exchange["tool_call_id"], "toolu_trace")
+        self.assertEqual(exchange["tool_input"], {"query": "Akane"})
+        self.assertEqual(exchange["source"], NATIVE_ANTHROPIC)
+        self.assertNotIn("top-secret", exchange["result"])
+        self.assertIn("[redacted]", exchange["result"])
 
     def test_final_output_preserves_internal_native_tool_batch(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

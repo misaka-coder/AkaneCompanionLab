@@ -798,56 +798,6 @@ class AkaneMemoryEngine:
             logger.warning("memcore user dual-write failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
-    def _record_memcore_assistant_turn(
-        self,
-        *,
-        assistant_record: dict[str, Any],
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str,
-    ) -> dict[str, Any]:
-        manager = self._memcore_manager_if_enabled()
-        if manager is None:
-            return {}
-        try:
-            return manager.record_assistant_turn(
-                assistant_record,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-            )
-        except Exception as exc:
-            logger.warning("memcore assistant dual-write failed: %s", exc)
-            return {"ok": False, "status": "failed", "reason": str(exc)}
-
-    def _record_memcore_external_event(
-        self,
-        *,
-        event: dict[str, Any],
-        source_id: str,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str,
-        timestamp: int,
-    ) -> dict[str, Any]:
-        manager = self._memcore_manager_if_enabled()
-        if manager is None:
-            return {}
-        try:
-            return manager.record_external_event(
-                event_type=str(event.get("event_type") or ""),
-                fields=dict(event.get("fields") or {}),
-                source=str(event.get("source") or ""),
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-                timestamp=timestamp,
-                source_id=source_id,
-            )
-        except Exception as exc:
-            logger.warning("memcore external event dual-write failed: %s", exc)
-            return {"ok": False, "status": "failed", "reason": str(exc)}
-
     def _record_memcore_input_turn(
         self,
         *,
@@ -858,25 +808,25 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         actor_stable_id: str,
         actor_display_name: str,
-        timestamp: int,
     ) -> dict[str, Any]:
-        if external_event is not None:
-            return self._record_memcore_external_event(
-                event=external_event,
-                source_id=str(user_record.get("source_id") or ""),
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            result = manager.begin_input_turn(
+                user_record,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
-                timestamp=timestamp,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
+                external_event=external_event,
             )
-        return self._record_memcore_user_turn(
-            user_record=user_record,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            actor_stable_id=actor_stable_id,
-            actor_display_name=actor_display_name,
-        )
+            self._warn_memcore_write_result("input turn open", result)
+            return result
+        except Exception as exc:
+            logger.warning("memcore input turn open failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
 
     def _update_memcore_turn_metadata(
         self,
@@ -893,7 +843,7 @@ class AkaneMemoryEngine:
         if manager is None:
             return {}
         try:
-            return manager.update_turn_metadata(
+            result = manager.stage_turn_metadata(
                 source_id,
                 memory_metadata,
                 profile_user_id=profile_user_id,
@@ -902,9 +852,104 @@ class AkaneMemoryEngine:
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
             )
+            self._warn_memcore_write_result("metadata staging", result)
+            return result
         except Exception as exc:
             logger.warning("memcore metadata dual-write failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _append_memcore_turn_intermediate(
+        self,
+        *,
+        turn_id: str,
+        assistant_record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None or not str(turn_id or "").strip():
+            return {}
+        try:
+            result = manager.append_turn_intermediate(
+                assistant_record,
+                turn_id=turn_id,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            self._warn_memcore_write_result("intermediate append", result)
+            return result
+        except Exception as exc:
+            logger.warning("memcore intermediate append failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _complete_memcore_input_turn(
+        self,
+        *,
+        turn_id: str,
+        assistant_record: dict[str, Any],
+        memory_metadata: dict[str, Any] | None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None or not str(turn_id or "").strip():
+            return {}
+        try:
+            result = manager.complete_input_turn(
+                turn_id=turn_id,
+                assistant_record=assistant_record,
+                memory_metadata=memory_metadata,
+                provider_output_raw="",
+                annotation_status="accepted_model" if isinstance(memory_metadata, dict) else "missing",
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            self._warn_memcore_write_result("input turn completion", result)
+            return result
+        except Exception as exc:
+            logger.warning("memcore input turn completion failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _abort_memcore_input_turn(
+        self,
+        *,
+        turn_id: str,
+        reason: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None or not str(turn_id or "").strip():
+            return {}
+        try:
+            result = manager.abort_input_turn(
+                turn_id=turn_id,
+                reason=reason,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            self._warn_memcore_write_result("input turn abort", result)
+            return result
+        except Exception as exc:
+            logger.warning("memcore input turn abort failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    @staticmethod
+    def _warn_memcore_write_result(operation: str, result: Any) -> None:
+        if not isinstance(result, dict) or bool(result.get("ok")):
+            return
+        logger.warning(
+            "memcore %s rejected status=%s reason=%s",
+            operation,
+            str(result.get("status") or "unknown")[:80],
+            str(result.get("reason") or "")[:160],
+        )
 
     def _record_attachment_material_trace(
         self,
@@ -2886,13 +2931,14 @@ class AkaneMemoryEngine:
         verifier_output = retrieval_pipeline.verifier_output
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
+        memcore_turn_id = ""
         if not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            self._record_memcore_input_turn(
+            memcore_open = self._record_memcore_input_turn(
                 user_record=user_record,
                 external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
@@ -2900,8 +2946,8 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
-                timestamp=now_ts,
             )
+            memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
 
         prompt_exclude_source_ids: list[str] = []
         final_output = self._build_final_response(
@@ -3058,6 +3104,7 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 date_label=date_label,
                 time_of_day=time_of_day,
+                memcore_turn_id=memcore_turn_id,
             )
             if (
                 preface_source_id
@@ -3085,6 +3132,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
+                memcore_turn_id=memcore_turn_id,
             )
             tool_result = batch_results[-1] if batch_results else None
             turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
@@ -3173,16 +3221,16 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_metadata=memory_metadata,
             )
-            if bool(user_record.get("index_in_vector", True)):
-                self._update_memcore_turn_metadata(
-                    source_id=str(user_record.get("source_id") or ""),
-                    memory_metadata=memory_metadata,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                    actor_stable_id=actor_stable_id,
-                    actor_display_name=actor_display_name,
-                )
+        if memcore_turn_id:
+            self._update_memcore_turn_metadata(
+                source_id=str(user_record.get("source_id") or ""),
+                memory_metadata=memory_metadata,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+                actor_stable_id="" if external_event_turn else actor_stable_id,
+                actor_display_name="" if external_event_turn else actor_display_name,
+            )
         if memory_tags and not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -3212,8 +3260,10 @@ class AkaneMemoryEngine:
             )
             self._upsert_raw_record(assistant_record)
             if not transient_user_turn:
-                self._record_memcore_assistant_turn(
+                self._complete_memcore_input_turn(
+                    turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
+                    memory_metadata=memory_metadata,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -3223,6 +3273,14 @@ class AkaneMemoryEngine:
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
                 )
+        elif memcore_turn_id:
+            self._abort_memcore_input_turn(
+                turn_id=memcore_turn_id,
+                reason="assistant_turn_not_persisted",
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -3400,13 +3458,14 @@ class AkaneMemoryEngine:
         verifier_output = retrieval_pipeline.verifier_output
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
+        memcore_turn_id = ""
         if not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            self._record_memcore_input_turn(
+            memcore_open = self._record_memcore_input_turn(
                 user_record=user_record,
                 external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
@@ -3414,8 +3473,8 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
-                timestamp=now_ts,
             )
+            memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
 
         prompt_exclude_source_ids: list[str] = []
         final_output = yield from self._stream_final_response(
@@ -3583,6 +3642,7 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 date_label=date_label,
                 time_of_day=time_of_day,
+                memcore_turn_id=memcore_turn_id,
             )
             if (
                 preface_source_id
@@ -3621,6 +3681,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
+                memcore_turn_id=memcore_turn_id,
             )
             tool_result = batch_results[-1] if batch_results else None
             turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
@@ -3711,16 +3772,16 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_metadata=memory_metadata,
             )
-            if bool(user_record.get("index_in_vector", True)):
-                self._update_memcore_turn_metadata(
-                    source_id=str(user_record.get("source_id") or ""),
-                    memory_metadata=memory_metadata,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                    actor_stable_id=actor_stable_id,
-                    actor_display_name=actor_display_name,
-                )
+        if memcore_turn_id:
+            self._update_memcore_turn_metadata(
+                source_id=str(user_record.get("source_id") or ""),
+                memory_metadata=memory_metadata,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+                actor_stable_id="" if external_event_turn else actor_stable_id,
+                actor_display_name="" if external_event_turn else actor_display_name,
+            )
         if memory_tags and not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
@@ -3752,8 +3813,10 @@ class AkaneMemoryEngine:
             )
             self._upsert_raw_record(assistant_record)
             if not transient_user_turn:
-                self._record_memcore_assistant_turn(
+                self._complete_memcore_input_turn(
+                    turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
+                    memory_metadata=memory_metadata,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -3763,6 +3826,14 @@ class AkaneMemoryEngine:
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
                 )
+        elif memcore_turn_id:
+            self._abort_memcore_input_turn(
+                turn_id=memcore_turn_id,
+                reason="assistant_turn_not_persisted",
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -4727,6 +4798,7 @@ class AkaneMemoryEngine:
         now_ts: int,
         date_label: str,
         time_of_day: str,
+        memcore_turn_id: str = "",
     ) -> str:
         preface_turn = (
             self._build_assistant_dialogue_turn(final_output.get("speech"))
@@ -4749,7 +4821,8 @@ class AkaneMemoryEngine:
             memory_metadata=self._build_assistant_timeline_metadata(final_output),
         )
         self._upsert_raw_record(preface_record)
-        self._record_memcore_assistant_turn(
+        self._append_memcore_turn_intermediate(
+            turn_id=memcore_turn_id,
             assistant_record=preface_record,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -4785,6 +4858,7 @@ class AkaneMemoryEngine:
         native_tool_history_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
+        memcore_turn_id: str = "",
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
         results, current_events = self._execute_and_record_tool_batch(
             tool_calls=[tool_call],
@@ -4805,6 +4879,7 @@ class AkaneMemoryEngine:
             native_tool_history_turns=native_tool_history_turns,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
+            memcore_turn_id=memcore_turn_id,
         )
         return (results[-1] if results else None), current_events
 
@@ -4830,6 +4905,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         recorded_tool_call_ids: set[str] | None = None,
         domain_profile_id: str = "",
+        memcore_turn_id: str = "",
     ) -> tuple[list[ToolExecutionResult], list[dict[str, Any]]]:
         calls = [dict(call) for call in tool_calls if isinstance(call, dict) and call]
         if not calls:
@@ -4939,12 +5015,23 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=character_pack_id,
                 now_ts=now_ts,
-                current_user_source_id=current_user_source_id,
-                recorded_tool_call_ids=recorded_tool_call_ids,
-                prompt_exclude_source_ids=prompt_exclude_source_ids,
             )
             batch_events.extend(current_events)
             history_items.append((call, result, shaped_followup, workspace_followup))
+        trace_source_ids = self._record_memcore_tool_batch(
+            items=history_items,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            now_ts=now_ts,
+            current_user_source_id=current_user_source_id,
+            memcore_turn_id=memcore_turn_id,
+            recorded_tool_call_ids=recorded_tool_call_ids,
+        )
+        if prompt_exclude_source_ids is not None:
+            for source_id in trace_source_ids:
+                if source_id not in prompt_exclude_source_ids:
+                    prompt_exclude_source_ids.append(source_id)
         self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=history_items,
@@ -4970,9 +5057,6 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str,
         now_ts: int,
-        current_user_source_id: str,
-        recorded_tool_call_ids: set[str] | None,
-        prompt_exclude_source_ids: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], str, str]:
 
         tool_results.append(tool_result)
@@ -4993,22 +5077,6 @@ class AkaneMemoryEngine:
             tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
             if workspace_followup:
                 tool_followups.append(workspace_followup)
-        trace_source_ids = self._record_memcore_tool_exchange(
-            tool_call=tool_call,
-            tool_result=tool_result,
-            shaped_followup=shaped_followup,
-            workspace_followup=workspace_followup,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            now_ts=now_ts,
-            current_user_source_id=current_user_source_id,
-            recorded_tool_call_ids=recorded_tool_call_ids,
-        )
-        if prompt_exclude_source_ids is not None:
-            for source_id in trace_source_ids:
-                if source_id not in prompt_exclude_source_ids:
-                    prompt_exclude_source_ids.append(source_id)
         current_tool_turns = list(tool_result.raw_turns)
         tool_turns.extend(current_tool_turns)
         for tool_turn in current_tool_turns:
@@ -5258,52 +5326,91 @@ class AkaneMemoryEngine:
         now_ts: int,
         current_user_source_id: str,
         recorded_tool_call_ids: set[str] | None,
+        memcore_turn_id: str = "",
+    ) -> list[str]:
+        return self._record_memcore_tool_batch(
+            items=[(tool_call, tool_result, shaped_followup, workspace_followup)],
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            now_ts=now_ts,
+            current_user_source_id=current_user_source_id,
+            memcore_turn_id=memcore_turn_id,
+            recorded_tool_call_ids=recorded_tool_call_ids,
+        )
+
+    def _record_memcore_tool_batch(
+        self,
+        *,
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        current_user_source_id: str,
+        memcore_turn_id: str,
+        recorded_tool_call_ids: set[str] | None,
     ) -> list[str]:
         manager = getattr(self, "memcore_manager", None)
-        if manager is None or not getattr(manager, "enabled", False):
+        if manager is None or not getattr(manager, "enabled", False) or not str(memcore_turn_id or "").strip():
             return []
-        tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
-        call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
-        if not call_id:
-            call_id = "call_" + hashlib.sha256(self._tool_call_signature(tool_call).encode("utf-8")).hexdigest()[:16]
-        trace_key = f"{tool_type}:{call_id}"
-        if recorded_tool_call_ids is not None:
-            if trace_key in recorded_tool_call_ids:
-                return []
-            recorded_tool_call_ids.add(trace_key)
-        tool_input = self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call))
-        feedback = "\n\n".join(
-            part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
-        )
-        feedback = self._sanitize_tool_trace_text(feedback)
-        source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
-        source_id_prefix = "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
+        exchanges: list[dict[str, Any]] = []
+        for tool_call, tool_result, shaped_followup, workspace_followup in items:
+            tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
+            call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+            if not call_id:
+                call_id = (
+                    "call_" + hashlib.sha256(self._tool_call_signature(tool_call).encode("utf-8")).hexdigest()[:16]
+                )
+            trace_key = f"{tool_type}:{call_id}"
+            if recorded_tool_call_ids is not None:
+                if trace_key in recorded_tool_call_ids:
+                    continue
+                recorded_tool_call_ids.add(trace_key)
+            feedback = "\n\n".join(
+                part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
+            )
+            source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
+            exchanges.append(
+                {
+                    "tool_name": tool_type,
+                    "tool_call_id": call_id,
+                    "tool_input": self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call)),
+                    "result": self._sanitize_tool_trace_text(feedback),
+                    "source": str(tool_call.get(TOOL_SOURCE_FIELD) or tool_result.tool_type or tool_type),
+                    "timestamp": max(now_ts, int(time.time())),
+                    "source_id_prefix": (
+                        "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
+                    ),
+                    "keywords": [tool_type],
+                    "importance": 0.25,
+                    "confidence": 0.9 if not self._tool_result_is_error(tool_result) else 0.5,
+                    "result_status": "error" if self._tool_result_is_error(tool_result) else "success",
+                }
+            )
+        if not exchanges:
+            return []
         try:
-            recorded = manager.record_tool_exchange(
-                tool_name=tool_type,
-                tool_call_id=call_id,
-                tool_input=tool_input,
-                result=feedback,
-                source=str(tool_call.get(TOOL_SOURCE_FIELD) or tool_result.tool_type or tool_type),
-                timestamp=max(now_ts, int(time.time())),
-                source_id_prefix=source_id_prefix,
-                keywords=[tool_type],
-                importance=0.25,
-                confidence=0.9 if not self._tool_result_is_error(tool_result) else 0.5,
+            recorded = manager.record_tool_batch(
+                exchanges=exchanges,
+                turn_id=memcore_turn_id,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
             )
+            self._warn_memcore_write_result("tool batch record", recorded)
             return [
                 source_id
+                for exchange in list((recorded or {}).get("exchanges") or [])
+                if isinstance(exchange, dict)
                 for source_id in (
-                    str((recorded or {}).get("tool_use_source_id") or "").strip(),
-                    str((recorded or {}).get("tool_result_source_id") or "").strip(),
+                    str(exchange.get("tool_use_source_id") or "").strip(),
+                    str(exchange.get("tool_result_source_id") or "").strip(),
                 )
                 if source_id
             ]
         except Exception as exc:
-            logger.warning("memcore tool trace record failed tool=%s reason=%s", tool_type, type(exc).__name__)
+            logger.warning("memcore tool batch record failed reason=%s", type(exc).__name__)
             return []
 
     def _sanitize_tool_trace_value(self, value: Any) -> Any:
