@@ -294,7 +294,7 @@ class AttachmentInboxService:
             lines.append("处理失败的材料：")
             for item in failed[:2]:
                 label = self._compact_item_label(item)
-                error = str(item.get("error_message") or "").strip()
+                error = self._readable_failure_message(item)
                 lines.append(f"- {label}" + (f"：{error}" if error else ""))
 
         overflow = max(
@@ -1897,12 +1897,12 @@ class AttachmentInboxService:
         if "bad request" in lowered or "400 client error" in lowered:
             return "QQ 临时链接返回 400，请稍后重试，或让系统尝试从 NapCat 本地缓存重新读取。"
         if "视觉模型" in error or "vision" in lowered:
-            return error[:220]
+            return "图片已接收，但视觉模型暂时不可用。"
         if "timeout" in lowered or "timed out" in lowered:
             return "读取附件超时，可能是网络或 NapCat 缓存暂时不可用。"
         if "too large" in lowered or "附件过大" in error:
-            return error[:220]
-        return error[:220]
+            return "附件超过当前大小限制，请压缩后重发或换一种方式发送。"
+        return "附件处理失败，请稍后重试或换一种方式发送。"
 
     def _kind_label(self, value: Any) -> str:
         kind = str(value or "").strip().lower()

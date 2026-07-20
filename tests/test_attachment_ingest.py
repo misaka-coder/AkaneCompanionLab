@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
 import time
 import unittest
@@ -12,7 +13,11 @@ from unittest.mock import patch
 import sys
 
 from companion_v01.attachment_inbox import AttachmentInboxService
-from companion_v01.attachment_ingest import AttachmentIngestService, RemoteMediaDescriptor
+from companion_v01.attachment_ingest import (
+    AttachmentIngestService,
+    AttachmentMaterializationError,
+    RemoteMediaDescriptor,
+)
 from companion_v01.store import MemoryStore
 
 
@@ -66,19 +71,15 @@ class AttachmentIngestTests(unittest.TestCase):
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
             )
 
-            created = service.ingest_qq_attachments(
+            created = service.ingest_local_file(
                 profile_user_id="master",
                 session_id="qq_pri_1",
-                attachments=[
-                    {
-                        "kind": "document",
-                        "origin_name": "计划.md",
-                        "path": str(source),
-                    }
-                ],
+                source_path=source,
+                kind="document",
+                origin_name="计划.md",
                 timestamp=100,
             )
-            self.assertEqual(len(created), 1)
+            self.assertEqual(created["attachment_handle"], "file_001")
 
             item = self._wait_for_status(
                 store,
@@ -120,10 +121,12 @@ class AttachmentIngestTests(unittest.TestCase):
                 attachment_service=inbox,
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
             )
-            service.ingest_qq_attachments(
+            service.ingest_local_file(
                 profile_user_id="master",
                 session_id="qq_pri_1",
-                attachments=[{"kind": "document", "origin_name": "计划.docx", "path": str(source)}],
+                source_path=source,
+                kind="document",
+                origin_name="计划.docx",
                 timestamp=100,
             )
 
@@ -158,10 +161,12 @@ class AttachmentIngestTests(unittest.TestCase):
                 attachment_service=inbox,
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
             )
-            service.ingest_qq_attachments(
+            service.ingest_local_file(
                 profile_user_id="master",
                 session_id="qq_pri_1",
-                attachments=[{"kind": "document", "origin_name": "成绩.xlsx", "path": str(source)}],
+                source_path=source,
+                kind="document",
+                origin_name="成绩.xlsx",
                 timestamp=100,
             )
 
@@ -190,20 +195,15 @@ class AttachmentIngestTests(unittest.TestCase):
                 vision_service=fake_vision,  # type: ignore[arg-type]
             )
 
-            created = service.ingest_qq_attachments(
+            created = service.ingest_local_file(
                 profile_user_id="master",
                 session_id="qq_pri_1",
-                attachments=[
-                    {
-                        "kind": "image",
-                        "origin_name": "cat.png",
-                        "path": str(source),
-                        "sender_label": "休比",
-                    }
-                ],
+                source_path=source,
+                kind="image",
+                origin_name="cat.png",
                 timestamp=100,
             )
-            self.assertEqual(len(created), 1)
+            self.assertEqual(created["attachment_handle"], "img_001")
 
             item = self._wait_for_status(
                 store,
@@ -215,9 +215,183 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(item["attachment_handle"], "img_001")
             self.assertEqual(item["summary_title"], "窗边小猫")
             self.assertEqual(item["detail"]["entities"], ["白猫", "窗边"])
-            self.assertEqual(item["detail"]["qq_sender_label"], "休比")
             self.assertEqual(len(fake_vision.scheduled), 1)
             self.assertTrue(fake_vision.scheduled[0]["source_path"].exists())
+
+    def test_qq_payload_cannot_authorize_local_or_workspace_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            secret = root / "private" / "secret.txt"
+            secret.parent.mkdir(parents=True, exist_ok=True)
+            secret.write_text("TOP_SECRET_MATERIAL", encoding="utf-8")
+
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                workspace_uri_resolver=lambda _uri: secret,
+            )
+
+            with patch("companion_v01.attachment_ingest.requests.post") as post_mock:
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "document",
+                            "origin_name": "note.txt",
+                            "file": str(secret),
+                            "path": str(secret),
+                            "local_path": str(secret),
+                            "workspace_uri": "workspace:/private/secret.txt",
+                        }
+                    ],
+                    timestamp=100,
+                )
+                self.assertEqual(len(created), 1)
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    status="failed",
+                )
+
+            post_mock.assert_not_called()
+            self.assertEqual(item["error_message"], "attachment_source_unavailable")
+            self.assertNotIn("raw_error", item["detail"]["failure"])
+            serialized_item = json.dumps(item, ensure_ascii=False)
+            prompt = inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1")
+            self.assertNotIn(str(secret), serialized_item)
+            self.assertNotIn("TOP_SECRET_MATERIAL", serialized_item)
+            self.assertNotIn(str(secret), prompt)
+            self.assertNotIn("TOP_SECRET_MATERIAL", prompt)
+            self.assertEqual([path for path in (root / "attachments").rglob("*") if path.is_file()], [])
+
+            legacy = inbox.create_pending(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                source="qq",
+                kind="document",
+                origin_name="legacy.txt",
+                timestamp=101,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=legacy["attachment_id"],
+                status="failed",
+                error_message=f"cannot read {secret} from https://secret.invalid/file?token=abc",
+                detail={},
+                updated_at=102,
+            )
+            legacy_prompt = inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1")
+            self.assertNotIn(str(secret), legacy_prompt)
+            self.assertNotIn("secret.invalid", legacy_prompt)
+            self.assertNotIn("token=abc", legacy_prompt)
+
+    def test_onebot_cache_path_requires_allow_root_and_logical_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cached = root / "napcat-cache" / "cat.jpg"
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(b"cache payload")
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+            target = root / "attachments" / "target.jpg"
+
+            class FakeResponse:
+                def __init__(self, *, status: str, retcode: int) -> None:
+                    self.status = status
+                    self.retcode = retcode
+
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {
+                        "status": self.status,
+                        "retcode": self.retcode,
+                        "data": {"path": str(cached)},
+                    }
+
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", ""),
+                patch(
+                    "companion_v01.attachment_ingest.requests.post",
+                    return_value=FakeResponse(status="ok", retcode=0),
+                ),
+            ):
+                no_root = service._copy_from_onebot_cache(
+                    item={"kind": "image", "origin_name": "cat.jpg"},
+                    payload={"file": "cat.jpg"},
+                    target_path=target,
+                    origin_name="cat.jpg",
+                )
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
+                patch(
+                    "companion_v01.attachment_ingest.requests.post",
+                    return_value=FakeResponse(status="failed", retcode=0),
+                ),
+            ):
+                logical_failure = service._copy_from_onebot_cache(
+                    item={"kind": "image", "origin_name": "cat.jpg"},
+                    payload={"file": "cat.jpg"},
+                    target_path=target,
+                    origin_name="cat.jpg",
+                )
+
+            self.assertIsNone(no_root)
+            self.assertIsNone(logical_failure)
+            self.assertFalse(target.exists())
+
+    def test_trusted_onebot_cache_path_enforces_size_limit_without_partial_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cached = root / "napcat-cache" / "large.bin"
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(b"too large")
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+            target = root / "attachments" / "target.bin"
+
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {"status": "ok", "retcode": 0, "data": {"path": str(cached)}}
+
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ATTACHMENT_MAX_BYTES", 4),
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
+                patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()),
+            ):
+                with self.assertRaisesRegex(AttachmentMaterializationError, "attachment_too_large"):
+                    service._copy_from_onebot_cache(
+                        item={"kind": "file", "origin_name": "large.bin"},
+                        payload={"file": "large.bin"},
+                        target_path=target,
+                        origin_name="large.bin",
+                    )
+
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_name(f".{target.name}.part").exists())
 
     def test_image_uses_onebot_cache_before_direct_url_download(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -250,29 +424,32 @@ class AttachmentIngestTests(unittest.TestCase):
                         },
                     }
 
-            with patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()) as post_mock:
-                with patch("companion_v01.attachment_ingest.requests.get") as get_mock:
-                    created = service.ingest_qq_attachments(
-                        profile_user_id="master",
-                        session_id="qq_pri_1",
-                        attachments=[
-                            {
-                                "kind": "image",
-                                "file": "cat.jpg",
-                                "origin_name": "cat.jpg",
-                                "url": "https://gchat.qpic.cn/download?bad=true",
-                            }
-                        ],
-                        timestamp=100,
-                    )
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
+                patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()) as post_mock,
+                patch("companion_v01.attachment_ingest.requests.get") as get_mock,
+            ):
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "image",
+                            "file": "cat.jpg",
+                            "origin_name": "cat.jpg",
+                            "url": "https://gchat.qpic.cn/download?bad=true",
+                        }
+                    ],
+                    timestamp=100,
+                )
 
-                    self.assertEqual(len(created), 1)
-                    item = self._wait_for_status(
-                        store,
-                        profile_user_id="master",
-                        session_id="qq_pri_1",
-                        status="ready",
-                    )
+                self.assertEqual(len(created), 1)
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    status="ready",
+                )
 
             post_mock.assert_called()
             get_mock.assert_not_called()
@@ -408,7 +585,10 @@ class AttachmentIngestTests(unittest.TestCase):
                 def json(self) -> dict[str, Any]:
                     return {"status": "ok", "retcode": 0, "data": {"file": str(cached)}}
 
-            with patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()):
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
+                patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()),
+            ):
                 result = service.retry_attachment(
                     profile_user_id="master",
                     session_id="qq_pri_1",
@@ -475,19 +655,15 @@ class AttachmentIngestTests(unittest.TestCase):
                     side_effect=fake_run,
                 ),
             ):
-                created = service.ingest_qq_attachments(
+                created = service.ingest_local_file(
                     profile_user_id="master",
                     session_id="qq_pri_1",
-                    attachments=[
-                        {
-                            "kind": "file",
-                            "origin_name": "clip.mp4",
-                            "path": str(source),
-                        }
-                    ],
+                    source_path=source,
+                    kind="file",
+                    origin_name="clip.mp4",
                     timestamp=100,
                 )
-                self.assertEqual(len(created), 1)
+                self.assertEqual(created["attachment_handle"], "file_001")
                 item = self._wait_for_status(
                     store,
                     profile_user_id="master",

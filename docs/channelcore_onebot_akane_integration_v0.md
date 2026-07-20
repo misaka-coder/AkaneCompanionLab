@@ -53,6 +53,14 @@ OneBot/NapCat webhook
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
 - choice of response media and all outbound OneBot actions.
 
+Akane's materialization boundary treats `AttachmentRef.locator` as untrusted
+input. QQ event `path`, `local_path`, and `workspace_uri` never authorize a
+local read, and `file` remains an opaque OneBot token. Bot-bound OneBot cache
+responses may expose a local path only when it resolves inside an
+explicit `QQ_ONEBOT_CACHE_ROOTS` directory; otherwise Akane requires base64 or
+the later URL download path. Materialization failures persist only stable codes
+and public reasons, not raw paths, URLs, or exceptions.
+
 `QQMessageContext` therefore remains in Akane, but its protocol parsing inputs
 come from `InboundMessage`. Compatibility methods such as
 `extract_attachments()` contain projection only; they do not reimplement CQ or
@@ -81,6 +89,10 @@ Each applied slice must delete or thin the corresponding Akane authority in the
 same change. In particular, HTTP 200 with a non-zero OneBot retcode must not be
 reported as success, and outbound results must not expose local paths, tokens,
 attachment URLs, raw exceptions, or raw OneBot payloads.
+
+Before the outbound slice, the remaining materialization repair must add public
+URL DNS/IP validation and manual per-hop redirect checks. Direct QQ URL fallback
+must remain fail-closed for loopback, private, link-local, and reserved targets.
 
 ## Validation
 

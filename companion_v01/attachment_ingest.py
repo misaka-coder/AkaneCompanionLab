@@ -108,6 +108,14 @@ REMOTE_MEDIA_DEFAULT_USER_AGENT = (
 REMOTE_MEDIA_DEFAULT_REFERER = "https://www.bilibili.com/"
 
 
+class AttachmentMaterializationError(RuntimeError):
+    """Stable materialization failure that never contains a locator or raw exception."""
+
+    def __init__(self, code: str) -> None:
+        self.code = str(code or "attachment_materialization_failed")
+        super().__init__(self.code)
+
+
 @dataclass(frozen=True)
 class RemoteMediaDescriptor:
     source_url: str
@@ -175,6 +183,7 @@ class AttachmentIngestService:
         for payload in attachments or []:
             if not isinstance(payload, dict):
                 continue
+            processing_payload = self._sanitize_qq_materialization_payload(payload)
             kind = self._normalize_kind(payload.get("kind"))
             if kind not in {"image", "document", "audio", "file"}:
                 continue
@@ -200,7 +209,7 @@ class AttachmentIngestService:
                 lane="attachment",
                 name=f"qq_attachment:{item.get('attachment_handle') or item.get('attachment_id')}",
                 fn=self._process_qq_attachment,
-                args=(item, dict(payload), effective_ts),
+                args=(item, processing_payload, effective_ts),
             )
         return created_items
 
@@ -248,7 +257,6 @@ class AttachmentIngestService:
         self._process_qq_attachment(
             item,
             {
-                "path": str(local_path),
                 "origin_name": clean_name,
                 "mime_type": guessed_mime,
                 "file_ext": suffix,
@@ -256,6 +264,7 @@ class AttachmentIngestService:
                 "character_pack_id": character_pack_id,
             },
             effective_ts,
+            trusted_local_source=local_path,
         )
         return (
             self.store.get_attachment_inbox_item(
@@ -370,11 +379,17 @@ class AttachmentIngestService:
         item: dict[str, Any],
         payload: dict[str, Any],
         timestamp: int,
+        *,
+        trusted_local_source: Path | None = None,
     ) -> None:
         try:
-            source_path = self._materialize_attachment_file(item=item, payload=payload)
+            source_path = self._materialize_attachment_file(
+                item=item,
+                payload=payload,
+                trusted_local_source=trusted_local_source,
+            )
             if source_path is None:
-                self._mark_failed(item, "没有可下载或可读取的附件地址。", timestamp=timestamp)
+                self._mark_failed(item, "attachment_source_unavailable", timestamp=timestamp)
                 return
 
             workspace_uri = str(payload.get("workspace_uri") or "").strip()
@@ -492,11 +507,13 @@ class AttachmentIngestService:
         ) or dict(item, status="pending_observation", error_message="", updated_at=effective_ts)
 
         payload = self._build_retry_payload(retry_item, previous_error=previous_error)
+        trusted_local_source = self._resolve_managed_retry_source(retry_item)
         self.background_tasks.submit(
             lane="attachment",
             name=f"retry_attachment:{retry_item.get('attachment_handle') or retry_item.get('attachment_id')}",
             fn=self._process_qq_attachment,
             args=(retry_item, payload, effective_ts),
+            kwargs={"trusted_local_source": trusted_local_source} if trusted_local_source is not None else None,
         )
         return {
             "ok": True,
@@ -1161,6 +1178,7 @@ class AttachmentIngestService:
         return text[:240] or "链接媒体获取失败，原因未知。"
 
     def _build_retry_payload(self, item: dict[str, Any], *, previous_error: str = "") -> dict[str, Any]:
+        del previous_error
         origin_name = self._clean_filename(item.get("origin_name") or "")
         payload = {
             "kind": str(item.get("kind") or "file").strip(),
@@ -1177,26 +1195,36 @@ class AttachmentIngestService:
             if candidate is not None and candidate.exists() and candidate.is_file():
                 payload["workspace_uri"] = storage_relpath
                 return payload
-        if storage_relpath:
-            for storage_root in [self.base_dir, *self.legacy_base_dirs]:
-                candidate = (storage_root / Path(storage_relpath)).resolve()
-                try:
-                    candidate.relative_to(storage_root.resolve())
-                except Exception:
-                    continue
-                if candidate.exists() and candidate.is_file():
-                    payload["path"] = str(candidate)
-                    return payload
-        recovered_url = self._extract_url(previous_error)
-        if recovered_url:
-            payload["url"] = recovered_url
         return payload
 
-    def _extract_url(self, text: str) -> str:
-        match = re.search(r"https?://[^\s)]+", str(text or ""))
-        return match.group(0).strip().rstrip("。.,，") if match else ""
+    def _resolve_managed_retry_source(self, item: dict[str, Any]) -> Path | None:
+        storage_relpath = str(item.get("storage_relpath") or "").strip()
+        if not storage_relpath or storage_relpath.lower().startswith("workspace:"):
+            return None
+        for storage_root in [self.base_dir, *self.legacy_base_dirs]:
+            try:
+                root = storage_root.resolve(strict=True)
+                candidate = (root / Path(storage_relpath)).resolve(strict=True)
+                candidate.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            if candidate.is_file():
+                return candidate
+        return None
 
-    def _materialize_attachment_file(self, *, item: dict[str, Any], payload: dict[str, Any]) -> Path | None:
+    def _sanitize_qq_materialization_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        sanitized = dict(payload)
+        for key in ("path", "local_path", "workspace_uri", "storage_relpath", "trusted_local_source"):
+            sanitized.pop(key, None)
+        return sanitized
+
+    def _materialize_attachment_file(
+        self,
+        *,
+        item: dict[str, Any],
+        payload: dict[str, Any],
+        trusted_local_source: Path | None = None,
+    ) -> Path | None:
         workspace_uri = str(payload.get("workspace_uri") or "").strip()
         if workspace_uri:
             if self.workspace_uri_resolver is None:
@@ -1234,12 +1262,12 @@ class AttachmentIngestService:
         except Exception:
             raise RuntimeError("attachment destination escaped the managed workspace") from None
 
-        local_path = str(payload.get("path") or payload.get("local_path") or "").strip()
-        if local_path:
-            source = Path(local_path)
-            if source.exists() and source.is_file():
-                shutil.copyfile(source, target_path)
-                return target_path
+        if trusted_local_source is not None:
+            source = Path(trusted_local_source)
+            if not source.exists() or not source.is_file():
+                raise AttachmentMaterializationError("attachment_trusted_local_missing")
+            self._copy_trusted_file(source=source, target_path=target_path, enforce_max_bytes=False)
+            return target_path
 
         onebot_cached = self._copy_from_onebot_cache(
             item=item,
@@ -1254,13 +1282,6 @@ class AttachmentIngestService:
         if url:
             self._download_to_path(url=url, target_path=target_path)
             return target_path
-
-        raw_file = str(payload.get("file") or "").strip()
-        if raw_file:
-            possible = Path(raw_file)
-            if possible.exists() and possible.is_file():
-                shutil.copyfile(possible, target_path)
-                return target_path
         return None
 
     def _copy_from_onebot_cache(
@@ -1271,13 +1292,13 @@ class AttachmentIngestService:
         target_path: Path,
         origin_name: str,
     ) -> Path | None:
-        file_token = (
-            str(payload.get("file") or "").strip()
-            or str(payload.get("file_id") or "").strip()
-            or str(payload.get("origin_name") or "").strip()
-            or str(origin_name or "").strip()
-            or str(item.get("origin_name") or "").strip()
-        )
+        supplied_token = str(payload.get("file") or payload.get("file_id") or "").strip()
+        if supplied_token:
+            file_token = self._safe_onebot_file_token(supplied_token)
+        else:
+            file_token = self._safe_onebot_file_token(
+                str(payload.get("origin_name") or origin_name or item.get("origin_name") or "").strip()
+            )
         if not file_token:
             return None
 
@@ -1288,9 +1309,7 @@ class AttachmentIngestService:
             base_url = self.qq_channel_config.onebot_http_url
             onebot_headers = self.qq_channel_config.onebot_headers()
         else:
-            base_url = str(
-                getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or ""
-            ).strip().rstrip("/")
+            base_url = str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/")
             onebot_headers = {}
         if not base_url:
             return None
@@ -1311,10 +1330,12 @@ class AttachmentIngestService:
 
             if not isinstance(payload_data, dict):
                 continue
-            if (
-                str(payload_data.get("status") or "").lower() not in {"ok", "async"}
-                and int(payload_data.get("retcode") or 0) != 0
-            ):
+            status = str(payload_data.get("status") or "").strip().lower()
+            try:
+                retcode = int(payload_data.get("retcode") or 0)
+            except (TypeError, ValueError):
+                retcode = -1
+            if status not in {"ok", "async"} or retcode != 0:
                 continue
             data = payload_data.get("data") if isinstance(payload_data.get("data"), dict) else {}
             encoded_file = data.get("base64")
@@ -1327,17 +1348,91 @@ class AttachmentIngestService:
                     except (ValueError, binascii.Error):
                         decoded_file = b""
                     if decoded_file and (max_bytes <= 0 or len(decoded_file) <= max_bytes):
-                        target_path.write_bytes(decoded_file)
+                        self._write_bytes_atomically(target_path=target_path, payload=decoded_file)
                         return target_path
             for key in ("path", "local_path", "file"):
                 cached_path = str(data.get(key) or "").strip()
                 if not cached_path:
                     continue
-                source = Path(cached_path)
-                if source.exists() and source.is_file():
-                    shutil.copyfile(source, target_path)
-                    return target_path
+                source = self._resolve_trusted_onebot_cache_path(cached_path)
+                if source is None:
+                    continue
+                self._copy_trusted_file(source=source, target_path=target_path)
+                return target_path
         return None
+
+    def _safe_onebot_file_token(self, value: Any) -> str:
+        token = str(value or "").strip()
+        if not token or len(token) > 512 or any(ord(char) < 32 for char in token):
+            return ""
+        if "/" in token or "\\" in token or ":" in token:
+            return ""
+        if token in {".", ".."}:
+            return ""
+        return token
+
+    def _resolve_trusted_onebot_cache_path(self, value: Any) -> Path | None:
+        raw_path = str(value or "").strip()
+        if not raw_path:
+            return None
+        try:
+            source = Path(raw_path).resolve(strict=True)
+        except OSError:
+            return None
+        if not source.is_file():
+            return None
+        raw_roots = str(getattr(config, "QQ_ONEBOT_CACHE_ROOTS", "") or "")
+        for raw_root in re.split(r"[;\r\n]+", raw_roots):
+            root_text = raw_root.strip()
+            if not root_text:
+                continue
+            try:
+                root_candidate = Path(root_text)
+                if not root_candidate.is_absolute():
+                    continue
+                root = root_candidate.resolve(strict=True)
+                if not root.is_dir():
+                    continue
+                source.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            return source
+        return None
+
+    def _copy_trusted_file(
+        self,
+        *,
+        source: Path,
+        target_path: Path,
+        enforce_max_bytes: bool = True,
+    ) -> None:
+        max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 0)
+        try:
+            file_size = source.stat().st_size
+        except OSError as exc:
+            raise AttachmentMaterializationError("attachment_trusted_local_missing") from exc
+        if enforce_max_bytes and max_bytes > 0 and file_size > max_bytes:
+            raise AttachmentMaterializationError("attachment_too_large")
+        temp_path = target_path.with_name(f".{target_path.name}.part")
+        try:
+            temp_path.unlink(missing_ok=True)
+            shutil.copyfile(source, temp_path)
+            temp_path.replace(target_path)
+        except Exception as exc:
+            temp_path.unlink(missing_ok=True)
+            if isinstance(exc, AttachmentMaterializationError):
+                raise
+            raise AttachmentMaterializationError("attachment_materialization_failed") from exc
+
+    def _write_bytes_atomically(self, *, target_path: Path, payload: bytes) -> None:
+        temp_path = target_path.with_name(f".{target_path.name}.part")
+        try:
+            temp_path.unlink(missing_ok=True)
+            temp_path.write_bytes(payload)
+            temp_path.replace(target_path)
+        except Exception as exc:
+            temp_path.unlink(missing_ok=True)
+            raise AttachmentMaterializationError("attachment_materialization_failed") from exc
 
     def _download_to_path(
         self,
@@ -1806,20 +1901,21 @@ class AttachmentIngestService:
                 return
 
     def _mark_failed(self, item: dict[str, Any], error: str, *, timestamp: int) -> None:
-        readable_error = self._humanize_failure(error, kind=str(item.get("kind") or ""))
+        error_code = self._material_failure_code(error)
+        readable_error = self._humanize_failure(error_code, kind=str(item.get("kind") or ""))
         updated = self.store.update_attachment_inbox_item(
             profile_user_id=str(item.get("profile_user_id") or ""),
             session_id=str(item.get("session_id") or ""),
             attachment_id=str(item.get("attachment_id") or ""),
             status="failed",
-            error_message=str(error or "")[:500],
+            error_message=error_code,
             short_hint=readable_error,
             detail=self._merge_item_detail(
                 item,
                 {
                     "failure": {
+                        "code": error_code,
                         "reason": readable_error,
-                        "raw_error": str(error or "")[:500],
                         "failed_at": timestamp,
                     }
                 },
@@ -1903,39 +1999,72 @@ class AttachmentIngestService:
         text = re.sub(r"\s+", " ", text).strip()
         return text[:48]
 
+    def _material_failure_code(self, error: Any) -> str:
+        if isinstance(error, AttachmentMaterializationError):
+            return error.code
+        text = str(error or "").strip()
+        lowered = text.lower()
+        stable_codes = {
+            "attachment_materialization_failed",
+            "attachment_source_unavailable",
+            "attachment_trusted_local_missing",
+            "attachment_untrusted_local_source",
+            "attachment_download_timeout",
+            "attachment_too_large",
+            "attachment_vision_unavailable",
+            "onebot_temporary_link_expired",
+        }
+        if lowered in stable_codes:
+            return lowered
+        if "bad request" in lowered or "400 client error" in lowered:
+            return "onebot_temporary_link_expired"
+        if "视觉模型" in text or "vision" in lowered:
+            return "attachment_vision_unavailable"
+        if "timeout" in lowered or "timed out" in lowered:
+            return "attachment_download_timeout"
+        if "附件过大" in text or "too large" in lowered:
+            return "attachment_too_large"
+        if "没有可下载" in text:
+            return "attachment_source_unavailable"
+        return "attachment_materialization_failed"
+
     def _humanize_failure(self, error: str, *, kind: str = "") -> str:
         text = str(error or "").strip()
         lowered = text.lower()
         normalized_kind = self._normalize_kind(kind)
         kind_label = (
-            "图片" if normalized_kind == "image"
-            else "音频" if normalized_kind == "audio"
-            else "文件" if normalized_kind in ("document", "file")
+            "图片"
+            if normalized_kind == "image"
+            else "音频"
+            if normalized_kind == "audio"
+            else "文件"
+            if normalized_kind in ("document", "file")
             else "附件"
         )
-        if "bad request" in lowered or "400 client error" in lowered:
+        if lowered == "onebot_temporary_link_expired":
             return (
                 f"QQ 临时{kind_label}链接已过期。建议：请用户在 QQ 上重新发送一次这个{kind_label}，"
                 f"新生成的临时链接就可以用了。"
             )
-        if "视觉模型" in text or "vision" in lowered:
-            return text[:240]
-        if "timeout" in lowered or "timed out" in lowered:
+        if lowered == "attachment_vision_unavailable":
+            return "图片已接收，但视觉模型暂时不可用。建议：稍后重试，或先用文字描述需要关注的内容。"
+        if lowered == "attachment_download_timeout":
             return (
                 f"{kind_label}下载超时（可能是网络波动或文件较大）。"
                 f"建议：请用户稍后重试，或将{kind_label}通过其他方式发送（如电脑端直接拖拽）。"
             )
-        if "附件过大" in text or "too large" in lowered:
-            return (
-                f"{kind_label}超过当前大小限制。"
-                f"建议：请用户压缩{kind_label}后重发，或使用文件传输助手等替代方式。"
-            )
-        if "没有可下载" in text:
+        if lowered == "attachment_too_large":
+            return f"{kind_label}超过当前大小限制。建议：请用户压缩{kind_label}后重发，或使用文件传输助手等替代方式。"
+        if lowered in {
+            "attachment_source_unavailable",
+            "attachment_untrusted_local_source",
+            "attachment_trusted_local_missing",
+        }:
             return (
                 f"没有拿到{kind_label}的可下载地址或本地缓存。"
                 f"建议：请用户在 QQ 上重新发送一次这个{kind_label}；如果仍失败，可尝试通过桌面端拖拽发送。"
             )
-        return f"{kind_label}处理失败：{text[:160] or '原因未知'}。建议：稍后重试，或换一种方式发送。"
+        return f"{kind_label}处理失败。建议：稍后重试，或换一种方式发送。"
 
     def _probe_media_info(self, source_path: Path) -> dict[str, Any] | None:
         ffprobe_path = shutil.which("ffprobe")

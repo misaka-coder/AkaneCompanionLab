@@ -279,6 +279,8 @@ class Settings(BaseSettings):
     QQ_BRIDGE_ENABLED: bool = False
     # OneBot HTTP 服务地址
     QQ_ONEBOT_HTTP_URL: str = "http://127.0.0.1:3001"
+    # 允许读取的 OneBot 本地缓存根目录；多个目录用分号分隔，留空则禁用 cache path fallback
+    QQ_ONEBOT_CACHE_ROOTS: str = ""
     # 部署侧通道引用；named instance 必须与 manifest 完全一致
     QQ_CHANNEL_PROFILE_REF: str = ""
     # Bot 自己的 QQ 号；留空时仍可使用事件里的 self_id
@@ -502,7 +504,7 @@ def _apply_settings(s: Settings) -> None:
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_FINAL_RESPONSE_MAX_ATTEMPTS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
-    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_CHANNEL_PROFILE_REF, QQ_BOT_QQ
+    global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_ONEBOT_CACHE_ROOTS, QQ_CHANNEL_PROFILE_REF, QQ_BOT_QQ
     global QQ_WEBHOOK_SECRET, QQ_ONEBOT_ACCESS_TOKEN, QQ_CHARACTER_PACK_ID
     global \
         QQ_REPLY_MODE, \
@@ -661,6 +663,7 @@ def _apply_settings(s: Settings) -> None:
     QQ_ONEBOT_HTTP_URL = (
         str(s.QQ_ONEBOT_HTTP_URL or "http://127.0.0.1:3001").strip().rstrip("/") or "http://127.0.0.1:3001"
     )
+    QQ_ONEBOT_CACHE_ROOTS = str(s.QQ_ONEBOT_CACHE_ROOTS or "").strip()
     QQ_CHANNEL_PROFILE_REF = str(s.QQ_CHANNEL_PROFILE_REF or "").strip()
     raw_qq_bot_qq = str(s.QQ_BOT_QQ or "").strip()
     QQ_BOT_QQ = raw_qq_bot_qq if raw_qq_bot_qq.isdigit() else ""

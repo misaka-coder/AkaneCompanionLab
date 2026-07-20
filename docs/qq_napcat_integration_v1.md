@@ -39,6 +39,8 @@ QQ_ALLOW_STALE_EVENTS=false
 
 - `QQ_BRIDGE_ENABLED`：是否开启 QQ 事件入口。默认关闭，避免公网误触发。
 - `QQ_ONEBOT_HTTP_URL`：NapCat OneBot HTTP 地址。
+- `QQ_ONEBOT_CACHE_ROOTS`：可选的 OneBot 本地缓存可信根目录，多个目录用分号分隔。留空时不会读取
+  `/get_image` 或 `/get_file` 返回的本地路径，只使用受限 base64 或后续安全 URL 下载路径。
 - `QQ_BOT_QQ`：机器人 QQ，用于识别群聊里是否被 at。
 - `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
 - `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。
