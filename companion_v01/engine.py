@@ -4159,6 +4159,8 @@ class AkaneMemoryEngine:
         buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
         streamed_speech_to_user = False
+        unrecovered_stream_error = ""
+        unrecovered_stream_partial: dict[str, str] = {}
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
@@ -4169,20 +4171,23 @@ class AkaneMemoryEngine:
                     "不要只输出通用兜底语、处理中占位语或未完成声明。"
                     "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
                 )
+            request_kwargs = {
+                "system_prompt": str(generation_context["system_prompt"]),
+                "user_prompt": str(generation_context["user_prompt"]) + retry_note,
+                "fallback": dict(generation_context["fallback"]),
+                "temperature": 0.7,
+                "prompt_cache_key": prompt_cache_key,
+                "user_images": user_images,
+                "native_tools": generation_context.get("native_tools"),
+                "native_tool_choice": generation_context.get("native_tool_choice", ""),
+                "system_extra_blocks": generation_context.get("system_extra_blocks"),
+                "history_turns": generation_context.get("history_turns"),
+                "post_user_turns": generation_context.get("post_user_turns"),
+                "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
+                "chat_model_override": chat_model_override,
+            }
             iterator = self.llm.stream_chat_json(
-                system_prompt=str(generation_context["system_prompt"]),
-                user_prompt=str(generation_context["user_prompt"]) + retry_note,
-                fallback=dict(generation_context["fallback"]),
-                temperature=0.7,
-                prompt_cache_key=prompt_cache_key,
-                user_images=user_images,
-                native_tools=generation_context.get("native_tools"),
-                native_tool_choice=generation_context.get("native_tool_choice", ""),
-                system_extra_blocks=generation_context.get("system_extra_blocks"),
-                history_turns=generation_context.get("history_turns"),
-                post_user_turns=generation_context.get("post_user_turns"),
-                prompt_audit_sections=generation_context.get("prompt_audit_sections"),
-                chat_model_override=chat_model_override,
+                **request_kwargs,
                 early_tool_call_validator=(
                     lambda call: (
                         self._normalize_tool_call(
@@ -4222,6 +4227,13 @@ class AkaneMemoryEngine:
             parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                 metrics_before.get("chat_json_fallbacks", 0) or 0
             )
+            stream_error = str(getattr(stream_result, "error", "") or "").strip()
+            if stream_error:
+                unrecovered_stream_error = stream_error
+                unrecovered_stream_partial = {
+                    "emotion": str(getattr(stream_result, "latest_emotion", "") or ""),
+                    "speech": str(getattr(stream_result, "latest_speech", "") or ""),
+                }
             normalized = self._normalize_final_output(
                 result=getattr(stream_result, "parsed", None),
                 visual_defaults=dict(generation_context["visual_defaults"]),
@@ -4246,6 +4258,46 @@ class AkaneMemoryEngine:
             # of starting another user-visible generation attempt.
             if streamed_speech_to_user:
                 break
+            if stream_error:
+                if hasattr(self.llm, "record_metric"):
+                    self.llm.record_metric("chat_stream_nonstream_fallbacks")
+                fallback_metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+                fallback_result = self.llm.call_chat_json(**request_kwargs)
+                fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+                fallback_parse_failure = int(fallback_metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
+                    fallback_metrics_before.get("chat_json_fallbacks", 0) or 0
+                )
+                normalized = self._normalize_final_output(
+                    result=fallback_result,
+                    visual_defaults=dict(generation_context["visual_defaults"]),
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    client_context=client_context,
+                    resource_manifest=resource_manifest,
+                    user_message=user_message,
+                    allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                    debug_enabled=bool(generation_context["debug_enabled"]),
+                )
+                self._attach_tool_execution_receipts(normalized, generation_context)
+                if normalized.get(NATIVE_TOOL_CALL_FIELD) or normalized.get(NATIVE_TOOL_CALLS_FIELD):
+                    fallback_preface_text = str(normalized.get("speech") or "").strip()
+                    if fallback_preface_text:
+                        normalized["_native_preface_text"] = fallback_preface_text
+                if not self._is_retryable_final_output(
+                    normalized,
+                    parse_fallback=fallback_parse_failure,
+                ):
+                    unrecovered_stream_error = ""
+                    unrecovered_stream_partial = {}
+                    if hasattr(self.llm, "record_metric"):
+                        self.llm.record_metric("chat_stream_nonstream_recoveries")
+                elif hasattr(self.llm, "record_metric"):
+                    self.llm.record_metric("chat_stream_nonstream_fallback_failures")
+                # A transport-level stream failure gets one equivalent
+                # non-stream request. If that also fails, return the existing
+                # structured fallback instead of hammering the same upstream
+                # with more stream attempts.
+                break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
         # Events were forwarded as they arrived above. Do not replay them here:
@@ -4253,14 +4305,11 @@ class AkaneMemoryEngine:
         # case a future stream implementation only returns buffered events,
         # preserve compatibility by forwarding events that were not already
         # emitted (currently all events from this path are emitted immediately).
-        if stream_result is not None and str(getattr(stream_result, "error", "") or "").strip():
+        if unrecovered_stream_error:
             yield {
                 "type": "stream_error",
-                "message": str(stream_result.error),
-                "partial": {
-                    "emotion": str(getattr(stream_result, "latest_emotion", "") or ""),
-                    "speech": str(getattr(stream_result, "latest_speech", "") or ""),
-                },
+                "message": unrecovered_stream_error,
+                "partial": unrecovered_stream_partial,
             }
         if self._is_retryable_final_output(normalized):
             normalized["_transient_final_failure"] = True
