@@ -4267,6 +4267,9 @@ class AkaneMemoryEngine:
                 fallback_parse_failure = int(fallback_metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                     fallback_metrics_before.get("chat_json_fallbacks", 0) or 0
                 )
+                fallback_transport_failure = int(fallback_metrics_after.get("errors", 0) or 0) > int(
+                    fallback_metrics_before.get("errors", 0) or 0
+                )
                 normalized = self._normalize_final_output(
                     result=fallback_result,
                     visual_defaults=dict(generation_context["visual_defaults"]),
@@ -4278,6 +4281,39 @@ class AkaneMemoryEngine:
                     allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                     debug_enabled=bool(generation_context["debug_enabled"]),
                 )
+                if fallback_transport_failure and self._is_retryable_final_output(
+                    normalized,
+                    parse_fallback=fallback_parse_failure,
+                ):
+                    if hasattr(self.llm, "record_metric"):
+                        self.llm.record_metric("chat_stream_uncached_fallbacks")
+                    uncached_request_kwargs = {**request_kwargs, "prompt_cache_key": ""}
+                    uncached_metrics_before = (
+                        self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+                    )
+                    uncached_result = self.llm.call_chat_json(**uncached_request_kwargs)
+                    uncached_metrics_after = (
+                        self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
+                    )
+                    fallback_parse_failure = int(
+                        uncached_metrics_after.get("chat_json_fallbacks", 0) or 0
+                    ) > int(uncached_metrics_before.get("chat_json_fallbacks", 0) or 0)
+                    normalized = self._normalize_final_output(
+                        result=uncached_result,
+                        visual_defaults=dict(generation_context["visual_defaults"]),
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        client_context=client_context,
+                        resource_manifest=resource_manifest,
+                        user_message=user_message,
+                        allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                        debug_enabled=bool(generation_context["debug_enabled"]),
+                    )
+                    if not self._is_retryable_final_output(
+                        normalized,
+                        parse_fallback=fallback_parse_failure,
+                    ) and hasattr(self.llm, "record_metric"):
+                        self.llm.record_metric("chat_stream_uncached_recoveries")
                 self._attach_tool_execution_receipts(normalized, generation_context)
                 if normalized.get(NATIVE_TOOL_CALL_FIELD) or normalized.get(NATIVE_TOOL_CALLS_FIELD):
                     fallback_preface_text = str(normalized.get("speech") or "").strip()

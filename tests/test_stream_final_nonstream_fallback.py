@@ -16,11 +16,24 @@ def exhaust_generator_return(generator):
 
 
 class _FakeLLM:
-    def __init__(self, *, stream_events=None, stream_parsed=None, stream_error="", nonstream_result=None):
+    def __init__(
+        self,
+        *,
+        stream_events=None,
+        stream_parsed=None,
+        stream_error="",
+        nonstream_result=None,
+        nonstream_results=None,
+        nonstream_transport_failures=None,
+    ):
         self.stream_events = list(stream_events or [])
         self.stream_parsed = dict(stream_parsed or {})
         self.stream_error = stream_error
-        self.nonstream_result = dict(nonstream_result or {})
+        self.nonstream_results = [
+            dict(item or {})
+            for item in (nonstream_results if nonstream_results is not None else [nonstream_result])
+        ]
+        self.nonstream_transport_failures = set(nonstream_transport_failures or [])
         self.stream_calls = []
         self.nonstream_calls = []
         self.recorded_metrics = []
@@ -41,10 +54,15 @@ class _FakeLLM:
         )
 
     def call_chat_json(self, **kwargs):
+        call_index = len(self.nonstream_calls)
         self.nonstream_calls.append(kwargs)
-        if self.nonstream_parse_failure:
+        if call_index in self.nonstream_transport_failures:
+            self.metrics["errors"] = self.metrics.get("errors", 0) + 1
             self.metrics["chat_json_fallbacks"] = self.metrics.get("chat_json_fallbacks", 0) + 1
-        return dict(self.nonstream_result)
+        elif self.nonstream_parse_failure:
+            self.metrics["chat_json_fallbacks"] = self.metrics.get("chat_json_fallbacks", 0) + 1
+        result_index = min(call_index, len(self.nonstream_results) - 1)
+        return dict(self.nonstream_results[result_index])
 
     def snapshot_metrics(self):
         return dict(self.metrics)
@@ -149,6 +167,28 @@ class StreamFinalNonstreamFallbackTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "stream_error")
         self.assertTrue(result["_transient_final_failure"])
         self.assertIn("chat_stream_nonstream_fallback_failures", llm.recorded_metrics)
+
+    def test_transport_failure_on_cached_nonstream_request_retries_without_provider_cache_key(self):
+        llm = _FakeLLM(
+            stream_parsed=self.fallback,
+            stream_error="502 Bad Gateway",
+            nonstream_results=[
+                self.fallback,
+                {"speech": "去掉故障缓存桶后恢复的正常答复。", "tool_call": None},
+            ],
+            nonstream_transport_failures={0},
+        )
+        engine = self._build_engine(llm)
+
+        events, result = self._run(engine)
+
+        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
+        self.assertEqual(result["speech"], "去掉故障缓存桶后恢复的正常答复。")
+        self.assertEqual(len(llm.nonstream_calls), 2)
+        self.assertNotEqual(llm.nonstream_calls[0]["prompt_cache_key"], "")
+        self.assertEqual(llm.nonstream_calls[1]["prompt_cache_key"], "")
+        self.assertIn("chat_stream_uncached_fallbacks", llm.recorded_metrics)
+        self.assertIn("chat_stream_uncached_recoveries", llm.recorded_metrics)
 
     def test_successful_stream_path_is_unchanged(self):
         llm = _FakeLLM(stream_parsed={"speech": "正常流式答复。", "tool_call": None})
