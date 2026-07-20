@@ -28,6 +28,7 @@ In scope for this document:
 
 - `promptpack-core`
 - `charpack-core`
+- `channelcore-onebot`
 - `capcore`
 - `capcore-adapter-*`
 - `capcore-provider-*`
@@ -224,6 +225,37 @@ LD009 cleanup:
 - `desktop_pet_character_resources.py` no longer imports underscored helpers
   from `charpack-core`; it remains a compatibility re-export over public
   character resource services, constants, and pack-id sanitizing.
+
+### `channelcore-onebot`
+
+Current Akane use:
+
+- `companion_v01/qq_gateway.py` delegates OneBot message text, CQ segment,
+  attachment, reply, mention, wake-word, and poke normalization to the package.
+- `QQMessageContext` remains an Akane product projection that adds session,
+  profile, character, reply-mode, model, prompt, and memory-facing fields.
+
+Authority:
+
+- `channelcore-onebot` owns the neutral inbound contracts and stateless OneBot
+  event/message-segment normalization implemented in the first 0.1 slice.
+- Akane owns webhook authentication, session/profile mapping, product commands,
+  attachment materialization, vision, MemCore, model calls, TTS, and delivery
+  policy.
+- Self-id, stale/replay state, stateful group attachment follow, quoted-message
+  HTTP lookup, and outbound OneBot actions remain Akane-owned until a later
+  replacement slice moves each behavior and removes its old implementation.
+
+Old implementation status:
+
+```text
+thin adapter for inbound normalization
+```
+
+The old parsing helpers in `qq_gateway.py` are now pure compatibility
+delegates/projections. Akane must not add new OneBot segment or inbound event
+normalization there. The package currently does not claim outbound ownership,
+so existing sending code is not a parallel package implementation.
 
 ### `capcore`
 

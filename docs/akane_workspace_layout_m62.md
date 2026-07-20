@@ -34,6 +34,7 @@ capcore-provider-anthropic
 capcore-provider-native-tools
 capcore-provider-openai
 charpack-core
+channelcore-onebot
 langchain
 memcore
 NapCatQQ
@@ -115,6 +116,7 @@ These are host-neutral or near host-neutral packages:
 memcore
 promptpack-core
 charpack-core
+channelcore-onebot
 capcore
 capcore-host-utils
 ```

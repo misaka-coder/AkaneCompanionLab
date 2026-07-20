@@ -15,6 +15,7 @@ application that composes them.
 
 ```text
 host application
+  -> channelcore-onebot  OneBot inbound contracts and message normalization
   -> promptpack-core      prompt sections, cache roles, audit hashes
   -> charpack-core        character pack context and resource manifests
   -> memcore              memory lifecycle, retrieval, timeline context
@@ -45,6 +46,7 @@ The host still owns:
 
 | Package | Owns | Does not own | 0.1 stable surface |
 | --- | --- | --- | --- |
+| `channelcore-onebot` | Host-neutral OneBot private/group/poke event contracts, text/CQ/attachment/reply/@ normalization, and neutral trigger reasons | Webhook secrets, host sessions, product commands, attachment materialization, vision/model/TTS, and outbound delivery | `InboundMessage`, `InboundParseResult`, `ConversationRef`, `ActorRef`, `ReplyRef`, `AttachmentRef`, `normalize_inbound_event` |
 | `memcore` | `MemorySystem` facade, raw/episodic/semantic memory, prompt context, retrieval, timeline, optional final JSON output adapter | Host chat loop, production model/embedding selection, UI, provider calls | `MemorySystem`, `MemoryConfig`, `Namespace`, `Actor`, `SQLiteMemoryStore`, `InMemoryVectorIndex`, `LLMClient`, `EmbeddingProvider`, `build_chat_output_contract_prompt`, `parse_chat_output` |
 | `promptpack-core` | Prompt blocks/profiles/sections, stable/dynamic assembly, cache role metadata, prompt audit hashes | Provider calls, Akane prompt text, memory, tools, output parsing | `PromptBlock`, `PromptBlockRegistry`, `PromptProfile`, `PromptProfileRegistry`, `PromptSection`, `PromptAssembler`, `PromptAssembly`, cache/audit helpers |
 | `charpack-core` | Character pack metadata, persona/resource prompt projection, context library reading, visual output normalization | Pack editor UI, TTS playback, QQ sending, desktop rendering, memory/session policy | `CharacterPackResourceService`, `ResourceManifest`, `CharacterContextLibraryService`, `sanitize_character_pack_id` |
@@ -62,42 +64,46 @@ The host still owns:
 
 For a normal AI product turn:
 
-1. Resolve host identity and context:
+1. If the product receives OneBot events, normalize them with
+   `channelcore-onebot` before mapping to host identity and context. Keep
+   provider locators out of public summaries and let the host decide whether
+   passive messages or attachments enter product flows.
+2. Resolve host identity and context:
    - `tenant_id`, `user_id`, `domain_id`, `conversation_id`;
    - current client mode or surface, such as `desktop`, `web`, `qq_text`;
    - active character pack/profile, if any.
-2. Record the incoming user turn with `memcore.MemorySystem.record_user_turn`.
-3. Build memory context:
+3. Record the incoming user turn with `memcore.MemorySystem.record_user_turn`.
+4. Build memory context:
    - `build_prompt_context(current=cur)`;
    - `render_prompt_context(ctx)`;
    - expose `retrieve_for_turn(current=cur, ...)` and `read_timeline(...)` as
      model tools when the product wants chat-model-driven memory lookup.
-4. Build character/resource context with `charpack-core` if the product has a
+5. Build character/resource context with `charpack-core` if the product has a
    character pack:
    - `build_persona_prompt_context(...)`;
    - `manifest.build_character_prompt_context()` or
      `manifest.build_emotion_prompt_context()`;
    - normalize visual output after the model reply.
-5. Assemble prompt sections with `promptpack-core`:
+6. Assemble prompt sections with `promptpack-core`:
    - stable system/developer rules first;
    - semi-stable persona/resource/reference context next;
    - dynamic memory, retrieved snippets, current time, state, user input, and
      tool results at the tail.
-6. Build model-native tool schemas from selected capcore capabilities:
+7. Build model-native tool schemas from selected capcore capabilities:
    - OpenAI: `build_openai_chat_tool_set(...)`;
    - Anthropic: `build_anthropic_messages_tool_set(...)`;
    - keep the returned tool set for parsing the same model response.
-7. Call the model in the host app. Provider packages do not call the model.
-8. Parse any tool calls/tool uses using the same provider tool set.
-9. Execute each parsed invocation through the provider runner:
+8. Call the model in the host app. Provider packages do not call the model.
+9. Parse any tool calls/tool uses using the same provider tool set.
+10. Execute each parsed invocation through the provider runner:
    - parse error / unknown tool becomes structured feedback;
    - `capcore.prepare_invocation()` validates args and resolves permission;
    - host approval callback decides user confirmation when required;
    - adapter invokes only after validation and permission pass.
-10. Feed provider-correct tool results back to the model:
+11. Feed provider-correct tool results back to the model:
     - OpenAI: `build_openai_chat_tool_messages(results)`;
     - Anthropic: `build_anthropic_messages_tool_result_message(results)`.
-11. Parse/normalize final assistant output, update memcore metadata, record the
+12. Parse/normalize final assistant output, update memcore metadata, record the
     assistant turn, and trigger background compaction.
 
 For a fuller host blueprint covering turn policy, tool concurrency,

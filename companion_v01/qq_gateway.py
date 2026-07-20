@@ -12,6 +12,19 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from channelcore_onebot import (
+    AttachmentRef,
+    clean_message_text as clean_onebot_message_text,
+    compile_wake_word_prefix as _compile_qq_wake_word_prefix,
+    compile_wake_word_search as _compile_qq_wake_word_search,
+    message_mentions_bot as onebot_message_mentions_bot,
+    normalize_inbound_event,
+    normalize_wake_words as _normalize_qq_wake_words,
+    parse_attachments as parse_onebot_attachments,
+    parse_cq_params as parse_onebot_cq_params,
+    parse_reply_ref as parse_onebot_reply_ref,
+    render_message_text as render_onebot_message_text,
+)
 
 import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
@@ -67,7 +80,6 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^(?:切换到|切到|换成)[:：\s]+([A-Za-z0-9_.-]+)$", re.IGNORECASE),
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
-QQ_DEFAULT_WAKE_WORDS = ("Akane",)
 QQ_INLINE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 QQ_OUTFIT_LIST_COMMANDS = {
     "服装列表",
@@ -105,34 +117,6 @@ QQ_REPLY_MODE_LABELS = {
     "both": "双发模式",
     "auto": "自动模式",
 }
-
-
-def _normalize_qq_wake_words(value: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
-    raw_items = list(value) if isinstance(value, (tuple, list)) else list(QQ_DEFAULT_WAKE_WORDS)
-    if not raw_items or len(raw_items) > 8:
-        raise ValueError("invalid_qq_wake_words")
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw_item in raw_items:
-        if not isinstance(raw_item, str):
-            raise ValueError("invalid_qq_wake_words")
-        item = raw_item.strip()
-        key = item.casefold()
-        if item != raw_item or not item or len(item) > 32 or key in seen or any(ord(char) < 32 for char in item):
-            raise ValueError("invalid_qq_wake_words")
-        seen.add(key)
-        normalized.append(item)
-    return tuple(normalized)
-
-
-def _compile_qq_wake_word_search(wake_words: tuple[str, ...]) -> re.Pattern[str]:
-    alternatives = "|".join(re.escape(item) for item in sorted(wake_words, key=len, reverse=True))
-    return re.compile(rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])", re.IGNORECASE)
-
-
-def _compile_qq_wake_word_prefix(wake_words: tuple[str, ...]) -> re.Pattern[str]:
-    alternatives = "|".join(re.escape(item) for item in sorted(wake_words, key=len, reverse=True))
-    return re.compile(rf"^(?:{alternatives})(?:[\s,，:：;；、-]+|$)", re.IGNORECASE)
 
 
 def _onebot_action_succeeded(payload: Any) -> bool:
@@ -827,16 +811,35 @@ class NapCatQQGateway:
         if self._is_duplicate_event(event):
             return QQMessageContext(False, "duplicate_event")
 
-        raw_message = self.extract_message_text(event)
-        clean_message = self.clean_message_text(event, raw_message)
-        attachments = self.extract_attachments(event)
-        if not clean_message:
+        inbound_result = normalize_inbound_event(
+            event,
+            bot_account_id=self.bot_qq,
+            wake_words=self._wake_words,
+        )
+        inbound = inbound_result.message
+        if inbound is None:
+            return QQMessageContext(False, inbound_result.reason or "invalid_event")
+        raw_message = inbound.raw_text
+        clean_message = inbound.text
+        attachments = self._legacy_attachments(inbound.attachments)
+        unsupported_attachment_labels = {
+            "video": "[视频]",
+            "sticker": "[表情]",
+            "emoji": "[表情]",
+        }
+        for attachment in inbound.attachments:
+            label = unsupported_attachment_labels.get(attachment.kind)
+            if label:
+                clean_message = clean_message.replace(label, " ")
+        clean_message = re.sub(r"\s+", " ", clean_message).strip()
+        if not clean_message or (not inbound.has_text_content and not attachments):
             return QQMessageContext(False, "empty_message")
-
-        mentions_bot = self.message_mentions_bot(event, raw_message)
+        mentions_bot = inbound.mentioned_bot
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
-        sender_label = self.resolve_sender_label(event=event, user_id=user_id)
-        mentions_wake_word = self.message_mentions_wake_word(clean_message)
+        sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
+        if sender_label:
+            self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
+        mentions_wake_word = inbound.mentioned_wake_word
         allow_group_attachment_buffer = self.is_group_vision_enabled(
             group_id
         ) and self._is_group_attachment_buffer_allowed(
@@ -912,16 +915,17 @@ class NapCatQQGateway:
         )
 
     def build_notice_context(self, event: dict[str, Any]) -> QQMessageContext:
-        if not self._is_poke_notice(event):
-            return QQMessageContext(False, "not_message_event")
+        inbound_result = normalize_inbound_event(
+            event,
+            bot_account_id=self.bot_qq,
+            wake_words=self._wake_words,
+        )
+        inbound = inbound_result.message
+        if inbound is None:
+            return QQMessageContext(False, inbound_result.reason or "not_message_event")
 
-        target_id = self._safe_int(event.get("target_id"))
-        bot_ids = {self._safe_int(item) for item in self._bot_target_ids(event)}
-        if not target_id or target_id not in bot_ids:
-            return QQMessageContext(False, "poke_not_for_bot")
-
-        user_id = self._resolve_poke_user_id(event, target_id=target_id)
-        group_id = self._safe_int(event.get("group_id"))
+        user_id = self._safe_int(inbound.actor.id)
+        group_id = self._safe_int(inbound.conversation.id) if inbound.conversation.kind == "group" else 0
         self_id = self._safe_int(event.get("self_id"))
         if user_id and user_id in {self._safe_int(self.bot_qq), self_id}:
             return QQMessageContext(False, "self_message")
@@ -934,7 +938,9 @@ class NapCatQQGateway:
 
         is_group = bool(group_id)
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
-        sender_label = self.resolve_sender_label(event=event, user_id=user_id)
+        sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
+        if sender_label:
+            self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
@@ -2021,119 +2027,17 @@ class NapCatQQGateway:
         return f"我{text}"
 
     def extract_message_text(self, event: dict[str, Any]) -> str:
-        raw_message = str(event.get("raw_message") or "").strip()
-        if raw_message:
-            return raw_message
-
-        segments = event.get("message")
-        if not isinstance(segments, list):
-            return str(segments or "").strip()
-
-        rendered: list[str] = []
-        for item in segments:
-            if not isinstance(item, dict):
-                continue
-            seg_type = str(item.get("type") or "").strip().lower()
-            seg_data = item.get("data") if isinstance(item.get("data"), dict) else {}
-            if seg_type == "text":
-                rendered.append(str(seg_data.get("text") or ""))
-            elif seg_type == "at":
-                rendered.append(f"[CQ:at,qq={str(seg_data.get('qq') or '').strip()}]")
-            elif seg_type == "image":
-                url_value = str(seg_data.get("url") or "").strip()
-                file_value = str(seg_data.get("file") or "").strip()
-                if url_value:
-                    rendered.append(f"[CQ:image,url={url_value}]")
-                elif file_value:
-                    rendered.append(f"[CQ:image,file={file_value}]")
-                else:
-                    rendered.append("[CQ:image]")
-            elif seg_type == "file":
-                name_value = str(seg_data.get("name") or seg_data.get("file") or "").strip()
-                if name_value:
-                    rendered.append(f"[CQ:file,name={name_value}]")
-                else:
-                    rendered.append("[CQ:file]")
-            elif seg_type in {"record", "voice"}:
-                rendered.append("[CQ:record]")
-        return "".join(rendered).strip()
+        return render_onebot_message_text(event)
 
     def clean_message_text(self, event: dict[str, Any], raw_message: str) -> str:
-        text = str(raw_message or "").strip()
-        has_image = bool(re.search(r"\[CQ:image(?:,[^\]]*)?\]", text))
-        has_file = bool(re.search(r"\[CQ:file(?:,[^\]]*)?\]", text))
-        has_record = bool(re.search(r"\[CQ:record(?:,[^\]]*)?\]", text))
-        text = re.sub(r"\[CQ:image(?:,[^\]]*)?\]", " [图片] ", text)
-        text = re.sub(r"\[CQ:file(?:,[^\]]*)?\]", " [文件] ", text)
-        text = re.sub(r"\[CQ:record(?:,[^\]]*)?\]", " [语音] ", text)
-        for bot_id in self._bot_target_ids(event):
-            text = text.replace(f"[CQ:at,qq={bot_id}]", "")
-        text = re.sub(r"\[CQ:at,qq=\d+\]", "", text)
-        text = re.sub(r"\[CQ:[^\]]+\]", "", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        if text in {"[图片]", "[文件]", "[语音]"}:
-            text = ""
-        if text in {"[图片] [文件]", "[文件] [图片]"}:
-            text = ""
-        if not text:
-            if has_image and has_file:
-                return "发来了图片和文件。"
-            if has_image:
-                return "发来了一张图片。"
-            if has_file:
-                return "发来了一个文件。"
-            if has_record:
-                return "发来了一段语音。"
-        return text
+        return clean_onebot_message_text(event, raw_message, bot_account_id=self.bot_qq)
 
     def extract_attachments(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        attachments: list[dict[str, Any]] = []
-        message_id = str(event.get("message_id") or "").strip()
-        segments = event.get("message")
-        if isinstance(segments, list):
-            for index, item in enumerate(segments, start=1):
-                if not isinstance(item, dict):
-                    continue
-                seg_type = str(item.get("type") or "").strip().lower()
-                seg_data = item.get("data") if isinstance(item.get("data"), dict) else {}
-                parsed = self._segment_to_attachment(seg_type=seg_type, data=seg_data)
-                if parsed:
-                    parsed["source_message_id"] = message_id
-                    parsed["source_event_id"] = str(event.get("message_id") or event.get("time") or "").strip()
-                    parsed["segment_index"] = index
-                    attachments.append(parsed)
-            return attachments
-
-        raw_message = self.extract_message_text(event)
-        for match in re.finditer(r"\[CQ:(image|file|record)(?:,([^\]]*))?\]", raw_message):
-            seg_type = match.group(1)
-            data = self._parse_cq_params(match.group(2) or "")
-            parsed = self._segment_to_attachment(seg_type=seg_type, data=data)
-            if parsed:
-                parsed["source_message_id"] = message_id
-                parsed["source_event_id"] = str(event.get("message_id") or event.get("time") or "").strip()
-                attachments.append(parsed)
-        return attachments
+        return self._legacy_attachments(parse_onebot_attachments(event))
 
     def extract_reply_message_id(self, event: dict[str, Any]) -> str:
-        segments = event.get("message")
-        if isinstance(segments, list):
-            for item in segments:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("type") or "").strip().lower() != "reply":
-                    continue
-                data = item.get("data") if isinstance(item.get("data"), dict) else {}
-                reply_id = str(data.get("id") or data.get("message_id") or "").strip()
-                if reply_id:
-                    return reply_id
-
-        raw_message = str(event.get("raw_message") or "").strip()
-        match = re.search(r"\[CQ:reply,([^\]]+)\]", raw_message, flags=re.IGNORECASE)
-        if not match:
-            return ""
-        params = self._parse_cq_params(match.group(1))
-        return str(params.get("id") or params.get("message_id") or "").strip()
+        reply = parse_onebot_reply_ref(event)
+        return reply.message_id if reply is not None else ""
 
     def resolve_quoted_attachments(
         self,
@@ -2240,98 +2144,41 @@ class NapCatQQGateway:
             return False
         return peer_id in participant_values
 
-    def _segment_to_attachment(self, *, seg_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
-        if seg_type == "image":
-            file_value = str(data.get("file") or data.get("filename") or data.get("name") or "").strip()
-            return {
-                "kind": "image",
-                "file": file_value,
-                "url": str(data.get("url") or "").strip(),
-                "path": str(data.get("path") or data.get("local_path") or "").strip(),
-                "origin_name": file_value,
-                "mime_type": "image/jpeg" if file_value.lower().endswith((".jpg", ".jpeg")) else "",
-                "file_size": self._safe_int(data.get("size") or data.get("file_size")),
-            }
-        if seg_type == "file":
-            file_value = str(data.get("file") or data.get("filename") or "").strip()
-            origin_name = str(data.get("name") or file_value or "").strip()
-            return {
-                "kind": "document",
-                "file": file_value or origin_name,
-                "url": str(data.get("url") or "").strip(),
-                "path": str(data.get("path") or data.get("local_path") or "").strip(),
-                "origin_name": origin_name,
-                "mime_type": str(data.get("mime_type") or "").strip(),
-                "file_size": self._safe_int(data.get("size") or data.get("file_size")),
-            }
-        if seg_type in {"record", "voice"}:
-            file_value = str(data.get("file") or data.get("filename") or data.get("name") or "").strip()
-            return {
-                "kind": "audio",
-                "file": file_value,
-                "url": str(data.get("url") or "").strip(),
-                "path": str(data.get("path") or data.get("local_path") or "").strip(),
-                "origin_name": file_value,
-                "mime_type": str(data.get("mime_type") or "audio/mpeg").strip(),
-                "file_size": self._safe_int(data.get("size") or data.get("file_size")),
-            }
-        return None
+    @staticmethod
+    def _legacy_attachments(attachments: tuple[AttachmentRef, ...]) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for attachment in attachments:
+            legacy_kind = {
+                "image": "image",
+                "audio": "audio",
+                "file": "document",
+            }.get(attachment.kind)
+            if not legacy_kind:
+                continue
+            projected.append(
+                {
+                    "kind": legacy_kind,
+                    "file": attachment.locator.file_id or attachment.name,
+                    "url": attachment.locator.url,
+                    "path": attachment.locator.path,
+                    "origin_name": attachment.name or attachment.locator.file_id,
+                    "mime_type": attachment.mime_type,
+                    "file_size": attachment.size,
+                    "source_message_id": attachment.source_message_id,
+                    "source_event_id": attachment.source_event_id,
+                    "segment_index": attachment.segment_index,
+                }
+            )
+        return projected
 
     def _parse_cq_params(self, raw: str) -> dict[str, str]:
-        params: dict[str, str] = {}
-        for part in str(raw or "").split(","):
-            if "=" not in part:
-                continue
-            key, value = part.split("=", 1)
-            params[key.strip()] = value.strip()
-        return params
+        return parse_onebot_cq_params(raw)
 
     def message_mentions_bot(self, event: dict[str, Any], raw_message: str) -> bool:
-        if bool(event.get("to_me")):
-            return True
-        raw_text = str(raw_message or "")
-        for bot_id in self._bot_target_ids(event):
-            if f"[CQ:at,qq={bot_id}]" in raw_text:
-                return True
-
-        segments = event.get("message")
-        if isinstance(segments, list):
-            for item in segments:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("type") or "").strip().lower() != "at":
-                    continue
-                qq_value = str((item.get("data") or {}).get("qq") or "").strip()
-                if qq_value in self._bot_target_ids(event):
-                    return True
-        return False
+        return onebot_message_mentions_bot(event, raw_message, bot_account_id=self.bot_qq)
 
     def message_mentions_wake_word(self, clean_message: str) -> bool:
         return bool(self._wake_word_search_re.search(str(clean_message or "")))
-
-    def _is_poke_notice(self, event: dict[str, Any]) -> bool:
-        post_type = str(event.get("post_type") or "").strip().lower()
-        notice_type = str(event.get("notice_type") or "").strip().lower()
-        sub_type = str(event.get("sub_type") or event.get("notice_sub_type") or "").strip().lower()
-        if post_type not in {"notice", "notify"}:
-            return False
-        if notice_type == "poke":
-            return True
-        return notice_type == "notify" and sub_type == "poke"
-
-    def _resolve_poke_user_id(self, event: dict[str, Any], *, target_id: int) -> int:
-        candidates = [
-            self._safe_int(event.get("operator_id")),
-            self._safe_int(event.get("sender_id")),
-            self._safe_int(event.get("user_id")),
-        ]
-        for candidate in candidates:
-            if candidate and candidate != target_id:
-                return candidate
-        for candidate in candidates:
-            if candidate:
-                return candidate
-        return 0
 
     def resolve_identity(self, *, user_id: int, group_id: int = 0) -> tuple[str, str]:
         user_text = str(user_id or "")
@@ -3639,14 +3486,6 @@ class NapCatQQGateway:
         ]
         for key in stale_keys:
             self.attachment_debounce_state.pop(key, None)
-
-    def _bot_target_ids(self, event: dict[str, Any]) -> set[str]:
-        ids: set[str] = set()
-        for candidate in (self.bot_qq, event.get("self_id")):
-            text = str(candidate or "").strip()
-            if text and text != "0":
-                ids.add(text)
-        return ids
 
     def _is_group_plaintext_allowed(self, *, session_id: str, user_id: int) -> bool:
         return bool(getattr(config, "QQ_GROUP_PLAINTEXT_ENABLED", False))

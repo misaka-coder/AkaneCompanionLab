@@ -30,6 +30,7 @@ PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec("memcore"),
     PackageSpec("promptpack-core"),
     PackageSpec("charpack-core"),
+    PackageSpec("channelcore-onebot"),
     PackageSpec("capcore-adapter-python"),
     PackageSpec("capcore-adapter-mcp"),
     PackageSpec("capcore-adapter-speech"),

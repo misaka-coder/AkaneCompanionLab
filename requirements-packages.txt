@@ -6,6 +6,7 @@ capcore-adapter-python==0.1.0
 capcore-adapter-speech==0.1.0
 capcore-adapter-comfyui==0.1.0
 charpack-core==0.1.0
+channelcore-onebot==0.1.0
 promptpack-core==0.1.0
 capcore-provider-native-tools==0.1.0
 capcore-provider-openai==0.1.0

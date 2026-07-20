@@ -14,6 +14,7 @@ PYTHON_PACKAGES = (
     "memcore",
     "promptpack-core",
     "charpack-core",
+    "channelcore-onebot",
     "capcore",
     "capcore-adapter-python",
     "capcore-adapter-mcp",

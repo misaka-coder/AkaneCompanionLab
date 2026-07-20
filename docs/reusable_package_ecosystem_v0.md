@@ -15,6 +15,7 @@ assistant style product:
 ```text
 chat/product host
   |
+  |-- channelcore-onebot        OneBot inbound contracts and normalization
   |-- charpack-core              character identity, persona, resources
   |-- memcore                    memory lifecycle and retrieval tools
   |-- capcore                    capability/tool contract
@@ -30,6 +31,7 @@ chat/product host
 
 | Package | Role | Host responsibilities |
 | --- | --- | --- |
+| `channelcore-onebot` | Host-neutral OneBot inbound contracts and event/message-segment normalization. | Own webhook auth, sessions, product commands, attachment materialization, vision/model/TTS, and delivery policy. |
 | `memcore` | Domain-neutral layered memory: record turns, render visible memory, expose retrieval/timeline tools, compact memory. | Provide real LLM/embedding adapters, namespace policy, prompt assembly, final chat model call. |
 | `capcore` | Capability descriptor, slot validation, invocation preparation, risk/effects/approval contract. | Decide which capabilities exist and how the user grants/denies them. |
 | `capcore-host-utils` | Host safety utilities: workspace scope, stable display paths, approval persistence, preview redaction, JSON-safe values. | Build the actual UI/CLI approval flow and choose trust mode. |
@@ -44,24 +46,29 @@ chat/product host
 
 ## Recommended New Product Integration Order
 
-1. Start with `charpack-core` if the product has characters, personas, visual
+1. Add `channelcore-onebot` when the product receives OneBot/NapCat events.
+   Map its neutral inbound objects into host sessions before product logic.
+2. Start with `charpack-core` if the product has characters, personas, visual
    states, or creator-authored context packs.
-2. Add `memcore` for long-running conversations. Use `MemorySystem` as the only
+3. Add `memcore` for long-running conversations. Use `MemorySystem` as the only
    facade and expose `retrieve_for_turn` plus `read_timeline` as chat-model
    tools.
-3. Add `capcore` when the model needs tools. Register local functions with
+4. Add `capcore` when the model needs tools. Register local functions with
    `capcore-adapter-python` first because it is the smallest adapter.
-4. Add `capcore-provider-openai` or `capcore-provider-anthropic` to convert the
+5. Add `capcore-provider-openai` or `capcore-provider-anthropic` to convert the
    capabilities into model-native tools.
-5. Add `capcore-host-utils` when the host has filesystem/shell/workspace risks
+6. Add `capcore-host-utils` when the host has filesystem/shell/workspace risks
    or wants persistent approvals.
-6. Add MCP, speech, and ComfyUI adapters only when the product needs those
+7. Add MCP, speech, and ComfyUI adapters only when the product needs those
    external runtimes.
 
 ## 0.1 API Freeze Scope
 
 Names that should remain stable through the 0.1 line:
 
+- `channelcore-onebot`: `InboundMessage`, `InboundParseResult`,
+  `ConversationRef`, `ActorRef`, `ReplyRef`, `AttachmentRef`,
+  `normalize_inbound_event`.
 - `memcore`: `MemorySystem`, `MemoryConfig`, `Namespace`, `Actor`,
   `SQLiteMemoryStore`, `InMemoryVectorIndex`, `HashedEmbeddingProvider`,
   `LLMClient`, `EmbeddingProvider`, `TokenCounter`, `build_chat_output_contract_prompt`,

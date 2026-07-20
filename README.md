@@ -209,6 +209,10 @@ editable、`../` 或本机绝对路径。普通安装只需要满足以下任一
 是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。完整的
 独立性契约和验证命令见 `docs/package_artifact_independence_m64.md`。
 
+QQ / NapCat 的中性入站契约与消息段归一化由 `channelcore-onebot` 提供；
+Akane 继续负责 Bot profile、产品指令、材料安全、视觉、记忆、模型、TTS 和
+最终交付策略。当前边界见 `docs/channelcore_onebot_akane_integration_v0.md`。
+
 抽包应用回 Akane 的规则见 `docs/package_reintegration_policy_m63.md`。核心原则是：
 回填包必须替代旧实现或压成薄 adapter，不允许长期新旧逻辑并行。
 

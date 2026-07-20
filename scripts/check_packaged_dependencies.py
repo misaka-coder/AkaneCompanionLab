@@ -30,6 +30,7 @@ PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec("capcore-adapter-speech", "capcore_adapter_speech"),
     PackageSpec("capcore-adapter-comfyui", "capcore_adapter_comfyui"),
     PackageSpec("charpack-core", "charpack_core"),
+    PackageSpec("channelcore-onebot", "channelcore_onebot"),
     PackageSpec("promptpack-core", "promptpack_core"),
     PackageSpec("capcore-provider-native-tools", "capcore_provider_native_tools"),
     PackageSpec("capcore-provider-openai", "capcore_provider_openai"),

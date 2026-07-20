@@ -104,7 +104,9 @@ function Test-PythonImports {
             $PSNativeCommandUseErrorActionPreference = $false
         }
         & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
-        return $LASTEXITCODE -eq 0
+        $coreImportsReady = $LASTEXITCODE -eq 0
+        & $PythonPath @PrefixArgs -c "import channelcore_onebot" 2>$null
+        return $coreImportsReady -and $LASTEXITCODE -eq 0
     } finally {
         if ($null -ne $hasNativeCommandPreference) {
             $PSNativeCommandUseErrorActionPreference = $oldNativeCommandPreference

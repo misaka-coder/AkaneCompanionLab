@@ -40,6 +40,7 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         expected_packages = (
             "promptpack-core",
             "charpack-core",
+            "channelcore-onebot",
             "capcore",
             "capcore-provider-openai",
             "capcore-provider-native-tools",
