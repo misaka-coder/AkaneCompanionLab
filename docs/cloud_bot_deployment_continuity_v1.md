@@ -154,3 +154,31 @@ curl -fsS http://127.0.0.1:10001/health
 7. 普通 Akane 实例没有自动加载金融插件或金融插件状态。
 
 回滚时先断开 QQ ingress，再停止新实例。保留原本机数据根不动，因此可以把 Bot 绑定切回原服务；不要把云端运行后产生的新数据库反向覆盖本地原库。需要双向合并时必须另做数据合并流程。
+
+## 8. QQ 掉线后的自助扫码
+
+当前统一 Host 部署可在 Windows 本机双击：
+
+```text
+scripts\relogin_cloud_bot.bat
+```
+
+也可以在仓库根目录显式选择 Bot：
+
+```powershell
+.\scripts\relogin_cloud_bot.ps1 -Bot personal
+.\scripts\relogin_cloud_bot.ps1 -Bot finance
+.\scripts\relogin_cloud_bot.ps1 -Bot both
+```
+
+脚本依赖本机可用的 `ssh` / `scp` 和 SSH 主机别名 `akane-vps`。如别名不同，传入 `-SshHost user@host`。它只重启所选 NapCat 容器，不启动旧 `akane@personal` / `akane@finance` 服务，也不修改 Host、记忆库、角色包或金融插件状态。
+
+恢复流程会先删除容器里的旧二维码缓存，再使用带毫秒时间戳的唯一文件名下载并自动打开新码；扫码后核对实际 QQ，执行 bot-scoped Host self-check，并从该 Bot 向 `MASTER_QQ` 发送一条真实确认消息。`-Bot both` 也会等 personal 完整成功后才生成 finance 的码，避免两个二维码同时过期或扫反。
+
+只检查当前在线状态、不重启容器时使用：
+
+```powershell
+.\scripts\relogin_cloud_bot.ps1 -Bot both -StatusOnly
+```
+
+二维码只落在本机系统临时目录的 `AkaneBotLogin` 子目录；脚本不会打印二维码解码 URL、OneBot token、Webhook secret 或 Host 管理 token。二维码生成后默认等待 150 秒，可以用 `-TimeoutSeconds` 在 30–300 秒之间调整。
