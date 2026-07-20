@@ -1,6 +1,6 @@
 # channelcore-onebot Akane integration v0
 
-Status: inbound normalization slice integrated.
+Status: inbound normalization + event-admission slices integrated.
 
 ## Decision
 
@@ -14,6 +14,7 @@ The runtime path is:
 ```text
 OneBot/NapCat webhook
   -> Akane webhook and per-Bot self_id authorization
+  -> channelcore_onebot.OneBotEventAdmission.admit(...)
   -> channelcore_onebot.normalize_inbound_event(...)
   -> Akane QQMessageContext product projection
   -> Akane commands, safe attachment materialization, vision, MemCore/LLM, TTS
@@ -29,12 +30,15 @@ OneBot/NapCat webhook
 - text, at, reply, image, voice, file, video, face, and mface parsing;
 - per-Bot wake-word inputs and neutral trigger reasons;
 - sensitive attachment locators hidden from repr and public summaries.
+- per-Bot `self_id` comparison;
+- seconds/milliseconds timestamp normalization and stale-event decisions;
+- thread-safe, atomic TTL replay claims with Bot-account-isolated fingerprints.
 
 ## Akane-owned
 
 - FastAPI routes, webhook secrets, deployment profiles, and runtime selection;
-- per-Bot self-id authorization before mutable replay state;
-- stale/duplicate event state and the stateful group attachment window;
+- webhook-secret/profile binding and HTTP status mapping for self-id failures;
+- the stateful group attachment window;
 - session/profile/character/model/reply-mode and memory mapping;
 - group vision settings and product commands;
 - quoted-message HTTP lookup and scope policy;
@@ -44,15 +48,16 @@ OneBot/NapCat webhook
 `QQMessageContext` therefore remains in Akane, but its protocol parsing inputs
 come from `InboundMessage`. Compatibility methods such as
 `extract_attachments()` contain projection only; they do not reimplement CQ or
-OneBot segment rules.
+OneBot segment rules. `deployment_security.py` maps the package's neutral
+identity result back to the existing `qq_self_id_mismatch` HTTP response.
 
 ## User-visible effect
 
-This slice is behavior-preserving. Existing Bots still use their own Akane
+These slices are behavior-preserving. Existing Bots still use their own Akane
 profiles and product settings. The practical improvement is that their common
 message, attachment, reply, mention, wake-word, and poke shapes now pass
-through one reusable protocol authority. No vision, reply-send, or new sticker
-behavior is advertised by this slice.
+  through one reusable protocol authority. Replay races now have an atomic
+  winner, but no vision, reply-send, or new sticker behavior is advertised.
 
 ## Remaining protocol slices
 

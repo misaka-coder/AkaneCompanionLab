@@ -238,13 +238,14 @@ Current Akane use:
 Authority:
 
 - `channelcore-onebot` owns the neutral inbound contracts and stateless OneBot
-  event/message-segment normalization implemented in the first 0.1 slice.
-- Akane owns webhook authentication, session/profile mapping, product commands,
+  event/message-segment normalization plus the M1 self-id, stale, and atomic
+  replay admission boundary.
+- Akane owns webhook authentication and HTTP status mapping, session/profile mapping, product commands,
   attachment materialization, vision, MemCore, model calls, TTS, and delivery
   policy.
-- Self-id, stale/replay state, stateful group attachment follow, quoted-message
-  HTTP lookup, and outbound OneBot actions remain Akane-owned until a later
-  replacement slice moves each behavior and removes its old implementation.
+- Stateful group attachment follow, quoted-message HTTP lookup, and outbound
+  OneBot actions remain Akane-owned until later replacement slices move each
+  behavior and remove its old implementation.
 
 Old implementation status:
 
@@ -252,10 +253,10 @@ Old implementation status:
 thin adapter for inbound normalization
 ```
 
-The old parsing helpers in `qq_gateway.py` are now pure compatibility
-delegates/projections. Akane must not add new OneBot segment or inbound event
-normalization there. The package currently does not claim outbound ownership,
-so existing sending code is not a parallel package implementation.
+The old parsing and replay helpers in `qq_gateway.py` are now deleted or pure
+compatibility projections. Akane must not add new OneBot segment, identity,
+freshness, or replay rules there. The package currently does not claim outbound
+ownership, so existing sending code is not a parallel package implementation.
 
 ### `capcore`
 

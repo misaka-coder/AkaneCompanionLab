@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from channelcore_onebot import validate_onebot_identity
+
 from .instance_profile import InstanceContext
 from .qq_channel_profiles import QQChannelDeploymentProfile
 
@@ -70,13 +72,15 @@ class QQChannelRuntimeConfig:
         return AuthorizationDecision(False, 401, "qq_webhook_auth_required")
 
     def authorize_event_identity(self, event: Any) -> AuthorizationDecision:
-        if not self.require_self_id:
+        result = validate_onebot_identity(
+            event,
+            bot_account_id=self.bot_id,
+            require_self_id=self.require_self_id,
+        )
+        if result.ok:
             return AuthorizationDecision(True)
-        if not isinstance(event, dict):
+        if result.reason == "onebot_event_must_be_mapping":
             return AuthorizationDecision(False, 400, "qq_event_must_be_object")
-        event_self_id = str(event.get("self_id") or "").strip()
-        if event_self_id and hmac.compare_digest(event_self_id, self.bot_id):
-            return AuthorizationDecision(True)
         return AuthorizationDecision(False, 403, "qq_self_id_mismatch")
 
     def onebot_headers(self) -> dict[str, str]:

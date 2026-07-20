@@ -14,6 +14,8 @@ from typing import Any
 import requests
 from channelcore_onebot import (
     AttachmentRef,
+    EventAdmissionConfig,
+    OneBotEventAdmission,
     clean_message_text as clean_onebot_message_text,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
     compile_wake_word_search as _compile_qq_wake_word_search,
@@ -316,7 +318,17 @@ class NapCatQQGateway:
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
         self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
         self.group_follow_state: dict[str, dict[str, Any]] = {}
-        self.recent_event_fingerprints: dict[str, float] = {}
+        require_self_id = (
+            self._channel_config.require_self_id
+            if self._channel_config is not None
+            else False
+        )
+        self._event_admission = OneBotEventAdmission(
+            EventAdmissionConfig(
+                bot_account_id=self.bot_qq,
+                require_self_id=require_self_id,
+            )
+        )
         self.sender_label_cache: dict[str, str] = {}
         self.attachment_debounce_state: dict[str, dict[str, Any]] = {}
         self._attachment_debounce_lock = threading.RLock()
@@ -479,6 +491,7 @@ class NapCatQQGateway:
             "active_emotion_image_session_count": len(self.emotion_image_state),
             "active_group_attachment_buffer_count": len(self.group_follow_state),
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
+            "active_event_fingerprint_count": self._event_admission.active_fingerprint_count,
         }
 
     def self_check(self) -> dict[str, Any]:
@@ -801,15 +814,9 @@ class NapCatQQGateway:
 
         user_id = self._safe_int(event.get("user_id"))
         group_id = self._safe_int(event.get("group_id"))
-        self_id = self._safe_int(event.get("self_id"))
-        if user_id and user_id in {self._safe_int(self.bot_qq), self_id}:
-            return QQMessageContext(False, "self_message")
-
-        if self._is_stale_event(event):
-            return QQMessageContext(False, "stale_event")
-
-        if self._is_duplicate_event(event):
-            return QQMessageContext(False, "duplicate_event")
+        admission = self._admit_event(event)
+        if admission is not None:
+            return admission
 
         inbound_result = normalize_inbound_event(
             event,
@@ -924,18 +931,12 @@ class NapCatQQGateway:
         if inbound is None:
             return QQMessageContext(False, inbound_result.reason or "not_message_event")
 
+        admission = self._admit_event(event)
+        if admission is not None:
+            return admission
+
         user_id = self._safe_int(inbound.actor.id)
         group_id = self._safe_int(inbound.conversation.id) if inbound.conversation.kind == "group" else 0
-        self_id = self._safe_int(event.get("self_id"))
-        if user_id and user_id in {self._safe_int(self.bot_qq), self_id}:
-            return QQMessageContext(False, "self_message")
-
-        if self._is_stale_event(event):
-            return QQMessageContext(False, "stale_event")
-
-        if self._is_duplicate_event(event):
-            return QQMessageContext(False, "duplicate_event")
-
         is_group = bool(group_id)
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
         sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
@@ -3532,86 +3533,16 @@ class NapCatQQGateway:
     def _arm_group_follow(self, *, session_id: str, user_id: int, reason: str) -> None:
         self._arm_group_attachment_buffer(session_id=session_id, user_id=user_id, reason=reason)
 
-    def _is_stale_event(self, event: dict[str, Any]) -> bool:
-        if bool(getattr(config, "QQ_ALLOW_STALE_EVENTS", False)):
-            return False
-        max_age_seconds = max(0.0, float(getattr(config, "QQ_EVENT_MAX_AGE_SECONDS", 300) or 0.0))
-        if max_age_seconds <= 0:
-            return False
-        event_ts = self._event_timestamp(event)
-        if event_ts <= 0:
-            return False
-        age_seconds = time.time() - event_ts
-        return age_seconds > max_age_seconds
-
-    def _event_timestamp(self, event: dict[str, Any]) -> float:
-        try:
-            event_ts = float(event.get("time") or 0.0)
-        except Exception:
-            return 0.0
-        if event_ts > 10_000_000_000:
-            event_ts = event_ts / 1000.0
-        return event_ts if event_ts > 0 else 0.0
-
-    def _is_duplicate_event(self, event: dict[str, Any], *, ttl_seconds: float = 300.0) -> bool:
-        now_ts = time.time()
-        stale_keys = [key for key, seen_at in self.recent_event_fingerprints.items() if now_ts - seen_at > ttl_seconds]
-        for key in stale_keys:
-            self.recent_event_fingerprints.pop(key, None)
-
-        fingerprints = self._event_fingerprints(event)
-        if not fingerprints:
-            return False
-        if any(
-            (seen_at := self.recent_event_fingerprints.get(fingerprint)) is not None and now_ts - seen_at <= ttl_seconds
-            for fingerprint in fingerprints
-        ):
-            for fingerprint in fingerprints:
-                self.recent_event_fingerprints[fingerprint] = now_ts
-            return True
-        for fingerprint in fingerprints:
-            self.recent_event_fingerprints[fingerprint] = now_ts
-        return False
-
-    def _event_fingerprint(self, event: dict[str, Any]) -> str:
-        fingerprints = self._event_fingerprints(event)
-        return fingerprints[0] if fingerprints else ""
-
-    def _event_fingerprints(self, event: dict[str, Any]) -> list[str]:
-        fingerprints: list[str] = []
-        post_type = str(event.get("post_type") or "").strip()
-        notice_type = str(event.get("notice_type") or "").strip()
-        sub_type = str(event.get("sub_type") or event.get("notice_sub_type") or "").strip()
-        message_type = str(event.get("message_type") or "").strip()
-        user_id = str(event.get("user_id") or event.get("sender_id") or event.get("operator_id") or "").strip()
-        group_id = str(event.get("group_id") or "").strip()
-        self_id = str(event.get("self_id") or "").strip()
-        target_id = str(event.get("target_id") or "").strip()
-
-        message_id = str(event.get("message_id") or "").strip()
-        if message_id:
-            fingerprints.append(f"id:{message_id}")
-            fingerprints.append(f"peer:{self_id}|{message_type}|{group_id}|{user_id}|{message_id}")
-        for key in ("real_id", "message_seq", "msg_id"):
-            value = str(event.get(key) or "").strip()
-            if value:
-                fingerprints.append(f"{key}:{self_id}|{message_type}|{group_id}|{user_id}|{value}")
-
-        timestamp = str(event.get("time") or "").strip()
-        raw_message = self.extract_message_text(event)[:200]
-        if user_id or group_id or target_id or raw_message:
-            fingerprints.append(
-                f"fallback:{self_id}|{post_type}|{notice_type}|{sub_type}|"
-                f"{message_type}|{user_id}|{group_id}|{target_id}|{timestamp}|{raw_message}"
-            )
-
-        seen: set[str] = set()
-        unique: list[str] = []
-        for fingerprint in fingerprints:
-            if fingerprint and fingerprint not in seen:
-                seen.add(fingerprint)
-                unique.append(fingerprint)
-        return unique
+    def _admit_event(self, event: dict[str, Any]) -> QQMessageContext | None:
+        result = self._event_admission.admit(
+            event,
+            max_age_seconds=getattr(config, "QQ_EVENT_MAX_AGE_SECONDS", 300),
+            allow_stale_events=getattr(config, "QQ_ALLOW_STALE_EVENTS", False),
+        )
+        if result.status == "accepted":
+            return None
+        reason = "qq_self_id_mismatch" if result.reason == "onebot_self_id_mismatch" else result.reason
+        return QQMessageContext(False, reason or result.status)
 
     @staticmethod
     def _safe_int(value: Any) -> int:
