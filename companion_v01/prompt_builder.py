@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from .persona_config import PersonaConfig
 from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
@@ -43,8 +44,35 @@ TOOL_CONTEXT_STABLE_RULES = """
 
 
 class PromptBuilder:
-    def __init__(self, persona: PersonaConfig):
+    def __init__(
+        self,
+        persona: PersonaConfig,
+        *,
+        stable_system_blocks_provider: Callable[[], tuple[str, ...]] | None = None,
+    ):
+        if stable_system_blocks_provider is not None and not callable(
+            stable_system_blocks_provider
+        ):
+            raise TypeError("invalid_stable_system_blocks_provider")
         self.persona = persona
+        self._stable_system_blocks_provider = stable_system_blocks_provider
+
+    def _registered_stable_system_blocks(self) -> tuple[str, ...]:
+        provider = self._stable_system_blocks_provider
+        if provider is None:
+            return ()
+        blocks = provider()
+        if not isinstance(blocks, tuple) or any(not isinstance(block, str) for block in blocks):
+            raise RuntimeError("invalid_stable_system_blocks_snapshot")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for block in blocks:
+            text = block.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return tuple(normalized)
 
     def build_router_prompts(
         self,
@@ -204,24 +232,51 @@ class PromptBuilder:
         stable_base_system_prompt = base_system_prompt.replace(CURRENT_ASSISTANT_STATE_MARKER, "", 1).rstrip()
         system_prompt = stable_base_system_prompt + format_addendum
 
+        registered_stable_blocks = self._registered_stable_system_blocks()
         system_extra_blocks: list[str] = []
+        seen_system_extra_blocks: set[str] = set()
+
+        def append_system_extra_block(block: str) -> bool:
+            if not block or block in seen_system_extra_blocks:
+                return False
+            seen_system_extra_blocks.add(block)
+            system_extra_blocks.append(block)
+            return True
+
         prompt_audit_sections: list[dict[str, str]] = [
             {"name": "system.full", "text": system_prompt},
             {"name": "system.format_addendum", "text": format_addendum},
         ]
+        for registered_block in registered_stable_blocks:
+            append_system_extra_block(registered_block)
+        if registered_stable_blocks:
+            registered_payload = json.dumps(
+                registered_stable_blocks,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            prompt_audit_sections.append(
+                {
+                    "name": "system_extra.registered_stable_metadata",
+                    "text": (
+                        f"blocks={len(registered_stable_blocks)} "
+                        f"chars={sum(len(block) for block in registered_stable_blocks)} "
+                        "sha256="
+                        f"{hashlib.sha256(registered_payload.encode('utf-8')).hexdigest()}"
+                    ),
+                }
+            )
         stable_system_text = str(stable_system_context or "").strip()
-        if stable_system_text:
-            system_extra_blocks.append(stable_system_text)
+        if append_system_extra_block(stable_system_text):
             prompt_audit_sections.append({"name": "system_extra.plugin_stable", "text": stable_system_text})
         domain_profile_text = str(domain_profile_context or "").strip()
-        if domain_profile_text:
-            system_extra_blocks.append(domain_profile_text)
+        if append_system_extra_block(domain_profile_text):
             prompt_audit_sections.append({"name": "system_extra.domain_profile", "text": domain_profile_text})
         resource_context_text = str(resource_context or "").strip()
         if resource_context_text:
             resource_block = f"可用视觉资源：\n{resource_context_text}"
-            system_extra_blocks.append(resource_block)
-            prompt_audit_sections.append({"name": "system_extra.resource_context", "text": resource_block})
+            if append_system_extra_block(resource_block):
+                prompt_audit_sections.append({"name": "system_extra.resource_context", "text": resource_block})
         semantic_text = str(semantic_summary_text or "").strip()
         semantic_block = ""
         if semantic_text:
@@ -358,10 +413,9 @@ class PromptBuilder:
             "fallback": fallback,
             "system_prompt": system_prompt,
             "system_extra_blocks": system_extra_blocks,
-            "stable_system_context_hash": (
-                hashlib.sha256(stable_system_text.encode("utf-8", errors="ignore")).hexdigest()
-                if stable_system_text
-                else ""
+            "stable_system_context_hash": self._stable_system_context_hash(
+                registered_stable_blocks=registered_stable_blocks,
+                legacy_stable_system_text=stable_system_text,
             ),
             "tool_prompt_context_hash": tool_context_hash,
             "linear_proactive_turn": linear_proactive_turn,
@@ -369,6 +423,26 @@ class PromptBuilder:
             "user_prompt": user_prompt,
             "prompt_audit_sections": prompt_audit_sections,
         }
+
+    @staticmethod
+    def _stable_system_context_hash(
+        *,
+        registered_stable_blocks: tuple[str, ...],
+        legacy_stable_system_text: str,
+    ) -> str:
+        if not registered_stable_blocks:
+            return (
+                hashlib.sha256(
+                    legacy_stable_system_text.encode("utf-8", errors="ignore")
+                ).hexdigest()
+                if legacy_stable_system_text
+                else ""
+            )
+        stable_blocks = list(registered_stable_blocks)
+        if legacy_stable_system_text and legacy_stable_system_text not in stable_blocks:
+            stable_blocks.append(legacy_stable_system_text)
+        canonical = json.dumps(stable_blocks, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()
 
     def build_summary_prompts(
         self,

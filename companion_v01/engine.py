@@ -9,7 +9,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 
 import config
 
@@ -236,6 +236,7 @@ class AkaneMemoryEngine:
         instance_context: InstanceContext | None = None,
         runtime_layout: InstanceRuntimeLayout | None = None,
         plugin_capability_source: Any = None,
+        stable_system_blocks_provider: Callable[[], tuple[str, ...]] | None = None,
         qq_channel_config: QQChannelRuntimeConfig | None = None,
         capability_offer_source: Any = None,
         settings: BotSettingsView | None = None,
@@ -275,6 +276,7 @@ class AkaneMemoryEngine:
             engine_dir=self.base_dir,
         )
         self.plugin_capability_source = plugin_capability_source
+        self.stable_system_blocks_provider = stable_system_blocks_provider
         self.qq_channel_config = qq_channel_config
         self.capability_offer_source = capability_offer_source
         self.resource_manifest = resource_manifest
@@ -403,7 +405,10 @@ class AkaneMemoryEngine:
             workspace_uri_resolver=self.workspace_file_service.resolve_file_uri,
             qq_channel_config=self.qq_channel_config,
         )
-        self.prompt_builder = PromptBuilder(PERSONA)
+        self.prompt_builder = PromptBuilder(
+            PERSONA,
+            stable_system_blocks_provider=self.stable_system_blocks_provider,
+        )
         self.mode_profile_registry = ModeProfileRegistry()
         self.prompt_profile_registry = PromptProfileRegistry()
         self.output_adapters = OutputAdapterRegistry()
@@ -1150,7 +1155,14 @@ class AkaneMemoryEngine:
     def _get_prompt_builder(self) -> PromptBuilder:
         prompt_builder = getattr(self, "prompt_builder", None)
         if prompt_builder is None:
-            prompt_builder = PromptBuilder(PERSONA)
+            prompt_builder = PromptBuilder(
+                PERSONA,
+                stable_system_blocks_provider=getattr(
+                    self,
+                    "stable_system_blocks_provider",
+                    None,
+                ),
+            )
             self.prompt_builder = prompt_builder
         return prompt_builder
 

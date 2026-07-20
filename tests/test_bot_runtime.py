@@ -382,6 +382,13 @@ care_enabled = true
                     len({runtime.engine.capability_offer_source.instance_id for runtime in runtimes}),
                     3,
                 )
+                self.assertTrue(
+                    all(
+                        runtime.engine.stable_system_blocks_provider.__self__ is runtime.plugin_host
+                        for runtime in runtimes
+                    )
+                )
+                self.assertTrue(all(runtime.engine.stable_system_blocks_provider() == () for runtime in runtimes))
                 self.assertEqual(
                     [runtime.desktop_pet_character_resources.public_prefix for runtime in runtimes],
                     [

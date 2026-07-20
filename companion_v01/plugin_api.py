@@ -26,6 +26,7 @@ BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
 PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
 MODEL_REASONING_PERMISSION = "model.reasoning"
+SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
 MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
@@ -326,6 +327,15 @@ class PluginQQCommandHandler(Protocol):
 class PluginRegistrar(Protocol):
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None: ...
 
+    def add_prompt_block(self, block_id: str, text: str) -> None:
+        """Register one stable system-prompt contribution at startup.
+
+        The plugin must declare ``prompt.system.contribute``.  Blocks are
+        bounded, restart-only contributions: the host validates and publishes
+        them transactionally with the plugin's capability adapters.
+        """
+        ...
+
     def get_storage_dir(self) -> Path:
         """Return the plugin's host-owned scoped data directory.
 
@@ -393,6 +403,7 @@ __all__ = [
     "NOTIFICATION_SEND_PERMISSION",
     "PLUGIN_QQ_COMMAND_PERMISSION",
     "PLUGIN_STORAGE_WRITE_PERMISSION",
+    "SYSTEM_PROMPT_CONTRIBUTION_PERMISSION",
     "AkanePlugin",
     "ManagedArtifactDraft",
     "ManagedArtifactPayload",

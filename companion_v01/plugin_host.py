@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from importlib import metadata as importlib_metadata
@@ -34,6 +35,7 @@ from .plugin_api import (
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
+    SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
     ManagedArtifactPayload,
     PluginManifest,
     PluginRegistrar,
@@ -63,6 +65,10 @@ _MAX_CAPABILITIES_PER_PLUGIN = 64
 _MAX_QQ_COMMANDS_PER_PLUGIN = 32
 _MAX_QQ_COMMAND_LENGTH = 64
 _QQ_COMMAND_PATTERN = re.compile(r"^/[^\s/]{1,63}$")
+_MAX_PROMPT_BLOCKS_PER_PLUGIN = 8
+_MAX_PROMPT_BLOCK_CHARS = 16_000
+_MAX_PROMPT_BLOCK_TOTAL_CHARS = 32_000
+_PROMPT_BLOCK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,12 +103,19 @@ class _CapabilityRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class _PromptBlockRegistration:
+    block_id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class _ActivePlugin:
     plugin: Any
     adapters: tuple[CapabilityAdapter, ...]
     capability_ids: tuple[str, ...]
     job: Any  # PluginBackgroundJob | None
     qq_command_registrations: tuple[_PluginCommandRegistration, ...] = ()
+    prompt_block_registrations: tuple[_PromptBlockRegistration, ...] = ()
 
 
 class _ActivationFailure(RuntimeError):
@@ -126,6 +139,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._reasoning_permission: bool = False
         self._qq_commands: list[_PluginCommandRegistration] = []
         self._qq_command_permission: bool = False
+        self._prompt_blocks: list[_PromptBlockRegistration] = []
+        self._prompt_permission: bool = False
 
     @property
     def adapters(self) -> tuple[CapabilityAdapter, ...]:
@@ -139,6 +154,36 @@ class _StagedRegistrar(PluginRegistrar):
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
         self._adapters.append(adapter)
+
+    def add_prompt_block(self, block_id: str, text: str) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._prompt_permission:
+            raise RuntimeError("prompt_contribution_permission_required")
+        if not isinstance(block_id, str) or _PROMPT_BLOCK_ID_PATTERN.fullmatch(block_id) is None:
+            raise RuntimeError("invalid_prompt_block_id")
+        if not isinstance(text, str):
+            raise RuntimeError("invalid_prompt_block_text")
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized_text or len(normalized_text) > _MAX_PROMPT_BLOCK_CHARS:
+            raise RuntimeError("invalid_prompt_block_text")
+        if any(
+            unicodedata.category(character) == "Cc"
+            and character not in {"\n", "\t"}
+            for character in normalized_text
+        ):
+            raise RuntimeError("invalid_prompt_block_text")
+        if any(registration.block_id == block_id for registration in self._prompt_blocks):
+            raise RuntimeError("duplicate_prompt_block_id")
+        if len(self._prompt_blocks) >= _MAX_PROMPT_BLOCKS_PER_PLUGIN:
+            raise RuntimeError("too_many_prompt_blocks")
+        if sum(len(registration.text) for registration in self._prompt_blocks) + len(
+            normalized_text
+        ) > _MAX_PROMPT_BLOCK_TOTAL_CHARS:
+            raise RuntimeError("prompt_blocks_too_large")
+        self._prompt_blocks.append(
+            _PromptBlockRegistration(block_id=block_id, text=normalized_text)
+        )
 
     def add_background_job(self, job: Any) -> None:
         if self._sealed:
@@ -197,6 +242,10 @@ class _StagedRegistrar(PluginRegistrar):
     def qq_commands(self) -> tuple[Any, ...]:
         return tuple(self._qq_commands)
 
+    @property
+    def prompt_blocks(self) -> tuple[_PromptBlockRegistration, ...]:
+        return tuple(self._prompt_blocks)
+
     def _set_storage_dir(self, path: Path) -> None:
         """Called by PluginHost after manifest validation; not part of the plugin API."""
         self._storage_dir = path
@@ -214,6 +263,9 @@ class _StagedRegistrar(PluginRegistrar):
 
     def _set_qq_command_permission(self, allowed: bool) -> None:
         self._qq_command_permission = allowed
+
+    def _set_prompt_permission(self, allowed: bool) -> None:
+        self._prompt_permission = allowed
 
     def seal(self) -> None:
         self._sealed = True
@@ -309,6 +361,17 @@ class PluginHost:
             }
         )
 
+    def stable_system_prompt_blocks(self) -> tuple[str, ...]:
+        """Return the active restart-only prompt snapshot in stable key order."""
+
+        registrations = [
+            (plugin_id, registration.block_id, registration.text)
+            for plugin_id, active in self._active_plugins.items()
+            for registration in active.prompt_block_registrations
+        ]
+        registrations.sort(key=lambda item: (item[0], item[1]))
+        return tuple(text for _plugin_id, _block_id, text in registrations)
+
     def status_snapshot(self) -> dict[str, Any]:
         reason = ""
         if self._state == "degraded":
@@ -334,6 +397,10 @@ class PluginHost:
             "contribution_policy": self._contribution_policy_id,
             "plugin_count": len(self._active_plugins),
             "capability_count": len(self._capabilities),
+            "prompt_block_count": sum(
+                len(active.prompt_block_registrations)
+                for active in self._active_plugins.values()
+            ),
             "job_count": len(self._job_tasks),
             "running_job_count": sum(
                 1 for item in self._job_statuses.values() if item.get("status") == "running"
@@ -837,6 +904,8 @@ class PluginHost:
             # Inject QQ command permission flag if declared
             if PLUGIN_QQ_COMMAND_PERMISSION in manifest.permissions:
                 registrar._set_qq_command_permission(True)
+            if SYSTEM_PROMPT_CONTRIBUTION_PERMISSION in manifest.permissions:
+                registrar._set_prompt_permission(True)
             register = getattr(plugin, "register", None)
             if not callable(register):
                 raise _ActivationFailure("invalid_plugin_contract")
@@ -927,6 +996,7 @@ class PluginHost:
                     )
                     for reg in registrar.qq_commands
                 ),
+                prompt_block_registrations=tuple(registrar.prompt_blocks),
             )
             return (
                 PluginStatus(

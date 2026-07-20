@@ -23,6 +23,7 @@ from .plugin_api import (
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
+    SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
     PluginManifest,
 )
 
@@ -137,7 +138,8 @@ class TrustedStatefulPluginContributionPolicy:
     - capability.prompt.invoke is required (plugin contributes prompt-visible capabilities)
     - network.read is required
     - storage.write, job.run, notification.send, artifact.write,
-      qq.command.register, and model.reasoning are optional individually
+      qq.command.register, model.reasoning, and prompt.system.contribute are
+      optional individually
 
     The capability-level rules are identical to TrustedReadNetworkContributionPolicy.
     """
@@ -155,6 +157,7 @@ class TrustedStatefulPluginContributionPolicy:
             MANAGED_ARTIFACT_WRITE_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
             MODEL_REASONING_PERMISSION,
+            SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
         }
     )
 

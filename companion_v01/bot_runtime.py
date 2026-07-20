@@ -452,6 +452,7 @@ class BotRuntimeFactory:
                 instance_context=instance_context,
                 runtime_layout=runtime_layout,
                 plugin_capability_source=plugin_capability_source,
+                stable_system_blocks_provider=plugin_host.stable_system_prompt_blocks,
                 qq_channel_config=deployment_security.qq,
                 capability_offer_source=satellite_offer_source,
                 settings=settings,

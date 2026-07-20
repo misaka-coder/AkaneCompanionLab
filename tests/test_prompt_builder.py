@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,39 @@ def _history_text(result: dict) -> str:
 
 def _provider_text(result: dict) -> str:
     return "\n".join(part for part in [_history_text(result), str(result.get("user_prompt") or "")] if part)
+
+
+def _build_minimal_final(
+    builder: PromptBuilder,
+    *,
+    current_message_text: str = "User: hello",
+    raw_text: str = "User: hello",
+    **overrides: object,
+) -> dict:
+    values = {
+        "now_ts": 1_712_400_000,
+        "raw_text": raw_text,
+        "current_message_text": current_message_text,
+        "episodic_summary_text": "",
+        "semantic_summary_text": "",
+        "memory_text": "",
+        "current_visual_context": "",
+        "resource_context": "",
+        "extra_context": "",
+        "visual_defaults": {
+            "major": "home",
+            "minor": "room",
+            "background": "morning",
+            "bgm": "",
+            "outfit": "default",
+            "emotion": "normal",
+        },
+        "allow_tool_call": True,
+        "tool_prompt_context": "tools",
+        "debug_enabled": False,
+    }
+    values.update(overrides)
+    return builder.build_final_generation_context(**values)  # type: ignore[arg-type]
 
 
 class PersonaConfigTomlTests(unittest.TestCase):
@@ -644,6 +678,104 @@ system = "semantic reinforcement system"
 
         self.assertEqual(first["stable_system_context_hash"], second["stable_system_context_hash"])
         self.assertNotEqual(first["user_prompt"], second["user_prompt"])
+
+    def test_registered_system_blocks_are_shared_by_normal_and_proactive_turns(self) -> None:
+        builder = PromptBuilder(
+            load_persona_config(),
+            stable_system_blocks_provider=lambda: (
+                "finance research method",
+                "finance research method",
+                "finance risk rules",
+            ),
+        )
+
+        normal = _build_minimal_final(
+            builder,
+            current_message_text="User: normal conversation",
+            raw_text="User: normal conversation",
+            stable_system_context="finance research method",
+            domain_profile_context="shared domain profile",
+            resource_context="shared visual resource",
+        )
+        proactive = _build_minimal_final(
+            builder,
+            current_message_text="event.finance: market news",
+            raw_text="event.finance: market news",
+            stable_system_context="finance research method",
+            domain_profile_context="shared domain profile",
+            resource_context="shared visual resource",
+            prompt_scope="plugin_proactive",
+            current_message_in_raw=True,
+        )
+
+        expected = [
+            "finance research method",
+            "finance risk rules",
+            "shared domain profile",
+            "可用视觉资源：\nshared visual resource",
+        ]
+        self.assertEqual(normal["system_extra_blocks"], expected)
+        self.assertEqual(proactive["system_extra_blocks"], expected)
+        self.assertEqual(
+            normal["stable_system_context_hash"],
+            proactive["stable_system_context_hash"],
+        )
+        audit = {section["name"]: section["text"] for section in normal["prompt_audit_sections"]}
+        self.assertIn("system_extra.registered_stable_metadata", audit)
+        self.assertNotIn(
+            "finance research method",
+            audit["system_extra.registered_stable_metadata"],
+        )
+
+    def test_registered_system_hash_tracks_block_text_and_order_not_dynamic_tail(self) -> None:
+        provided = [("research-a", "research-b")]
+        builder = PromptBuilder(
+            load_persona_config(),
+            stable_system_blocks_provider=lambda: provided[0],
+        )
+
+        first = _build_minimal_final(
+            builder,
+            current_message_text="event.finance: A",
+            raw_text="event.finance: A",
+        )
+        same_prefix = _build_minimal_final(
+            builder,
+            current_message_text="event.finance: B",
+            raw_text="event.finance: B",
+            now_ts=1_800_000_000,
+            memory_text="different retrieval tail",
+            episodic_summary_text="different compacted memory",
+        )
+        provided[0] = ("research-b", "research-a")
+        reordered = _build_minimal_final(builder)
+        provided[0] = ("research-b", "research-changed")
+        changed = _build_minimal_final(builder)
+
+        self.assertEqual(
+            first["stable_system_context_hash"],
+            same_prefix["stable_system_context_hash"],
+        )
+        self.assertNotEqual(
+            first["stable_system_context_hash"],
+            reordered["stable_system_context_hash"],
+        )
+        self.assertNotEqual(
+            reordered["stable_system_context_hash"],
+            changed["stable_system_context_hash"],
+        )
+
+    def test_legacy_stable_system_hash_is_unchanged_without_registered_blocks(self) -> None:
+        legacy_text = "stable finance research principles"
+        result = _build_minimal_final(
+            PromptBuilder(load_persona_config()),
+            stable_system_context=legacy_text,
+        )
+
+        self.assertEqual(
+            result["stable_system_context_hash"],
+            hashlib.sha256(legacy_text.encode("utf-8")).hexdigest(),
+        )
 
     def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
         persona = load_persona_config()
