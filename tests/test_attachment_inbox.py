@@ -1209,6 +1209,36 @@ class AttachmentInboxTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["type"], "attachment_retry_started")
         self.assertIn("正在重新处理", result.followup_context)
 
+    def test_legacy_remote_source_renderer_keeps_only_public_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+
+            rendered = "\n".join(
+                inbox._render_remote_source_lines(
+                    {
+                        "platform": "LegacyVideo",
+                        "uploader": "AkaneChannel",
+                        "webpage_url": "https://example.com/private/watch?token=topsecret#fragment",
+                    }
+                )
+            )
+            private_rendered = "\n".join(
+                inbox._render_remote_source_lines(
+                    {
+                        "platform": "LegacyVideo",
+                        "source_url": "http://127.0.0.1/private?token=topsecret",
+                    }
+                )
+            )
+
+            self.assertIn("链接 https://example.com", rendered)
+            self.assertNotIn("/private/watch", rendered)
+            self.assertNotIn("topsecret", rendered)
+            self.assertNotIn("127.0.0.1", private_rendered)
+            self.assertNotIn("topsecret", private_rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

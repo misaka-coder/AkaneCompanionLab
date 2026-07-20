@@ -90,9 +90,45 @@ same change. In particular, HTTP 200 with a non-zero OneBot retcode must not be
 reported as success, and outbound results must not expose local paths, tokens,
 attachment URLs, raw exceptions, or raw OneBot payloads.
 
-Before the outbound slice, the remaining materialization repair must add public
-URL DNS/IP validation and manual per-hop redirect checks. Direct QQ URL fallback
-must remain fail-closed for loopback, private, link-local, and reserved targets.
+The Akane-owned remote materialization repair now validates public HTTP/HTTPS
+URLs before creating a pending item, requires every resolved A/AAAA address to
+be public, disables environment proxies, follows at most three redirects
+manually, revalidates every hop, and checks the connected peer before reading
+the response body. Direct QQ URL fallback has no local OneBot-origin exception:
+it remains fail-closed for loopback, private, link-local, reserved, multicast,
+unspecified, mixed public/private DNS, and unverifiable peers. Downloads use a
+bounded `.part` file and atomically replace the destination only after success.
+
+Full remote URLs are transient transport inputs. New material records persist a
+SHA-256 fingerprint as `source_event_id`; source detail and prompts retain only
+the public origin, platform, uploader, and non-reversible fingerprints. Legacy
+`source_url` / `webpage_url` detail is projected through the same origin-only
+renderer, so query tokens, userinfo, fragments, and paths do not enter prompts
+or structured failure results. After a QQ remote-fetch attempt, the original
+turn message and delivery metadata are also projected to the public origin (or
+an explicit restricted-link marker) before they enter the engine, MemoryStore,
+MemCore, or model prompt.
+
+`yt-dlp` is only entered for the existing explicit provider set (Bilibili,
+YouTube, Douyin, Ixigua, and Kuaishou hosts); arbitrary public media-file
+direct links continue through the guarded downloader. Unknown webpages degrade
+with a structured `remote_media_provider_not_allowed` result and never receive
+configured cookies. The Generic extractor and environment proxies are disabled,
+browser Cookie import is rejected, and an explicit cookies.txt is loaded only
+when all of its cookie domains belong to the supported provider set. Short URLs
+that require the Generic extractor now degrade until they are expanded to a
+canonical provider URL or a separately isolated resolver is available.
+
+Residual risk: `requests` performs its own hostname resolution when connecting,
+so pre-resolution plus peer verification reduces exposure but cannot fully
+eliminate DNS rebinding between validation and the first request. Peer checking
+also happens after the HTTP request has been sent. `yt-dlp` owns its internal
+API/media/manifest network stack after a non-Generic allowlisted extractor is
+selected. Production deployments should therefore enforce outbound egress
+firewall rules or use an isolated, IP-pinned download service in addition to
+these application checks. Historical material rows are not rewritten in this
+repair; their legacy URL fields are hidden by the prompt renderer, while the
+fingerprint/origin-only persistence rule applies to newly written rows.
 
 ## Validation
 
@@ -104,6 +140,7 @@ uv run python examples/minimal_inbound_event.py
 uv run --extra dev python -m build
 
 python -m unittest tests.test_qq_channelcore_integration tests.test_qq_gateway tests.test_qq_multi_bot_dispatch -v
+python -m unittest tests.test_public_url_policy tests.test_attachment_ingest tests.test_attachment_inbox tests.test_backend_route_modules -v
 python -m unittest tests.test_package_independence tests.test_package_reintegration_policy -v
 git diff --check
 ```

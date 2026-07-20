@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from .public_url_policy import public_url_display_origin
 from .store import MemoryStore
 
 
@@ -1242,16 +1243,20 @@ class AttachmentInboxService:
         return lines
 
     def _render_remote_source_lines(self, remote_source: dict[str, Any], *, prefix: str = "   ") -> list[str]:
-        platform = str(remote_source.get("platform") or remote_source.get("extractor") or "").strip()
-        uploader = str(remote_source.get("uploader") or "").strip()
-        webpage_url = str(remote_source.get("webpage_url") or remote_source.get("source_url") or "").strip()
+        platform = self._safe_prompt_label(remote_source.get("platform") or remote_source.get("extractor"))
+        uploader = self._safe_prompt_label(remote_source.get("uploader"))
+        display_origin = public_url_display_origin(remote_source.get("display_origin"))
+        if not display_origin:
+            display_origin = public_url_display_origin(
+                remote_source.get("webpage_url") or remote_source.get("source_url")
+            )
         pieces = []
         if platform:
             pieces.append(f"平台 {platform}")
         if uploader:
             pieces.append(f"发布者 {uploader}")
-        if webpage_url:
-            pieces.append(f"链接 {webpage_url[:160]}")
+        if display_origin:
+            pieces.append(f"链接 {display_origin}")
         if not pieces:
             return []
         return [prefix + "来源：" + "；".join(pieces)]

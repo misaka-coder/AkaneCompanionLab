@@ -172,6 +172,9 @@ QQ 支持主人在当前会话里临时切换聊天模型。该功能只改 `CHA
 
 - QQ 图片 / 文件默认进入临时附件上下文，不默认进入礼物系统。设计见 `docs/attachment_focus_inbox_v1.md`。
 - 图片优先通过 NapCat / OneBot 的 `get_image` 读取本地缓存；如果失败才尝试直连临时 URL。
+- QQ 临时 URL 和 `fetch_media_from_url` 只允许公开 HTTP/HTTPS 地址：本机、局域网、保留地址、混合公网/私网 DNS、非法跳转和无法核验的连接会被结构化拒绝。拒绝取材不会中断本轮 QQ 文字回复，Akane 会说明需要公开直链。
+- 远程下载逐跳关闭自动重定向和环境代理，限制三次跳转、核验 DNS 与连接 peer、执行大小/总时限，并通过 `.part` 临时文件原子落盘。新写入的数据库记录、失败结果和模型提示只保留 URL 指纹或公开 origin，不保存签名 query、userinfo、fragment 和完整路径；QQ 远程取材尝试后，原始消息中的链接也会在进入 MemoryStore、MemCore 和模型前替换成公开 origin 或受限链接标记。旧材料行不会在本轮重写，但其 legacy URL 不再进入 prompt。
+- `yt-dlp` 只接收 Bilibili、YouTube、Douyin、Ixigua、Kuaishou 的现有 provider host，并禁用 Generic extractor、环境代理和浏览器 Cookie 导入；显式 cookies.txt 只有全部 Cookie 域属于受支持平台时才加载。依赖 Generic 的短链需要先换成平台 canonical URL。由于普通 HTTP 客户端仍有 DNS 校验到连接之间的 TOCTOU，且 `yt-dlp` extractor 的 API/媒体/manifest 网络栈不受逐跳检查控制，生产环境仍应配置出口防火墙或独立 IP-pinned 下载服务。
 - 文件会优先保留原始文件名；可解析文件会进入临时附件工作台。新的一批附件默认 Auto-Focus，未展开附件只在 Manifest 中显示结构化识别信息，不展示半截正文。
 - 如果用户要求“整理成文件发我”，Akane 可使用 `compose_file` 生成 `gen_001` 这类生成文件。
 - 如果用户只是要求 TXT/Markdown 等原始附件或 `gen_001` 这类已生成文件忠实转成 PDF/Word，Akane 应使用 `compose_file` 但留空 `content_markdown/table_rows`，让后端从来源读取正文；最终文件不会包含 `任务/来源摘录/用途` 这类工作台元信息。

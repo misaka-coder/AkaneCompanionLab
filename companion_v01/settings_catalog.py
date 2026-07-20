@@ -39,7 +39,14 @@ MANAGED_DEPLOYMENT = "deployment"
 # here is the explicit, reviewable way to keep it out of the drift guard.
 # AKANE_INSTANCE_ID is deployment composition selected before the host starts;
 # it must not become a control-center setting or a live runtime override.
-EXCLUDED_KEYS: frozenset[str] = frozenset({"AKANE_INSTANCE_ID"})
+EXCLUDED_KEYS: frozenset[str] = frozenset(
+    {
+        "AKANE_INSTANCE_ID",
+        # Accepted only to return an actionable deprecation error. Remote media
+        # fetches must never import an entire browser cookie database.
+        "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -344,13 +351,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("BACKGROUND_ATTACHMENT_WORKERS", _BG, SCOPE_RESTART_CLIENT, "附件处理并发 Worker 数"),
     # 远程媒体 (yt-dlp)
     _s("REMOTE_MEDIA_YTDLP_COOKIEFILE", _RM, SCOPE_RUNTIME, "Cookie 文件路径（需登录的平台）", sensitive=True),
-    _s(
-        "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
-        _RM,
-        SCOPE_RUNTIME,
-        "从浏览器读取 cookie（如 chrome）",
-        sensitive=True,
-    ),
     _s("REMOTE_MEDIA_YTDLP_USER_AGENT", _RM, SCOPE_RUNTIME, "自定义 User-Agent"),
     _s("REMOTE_MEDIA_YTDLP_REFERER", _RM, SCOPE_RUNTIME, "Referer 头"),
     # Web 身份模式

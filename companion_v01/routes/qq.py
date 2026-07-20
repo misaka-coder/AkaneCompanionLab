@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
+from ..media_bridge_engine import redact_remote_media_urls_for_prompt
 from ..model_service_config import (
     effective_settings_from_config,
     effective_settings_from_runtime_settings,
@@ -1411,6 +1412,21 @@ def build_qq_router(
             character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
             timestamp=int(event.get("time") or time.time()),
         )
+        if isinstance(remote_prefetch_result, dict) and remote_prefetch_result:
+            turn_payload["message"] = redact_remote_media_urls_for_prompt(str(turn_payload.get("message") or ""))
+            delivery_context = (
+                dict(turn_payload.get("qq_delivery_context") or {})
+                if isinstance(turn_payload.get("qq_delivery_context"), dict)
+                else {}
+            )
+            if delivery_context:
+                delivery_context["clean_message"] = redact_remote_media_urls_for_prompt(
+                    str(delivery_context.get("clean_message") or "")
+                )
+                delivery_context["raw_message"] = redact_remote_media_urls_for_prompt(
+                    str(delivery_context.get("raw_message") or "")
+                )
+                turn_payload["qq_delivery_context"] = delivery_context
         if (
             isinstance(remote_prefetch_result, dict)
             and str(remote_prefetch_result.get("followup_context") or "").strip()

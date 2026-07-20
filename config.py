@@ -333,7 +333,7 @@ class Settings(BaseSettings):
     # === 远程媒体 (yt-dlp) ===
     # Cookie 文件路径（需登录的平台）
     REMOTE_MEDIA_YTDLP_COOKIEFILE: str = ""
-    # 从浏览器读取 cookie（如 "chrome"）
+    # 已停用：仅为旧配置提供结构化迁移提示；请改用受域名校验的 cookies.txt。
     REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER: str = ""
     # 自定义 User-Agent
     REMOTE_MEDIA_YTDLP_USER_AGENT: str = (

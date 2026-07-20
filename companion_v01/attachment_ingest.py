@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib.util
 import json
 import mimetypes
@@ -13,7 +13,7 @@ import time
 import re
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
@@ -22,6 +22,16 @@ import config
 from .attachment_inbox import AttachmentInboxService
 from .background_tasks import BackgroundTaskRunner
 from .deployment_security import QQChannelRuntimeConfig
+from .public_url_policy import (
+    HostResolver,
+    PublicUrlPolicyError,
+    PublicUrlTarget,
+    is_ytdlp_provider_url,
+    public_url_display_origin,
+    public_url_fingerprint,
+    validate_public_http_url,
+    validate_response_peer,
+)
 from .store import MemoryStore
 from .vision_service import VisionObservationService
 
@@ -106,6 +116,15 @@ REMOTE_MEDIA_DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 REMOTE_MEDIA_DEFAULT_REFERER = "https://www.bilibili.com/"
+REMOTE_DOWNLOAD_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+REMOTE_DOWNLOAD_MAX_REDIRECTS = 3
+REMOTE_MEDIA_YTDLP_ALLOWED_EXTRACTORS = (
+    "BiliBili",
+    "youtube",
+    "Douyin",
+    "Ixigua",
+    "Kuaishou",
+)
 
 
 class AttachmentMaterializationError(RuntimeError):
@@ -118,19 +137,19 @@ class AttachmentMaterializationError(RuntimeError):
 
 @dataclass(frozen=True)
 class RemoteMediaDescriptor:
-    source_url: str
+    source_url: str = field(repr=False)
     title: str
     ext: str
     mime_type: str
     kind: str
     download_mode: str
-    webpage_url: str = ""
+    webpage_url: str = field(default="", repr=False)
     extractor: str = ""
     extractor_key: str = ""
     uploader: str = ""
     channel: str = ""
     duration_seconds: float | None = None
-    thumbnail_url: str = ""
+    thumbnail_url: str = field(default="", repr=False)
     description: str = ""
     file_size_hint: int = 0
 
@@ -154,6 +173,7 @@ class AttachmentIngestService:
         ensure_storage_ready: Callable[[], Any] | None = None,
         workspace_uri_resolver: Callable[[str], Path | None] | None = None,
         qq_channel_config: QQChannelRuntimeConfig | None = None,
+        public_host_resolver: HostResolver | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -161,6 +181,7 @@ class AttachmentIngestService:
         self.ensure_storage_ready = ensure_storage_ready
         self.workspace_uri_resolver = workspace_uri_resolver
         self.qq_channel_config = qq_channel_config
+        self.public_host_resolver = public_host_resolver
         self.store = store
         self.attachment_service = attachment_service
         self.vision_service = vision_service
@@ -555,7 +576,11 @@ class AttachmentIngestService:
         for index, url in enumerate(normalized_urls, start=1):
             title_hint = single_title if len(normalized_urls) == 1 else ""
             item: dict[str, Any] | None = None
+            display_origin = public_url_display_origin(url)
             try:
+                target = self._validate_public_remote_url(url)
+                url = target.url
+                display_origin = target.origin
                 descriptor = self._fetch_remote_media_descriptor(
                     url=url,
                     preferred_title=title_hint,
@@ -569,7 +594,7 @@ class AttachmentIngestService:
                     mime_type=str(descriptor.mime_type or "").strip(),
                     file_ext=f".{descriptor.ext.lstrip('.')}" if descriptor.ext else "",
                     file_size=max(0, int(descriptor.file_size_hint or 0)),
-                    source_event_id=url,
+                    source_event_id=public_url_fingerprint(url),
                     source_message_id="",
                     detail=self._material_context_detail(character_pack_id=character_pack_id),
                     timestamp=effective_ts,
@@ -590,18 +615,19 @@ class AttachmentIngestService:
                 self._mark_failed(item, "下载完成后没有生成可用的媒体文件。", timestamp=effective_ts)
                 failures.append(
                     {
-                        "url": url,
+                        "url": display_origin,
                         "error": "下载完成后没有生成可用的媒体文件。",
                         "index_label": f"第{index}个链接",
                     }
                 )
             except Exception as exc:
-                error_message = self._humanize_remote_fetch_error(str(exc))
+                error_code = self._remote_fetch_error_code(exc)
+                error_message = self._humanize_remote_fetch_error(error_code)
                 if item is not None:
-                    self._mark_failed(item, error_message, timestamp=effective_ts)
+                    self._mark_failed(item, error_code, timestamp=effective_ts)
                 failures.append(
                     {
-                        "url": url,
+                        "url": display_origin,
                         "error": error_message,
                         "index_label": f"第{index}个链接",
                     }
@@ -627,6 +653,7 @@ class AttachmentIngestService:
         normalized_url = str(source_url or "").strip()
         if not normalized_url:
             return
+        matching_source_ids = {normalized_url, public_url_fingerprint(normalized_url)}
         profile_user_id = str(ready_item.get("profile_user_id") or "").strip()
         session_id = str(ready_item.get("session_id") or "").strip()
         ready_id = str(ready_item.get("attachment_id") or "").strip()
@@ -645,7 +672,7 @@ class AttachmentIngestService:
                 continue
             if str(failed.get("source") or "").strip() != "remote_url":
                 continue
-            if str(failed.get("source_event_id") or "").strip() != normalized_url:
+            if str(failed.get("source_event_id") or "").strip() not in matching_source_ids:
                 continue
             updated = self.store.update_attachment_inbox_item(
                 profile_user_id=profile_user_id,
@@ -742,6 +769,8 @@ class AttachmentIngestService:
         url: str,
         preferred_title: str = "",
     ) -> RemoteMediaDescriptor:
+        target = self._validate_public_remote_url(url)
+        url = target.url
         direct_descriptor = self._build_direct_media_descriptor(
             url=url,
             preferred_title=preferred_title,
@@ -749,6 +778,8 @@ class AttachmentIngestService:
         if direct_descriptor is not None:
             return direct_descriptor
 
+        if not self._is_ytdlp_provider_allowed(url):
+            raise AttachmentMaterializationError("remote_media_provider_not_allowed")
         descriptor = self._extract_remote_media_with_yt_dlp(
             url=url,
             preferred_title=preferred_title,
@@ -756,9 +787,7 @@ class AttachmentIngestService:
         if descriptor is not None:
             return descriptor
 
-        raise RuntimeError(
-            "当前环境没有可用的公开视频下载器；请先安装 yt-dlp，或者提供一个可直接下载的音频/视频文件链接。"
-        )
+        raise AttachmentMaterializationError("remote_media_ytdlp_unavailable")
 
     def _build_direct_media_descriptor(
         self,
@@ -795,12 +824,16 @@ class AttachmentIngestService:
         url: str,
         preferred_title: str = "",
     ) -> RemoteMediaDescriptor | None:
+        target = self._validate_public_remote_url(url)
+        url = target.url
+        if not self._is_ytdlp_provider_allowed(url):
+            raise AttachmentMaterializationError("remote_media_provider_not_allowed")
         if importlib.util.find_spec("yt_dlp") is None:
             return None
         try:
             from yt_dlp import YoutubeDL  # type: ignore
         except Exception as exc:
-            raise RuntimeError(f"yt-dlp 无法导入：{exc}") from exc
+            raise AttachmentMaterializationError("remote_media_ytdlp_unavailable") from exc
 
         options = {
             "quiet": True,
@@ -820,12 +853,12 @@ class AttachmentIngestService:
             with YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
-            raise RuntimeError(f"链接解析失败：{exc}") from exc
+            raise AttachmentMaterializationError(self._classify_ytdlp_error(exc, phase="extract")) from exc
 
         if not isinstance(info, dict):
-            raise RuntimeError("链接解析失败：没有拿到可用的媒体信息。")
+            raise AttachmentMaterializationError("remote_media_extract_failed")
         if str(info.get("_type") or "").strip().lower() == "playlist" or isinstance(info.get("entries"), list):
-            raise RuntimeError("暂时只支持单个音频/视频链接，不支持整条播放列表或合集。")
+            raise AttachmentMaterializationError("remote_media_playlist_not_supported")
 
         ext = str(info.get("ext") or "").strip().lower()
         if not ext:
@@ -919,10 +952,13 @@ class AttachmentIngestService:
         timeout: float,
         max_bytes: int,
     ) -> Path:
+        source_target = self._validate_public_remote_url(descriptor.source_url)
+        if not self._is_ytdlp_provider_allowed(source_target.url):
+            raise AttachmentMaterializationError("remote_media_provider_not_allowed")
         try:
             from yt_dlp import YoutubeDL  # type: ignore
         except Exception as exc:
-            raise RuntimeError(f"yt-dlp 无法导入：{exc}") from exc
+            raise AttachmentMaterializationError("remote_media_ytdlp_unavailable") from exc
 
         ffmpeg_path = shutil.which("ffmpeg")
         options: dict[str, Any] = {
@@ -946,18 +982,18 @@ class AttachmentIngestService:
             options["max_filesize"] = max_bytes
         try:
             with YoutubeDL(options) as ydl:
-                ydl.download([descriptor.source_url])
+                ydl.download([source_target.url])
         except Exception as exc:
-            raise RuntimeError(f"下载失败：{exc}") from exc
+            raise AttachmentMaterializationError(self._classify_ytdlp_error(exc, phase="download")) from exc
 
         downloaded = self._locate_downloaded_remote_media_file(
             target_dir=target_dir,
             handle=handle,
         )
         if downloaded is None:
-            raise RuntimeError("下载完成后没有找到可用的媒体文件。")
+            raise AttachmentMaterializationError("remote_media_download_missing")
         if max_bytes > 0 and downloaded.stat().st_size > max_bytes:
-            raise RuntimeError(f"下载后的媒体文件过大，当前限制为 {max_bytes} bytes。")
+            raise AttachmentMaterializationError("attachment_too_large")
         return downloaded
 
     def _yt_dlp_common_options(self, *, timeout: float | None = None) -> dict[str, Any]:
@@ -974,40 +1010,41 @@ class AttachmentIngestService:
             headers["Referer"] = referer
         options: dict[str, Any] = {
             "http_headers": headers,
+            "allowed_extractors": list(REMOTE_MEDIA_YTDLP_ALLOWED_EXTRACTORS),
+            "proxy": "",
         }
         if timeout is not None:
             options["socket_timeout"] = timeout
         cookiefile = str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIEFILE", "") or "").strip()
         if cookiefile:
-            options["cookiefile"] = str(Path(cookiefile).expanduser())
-        else:
-            browser_spec = self._parse_ytdlp_browser_cookie_spec(
-                str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "") or "").strip()
-            )
-            if browser_spec is not None:
-                options["cookiesfrombrowser"] = browser_spec
+            options["cookiefile"] = self._validated_ytdlp_cookiefile(cookiefile)
+        elif str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "") or "").strip():
+            raise AttachmentMaterializationError("remote_media_browser_cookies_forbidden")
         return options
 
-    def _parse_ytdlp_browser_cookie_spec(self, value: str) -> tuple[str, str | None, str | None, str | None] | None:
-        raw = str(value or "").strip()
-        if not raw:
-            return None
-        container: str | None = None
-        if "::" in raw:
-            raw, container = raw.split("::", 1)
-            container = container.strip() or None
-        profile: str | None = None
-        if ":" in raw:
-            raw, profile = raw.split(":", 1)
-            profile = profile.strip() or None
-        keyring: str | None = None
-        if "+" in raw:
-            raw, keyring = raw.split("+", 1)
-            keyring = keyring.strip().upper() or None
-        browser = raw.strip().lower()
-        if not browser:
-            return None
-        return (browser, profile, keyring, container)
+    def _validated_ytdlp_cookiefile(self, value: str) -> str:
+        cookie_path = Path(str(value or "").strip()).expanduser()
+        try:
+            if not cookie_path.is_file() or cookie_path.stat().st_size > 2 * 1024 * 1024:
+                raise AttachmentMaterializationError("remote_media_cookie_unavailable")
+            lines = cookie_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except AttachmentMaterializationError:
+            raise
+        except OSError as exc:
+            raise AttachmentMaterializationError("remote_media_cookie_unavailable") from exc
+
+        for line in lines:
+            normalized = line.strip()
+            if not normalized or (normalized.startswith("#") and not normalized.startswith("#HttpOnly_")):
+                continue
+            if normalized.startswith("#HttpOnly_"):
+                normalized = normalized[len("#HttpOnly_") :]
+            domain = normalized.split("\t", 1)[0].strip().lower().lstrip(".").rstrip(".")
+            if not domain:
+                continue
+            if not is_ytdlp_provider_url(f"https://{domain}/"):
+                raise AttachmentMaterializationError("remote_media_cookie_domain_forbidden")
+        return str(cookie_path)
 
     def _locate_downloaded_remote_media_file(self, *, target_dir: Path, handle: str) -> Path | None:
         ignored_suffixes = {
@@ -1043,18 +1080,21 @@ class AttachmentIngestService:
     ) -> dict[str, Any]:
         summary_title = str(file_card.get("summary_title") or descriptor.title or descriptor.origin_name).strip()
         detail = dict(file_card.get("detail") or {}) if isinstance(file_card.get("detail"), dict) else {}
+        source_fingerprint = public_url_fingerprint(descriptor.source_url)
+        webpage_fingerprint = public_url_fingerprint(descriptor.webpage_url or descriptor.source_url)
+        thumbnail_fingerprint = public_url_fingerprint(descriptor.thumbnail_url)
+        display_origin = public_url_display_origin(descriptor.webpage_url) or public_url_display_origin(
+            descriptor.source_url
+        )
         detail["remote_source"] = {
-            "platform": str(
-                descriptor.extractor
-                or descriptor.extractor_key
-                or urlparse(descriptor.webpage_url or descriptor.source_url).netloc
-            ).strip(),
-            "extractor": str(descriptor.extractor or "").strip(),
-            "extractor_key": str(descriptor.extractor_key or "").strip(),
-            "uploader": str(descriptor.uploader or descriptor.channel or "").strip(),
-            "webpage_url": str(descriptor.webpage_url or descriptor.source_url).strip(),
-            "source_url": str(descriptor.source_url or "").strip(),
-            "thumbnail_url": str(descriptor.thumbnail_url or "").strip(),
+            "platform": self._safe_prompt_label(
+                descriptor.extractor or descriptor.extractor_key or urlparse(display_origin).netloc
+            ),
+            "uploader": self._safe_prompt_label(descriptor.uploader or descriptor.channel),
+            "display_origin": display_origin,
+            "source_fingerprint": source_fingerprint,
+            "webpage_fingerprint": webpage_fingerprint,
+            "thumbnail_fingerprint": thumbnail_fingerprint,
         }
         if descriptor.description and not detail.get("description"):
             detail["description"] = descriptor.description
@@ -1136,6 +1176,8 @@ class AttachmentIngestService:
             error = str(entry.get("error") or "").strip().lower()
             if "yt-dlp 无法导入" in error or "没有可用的公开视频下载器" in error:
                 return True
+            if "没有可用的 yt-dlp" in error or "安装或修复 yt-dlp" in error:
+                return True
             if "no module named" in error and "yt" in error and "dlp" in error:
                 return True
         return False
@@ -1143,6 +1185,44 @@ class AttachmentIngestService:
     def _humanize_remote_fetch_error(self, error: str) -> str:
         text = str(error or "").strip()
         lowered = text.lower()
+        stable_messages = {
+            "remote_url_invalid": "这个链接格式不合法，当前无法读取。",
+            "remote_url_scheme_forbidden": "这个链接不是公开的 http/https 地址，出于安全原因无法读取。",
+            "remote_url_credentials_forbidden": "这个链接包含账号或凭据，出于安全原因无法读取；请提供不含凭据的公开链接。",
+            "remote_url_host_forbidden": "这个链接指向本机或内部主机，出于安全原因无法读取；请提供公开直链。",
+            "remote_url_dns_failed": "这个链接的公开地址暂时无法解析，请检查链接或稍后重试。",
+            "remote_url_private_address": "这个链接指向本机、局域网或内部地址，出于安全原因无法读取；请提供公开直链。",
+            "remote_url_peer_unverifiable": "无法确认远端连接的公开地址，出于安全原因已停止读取。",
+            "remote_url_peer_mismatch": "远端连接地址与预检查结果不一致，出于安全原因已停止读取。",
+            "remote_url_redirect_missing": "远端返回了无效跳转，当前无法继续读取。",
+            "remote_url_redirect_limit": "这个链接跳转次数过多，当前已停止读取。",
+            "remote_url_https_downgrade": "这个链接从 HTTPS 跳转到不安全的 HTTP，当前已停止读取。",
+            "remote_media_provider_not_allowed": "这个网页平台当前不在可调用的媒体下载范围内；请提供受支持平台链接或公开媒体直链。",
+            "remote_media_ytdlp_unavailable": "当前环境没有可用的 yt-dlp 媒体下载器，请先安装或修复 yt-dlp。",
+            "remote_media_playlist_not_supported": "这个链接更像播放列表/合集，当前只支持单个视频或音频链接。",
+            "remote_media_cookie_database_locked": (
+                "yt-dlp 没能复制浏览器 Cookie 数据库，通常是浏览器仍在运行并锁住了 Cookie 文件；"
+                "请完全关闭对应浏览器后台进程后重试，或改用 REMOTE_MEDIA_YTDLP_COOKIEFILE 指向导出的 cookies.txt。"
+            ),
+            "remote_media_cookie_unavailable": "配置的 yt-dlp Cookie 文件不可用，请检查 REMOTE_MEDIA_YTDLP_COOKIEFILE 路径是否正确。",
+            "remote_media_cookie_domain_forbidden": "yt-dlp Cookie 文件包含非受支持媒体平台的域，出于安全原因未加载。",
+            "remote_media_browser_cookies_forbidden": (
+                "远程取材不再直接读取浏览器 Cookie；请改用只包含目标媒体平台域的导出 cookies.txt。"
+            ),
+            "remote_media_precondition_failed": (
+                "远端拒绝了这次媒体信息请求，像是平台风控或前置校验失败；"
+                "可以稍后重试、换原始公开链接，或在 .env 配置 REMOTE_MEDIA_YTDLP_COOKIEFILE 后再试。"
+            ),
+            "remote_media_forbidden": "远端拒绝了这次下载请求，可能有权限或地区限制。",
+            "remote_media_not_found": "这个链接对应的页面或媒体文件似乎不存在了。",
+            "attachment_download_timeout": "下载超时了，可能是网络不稳定，或者远端响应太慢。",
+            "attachment_too_large": "远程媒体超过当前大小限制，请换较小的文件或先压缩后重试。",
+            "remote_media_extract_failed": "这次没有解析出可用的媒体信息，请检查公开链接或稍后重试。",
+            "remote_media_download_missing": "下载完成后没有生成可用的媒体文件，请稍后重试。",
+            "remote_media_download_failed": "这次媒体下载没有成功，请检查网络、权限或稍后重试。",
+        }
+        if lowered in stable_messages:
+            return stable_messages[lowered]
         if "playlist" in lowered or "合集" in text:
             return "这个链接更像播放列表/合集，当前只支持单个视频或音频链接。"
         if "could not copy" in lowered and "cookie database" in lowered:
@@ -1151,7 +1231,7 @@ class AttachmentIngestService:
                 "请完全关闭对应浏览器后台进程后重试，或改用 REMOTE_MEDIA_YTDLP_COOKIEFILE 指向导出的 cookies.txt。"
             )
         if "yt-dlp" in lowered:
-            return text[:240]
+            return "yt-dlp 媒体下载器暂时不可用，请检查安装和运行环境后重试。"
         if "attachment handle allocation failed" in lowered or (
             "unique constraint failed" in lowered and "attachment_inbox_items" in lowered
         ):
@@ -1174,8 +1254,8 @@ class AttachmentIngestService:
         if "timeout" in lowered or "timed out" in lowered:
             return "下载超时了，可能是网络不稳定，或者远端响应太慢。"
         if "过大" in text or "max_filesize" in lowered:
-            return text[:240]
-        return text[:240] or "链接媒体获取失败，原因未知。"
+            return "远程媒体超过当前大小限制，请换较小的文件或先压缩后重试。"
+        return "链接媒体获取失败，请检查公开链接或稍后重试。"
 
     def _build_retry_payload(self, item: dict[str, Any], *, previous_error: str = "") -> dict[str, Any]:
         del previous_error
@@ -1451,21 +1531,90 @@ class AttachmentIngestService:
             if max_bytes is not None
             else (getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 20 * 1024 * 1024)
         )
-        request_headers = headers or {
-            "User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        request_headers = dict(
+            headers
+            or {
+                "User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            }
+        )
+        request_headers = {
+            str(key): str(value)
+            for key, value in request_headers.items()
+            if str(key).casefold() not in {"authorization", "proxy-authorization", "cookie"}
         }
-        with requests.get(url, stream=True, timeout=timeout_value, headers=request_headers) as response:
-            response.raise_for_status()
-            total = 0
-            with target_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=64 * 1024):
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if total > max_bytes_value:
-                        raise RuntimeError(f"附件过大，当前限制为 {max_bytes_value} bytes。")
-                    handle.write(chunk)
+
+        temp_path = target_path.with_name(f".{target_path.name}.part")
+        temp_path.unlink(missing_ok=True)
+        deadline = time.monotonic() + max(0.1, timeout_value)
+        try:
+            current_target = self._validate_public_remote_url(url)
+            redirect_count = 0
+            with requests.Session() as session:
+                session.trust_env = False
+                while True:
+                    if time.monotonic() > deadline:
+                        raise AttachmentMaterializationError("attachment_download_timeout")
+                    session.cookies.clear()
+                    response = session.get(
+                        current_target.url,
+                        stream=True,
+                        timeout=timeout_value,
+                        headers=request_headers,
+                        allow_redirects=False,
+                    )
+                    try:
+                        validate_response_peer(response, current_target)
+                        status_code = int(getattr(response, "status_code", 0) or 0)
+                        if status_code in REMOTE_DOWNLOAD_REDIRECT_STATUSES:
+                            location = str(getattr(response, "headers", {}).get("Location") or "").strip()
+                            if not location:
+                                raise AttachmentMaterializationError("remote_url_redirect_missing")
+                            if redirect_count >= REMOTE_DOWNLOAD_MAX_REDIRECTS:
+                                raise AttachmentMaterializationError("remote_url_redirect_limit")
+                            next_target = self._validate_public_remote_url(urljoin(current_target.url, location))
+                            if (
+                                urlparse(current_target.url).scheme == "https"
+                                and urlparse(next_target.url).scheme == "http"
+                            ):
+                                raise AttachmentMaterializationError("remote_url_https_downgrade")
+                            current_target = next_target
+                            redirect_count += 1
+                            continue
+
+                        if status_code < 200 or status_code >= 300:
+                            raise AttachmentMaterializationError("remote_media_download_failed")
+                        response.raise_for_status()
+                        content_length = self._safe_int(getattr(response, "headers", {}).get("Content-Length"))
+                        if max_bytes_value > 0 and content_length > max_bytes_value:
+                            raise AttachmentMaterializationError("attachment_too_large")
+                        total = 0
+                        with temp_path.open("wb") as handle:
+                            for chunk in response.iter_content(chunk_size=64 * 1024):
+                                if time.monotonic() > deadline:
+                                    raise AttachmentMaterializationError("attachment_download_timeout")
+                                if not chunk:
+                                    continue
+                                total += len(chunk)
+                                if max_bytes_value > 0 and total > max_bytes_value:
+                                    raise AttachmentMaterializationError("attachment_too_large")
+                                handle.write(chunk)
+                        temp_path.replace(target_path)
+                        return
+                    finally:
+                        response.close()
+        except PublicUrlPolicyError as exc:
+            raise AttachmentMaterializationError(exc.code) from exc
+        except requests.Timeout as exc:
+            raise AttachmentMaterializationError("attachment_download_timeout") from exc
+        except requests.RequestException as exc:
+            raise AttachmentMaterializationError("remote_media_download_failed") from exc
+        except AttachmentMaterializationError:
+            raise
+        except Exception as exc:
+            raise AttachmentMaterializationError("remote_media_download_failed") from exc
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def _build_file_card(self, *, source_path: Path, item: dict[str, Any], mime_type: str) -> dict[str, Any]:
         origin_name = self._clean_filename(item.get("origin_name") or source_path.name)
@@ -2002,6 +2151,8 @@ class AttachmentIngestService:
     def _material_failure_code(self, error: Any) -> str:
         if isinstance(error, AttachmentMaterializationError):
             return error.code
+        if isinstance(error, PublicUrlPolicyError):
+            return error.code
         text = str(error or "").strip()
         lowered = text.lower()
         stable_codes = {
@@ -2013,6 +2164,30 @@ class AttachmentIngestService:
             "attachment_too_large",
             "attachment_vision_unavailable",
             "onebot_temporary_link_expired",
+            "remote_url_invalid",
+            "remote_url_scheme_forbidden",
+            "remote_url_credentials_forbidden",
+            "remote_url_host_forbidden",
+            "remote_url_dns_failed",
+            "remote_url_private_address",
+            "remote_url_peer_unverifiable",
+            "remote_url_peer_mismatch",
+            "remote_url_redirect_missing",
+            "remote_url_redirect_limit",
+            "remote_url_https_downgrade",
+            "remote_media_provider_not_allowed",
+            "remote_media_ytdlp_unavailable",
+            "remote_media_playlist_not_supported",
+            "remote_media_cookie_database_locked",
+            "remote_media_cookie_unavailable",
+            "remote_media_cookie_domain_forbidden",
+            "remote_media_browser_cookies_forbidden",
+            "remote_media_precondition_failed",
+            "remote_media_forbidden",
+            "remote_media_not_found",
+            "remote_media_extract_failed",
+            "remote_media_download_missing",
+            "remote_media_download_failed",
         }
         if lowered in stable_codes:
             return lowered
@@ -2055,6 +2230,10 @@ class AttachmentIngestService:
             )
         if lowered == "attachment_too_large":
             return f"{kind_label}超过当前大小限制。建议：请用户压缩{kind_label}后重发，或使用文件传输助手等替代方式。"
+        if lowered.startswith("remote_url_"):
+            return self._humanize_remote_fetch_error(lowered)
+        if lowered.startswith("remote_media_"):
+            return self._humanize_remote_fetch_error(lowered)
         if lowered in {
             "attachment_source_unavailable",
             "attachment_untrusted_local_source",
@@ -2065,6 +2244,40 @@ class AttachmentIngestService:
                 f"建议：请用户在 QQ 上重新发送一次这个{kind_label}；如果仍失败，可尝试通过桌面端拖拽发送。"
             )
         return f"{kind_label}处理失败。建议：稍后重试，或换一种方式发送。"
+
+    def _validate_public_remote_url(self, url: str) -> PublicUrlTarget:
+        return validate_public_http_url(url, resolver=self.public_host_resolver)
+
+    def _is_ytdlp_provider_allowed(self, url: str) -> bool:
+        return is_ytdlp_provider_url(url)
+
+    def _remote_fetch_error_code(self, error: Any) -> str:
+        if isinstance(error, (AttachmentMaterializationError, PublicUrlPolicyError)):
+            return error.code
+        return self._classify_ytdlp_error(error, phase="download")
+
+    def _classify_ytdlp_error(self, error: Any, *, phase: str) -> str:
+        text = str(error or "").strip()
+        lowered = text.lower()
+        if "playlist" in lowered or "合集" in text:
+            return "remote_media_playlist_not_supported"
+        if "could not copy" in lowered and "cookie database" in lowered:
+            return "remote_media_cookie_database_locked"
+        if "cookie" in lowered and ("not found" in lowered or "no such file" in lowered or "cannot" in lowered):
+            return "remote_media_cookie_unavailable"
+        if "412" in lowered or "precondition failed" in lowered:
+            return "remote_media_precondition_failed"
+        if "403" in lowered or "forbidden" in lowered:
+            return "remote_media_forbidden"
+        if "404" in lowered or "not found" in lowered:
+            return "remote_media_not_found"
+        if "timeout" in lowered or "timed out" in lowered:
+            return "attachment_download_timeout"
+        if "max_filesize" in lowered or "too large" in lowered or "过大" in text:
+            return "attachment_too_large"
+        if "unsupported url" in lowered or "unsupported" in lowered or "no suitable extractor" in lowered:
+            return "remote_media_provider_not_allowed"
+        return "remote_media_extract_failed" if phase == "extract" else "remote_media_download_failed"
 
     def _probe_media_info(self, source_path: Path) -> dict[str, Any] | None:
         ffprobe_path = shutil.which("ffprobe")
@@ -2286,7 +2499,9 @@ class AttachmentIngestService:
         }.get(suffix, suffix.lstrip(".") or "text")
 
     def _clean_filename(self, value: Any) -> str:
-        text = str(value or "").strip().replace("\\", "/").split("/")[-1].strip()
+        raw = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip().replace("\\", "/")
+        parsed = urlparse(raw)
+        text = unquote(parsed.path or "").replace("\\", "/").split("/")[-1].strip()
         return text[:160]
 
     def _safe_path_part(self, value: Any) -> str:

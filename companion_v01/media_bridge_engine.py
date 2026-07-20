@@ -4,7 +4,11 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from .public_url_policy import is_ytdlp_provider_url, public_url_display_origin
 from .text_utils import normalize_text
+
+
+REMOTE_HTTP_URL_RE = re.compile(r"https?://[^\s<>\]）)\"'，。；、]+", re.IGNORECASE)
 
 
 def prefetch_remote_media_links_for_message(
@@ -97,7 +101,7 @@ def extract_prefetchable_remote_media_urls(message: str) -> list[str]:
     text = str(message or "")
     if not text:
         return []
-    candidates = re.findall(r"https?://[^\s<>\]）)\"'，。；、]+", text)
+    candidates = REMOTE_HTTP_URL_RE.findall(text)
     normalized: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -112,6 +116,19 @@ def extract_prefetchable_remote_media_urls(message: str) -> list[str]:
         if len(normalized) >= 6:
             break
     return normalized
+
+
+def redact_remote_media_urls_for_prompt(message: str) -> str:
+    """Keep remote-fetch intent while removing transport locators from model-visible text."""
+
+    def replace(match: re.Match[str]) -> str:
+        matched = match.group(0)
+        url = matched.rstrip(".,!?;:，。！？；：")
+        trailing = matched[len(url) :]
+        display_origin = public_url_display_origin(url)
+        return f"{display_origin or '[受限的远程链接]'}{trailing}"
+
+    return REMOTE_HTTP_URL_RE.sub(replace, str(message or ""))
 
 
 def message_requests_remote_media_fetch(message: str, *, urls: list[str]) -> bool:
@@ -136,19 +153,8 @@ def message_requests_remote_media_fetch(message: str, *, urls: list[str]) -> boo
     )
     if any(keyword in text for keyword in intent_keywords):
         return True
-    known_media_hosts = (
-        "b23.tv",
-        "bilibili.com",
-        "youtube.com",
-        "youtu.be",
-        "douyin.com",
-        "iesdouyin.com",
-        "ixigua.com",
-        "kuaishou.com",
-    )
     for url in urls:
-        host = urlparse(url).netloc.lower()
-        if any(host == known or host.endswith("." + known) for known in known_media_hosts):
+        if is_ytdlp_provider_url(url):
             return True
     return False
 

@@ -19,10 +19,13 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.care_runtime import CareModulePort
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
+from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
 from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolDiscoverer
 from companion_v01.music_lyrics import parse_lrc_segments
 from companion_v01.plugin_api import PluginQQCommandResult
@@ -40,6 +43,7 @@ from companion_v01.routes.think import build_think_router
 from companion_v01.routes.voice import build_voice_router
 from companion_v01.tool_runtime import ToolMetadata
 from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.store import MemoryStore
 
 
 QQ_BOT_FIXTURE_ID = 10001
@@ -880,6 +884,94 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("普通对话继续运行", sent_payload["message"])
+
+    def test_qq_router_remote_url_security_failure_still_sends_text_reply(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        store = MemoryStore(root / "db")
+        inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+        ingest = AttachmentIngestService(
+            base_dir=root / "attachments",
+            store=store,
+            attachment_service=inbox,
+            vision_service=None,
+            public_host_resolver=lambda *_args: ("127.0.0.1",),
+        )
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_ingest_service(self):
+                return ingest
+
+            def prefetch_remote_media_links_for_message(self, **kwargs):
+                return prefetch_remote_media_links_for_message(self, **kwargs)
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "这个链接不安全，请换公开直链给我。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 99}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-private-url-blocked-1",
+                    "raw_message": "帮我下载 http://127.0.0.1/private?token=topsecret",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private", response.json())
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("【链接素材预处理结果】", process_calls[0]["extra_context"])
+        self.assertIn("出于安全原因无法读取", process_calls[0]["extra_context"])
+        self.assertNotIn("topsecret", process_calls[0]["extra_context"])
+        self.assertEqual(process_calls[0]["message"], "帮我下载 [受限的远程链接]")
+        self.assertNotIn("topsecret", repr(process_calls[0]["qq_delivery_context"]))
+        self.assertNotIn("topsecret", response.text)
+        mocked_post.assert_called_once()
+        self.assertNotIn("topsecret", repr(mocked_post.call_args_list))
+        self.assertNotIn("topsecret", repr(log_calls))
+        self.assertIn("请换公开直链", mocked_post.call_args.kwargs["json"]["message"])
+        self.assertEqual(
+            store.list_attachment_inbox_items(
+                profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
+                session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+                limit=10,
+            ),
+            [],
+        )
 
     def test_qq_router_dispatches_plugin_command_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()

@@ -54,6 +54,71 @@ class FakeVisionService:
         return {"status": "pending"}
 
 
+class FakePeerSocket:
+    def __init__(self, peer_ip: str) -> None:
+        self.peer_ip = peer_ip
+
+    def getpeername(self) -> tuple[str, int]:
+        return (self.peer_ip, 443)
+
+
+class FakeStreamResponse:
+    def __init__(
+        self,
+        *,
+        peer_ip: str,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = dict(headers or {})
+        self.chunks = list(chunks or [])
+        self.raw = types.SimpleNamespace(
+            connection=types.SimpleNamespace(sock=FakePeerSocket(peer_ip)),
+        )
+        self.closed = False
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError("remote http failure with hidden locator")
+
+    def iter_content(self, *, chunk_size: int):
+        del chunk_size
+        yield from self.chunks
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeCookieJar:
+    def __init__(self) -> None:
+        self.clear_calls = 0
+
+    def clear(self) -> None:
+        self.clear_calls += 1
+
+
+class FakeHttpSession:
+    def __init__(self, responses: list[FakeStreamResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.cookies = FakeCookieJar()
+        self.trust_env = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def get(self, url: str, **kwargs: Any) -> FakeStreamResponse:
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise AssertionError("unexpected HTTP request")
+        return self.responses.pop(0)
+
+
 class AttachmentIngestTests(unittest.TestCase):
     def test_local_text_file_is_registered_and_parsed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -292,6 +357,56 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertNotIn("secret.invalid", legacy_prompt)
             self.assertNotIn("token=abc", legacy_prompt)
 
+    def test_signed_attachment_filename_is_sanitized_before_storage_and_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+
+            class FakeOneBotResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {"status": "failed", "retcode": 100, "data": {}}
+
+            with patch(
+                "companion_v01.attachment_ingest.requests.post",
+                return_value=FakeOneBotResponse(),
+            ):
+                service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "file",
+                            "file": "https://gchat.qpic.cn/download/cat.jpg?token=topsecret&expires=999",
+                            "origin_name": "cat.jpg?token=topsecret&expires=999#fragment",
+                        }
+                    ],
+                    timestamp=100,
+                )
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    status="failed",
+                )
+
+            serialized_item = json.dumps(item, ensure_ascii=False)
+            prompt = inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1")
+            self.assertEqual(item["origin_name"], "cat.jpg")
+            self.assertNotIn("topsecret", serialized_item)
+            self.assertNotIn("expires=999", serialized_item)
+            self.assertNotIn("topsecret", prompt)
+            self.assertNotIn("expires=999", prompt)
+
     def test_onebot_cache_path_requires_allow_root_and_logical_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -427,7 +542,7 @@ class AttachmentIngestTests(unittest.TestCase):
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
                 patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()) as post_mock,
-                patch("companion_v01.attachment_ingest.requests.get") as get_mock,
+                patch("companion_v01.attachment_ingest.requests.Session") as session_mock,
             ):
                 created = service.ingest_qq_attachments(
                     profile_user_id="master",
@@ -452,7 +567,7 @@ class AttachmentIngestTests(unittest.TestCase):
                 )
 
             post_mock.assert_called()
-            get_mock.assert_not_called()
+            session_mock.assert_not_called()
             saved_path = root / "attachments" / item["storage_relpath"]
             self.assertEqual(saved_path.read_bytes(), b"cached image payload")
             self.assertEqual(item["summary_title"], "窗边小猫")
@@ -487,7 +602,7 @@ class AttachmentIngestTests(unittest.TestCase):
                     }
 
             with patch("companion_v01.attachment_ingest.requests.post", return_value=FakeResponse()) as post_mock:
-                with patch("companion_v01.attachment_ingest.requests.get") as get_mock:
+                with patch("companion_v01.attachment_ingest.requests.Session") as session_mock:
                     created = service.ingest_qq_attachments(
                         profile_user_id="master",
                         session_id="qq_pri_1",
@@ -504,7 +619,7 @@ class AttachmentIngestTests(unittest.TestCase):
                     )
 
             post_mock.assert_called()
-            get_mock.assert_not_called()
+            session_mock.assert_not_called()
             saved_path = root / "attachments" / item["storage_relpath"]
             self.assertEqual(saved_path.read_bytes(), payload_bytes)
             self.assertNotIn("/app/", str(saved_path).replace("\\", "/"))
@@ -691,11 +806,14 @@ class AttachmentIngestTests(unittest.TestCase):
                 store=store,
                 attachment_service=inbox,
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
             )
 
+            source_url = "https://example.com/watch?v=1&token=topsecret"
             descriptor = RemoteMediaDescriptor(
-                source_url="https://example.com/watch?v=1",
-                webpage_url="https://example.com/watch?v=1",
+                source_url=source_url,
+                webpage_url=source_url,
+                thumbnail_url="https://img.example.com/cover.jpg?token=thumbnail-secret",
                 title="测试视频",
                 ext="mp4",
                 mime_type="video/mp4",
@@ -738,7 +856,7 @@ class AttachmentIngestTests(unittest.TestCase):
                         result = service.fetch_media_from_urls(
                             profile_user_id="master",
                             session_id="qq_pri_1",
-                            urls=["https://example.com/watch?v=1"],
+                            urls=[source_url],
                             timestamp=100,
                         )
 
@@ -750,11 +868,21 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(item["source"], "remote_url")
             self.assertEqual(item["detail"]["remote_source"]["platform"], "ExampleVideo")
             self.assertEqual(item["detail"]["remote_source"]["uploader"], "AkaneChannel")
+            self.assertTrue(item["source_event_id"].startswith("url_sha256:"))
+            self.assertNotIn("topsecret", repr(item))
+            self.assertNotIn("thumbnail-secret", repr(item))
+            self.assertEqual(item["detail"]["remote_source"]["display_origin"], "https://example.com")
+            self.assertNotIn("source_url", item["detail"]["remote_source"])
+            self.assertNotIn("webpage_url", item["detail"]["remote_source"])
+            self.assertNotIn("thumbnail_url", item["detail"]["remote_source"])
 
             prompt = inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1")
             self.assertIn("平台 ExampleVideo", prompt)
             self.assertIn("发布者 AkaneChannel", prompt)
             self.assertIn("媒体信息", prompt)
+            self.assertIn("链接 https://example.com", prompt)
+            self.assertNotIn("topsecret", prompt)
+            self.assertNotIn("thumbnail-secret", prompt)
 
     def test_fetch_media_from_url_clears_stale_failed_entry_for_same_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -766,6 +894,7 @@ class AttachmentIngestTests(unittest.TestCase):
                 store=store,
                 attachment_service=inbox,
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
             )
             url = "https://example.com/watch?v=stale"
             stale = store.add_attachment_inbox_item(
@@ -826,6 +955,398 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertIn("测试视频", prompt)
             self.assertNotIn("Requested format", prompt)
 
+    def test_private_remote_url_is_rejected_before_pending_item_or_downloader(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("127.0.0.1",),
+            )
+
+            with patch.object(service, "_fetch_remote_media_descriptor") as descriptor_mock:
+                result = service.fetch_media_from_urls(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    urls=["https://private.example/file.mp4?token=topsecret"],
+                    timestamp=100,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["items"], [])
+            self.assertEqual(result["failed"][0]["url"], "https://private.example")
+            self.assertNotIn("topsecret", repr(result))
+            self.assertIn("出于安全原因", result["followup_context"])
+            descriptor_mock.assert_not_called()
+            self.assertEqual(
+                store.list_attachment_inbox_items(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    limit=10,
+                ),
+                [],
+            )
+
+    def test_qq_private_attachment_url_fails_structurally_without_http_get_or_vision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            vision = FakeVisionService(store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=vision,  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("127.0.0.1",),
+            )
+
+            class FakeOneBotResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {"status": "failed", "retcode": 100, "data": {}}
+
+            with (
+                patch(
+                    "companion_v01.attachment_ingest.requests.post",
+                    return_value=FakeOneBotResponse(),
+                ) as post_mock,
+                patch("companion_v01.attachment_ingest.requests.Session") as session_mock,
+            ):
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "image",
+                            "file": "private.jpg",
+                            "origin_name": "private.jpg",
+                            "url": "http://127.0.0.1/private?token=topsecret",
+                        }
+                    ],
+                    timestamp=100,
+                )
+                self.assertEqual(len(created), 1)
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    status="failed",
+                )
+
+            self.assertEqual(item["error_message"], "remote_url_private_address")
+            self.assertIn("出于安全原因", item["short_hint"])
+            self.assertNotIn("127.0.0.1", json.dumps(item, ensure_ascii=False))
+            self.assertNotIn("topsecret", json.dumps(item, ensure_ascii=False))
+            self.assertNotIn("127.0.0.1", inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1"))
+            self.assertEqual(vision.scheduled, [])
+            self.assertEqual(post_mock.call_count, 2)
+            session_mock.assert_not_called()
+
+    def test_qq_public_attachment_url_fallback_downloads_after_onebot_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+
+            class FakeOneBotResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {"status": "failed", "retcode": 100, "data": {}}
+
+            stream_response = FakeStreamResponse(
+                peer_ip="93.184.216.34",
+                headers={"Content-Length": "7"},
+                chunks=[b"payload"],
+            )
+            session = FakeHttpSession([stream_response])
+            with (
+                patch(
+                    "companion_v01.attachment_ingest.requests.post",
+                    return_value=FakeOneBotResponse(),
+                ) as post_mock,
+                patch("companion_v01.attachment_ingest.requests.Session", return_value=session),
+                patch("companion_v01.attachment_ingest.shutil.which", return_value=None),
+            ):
+                service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "file",
+                            "file": "clip.mp4",
+                            "origin_name": "clip.mp4",
+                            "url": "https://media.example/clip.mp4?token=topsecret",
+                        }
+                    ],
+                    timestamp=100,
+                )
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    status="ready",
+                )
+
+            saved_path = root / "attachments" / item["storage_relpath"]
+            self.assertEqual(saved_path.read_bytes(), b"payload")
+            self.assertEqual(post_mock.call_count, 1)
+            self.assertEqual(len(session.calls), 1)
+            self.assertNotIn("topsecret", json.dumps(item, ensure_ascii=False))
+
+    def test_unknown_public_webpage_does_not_enter_cookie_capable_ytdlp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+
+            with patch("companion_v01.attachment_ingest.importlib.util.find_spec") as find_spec:
+                result = service.fetch_media_from_urls(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    urls=["https://unknown.example/watch?token=topsecret"],
+                    timestamp=100,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("不在可调用的媒体下载范围", result["followup_context"])
+            self.assertNotIn("topsecret", repr(result))
+            find_spec.assert_not_called()
+
+    def test_unknown_public_media_direct_link_does_not_require_ytdlp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+
+            with patch("companion_v01.attachment_ingest.importlib.util.find_spec") as find_spec:
+                descriptor = service._fetch_remote_media_descriptor(
+                    url="https://unknown.example/media/clip.mp4?token=topsecret",
+                )
+
+            self.assertEqual(descriptor.download_mode, "direct")
+            self.assertEqual(descriptor.extractor, "direct")
+            find_spec.assert_not_called()
+
+    def test_public_downloader_revalidates_redirects_and_writes_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            addresses = {
+                "media.example": ("93.184.216.34",),
+                "cdn.example": ("93.184.216.35",),
+            }
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda hostname, _port: addresses.get(hostname, ()),
+            )
+            first = FakeStreamResponse(
+                peer_ip="93.184.216.34",
+                status_code=302,
+                headers={"Location": "https://cdn.example/final.mp4"},
+            )
+            second = FakeStreamResponse(
+                peer_ip="93.184.216.35",
+                headers={"Content-Length": "7"},
+                chunks=[b"payload"],
+            )
+            session = FakeHttpSession([first, second])
+            target = root / "attachments" / "download.mp4"
+
+            with patch("companion_v01.attachment_ingest.requests.Session", return_value=session):
+                service._download_to_path(
+                    url="https://media.example/start",
+                    target_path=target,
+                    max_bytes=16,
+                    headers={
+                        "Accept": "*/*",
+                        "aUtHoRiZaTiOn": "Bearer secret",
+                        "CoOkIe": "session=secret",
+                    },
+                )
+
+            self.assertEqual(target.read_bytes(), b"payload")
+            self.assertFalse(target.with_name(".download.mp4.part").exists())
+            self.assertFalse(session.trust_env)
+            self.assertEqual(
+                [call[0] for call in session.calls], ["https://media.example/start", "https://cdn.example/final.mp4"]
+            )
+            self.assertTrue(all(call[1]["allow_redirects"] is False for call in session.calls))
+            self.assertTrue(
+                all(
+                    all(
+                        key.casefold() not in {"authorization", "proxy-authorization", "cookie"}
+                        for key in call[1]["headers"]
+                    )
+                    for call in session.calls
+                )
+            )
+            self.assertEqual(session.cookies.clear_calls, 2)
+            self.assertTrue(first.closed)
+            self.assertTrue(second.closed)
+
+    def test_public_downloader_blocks_private_redirect_before_second_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            addresses = {
+                "media.example": ("93.184.216.34",),
+                "internal.example": ("10.0.0.8",),
+            }
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda hostname, _port: addresses.get(hostname, ()),
+            )
+            response = FakeStreamResponse(
+                peer_ip="93.184.216.34",
+                status_code=302,
+                headers={"Location": "http://internal.example/private"},
+            )
+            session = FakeHttpSession([response])
+            target = root / "attachments" / "download.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"existing")
+
+            with patch("companion_v01.attachment_ingest.requests.Session", return_value=session):
+                with self.assertRaisesRegex(AttachmentMaterializationError, "remote_url_private_address"):
+                    service._download_to_path(
+                        url="https://media.example/start",
+                        target_path=target,
+                        max_bytes=16,
+                    )
+
+            self.assertEqual(len(session.calls), 1)
+            self.assertEqual(target.read_bytes(), b"existing")
+            self.assertFalse(target.with_name(".download.mp4.part").exists())
+
+    def test_public_downloader_rejects_missing_or_excessive_redirects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+            target = root / "attachments" / "download.mp4"
+
+            missing_session = FakeHttpSession([FakeStreamResponse(peer_ip="93.184.216.34", status_code=302)])
+            with patch(
+                "companion_v01.attachment_ingest.requests.Session",
+                return_value=missing_session,
+            ):
+                with self.assertRaisesRegex(AttachmentMaterializationError, "remote_url_redirect_missing"):
+                    service._download_to_path(
+                        url="https://media.example/start",
+                        target_path=target,
+                    )
+
+            redirect_responses = [
+                FakeStreamResponse(
+                    peer_ip="93.184.216.34",
+                    status_code=302,
+                    headers={"Location": "/loop"},
+                )
+                for _index in range(4)
+            ]
+            limit_session = FakeHttpSession(redirect_responses)
+            with patch(
+                "companion_v01.attachment_ingest.requests.Session",
+                return_value=limit_session,
+            ):
+                with self.assertRaisesRegex(AttachmentMaterializationError, "remote_url_redirect_limit"):
+                    service._download_to_path(
+                        url="https://media.example/start",
+                        target_path=target,
+                    )
+
+            self.assertEqual(len(missing_session.calls), 1)
+            self.assertEqual(len(limit_session.calls), 4)
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_name(".download.mp4.part").exists())
+
+    def test_public_downloader_cleans_partial_file_on_size_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+            targets_and_responses = (
+                (
+                    root / "attachments" / "declared.mp4",
+                    FakeStreamResponse(
+                        peer_ip="93.184.216.34",
+                        headers={"Content-Length": "17"},
+                        chunks=[b"unused"],
+                    ),
+                ),
+                (
+                    root / "attachments" / "streamed.mp4",
+                    FakeStreamResponse(peer_ip="93.184.216.34", chunks=[b"12345678", b"9"]),
+                ),
+            )
+
+            for target, response in targets_and_responses:
+                with self.subTest(target=target.name):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"existing")
+                    session = FakeHttpSession([response])
+                    with patch("companion_v01.attachment_ingest.requests.Session", return_value=session):
+                        with self.assertRaisesRegex(AttachmentMaterializationError, "attachment_too_large"):
+                            service._download_to_path(
+                                url="https://media.example/file.mp4",
+                                target_path=target,
+                                max_bytes=8,
+                            )
+                    self.assertEqual(target.read_bytes(), b"existing")
+                    self.assertFalse(target.with_name(f".{target.name}.part").exists())
+
     def test_remote_media_download_with_ytdlp_does_not_force_best_format(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -836,6 +1357,7 @@ class AttachmentIngestTests(unittest.TestCase):
                 store=store,
                 attachment_service=inbox,
                 vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
             )
 
             captured_options: dict[str, Any] = {}
@@ -889,6 +1411,11 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertNotIn("format", captured_options)
             self.assertEqual(captured_options["socket_timeout"], 30.0)
             self.assertEqual(captured_options["cookiefile"], str(cookiefile))
+            self.assertEqual(
+                captured_options["allowed_extractors"],
+                ["BiliBili", "youtube", "Douyin", "Ixigua", "Kuaishou"],
+            )
+            self.assertEqual(captured_options["proxy"], "")
             headers = captured_options["http_headers"]
             self.assertIn("Mozilla/5.0", headers["User-Agent"])
             self.assertEqual(headers["Referer"], "https://www.bilibili.com/")
@@ -912,7 +1439,7 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertIn("平台风控", message)
             self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
 
-    def test_ytdlp_common_options_support_browser_cookies(self) -> None:
+    def test_ytdlp_common_options_reject_browser_cookie_import(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store = MemoryStore(root / "db")
@@ -928,11 +1455,46 @@ class AttachmentIngestTests(unittest.TestCase):
                 with patch(
                     "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "edge:Default"
                 ):
-                    options = service._yt_dlp_common_options(timeout=12.0)
+                    with self.assertRaisesRegex(
+                        AttachmentMaterializationError,
+                        "remote_media_browser_cookies_forbidden",
+                    ):
+                        service._yt_dlp_common_options(timeout=12.0)
 
-            self.assertEqual(options["socket_timeout"], 12.0)
-            self.assertEqual(options["cookiesfrombrowser"], ("edge", "Default", None, None))
-            self.assertNotIn("cookiefile", options)
+    def test_ytdlp_cookiefile_rejects_non_provider_domains(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+            cookiefile = root / "cookies.txt"
+            cookiefile.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tprovider-cookie\n"
+                ".internal.example\tTRUE\t/\tFALSE\t0\tsession\tinternal-cookie\n",
+                encoding="utf-8",
+            )
+
+            with (
+                patch(
+                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE",
+                    str(cookiefile),
+                ),
+                patch(
+                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
+                    "",
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    AttachmentMaterializationError,
+                    "remote_media_cookie_domain_forbidden",
+                ):
+                    service._yt_dlp_common_options(timeout=12.0)
 
     def test_remote_media_browser_cookie_copy_error_is_actionable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
