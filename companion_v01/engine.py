@@ -820,6 +820,64 @@ class AkaneMemoryEngine:
             logger.warning("memcore assistant dual-write failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _record_memcore_external_event(
+        self,
+        *,
+        event: dict[str, Any],
+        source_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        timestamp: int,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.record_external_event(
+                event_type=str(event.get("event_type") or ""),
+                fields=dict(event.get("fields") or {}),
+                source=str(event.get("source") or ""),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                timestamp=timestamp,
+                source_id=source_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore external event dual-write failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    def _record_memcore_input_turn(
+        self,
+        *,
+        user_record: dict[str, Any],
+        external_event: dict[str, Any] | None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        actor_stable_id: str,
+        actor_display_name: str,
+        timestamp: int,
+    ) -> dict[str, Any]:
+        if external_event is not None:
+            return self._record_memcore_external_event(
+                event=external_event,
+                source_id=str(user_record.get("source_id") or ""),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                timestamp=timestamp,
+            )
+        return self._record_memcore_user_turn(
+            user_record=user_record,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            actor_stable_id=actor_stable_id,
+            actor_display_name=actor_display_name,
+        )
+
     def _update_memcore_turn_metadata(
         self,
         *,
@@ -2369,6 +2427,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        memory_role: str = "user",
     ) -> str:
         raw_idempotency_key = payload.pop("memory_idempotency_key", "")
         if not isinstance(raw_idempotency_key, str) or not raw_idempotency_key.strip():
@@ -2379,7 +2438,7 @@ class AkaneMemoryEngine:
                 "session_id": str(session_id),
                 "character_pack_id": normalize_character_pack_id(character_pack_id),
                 "memory_idempotency_key": raw_idempotency_key.strip(),
-                "role": "user",
+                "role": str(memory_role or "user").strip() or "user",
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2387,6 +2446,54 @@ class AkaneMemoryEngine:
         )
         digest = hashlib.sha256(source_material.encode("utf-8", errors="ignore")).hexdigest()
         return f"plugin-event:{digest}"
+
+    @staticmethod
+    def _pop_plugin_external_event(
+        payload: dict[str, Any],
+        *,
+        prompt_scope: str,
+    ) -> dict[str, Any] | None:
+        raw = payload.pop("plugin_external_event", None)
+        if prompt_scope != "plugin_proactive" or not isinstance(raw, dict):
+            return None
+        event_type = str(raw.get("event_type") or "").strip().lower()
+        source = str(raw.get("source") or "").strip()
+        raw_fields = raw.get("fields")
+        if (
+            re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", event_type) is None
+            or len(source) > 240
+            or not isinstance(raw_fields, dict)
+        ):
+            return None
+        fields: dict[str, str] = {}
+        for raw_key, raw_value in raw_fields.items():
+            key = str(raw_key or "").strip()
+            value = str(raw_value or "").strip()
+            if (
+                re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", key) is None
+                or not value
+                or len(value) > 4_000
+            ):
+                return None
+            fields[key] = value
+        if not fields:
+            return None
+        return {
+            "event_type": event_type,
+            "source": source,
+            "fields": fields,
+        }
+
+    @staticmethod
+    def _external_event_memory_metadata(event: dict[str, Any]) -> dict[str, Any]:
+        event_type = str(event.get("event_type") or "external").strip() or "external"
+        return {
+            "categories": ["event_trace"],
+            "keywords": [event_type],
+            "subject_scopes": ["other"],
+            "importance": 0.4,
+            "confidence": 1.0,
+        }
 
     def _build_transient_user_record(
         self,
@@ -2663,6 +2770,7 @@ class AkaneMemoryEngine:
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
         if prompt_scope != "plugin_proactive":
             plugin_stable_system_context = ""
+        plugin_external_event = self._pop_plugin_external_event(payload, prompt_scope=prompt_scope)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -2673,6 +2781,11 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
+            memory_role=(
+                f"event.{plugin_external_event['event_type']}"
+                if plugin_external_event is not None
+                else "user"
+            ),
         )
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
@@ -2701,6 +2814,7 @@ class AkaneMemoryEngine:
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
+        external_event_turn = plugin_external_event is not None
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -2721,12 +2835,21 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
-                role="user",
+                role=(
+                    f"event.{plugin_external_event['event_type']}"
+                    if plugin_external_event is not None
+                    else "user"
+                ),
                 content=user_message,
                 timestamp=now_ts,
                 date_label=date_label,
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
+                memory_metadata=(
+                    self._external_event_memory_metadata(plugin_external_event)
+                    if plugin_external_event is not None
+                    else None
+                ),
                 source_id=user_memory_source_id,
             )
             if not self._memcore_owns_compaction():
@@ -2769,13 +2892,15 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            self._record_memcore_user_turn(
+            self._record_memcore_input_turn(
                 user_record=user_record,
+                external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                timestamp=now_ts,
             )
 
         prompt_exclude_source_ids: list[str] = []
@@ -3043,7 +3168,7 @@ class AkaneMemoryEngine:
         memory_metadata["keywords"] = memory_tags
         final_output["memory_metadata"] = memory_metadata
         final_output.pop("memory_tags", None)
-        if not transient_user_turn:
+        if not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_metadata_to_user_record(
                 user_record=user_record,
                 memory_metadata=memory_metadata,
@@ -3058,7 +3183,7 @@ class AkaneMemoryEngine:
                     actor_stable_id=actor_stable_id,
                     actor_display_name=actor_display_name,
                 )
-        if memory_tags and not transient_user_turn:
+        if memory_tags and not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
                 memory_tags=memory_tags,
@@ -3159,6 +3284,7 @@ class AkaneMemoryEngine:
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
         if prompt_scope != "plugin_proactive":
             plugin_stable_system_context = ""
+        plugin_external_event = self._pop_plugin_external_event(payload, prompt_scope=prompt_scope)
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
@@ -3169,6 +3295,11 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
+            memory_role=(
+                f"event.{plugin_external_event['event_type']}"
+                if plugin_external_event is not None
+                else "user"
+            ),
         )
         user_message = str(payload.get("message") or "").strip()
         now_ts = int(payload.get("timestamp") or time.time())
@@ -3197,6 +3328,7 @@ class AkaneMemoryEngine:
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
+        external_event_turn = plugin_external_event is not None
 
         self.consume_due_reminders(
             profile_user_id=profile_user_id,
@@ -3217,12 +3349,21 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
-                role="user",
+                role=(
+                    f"event.{plugin_external_event['event_type']}"
+                    if plugin_external_event is not None
+                    else "user"
+                ),
                 content=user_message,
                 timestamp=now_ts,
                 date_label=date_label,
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
+                memory_metadata=(
+                    self._external_event_memory_metadata(plugin_external_event)
+                    if plugin_external_event is not None
+                    else None
+                ),
                 source_id=user_memory_source_id,
             )
             if not self._memcore_owns_compaction():
@@ -3265,13 +3406,15 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            self._record_memcore_user_turn(
+            self._record_memcore_input_turn(
                 user_record=user_record,
+                external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                timestamp=now_ts,
             )
 
         prompt_exclude_source_ids: list[str] = []
@@ -3563,7 +3706,7 @@ class AkaneMemoryEngine:
         memory_metadata["keywords"] = memory_tags
         final_output["memory_metadata"] = memory_metadata
         final_output.pop("memory_tags", None)
-        if not transient_user_turn:
+        if not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_metadata_to_user_record(
                 user_record=user_record,
                 memory_metadata=memory_metadata,
@@ -3578,7 +3721,7 @@ class AkaneMemoryEngine:
                     actor_stable_id=actor_stable_id,
                     actor_display_name=actor_display_name,
                 )
-        if memory_tags and not transient_user_turn:
+        if memory_tags and not transient_user_turn and not external_event_turn:
             user_record = self._apply_memory_tags_to_user_record(
                 user_record=user_record,
                 memory_tags=memory_tags,
@@ -6128,7 +6271,7 @@ class AkaneMemoryEngine:
         last_role = str(last_record.get("role", "") or "").strip().lower()
         last_content = normalize_text(str(last_record.get("content", "") or ""))
         current_content = normalize_text(user_message)
-        if last_role == "user" and last_content == current_content:
+        if (last_role == "user" or last_role.startswith("event.")) and last_content == current_content:
             return records[:-1], last_record
         return records, current_record
 
@@ -6141,11 +6284,7 @@ class AkaneMemoryEngine:
             content = str(rec.get("content", "") or "").strip()
             if not content:
                 continue
-            rendered_content = render_chat_line(
-                role=raw_role,
-                content=content,
-                timestamp=rec.get("timestamp"),
-            )
+            rendered_content = AkaneMemoryEngine._render_memory_record_for_prompt(rec)
             if role == "assistant" or role.startswith("assistant."):
                 turns.append({"role": "assistant", "content": rendered_content})
             elif role.startswith("npc:"):
@@ -6160,10 +6299,26 @@ class AkaneMemoryEngine:
         *,
         current_user_record: dict[str, Any],
     ) -> str:
+        return self._render_memory_record_for_prompt(current_user_record)
+
+    @staticmethod
+    def _render_memory_record_for_prompt(record: dict[str, Any]) -> str:
+        role = str(record.get("role") or "user").strip()
+        if role.lower().startswith("event."):
+            try:
+                from memcore.rendering import render_prompt_message
+
+                timezone = (
+                    str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip()
+                    or "Asia/Shanghai"
+                )
+                return render_prompt_message(dict(record), tz=timezone)
+            except Exception:
+                pass
         return render_chat_line(
-            role=str(current_user_record.get("role") or "user"),
-            content=str(current_user_record.get("content") or ""),
-            timestamp=current_user_record.get("timestamp"),
+            role=role,
+            content=str(record.get("content") or ""),
+            timestamp=record.get("timestamp"),
         )
 
     def _upsert_raw_record(self, record: dict[str, Any]) -> None:

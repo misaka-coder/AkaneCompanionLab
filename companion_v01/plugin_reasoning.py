@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -16,9 +17,31 @@ MAX_REASONING_STABLE_SYSTEM_CHARS = 12_000
 MAX_REASONING_IDEMPOTENCY_KEY_CHARS = 240
 MAX_REASONING_OUTPUT_CHARS = 6_000
 MAX_REASONING_EVIDENCE_EVENTS = 24
+MAX_REASONING_EVENT_FIELDS = 16
+MAX_REASONING_EVENT_FIELD_CHARS = 4_000
+MAX_REASONING_EVENT_TOTAL_CHARS = 12_000
 DEFAULT_REASONING_TIMEOUT_SECONDS = 120.0
 _PROACTIVE_MESSAGE_HEADER = "【当前待处理的插件主动事件（不是用户发言）】"
 _PROACTIVE_RESPONSE_DIRECTIVE = "请按系统约定的 JSON 最终答复格式完成本次处理。"
+_EVENT_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_EVENT_FIELD_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_RESERVED_EVENT_FIELDS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "access_token",
+        "authorization",
+        "cached_path",
+        "event_type",
+        "file_path",
+        "password",
+        "path",
+        "secret",
+        "source",
+        "storage_relpath",
+        "token",
+    }
+)
 _EVIDENCE_FIELDS = (
     "type",
     "status",
@@ -46,7 +69,19 @@ class EnginePluginReasoningPort:
         error = _validate_request(request)
         if error:
             return PluginReasoningResult(ok=False, status="invalid_request", reason=error)
-        persistent_message = _render_persistent_proactive_message(request.message)
+        external_event_payload: dict[str, Any] | None = None
+        if request.external_event is not None:
+            external_event_payload = _project_external_event(request.external_event)
+            try:
+                persistent_message = _render_external_event(external_event_payload)
+            except Exception:
+                return PluginReasoningResult(
+                    ok=False,
+                    status="unavailable",
+                    reason="external_event_renderer_unavailable",
+                )
+        else:
+            persistent_message = _render_persistent_proactive_message(request.message)
         if len(persistent_message) > MAX_REASONING_MESSAGE_CHARS:
             return PluginReasoningResult(ok=False, status="invalid_request", reason="invalid_message")
         payload = {
@@ -60,9 +95,12 @@ class EnginePluginReasoningPort:
             "turn_kind": "plugin_proactive",
             "client_turn_kind": "proactive",
             "extra_context": request.extra_context.strip(),
-            "plugin_stable_system_context": request.stable_system_context.strip(),
             "memory_idempotency_key": request.memory_idempotency_key.strip(),
         }
+        if request.stable_system_context.strip():
+            payload["plugin_stable_system_context"] = request.stable_system_context.strip()
+        if external_event_payload is not None:
+            payload["plugin_external_event"] = external_event_payload
         if request.character_pack_id.strip():
             payload["character_pack_id"] = request.character_pack_id.strip()
         try:
@@ -148,7 +186,75 @@ def _validate_request(request: object) -> str:
         return "reasoning_identity_required"
     if not request.message.strip():
         return "reasoning_message_required"
+    event_error = _validate_external_event(request.external_event)
+    if event_error:
+        return event_error
     return ""
+
+
+def _validate_external_event(value: object) -> str:
+    from .plugin_api import PluginExternalEvent
+
+    if value is None:
+        return ""
+    if not isinstance(value, PluginExternalEvent):
+        return "invalid_external_event"
+    if not isinstance(value.event_type, str) or _EVENT_TYPE_PATTERN.fullmatch(value.event_type) is None:
+        return "invalid_external_event_type"
+    if not isinstance(value.source, str) or len(value.source) > 240 or "\x00" in value.source:
+        return "invalid_external_event_source"
+    if not isinstance(value.fields, tuple) or not value.fields or len(value.fields) > MAX_REASONING_EVENT_FIELDS:
+        return "invalid_external_event_fields"
+    seen: set[str] = set()
+    total_chars = len(value.event_type) + len(value.source)
+    for item in value.fields:
+        if not isinstance(item, tuple) or len(item) != 2:
+            return "invalid_external_event_fields"
+        key, field_value = item
+        if (
+            not isinstance(key, str)
+            or _EVENT_FIELD_PATTERN.fullmatch(key) is None
+            or key in _RESERVED_EVENT_FIELDS
+            or key in seen
+        ):
+            return "invalid_external_event_fields"
+        if (
+            not isinstance(field_value, str)
+            or not field_value.strip()
+            or len(field_value) > MAX_REASONING_EVENT_FIELD_CHARS
+            or "\x00" in field_value
+        ):
+            return "invalid_external_event_fields"
+        seen.add(key)
+        total_chars += len(key) + len(field_value)
+    if total_chars > MAX_REASONING_EVENT_TOTAL_CHARS:
+        return "invalid_external_event_fields"
+    return ""
+
+
+def _project_external_event(value: Any) -> dict[str, Any]:
+    return {
+        "event_type": value.event_type,
+        "source": value.source.strip(),
+        "fields": {
+            key: field_value.strip()
+            for key, field_value in value.fields
+            if field_value.strip()
+        },
+    }
+
+
+def _render_external_event(event: Mapping[str, Any]) -> str:
+    from memcore.rendering import render_external_event_text
+
+    rendered = render_external_event_text(
+        event_type=str(event.get("event_type") or ""),
+        fields=dict(event.get("fields") or {}),
+        source=str(event.get("source") or ""),
+    ).strip()
+    if not rendered:
+        raise ValueError("empty_external_event")
+    return rendered
 
 
 def _frame_text(frame: Mapping[str, Any]) -> str:

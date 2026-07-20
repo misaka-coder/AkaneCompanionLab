@@ -70,6 +70,34 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
         self.assertIn("Akane: 在哦", turns[1]["content"])
         self.assertIn("Weather: 天气晴朗。", turns[2]["content"])
 
+    def test_external_event_uses_same_rendering_as_current_and_later_history(self) -> None:
+        event = {
+            "source_id": "event-1",
+            "role": "event.finance",
+            "content": (
+                "source: 东方财富\n"
+                "published_at: 2026-07-20T08:52:00+08:00\n"
+                "title: 提振消费政策评论\n"
+                "summary: 关注收入、就业、财政和金融支持。\n"
+                "url: https://finance.eastmoney.com/example.html"
+            ),
+            "timestamp": 1_784_512_320,
+            "memory_metadata": {"categories": ["event_trace"]},
+        }
+
+        history, current = AkaneMemoryEngine._split_history_records(
+            recent_raw=[event],
+            user_message=event["content"],
+            now_ts=event["timestamp"],
+        )
+        current_text = AkaneMemoryEngine._render_memory_record_for_prompt(current)
+        later_history_text = AkaneMemoryEngine._build_history_turns([event])[0]["content"]
+
+        self.assertEqual(history, [])
+        self.assertEqual(current_text, later_history_text)
+        self.assertIn("event.finance\nsource: 东方财富", current_text)
+        self.assertNotIn("User:", current_text)
+
     def test_collect_visible_context_source_ids_excludes_only_directly_visible_records(self) -> None:
         visible_ids = AkaneMemoryEngine._collect_visible_context_source_ids(
             recent_raw=[

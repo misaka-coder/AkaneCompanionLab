@@ -221,6 +221,15 @@ class NotificationPort(Protocol):
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
+class PluginExternalEvent:
+    """Immutable structured event data for one proactive reasoning turn."""
+
+    event_type: str
+    fields: tuple[tuple[str, str], ...]
+    source: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class PluginReasoningRequest:
     """Bounded proactive reasoning request using the host's normal model/tool loop."""
 
@@ -233,6 +242,7 @@ class PluginReasoningRequest:
     timestamp: int = 0
     stable_system_context: str = ""
     memory_idempotency_key: str = ""
+    external_event: PluginExternalEvent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +421,7 @@ __all__ = [
     "NotificationPort",
     "NotificationResult",
     "PluginBackgroundJob",
+    "PluginExternalEvent",
     "PluginJobController",
     "PluginManifest",
     "PluginQQCommandHandler",

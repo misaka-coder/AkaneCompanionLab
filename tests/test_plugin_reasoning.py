@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from typing import Any
 
 from companion_v01.engine import AkaneMemoryEngine
-from companion_v01.plugin_api import PluginReasoningRequest, PluginReasoningResult
+from companion_v01.plugin_api import (
+    PluginExternalEvent,
+    PluginReasoningRequest,
+    PluginReasoningResult,
+)
 from companion_v01.plugin_reasoning import EnginePluginReasoningPort, PluginScopedReasoningPort
 
 
@@ -42,6 +47,16 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
             stable_system_context="长期稳定的金融分析原则",
             memory_idempotency_key="delivery:stable-event-1",
             timestamp=1_784_016_000,
+            external_event=PluginExternalEvent(
+                event_type="finance",
+                source="东方财富",
+                fields=(
+                    ("url", "https://finance.eastmoney.com/example.html"),
+                    ("summary", "公开快讯摘要。"),
+                    ("title", "科创债ETF规模出现新变化"),
+                    ("published_at", "2026-07-14T14:30:00+08:00"),
+                ),
+            ),
         )
 
         result = await port.analyze(request)
@@ -60,10 +75,34 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["character_pack_id"], "akane_v1")
         self.assertEqual(
             payload["message"],
+            "source: 东方财富\n"
+            "published_at: 2026-07-14T14:30:00+08:00\n"
+            "title: 科创债ETF规模出现新变化\n"
+            "summary: 公开快讯摘要。\n"
+            "url: https://finance.eastmoney.com/example.html",
+        )
+        self.assertEqual(payload["plugin_external_event"]["event_type"], "finance")
+        self.assertEqual(payload["plugin_external_event"]["source"], "东方财富")
+
+    async def test_legacy_unstructured_request_keeps_bounded_proactive_wrapper(self) -> None:
+        engine = FakeEngine()
+        result = await EnginePluginReasoningPort(engine).analyze(
+            PluginReasoningRequest(
+                trace_id="legacy:1",
+                profile_user_id="qq-user",
+                session_id="qq-session",
+                message="旧式主动事件",
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            engine.payloads[0]["message"],
             "【当前待处理的插件主动事件（不是用户发言）】\n"
-            "外部市场事件\n"
+            "旧式主动事件\n"
             "请按系统约定的 JSON 最终答复格式完成本次处理。",
         )
+        self.assertNotIn("plugin_external_event", engine.payloads[0])
 
     async def test_transient_final_failure_is_structured_instead_of_returned_as_analysis(self) -> None:
         class IncompleteEngine:
@@ -115,6 +154,34 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
             ({"memory_idempotency_key": []}, "invalid_memory_idempotency_key"),
             ({"memory_idempotency_key": "x" * 241}, "invalid_memory_idempotency_key"),
             ({"memory_idempotency_key": "event\x00key"}, "invalid_memory_idempotency_key"),
+            ({"external_event": "invalid"}, "invalid_external_event"),
+            (
+                {
+                    "external_event": PluginExternalEvent(
+                        event_type="Finance",
+                        fields=(("title", "event"),),
+                    )
+                },
+                "invalid_external_event_type",
+            ),
+            (
+                {
+                    "external_event": PluginExternalEvent(
+                        event_type="finance",
+                        fields=(("title", "event"), ("title", "duplicate")),
+                    )
+                },
+                "invalid_external_event_fields",
+            ),
+            (
+                {
+                    "external_event": PluginExternalEvent(
+                        event_type="finance",
+                        fields=(("file_path", "C:/private/event.txt"),),
+                    )
+                },
+                "invalid_external_event_fields",
+            ),
         )
 
         for overrides, expected_reason in invalid_cases:
@@ -196,6 +263,33 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         engine._load_turn_visible_memory = stop_after_user_write
         return engine, store, prepared_payloads
 
+    def _build_engine_stopped_after_external_event_write(
+        self,
+    ) -> tuple[AkaneMemoryEngine, list[dict[str, Any]]]:
+        engine, _store, _prepared_payloads = self._build_engine_stopped_after_user_write()
+        event_calls: list[dict[str, Any]] = []
+        engine._load_turn_visible_memory = lambda **kwargs: ([kwargs["user_record"]], [], [])
+        engine._run_pre_retrieval_pipeline = lambda **_kwargs: SimpleNamespace(
+            router_output={},
+            router_timing={},
+            retrieval_result={"fused_hits": []},
+            verifier_output={},
+            confirmed_snippets=[],
+            verifier_timing={},
+        )
+        engine._apply_user_vector_index_policy = lambda *, user_record, **_kwargs: user_record
+        engine._upsert_raw_record = lambda _record: None
+        engine._record_memcore_user_turn = lambda **_kwargs: self.fail(
+            "structured event must not use record_user_turn"
+        )
+
+        def stop_after_external_event_write(**kwargs: Any) -> dict[str, Any]:
+            event_calls.append(dict(kwargs))
+            raise self._StopAfterUserWrite()
+
+        engine._record_memcore_external_event = stop_after_external_event_write
+        return engine, event_calls
+
     def test_sync_and_stream_paths_use_same_hashed_user_source_id_and_consume_raw_key(self) -> None:
         engine, store, prepared_payloads = self._build_engine_stopped_after_user_write()
         payload = {
@@ -240,6 +334,94 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
         )
 
         self.assertNotEqual(first, second)
+
+    def test_structured_event_source_id_is_separate_from_legacy_user_role(self) -> None:
+        payload = {"memory_idempotency_key": "delivery:event-1"}
+        legacy = AkaneMemoryEngine._pop_user_memory_source_id(
+            dict(payload),
+            profile_user_id="owner",
+            session_id="session",
+            character_pack_id="akane_v1",
+        )
+        structured = AkaneMemoryEngine._pop_user_memory_source_id(
+            dict(payload),
+            profile_user_id="owner",
+            session_id="session",
+            character_pack_id="akane_v1",
+            memory_role="event.finance",
+        )
+
+        self.assertNotEqual(legacy, structured)
+
+    def test_sync_and_stream_paths_store_structured_event_role_without_leaking_control_payload(self) -> None:
+        engine, store, prepared_payloads = self._build_engine_stopped_after_user_write()
+        message = (
+            "source: 东方财富\n"
+            "published_at: 2026-07-14T14:30:00+08:00\n"
+            "title: 科创债ETF规模出现新变化\n"
+            "summary: 公开快讯摘要。\n"
+            "url: https://finance.eastmoney.com/example.html"
+        )
+        payload = {
+            "user_id": "qq-session",
+            "real_user_id": "qq-user",
+            "character_pack_id": "akane_v1",
+            "message": message,
+            "timestamp": 1_784_016_000,
+            "turn_kind": "plugin_proactive",
+            "memory_idempotency_key": "delivery:structured-event",
+            "plugin_external_event": {
+                "event_type": "finance",
+                "source": "东方财富",
+                "fields": {
+                    "published_at": "2026-07-14T14:30:00+08:00",
+                    "title": "科创债ETF规模出现新变化",
+                    "summary": "公开快讯摘要。",
+                    "url": "https://finance.eastmoney.com/example.html",
+                },
+            },
+        }
+
+        with self.assertRaises(self._StopAfterUserWrite):
+            engine.process_turn(payload)
+        with self.assertRaises(self._StopAfterUserWrite):
+            next(engine.process_turn_stream(payload))
+
+        self.assertEqual([call["role"] for call in store.calls], ["event.finance", "event.finance"])
+        self.assertTrue(
+            all(call["memory_metadata"]["categories"] == ["event_trace"] for call in store.calls)
+        )
+        self.assertTrue(all(call["content"] == message for call in store.calls))
+        self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
+
+    def test_sync_and_stream_paths_route_structured_event_to_memcore_external_primitive(self) -> None:
+        payload = {
+            "user_id": "qq-session",
+            "real_user_id": "qq-user",
+            "character_pack_id": "akane_v1",
+            "message": "source: 东方财富\ntitle: 结构化事件",
+            "timestamp": 1_784_016_000,
+            "turn_kind": "plugin_proactive",
+            "memory_idempotency_key": "delivery:structured-event",
+            "plugin_external_event": {
+                "event_type": "finance",
+                "source": "东方财富",
+                "fields": {"title": "结构化事件"},
+            },
+        }
+
+        for use_stream in (False, True):
+            with self.subTest(use_stream=use_stream):
+                engine, event_calls = self._build_engine_stopped_after_external_event_write()
+                with self.assertRaises(self._StopAfterUserWrite):
+                    if use_stream:
+                        next(engine.process_turn_stream(payload))
+                    else:
+                        engine.process_turn(payload)
+
+                self.assertEqual(len(event_calls), 1)
+                self.assertEqual(event_calls[0]["event"]["event_type"], "finance")
+                self.assertEqual(event_calls[0]["event"]["fields"], {"title": "结构化事件"})
 
     def test_transient_final_failure_is_not_persisted_as_an_assistant_turn(self) -> None:
         self.assertFalse(

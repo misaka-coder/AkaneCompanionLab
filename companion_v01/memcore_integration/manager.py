@@ -220,6 +220,47 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
         )
 
+    def record_external_event(
+        self,
+        *,
+        event_type: str,
+        fields: dict[str, Any],
+        source: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        timestamp: int | None = None,
+        source_id: str = "",
+    ) -> dict[str, Any]:
+        operation = "record_external_event"
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
+        try:
+            written = system.record_external_event(
+                event_type=str(event_type or "").strip(),
+                fields=dict(fields or {}),
+                source=str(source or "").strip(),
+                timestamp=timestamp,
+                source_id=str(source_id or "").strip() or None,
+            )
+            return self._status(
+                operation,
+                True,
+                "recorded",
+                source_id=str(written.get("source_id") or source_id),
+                index_status=str(written.get("index_status") or ""),
+            )
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore external event dual-write failed: %s", reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
     def inspect_turn_source(
         self,
         source_id: str,

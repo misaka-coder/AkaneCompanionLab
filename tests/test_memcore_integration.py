@@ -1357,6 +1357,48 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored["memory_metadata"]["keywords"], ["稳健型基金", "基金偏好"])
             manager.close()
 
+    def test_manager_records_structured_external_event_in_linear_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="dual",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+
+            result = manager.record_external_event(
+                event_type="finance",
+                source="东方财富",
+                fields={
+                    "url": "https://finance.eastmoney.com/example.html",
+                    "summary": "公开快讯摘要。",
+                    "title": "科创债ETF规模出现新变化",
+                    "published_at": "2026-07-14T14:30:00+08:00",
+                },
+                profile_user_id="qq-user",
+                session_id="qq-session",
+                character_pack_id="akane_v1",
+                timestamp=1_784_016_000,
+                source_id="plugin-event:structured-1",
+            )
+
+            self.assertTrue(result["ok"], result)
+            stored = manager._store.get_record_by_source_id("plugin-event:structured-1")
+            self.assertEqual(stored["role"], "event.finance")
+            self.assertEqual(stored["memory_metadata"]["categories"], ["event_trace"])
+            self.assertEqual(
+                stored["content"],
+                "source: 东方财富\n"
+                "published_at: 2026-07-14T14:30:00+08:00\n"
+                "title: 科创债ETF规模出现新变化\n"
+                "summary: 公开快讯摘要。\n"
+                "url: https://finance.eastmoney.com/example.html",
+            )
+            manager.close()
+
     def test_engine_memcore_wrappers_forward_turn_actor(self) -> None:
         manager = _ActorCaptureMemcoreManager()
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
