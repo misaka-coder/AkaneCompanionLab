@@ -10,7 +10,10 @@ from types import SimpleNamespace
 from companion_v01.resource_manifest import ResourceManifest
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.store import MemoryStore
-from companion_v01.vision_service import VisionObservationService
+from companion_v01.vision_service import (
+    VISION_ERROR_RETRY_COOLDOWN_SECONDS,
+    VisionObservationService,
+)
 
 
 def write_bytes(path: Path, content: bytes = b"stub") -> None:
@@ -373,6 +376,30 @@ class VisionObservationServiceTests(unittest.TestCase):
         assert observation is not None
         self.assertEqual(observation["status"], "ready")
         self.assertEqual(observation["observation"]["summary"], "客厅里有柔和的暖光。")
+
+    def test_failed_observation_waits_for_cooldown_before_retry(self) -> None:
+        temp_dir, root = self._build_assets_root()
+        self.addCleanup(temp_dir.cleanup)
+        service = VisionObservationService(
+            root / "vision_cache",
+            store=MemoryStore(root / "db"),
+            analyze_image_fn=lambda _target: {},
+        )
+        now_ts = int(time.time())
+
+        self.assertFalse(
+            service._should_retry_observation(
+                {"status": "error", "updated_at": now_ts}
+            )
+        )
+        self.assertTrue(
+            service._should_retry_observation(
+                {
+                    "status": "error",
+                    "updated_at": now_ts - VISION_ERROR_RETRY_COOLDOWN_SECONDS,
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

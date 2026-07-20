@@ -22,6 +22,7 @@ from .store import MemoryStore
 logger = logging.getLogger("akane.vision")
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 PROMPT_STYLE_REVISION = "atmo5"
+VISION_ERROR_RETRY_COOLDOWN_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -434,15 +435,15 @@ class VisionObservationService:
         if not isinstance(observation, dict):
             return False
         status = str(observation.get("status") or "").strip().lower()
-        if status == "error":
-            return True
-        if status not in {"pending", "running"}:
+        if status not in {"error", "pending", "running"}:
             return False
 
         updated_at = int(observation.get("updated_at") or 0)
         if updated_at <= 0:
             return True
         age_seconds = max(0, int(time.time()) - updated_at)
+        if status == "error":
+            return age_seconds >= VISION_ERROR_RETRY_COOLDOWN_SECONDS
         if status == "pending":
             return age_seconds >= 15
         running_stale_seconds = max(int(self.settings.vision_request_timeout) + 30, 180)
