@@ -111,6 +111,42 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(context.clean_message, "这个表情")
         self.assertNotIn("provider.invalid", str(normalized.as_dict()))
 
+    def test_gateway_group_context_delegates_trigger_decision_to_package_policy(self) -> None:
+        gateway = NapCatQQGateway(wake_words=("Akane",))
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "group_id": GROUP_ID,
+            "message_id": "package-backed-group-trigger-1",
+            "message": [
+                {"type": "text", "data": {"text": "Akane 看看这个"}},
+                {
+                    "type": "image",
+                    "data": {"file": "image.jpg", "url": "https://provider.invalid/image"},
+                },
+            ],
+        }
+
+        with patch.object(
+            gateway._group_trigger,
+            "evaluate",
+            wraps=gateway._group_trigger.evaluate,
+        ) as trigger_policy:
+            context = gateway.build_message_context(event)
+
+        trigger_policy.assert_called_once()
+        kwargs = trigger_policy.call_args.kwargs
+        self.assertEqual(kwargs["group_id"], GROUP_ID)
+        self.assertEqual(kwargs["actor_id"], USER_ID)
+        self.assertFalse(kwargs["mentioned_bot"])
+        self.assertTrue(kwargs["mentioned_wake_word"])
+        self.assertTrue(kwargs["has_attachments"])
+        self.assertTrue(kwargs["allow_attachment_follow"])
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "group_wake_word")
+
 
 if __name__ == "__main__":
     unittest.main()

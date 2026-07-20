@@ -1,13 +1,13 @@
 # channelcore-onebot Akane integration v0
 
-Status: inbound normalization + event-admission slices integrated.
+Status: inbound normalization + event-admission + group-trigger slices integrated.
 
 ## Decision
 
 `channelcore-onebot` is one independent Python package, not a premature
-`channelcore` plus adapter split. Its first applied slice is deliberately
-narrow: immutable inbound contracts and stateless OneBot event/message-segment
-normalization.
+`channelcore` plus adapter split. Its applied slices remain deliberately
+narrow: immutable inbound contracts, OneBot event/message-segment
+normalization, admission, and neutral group-trigger calculation.
 
 The runtime path is:
 
@@ -16,6 +16,7 @@ OneBot/NapCat webhook
   -> Akane webhook and per-Bot self_id authorization
   -> channelcore_onebot.OneBotEventAdmission.admit(...)
   -> channelcore_onebot.normalize_inbound_event(...)
+  -> channelcore_onebot.GroupTriggerPolicy.evaluate(...)
   -> Akane QQMessageContext product projection
   -> Akane commands, safe attachment materialization, vision, MemCore/LLM, TTS
   -> current Akane OneBot delivery path
@@ -29,18 +30,20 @@ OneBot/NapCat webhook
 - structured segments and raw CQ fallback;
 - text, at, reply, image, voice, file, video, face, and mface parsing;
 - per-Bot wake-word inputs and neutral trigger reasons;
-- sensitive attachment locators hidden from repr and public summaries.
+- sensitive attachment locators hidden from repr and public summaries;
 - per-Bot `self_id` comparison;
 - seconds/milliseconds timestamp normalization and stale-event decisions;
-- thread-safe, atomic TTL replay claims with Bot-account-isolated fingerprints.
+- thread-safe, atomic TTL replay claims with Bot-account-isolated fingerprints;
+- neutral group mention/wake-word and same-actor attachment-follow decisions,
+  keyed by Bot account, group, and actor.
 
 ## Akane-owned
 
 - FastAPI routes, webhook secrets, deployment profiles, and runtime selection;
 - webhook-secret/profile binding and HTTP status mapping for self-id failures;
-- the stateful group attachment window;
 - session/profile/character/model/reply-mode and memory mapping;
-- group vision settings and product commands;
+- group vision settings and product commands (the host only supplies the
+  package's `allow_attachment_follow` strategy input);
 - quoted-message HTTP lookup and scope policy;
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
 - choice of response media and all outbound OneBot actions.
@@ -63,12 +66,10 @@ message, attachment, reply, mention, wake-word, and poke shapes now pass
 
 Later work may replace, one boundary at a time:
 
-1. self-id plus thread-safe stale/replay guards and stateful group trigger
-   calculation;
-2. quoted-message lookup and quoted attachment scope validation;
-3. text/image/voice/file/mface outbound actions with one sanitized structured
+1. quoted-message lookup and quoted attachment scope validation;
+2. text/image/voice/file/mface outbound actions with one sanitized structured
    result contract;
-4. real reply-segment sending and face/mface host consumption.
+3. real reply-segment sending and face/mface host consumption.
 
 Each applied slice must delete or thin the corresponding Akane authority in the
 same change. In particular, HTTP 200 with a non-zero OneBot retcode must not be

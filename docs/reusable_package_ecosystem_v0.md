@@ -31,7 +31,7 @@ chat/product host
 
 | Package | Role | Host responsibilities |
 | --- | --- | --- |
-| `channelcore-onebot` | Host-neutral OneBot inbound contracts, event/message-segment normalization, self-id, freshness, and atomic replay admission. | Own webhook auth/status mapping, sessions, product commands, attachment materialization, vision/model/TTS, and delivery policy. |
+| `channelcore-onebot` | Host-neutral OneBot inbound contracts, event/message-segment normalization, self-id, freshness, atomic replay admission, and group-trigger/follow decisions. | Own webhook auth/status mapping, sessions, product commands, attachment materialization, vision/model/TTS, and delivery policy. |
 | `memcore` | Domain-neutral layered memory: record turns, render visible memory, expose retrieval/timeline tools, compact memory. | Provide real LLM/embedding adapters, namespace policy, prompt assembly, final chat model call. |
 | `capcore` | Capability descriptor, slot validation, invocation preparation, risk/effects/approval contract. | Decide which capabilities exist and how the user grants/denies them. |
 | `capcore-host-utils` | Host safety utilities: workspace scope, stable display paths, approval persistence, preview redaction, JSON-safe values. | Build the actual UI/CLI approval flow and choose trust mode. |

@@ -15,6 +15,7 @@ import requests
 from channelcore_onebot import (
     AttachmentRef,
     EventAdmissionConfig,
+    GroupTriggerPolicy,
     OneBotEventAdmission,
     clean_message_text as clean_onebot_message_text,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
@@ -317,7 +318,7 @@ class NapCatQQGateway:
         self._wake_words = _normalize_qq_wake_words(wake_words)
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
         self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
-        self.group_follow_state: dict[str, dict[str, Any]] = {}
+        self._group_trigger = GroupTriggerPolicy(bot_account_id=self.bot_qq)
         require_self_id = (
             self._channel_config.require_self_id
             if self._channel_config is not None
@@ -489,7 +490,7 @@ class NapCatQQGateway:
             "active_reply_mode_override_count": len(self.reply_mode_overrides),
             "active_emotion_mface_session_count": len(self.emotion_mface_state),
             "active_emotion_image_session_count": len(self.emotion_image_state),
-            "active_group_attachment_buffer_count": len(self.group_follow_state),
+            "active_group_attachment_buffer_count": self._group_trigger.active_window_count,
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
             "active_event_fingerprint_count": self._event_admission.active_fingerprint_count,
         }
@@ -847,30 +848,28 @@ class NapCatQQGateway:
         if sender_label:
             self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
         mentions_wake_word = inbound.mentioned_wake_word
-        allow_group_attachment_buffer = self.is_group_vision_enabled(
-            group_id
-        ) and self._is_group_attachment_buffer_allowed(
-            session_id=session_id,
-            user_id=user_id,
-            attachments=attachments,
-        )
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
 
         if is_group:
-            if mentions_bot or mentions_wake_word:
-                self._arm_group_attachment_buffer(
-                    session_id=session_id,
-                    user_id=user_id,
-                    reason="group_mention" if mentions_bot else "group_wake_word",
-                )
-            elif allow_group_attachment_buffer:
-                pass
-            else:
+            trigger = self._group_trigger.evaluate(
+                group_id=str(group_id),
+                actor_id=str(user_id),
+                mentioned_bot=mentions_bot,
+                mentioned_wake_word=mentions_wake_word,
+                has_attachments=bool(attachments),
+                allow_attachment_follow=self.is_group_vision_enabled(group_id),
+                ttl_seconds=getattr(
+                    config,
+                    "QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS",
+                    getattr(config, "QQ_GROUP_FOLLOW_TTL_SECONDS", 180),
+                ),
+            )
+            if not trigger.should_respond:
                 return QQMessageContext(
                     should_respond=False,
-                    reason="group_passive_observed",
+                    reason=trigger.reason,
                     should_record=True,
                     is_group=True,
                     target_id=group_id,
@@ -889,13 +888,7 @@ class NapCatQQGateway:
 
         return QQMessageContext(
             should_respond=True,
-            reason="private"
-            if is_private
-            else (
-                "group_mention"
-                if mentions_bot
-                else ("group_wake_word" if mentions_wake_word else "group_attachment_buffer")
-            ),
+            reason="private" if is_private else trigger.reason,
             is_group=is_group,
             target_id=group_id if is_group else user_id,
             user_id=user_id,
@@ -3490,48 +3483,6 @@ class NapCatQQGateway:
 
     def _is_group_plaintext_allowed(self, *, session_id: str, user_id: int) -> bool:
         return bool(getattr(config, "QQ_GROUP_PLAINTEXT_ENABLED", False))
-
-    def _is_group_attachment_buffer_allowed(
-        self,
-        *,
-        session_id: str,
-        user_id: int,
-        attachments: list[dict[str, Any]] | None,
-    ) -> bool:
-        if not attachments:
-            return False
-        state = self._get_group_follow_state(session_id)
-        return bool(state and int(state.get("user_id") or 0) == int(user_id or 0))
-
-    def _get_group_follow_state(self, session_id: str) -> dict[str, Any] | None:
-        state = self.group_follow_state.get(session_id)
-        if not isinstance(state, dict):
-            return None
-        if float(state.get("expires_at") or 0.0) <= time.time():
-            self.group_follow_state.pop(session_id, None)
-            return None
-        return state
-
-    def _arm_group_attachment_buffer(self, *, session_id: str, user_id: int, reason: str) -> None:
-        ttl = max(
-            20,
-            int(
-                getattr(
-                    config,
-                    "QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS",
-                    getattr(config, "QQ_GROUP_FOLLOW_TTL_SECONDS", 180),
-                )
-                or 180
-            ),
-        )
-        self.group_follow_state[session_id] = {
-            "user_id": int(user_id or 0),
-            "expires_at": time.time() + ttl,
-            "reason": reason,
-        }
-
-    def _arm_group_follow(self, *, session_id: str, user_id: int, reason: str) -> None:
-        self._arm_group_attachment_buffer(session_id=session_id, user_id=user_id, reason=reason)
 
     def _admit_event(self, event: dict[str, Any]) -> QQMessageContext | None:
         result = self._event_admission.admit(
