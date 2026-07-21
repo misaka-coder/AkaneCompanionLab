@@ -741,7 +741,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
     def test_index_warmup_is_scheduled_without_blocking_first_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
-                backend="legacy",
+                backend="memcore",
                 storage_path=Path(temp_dir) / "memcore_v01.db",
                 visible_scope="user",
                 enable_flavor=False,
@@ -773,6 +773,133 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 release.set()
                 close_thread.join(timeout=1)
                 self.assertFalse(close_thread.is_alive())
+
+    def test_default_managers_share_process_runtime_without_mixing_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "first.db",
+                visible_scope="conversation",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            second = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "second.db",
+                visible_scope="conversation",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                first_system = first._get_system(
+                    profile_user_id="personal-user",
+                    session_id="private:personal-user",
+                    character_pack_id="akane-personal",
+                )
+                second_system = second._get_system(
+                    profile_user_id="finance-user",
+                    session_id="group:finance-room",
+                    character_pack_id="akane-finance",
+                )
+
+                self.assertIs(first._runtime, second._runtime)
+                self.assertIs(first_system.runtime, second_system.runtime)
+                self.assertNotEqual(first_system.namespace.hard_key(), second_system.namespace.hard_key())
+                self.assertNotEqual(
+                    first_system.namespace.conversation_id,
+                    second_system.namespace.conversation_id,
+                )
+
+                shared_runtime = first_system.runtime
+                first.close()
+                self.assertEqual(shared_runtime.submit_index_repair(lambda: "alive").result(timeout=1), "alive")
+            finally:
+                first.close()
+                second.close()
+            with self.assertRaisesRegex(RuntimeError, "memcore_runtime_closed"):
+                shared_runtime.submit_index_repair(lambda: "closed")
+
+    def test_manager_does_not_close_injected_runtime(self) -> None:
+        from memcore import MemCoreRuntime
+
+        runtime = MemCoreRuntime(compaction_workers=1, index_workers=1)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "memcore_v01.db",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                    runtime=runtime,
+                )
+                system = manager._get_system(
+                    profile_user_id="user",
+                    session_id="private:user",
+                    character_pack_id="akane",
+                )
+                self.assertIs(system.runtime, runtime)
+                manager.close()
+
+            self.assertEqual(runtime.submit_index_repair(lambda: 7).result(timeout=1), 7)
+        finally:
+            runtime.close()
+
+    def test_manager_waits_for_running_compaction_before_closing_store(self) -> None:
+        from memcore import MemCoreRuntime
+
+        runtime = MemCoreRuntime(compaction_workers=1, index_workers=1)
+        started = threading.Event()
+        release = threading.Event()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "memcore_v01.db",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                    runtime=runtime,
+                )
+                system = manager._get_system(
+                    profile_user_id="user",
+                    session_id="private:user",
+                    character_pack_id="akane",
+                )
+
+                def _run_slow_compaction():
+                    started.set()
+                    release.wait(timeout=2)
+                    return {"status": "not_due"}
+
+                system.compact_due_background = lambda: runtime.submit_compaction(_run_slow_compaction)
+                scheduled = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="private:user",
+                    character_pack_id="akane",
+                )
+                self.assertEqual(scheduled["status"], "scheduled")
+                self.assertTrue(started.wait(timeout=1))
+
+                close_thread = threading.Thread(target=manager.close)
+                close_thread.start()
+                close_thread.join(timeout=0.05)
+                self.assertTrue(close_thread.is_alive())
+                release.set()
+                close_thread.join(timeout=1)
+                self.assertFalse(close_thread.is_alive())
+                self.assertTrue(manager._closed)
+        finally:
+            release.set()
+            runtime.close()
 
     def test_normalize_memory_backend(self) -> None:
         self.assertEqual(normalize_memory_backend("legacy"), "legacy")

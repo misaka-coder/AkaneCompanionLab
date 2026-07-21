@@ -8,7 +8,7 @@ is being retired.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, wait
 import hashlib
 import logging
 from pathlib import Path
@@ -37,6 +37,38 @@ MEMCORE_PROVIDER_PROFILE_ALIASES = {
     "canonical_user_assistant": "canonical_user_assistant",
 }
 logger = logging.getLogger("akane.memcore")
+
+
+_PROCESS_RUNTIME_LOCK = threading.RLock()
+_PROCESS_RUNTIME: Any | None = None
+_PROCESS_RUNTIME_LEASES = 0
+
+
+def _acquire_process_runtime(memcore: Any) -> Any:
+    """Lease the one MemCoreRuntime shared by all live Akane managers."""
+
+    global _PROCESS_RUNTIME, _PROCESS_RUNTIME_LEASES
+    with _PROCESS_RUNTIME_LOCK:
+        if _PROCESS_RUNTIME is None:
+            _PROCESS_RUNTIME = memcore.MemCoreRuntime()
+        _PROCESS_RUNTIME_LEASES += 1
+        return _PROCESS_RUNTIME
+
+
+def _release_process_runtime(runtime: Any) -> None:
+    """Release a process-runtime lease and close only after the final owner."""
+
+    global _PROCESS_RUNTIME, _PROCESS_RUNTIME_LEASES
+    runtime_to_close = None
+    with _PROCESS_RUNTIME_LOCK:
+        if runtime is not _PROCESS_RUNTIME or _PROCESS_RUNTIME_LEASES < 1:
+            return
+        _PROCESS_RUNTIME_LEASES -= 1
+        if _PROCESS_RUNTIME_LEASES == 0:
+            runtime_to_close = _PROCESS_RUNTIME
+            _PROCESS_RUNTIME = None
+    if runtime_to_close is not None:
+        runtime_to_close.close(wait=True)
 
 
 def normalize_memory_backend(value: Any) -> str:
@@ -117,6 +149,7 @@ class MemcoreManager:
         llm: Any,
         embedding_provider: Any,
         persona_text_provider: Callable[[str, str], str] | None = None,
+        runtime: Any | None = None,
     ) -> None:
         self.backend = normalize_memory_backend(backend)
         self.storage_path = Path(storage_path)
@@ -135,10 +168,14 @@ class MemcoreManager:
         self._memory_config: Any | None = None
         self._store: Any | None = None
         self._index: Any | None = None
+        self._runtime: Any | None = runtime
+        self._uses_process_runtime = False
         self._systems: dict[tuple[str, str, str], Any] = {}
         self._warmed_index_keys: set[tuple[str, str, str]] = set()
-        self._index_warmup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="akane-memcore-warmup")
+        self._background_futures: set[Future[Any]] = set()
         self._lock = threading.RLock()
+        self._closing = False
+        self._closed = False
         if self.enabled:
             self._bootstrap()
 
@@ -181,16 +218,27 @@ class MemcoreManager:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed or self._closing:
+                return
+            self._closing = True
+            futures = list(self._background_futures)
+        # A shared runtime cannot cancel work by manager. Track our own jobs so
+        # this store remains valid until its running warmup/compaction finishes.
+        for future in futures:
+            future.cancel()
+        if futures:
+            wait(futures)
+        with self._lock:
             systems = list(self._systems.values())
             self._systems.clear()
             store = self._store
             self._store = None
             self._index = None
-            warmup_executor = self._index_warmup_executor
-        # Let an already-running reindex finish while its MemorySystem/store are
-        # still valid. Pending namespace warmups are cancelled so shutdown does
-        # not start new database work.
-        warmup_executor.shutdown(wait=True, cancel_futures=True)
+            runtime = self._runtime
+            uses_process_runtime = self._uses_process_runtime
+            self._runtime = None
+            self._uses_process_runtime = False
+            self._background_futures.clear()
         for system in systems:
             try:
                 system.close()
@@ -201,6 +249,12 @@ class MemcoreManager:
                 store.close()
             except Exception as exc:
                 logger.debug("memcore store close failed: %s", exc)
+        if uses_process_runtime and runtime is not None:
+            _release_process_runtime(runtime)
+        with self._lock:
+            self._available = False
+            self._closed = True
+            self._closing = False
 
     def record_user_turn(
         self,
@@ -794,7 +848,11 @@ class MemcoreManager:
         if system is None:
             return self._status("compact_due_background", False, "unavailable", reason=self._reason)
         try:
-            future = system.compact_due_background()
+            with self._lock:
+                if self._closing or self._closed:
+                    raise RuntimeError("memcore_manager_closed")
+                future = system.compact_due_background()
+                self._track_background_future_locked(future)
             future.add_done_callback(self._log_compaction_result)
             return self._status("compact_due_background", True, "scheduled")
         except Exception as exc:
@@ -1741,6 +1799,8 @@ class MemcoreManager:
             }
 
     def _bootstrap(self) -> None:
+        store = None
+        process_runtime = None
         try:
             memcore = self._import_memcore()
 
@@ -1748,12 +1808,29 @@ class MemcoreManager:
             self._llm_client = build_akane_llm_client(self.llm)
             self._embedding = build_akane_embedding_provider(self.embedding_provider)
             self._memory_config = self._build_memory_config(memcore)
-            self._store = memcore.SQLiteMemoryStore(str(self.storage_path))
-            self._index = memcore.InMemoryVectorIndex(embedding=self._embedding)
+            store = memcore.SQLiteMemoryStore(str(self.storage_path))
+            index = memcore.InMemoryVectorIndex(embedding=self._embedding)
+            if self._runtime is None:
+                process_runtime = _acquire_process_runtime(memcore)
+                self._runtime = process_runtime
+                self._uses_process_runtime = True
+            elif not isinstance(self._runtime, memcore.MemCoreRuntime):
+                raise TypeError("runtime must be a MemCoreRuntime or None")
+            self._store = store
+            self._index = index
             self._memcore_module = memcore
             self._available = True
             self._reason = ""
         except Exception as exc:
+            if process_runtime is not None:
+                _release_process_runtime(process_runtime)
+                self._runtime = None
+                self._uses_process_runtime = False
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
             self._available = False
             self._reason = str(exc) or exc.__class__.__name__
 
@@ -2267,9 +2344,11 @@ class MemcoreManager:
         session_id: str,
         character_pack_id: str,
     ) -> Any:
+        if self._closing or self._closed:
+            raise RuntimeError("memcore_manager_closed")
         if self._memcore_module is None or self._llm_client is None or self._embedding is None:
             raise RuntimeError(self._reason or "memcore_not_bootstrapped")
-        if self._store is None or self._index is None or self._memory_config is None:
+        if self._store is None or self._index is None or self._memory_config is None or self._runtime is None:
             raise RuntimeError(self._reason or "memcore_dependencies_not_ready")
 
         user_id = str(profile_user_id or session_id or "default_user").strip() or "default_user"
@@ -2277,6 +2356,8 @@ class MemcoreManager:
         domain_id = str(character_pack_id or "").strip()
         key = (user_id, conversation_id, domain_id)
         with self._lock:
+            if self._closing or self._closed:
+                raise RuntimeError("memcore_manager_closed")
             existing = self._systems.get(key)
             if existing is None:
                 namespace = self._memcore_module.Namespace(
@@ -2302,6 +2383,7 @@ class MemcoreManager:
                     embedding=self._embedding,
                     persona_text=persona_text,
                     prompt_overrides=self._build_prompt_overrides(persona_text),
+                    runtime=self._runtime,
                 )
                 self._systems[key] = existing
         self._warm_index_for_system(existing, operation="get_system")
@@ -2329,22 +2411,34 @@ class MemcoreManager:
             return
         hard_key = tuple(str(item or "") for item in namespace.hard_key())
         with self._lock:
+            if self._closing or self._closed or self._runtime is None:
+                return
             if hard_key in self._warmed_index_keys:
                 return
             self._warmed_index_keys.add(hard_key)
-        try:
-            self._index_warmup_executor.submit(
-                self._run_index_warmup,
-                system,
-                hard_key,
-                operation,
-            )
-        except Exception as exc:
-            with self._lock:
+            try:
+                future = self._runtime.submit_index_repair(
+                    self._run_index_warmup,
+                    system,
+                    hard_key,
+                    operation,
+                )
+                self._track_background_future_locked(future)
+            except Exception as exc:
                 self._warmed_index_keys.discard(hard_key)
-            logger.warning(
-                "memcore %s index warmup scheduling failed: %s", operation, str(exc) or exc.__class__.__name__
-            )
+                logger.warning(
+                    "memcore %s index warmup scheduling failed: %s",
+                    operation,
+                    str(exc) or exc.__class__.__name__,
+                )
+
+    def _track_background_future_locked(self, future: Future[Any]) -> None:
+        self._background_futures.add(future)
+        future.add_done_callback(self._discard_background_future)
+
+    def _discard_background_future(self, future: Future[Any]) -> None:
+        with self._lock:
+            self._background_futures.discard(future)
 
     def _run_index_warmup(
         self,
@@ -2536,6 +2630,8 @@ class MemcoreManager:
 
     @staticmethod
     def _log_compaction_result(future: Any) -> None:
+        if future.cancelled():
+            return
         try:
             future.result()
         except Exception as exc:
