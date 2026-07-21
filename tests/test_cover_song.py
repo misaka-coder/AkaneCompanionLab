@@ -410,6 +410,43 @@ class CoverSongTests(unittest.TestCase):
         send_voice.assert_called_once()
         send_file.assert_not_called()
 
+    def test_cover_song_both_delivery_result_hides_local_path(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            target_id=123,
+            user_id=123,
+            session_id="qq_pri_123",
+            profile_user_id="qq_123",
+            clean_message="语音和文件都发我",
+        )
+        private_path = r"C:\private\cover.mp3"
+        event = {
+            "type": "generated_file_ready",
+            "send_to_user": True,
+            "delivery_scope": "cover_song",
+            "delivery_mode": "both",
+            "generated_file": {
+                "generated_id": "generated::1",
+                "absolute_path": private_path,
+                "output_title": "测试翻唱",
+                "file_ext": "mp3",
+                "mime_type": "audio/mpeg",
+            },
+        }
+        with (
+            patch.object(gateway, "send_voice", return_value={"ok": True}) as send_voice,
+            patch.object(gateway, "send_file", return_value={"ok": True}) as send_file,
+        ):
+            result = gateway.send_generated_files(context, [event])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["results"][0]["mode"], "both")
+        self.assertNotIn(private_path, repr(result))
+        send_voice.assert_called_once()
+        send_file.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

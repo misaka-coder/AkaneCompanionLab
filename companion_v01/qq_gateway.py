@@ -2273,7 +2273,6 @@ class NapCatQQGateway:
                         "mode": "both",
                         "voice_result": voice_result,
                         "file_result": file_result,
-                        "file": str(target.get("path") or ""),
                     }
                 elif delivery_mode == "file":
                     result = self.send_file(
