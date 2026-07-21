@@ -41,10 +41,19 @@
    当前消息、真正 volatile 的 transport/event 上下文和 visual 状态。按真实审计组成估算，普通轮冻结增量将从
    约 8k 降到约 0.8k tokens；状态真实变化时允许一次前缀重建，不以复制整块状态换取表面缓存命中。
 
-云端仍未部署这两项。当前共享 venv 内实际运行的 MemCore 是旧 `0.1.0` wheel（对应 `99a1fa0`），
-只支持 30 条触发/20 条批次的计数压缩；仅发布 Akane release 不会自动更新该 wheel。下一步部署 smoke 必须
-同时核对运行时存在 `compaction_policy`、`max_prompt_history_tokens` 和正确源码/wheel hash，再做个人私聊、
-个人群聊各至少三轮及一次压缩前后验收。
+这两项已于 2026-07-21 部署：Host release 为 `3fe5e8f`，共享 venv 安装从 `a2ba712` 构建的
+MemCore `0.1.0` wheel。运行时 smoke 明确返回 `compaction_policy=projected_tokens`、
+`max_prompt_history_tokens=16000`、`target_prompt_history_tokens=10000`，并验证
+`closed/aborted/open` 的 terminal 状态分别为 `true/true/false`。
+
+首次只用主仓库 archive 切换时，因 archive 不包含抽出的 package 源码目录，启动被
+`channelcore_onebot` 缺失拒绝；unit 已立即回滚到 `b1c96ae` 恢复服务。随后只把旧 release 中 11 个未改动
+的抽包依赖复制到新 release，明确不复制旧 `memcore/`（否则会遮蔽共享 venv 新 wheel），离线 import smoke
+通过后再次切换。最终 personal/finance health 均为 `ok`、root binding 均为 `valid`、`NRestarts=0`；备份 ID
+为 `cache-compaction-3fe5e8f-a2ba712-20260721`。数据库、Bot 配置、环境密钥、NapCat 与 QQ 登录态均未修改。
+
+部署后已出现积压历史的 projected-token compaction 请求，但个人私聊、个人群聊各至少三轮的真实主回复
+usage 与一次压缩前后缓存验收仍待完成，不能仅凭 health 写成缓存验收通过。
 
 当前新增/重点测试位于：
 
