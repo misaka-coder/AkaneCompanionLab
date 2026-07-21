@@ -8,7 +8,8 @@
 - 请求冻结按 projection message 生效，不再按整个 turn 锁死；已冻结旧消息不可改，后追加工具消息可分别首次冻结；
 - 普通消息、`event.*`、单工具和并行工具使用同一线性 turn；Responses 不再合并相邻同 role 消息；
 - final 保存真实 provider raw，缺少 LLM runtime 的轻量完成路径仍能原样提交 raw；
-- 动态检索/runtime/persona/visual 上下文放在 append-only 历史和当前消息之后；空动态块不渲染；
+- 可复用 persona/宿主状态放在 append-only 历史之前，真正逐轮变化的检索、transport/event 与 visual
+  上下文放在当前消息尾部；空动态块不渲染；
 - `tool/event/skill/material` 显式 kind 检索由宿主 allowlist 授权，模型只能缩小权限；
 - MemCore projection 读取/冻结失败返回结构化记忆错误，不落入人格兜底，也不持久化失败回复；
 - 工具新加载的图片不再回填到已冻结的原始 user message，而是在 tool result 后追加
@@ -19,6 +20,31 @@
   不改变工具选择、轮数或执行权限；
 - final `complete_turn` 会做一次幂等重试；仍失败时显式 abort 开放 turn、停止该轮 compaction，并在不丢弃
   已生成模型回复的前提下附加 path-free `_memcore_failure`，不再静默留下 open turn。
+
+### 2026-07-21 缓存与压缩真实审计
+
+云端 provider audit 已确认此前“单次请求接近 10 万 tokens”不是正常的长对话正文：
+
+- 个人群聊压缩前样本为 `126078 input / 117248 cached`（93.00%）；压缩后为
+  `75750 input / 2560 cached`（3.38%），且压缩后历史仍约 64.5k tokens；
+- 个人私聊最新样本为 `27044 input / 23040 cached`（85.19%），历史约 21.7k tokens；
+- 每个完整 provider user turn 约新增 8.3k～8.7k tokens；真实 prompt 指纹显示其中约 4.1k 是跨轮
+  不变的 persona state/reference，约 3.1k～3.7k 是宿主运行上下文，当前消息通常只有几十 tokens；
+- 根因是 request observer 正确冻结了真实 provider payload，但宿主把可复用 persona/运行上下文也塞在
+  当前 user 尾部，导致这些内容每轮被当作会话历史永久复制。
+
+本地已完成两个尚未部署的修复切片：
+
+1. MemCore `a2ba712`：`closed` 与 `aborted` 都按 terminal turn 进入 token compaction；`open` 仍阻塞，
+   `aborted` 只总结真实条目，不伪造 assistant final。包全量 303 tests（3 skipped）、ruff、build 均通过；
+2. Akane 当前工作切片：persona 与可复用宿主上下文移到 MemCore 历史前的分离前缀块；当前 turn 只冻结
+   当前消息、真正 volatile 的 transport/event 上下文和 visual 状态。按真实审计组成估算，普通轮冻结增量将从
+   约 8k 降到约 0.8k tokens；状态真实变化时允许一次前缀重建，不以复制整块状态换取表面缓存命中。
+
+云端仍未部署这两项。当前共享 venv 内实际运行的 MemCore 是旧 `0.1.0` wheel（对应 `99a1fa0`），
+只支持 30 条触发/20 条批次的计数压缩；仅发布 Akane release 不会自动更新该 wheel。下一步部署 smoke 必须
+同时核对运行时存在 `compaction_policy`、`max_prompt_history_tokens` 和正确源码/wheel hash，再做个人私聊、
+个人群聊各至少三轮及一次压缩前后验收。
 
 当前新增/重点测试位于：
 
@@ -87,7 +113,7 @@ git log -8 --oneline
 ```text
 路径：F:\Akane\AkaneCompanionLab
 分支：feature/qq-finance-assistant-emquant
-本主线最新提交：9f5df7c feat: migrate Akane writes to MemCore V2 turns
+审计时最新提交：b1c96ae fix: limit QQ quote frames to first reply
 ```
 
 `9f5df7c` 之后本交接文档是下一项改动。不要把下面未跟踪内容夹带进提交：
@@ -112,24 +138,14 @@ maintenance/_temporary_deepseek_cloud_switch.py
 ```text
 路径：F:\Akane\memcore
 分支：feature/actor-metadata-update
-最新已提交主线：8e5ee7f feat: add timeline v2 host cutover primitives
+最新已提交主线：a2ba712 fix: compact aborted terminal turns
 ```
 
-当前用户已有未提交改动，接手时不得覆盖、格式化或夹带：
+当前只观察到未跟踪的本地 agent 配置，接手时不得夹带：
 
 ```text
-README.md
-docs/model_prompt_playbook_v1.md
-docs/usage_flow_v1.md
-memcore/chat_output/prompts.py
-memcore/native_tools.py
-memcore/prompts.py
-tests/test_slice6_prompt_governance.py
-tests/test_slice_native_tools.py
 .claude/
 ```
-
-这些改动涉及材料校验、提示词/原生工具等另一条线。除非新用户明确要求，当前 Akane read cutover 不应修改它们。
 
 ## 3. 权威文档与历史文档
 
@@ -531,7 +547,7 @@ first divergence index/reason
 
 - manager 注入共享 `MemCoreRuntime`；
 - 移除独立 index warmup executor/重复 lock ownership；
-- compaction 只选择 closed-turn 前缀；
+- compaction 只选择 terminal-turn（`closed` / `aborted`）前缀，仍不得切断 `open` turn；
 - 删除 Akane 私有 prompt renderer、prompt envelope writer/reader/pruner；
 - 删除不再使用的分段 `record_*` helper；
 - legacy import 若用户确认不需要，可删除；若保留只能是一次性维护 adapter；

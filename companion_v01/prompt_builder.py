@@ -50,9 +50,7 @@ class PromptBuilder:
         *,
         stable_system_blocks_provider: Callable[[], tuple[str, ...]] | None = None,
     ):
-        if stable_system_blocks_provider is not None and not callable(
-            stable_system_blocks_provider
-        ):
+        if stable_system_blocks_provider is not None and not callable(stable_system_blocks_provider):
             raise TypeError("invalid_stable_system_blocks_provider")
         self.persona = persona
         self._stable_system_blocks_provider = stable_system_blocks_provider
@@ -305,36 +303,30 @@ class PromptBuilder:
         # ``prompt_scope`` is an operational delivery/audit label. It must not
         # select a second prompt shape: ordinary messages and external events
         # share the same MemCore timeline and therefore the same layout rules.
-        linear_timeline_turn = bool(
-            current_message_in_raw
-            and not str(memory_text or "").strip()
-        )
-        stable_user_context = (
-            f"{stable_user_intro}"
-            f"【本轮系统能力与工具上下文】\n{tool_context_text}"
-        ).strip()
-        structured_history_turns: list[dict[str, Any]] = [
-            {"role": "user", "content": stable_user_context}
-        ]
-        if memory_context_text:
-            structured_history_turns.append(
-                {"role": "user", "content": memory_context_text}
+        linear_timeline_turn = bool(current_message_in_raw and not str(memory_text or "").strip())
+        persona_runtime_context_text = "\n\n".join(
+            (
+                f"【本轮当前助手状态（宿主可信上下文）】\n{persona_system or '(无额外当前状态)'}",
+                f"【本轮角色表达侧面参考】\n{persona_reference_context or '(无额外表达侧面参考)'}",
             )
-        stable_runtime_context_parts = [
-            str(extra_context or "").strip(),
-            (
-                "【本轮当前助手状态（宿主可信上下文）】\n"
-                f"{persona_system or '(无额外当前状态)'}"
-            ),
-            (
-                "【本轮角色表达侧面参考】\n"
-                f"{persona_reference_context or '(无额外表达侧面参考)'}"
-            ),
-        ]
-        runtime_context_text = "\n\n".join(part for part in stable_runtime_context_parts if part)
-        structured_history_turns.extend(
-            dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
         )
+        stable_extra_context_text = str(extra_context or "").strip()
+        runtime_context_text = "\n\n".join(
+            part for part in (persona_runtime_context_text, stable_extra_context_text) if part
+        )
+        stable_user_context = (f"{stable_user_intro}【本轮系统能力与工具上下文】\n{tool_context_text}").strip()
+        structured_history_turns: list[dict[str, Any]] = [{"role": "user", "content": stable_user_context}]
+        # Reusable host/persona state belongs before the append-only timeline.
+        # Freezing it into every current user turn made a short chat message
+        # grow by thousands of tokens per round.  Keep persona and other host
+        # state in separate blocks so a task/attachment state change can still
+        # reuse the earlier persona prefix.
+        structured_history_turns.append({"role": "user", "content": persona_runtime_context_text})
+        if stable_extra_context_text:
+            structured_history_turns.append({"role": "user", "content": stable_extra_context_text})
+        if memory_context_text:
+            structured_history_turns.append({"role": "user", "content": memory_context_text})
+        structured_history_turns.extend(dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict))
         if linear_timeline_turn:
             # Per-turn transport hints and visual state are still available to
             # the model, but must follow the append-only MemCore timeline.
@@ -343,11 +335,9 @@ class PromptBuilder:
             # using prefix caches (notably the Responses wire protocol).
             dynamic_tail_parts = [
                 str(current_message_text or "").strip(),
-                runtime_context_text,
                 str(volatile_extra_context or "").strip(),
                 (
-                    "当前演出状态（本轮基准参考，不是硬锁定）：\n"
-                    f"{current_visual_context}"
+                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
                     if str(current_visual_context or "").strip()
                     else ""
                 ),
@@ -357,7 +347,6 @@ class PromptBuilder:
             dynamic_tail_parts = [
                 f"当前时间线消息：\n{current_message_text}",
                 f"可用回忆片段：\n{memory_text}" if str(memory_text or "").strip() else "",
-                runtime_context_text,
                 str(volatile_extra_context or "").strip(),
                 (
                     f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
@@ -442,9 +431,7 @@ class PromptBuilder:
     ) -> str:
         if not registered_stable_blocks:
             return (
-                hashlib.sha256(
-                    legacy_stable_system_text.encode("utf-8", errors="ignore")
-                ).hexdigest()
+                hashlib.sha256(legacy_stable_system_text.encode("utf-8", errors="ignore")).hexdigest()
                 if legacy_stable_system_text
                 else ""
             )
