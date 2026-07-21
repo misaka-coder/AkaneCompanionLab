@@ -166,6 +166,8 @@ logger = logging.getLogger("akane.engine")
 # the version inside the routing digest prevents a provider cache bucket built
 # from an older prefix layout from shadowing a newly stabilized conversation.
 FINAL_PROMPT_CACHE_LAYOUT_VERSION = "responses-unified-timeline-v3"
+MEMORY_ANNOTATION_STATUS_FIELD = "_memory_annotation_status"
+MEMORY_METADATA_PRESENT_FIELD = "_memory_metadata_present"
 
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
@@ -892,6 +894,7 @@ class AkaneMemoryEngine:
         assistant_record: dict[str, Any],
         memory_metadata: dict[str, Any] | None,
         provider_output_raw: str,
+        annotation_status: str = "",
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -905,7 +908,10 @@ class AkaneMemoryEngine:
                 assistant_record=assistant_record,
                 memory_metadata=memory_metadata,
                 provider_output_raw=str(provider_output_raw or ""),
-                annotation_status="accepted_model" if isinstance(memory_metadata, dict) else "missing",
+                annotation_status=(
+                    str(annotation_status or "").strip()
+                    or ("accepted_model" if isinstance(memory_metadata, dict) else "missing")
+                ),
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
@@ -915,6 +921,55 @@ class AkaneMemoryEngine:
         except Exception as exc:
             logger.warning("memcore input turn completion failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
+
+    @staticmethod
+    def _memory_metadata_has_signal(metadata: Any) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+        for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
+            value = metadata.get(key)
+            if isinstance(value, (list, tuple, set)) and any(str(item or "").strip() for item in value):
+                return True
+        for key in ("importance", "confidence"):
+            try:
+                if float(metadata.get(key) or 0.0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _attach_memory_annotation_truth(
+        self,
+        output: dict[str, Any],
+        *,
+        result: Any,
+        raw_result: Any,
+    ) -> None:
+        allowed = {"accepted_model", "accepted_host", "missing", "invalid", "plain", "fallback", "rejected"}
+        status = str(getattr(result, "metadata_status", "") or "").strip()
+        present_value = getattr(result, "metadata_present", None)
+        if status not in allowed:
+            raw_payload = raw_result if isinstance(raw_result, dict) else {}
+            present_value = "memory_metadata" in raw_payload
+            if not present_value:
+                status = "missing"
+            elif isinstance(raw_payload.get("memory_metadata"), dict):
+                status = "accepted_model"
+            else:
+                status = "invalid"
+        if status in {"missing", "invalid", "plain", "fallback"} and self._memory_metadata_has_signal(
+            output.get("memory_metadata")
+        ):
+            status = "accepted_host"
+        output[MEMORY_ANNOTATION_STATUS_FIELD] = status
+        output[MEMORY_METADATA_PRESENT_FIELD] = bool(present_value)
+
+    def _pop_memory_annotation_status(self, output: dict[str, Any]) -> str:
+        status = str(output.pop(MEMORY_ANNOTATION_STATUS_FIELD, "") or "").strip()
+        output.pop(MEMORY_METADATA_PRESENT_FIELD, None)
+        if status in {"accepted_model", "accepted_host", "missing", "invalid", "plain", "fallback", "rejected"}:
+            return status
+        return "accepted_host" if self._memory_metadata_has_signal(output.get("memory_metadata")) else "missing"
 
     def _abort_memcore_input_turn(
         self,
@@ -3212,6 +3267,7 @@ class AkaneMemoryEngine:
             now_ts=now_ts,
         )
         provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
+        memory_annotation_status = self._pop_memory_annotation_status(final_output)
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -3270,6 +3326,7 @@ class AkaneMemoryEngine:
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
+                    annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -3767,6 +3824,7 @@ class AkaneMemoryEngine:
             now_ts=now_ts,
         )
         provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
+        memory_annotation_status = self._pop_memory_annotation_status(final_output)
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -3827,6 +3885,7 @@ class AkaneMemoryEngine:
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
+                    annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -4125,6 +4184,7 @@ class AkaneMemoryEngine:
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 user_message=user_message,
             )
+            self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 if provider_output_raw:
@@ -4352,6 +4412,11 @@ class AkaneMemoryEngine:
                 allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                 debug_enabled=bool(generation_context["debug_enabled"]),
             )
+            self._attach_memory_annotation_truth(
+                normalized,
+                result=stream_result,
+                raw_result=getattr(stream_result, "parsed", None),
+            )
             self._attach_tool_execution_receipts(normalized, generation_context)
             native_preface_text = str(getattr(stream_result, "native_preface_text", "") or "").strip()
             if native_preface_text:
@@ -4398,6 +4463,11 @@ class AkaneMemoryEngine:
                     allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                     debug_enabled=bool(generation_context["debug_enabled"]),
                 )
+                self._attach_memory_annotation_truth(
+                    normalized,
+                    result=fallback_call_result,
+                    raw_result=fallback_result,
+                )
                 if fallback_transport_failure and self._is_retryable_final_output(
                     normalized,
                     parse_fallback=fallback_parse_failure,
@@ -4435,6 +4505,11 @@ class AkaneMemoryEngine:
                         user_message=user_message,
                         allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                         debug_enabled=bool(generation_context["debug_enabled"]),
+                    )
+                    self._attach_memory_annotation_truth(
+                        normalized,
+                        result=uncached_call_result,
+                        raw_result=uncached_result,
                     )
                     if not self._is_retryable_final_output(
                         normalized,

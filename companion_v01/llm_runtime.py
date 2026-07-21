@@ -182,6 +182,8 @@ class ChatJSONResult:
     parsed: dict[str, Any]
     raw_text: str
     error: str = ""
+    metadata_status: str = "missing"
+    metadata_present: bool = False
 
 
 @dataclass
@@ -196,6 +198,46 @@ class ChatJSONStreamResult:
     native_preface_text: str = ""
     stopped_early: bool = False
     early_tool_call: dict[str, Any] | None = None
+    metadata_status: str = "missing"
+    metadata_present: bool = False
+
+
+def _memory_metadata_truth(
+    payload: Any,
+    *,
+    accepted_status: str,
+    require_signal: bool = False,
+) -> tuple[str, bool]:
+    """Describe annotation provenance without changing reply delivery.
+
+    Model JSON may legitimately contain an empty metadata object. Host fallback
+    and recovery objects, however, only count as host annotations when they
+    carry an actual memory signal; their template defaults must not masquerade
+    as accepted model output.
+    """
+
+    if not isinstance(payload, dict) or "memory_metadata" not in payload:
+        return "missing", False
+    metadata = payload.get("memory_metadata")
+    if not isinstance(metadata, dict):
+        return "invalid", True
+    if require_signal and not _memory_metadata_has_signal(metadata):
+        return "missing", True
+    return accepted_status, True
+
+
+def _memory_metadata_has_signal(metadata: dict[str, Any]) -> bool:
+    for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
+        value = metadata.get(key)
+        if isinstance(value, (list, tuple, set)) and any(str(item or "").strip() for item in value):
+            return True
+    for key in ("importance", "confidence"):
+        try:
+            if float(metadata.get(key) or 0.0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _responses_error_summary(value: Any) -> str:
@@ -954,25 +996,76 @@ class LLMRuntime:
                 if native_preface_text:
                     parsed["speech"] = native_preface_text
                     parsed["speech_segments"] = [native_preface_text]
-                return ChatJSONResult(parsed=parsed, raw_text=content)
+                metadata_status, metadata_present = _memory_metadata_truth(
+                    parsed,
+                    accepted_status="accepted_model",
+                )
+                return ChatJSONResult(
+                    parsed=parsed,
+                    raw_text=content,
+                    metadata_status=metadata_status,
+                    metadata_present=metadata_present,
+                )
             if native_requested:
                 self._record_metric("native_tool_no_call")
             self._note_truncation(response, phase="call_json")
             content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
-                return ChatJSONResult(parsed=parsed, raw_text=content)
+                metadata_status, metadata_present = _memory_metadata_truth(
+                    parsed,
+                    accepted_status="accepted_model",
+                )
+                return ChatJSONResult(
+                    parsed=parsed,
+                    raw_text=content,
+                    metadata_status=metadata_status,
+                    metadata_present=metadata_present,
+                )
             recovered = self._recover_partial_chat_json(content, fallback=fallback)
             if isinstance(recovered, dict):
-                return ChatJSONResult(parsed=recovered, raw_text=content)
+                metadata_status, metadata_present = _memory_metadata_truth(
+                    recovered,
+                    accepted_status="accepted_host",
+                    require_signal=True,
+                )
+                return ChatJSONResult(
+                    parsed=recovered,
+                    raw_text=content,
+                    metadata_status=metadata_status,
+                    metadata_present=metadata_present,
+                )
             self._note_parse_fallback(content, phase="call_json")
         except Exception as exc:
             self._record_metric("errors")
             self._capture_runtime_error(exc, phase="call_json")
             self._record_metric("chat_json_fallbacks")
-            return ChatJSONResult(parsed=dict(fallback), raw_text="", error=str(exc or "").strip())
+            fallback_payload = dict(fallback)
+            metadata_status, metadata_present = _memory_metadata_truth(
+                fallback_payload,
+                accepted_status="accepted_host",
+                require_signal=True,
+            )
+            return ChatJSONResult(
+                parsed=fallback_payload,
+                raw_text="",
+                error=str(exc or "").strip(),
+                metadata_status=metadata_status,
+                metadata_present=metadata_present,
+            )
         self._record_metric("chat_json_fallbacks")
-        return ChatJSONResult(parsed=dict(fallback), raw_text=content)
+        fallback_payload = dict(fallback)
+        metadata_status, metadata_present = _memory_metadata_truth(
+            fallback_payload,
+            accepted_status="accepted_host",
+            require_signal=True,
+        )
+        return ChatJSONResult(
+            parsed=fallback_payload,
+            raw_text=content,
+            metadata_status=metadata_status,
+            metadata_present=metadata_present,
+        )
 
     def _call_ndjson(
         self,
@@ -1147,6 +1240,8 @@ class LLMRuntime:
             native_tools=native_tools,
             bundle=bundle,
         )
+        metadata_origin = "accepted_model"
+        metadata_requires_signal = False
         if native_tool_calls:
             self._record_metric("native_tool_call_extracted")
             parsed = {
@@ -1169,10 +1264,14 @@ class LLMRuntime:
             recovered = self._recover_partial_chat_json(raw_text, fallback=fallback)
             if isinstance(recovered, dict):
                 parsed = recovered
+                metadata_origin = "accepted_host"
+                metadata_requires_signal = True
             else:
                 self._record_metric("chat_json_fallbacks")
                 self._note_parse_fallback(raw_text, phase="stream_chat_json")
                 parsed = dict(fallback)
+                metadata_origin = "accepted_host"
+                metadata_requires_signal = True
         else:
             parsed = dict(parsed)
 
@@ -1184,6 +1283,11 @@ class LLMRuntime:
             parsed["reply_medium"] = tap.latest_reply_medium
 
         elapsed_ms = round((time.perf_counter() - start_at) * 1000, 1)
+        metadata_status, metadata_present = _memory_metadata_truth(
+            parsed,
+            accepted_status=metadata_origin,
+            require_signal=metadata_requires_signal,
+        )
         return ChatJSONStreamResult(
             parsed=parsed,
             raw_text=raw_text,
@@ -1195,6 +1299,8 @@ class LLMRuntime:
             native_preface_text=native_preface_text if native_tool_calls else "",
             stopped_early=stopped_early,
             early_tool_call=early_tool_call,
+            metadata_status=metadata_status,
+            metadata_present=metadata_present,
         )
 
     def _try_extract_stream_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:

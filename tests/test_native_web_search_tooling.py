@@ -1442,6 +1442,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         )
 
         self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
+        self.assertEqual(result.pop("_memory_annotation_status"), "missing")
+        self.assertFalse(result.pop("_memory_metadata_present"))
         self.assertEqual(
             result,
             {"speech": "ok", "tool_call": None, "_native_preface_text": "我先查一下。"},

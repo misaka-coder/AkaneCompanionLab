@@ -36,7 +36,24 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
 
         self.assertEqual(result.parsed, {"speech": "在的。", "emotion": "happy"})
         self.assertEqual(result.raw_text, raw_text)
+        self.assertEqual(result.metadata_status, "missing")
+        self.assertFalse(result.metadata_present)
         self.assertNotEqual(result.raw_text, '{"speech": "在的。", "emotion": "happy"}')
+
+    def test_sync_model_metadata_object_is_accepted_even_when_empty(self) -> None:
+        runtime = self._sync_runtime('{"speech":"在的。","memory_metadata":{}}')
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.metadata_status, "accepted_model")
+        self.assertTrue(result.metadata_present)
 
     def test_sync_parse_fallback_keeps_real_raw_separate_from_fallback(self) -> None:
         raw_text = "provider returned broken json"
@@ -53,6 +70,8 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
 
         self.assertEqual(result.parsed, {"speech": "fallback"})
         self.assertEqual(result.raw_text, raw_text)
+        self.assertEqual(result.metadata_status, "missing")
+        self.assertFalse(result.metadata_present)
 
     def test_emits_ui_event_and_speech_chunks_from_split_json(self) -> None:
         tap = _TopLevelJSONStreamTap()
@@ -197,6 +216,7 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
             '{"emotion":"normal","speech":"我查一下。","speech_segments":[],"tool_call":{"type":"retrieve_memory","query":"扬州城"}}',
         )
         self.assertNotIn('"status"', result.raw_text)
+        self.assertEqual(result.metadata_status, "missing")
 
     def test_extract_text_flattens_content_blocks(self) -> None:
         runtime = object.__new__(LLMRuntime)

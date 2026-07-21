@@ -72,6 +72,13 @@ MemCore 只提供跨轮历史消息。
 
 因此不会出现“metadata 已可检索，但最终回复尚未落库”的半完成状态。
 
+Chat Output Adapter 同时返回 `metadata_status` 与 `metadata_present`，把记忆标注真值和回复交付解耦：
+
+- `accepted` / `accepted_model`：provider 明确给出合法 metadata object；合法空 object 仍保持现有记忆体验；
+- `accepted_host`：宿主从 legacy tags 等安全输入中确实补出了有效记忆信号；
+- `missing` / `invalid`：不提升普通检索准入，但 speech、流式气泡、TTS 和对话保存照常进行；
+- fallback 模板中的空 metadata 不冒充模型标注。
+
 ### 5. 关系感知检索与压缩
 
 - 普通检索默认看 message/event 和记忆摘要，默认排除 `tool.*`、`material.*` trace。
