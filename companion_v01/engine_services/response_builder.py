@@ -14,12 +14,11 @@ from ..memory_rendering import render_semantic_summary_timeline, render_summary_
 from ..prompt_blocks import strip_care_prompt_contract
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
-from ..text_utils import render_chat_line, render_chat_timeline
+from ..text_utils import render_chat_timeline
 from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
 
 logger = logging.getLogger("akane.response_builder")
 
-PROMPT_USER_CONTENT_FIELD = "_akane_prompt_user_content"
 PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
 
 
@@ -182,16 +181,6 @@ def prepare_context(
         str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
     )
     projection_authoritative = not projection_migration_window
-    if projection_migration_window:
-        # Event projections and non-MemCore backends remain in the documented
-        # migration window until their dedicated cutover slices.
-        _attach_message_prompt_envelopes(
-            engine,
-            raw_records,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -633,11 +622,7 @@ def prepare_context(
             )
         if not projection_authoritative:
             history_builder = getattr(engine, "_build_history_turns", None)
-            history_turns = (
-                history_builder(history_records)
-                if callable(history_builder)
-                else _build_structured_history_turns(history_records)
-            )
+            history_turns = history_builder(history_records) if callable(history_builder) else []
             if not history_turns and raw_text and not raw_records:
                 history_turns = [
                     {
@@ -732,14 +717,6 @@ def prepare_context(
                     str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
                 )
                 projection_authoritative = not projection_migration_window
-                if projection_migration_window:
-                    _attach_message_prompt_envelopes(
-                        engine,
-                        raw_records,
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=character_pack_id,
-                    )
                 raw_text = str(refreshed.get("raw_text") or "")
                 episodic_summary_text = str(refreshed.get("episodic_text") or "")
                 semantic_summary_text = str(refreshed.get("semantic_text") or "")
@@ -1011,71 +988,6 @@ def _drop_oldest_prompt_lines(text: str) -> str:
     remove_count = max(1, len(lines) // 4)
     remaining = lines[remove_count:]
     return marker + "\n" + "\n".join(remaining)
-
-
-def _build_structured_history_turns(records: list[dict[str, Any]]) -> list[dict[str, str]]:
-    turns: list[dict[str, str]] = []
-    for record in records:
-        raw_role = str(record.get("role") or "").strip()
-        role = raw_role.lower()
-        content = str(record.get("content") or "").strip()
-        if not content:
-            continue
-        persisted_prompt = str(record.get(PROMPT_USER_CONTENT_FIELD) or "").strip()
-        rendered = (
-            persisted_prompt
-            if persisted_prompt and not (role == "assistant" or role.startswith("assistant."))
-            else render_chat_line(
-                role=raw_role,
-                content=content,
-                timestamp=record.get("timestamp"),
-            )
-        )
-        output_role = "assistant" if role == "assistant" or role.startswith("assistant.") else "user"
-        turns.append({"role": output_role, "content": rendered})
-    return turns
-
-
-def _attach_message_prompt_envelopes(
-    engine: Any,
-    records: list[dict[str, Any]],
-    *,
-    profile_user_id: str,
-    session_id: str,
-    character_pack_id: str,
-) -> None:
-    store = getattr(engine, "store", None)
-    getter = getattr(store, "get_message_prompt_envelopes", None)
-    pruner = getattr(store, "prune_message_prompt_envelopes", None)
-    if not callable(getter):
-        return
-    source_ids = [
-        str(record.get("source_id") or "").strip()
-        for record in records
-        if isinstance(record, dict) and str(record.get("source_id") or "").strip()
-    ]
-    try:
-        envelopes = getter(
-            source_ids,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
-        if isinstance(envelopes, dict):
-            for record in records:
-                source_id = str(record.get("source_id") or "").strip()
-                prompt_text = str(envelopes.get(source_id) or "").strip()
-                if prompt_text:
-                    record[PROMPT_USER_CONTENT_FIELD] = prompt_text
-        if callable(pruner):
-            pruner(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-                keep_source_ids=source_ids,
-            )
-    except Exception as exc:
-        logger.warning("message prompt envelope load failed: %s", str(exc)[:160])
 
 
 def _trim_oldest_prompt_raw_record(

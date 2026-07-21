@@ -2768,10 +2768,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
             },
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
-        engine.store = SimpleNamespace(
-            get_message_prompt_envelopes=lambda *_args, **_kwargs: self.fail("envelope reader must not run"),
-            upsert_message_prompt_envelope=lambda **_kwargs: self.fail("envelope writer must not run"),
-        )
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
             result = response_builder.prepare_context(
@@ -2813,9 +2809,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
             projection_payload={"ok": False, "status": "failed", "reason": "projection_build_failed"},
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
-        engine.store = SimpleNamespace(
-            get_message_prompt_envelopes=lambda *_args, **_kwargs: self.fail("legacy reader must not run"),
-        )
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
             result = response_builder.prepare_context(
@@ -2835,7 +2828,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("LEGACY", repr(result["history_turns"]))
         self.assertEqual(result["user_prompt"].count("当前问题"), 1)
 
-    def test_native_tool_projection_ignores_old_envelope_without_writing_current_envelope(self) -> None:
+    def test_native_tool_projection_has_no_prompt_envelope_store_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
             previous = store.add_message(
@@ -2861,14 +2854,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 role="user",
                 content="现在的问题",
                 timestamp=1712400000,
-            )
-            exact_previous = "[stable timestamp] user: 上一条消息\n\n上一轮 runtime\n\n上一轮视觉状态"
-            store.upsert_message_prompt_envelope(
-                source_id=previous["source_id"],
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-                prompt_text=exact_previous,
             )
             projected_previous = "MemCore projected previous"
             memcore_manager = _PromptContextMemcoreManager(
@@ -2925,15 +2910,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             captured = engine.prompt_builder.kwargs
             self.assertEqual(captured["history_turns"][0]["content"], projected_previous)
-            self.assertNotIn(exact_previous, repr(captured["history_turns"]))
             self.assertEqual(captured["history_turns"][1]["role"], "assistant")
-            stored_current = store.get_message_prompt_envelopes(
-                [current["source_id"]],
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-            )
-            self.assertNotIn(current["source_id"], stored_current)
+            self.assertFalse(hasattr(store, "upsert_message_prompt_envelope"))
+            self.assertFalse(hasattr(store, "get_message_prompt_envelopes"))
+            self.assertFalse(hasattr(store, "prune_message_prompt_envelopes"))
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["content"], "现在的问题")
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["memory_metadata"], {})
 

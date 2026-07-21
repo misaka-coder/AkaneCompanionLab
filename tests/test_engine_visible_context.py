@@ -58,7 +58,12 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
     def test_build_history_turns_preserves_time_and_speaker_labels(self) -> None:
         turns = AkaneMemoryEngine._build_history_turns(
             [
-                {"role": "user", "content": "你好", "timestamp": 1712400000},
+                {
+                    "role": "user",
+                    "content": "你好",
+                    "timestamp": 1712400000,
+                    "_akane_prompt_user_content": "OLD ENVELOPE MUST STAY OUT",
+                },
                 {"role": "assistant", "content": "在哦", "timestamp": 1712400060},
                 {"role": "npc:Weather", "content": "天气晴朗。", "timestamp": 1712400120},
             ]
@@ -67,6 +72,7 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
         self.assertEqual([turn["role"] for turn in turns], ["user", "assistant", "user"])
         self.assertIn("[2024-04-06 18:40]", turns[0]["content"])
         self.assertIn("User: 你好", turns[0]["content"])
+        self.assertNotIn("OLD ENVELOPE", turns[0]["content"])
         self.assertIn("Akane: 在哦", turns[1]["content"])
         self.assertIn("Weather: 天气晴朗。", turns[2]["content"])
 
