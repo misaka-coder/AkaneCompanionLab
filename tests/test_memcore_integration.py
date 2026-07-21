@@ -203,7 +203,7 @@ class _CapturePromptBuilder:
             "debug_enabled": bool(kwargs.get("debug_enabled")),
             "tool_prompt_context": str(kwargs.get("tool_prompt_context") or ""),
             "system_extra_blocks": [],
-            "history_turns": [],
+            "history_turns": [dict(turn) for turn in list(kwargs.get("history_turns") or [])],
             "prompt_audit_sections": [],
             "linear_timeline_turn": linear_timeline_turn,
         }
@@ -213,14 +213,25 @@ class _PromptContextMemcoreManager:
     enabled = True
     available = True
 
-    def __init__(self, payload: dict[str, object]) -> None:
+    def __init__(self, payload: dict[str, object], projection_payload: dict[str, object] | None = None) -> None:
         self.payload = payload
+        self.projection_payload = projection_payload
         self.calls: list[dict[str, object]] = []
         self.compare_calls: list[dict[str, object]] = []
 
     def build_prompt_context(self, **kwargs) -> dict[str, object]:
         self.calls.append(dict(kwargs))
         return dict(self.payload)
+
+    def build_context_projection(self, **_kwargs) -> dict[str, object]:
+        return dict(
+            self.projection_payload
+            or {
+                "ok": False,
+                "status": "migration_window",
+                "reason": "native_tool_history_pending",
+            }
+        )
 
     def compare_context_projection(self, **kwargs) -> dict[str, object]:
         self.compare_calls.append(dict(kwargs))
@@ -2354,11 +2365,121 @@ class MemcoreIntegrationTests(unittest.TestCase):
         compare_call = memcore_manager.compare_calls[0]
         self.assertEqual(compare_call["provider_profile"], "openai")
         self.assertEqual(compare_call["exclude_source_ids"], ["current"])
-        self.assertEqual(compare_call["actual_history_messages"], result["history_turns"])
+        history_start = int(result["memcore_history_start_index"])
+        self.assertEqual(compare_call["actual_history_messages"], result["history_turns"][history_start:])
         self.assertNotIn("memcore_projection_shadow", result["system_prompt"])
         self.assertNotIn("memcore_projection_shadow", result["user_prompt"])
 
-    def test_final_prompt_context_replays_and_persists_exact_turn_envelopes(self) -> None:
+    def test_plain_prompt_reads_memcore_projection_without_envelope_or_duplicate_current_message(self) -> None:
+        raw_final = '{"speech":"上一轮原始回复","memory_metadata":{}}'
+        projection_messages = [
+            {
+                "payload": {"role": "user", "content": "【阶段摘要】稳定摘要"},
+                "source_ids": ["summary-1"],
+            },
+            {
+                "payload": {"role": "user", "content": "上一轮问题"},
+                "source_ids": ["previous-user"],
+            },
+            {
+                "payload": {"role": "assistant", "content": raw_final},
+                "source_ids": ["previous-assistant"],
+            },
+            {
+                "payload": {"role": "user", "content": "当前问题"},
+                "source_ids": ["current"],
+            },
+        ]
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "ok": True,
+                "status": "ok",
+                "raw": [
+                    {"source_id": "previous-user", "role": "user", "content": "LEGACY QUESTION"},
+                    {"source_id": "previous-assistant", "role": "assistant", "content": "LEGACY ANSWER"},
+                    {"source_id": "current", "role": "user", "content": "当前问题"},
+                ],
+                "raw_text": "LEGACY RAW",
+                "episodic_text": "LEGACY EPISODIC",
+                "semantic_text": "LEGACY SEMANTIC",
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": projection_messages,
+                "stable_prefix_hash": "b" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        engine.store = SimpleNamespace(
+            get_message_prompt_envelopes=lambda *_args, **_kwargs: self.fail("envelope reader must not run"),
+            upsert_message_prompt_envelope=lambda **_kwargs: self.fail("envelope writer must not run"),
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+            )
+
+        history_start = int(result["memcore_history_start_index"])
+        projected_history = result["history_turns"][history_start:]
+        self.assertEqual(projected_history, [item["payload"] for item in projection_messages[:-1]])
+        self.assertEqual(result["memcore_projection_read"]["status"], "active")
+        self.assertEqual(result["user_prompt"].count("当前问题"), 1)
+        self.assertNotIn("当前问题", repr(projected_history))
+        self.assertIn(raw_final, repr(projected_history))
+        self.assertNotIn("LEGACY EPISODIC", repr(result["history_turns"]))
+        self.assertNotIn("LEGACY SEMANTIC", repr(result["history_turns"]))
+
+    def test_plain_projection_failure_does_not_fall_back_to_legacy_envelope_authority(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "ok": True,
+                "status": "ok",
+                "raw": [{"source_id": "current", "role": "user", "content": "当前问题"}],
+                "raw_text": "LEGACY RAW MUST STAY OUT",
+                "episodic_text": "LEGACY EPISODIC MUST STAY OUT",
+                "semantic_text": "LEGACY SEMANTIC MUST STAY OUT",
+            },
+            projection_payload={"ok": False, "status": "failed", "reason": "projection_build_failed"},
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        engine.store = SimpleNamespace(
+            get_message_prompt_envelopes=lambda *_args, **_kwargs: self.fail("legacy reader must not run"),
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+            )
+
+        self.assertEqual(result["memcore_projection_read"]["status"], "unavailable")
+        self.assertNotIn("LEGACY", repr(result["history_turns"]))
+        self.assertEqual(result["user_prompt"].count("当前问题"), 1)
+
+    def test_legacy_tool_migration_replays_old_envelope_without_writing_current_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
             previous = store.add_message(
@@ -2431,10 +2552,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 session_id="s1",
                 character_pack_id="char",
             )
-            self.assertEqual(
-                stored_current[current["source_id"]],
-                "User: 现在的问题\n\n(当前客户端模式不需要完整演出状态。)",
-            )
+            self.assertNotIn(current["source_id"], stored_current)
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["content"], "现在的问题")
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["memory_metadata"], {})
 
@@ -2449,7 +2567,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 [
                     {"role": "user", "content": "stable prompt context"},
                     *captured["history_turns"],
-                    {"role": "user", "content": stored_current[current["source_id"]]},
+                    {"role": "user", "content": captured["current_message_text"]},
                 ]
             )
             self.assertEqual(first_request[0], second_request[0])

@@ -20,6 +20,9 @@ from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RE
 logger = logging.getLogger("akane.response_builder")
 
 PROMPT_USER_CONTENT_FIELD = "_akane_prompt_user_content"
+PROJECTION_READ_MIGRATION_REASONS = frozenset(
+    {"event_projection_pending", "legacy_memory_backend", "native_tool_history_pending"}
+)
 
 
 QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS = (
@@ -167,14 +170,31 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
-    _attach_message_prompt_envelopes(
+    current_source_id = str(current_record.get("source_id") or "").strip()
+    provider_projection = _build_memcore_provider_history(
         engine,
-        raw_records,
         profile_user_id=profile_user_id,
         session_id=session_id,
         character_pack_id=character_pack_id,
+        current_source_id=current_source_id,
+        chat_model_override=chat_model_override,
+        prompt_scope=normalized_prompt_scope,
     )
-    current_source_id = str(current_record.get("source_id") or "").strip()
+    projection_read_active = bool(provider_projection.get("ok"))
+    projection_migration_window = (
+        str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
+    )
+    projection_authoritative = not projection_migration_window
+    if projection_migration_window:
+        # Documented migration window: histories containing provider-native
+        # tool messages remain on the legacy envelope reader until Slice E.
+        _attach_message_prompt_envelopes(
+            engine,
+            raw_records,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -594,11 +614,15 @@ def prepare_context(
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
 
     def _build_generation_context() -> dict[str, Any]:
-        current_message_visible_in_raw = bool(
+        current_message_visible_in_raw = bool(provider_projection.get("current_source_visible")) if (
+            projection_read_active
+        ) else bool(
             current_source_id
             and any(str(record.get("source_id") or "").strip() == current_source_id for record in raw_records)
         )
-        if current_source_id:
+        if projection_authoritative:
+            history_turns = [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
+        elif current_source_id:
             history_records = [
                 record
                 for record in raw_records
@@ -610,26 +634,27 @@ def prepare_context(
                 user_message=user_message,
                 now_ts=now_ts,
             )
-        history_builder = getattr(engine, "_build_history_turns", None)
-        history_turns = (
-            history_builder(history_records)
-            if callable(history_builder)
-            else _build_structured_history_turns(history_records)
-        )
-        if not history_turns and raw_text and not raw_records:
-            history_turns = [
-                {
-                    "role": "user",
-                    "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
-                }
-            ]
+        if not projection_authoritative:
+            history_builder = getattr(engine, "_build_history_turns", None)
+            history_turns = (
+                history_builder(history_records)
+                if callable(history_builder)
+                else _build_structured_history_turns(history_records)
+            )
+            if not history_turns and raw_text and not raw_records:
+                history_turns = [
+                    {
+                        "role": "user",
+                        "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
+                    }
+                ]
         generation_context = prompt_builder.build_final_generation_context(
             now_ts=now_ts,
             raw_text=raw_text,
             history_turns=history_turns,
             current_message_text=current_message_text,
-            episodic_summary_text=episodic_summary_text,
-            semantic_summary_text=semantic_summary_text,
+            episodic_summary_text="" if projection_authoritative else episodic_summary_text,
+            semantic_summary_text="" if projection_authoritative else semantic_summary_text,
             memory_text=memory_text,
             current_visual_context=current_visual_context,
             resource_context=resource_context,
@@ -660,7 +685,16 @@ def prepare_context(
         generation_context["prompt_cache_scope_hash"] = hashlib.sha256(
             cache_scope_material.encode("utf-8", errors="ignore")
         ).hexdigest()
+        generation_context["memcore_history_start_index"] = max(
+            0,
+            len(list(generation_context.get("history_turns") or [])) - len(history_turns),
+        )
         generation_context["post_user_turns"] = [dict(turn) for turn in effective_post_user_turns]
+        generation_context["memcore_projection_read"] = {
+            key: value
+            for key, value in provider_projection.items()
+            if key not in {"history_turns"}
+        }
         return generation_context
 
     generation_context = _build_generation_context()
@@ -688,13 +722,28 @@ def prepare_context(
             )
             if refreshed is not None and refreshed.get("ok"):
                 raw_records = [dict(record) for record in list(refreshed.get("raw") or [])]
-                _attach_message_prompt_envelopes(
+                provider_projection = _build_memcore_provider_history(
                     engine,
-                    raw_records,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=character_pack_id,
+                    current_source_id=current_source_id,
+                    chat_model_override=chat_model_override,
+                    prompt_scope=normalized_prompt_scope,
                 )
+                projection_read_active = bool(provider_projection.get("ok"))
+                projection_migration_window = (
+                    str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
+                )
+                projection_authoritative = not projection_migration_window
+                if projection_migration_window:
+                    _attach_message_prompt_envelopes(
+                        engine,
+                        raw_records,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=character_pack_id,
+                    )
                 raw_text = str(refreshed.get("raw_text") or "")
                 episodic_summary_text = str(refreshed.get("episodic_text") or "")
                 semantic_summary_text = str(refreshed.get("semantic_text") or "")
@@ -705,7 +754,7 @@ def prepare_context(
     # without a bound. Drop oldest raw lines first, then oldest episodic lines;
     # semantic memory and the current user message remain intact.
     trimmed_layers: list[str] = []
-    if prompt_token_limit:
+    if prompt_token_limit and not projection_authoritative:
         while (
             _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
             and _trim_oldest_prompt_raw_record(
@@ -758,18 +807,6 @@ def prepare_context(
         chat_model_override=chat_model_override,
         prompt_scope=normalized_prompt_scope,
     )
-    _sync_current_message_prompt_envelope(
-        engine,
-        source_id=current_source_id,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        character_pack_id=character_pack_id,
-        prompt_text=(
-            str(generation_context.get("user_prompt") or "")
-            if bool(generation_context.get("linear_timeline_turn"))
-            else ""
-        ),
-    )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
     generation_context["prompt_scope"] = normalized_prompt_scope
@@ -820,8 +857,10 @@ def _compare_memcore_projection_shadow(
         return {"ok": False, "status": "unavailable", "reason": "projection_shadow_dependencies_unavailable"}
     try:
         protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
+        history_turns = list(generation_context.get("history_turns") or [])
+        history_start = max(0, int(generation_context.get("memcore_history_start_index") or 0))
         actual_history = history_normalizer(
-            list(generation_context.get("history_turns") or []),
+            history_turns[history_start:],
             chat_model_override=chat_model_override,
         )
         result = compare(
@@ -852,6 +891,92 @@ def _compare_memcore_projection_shadow(
     except Exception as exc:
         logger.warning("memcore projection shadow unavailable: %s", exc.__class__.__name__)
         return {"ok": False, "status": "failed", "reason": "shadow_compare_failed"}
+
+
+def _build_memcore_provider_history(
+    engine: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    current_source_id: str,
+    chat_model_override: str,
+    prompt_scope: str,
+) -> dict[str, Any]:
+    if _memory_backend() != "memcore":
+        return {"ok": False, "status": "migration_window", "reason": "legacy_memory_backend"}
+    if str(prompt_scope or "").strip():
+        return {"ok": False, "status": "migration_window", "reason": "event_projection_pending"}
+    manager = getattr(engine, "memcore_manager", None)
+    build_projection = getattr(manager, "build_context_projection", None)
+    runtime = getattr(engine, "llm", None)
+    protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+    if not callable(build_projection) or not callable(protocol_getter):
+        return {"ok": False, "status": "unavailable", "reason": "projection_read_dependencies_unavailable"}
+    if not str(current_source_id or "").strip():
+        return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
+    try:
+        protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
+        projection = build_projection(
+            provider_profile=protocol,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if not isinstance(projection, dict) or not projection.get("ok"):
+            migration_reason = str((projection or {}).get("reason") or "")
+            if migration_reason in PROJECTION_READ_MIGRATION_REASONS:
+                return {"ok": False, "status": "migration_window", "reason": migration_reason}
+            return {"ok": False, "status": "unavailable", "reason": "projection_build_failed"}
+        current_sid = str(current_source_id).strip()
+        current_source_visible = False
+        history_turns: list[dict[str, Any]] = []
+        history_source_ids: list[str] = []
+        for message in list(projection.get("messages") or []):
+            if not isinstance(message, dict):
+                return {"ok": False, "status": "failed", "reason": "projection_message_invalid"}
+            source_ids = [str(item or "").strip() for item in list(message.get("source_ids") or [])]
+            if current_sid in source_ids:
+                current_source_visible = True
+                continue
+            payload = dict(message.get("payload") or {})
+            if _is_provider_native_tool_history_message(payload):
+                return {"ok": False, "status": "migration_window", "reason": "native_tool_history_pending"}
+            role = str(payload.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"} or "content" not in payload:
+                return {"ok": False, "status": "failed", "reason": "projection_message_unsupported"}
+            history_turns.append(payload)
+            history_source_ids.extend(source_id for source_id in source_ids if source_id)
+        if not current_source_visible:
+            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
+        return {
+            "ok": True,
+            "status": "active",
+            "reason": "",
+            "provider_profile": str(projection.get("provider_profile") or ""),
+            "history_turns": history_turns,
+            "source_ids": list(dict.fromkeys(history_source_ids)),
+            "source_count": len(set(history_source_ids)),
+            "message_count": len(history_turns),
+            "stable_prefix_hash": str(projection.get("stable_prefix_hash") or ""),
+            "projection_version": int(projection.get("projection_version") or 0),
+            "compaction_generation": int(projection.get("compaction_generation") or 0),
+            "projection_generation": int(projection.get("projection_generation") or 0),
+            "current_source_visible": True,
+        }
+    except Exception as exc:
+        logger.warning("memcore projection read unavailable: %s", exc.__class__.__name__)
+        return {"ok": False, "status": "failed", "reason": "projection_read_failed"}
+
+
+def _is_provider_native_tool_history_message(payload: dict[str, Any]) -> bool:
+    if str(payload.get("role") or "").strip().lower() == "tool" or payload.get("tool_calls"):
+        return True
+    content = payload.get("content")
+    return isinstance(content, list) and any(
+        isinstance(item, dict) and str(item.get("type") or "").strip() in {"tool_use", "tool_result"}
+        for item in content
+    )
 
 
 def _estimate_generation_context_tokens(
@@ -974,47 +1099,6 @@ def _attach_message_prompt_envelopes(
             )
     except Exception as exc:
         logger.warning("message prompt envelope load failed: %s", str(exc)[:160])
-
-
-def _sync_current_message_prompt_envelope(
-    engine: Any,
-    *,
-    source_id: str,
-    profile_user_id: str,
-    session_id: str,
-    character_pack_id: str,
-    prompt_text: str,
-) -> None:
-    sid = str(source_id or "").strip()
-    if not sid:
-        return
-    store = getattr(engine, "store", None)
-    writer = getattr(store, "upsert_message_prompt_envelope", None)
-    deleter = getattr(store, "delete_message_prompt_envelope", None)
-    try:
-        if str(prompt_text or "").strip() and callable(writer):
-            result = writer(
-                source_id=sid,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-                prompt_text=str(prompt_text),
-            )
-            if isinstance(result, dict) and not result.get("ok", False):
-                logger.warning(
-                    "message prompt envelope write declined status=%s reason=%s",
-                    str(result.get("status") or "unknown")[:40],
-                    str(result.get("reason") or "unknown")[:80],
-                )
-        elif callable(deleter):
-            deleter(
-                source_id=sid,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=character_pack_id,
-            )
-    except Exception as exc:
-        logger.warning("message prompt envelope sync failed: %s", str(exc)[:160])
 
 
 def _trim_oldest_prompt_raw_record(
