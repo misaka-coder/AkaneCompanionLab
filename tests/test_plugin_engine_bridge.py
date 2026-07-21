@@ -352,8 +352,8 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "messages": projected_messages,
             }
         )
-        projection = native_engine._append_native_tool_history_batch(
-            native_tool_history_turns=history,
+        projection = native_engine._append_tool_history_batch(
+            tool_history_turns=history,
             items=[(normalized, result, result.followup_context, "")],
             trace_source_ids=["plugin-use", "plugin-result"],
             profile_user_id="user-42",

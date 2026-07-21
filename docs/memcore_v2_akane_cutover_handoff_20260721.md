@@ -13,7 +13,12 @@
 - MemCore projection 读取/冻结失败返回结构化记忆错误，不落入人格兜底，也不持久化失败回复；
 - 工具新加载的图片不再回填到已冻结的原始 user message，而是在 tool result 后追加
   `material.model_input`；原图只走当前 provider request，持久化投影使用 media omission marker；
-- MemCore 模式下最终生成重试复用完全相同的 user payload，不追加临时 retry note。
+- MemCore 模式下最终生成重试复用完全相同的 user payload，不追加临时 retry note；
+- legacy JSON `tool_call` 不再把结果重新拼进当前 user prompt：实际 provider assistant raw 与中性的
+  `[tool.result]` user block 线性追加，由 request observer 首次冻结；这只是未验证 native provider 的薄兼容形态，
+  不改变工具选择、轮数或执行权限；
+- final `complete_turn` 会做一次幂等重试；仍失败时显式 abort 开放 turn、停止该轮 compaction，并在不丢弃
+  已生成模型回复的前提下附加 path-free `_memcore_failure`，不再静默留下 open turn。
 
 当前新增/重点测试位于：
 
@@ -24,8 +29,9 @@ tests/test_llm_client.py
 memcore/tests/test_projection_cache.py
 ```
 
-最新已单独通过：无 runtime 的 raw final 完成、工具产图冻结、重试 payload 一致、原生工具与 provider raw
-聚焦测试。完整回归和真实云端 provider/QQ 验收仍需在本 repair pass 末尾执行；在此之前不要把本地状态写成
+最新已单独通过：无 runtime 的 raw final 完成、工具产图冻结、重试 payload 一致、原生工具、legacy JSON
+线性工具轮、final completion 失败恢复与 provider raw 聚焦测试。完整回归和真实云端 provider/QQ 验收仍需在本
+repair pass 末尾执行；在此之前不要把本地状态写成
 “线上已完成”。后续章节保留的是切换前历史，定位旧代码和理解迁移顺序仍有价值，但“当前阶段”以本节为准。
 
 > 用途：把本文件全文复制给新的 Codex/AI 账号，即可继续当前主线。

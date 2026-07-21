@@ -987,7 +987,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             client_context=client_context,
             memory_exclude_source_ids=[],
             request_context={},
-            native_tool_history_turns=native_history,
+            tool_history_turns=native_history,
             memcore_turn_id="turn-native-anthropic",
         )
 
@@ -1104,7 +1104,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             client_context=client_context,
             memory_exclude_source_ids=[],
             request_context={},
-            native_tool_history_turns=native_history,
+            tool_history_turns=native_history,
             memcore_turn_id="turn-parallel-anthropic",
         )
 
@@ -1170,7 +1170,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             client_context=client_context,
             memory_exclude_source_ids=[],
             request_context={},
-            native_tool_history_turns=native_history,
+            tool_history_turns=native_history,
             memcore_turn_id="turn-parallel-openai",
         )
 
@@ -1279,7 +1279,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             client_context=client_context,
             memory_exclude_source_ids=[],
             request_context={},
-            native_tool_history_turns=[],
+            tool_history_turns=[],
             memcore_turn_id="turn-image",
         )
 

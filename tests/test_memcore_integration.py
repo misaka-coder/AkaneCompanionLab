@@ -746,6 +746,293 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(payloads[1], {"role": "assistant", "content": '{"speech":"第一答","memory_metadata":{}}'})
         self.assertEqual(generation_context["memcore_request_projection"]["status"], "recorded")
 
+    def test_legacy_json_tool_round_freezes_the_real_linear_provider_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "legacy-user-1", "content": "查一下北京天气", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                engine.llm = SimpleNamespace(
+                    supports_request_observer=True,
+                    chat_provider_protocol=lambda **_kwargs: "responses",
+                )
+                engine.memcore_manager = manager
+                initial_projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                first_context = {
+                    "memcore_projection_read": {
+                        "current_turn_id": opened["turn_id"],
+                        "current_turn_messages": [
+                            dict(message)
+                            for message in initial_projection["messages"]
+                            if message.get("turn_id") == opened["turn_id"]
+                        ],
+                    }
+                }
+                first_observer = engine._build_memcore_request_observer(
+                    generation_context=first_context,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                actual_user = {
+                    "role": "user",
+                    "content": "[100] message.user\ncontent:\n查一下北京天气\n\n本轮状态",
+                }
+                first = first_observer(
+                    {
+                        "protocol": "responses",
+                        "model_route": {"protocol": "responses", "model": "gpt-test"},
+                        "system_prefix": "stable system",
+                        "tool_schema": [],
+                        "history_messages": [actual_user],
+                        "audit_history_messages": [actual_user],
+                    }
+                )
+                self.assertTrue(first["ok"], first)
+
+                batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "web_search",
+                            "tool_call_id": "legacy-call-1",
+                            "tool_input": {"query": "北京天气"},
+                            "result": "北京今天晴，25°C。",
+                            "source": "search-api",
+                            "timestamp": 101,
+                            "source_id_prefix": "legacy-weather",
+                            "result_status": "success",
+                        }
+                    ],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                trace_ids = [
+                    source_id
+                    for exchange in batch["exchanges"]
+                    for source_id in (exchange["tool_use_source_id"], exchange["tool_result_source_id"])
+                ]
+                provider_raw = (
+                    '{"speech":"我查一下。","tool_call":{"type":"web_search",'
+                    '"query":"北京天气"},"memory_metadata":{}}'
+                )
+                post_turns: list[dict[str, object]] = []
+                projected = engine._append_tool_history_batch(
+                    tool_history_turns=post_turns,
+                    items=[
+                        (
+                            {"type": "web_search", "query": "北京天气"},
+                            ToolExecutionResult(
+                                tool_type="web_search",
+                                followup_context="北京今天晴，25°C。",
+                            ),
+                            "北京今天晴，25°C。",
+                            "",
+                        )
+                    ],
+                    trace_source_ids=trace_ids,
+                    provider_output_raw=provider_raw,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(projected["ok"], projected)
+                self.assertEqual(post_turns[0], {"role": "assistant", "content": provider_raw})
+                self.assertEqual(post_turns[1]["role"], "user")
+                self.assertIn("[tool.result]", str(post_turns[1]["content"]))
+                self.assertNotIn("tool_calls", post_turns[0])
+
+                tool_projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                second_context = {
+                    "memcore_projection_read": {
+                        "current_turn_id": opened["turn_id"],
+                        "current_turn_messages": [
+                            dict(message)
+                            for message in tool_projection["messages"]
+                            if message.get("turn_id") == opened["turn_id"]
+                        ],
+                    }
+                }
+                second_observer = engine._build_memcore_request_observer(
+                    generation_context=second_context,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                actual_second_history = [actual_user, *post_turns]
+                second = second_observer(
+                    {
+                        "protocol": "responses",
+                        "model_route": {"protocol": "responses", "model": "gpt-test"},
+                        "system_prefix": "stable system",
+                        "tool_schema": [],
+                        "history_messages": actual_second_history,
+                        "audit_history_messages": actual_second_history,
+                    }
+                )
+                self.assertTrue(second["ok"], second)
+
+                completed = manager.complete_input_turn(
+                    turn_id=str(opened["turn_id"]),
+                    assistant_record={"source_id": "legacy-final-1", "content": "北京今天晴。", "timestamp": 102},
+                    memory_metadata={"keywords": ["北京天气"]},
+                    provider_output_raw='{"speech":"北京今天晴。","memory_metadata":{}}',
+                    provider_profile="responses",
+                    provider_projection={
+                        "role": "assistant",
+                        "content": '{"speech":"北京今天晴。","memory_metadata":{}}',
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(completed["ok"], completed)
+                manager.begin_input_turn(
+                    {"source_id": "legacy-user-2", "content": "继续", "timestamp": 103},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                next_projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        self.assertEqual(next_projection["payloads"][:3], actual_second_history)
+
+    def test_final_completion_failure_preserves_reply_and_aborts_open_turn(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        completion_calls: list[dict[str, object]] = []
+        abort_calls: list[dict[str, object]] = []
+
+        def fail_completion(**kwargs):
+            completion_calls.append(dict(kwargs))
+            return {"ok": False, "status": "failed", "reason": "private path must not escape"}
+
+        def abort_turn(**kwargs):
+            abort_calls.append(dict(kwargs))
+            return {"ok": True, "status": "aborted"}
+
+        engine._complete_memcore_input_turn = fail_completion
+        engine._abort_memcore_input_turn = abort_turn
+        final_output = {"speech": "这是模型已经生成的真实回复。"}
+
+        completed = engine._finalize_memcore_input_turn_for_delivery(
+            final_output=final_output,
+            turn_id="turn-final-failure",
+            assistant_record={"source_id": "assistant-1", "content": final_output["speech"]},
+            memory_metadata={"keywords": []},
+            provider_output_raw='{"speech":"这是模型已经生成的真实回复。"}',
+            chat_model_override="",
+            annotation_status="accepted_model",
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+        )
+
+        self.assertFalse(completed)
+        self.assertEqual(len(completion_calls), 2)
+        self.assertEqual(len(abort_calls), 1)
+        self.assertEqual(final_output["speech"], "这是模型已经生成的真实回复。")
+        self.assertEqual(final_output["_memcore_failure"]["reason"], "input_turn_completion_failed")
+        self.assertEqual(final_output["_memcore_failure"]["recovery_status"], "aborted")
+        self.assertNotIn("private path", repr(final_output["_memcore_failure"]))
+
+    def test_legacy_anthropic_tool_result_is_normalized_to_neutral_user_history(self) -> None:
+        class AnthropicProjectionManager:
+            @staticmethod
+            def build_context_projection(**_kwargs):
+                return {
+                    "ok": True,
+                    "provider_profile": "anthropic_messages",
+                    "messages": [
+                        {
+                            "payload": {
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "tool_use",
+                                        "id": "legacy-anthropic-call",
+                                        "name": "web_search",
+                                        "input": {"query": "天气"},
+                                    }
+                                ],
+                            },
+                            "source_ids": ["legacy-anthropic-use"],
+                        },
+                        {
+                            "payload": {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "legacy-anthropic-call",
+                                        "content": "晴，25°C。",
+                                    }
+                                ],
+                            },
+                            "source_ids": ["legacy-anthropic-result"],
+                        },
+                    ],
+                }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.llm = SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "anthropic_messages")
+        engine.memcore_manager = AnthropicProjectionManager()
+        history: list[dict[str, object]] = []
+        raw = '{"speech":"我查一下。","tool_call":{"type":"web_search","query":"天气"}}'
+
+        projected = engine._append_tool_history_batch(
+            tool_history_turns=history,
+            items=[
+                (
+                    {"type": "web_search", "query": "天气"},
+                    ToolExecutionResult(tool_type="web_search", followup_context="晴，25°C。"),
+                    "晴，25°C。",
+                    "",
+                )
+            ],
+            trace_source_ids=["legacy-anthropic-use", "legacy-anthropic-result"],
+            provider_output_raw=raw,
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+        )
+
+        self.assertTrue(projected["ok"], projected)
+        self.assertEqual(history[0], {"role": "assistant", "content": raw})
+        self.assertEqual(history[1]["role"], "user")
+        self.assertIn("call_id: legacy-anthropic-call", str(history[1]["content"]))
+        self.assertNotIn("tool_result", repr(history[1]))
+
     def test_parallel_native_tool_wire_is_restored_in_order_on_next_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -1077,8 +1364,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "mime_type": "image/png",
                     "data_url": "data:image/png;base64,AAAA",
                 }
-                projected = engine._append_native_tool_history_batch(
-                    native_tool_history_turns=native_history,
+                projected = engine._append_tool_history_batch(
+                    tool_history_turns=native_history,
                     items=[
                         (
                             {

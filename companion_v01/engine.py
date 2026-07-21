@@ -939,6 +939,61 @@ class AkaneMemoryEngine:
             logger.warning("memcore input turn completion failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _finalize_memcore_input_turn_for_delivery(
+        self,
+        *,
+        final_output: dict[str, Any],
+        turn_id: str,
+        assistant_record: dict[str, Any],
+        memory_metadata: dict[str, Any] | None,
+        provider_output_raw: str,
+        chat_model_override: str,
+        annotation_status: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> bool:
+        """Close a MemCore turn without discarding an already generated reply.
+
+        ``complete_turn`` is idempotent, so one immediate retry is safe for a
+        transient store failure.  If both attempts fail, close the open turn
+        through the explicit abort path and attach a bounded, path-free status
+        to the real model result.  The caller must not schedule compaction for
+        that failed turn.
+        """
+
+        if not str(turn_id or "").strip():
+            return True
+        completion: dict[str, Any] = {}
+        for _attempt in range(2):
+            completion = self._complete_memcore_input_turn(
+                turn_id=turn_id,
+                assistant_record=assistant_record,
+                memory_metadata=memory_metadata,
+                provider_output_raw=provider_output_raw,
+                chat_model_override=chat_model_override,
+                annotation_status=annotation_status,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            if not completion or bool(completion.get("ok")):
+                return True
+        aborted = self._abort_memcore_input_turn(
+            turn_id=turn_id,
+            reason="input_turn_completion_failed",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        final_output["_memcore_failure"] = {
+            "status": str(completion.get("status") or "failed")[:40],
+            "reason": "input_turn_completion_failed",
+            "recovery_status": "aborted" if bool((aborted or {}).get("ok")) else "abort_failed",
+            "delivery_status": "model_reply_preserved",
+        }
+        return False
+
     @staticmethod
     def _memory_metadata_has_signal(metadata: Any) -> bool:
         if not isinstance(metadata, dict):
@@ -3053,7 +3108,7 @@ class AkaneMemoryEngine:
         tool_results: list[ToolExecutionResult] = []
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
-        native_tool_history_turns: list[dict[str, Any]] = []
+        tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
@@ -3107,7 +3162,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
-                    post_user_turns=native_tool_history_turns,
+                    post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
@@ -3161,7 +3216,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
-                    post_user_turns=native_tool_history_turns,
+                    post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
@@ -3191,6 +3246,7 @@ class AkaneMemoryEngine:
             batch_results, _current_events = self._execute_and_record_tool_batch(
                 tool_calls=executable_calls,
                 final_output=final_output,
+                provider_output_raw=provider_output_raw,
                 tool_results=tool_results,
                 tool_events=tool_events,
                 tool_followups=tool_followups,
@@ -3204,7 +3260,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
-                native_tool_history_turns=native_tool_history_turns,
+                tool_history_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
@@ -3250,7 +3306,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
-                post_user_turns=native_tool_history_turns,
+                post_user_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
@@ -3341,7 +3397,8 @@ class AkaneMemoryEngine:
             )
             self._upsert_raw_record(assistant_record)
             if not transient_user_turn:
-                self._complete_memcore_input_turn(
+                if self._finalize_memcore_input_turn_for_delivery(
+                    final_output=final_output,
                     turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
@@ -3351,12 +3408,12 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
-                )
-                self._schedule_memcore_compaction(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                )
+                ):
+                    self._schedule_memcore_compaction(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
         elif memcore_turn_id:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
@@ -3590,7 +3647,7 @@ class AkaneMemoryEngine:
         tool_results: list[ToolExecutionResult] = []
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
-        native_tool_history_turns: list[dict[str, Any]] = []
+        tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
@@ -3655,7 +3712,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
-                    post_user_turns=native_tool_history_turns,
+                    post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
@@ -3709,7 +3766,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
-                    post_user_turns=native_tool_history_turns,
+                    post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
@@ -3750,6 +3807,7 @@ class AkaneMemoryEngine:
             batch_results, current_events = self._execute_and_record_tool_batch(
                 tool_calls=executable_calls,
                 final_output=final_output,
+                provider_output_raw=provider_output_raw,
                 tool_results=tool_results,
                 tool_events=tool_events,
                 tool_followups=tool_followups,
@@ -3763,7 +3821,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
-                native_tool_history_turns=native_tool_history_turns,
+                tool_history_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
@@ -3811,7 +3869,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=allow_more_tools,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
-                post_user_turns=native_tool_history_turns,
+                post_user_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
@@ -3885,8 +3943,6 @@ class AkaneMemoryEngine:
                 session_id=session_id,
             )
 
-        ui_final_payload = dict(final_output)
-
         persist_assistant_turn = self._should_persist_completed_assistant(
             persist_assistant_turn,
             final_output,
@@ -3904,7 +3960,8 @@ class AkaneMemoryEngine:
             )
             self._upsert_raw_record(assistant_record)
             if not transient_user_turn:
-                self._complete_memcore_input_turn(
+                if self._finalize_memcore_input_turn_for_delivery(
+                    final_output=final_output,
                     turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
@@ -3914,12 +3971,12 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
-                )
-                self._schedule_memcore_compaction(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                )
+                ):
+                    self._schedule_memcore_compaction(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
         elif memcore_turn_id:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
@@ -3947,6 +4004,7 @@ class AkaneMemoryEngine:
                 final_json=final_output,
             )
 
+        ui_final_payload = dict(final_output)
         yield {"type": "final_ui", "payload": ui_final_payload}
 
         final_output["trace_id"] = trace_id
@@ -4726,10 +4784,9 @@ class AkaneMemoryEngine:
                 actual_tail = history[-len(current_messages) :]
                 prepared: list[dict[str, Any]] = []
                 for metadata, actual in zip(current_messages, actual_tail):
-                    expected_role = str(dict(metadata.get("payload") or {}).get("role") or "").strip().lower()
                     actual_role = str(actual.get("role") or "").strip().lower()
-                    if expected_role and expected_role != actual_role:
-                        return {"ok": False, "status": "failed", "reason": "current_turn_role_mismatch"}
+                    if actual_role not in {"user", "assistant", "tool"}:
+                        return {"ok": False, "status": "failed", "reason": "current_turn_role_invalid"}
                     source_ids = [
                         str(source_id or "").strip()
                         for source_id in list(metadata.get("source_ids") or [])
@@ -5166,7 +5223,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext,
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
-        native_tool_history_turns: list[dict[str, Any]] | None = None,
+        tool_history_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         memcore_turn_id: str = "",
@@ -5187,7 +5244,7 @@ class AkaneMemoryEngine:
             client_context=client_context,
             memory_exclude_source_ids=memory_exclude_source_ids,
             request_context=request_context,
-            native_tool_history_turns=native_tool_history_turns,
+            tool_history_turns=tool_history_turns,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             memcore_turn_id=memcore_turn_id,
@@ -5199,6 +5256,7 @@ class AkaneMemoryEngine:
         *,
         tool_calls: list[dict[str, Any]],
         final_output: dict[str, Any],
+        provider_output_raw: str = "",
         tool_results: list[ToolExecutionResult],
         tool_events: list[dict[str, Any]],
         tool_followups: list[str],
@@ -5212,7 +5270,7 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext,
         memory_exclude_source_ids: list[str],
         request_context: dict[str, Any],
-        native_tool_history_turns: list[dict[str, Any]] | None = None,
+        tool_history_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         recorded_tool_call_ids: set[str] | None = None,
         domain_profile_id: str = "",
@@ -5311,6 +5369,7 @@ class AkaneMemoryEngine:
         completed = [result for result in executed if result is not None]
 
         batch_events: list[dict[str, Any]] = []
+        followup_start = len(tool_followups)
         history_items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]] = []
         for call, result in zip(calls, executed):
             assert result is not None
@@ -5356,12 +5415,13 @@ class AkaneMemoryEngine:
             for source_id in [*trace_source_ids, *media_source_ids]:
                 if source_id not in prompt_exclude_source_ids:
                     prompt_exclude_source_ids.append(source_id)
-        native_projection = self._append_native_tool_history_batch(
-            native_tool_history_turns=native_tool_history_turns,
+        tool_projection = self._append_tool_history_batch(
+            tool_history_turns=tool_history_turns,
             items=history_items,
             trace_source_ids=trace_source_ids,
             media_source_ids=media_source_ids,
             model_image_inputs=batch_model_images,
+            provider_output_raw=provider_output_raw,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
@@ -5377,18 +5437,18 @@ class AkaneMemoryEngine:
             memcore_failure = {"status": "failed", "reason": "tool_trace_record_failed"}
         elif memcore_required and batch_model_images and not media_source_ids:
             memcore_failure = {"status": "failed", "reason": "tool_media_record_failed"}
-        elif memcore_required and any(
-            str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
-            for call in calls
-        ) and not native_projection.get("ok"):
+        elif memcore_required and not tool_projection.get("ok"):
             memcore_failure = {"status": "failed", "reason": "tool_projection_build_failed"}
         if memcore_failure is not None:
             for result in completed:
                 result.state_updates["_memcore_failure"] = dict(memcore_failure)
-        if not native_projection.get("ok") and any(
+        has_native_calls = any(
             str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
             for call in calls
-        ):
+        )
+        if tool_projection.get("ok") and tool_projection.get("status") == "projected" and not has_native_calls:
+            del tool_followups[followup_start:]
+        if not tool_projection.get("ok") and has_native_calls:
             for _call, result, shaped_followup, workspace_followup in history_items:
                 feedback = "\n\n".join(
                     part
@@ -5504,19 +5564,20 @@ class AkaneMemoryEngine:
                 break
         return merged
 
-    def _append_native_tool_history_batch(
+    def _append_tool_history_batch(
         self,
         *,
-        native_tool_history_turns: list[dict[str, Any]] | None,
+        tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
         trace_source_ids: list[str],
         media_source_ids: list[str] | None = None,
         model_image_inputs: list[dict[str, Any]] | None = None,
+        provider_output_raw: str = "",
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
     ) -> dict[str, Any]:
-        if native_tool_history_turns is None:
+        if tool_history_turns is None:
             return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
         sources = {
             str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
@@ -5528,20 +5589,25 @@ class AkaneMemoryEngine:
             for source_id in list(media_source_ids or [])
             if str(source_id or "").strip()
         }
-        if not sources and not media_ids:
-            return {"ok": True, "status": "skipped", "reason": "no_native_tool_calls"}
+        has_legacy_calls = any(
+            str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
+            for tool_call, _result, _shaped, _workspace in items
+        )
+        if sources and has_legacy_calls:
+            return {"ok": False, "status": "failed", "reason": "mixed_tool_history_modes"}
+        if not sources and not has_legacy_calls and not media_ids:
+            return {"ok": True, "status": "skipped", "reason": "no_tool_calls"}
         if len(sources) != 1:
             if sources:
                 return {"ok": False, "status": "failed", "reason": "mixed_native_provider_batch"}
         manager = getattr(self, "memcore_manager", None)
         build_projection = getattr(manager, "build_context_projection", None)
         selected_ids = set(media_ids)
-        if sources:
-            selected_ids.update(
-                str(source_id or "").strip()
-                for source_id in trace_source_ids
-                if str(source_id or "").strip()
-            )
+        selected_ids.update(
+            str(source_id or "").strip()
+            for source_id in trace_source_ids
+            if str(source_id or "").strip()
+        )
         if not callable(build_projection) or not selected_ids:
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
         provider_profile = next(iter(sources), "")
@@ -5570,6 +5636,9 @@ class AkaneMemoryEngine:
         ]
         projected_messages: list[dict[str, Any]] = []
         media_attached = False
+        legacy_assistant_written = False
+        legacy_action_ids = set(trace_source_ids[0::2]) if has_legacy_calls else set()
+        legacy_result_ids = set(trace_source_ids[1::2]) if has_legacy_calls else set()
         for message in selected_messages:
             payload = dict(message.get("payload") or {})
             message_source_ids = {
@@ -5583,6 +5652,18 @@ class AkaneMemoryEngine:
                     model_image_inputs=list(model_image_inputs or []),
                 )
                 media_attached = True
+            elif has_legacy_calls and legacy_action_ids.intersection(message_source_ids):
+                raw = str(provider_output_raw or "")
+                if not raw or legacy_assistant_written:
+                    return {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "legacy_provider_output_unavailable",
+                    }
+                payload = {"role": "assistant", "content": raw}
+                legacy_assistant_written = True
+            elif has_legacy_calls and legacy_result_ids.intersection(message_source_ids):
+                payload = self._legacy_tool_result_history_message(payload)
             projected_messages.append(payload)
         covered_ids = {
             str(source_id or "").strip()
@@ -5595,7 +5676,9 @@ class AkaneMemoryEngine:
             return {"ok": False, "status": "failed", "reason": "tool_projection_incomplete"}
         if media_ids and not media_attached:
             return {"ok": False, "status": "failed", "reason": "media_projection_incomplete"}
-        native_tool_history_turns.extend(projected_messages)
+        if has_legacy_calls and not legacy_assistant_written:
+            return {"ok": False, "status": "failed", "reason": "legacy_assistant_projection_missing"}
+        tool_history_turns.extend(projected_messages)
         return {
             "ok": True,
             "status": "projected",
@@ -5604,6 +5687,31 @@ class AkaneMemoryEngine:
             "message_count": len(projected_messages),
             "source_count": len(covered_ids),
         }
+
+    @staticmethod
+    def _legacy_tool_result_history_message(payload: dict[str, Any]) -> dict[str, Any]:
+        content = payload.get("content")
+        nested_call_ids: list[str] = []
+        if isinstance(content, list):
+            nested_call_ids = [
+                str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
+                for item in content
+                if isinstance(item, dict)
+                and str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
+            ]
+            result_text = "\n".join(
+                str(item.get("text") or item.get("content") or "").strip()
+                for item in content
+                if isinstance(item, dict) and str(item.get("text") or item.get("content") or "").strip()
+            )
+        else:
+            result_text = str(content or "").strip()
+        call_id = str(payload.get("tool_call_id") or "").strip() or ",".join(nested_call_ids)
+        lines = ["[tool.result]"]
+        if call_id:
+            lines.append(f"call_id: {call_id}")
+        lines.extend(("content:", result_text, "请基于以上真实工具结果继续处理当前请求。"))
+        return {"role": "user", "content": "\n".join(lines)}
 
     @staticmethod
     def _attach_model_images_to_projection(
