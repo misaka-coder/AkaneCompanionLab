@@ -24,6 +24,16 @@ from .diagnostics import snippet_hashes
 
 
 SUPPORTED_MEMORY_BACKENDS = frozenset({"legacy", "dual", "memcore"})
+MEMCORE_PROVIDER_PROFILE_ALIASES = {
+    "openai": "openai_chat",
+    "openai_chat": "openai_chat",
+    "responses": "openai_chat",
+    "ollama": "openai_chat",
+    "anthropic": "anthropic_messages",
+    "anthropic_messages": "anthropic_messages",
+    "canonical": "canonical_user_assistant",
+    "canonical_user_assistant": "canonical_user_assistant",
+}
 logger = logging.getLogger("akane.memcore")
 
 
@@ -35,6 +45,12 @@ def normalize_memory_backend(value: Any) -> str:
 def normalize_visible_scope(value: Any) -> str:
     text = str(value or "user").strip().lower()
     return text if text in {"conversation", "user"} else "user"
+
+
+def resolve_memcore_provider_profile(value: Any) -> str:
+    """Map the actual provider protocol to a MemCore projection profile."""
+
+    return MEMCORE_PROVIDER_PROFILE_ALIASES.get(str(value or "").strip().lower(), "")
 
 
 def _build_persona_text_provider(engine: Any) -> Any:
@@ -1167,6 +1183,174 @@ class MemcoreManager:
                 str(exc) or exc.__class__.__name__,
             )
         return self._status(operation, True, "recorded", source_id=record_id, index_status=index_status)
+
+    def build_context_projection(
+        self,
+        *,
+        provider_profile: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        operation = "build_context_projection"
+        profile = resolve_memcore_provider_profile(provider_profile)
+        if not profile:
+            return {
+                **self._status(operation, False, "invalid_provider_profile", reason="provider_profile_unsupported"),
+                "provider_profile": "",
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
+                "stable_prefix_hash": "",
+                "projection_version": 0,
+                "compaction_generation": 0,
+                "projection_generation": 0,
+            }
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "provider_profile": profile,
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
+                "stable_prefix_hash": "",
+                "projection_version": 0,
+                "compaction_generation": 0,
+                "projection_generation": 0,
+            }
+        try:
+            projection = system.build_context_projection(provider_profile=profile)
+            messages = [
+                {
+                    "payload": dict(message.payload),
+                    "source_ids": list(message.source_ids),
+                    "payload_hash": str(message.payload_hash or ""),
+                    "projection_status": str(message.projection_status),
+                    "projection_index": int(message.projection_index),
+                    "projection_version": int(message.projection_version),
+                }
+                for message in projection.messages
+            ]
+            source_ids = list(
+                dict.fromkeys(source_id for message in projection.messages for source_id in message.source_ids)
+            )
+            return {
+                **self._status(operation, True, "ok"),
+                "provider_profile": str(projection.provider_profile),
+                "messages": messages,
+                "payloads": [dict(payload) for payload in projection.payloads],
+                "source_ids": source_ids,
+                "message_count": len(messages),
+                "source_count": len(source_ids),
+                "stable_prefix_hash": str(projection.stable_prefix_hash or ""),
+                "projection_version": int(projection.projection_version),
+                "compaction_generation": int(projection.compaction_generation),
+                "projection_generation": int(projection.projection_generation),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore context projection failed: %s", reason)
+            return {
+                **self._status(operation, False, "failed", reason=reason),
+                "provider_profile": profile,
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
+                "stable_prefix_hash": "",
+                "projection_version": 0,
+                "compaction_generation": 0,
+                "projection_generation": 0,
+            }
+
+    def record_request_projection(
+        self,
+        *,
+        turn_id: str,
+        provider_profile: str,
+        turn_messages: list[dict[str, Any]],
+        history_messages: list[dict[str, Any]],
+        attempt: int,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        model_route: Any = "",
+        system_prefix: Any = "",
+        tool_schema: Any = (),
+        created_at: int | None = None,
+    ) -> dict[str, Any]:
+        operation = "record_request_projection"
+        profile = resolve_memcore_provider_profile(provider_profile)
+        if not profile:
+            return self._status(
+                operation,
+                False,
+                "invalid_provider_profile",
+                reason="provider_profile_unsupported",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        try:
+            projection_input = self._memcore_module.ProjectionMessageInput
+            prepared = [
+                projection_input(
+                    provider_profile=profile,
+                    payload=dict(message.get("payload") or {}),
+                    source_ids=tuple(message.get("source_ids") or ()),
+                    projection_index=int(message.get("projection_index", -1)),
+                    projection_status=message.get("projection_status") or "complete",
+                    projection_version=int(message.get("projection_version") or 1),
+                )
+                for message in list(turn_messages or [])
+                if isinstance(message, dict)
+            ]
+            if len(prepared) != len(turn_messages or []):
+                return self._status(operation, False, "invalid_request", reason="turn_messages_must_be_objects")
+            result = system.record_request_projection(
+                turn_id=str(turn_id or "").strip(),
+                provider_profile=profile,
+                turn_messages=prepared,
+                history_messages=[dict(message) for message in list(history_messages or [])],
+                attempt=int(attempt),
+                model_route=model_route,
+                system_prefix=system_prefix,
+                tool_schema=tool_schema,
+                created_at=created_at,
+            )
+            audit = result.audit
+            return {
+                **self._status(operation, True, "recorded"),
+                "turn_id": str(audit.turn_id),
+                "attempt": int(audit.attempt),
+                "provider_profile": str(audit.provider_profile),
+                "projection_count": len(result.projections),
+                "source_ids": list(
+                    dict.fromkeys(source_id for item in result.projections for source_id in item.source_ids)
+                ),
+                "projection_hashes": [str(item.payload_hash or "") for item in result.projections],
+                "model_route_hash": str(audit.model_route_hash or ""),
+                "system_prefix_hash": str(audit.system_prefix_hash or ""),
+                "tool_schema_hash": str(audit.tool_schema_hash or ""),
+                "history_hash": str(audit.history_hash or ""),
+                "full_prefix_hash": str(audit.full_prefix_hash or ""),
+                "projection_version": int(audit.projection_version),
+                "media_omitted": bool(audit.media_omitted),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore request projection failed: %s", reason)
+            return self._status(operation, False, "failed", reason=reason)
 
     def build_prompt_context(
         self,

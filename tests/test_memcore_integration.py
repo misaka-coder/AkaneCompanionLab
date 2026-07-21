@@ -16,7 +16,11 @@ from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.llm_runtime import LLMRuntime
-from companion_v01.memcore_integration.manager import MemcoreManager, normalize_memory_backend
+from companion_v01.memcore_integration.manager import (
+    MemcoreManager,
+    normalize_memory_backend,
+    resolve_memcore_provider_profile,
+)
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
 from companion_v01.prompt_profiles import PromptModule
 from companion_v01.retrieval_types import RetrievalPipelineResult
@@ -528,6 +532,71 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_provider_protocol_maps_to_projection_profile_without_bot_specific_branching(self) -> None:
+        self.assertEqual(resolve_memcore_provider_profile("openai"), "openai_chat")
+        self.assertEqual(resolve_memcore_provider_profile("responses"), "openai_chat")
+        self.assertEqual(resolve_memcore_provider_profile("ollama"), "openai_chat")
+        self.assertEqual(resolve_memcore_provider_profile("anthropic"), "anthropic_messages")
+        self.assertEqual(resolve_memcore_provider_profile("canonical"), "canonical_user_assistant")
+        self.assertEqual(resolve_memcore_provider_profile("finance_bot"), "")
+
+    def test_projection_facades_delegate_to_memcore_and_return_safe_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "projection-stimulus", "content": "测试投影", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                current_messages = [
+                    message
+                    for message in projection["messages"]
+                    if "projection-stimulus" in message["source_ids"]
+                ]
+                recorded = manager.record_request_projection(
+                    turn_id=str(opened["turn_id"]),
+                    provider_profile="responses",
+                    turn_messages=current_messages,
+                    history_messages=list(projection["payloads"]),
+                    attempt=1,
+                    model_route={"protocol": "responses", "model": "safe-model-id"},
+                    system_prefix="stable system prefix",
+                    tool_schema=[{"name": "safe_tool"}],
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    created_at=101,
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(projection["ok"], projection)
+        self.assertEqual(projection["provider_profile"], "openai_chat")
+        self.assertEqual(projection["source_ids"], ["projection-stimulus"])
+        self.assertRegex(projection["stable_prefix_hash"], r"^[a-f0-9]{64}$")
+        self.assertTrue(recorded["ok"], recorded)
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(recorded["source_ids"], ["projection-stimulus"])
+        self.assertRegex(recorded["full_prefix_hash"], r"^[a-f0-9]{64}$")
+        self.assertNotIn("history_messages", recorded)
+        self.assertNotIn("stable system prefix", repr(recorded))
+
     def test_prompt_token_estimate_counts_structured_history(self) -> None:
         base = {
             "system_prompt": "system",
