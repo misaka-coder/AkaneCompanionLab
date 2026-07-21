@@ -78,9 +78,10 @@ class StickerAssetTests(unittest.TestCase):
         self.assertEqual(result.stream_events, [])
         self.assertIn("没有找到", result.followup_context)
 
-    @patch("companion_v01.qq_gateway.requests.post")
+    @patch("companion_v01.onebot_transport.requests.Session.request")
     def test_qq_gateway_sends_sticker_as_image_message(self, post: Mock) -> None:
         post.return_value = Mock(
+            status_code=200,
             raise_for_status=Mock(),
             json=Mock(return_value={"status": "ok"}),
         )

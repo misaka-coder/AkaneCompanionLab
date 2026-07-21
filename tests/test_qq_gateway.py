@@ -513,9 +513,11 @@ class QQGatewayTests(unittest.TestCase):
                 return None
 
             def json(self):
-                return {"retcode": 0, "data": {"card": "休比", "nickname": "fallback"}}
+                return {"status": "ok", "retcode": 0, "data": {"card": "休比", "nickname": "fallback"}}
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             context = gateway.build_message_context(event)
 
         payload = context.to_turn_payload()
@@ -524,7 +526,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.sender_label, "休比")
         self.assertEqual(payload["message"], "【休比】刚才发生的互动：休比在 QQ 里戳了戳你的头像。")
         mocked_post.assert_called_once()
-        self.assertTrue(mocked_post.call_args.args[0].endswith("/get_group_member_info"))
+        self.assertTrue(mocked_post.call_args.args[1].endswith("/get_group_member_info"))
         self.assertEqual(mocked_post.call_args.kwargs["json"]["group_id"], QQ_GROUP_FIXTURE_ID)
         self.assertEqual(mocked_post.call_args.kwargs["json"]["user_id"], QQ_USER_FIXTURE_ID)
 
@@ -1379,7 +1381,9 @@ class QQGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             audio_path = Path(temp_dir) / "reply.wav"
             audio_path.write_bytes(b"RIFF....WAVE")
-            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
                 result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
 
         self.assertTrue(result["ok"])
@@ -1417,7 +1421,7 @@ class QQGatewayTests(unittest.TestCase):
             failed = FakeResponse({"status": "failed", "retcode": 200})
             succeeded = FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 9}})
             with patch(
-                "companion_v01.qq_gateway.requests.post",
+                "companion_v01.onebot_transport.requests.Session.request",
                 side_effect=[failed, failed, succeeded],
             ) as mocked_post:
                 result = gateway.send_image(context, image_path=str(image_path), name="开心")
@@ -1448,7 +1452,9 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             result = gateway.send_mface(
                 context,
                 mface={
@@ -1507,7 +1513,9 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             first = gateway.send_emotion_mface(
                 context,
                 {"speech": "好。", "emotion": "happy"},
@@ -1538,7 +1546,7 @@ class QQGatewayTests(unittest.TestCase):
             profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
         )
 
-        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
             result = gateway.send_emotion_mface(
                 context,
                 {"speech": "好。", "emotion": "happy"},
@@ -1571,7 +1579,9 @@ class QQGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "happy.png"
             image_path.write_bytes(b"png")
-            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
                 first = gateway.send_emotion_image(
                     context,
                     {"speech": "好。", "emotion": "happy"},
@@ -1852,7 +1862,9 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -1871,7 +1883,7 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         mocked_post.assert_called_once()
-        url = mocked_post.call_args.args[0]
+        url = mocked_post.call_args.args[1]
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_private_file"))
         self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
@@ -1901,7 +1913,9 @@ class QQGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "generated.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
-            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
                     [
@@ -1921,7 +1935,7 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         mocked_post.assert_called_once()
-        url = mocked_post.call_args.args[0]
+        url = mocked_post.call_args.args[1]
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/send_private_msg"))
         self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
@@ -1950,7 +1964,9 @@ class QQGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "reimu.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
-            with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
                     [
@@ -1987,7 +2003,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -2034,7 +2050,9 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -2053,7 +2071,7 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         mocked_post.assert_called_once()
-        url = mocked_post.call_args.args[0]
+        url = mocked_post.call_args.args[1]
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_group_file"))
         self.assertEqual(payload["group_id"], QQ_FILE_GROUP_FIXTURE_ID)
@@ -2073,7 +2091,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        with patch("companion_v01.qq_gateway.requests.post") as mocked_post:
+        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -2143,7 +2161,8 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
         gateway = NapCatQQGateway()
         with patch(
-            "companion_v01.qq_gateway.requests.get", side_effect=req_module.exceptions.ConnectionError("refused")
+            "companion_v01.onebot_transport.requests.Session.request",
+            side_effect=req_module.exceptions.ConnectionError("refused"),
         ):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
@@ -2156,7 +2175,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         import requests as req_module
 
         gateway = NapCatQQGateway()
-        with patch("companion_v01.qq_gateway.requests.get", side_effect=req_module.exceptions.Timeout("timed out")):
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request",
+            side_effect=req_module.exceptions.Timeout("timed out"),
+        ):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "timeout")
@@ -2175,7 +2197,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             def json(self):
                 return {}
 
-        with patch("companion_v01.qq_gateway.requests.get", return_value=FakeResponse()):
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "auth_failed")
@@ -2194,6 +2216,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
             def json(self):
                 return {
+                    "status": "ok",
                     "retcode": 0,
                     "data": {"user_id": 12345678, "nickname": "阿卡内测试号"},
                 }
@@ -2202,10 +2225,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             status_code = 200
 
             def json(self):
-                return {"retcode": 0, "data": {"online": True, "good": True}}
+                return {"status": "ok", "retcode": 0, "data": {"online": True, "good": True}}
 
         with patch(
-            "companion_v01.qq_gateway.requests.get",
+            "companion_v01.onebot_transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ) as mocked_get:
             result = gateway.self_check()
@@ -2219,7 +2242,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertTrue(result["checks"]["account_online"])
         self.assertEqual(result["checks"]["send_test"], "not_tested")
         self.assertEqual(mocked_get.call_count, 2)
-        self.assertTrue(mocked_get.call_args_list[1].args[0].endswith("/get_status"))
+        self.assertTrue(mocked_get.call_args_list[1].args[1].endswith("/get_status"))
         # 不能暴露 token/cookie/path
         result_str = str(result)
         self.assertNotIn("token", result_str.lower())
@@ -2234,16 +2257,16 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             status_code = 200
 
             def json(self):
-                return {"retcode": 0, "data": {"user_id": 12345678, "nickname": "缓存账号"}}
+                return {"status": "ok", "retcode": 0, "data": {"user_id": 12345678, "nickname": "缓存账号"}}
 
         class StatusResponse:
             status_code = 200
 
             def json(self):
-                return {"retcode": 0, "data": {"online": False, "good": True}}
+                return {"status": "ok", "retcode": 0, "data": {"online": False, "good": True}}
 
         with patch(
-            "companion_v01.qq_gateway.requests.get",
+            "companion_v01.onebot_transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ):
             result = gateway.self_check()
@@ -2266,6 +2289,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
             def json(self):
                 return {
+                    "status": "ok",
                     "retcode": 0,
                     "data": {
                         "user_id": 99999,
@@ -2279,10 +2303,10 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             status_code = 200
 
             def json(self):
-                return {"retcode": 0, "data": {"online": True, "good": True}}
+                return {"status": "ok", "retcode": 0, "data": {"online": True, "good": True}}
 
         with patch(
-            "companion_v01.qq_gateway.requests.get",
+            "companion_v01.onebot_transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ):
             result = gateway.self_check()

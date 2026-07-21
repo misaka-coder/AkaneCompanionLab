@@ -741,7 +741,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -797,7 +799,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -857,7 +861,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.qq_gateway.requests.post",
+            "companion_v01.onebot_transport.requests.Session.request",
             return_value=FakeResponse(),
         ) as mocked_post:
             response = TestClient(app).post(
@@ -938,7 +942,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1016,7 +1022,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1177,7 +1185,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             list_response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1275,7 +1285,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1366,7 +1378,9 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1452,7 +1466,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
             command_response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1817,7 +1831,9 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         with (
             patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task),
-            patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post,
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post,
         ):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1910,7 +1926,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         event_timestamp = int(time.time())
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()) as mocked_post:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={

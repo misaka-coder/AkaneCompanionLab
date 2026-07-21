@@ -102,7 +102,37 @@ class OneBotActionTransportTests(unittest.TestCase):
         serialized = repr(failed)
         self.assertEqual(failed.code, "connection_error")
         self.assertNotIn("secret", serialized)
-        self.assertNotIn("NapCat", serialized)
+        self.assertNotIn(r"C:\\NapCat", serialized)
+
+    def test_outbound_result_projects_only_safe_acknowledgement(self) -> None:
+        session = _Session(
+            [
+                _Response(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "message_id": 7,
+                            "file": r"C:\\private\\voice.wav",
+                            "url": "http://127.0.0.1:3001/private",
+                            "token": "secret",
+                        },
+                    }
+                )
+            ]
+        )
+        transport = OneBotActionTransport(
+            _config(url="http://127.0.0.1:3001", token="secret", bot_id="1"),
+            session=session,  # type: ignore[arg-type]
+        )
+
+        result = transport.call("send_private_msg", {"user_id": 2, "message": "hello"}).as_dict()
+
+        self.assertEqual(result["data"], {"message_id": 7})
+        serialized = repr(result)
+        self.assertNotIn(r"C:\\private", serialized)
+        self.assertNotIn("127.0.0.1", serialized)
+        self.assertNotIn("secret", serialized)
 
 
 if __name__ == "__main__":

@@ -78,13 +78,15 @@ class OneBotActionTransport:
         except requests.Timeout:
             return _failure(clean_action, "timeout", "OneBot 请求超时。")
         except requests.RequestException:
-            return _failure(clean_action, "connection_error", "无法连接 OneBot 服务。")
+            return _failure(clean_action, "connection_error", "无法连接 OneBot 服务，请确认 NapCat 端口可用。")
         except Exception:
             return _failure(clean_action, "transport_error", "OneBot 请求失败。")
 
         http_status = int(getattr(response, "status_code", 200) or 0)
         if 300 <= http_status < 400:
             return _failure(clean_action, "redirect_rejected", "OneBot action 不允许重定向。", http_status)
+        if http_status in {401, 403}:
+            return _failure(clean_action, "auth_failed", "OneBot 鉴权失败，请检查访问令牌。", http_status)
         if not 200 <= http_status < 300:
             return _failure(clean_action, "http_error", "OneBot 返回了异常 HTTP 状态。", http_status)
         try:
@@ -98,21 +100,34 @@ class OneBotActionTransport:
         if not isinstance(status, str) or status.strip().lower() not in {"ok", "async"}:
             return _failure(clean_action, "onebot_status_error", "OneBot action 未成功。", http_status)
         retcode = body.get("retcode")
-        if retcode not in {0, "0"}:
+        if retcode is not None and retcode not in {0, "0"}:
             return _failure(clean_action, "onebot_retcode_error", "OneBot action 未成功。", http_status)
         data = body.get("data")
+        safe_data = _project_action_data(clean_action, data if isinstance(data, dict) else {})
         return OneBotActionResult(
             True,
             "success",
             "ok",
             clean_action,
-            data=data if isinstance(data, dict) else {},
+            data=safe_data,
             http_status=http_status,
         )
 
 
 def _failure(action: str, code: str, reason: str, http_status: int | None = None) -> OneBotActionResult:
     return OneBotActionResult(False, "failed", code, action, public_reason=reason, http_status=http_status)
+
+
+def _project_action_data(action: str, data: dict[str, Any]) -> dict[str, Any]:
+    if action in {"send_private_msg", "send_group_msg", "upload_private_file", "upload_group_file"}:
+        return {"message_id": data.get("message_id")} if data.get("message_id") is not None else {}
+    if action == "get_login_info":
+        return {key: data[key] for key in ("user_id", "nickname") if key in data}
+    if action == "get_status":
+        return {key: data[key] for key in ("online", "is_online", "good") if key in data}
+    if action == "get_group_member_info":
+        return {key: data[key] for key in ("card", "nickname") if key in data}
+    return data
 
 
 def _canonical_base_url(value: str) -> str:

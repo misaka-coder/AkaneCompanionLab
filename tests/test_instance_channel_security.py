@@ -410,7 +410,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
             profile_user_id="qq_789",
         )
         with patch(
-            "companion_v01.qq_gateway.requests.post",
+            "companion_v01.onebot_transport.requests.Session.request",
             return_value=FakeResponse(),
         ) as mocked_post:
             result = gateway.send_reply(context, "hello")
@@ -424,8 +424,8 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
     def test_every_onebot_request_site_uses_bound_headers(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
         request_sites = source.count("requests.get(") + source.count("requests.post(")
-        self.assertGreater(request_sites, 0)
-        self.assertEqual(request_sites, source.count("headers=self.onebot_headers"))
+        self.assertEqual(request_sites, 0)
+        self.assertIn("self._onebot_transport.call(", source)
 
     def test_attachment_onebot_lookup_uses_same_bound_token(self) -> None:
         class FakeResponse:

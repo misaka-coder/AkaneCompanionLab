@@ -49,9 +49,10 @@ OneBot/NapCat webhook
 - session/profile/character/model/reply-mode and memory mapping;
 - group vision settings and product commands (the host only supplies the
   package's `allow_attachment_follow` strategy input);
-- Bot-bound OneBot action transport for quoted-message and attachment-cache
-  lookup (fixed action allowlist, dedicated non-proxying Session, redirect
-  rejection, and separate HTTP/status/retcode validation);
+- Bot-bound OneBot action transport for self-check, member/quoted-message and
+  attachment-cache lookup, and the current outbound actions (fixed action
+  allowlist, dedicated non-proxying Session, redirect rejection, and separate
+  HTTP/status/retcode validation);
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
 - choice of response media and all outbound OneBot actions.
 
@@ -84,7 +85,13 @@ message, attachment, reply, mention, wake-word, and poke shapes now pass
   through one reusable protocol authority. Replay races now have an atomic
   winner, and quoted attachments from another group/private peer are rejected
   before materialization. No vision, reply-send, or new sticker behavior is
-  advertised.
+advertised.
+
+The transport remains Akane-owned in this repair. Outbound product decisions
+and OneBot message construction have not moved into `channelcore-onebot`, so
+this does not start M4 or create a parallel package sender. `qq_gateway.py` no
+longer performs direct OneBot HTTP requests; transport results expose only
+stable codes, public reasons, and action-specific safe acknowledgement data.
 
 ## Remaining protocol slices
 

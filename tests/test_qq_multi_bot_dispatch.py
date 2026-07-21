@@ -148,7 +148,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         app, engine_a, engine_b, _gateway_a, _gateway_b = self._app()
         posts: list[dict[str, Any]] = []
 
-        def fake_post(url: str, **kwargs: Any) -> _Response:
+        def fake_post(_method: str, url: str, **kwargs: Any) -> _Response:
             posts.append({"url": url, **kwargs})
             return _Response()
 
@@ -167,7 +167,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "raw_message": "你好 B",
         }
         client = TestClient(app)
-        with patch("companion_v01.qq_gateway.requests.post", side_effect=fake_post):
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
             wrong_secret = client.post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-b"},
@@ -217,7 +217,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "message_id": "legacy-event-a",
             "raw_message": "旧路径",
         }
-        with patch("companion_v01.qq_gateway.requests.post", return_value=_Response()):
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},
@@ -239,7 +239,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "raw_message": "同一事件不能回复两次",
         }
         client = TestClient(app)
-        with patch("companion_v01.qq_gateway.requests.post", return_value=_Response()) as mocked_post:
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()) as mocked_post:
             canonical = client.post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},
@@ -300,11 +300,11 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         }
         posts: list[dict[str, Any]] = []
 
-        def fake_post(url: str, **kwargs: Any) -> _Response:
+        def fake_post(_method: str, url: str, **kwargs: Any) -> _Response:
             posts.append({"url": url, **kwargs})
             return _Response()
 
-        with patch("companion_v01.qq_gateway.requests.post", side_effect=fake_post):
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
             response_a = TestClient(app).post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},

@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import requests
 from channelcore_onebot import (
     AttachmentRef,
     EventAdmissionConfig,
@@ -121,18 +120,6 @@ QQ_REPLY_MODE_LABELS = {
     "both": "双发模式",
     "auto": "自动模式",
 }
-
-
-def _onebot_action_succeeded(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    status = str(payload.get("status") or "").strip().lower()
-    retcode = payload.get("retcode")
-    if status:
-        return status == "ok" and retcode in {None, 0, "0"}
-    if retcode is not None:
-        return retcode in {0, "0"}
-    return True
 
 
 QQ_REPLY_MODE_CURRENT_COMMANDS = {
@@ -504,182 +491,39 @@ class NapCatQQGateway:
         }
 
     def self_check(self) -> dict[str, Any]:
-        """主动对 OneBot HTTP API 做连通性自检，返回结构化诊断结果。
-
-        不执行任何消息发送动作，只检查：
-        1. QQ bridge 是否已在配置里启用
-        2. OneBot URL 格式是否合理
-        3. /get_login_info 是否可达（连通性 + 鉴权）
-        4. /get_status 是否明确报告账号在线且状态健康
-        5. 返回登录账号信息（安全字段：user_id/nickname）
-
-        不暴露 token、cookie 或本地绝对路径。
-        """
-        enabled = self.bridge_enabled
-        if not enabled:
+        """Check login and online state without exposing endpoint or credentials."""
+        if not self.bridge_enabled:
             return {
                 "ok": False,
                 "status": "bridge_disabled",
                 "reason": "QQ_BRIDGE_ENABLED 未启用；在 .env 里设置 QQ_BRIDGE_ENABLED=true 并配置 NapCat。",
-                "onebot_http_url": self.onebot_http_url,
             }
-
-        url = self.onebot_http_url
-        if not url or not (url.startswith("http://") or url.startswith("https://")):
-            return {
-                "ok": False,
-                "status": "invalid_url",
-                "reason": f"OneBot URL 格式不正确：{url!r}",
-                "onebot_http_url": url,
-            }
-
-        try:
-            response = requests.get(
-                f"{url}/get_login_info",
-                headers=self.onebot_headers,
-                timeout=5,
-            )
-        except requests.exceptions.ConnectionError:
-            return {
-                "ok": False,
-                "status": "unreachable",
-                "reason": f"无法连接到 {url}：端口不可达，请确认 NapCat 已启动并监听该端口。",
-                "onebot_http_url": url,
-            }
-        except requests.exceptions.Timeout:
-            return {
-                "ok": False,
-                "status": "timeout",
-                "reason": f"连接 {url} 超时（5 秒）：NapCat 可能正在启动或端口被防火墙拦截。",
-                "onebot_http_url": url,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": "connection_error",
-                "reason": f"连接异常：{type(exc).__name__}",
-                "onebot_http_url": url,
-            }
-
-        if response.status_code == 401 or response.status_code == 403:
-            return {
-                "ok": False,
-                "status": "auth_failed",
-                "reason": f"鉴权失败（HTTP {response.status_code}）：请检查 NapCat 访问令牌配置。",
-                "onebot_http_url": url,
-            }
-
-        if response.status_code != 200:
-            return {
-                "ok": False,
-                "status": "http_error",
-                "reason": f"OneBot 返回 HTTP {response.status_code}，预期 200。",
-                "onebot_http_url": url,
-            }
-
-        try:
-            data = response.json()
-        except Exception:
-            return {
-                "ok": False,
-                "status": "invalid_response",
-                "reason": "OneBot 返回了非 JSON 响应，可能是服务未完全启动。",
-                "onebot_http_url": url,
-            }
-
-        retcode = data.get("retcode", data.get("status"))
-        inner_data = data.get("data") or {}
-        user_id = inner_data.get("user_id") or ""
-        nickname = inner_data.get("nickname") or ""
-
-        if retcode not in (0, "ok"):
-            return {
-                "ok": False,
-                "status": "onebot_error",
-                "reason": f"OneBot 接口返回错误：retcode={retcode!r}",
-                "onebot_http_url": url,
-            }
-
-        try:
-            status_response = requests.get(
-                f"{url}/get_status",
-                headers=self.onebot_headers,
-                timeout=5,
-            )
-        except requests.exceptions.Timeout:
-            return {
-                "ok": False,
-                "status": "status_timeout",
-                "reason": "已读取登录账号，但确认 QQ 在线状态时超时。",
-                "onebot_http_url": url,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": "status_unavailable",
-                "reason": f"已读取登录账号，但无法确认 QQ 在线状态：{type(exc).__name__}",
-                "onebot_http_url": url,
-            }
-
-        if status_response.status_code in {401, 403}:
-            return {
-                "ok": False,
-                "status": "auth_failed",
-                "reason": f"在线状态鉴权失败（HTTP {status_response.status_code}）：请检查 NapCat 访问令牌配置。",
-                "onebot_http_url": url,
-            }
-        if status_response.status_code != 200:
-            return {
-                "ok": False,
-                "status": "status_http_error",
-                "reason": f"OneBot 在线状态接口返回 HTTP {status_response.status_code}，预期 200。",
-                "onebot_http_url": url,
-            }
-        try:
-            status_payload = status_response.json()
-        except Exception:
-            return {
-                "ok": False,
-                "status": "invalid_status_response",
-                "reason": "OneBot 在线状态接口返回了非 JSON 响应。",
-                "onebot_http_url": url,
-            }
-        if not isinstance(status_payload, dict):
-            return {
-                "ok": False,
-                "status": "invalid_status_response",
-                "reason": "OneBot 在线状态响应格式不正确。",
-                "onebot_http_url": url,
-            }
-        status_retcode = status_payload.get("retcode", status_payload.get("status"))
-        status_data = status_payload.get("data") if isinstance(status_payload.get("data"), dict) else {}
-        if status_retcode not in (0, "ok"):
-            return {
-                "ok": False,
-                "status": "onebot_status_error",
-                "reason": f"OneBot 在线状态接口返回错误：retcode={status_retcode!r}",
-                "onebot_http_url": url,
-            }
+        login_result = self._onebot_transport.call("get_login_info", timeout=5)
+        if not login_result.ok:
+            return self._self_check_failure(login_result.code, login_result.public_reason)
+        user_id = login_result.data.get("user_id") or ""
+        nickname = login_result.data.get("nickname") or ""
+        status_result = self._onebot_transport.call("get_status", timeout=5)
+        if not status_result.ok:
+            return self._self_check_failure(status_result.code, status_result.public_reason)
+        status_data = status_result.data
         online = status_data.get("online", status_data.get("is_online"))
         if online is not True:
             return {
                 "ok": False,
                 "status": "account_offline" if online is False else "account_status_unknown",
                 "reason": "QQ 账号当前不在线，请在 NapCat 中重新登录并确认未被下线。",
-                "onebot_http_url": url,
             }
         if status_data.get("good") is False:
             return {
                 "ok": False,
                 "status": "account_unhealthy",
                 "reason": "QQ 账号在线，但 OneBot 报告运行状态异常。",
-                "onebot_http_url": url,
             }
 
         return {
             "ok": True,
             "status": "connected",
-            "onebot_http_url": url,
             "bot_qq": str(user_id) if user_id else self.bot_qq,
             "nickname": str(nickname),
             "checks": {
@@ -690,6 +534,22 @@ class NapCatQQGateway:
                 "send_test": "not_tested",
             },
         }
+
+    @staticmethod
+    def _self_check_failure(code: str, public_reason: str) -> dict[str, Any]:
+        status = {
+            "invalid_base_url": "invalid_url",
+            "timeout": "timeout",
+            "connection_error": "unreachable",
+            "auth_failed": "auth_failed",
+            "http_error": "http_error",
+            "redirect_rejected": "redirect_rejected",
+            "invalid_json": "invalid_response",
+            "invalid_response": "invalid_response",
+            "onebot_status_error": "onebot_error",
+            "onebot_retcode_error": "onebot_error",
+        }.get(code, "connection_error")
+        return {"ok": False, "status": status, "reason": public_reason or "OneBot 自检失败。"}
 
     @property
     def onebot_http_url(self) -> str:
@@ -2175,22 +2035,10 @@ class NapCatQQGateway:
         if not group_id or not user_id:
             return ""
         payload = {"group_id": group_id, "user_id": user_id, "no_cache": False}
-        try:
-            response = requests.post(
-                f"{self.onebot_http_url}/get_group_member_info",
-                json=payload,
-                headers=self.onebot_headers,
-                timeout=3,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception:
+        result = self._onebot_transport.call("get_group_member_info", payload, timeout=3)
+        if not result.ok:
             return ""
-        if not isinstance(data, dict):
-            return ""
-        if data.get("retcode", data.get("status")) not in (0, "ok"):
-            return ""
-        member = data.get("data") if isinstance(data.get("data"), dict) else {}
+        member = result.data
         label = str(member.get("card") or member.get("nickname") or "").strip()
         return label
 
@@ -3047,18 +2895,7 @@ class NapCatQQGateway:
             if context.is_group
             else {"user_id": context.target_id, "message": clean_message}
         )
-        try:
-            response = requests.post(
-                f"{self.onebot_http_url}/{action}",
-                json=payload,
-                headers=self.onebot_headers,
-                timeout=8,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return {"ok": True, "action": action, "data": data}
-        except Exception as exc:
-            return {"ok": False, "action": action, "reason": str(exc)}
+        return self._onebot_transport.call(action, payload, timeout=8).as_dict()
 
     def send_mface(self, context: QQMessageContext, *, mface: dict[str, Any]) -> dict[str, Any]:
         """Send a NapCat / OneBot marketplace emoji message segment."""
@@ -3080,17 +2917,7 @@ class NapCatQQGateway:
                 "message": [{"type": "mface", "data": data}],
             }
         )
-        try:
-            response = requests.post(
-                f"{self.onebot_http_url}/{action}",
-                json=payload,
-                headers=self.onebot_headers,
-                timeout=8,
-            )
-            response.raise_for_status()
-            return {"ok": True, "action": action, "data": response.json(), "mface": data}
-        except Exception as exc:
-            return {"ok": False, "action": action, "reason": str(exc), "mface": data}
+        return self._onebot_transport.call(action, payload, timeout=8).as_dict()
 
     def send_emotion_mface(
         self,
@@ -3227,7 +3054,7 @@ class NapCatQQGateway:
 
         path_obj = Path(clean_path)
         if not path_obj.exists():
-            return {"ok": False, "reason": "image_not_found", "file": clean_path}
+            return {"ok": False, "reason": "image_not_found"}
 
         action = "send_group_msg" if context.is_group else "send_private_msg"
         base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
@@ -3245,7 +3072,7 @@ class NapCatQQGateway:
                 inline_fallback_skipped = True
         except OSError:
             inline_fallback_skipped = True
-        last_error = ""
+        last_result = None
         for transport, file_value in file_candidates:
             payload = {
                 **base_payload,
@@ -3259,35 +3086,14 @@ class NapCatQQGateway:
                     }
                 ],
             }
-            try:
-                response = requests.post(
-                    f"{self.onebot_http_url}/{action}",
-                    json=payload,
-                    headers=self.onebot_headers,
-                    timeout=20,
-                )
-                response.raise_for_status()
-                data = response.json()
-                if _onebot_action_succeeded(data):
-                    return {
-                        "ok": True,
-                        "action": action,
-                        "data": data,
-                        "file": clean_path,
-                        "transport": transport,
-                    }
-                status = str(data.get("status") or "unknown") if isinstance(data, dict) else "invalid"
-                retcode = data.get("retcode") if isinstance(data, dict) else None
-                last_error = f"onebot_send_failed:{status}:{retcode}"
-            except Exception as exc:
-                last_error = str(exc)
-        return {
-            "ok": False,
-            "action": action,
-            "reason": last_error or "onebot_send_failed",
-            "file": clean_path,
-            "inline_fallback_skipped": inline_fallback_skipped,
-        }
+            last_result = self._onebot_transport.call(action, payload, timeout=20)
+            if last_result.ok:
+                result = last_result.as_dict()
+                result["transport"] = transport
+                return result
+        result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
+        result["inline_fallback_skipped"] = inline_fallback_skipped
+        return result
 
     def send_voice(self, context: QQMessageContext, *, audio_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(audio_path or "").strip()
@@ -3296,12 +3102,12 @@ class NapCatQQGateway:
 
         path_obj = Path(clean_path)
         if not path_obj.exists():
-            return {"ok": False, "reason": "audio_not_found", "file": clean_path}
+            return {"ok": False, "reason": "audio_not_found"}
 
         action = "send_group_msg" if context.is_group else "send_private_msg"
         base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
         file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
-        last_error = ""
+        last_result = None
         for file_value in file_candidates:
             payload = {
                 **base_payload,
@@ -3315,19 +3121,10 @@ class NapCatQQGateway:
                     }
                 ],
             }
-            try:
-                response = requests.post(
-                    f"{self.onebot_http_url}/{action}",
-                    json=payload,
-                    headers=self.onebot_headers,
-                    timeout=30,
-                )
-                response.raise_for_status()
-                data = response.json()
-                return {"ok": True, "action": action, "data": data, "file": clean_path}
-            except Exception as exc:
-                last_error = str(exc)
-        return {"ok": False, "action": action, "reason": last_error, "file": clean_path}
+            last_result = self._onebot_transport.call(action, payload, timeout=30)
+            if last_result.ok:
+                return last_result.as_dict()
+        return (last_result or self._onebot_transport.call("unknown", {})).as_dict()
 
     def send_file(self, context: QQMessageContext, *, file_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(file_path or "").strip()
@@ -3340,18 +3137,7 @@ class NapCatQQGateway:
             if context.is_group
             else {"user_id": context.target_id, "file": clean_path, "name": name or Path(clean_path).name}
         )
-        try:
-            response = requests.post(
-                f"{self.onebot_http_url}/{action}",
-                json=payload,
-                headers=self.onebot_headers,
-                timeout=20,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return {"ok": True, "action": action, "data": data}
-        except Exception as exc:
-            return {"ok": False, "action": action, "reason": str(exc)}
+        return self._onebot_transport.call(action, payload, timeout=20).as_dict()
 
     def register_attachment_debounce(
         self,

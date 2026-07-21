@@ -246,7 +246,9 @@ Authority:
   policy.
 - Group vision enablement remains Akane-owned and is passed into the package as
   `allow_attachment_follow`; Akane supplies only the Bot-bound action transport
-  for quoted lookup. Outbound OneBot actions remain Akane-owned until a later
+  for quoted lookup, attachment-cache lookup, self-check, and current outbound
+  delivery. The HTTP transport is a single Akane-owned implementation;
+  outbound protocol/message construction remains Akane-owned until a later
   replacement slice moves that behavior and removes its old implementation.
 
 Old implementation status:
