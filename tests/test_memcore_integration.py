@@ -966,6 +966,44 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(final_output["_memcore_failure"]["recovery_status"], "aborted")
         self.assertNotIn("private path", repr(final_output["_memcore_failure"]))
 
+    def test_aborted_input_turn_schedules_compaction_with_actual_provider_protocol(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        abort_calls: list[dict[str, object]] = []
+        compact_calls: list[dict[str, object]] = []
+
+        def abort_turn(**kwargs):
+            abort_calls.append(dict(kwargs))
+            return {"ok": True, "status": "aborted"}
+
+        def compact_due_background(**kwargs):
+            compact_calls.append(dict(kwargs))
+            return {"ok": True, "status": "scheduled"}
+
+        manager = SimpleNamespace(
+            abort_input_turn=abort_turn,
+            compact_due_background=compact_due_background,
+        )
+        engine.memcore_manager = manager
+        engine.llm = SimpleNamespace(
+            chat_provider_protocol=lambda **_kwargs: "responses",
+        )
+        engine._memcore_manager_if_enabled = lambda: manager
+
+        result = engine._abort_memcore_input_turn(
+            turn_id="turn-aborted",
+            reason="assistant_turn_not_persisted",
+            chat_model_override="finance-model",
+            profile_user_id="u1",
+            session_id="group:1",
+            character_pack_id="char",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(abort_calls), 1)
+        self.assertEqual(len(compact_calls), 1)
+        self.assertEqual(compact_calls[0]["provider_profile"], "responses")
+        self.assertEqual(result["compaction"]["status"], "scheduled")
+
     def test_legacy_anthropic_tool_result_is_normalized_to_neutral_user_history(self) -> None:
         class AnthropicProjectionManager:
             @staticmethod
@@ -1952,13 +1990,22 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     release.wait(timeout=2)
                     return {"status": "not_due"}
 
-                system.compact_due_background = lambda: runtime.submit_compaction(_run_slow_compaction)
+                submitted_profiles: list[str] = []
+
+                def _submit_slow_compaction(**kwargs):
+                    submitted_profiles.append(str(kwargs.get("provider_profile") or ""))
+                    return runtime.submit_compaction(_run_slow_compaction)
+
+                system.compact_due_background = _submit_slow_compaction
                 scheduled = manager.compact_due_background(
                     profile_user_id="user",
                     session_id="private:user",
                     character_pack_id="akane",
+                    provider_profile="responses",
                 )
                 self.assertEqual(scheduled["status"], "scheduled")
+                self.assertEqual(scheduled["provider_profile"], "openai_chat")
+                self.assertEqual(submitted_profiles, ["openai_chat"])
                 self.assertTrue(started.wait(timeout=1))
 
                 close_thread = threading.Thread(target=manager.close)
@@ -1972,6 +2019,36 @@ class MemcoreIntegrationTests(unittest.TestCase):
         finally:
             release.set()
             runtime.close()
+
+    def test_compaction_result_log_reports_safe_structured_counts(self) -> None:
+        future = SimpleNamespace(
+            cancelled=lambda: False,
+            result=lambda: {
+                "status": "compacted",
+                "provider_profile": "openai_chat",
+                "before_projected_tokens": 220_000,
+                "after_projected_tokens": 28_000,
+                "compaction_generation": 2,
+                "source_turn_count": 39,
+                "source_entry_count": 78,
+                "summaries_created": 1,
+                "summary_source_ids": ["must-not-be-logged"],
+            },
+        )
+
+        with self.assertLogs("akane.memcore", level="INFO") as captured:
+            MemcoreManager._log_compaction_result(
+                future,
+                namespace_hash="abc123def456",
+                requested_profile="openai_chat",
+            )
+
+        rendered = "\n".join(captured.output)
+        self.assertIn("status=compacted", rendered)
+        self.assertIn("before_tokens=220000", rendered)
+        self.assertIn("after_tokens=28000", rendered)
+        self.assertIn("namespace=abc123def456", rendered)
+        self.assertNotIn("must-not-be-logged", rendered)
 
     def test_normalize_memory_backend(self) -> None:
         self.assertEqual(normalize_memory_backend("legacy"), "legacy")
@@ -2063,7 +2140,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(legacy_compaction.ran, [])
         self.assertEqual(
             memcore_manager.sync_calls,
-            [{"profile_user_id": "u1", "session_id": "s1", "character_pack_id": "char"}],
+            [
+                {
+                    "profile_user_id": "u1",
+                    "session_id": "s1",
+                    "character_pack_id": "char",
+                    "provider_profile": "",
+                }
+            ],
         )
 
     def test_engine_memcore_mode_keeps_legacy_compaction_fallback_when_unavailable(self) -> None:
@@ -3896,6 +3980,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(len(memcore_manager.compact_calls), 1)
+        self.assertEqual(memcore_manager.compact_calls[0]["provider_profile"], "openai_chat")
         self.assertEqual(len(memcore_manager.projection_calls), 2)
         self.assertFalse(hasattr(memcore_manager, "build_prompt_context"))
         self.assertTrue(result["prompt_budget"]["compact_attempted"])

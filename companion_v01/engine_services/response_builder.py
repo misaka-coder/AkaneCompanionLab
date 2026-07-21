@@ -682,6 +682,7 @@ def prepare_context(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                provider_profile=str(provider_projection.get("provider_profile") or ""),
             )
             provider_projection = _build_memcore_provider_history(
                 engine,

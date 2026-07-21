@@ -875,7 +875,17 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        provider_profile: str = "",
     ) -> dict[str, Any]:
+        requested_profile = str(provider_profile or "").strip()
+        resolved_profile = resolve_memcore_provider_profile(requested_profile) if requested_profile else ""
+        if requested_profile and not resolved_profile:
+            return self._status(
+                "compact_due_background",
+                False,
+                "invalid_provider_profile",
+                reason="provider_profile_unsupported",
+            )
         system = self._get_system_or_none(
             operation="compact_due_background",
             profile_user_id=profile_user_id,
@@ -888,10 +898,20 @@ class MemcoreManager:
             with self._lock:
                 if self._closing or self._closed:
                     raise RuntimeError("memcore_manager_closed")
-                future = system.compact_due_background()
+                future = system.compact_due_background(provider_profile=resolved_profile)
                 self._track_background_future_locked(future)
-            future.add_done_callback(self._log_compaction_result)
-            return self._status("compact_due_background", True, "scheduled")
+            namespace_hash = self._compaction_namespace_hash(system)
+            future.add_done_callback(
+                lambda completed, namespace_hash=namespace_hash, profile=resolved_profile: self._log_compaction_result(
+                    completed,
+                    namespace_hash=namespace_hash,
+                    requested_profile=profile,
+                )
+            )
+            return {
+                **self._status("compact_due_background", True, "scheduled"),
+                "provider_profile": resolved_profile,
+            }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore background compaction scheduling failed: %s", reason)
@@ -903,7 +923,17 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        provider_profile: str = "",
     ) -> dict[str, Any]:
+        requested_profile = str(provider_profile or "").strip()
+        resolved_profile = resolve_memcore_provider_profile(requested_profile) if requested_profile else ""
+        if requested_profile and not resolved_profile:
+            return self._status(
+                "compact_due_sync",
+                False,
+                "invalid_provider_profile",
+                reason="provider_profile_unsupported",
+            )
         system = self._get_system_or_none(
             operation="compact_due_sync",
             profile_user_id=profile_user_id,
@@ -913,7 +943,12 @@ class MemcoreManager:
         if system is None:
             return self._status("compact_due_sync", False, "unavailable", reason=self._reason)
         try:
-            stats = dict(system.compact_due_sync())
+            stats = dict(system.compact_due_sync(provider_profile=resolved_profile))
+            self._log_compaction_stats(
+                stats,
+                namespace_hash=self._compaction_namespace_hash(system),
+                requested_profile=resolved_profile,
+            )
             return {
                 **self._status("compact_due_sync", True, "completed"),
                 "stats": stats,
@@ -2638,10 +2673,90 @@ class MemcoreManager:
         }
 
     @staticmethod
-    def _log_compaction_result(future: Any) -> None:
+    def _compaction_namespace_hash(system: Any) -> str:
+        namespace = getattr(system, "namespace", None)
+        if namespace is None:
+            return "unknown"
+        values = (
+            str(getattr(namespace, "tenant_id", "") or ""),
+            str(getattr(namespace, "user_id", "") or ""),
+            str(getattr(namespace, "domain_id", "") or ""),
+            str(getattr(namespace, "conversation_id", "") or ""),
+        )
+        return hashlib.sha256("\x1f".join(values).encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    @staticmethod
+    def _log_compaction_stats(
+        stats: Any,
+        *,
+        namespace_hash: str,
+        requested_profile: str,
+    ) -> None:
+        if not isinstance(stats, dict):
+            logger.warning(
+                "memcore_compaction status=invalid_result namespace=%s profile=%s",
+                str(namespace_hash or "unknown")[:16],
+                str(requested_profile or "default")[:40],
+            )
+            return
+        status = str(stats.get("status") or "unknown")[:40]
+        profile = str(stats.get("provider_profile") or requested_profile or "default")[:40]
+        reason = re.sub(r"[\r\n\t]+", " ", str(stats.get("reason") or ""))[:120]
+
+        def _safe_int(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        fields = (
+            "memcore_compaction status=%s namespace=%s profile=%s reason=%s "
+            "before_tokens=%d after_tokens=%d generation=%d source_turns=%d "
+            "source_entries=%d summaries=%d"
+        )
+        args = (
+            status,
+            str(namespace_hash or "unknown")[:16],
+            profile,
+            reason or "none",
+            _safe_int(stats.get("before_projected_tokens")),
+            _safe_int(stats.get("after_projected_tokens")),
+            _safe_int(stats.get("compaction_generation")),
+            _safe_int(stats.get("source_turn_count")),
+            _safe_int(stats.get("source_entry_count")),
+            _safe_int(stats.get("summaries_created")),
+        )
+        if status == "compacted":
+            logger.info(fields, *args)
+        elif status in {"failed", "blocked_by_open_turn", "stale_batch"}:
+            logger.warning(fields, *args)
+        elif status in {"not_due", "busy"}:
+            logger.debug(fields, *args)
+        else:
+            logger.warning(fields, *args)
+
+    @classmethod
+    def _log_compaction_result(
+        cls,
+        future: Any,
+        *,
+        namespace_hash: str = "unknown",
+        requested_profile: str = "",
+    ) -> None:
         if future.cancelled():
+            logger.debug(
+                "memcore_compaction status=cancelled namespace=%s profile=%s",
+                str(namespace_hash or "unknown")[:16],
+                str(requested_profile or "default")[:40],
+            )
             return
         try:
-            future.result()
+            stats = future.result()
         except Exception as exc:
             logger.warning("memcore background compaction failed: %s", str(exc) or exc.__class__.__name__)
+            return
+        cls._log_compaction_stats(
+            stats,
+            namespace_hash=namespace_hash,
+            requested_profile=requested_profile,
+        )

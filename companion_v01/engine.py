@@ -887,6 +887,17 @@ class AkaneMemoryEngine:
             logger.warning("memcore intermediate append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _chat_provider_protocol_for_memcore(self, *, chat_model_override: str = "") -> str:
+        runtime = getattr(self, "llm", None)
+        protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+        if not callable(protocol_getter):
+            return ""
+        try:
+            return str(protocol_getter(chat_model_override=chat_model_override) or "").strip()
+        except Exception as exc:
+            logger.debug("memcore provider protocol resolution failed: %s", exc)
+            return ""
+
     def _complete_memcore_input_turn(
         self,
         *,
@@ -907,12 +918,9 @@ class AkaneMemoryEngine:
             provider_profile = ""
             provider_projection: dict[str, Any] | None = None
             if str(provider_output_raw or ""):
-                runtime = getattr(self, "llm", None)
-                protocol_getter = getattr(runtime, "chat_provider_protocol", None)
-                if callable(protocol_getter):
-                    provider_profile = str(
-                        protocol_getter(chat_model_override=chat_model_override) or ""
-                    ).strip()
+                provider_profile = self._chat_provider_protocol_for_memcore(
+                    chat_model_override=chat_model_override
+                )
                 if provider_profile:
                     provider_projection = {
                         "role": "assistant",
@@ -958,8 +966,8 @@ class AkaneMemoryEngine:
         ``complete_turn`` is idempotent, so one immediate retry is safe for a
         transient store failure.  If both attempts fail, close the open turn
         through the explicit abort path and attach a bounded, path-free status
-        to the real model result.  The caller must not schedule compaction for
-        that failed turn.
+        to the real model result.  A successful abort becomes a terminal turn
+        and schedules the same provider-aware compaction path.
         """
 
         if not str(turn_id or "").strip():
@@ -982,6 +990,7 @@ class AkaneMemoryEngine:
         aborted = self._abort_memcore_input_turn(
             turn_id=turn_id,
             reason="input_turn_completion_failed",
+            chat_model_override=chat_model_override,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
@@ -1048,6 +1057,7 @@ class AkaneMemoryEngine:
         *,
         turn_id: str,
         reason: str,
+        chat_model_override: str = "",
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -1064,6 +1074,15 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
             )
             self._warn_memcore_write_result("input turn abort", result)
+            if isinstance(result, dict) and bool(result.get("ok")):
+                compaction = self._schedule_memcore_compaction(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                    chat_model_override=chat_model_override,
+                )
+                if compaction:
+                    result = {**result, "compaction": compaction}
             return result
         except Exception as exc:
             logger.warning("memcore input turn abort failed: %s", exc)
@@ -1124,6 +1143,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        chat_model_override: str = "",
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None:
@@ -1133,6 +1153,9 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                provider_profile=self._chat_provider_protocol_for_memcore(
+                    chat_model_override=chat_model_override
+                ),
             )
         except Exception as exc:
             logger.warning("memcore compaction scheduling failed: %s", exc)
@@ -2295,6 +2318,7 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=character_pack_id,
+                    provider_profile=self._chat_provider_protocol_for_memcore(),
                 )
             return
         from .engine_services.memory_facade import run_summary_cycle as _fn
@@ -3413,11 +3437,13 @@ class AkaneMemoryEngine:
                         profile_user_id=profile_user_id,
                         session_id=session_id,
                         character_pack_id=turn_character_pack_id,
+                        chat_model_override=chat_model_override,
                     )
         elif memcore_turn_id:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
                 reason="assistant_turn_not_persisted",
+                chat_model_override=chat_model_override,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
@@ -3976,11 +4002,13 @@ class AkaneMemoryEngine:
                         profile_user_id=profile_user_id,
                         session_id=session_id,
                         character_pack_id=turn_character_pack_id,
+                        chat_model_override=chat_model_override,
                     )
         elif memcore_turn_id:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
                 reason="assistant_turn_not_persisted",
+                chat_model_override=chat_model_override,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
