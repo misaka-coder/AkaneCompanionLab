@@ -216,10 +216,25 @@ class _PromptContextMemcoreManager:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
         self.calls: list[dict[str, object]] = []
+        self.compare_calls: list[dict[str, object]] = []
 
     def build_prompt_context(self, **kwargs) -> dict[str, object]:
         self.calls.append(dict(kwargs))
         return dict(self.payload)
+
+    def compare_context_projection(self, **kwargs) -> dict[str, object]:
+        self.compare_calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "status": "match",
+            "provider_profile": "openai_chat",
+            "projection_hash": "a" * 64,
+            "actual_history_hash": "a" * 64,
+            "strict_prefix": True,
+            "first_divergence_index": -1,
+            "divergence_reason": "",
+            "source_ids": ["previous"],
+        }
 
 
 class _PromptContextEngine:
@@ -229,6 +244,10 @@ class _PromptContextEngine:
         self.vision_service = None
         self.memcore_manager = memcore_manager
         self.prompt_builder = _CapturePromptBuilder()
+        self.llm = SimpleNamespace(
+            chat_provider_protocol=lambda **_kwargs: "openai",
+            normalize_chat_history_turns=lambda turns, **_kwargs: [dict(turn) for turn in turns],
+        )
 
     def _resolve_client_protocol_context(self, _payload) -> ClientProtocolContext:
         return ClientProtocolContext(
@@ -564,6 +583,20 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
+                comparison = manager.compare_context_projection(
+                    provider_profile="responses",
+                    actual_history_messages=list(projection["payloads"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                divergence = manager.compare_context_projection(
+                    provider_profile="responses",
+                    actual_history_messages=[{"role": "user", "content": "different private text"}],
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
                 current_messages = [
                     message
                     for message in projection["messages"]
@@ -590,6 +623,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(projection["provider_profile"], "openai_chat")
         self.assertEqual(projection["source_ids"], ["projection-stimulus"])
         self.assertRegex(projection["stable_prefix_hash"], r"^[a-f0-9]{64}$")
+        self.assertTrue(comparison["strict_prefix"], comparison)
+        self.assertEqual(comparison["projection_hash"], comparison["actual_history_hash"])
+        self.assertNotIn("actual_history_messages", comparison)
+        self.assertFalse(divergence["strict_prefix"])
+        self.assertEqual(divergence["first_divergence_index"], 0)
+        self.assertEqual(divergence["divergence_reason"], "message_mismatch")
+        self.assertNotIn("different private text", repr(divergence))
         self.assertTrue(recorded["ok"], recorded)
         self.assertEqual(recorded["status"], "recorded")
         self.assertEqual(recorded["source_ids"], ["projection-stimulus"])
@@ -2274,6 +2314,49 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_plain_prompt_shadow_compares_normalized_history_without_changing_prompt(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw": [
+                    {"source_id": "previous", "role": "assistant", "content": "上一轮原文", "timestamp": 99},
+                    {"source_id": "current", "role": "user", "content": "当前问题", "timestamp": 100},
+                ],
+                "raw_text": "MEMCORE RAW",
+                "episodic_text": "",
+                "semantic_text": "",
+            }
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
+            config, "MEMCORE_SHADOW_COMPARE", True
+        ):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+            )
+
+        self.assertEqual(result["memcore_projection_shadow"]["status"], "match")
+        self.assertTrue(result["memcore_projection_shadow"]["strict_prefix"])
+        self.assertEqual(len(memcore_manager.compare_calls), 1)
+        compare_call = memcore_manager.compare_calls[0]
+        self.assertEqual(compare_call["provider_profile"], "openai")
+        self.assertEqual(compare_call["exclude_source_ids"], ["current"])
+        self.assertEqual(compare_call["actual_history_messages"], result["history_turns"])
+        self.assertNotIn("memcore_projection_shadow", result["system_prompt"])
+        self.assertNotIn("memcore_projection_shadow", result["user_prompt"])
 
     def test_final_prompt_context_replays_and_persists_exact_turn_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

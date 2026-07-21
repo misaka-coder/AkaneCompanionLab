@@ -748,6 +748,16 @@ def prepare_context(
         "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
     )
     generation_context["post_user_turns"] = effective_post_user_turns
+    generation_context["memcore_projection_shadow"] = _compare_memcore_projection_shadow(
+        engine,
+        generation_context=generation_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        current_source_id=current_source_id,
+        chat_model_override=chat_model_override,
+        prompt_scope=normalized_prompt_scope,
+    )
     _sync_current_message_prompt_envelope(
         engine,
         source_id=current_source_id,
@@ -784,6 +794,64 @@ def prepare_context(
             fallback_payload.pop("pet", None)
             fallback_payload.pop("activity", None)
     return generation_context
+
+
+def _compare_memcore_projection_shadow(
+    engine: Any,
+    *,
+    generation_context: dict[str, Any],
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    current_source_id: str,
+    chat_model_override: str,
+    prompt_scope: str,
+) -> dict[str, Any]:
+    if not bool(getattr(mod_config, "MEMCORE_SHADOW_COMPARE", False)):
+        return {"ok": True, "status": "disabled", "reason": "shadow_compare_disabled"}
+    if str(prompt_scope or "").strip():
+        return {"ok": True, "status": "skipped", "reason": "non_ordinary_prompt_scope"}
+    manager = getattr(engine, "memcore_manager", None)
+    compare = getattr(manager, "compare_context_projection", None)
+    runtime = getattr(engine, "llm", None)
+    protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+    history_normalizer = getattr(runtime, "normalize_chat_history_turns", None)
+    if not callable(compare) or not callable(protocol_getter) or not callable(history_normalizer):
+        return {"ok": False, "status": "unavailable", "reason": "projection_shadow_dependencies_unavailable"}
+    try:
+        protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
+        actual_history = history_normalizer(
+            list(generation_context.get("history_turns") or []),
+            chat_model_override=chat_model_override,
+        )
+        result = compare(
+            provider_profile=protocol,
+            actual_history_messages=actual_history,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            exclude_source_ids=[current_source_id] if current_source_id else [],
+        )
+        safe_result = dict(result) if isinstance(result, dict) else {
+            "ok": False,
+            "status": "failed",
+            "reason": "invalid_projection_shadow_result",
+        }
+        logger.info(
+            "memcore projection shadow status=%s profile=%s strict_prefix=%s projection_hash=%s "
+            "actual_history_hash=%s first_divergence_index=%s reason=%s",
+            str(safe_result.get("status") or "unknown")[:40],
+            str(safe_result.get("provider_profile") or "")[:40],
+            bool(safe_result.get("strict_prefix")),
+            str(safe_result.get("projection_hash") or "")[:64],
+            str(safe_result.get("actual_history_hash") or "")[:64],
+            int(safe_result.get("first_divergence_index") or 0),
+            str(safe_result.get("divergence_reason") or safe_result.get("reason") or "")[:80],
+        )
+        return safe_result
+    except Exception as exc:
+        logger.warning("memcore projection shadow unavailable: %s", exc.__class__.__name__)
+        return {"ok": False, "status": "failed", "reason": "shadow_compare_failed"}
 
 
 def _estimate_generation_context_tokens(

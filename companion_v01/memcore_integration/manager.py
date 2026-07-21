@@ -1352,6 +1352,104 @@ class MemcoreManager:
             logger.warning("memcore request projection failed: %s", reason)
             return self._status(operation, False, "failed", reason=reason)
 
+    def compare_context_projection(
+        self,
+        *,
+        provider_profile: str,
+        actual_history_messages: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        exclude_source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        operation = "compare_context_projection"
+        projection = self.build_context_projection(
+            provider_profile=provider_profile,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if not projection.get("ok"):
+            return {
+                **self._status(
+                    operation,
+                    False,
+                    str(projection.get("status") or "failed"),
+                    reason="projection_unavailable",
+                ),
+                "provider_profile": str(projection.get("provider_profile") or ""),
+                "projection_hash": "",
+                "actual_history_hash": "",
+                "strict_prefix": False,
+                "first_divergence_index": -1,
+                "divergence_reason": "projection_unavailable",
+                "source_ids": [],
+            }
+        try:
+            excluded = {
+                str(source_id or "").strip()
+                for source_id in list(exclude_source_ids or [])
+                if str(source_id or "").strip()
+            }
+            projected_messages = [
+                dict(message.get("payload") or {})
+                for message in list(projection.get("messages") or [])
+                if not excluded.intersection(str(item or "") for item in list(message.get("source_ids") or []))
+            ]
+            projected_source_ids = list(
+                dict.fromkeys(
+                    str(source_id or "")
+                    for message in list(projection.get("messages") or [])
+                    if not excluded.intersection(str(item or "") for item in list(message.get("source_ids") or []))
+                    for source_id in list(message.get("source_ids") or [])
+                    if str(source_id or "")
+                )
+            )
+            actual = [dict(message) for message in list(actual_history_messages or [])]
+            stable_hash = self._memcore_module.stable_projection_hash
+            canonical_bytes = self._memcore_module.canonical_json_bytes
+            strict_prefix = bool(self._memcore_module.is_strict_message_prefix(projected_messages, actual))
+            divergence_index = -1
+            divergence_reason = ""
+            for index, (expected, observed) in enumerate(zip(projected_messages, actual)):
+                if canonical_bytes(expected) != canonical_bytes(observed):
+                    divergence_index = index
+                    divergence_reason = "message_mismatch"
+                    break
+            if divergence_index < 0 and len(projected_messages) > len(actual):
+                divergence_index = len(actual)
+                divergence_reason = "actual_history_missing_projection_suffix"
+            elif divergence_index < 0 and len(projected_messages) < len(actual):
+                divergence_index = len(projected_messages)
+                divergence_reason = "actual_history_has_extra_suffix"
+            return {
+                **self._status(operation, True, "match" if strict_prefix else "diverged"),
+                "provider_profile": str(projection.get("provider_profile") or ""),
+                "projection_hash": str(stable_hash(projected_messages)),
+                "actual_history_hash": str(stable_hash(actual)),
+                "strict_prefix": strict_prefix,
+                "first_divergence_index": divergence_index,
+                "divergence_reason": divergence_reason,
+                "projection_message_count": len(projected_messages),
+                "actual_history_message_count": len(actual),
+                "source_ids": projected_source_ids,
+                "source_count": len(projected_source_ids),
+                "compaction_generation": int(projection.get("compaction_generation") or 0),
+                "projection_generation": int(projection.get("projection_generation") or 0),
+            }
+        except Exception as exc:
+            logger.warning("memcore projection shadow comparison failed: %s", exc.__class__.__name__)
+            return {
+                **self._status(operation, False, "failed", reason="comparison_failed"),
+                "provider_profile": str(projection.get("provider_profile") or ""),
+                "projection_hash": "",
+                "actual_history_hash": "",
+                "strict_prefix": False,
+                "first_divergence_index": -1,
+                "divergence_reason": "comparison_failed",
+                "source_ids": [],
+            }
+
     def build_prompt_context(
         self,
         *,

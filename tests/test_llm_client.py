@@ -43,6 +43,15 @@ class LLMClientConfigTests(unittest.TestCase):
                 {"role": "assistant", "content": "first assistant turn"},
             ],
         )
+        normalized_history = runtime._normalize_history_turns_for_payload(
+            [
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable summaries"},
+                {"role": "user", "content": "first user turn"},
+                {"role": "assistant", "content": "first assistant turn"},
+            ],
+            bundle=bundle,
+        )
 
         self.assertEqual(
             [(item["role"], item["content"]) for item in payload["messages"]],
@@ -55,6 +64,7 @@ class LLMClientConfigTests(unittest.TestCase):
                 ("user", "dynamic current tail"),
             ],
         )
+        self.assertEqual(payload["messages"][1:-1], normalized_history)
 
     def test_ollama_protocol_normalizes_to_openai_compatible_v1_endpoint(self) -> None:
         self.assertEqual(normalize_api_protocol(protocol="ollama", base_url=""), "ollama")

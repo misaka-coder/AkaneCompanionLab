@@ -797,6 +797,20 @@ class LLMRuntime:
         bundle = self._chat_bundle_for_override(chat_model_override)
         return self._should_send_native_tools(bundle)
 
+    def chat_provider_protocol(self, *, chat_model_override: str = "") -> str:
+        bundle = self._chat_bundle_for_override(chat_model_override)
+        client = getattr(bundle, "client", bundle)
+        return str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
+
+    def normalize_chat_history_turns(
+        self,
+        history_turns: list[dict[str, Any]] | None,
+        *,
+        chat_model_override: str = "",
+    ) -> list[dict[str, Any]]:
+        bundle = self._chat_bundle_for_override(chat_model_override)
+        return self._normalize_history_turns_for_payload(history_turns, bundle=bundle)
+
     def record_metric(self, key: str, amount: int = 1) -> None:
         self._record_metric(key, amount)
 
@@ -1355,11 +1369,7 @@ class LLMRuntime:
                 part for part in [effective_system_prompt.strip(), *filtered_system_extra_blocks] if part
             )
         messages: list[dict[str, Any]] = [{"role": "system", "content": effective_system_prompt}]
-        for turn in history_turns or []:
-            role = str(turn.get("role", "") or "").strip().lower()
-            content = self._normalize_message_content_for_payload(turn.get("content"))
-            if content and role in {"user", "assistant"}:
-                messages.append({"role": role, "content": content})
+        messages.extend(self._normalize_history_turns_for_payload(history_turns, bundle=bundle))
         messages.append({"role": "user", "content": user_content})
         for turn in post_user_turns or []:
             normalized_turn = self._normalize_post_user_turn_for_payload(turn, bundle=bundle)
@@ -1456,6 +1466,23 @@ class LLMRuntime:
             blocks = [dict(item) for item in content if isinstance(item, dict)]
             return blocks if blocks else self._flatten_message_content(content).strip()
         return str(content or "").strip()
+
+    def _normalize_history_turns_for_payload(
+        self,
+        history_turns: list[dict[str, Any]] | None,
+        *,
+        bundle: ModelBundle,
+    ) -> list[dict[str, Any]]:
+        del bundle  # Reserved for provider-specific history normalization.
+        messages: list[dict[str, Any]] = []
+        for turn in history_turns or []:
+            if not isinstance(turn, dict):
+                continue
+            role = str(turn.get("role", "") or "").strip().lower()
+            content = self._normalize_message_content_for_payload(turn.get("content"))
+            if content and role in {"user", "assistant"}:
+                messages.append({"role": role, "content": content})
+        return messages
 
     def _normalize_post_user_turn_for_payload(
         self,
