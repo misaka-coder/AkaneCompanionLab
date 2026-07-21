@@ -216,14 +216,11 @@ class _PromptContextMemcoreManager:
     def __init__(self, payload: dict[str, object], projection_payload: dict[str, object] | None = None) -> None:
         self.payload = payload
         self.projection_payload = projection_payload
-        self.calls: list[dict[str, object]] = []
+        self.projection_calls: list[dict[str, object]] = []
         self.compare_calls: list[dict[str, object]] = []
 
-    def build_prompt_context(self, **kwargs) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
-        return dict(self.payload)
-
-    def build_context_projection(self, **_kwargs) -> dict[str, object]:
+    def build_context_projection(self, **kwargs) -> dict[str, object]:
+        self.projection_calls.append(dict(kwargs))
         return dict(
             self.projection_payload
             or {
@@ -683,7 +680,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("更早内容已由上下文高水位保护省略", records[0]["content"])
         self.assertLess(len(records[0]["content"]), 900)
 
-    def test_tool_exchange_is_visible_in_memcore_raw_on_next_turn(self) -> None:
+    def test_tool_exchange_is_visible_in_memcore_provider_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",
@@ -714,29 +711,22 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                     turn_id=str(user.get("turn_id") or ""),
                 )
-                context = manager.build_prompt_context(
+                projection = manager.build_context_projection(
+                    provider_profile="native_openai",
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
-                    current_user_record={"source_id": "user-2", "content": "刚才结果呢", "timestamp": 103},
-                )
-                current_round_context = manager.build_prompt_context(
-                    profile_user_id="u1",
-                    session_id="s1",
-                    character_pack_id="char",
-                    current_user_record={"source_id": "user-2", "content": "刚才结果呢", "timestamp": 103},
-                    exclude_source_ids=[trace["tool_use_source_id"], trace["tool_result_source_id"]],
                 )
             finally:
                 manager.close()
 
         self.assertTrue(user["ok"])
         self.assertTrue(trace["ok"])
-        self.assertIn("assistant.tool_call web_search call_1", context["raw_text"])
-        self.assertIn("tool.web_search call_1", context["raw_text"])
-        self.assertIn("北京今天晴", context["raw_text"])
-        self.assertNotIn("assistant.tool_call web_search call_1", current_round_context["raw_text"])
-        self.assertNotIn("北京今天晴", current_round_context["raw_text"])
+        self.assertTrue(projection["ok"], projection)
+        payloads = [item["payload"] for item in projection["messages"]]
+        self.assertEqual(payloads[1]["tool_calls"][0]["function"]["name"], "web_search")
+        self.assertEqual(payloads[2]["tool_call_id"], "call_1")
+        self.assertIn("北京今天晴", payloads[2]["content"])
 
     def test_index_warmup_is_scheduled_without_blocking_first_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1650,12 +1640,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
-                visible_context = manager.build_prompt_context(
-                    profile_user_id="u1",
-                    session_id="s1",
-                    character_pack_id="char",
-                    current_user_record={"source_id": "next", "content": "刚才查到了什么？", "timestamp": 104},
-                )
             finally:
                 manager.close()
 
@@ -1713,10 +1697,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         final = entries[-1]
         self.assertEqual(final.semantic_text, "北京天气晴朗，也有一条公开新闻。")
         self.assertEqual(final.payload.get("provider_output_raw"), "")
-        self.assertIn("我一起查一下", visible_context["raw_text"])
-        self.assertIn("assistant.tool_call weather call-weather", visible_context["raw_text"])
-        self.assertIn("晴,25°C", visible_context["raw_text"])
-        self.assertIn("北京天气晴朗", visible_context["raw_text"])
 
     def test_external_event_can_open_and_complete_the_same_v2_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2104,7 +2084,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_cleanup["payload"]["reason"], "聊完了")
         self.assertEqual(stored_cleanup["turn_id"], "")
 
-    def test_build_prompt_context_returns_memcore_visible_layers(self) -> None:
+    def test_manager_does_not_expose_v1_prompt_context_facade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",
@@ -2115,31 +2095,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
-            manager.record_user_turn(
-                {
-                    "source_id": "visible-user-1",
-                    "content": "我今天提到想喝冰可乐。",
-                    "timestamp": 1_712_400_000,
-                    "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.7},
-                },
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-            )
-
-            result = manager.build_prompt_context(
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-                current_user_record={"source_id": "visible-user-1", "timestamp": 1_712_400_000},
-            )
-
-            self.assertTrue(result["ok"], result)
-            self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["raw_count"], 1)
-            self.assertIn("【近期原始对话(未摘要)】", result["raw_text"])
-            self.assertIn("冰可乐", result["raw_text"])
-            self.assertIn("冰可乐", result["rendered_text"])
+            self.assertFalse(hasattr(manager, "build_prompt_context"))
+            self.assertFalse(hasattr(manager, "_render_prompt_context_layers"))
             manager.close()
 
     def test_read_memory_timeline_returns_memcore_raw_and_excludes_current_turn(self) -> None:
@@ -2647,10 +2604,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["episodic_summary_text"], "")
         self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
-        self.assertEqual(memcore_manager.calls[0]["profile_user_id"], "u1")
-        self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
-        self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
-        self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
+        self.assertEqual(memcore_manager.projection_calls[0]["profile_user_id"], "u1")
+        self.assertEqual(memcore_manager.projection_calls[0]["session_id"], "s1")
+        self.assertEqual(memcore_manager.projection_calls[0]["character_pack_id"], "char")
         self.assertEqual(
             [turn["role"] for turn in captured["history_turns"]],
             ["user", "assistant", "assistant", "tool"],
@@ -2660,6 +2616,70 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_prompt_budget_compacts_then_refreshes_only_provider_projection(self) -> None:
+        initial_projection = {
+            "ok": True,
+            "status": "ok",
+            "provider_profile": "openai_chat",
+            "messages": [
+                {
+                    "payload": {"role": "user", "content": "很长的旧历史" * 1000},
+                    "source_ids": ["previous"],
+                },
+                {"payload": {"role": "user", "content": "当前问题"}, "source_ids": ["current"]},
+            ],
+            "stable_prefix_hash": "1" * 64,
+            "projection_version": 1,
+            "compaction_generation": 0,
+            "projection_generation": 1,
+        }
+        refreshed_projection = {
+            **initial_projection,
+            "messages": [
+                {"payload": {"role": "user", "content": "当前问题"}, "source_ids": ["current"]},
+            ],
+            "stable_prefix_hash": "2" * 64,
+            "compaction_generation": 1,
+        }
+
+        class _CompactingProjectionManager(_PromptContextMemcoreManager):
+            def __init__(self) -> None:
+                super().__init__({}, projection_payload=initial_projection)
+                self.compact_calls: list[dict[str, object]] = []
+
+            def compact_due_sync(self, **kwargs) -> dict[str, object]:
+                self.compact_calls.append(dict(kwargs))
+                self.projection_payload = refreshed_projection
+                return {"ok": True, "status": "completed", "stats": {}}
+
+        memcore_manager = _CompactingProjectionManager()
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
+            config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 100
+        ):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[{"source_id": "current", "role": "user", "content": "当前问题"}],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+            )
+
+        self.assertEqual(len(memcore_manager.compact_calls), 1)
+        self.assertEqual(len(memcore_manager.projection_calls), 2)
+        self.assertFalse(hasattr(memcore_manager, "build_prompt_context"))
+        self.assertTrue(result["prompt_budget"]["compact_attempted"])
+        self.assertEqual(result["memcore_projection_read"]["compaction_generation"], 1)
+        history_start = int(result["memcore_history_start_index"])
+        self.assertEqual(result["history_turns"][history_start:], [])
+        self.assertNotIn("很长的旧历史", repr(result))
 
     def test_plain_prompt_shadow_compares_normalized_history_without_changing_prompt(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
@@ -3028,7 +3048,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
         self.assertEqual(result["memcore_projection_shadow"]["status"], "match")
         self.assertEqual(memcore_manager.compare_calls[0]["exclude_source_ids"], ["current"])
-        self.assertEqual(len(memcore_manager.calls), 1)
+        self.assertFalse(hasattr(memcore_manager, "build_prompt_context"))
         self.assertEqual((repr(captured["history_turns"]) + result["user_prompt"]).count("真实插件事件"), 1)
         self.assertNotIn("插件", previous_event)
         self.assertNotIn("LEGACY RAW MUST STAY OUT", repr(captured))

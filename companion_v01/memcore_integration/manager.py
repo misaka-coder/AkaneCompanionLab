@@ -1510,85 +1510,6 @@ class MemcoreManager:
                 "source_ids": [],
             }
 
-    def build_prompt_context(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str = "",
-        current_user_record: dict[str, Any] | None = None,
-        now_ts: int | None = None,
-        exclude_source_ids: list[str] | None = None,
-    ) -> dict[str, Any]:
-        system = self._get_system_or_none(
-            operation="build_prompt_context",
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
-        if system is None:
-            return {
-                **self._status("build_prompt_context", False, "unavailable", reason=self._reason),
-                "raw": [],
-                "episodic": [],
-                "semantic": [],
-                "raw_text": "",
-                "episodic_text": "",
-                "semantic_text": "",
-                "rendered_text": "",
-            }
-
-        current = dict(current_user_record or {})
-        if not int(current.get("timestamp") or 0):
-            current["timestamp"] = int(now_ts or time.time())
-        try:
-            context = system.build_prompt_context(current=current)
-            excluded = {
-                str(source_id or "").strip()
-                for source_id in list(exclude_source_ids or [])
-                if str(source_id or "").strip()
-            }
-            raw = [
-                record
-                for record in list(context.get("raw") or [])
-                if str(record.get("source_id") or "").strip() not in excluded
-            ]
-            episodic = list(context.get("episodic") or [])
-            semantic = list(context.get("semantic") or [])
-            raw_text, episodic_text, semantic_text = self._render_prompt_context_layers(
-                system=system,
-                raw=raw,
-                episodic=episodic,
-                semantic=semantic,
-            )
-            rendered_text = "\n\n".join(part for part in [raw_text, episodic_text, semantic_text] if part)
-            return {
-                **self._status("build_prompt_context", True, "ok"),
-                "raw": raw,
-                "episodic": episodic,
-                "semantic": semantic,
-                "raw_count": len(raw),
-                "episodic_count": len(episodic),
-                "semantic_count": len(semantic),
-                "raw_text": raw_text,
-                "episodic_text": episodic_text,
-                "semantic_text": semantic_text,
-                "rendered_text": rendered_text,
-            }
-        except Exception as exc:
-            reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore prompt context failed: %s", reason)
-            return {
-                **self._status("build_prompt_context", False, "failed", reason=reason),
-                "raw": [],
-                "episodic": [],
-                "semantic": [],
-                "raw_text": "",
-                "episodic_text": "",
-                "semantic_text": "",
-                "rendered_text": "",
-            }
-
     def read_memory_timeline(
         self,
         *,
@@ -2522,31 +2443,6 @@ class MemcoreManager:
         if value <= 0:
             return list(snippets)
         return list(snippets)[:value]
-
-    @staticmethod
-    def _render_prompt_context_layers(
-        *,
-        system: Any,
-        raw: list[dict[str, Any]],
-        episodic: list[dict[str, Any]],
-        semantic: list[dict[str, Any]],
-    ) -> tuple[str, str, str]:
-        from memcore.rendering import render_semantic_snippet, render_summary_snippet, render_visible_raw
-
-        tz = str(getattr(system, "timezone", "") or "Asia/Shanghai")
-        enable_flavor = bool(getattr(getattr(system, "config", None), "enable_flavor", False))
-        raw_text = render_visible_raw(raw, tz=tz)
-        episodic_text = "\n\n".join(
-            text
-            for text in (render_summary_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in episodic)
-            if text
-        )
-        semantic_text = "\n\n".join(
-            text
-            for text in (render_semantic_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in semantic)
-            if text
-        )
-        return raw_text, episodic_text, semantic_text
 
     @staticmethod
     def _project_timeline_result(

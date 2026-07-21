@@ -141,23 +141,12 @@ def prepare_context(
     current_message_text = engine._render_current_message_line(
         current_user_record=current_record,
     )
-    memcore_prompt_context = _build_memcore_prompt_context(
-        engine,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        character_pack_id=character_pack_id,
-        current_user_record=current_record,
-        now_ts=now_ts,
-        exclude_source_ids=list(excluded_prompt_sources),
-    )
-    raw_records: list[dict[str, Any]] = []
-    if memcore_prompt_context is not None:
-        raw_records = [dict(record) for record in list(memcore_prompt_context.get("raw") or [])]
-        raw_text = str(memcore_prompt_context.get("raw_text") or "")
-        episodic_summary_text = str(memcore_prompt_context.get("episodic_text") or "")
-        semantic_summary_text = str(memcore_prompt_context.get("semantic_text") or "")
+    raw_records = list(visible_recent_raw)
+    if _memory_backend() == "memcore":
+        raw_text = ""
+        episodic_summary_text = ""
+        semantic_summary_text = ""
     else:
-        raw_records = list(visible_recent_raw)
         raw_text = render_chat_timeline(visible_recent_raw)
         episodic_summary_text = render_summary_timeline(
             recent_episodic_summaries,
@@ -683,7 +672,7 @@ def prepare_context(
     prompt_token_limit = max(0, int(getattr(mod_config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0))
     initial_prompt_tokens = _estimate_generation_context_tokens(generation_context, native_tools)
     compact_attempted = False
-    if prompt_token_limit and initial_prompt_tokens > prompt_token_limit and memcore_prompt_context is not None:
+    if prompt_token_limit and initial_prompt_tokens > prompt_token_limit and projection_read_active:
         manager = getattr(engine, "memcore_manager", None)
         compact_sync = getattr(manager, "compact_due_sync", None)
         if callable(compact_sync):
@@ -693,34 +682,20 @@ def prepare_context(
                 session_id=session_id,
                 character_pack_id=character_pack_id,
             )
-            refreshed = _build_memcore_prompt_context(
+            provider_projection = _build_memcore_provider_history(
                 engine,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
-                current_user_record=current_record,
-                now_ts=now_ts,
-                exclude_source_ids=list(excluded_prompt_sources),
+                current_source_id=current_source_id,
+                chat_model_override=chat_model_override,
             )
-            if refreshed is not None and refreshed.get("ok"):
-                raw_records = [dict(record) for record in list(refreshed.get("raw") or [])]
-                provider_projection = _build_memcore_provider_history(
-                    engine,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=character_pack_id,
-                    current_source_id=current_source_id,
-                    chat_model_override=chat_model_override,
-                )
-                projection_read_active = bool(provider_projection.get("ok"))
-                projection_migration_window = (
-                    str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
-                )
-                projection_authoritative = not projection_migration_window
-                raw_text = str(refreshed.get("raw_text") or "")
-                episodic_summary_text = str(refreshed.get("episodic_text") or "")
-                semantic_summary_text = str(refreshed.get("semantic_text") or "")
-                generation_context = _build_generation_context()
+            projection_read_active = bool(provider_projection.get("ok"))
+            projection_migration_window = (
+                str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
+            )
+            projection_authoritative = not projection_migration_window
+            generation_context = _build_generation_context()
 
     # Emergency second boundary: compaction normally keeps these layers small,
     # but a single oversized imported/tool trace must never make context grow
@@ -1027,54 +1002,3 @@ def _trim_oldest_prompt_raw_record(
 def _memory_backend() -> str:
     backend = str(getattr(mod_config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
     return backend if backend in {"legacy", "dual", "memcore"} else "memcore"
-
-
-def _build_memcore_prompt_context(
-    engine: Any,
-    *,
-    profile_user_id: str,
-    session_id: str,
-    character_pack_id: str,
-    current_user_record: dict[str, Any],
-    now_ts: int,
-    exclude_source_ids: list[str] | None = None,
-) -> dict[str, Any] | None:
-    if _memory_backend() != "memcore":
-        return None
-    manager = getattr(engine, "memcore_manager", None)
-    if manager is None or not getattr(manager, "enabled", False) or not getattr(manager, "available", False):
-        logger.warning("memcore final prompt context unavailable: manager_not_available")
-        return _empty_memcore_prompt_context("manager_not_available")
-    try:
-        payload = manager.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            current_user_record=current_user_record,
-            now_ts=now_ts,
-            exclude_source_ids=exclude_source_ids,
-        )
-    except Exception as exc:
-        logger.warning("memcore final prompt context failed: %s", str(exc) or exc.__class__.__name__)
-        return _empty_memcore_prompt_context(str(exc) or exc.__class__.__name__)
-    if not isinstance(payload, dict) or not payload.get("ok"):
-        reason = str((payload or {}).get("reason") or (payload or {}).get("status") or "unknown")
-        logger.warning("memcore final prompt context unavailable: %s", reason)
-        return _empty_memcore_prompt_context(reason)
-    return payload
-
-
-def _empty_memcore_prompt_context(reason: str) -> dict[str, Any]:
-    return {
-        "operation": "build_prompt_context",
-        "ok": False,
-        "status": "unavailable",
-        "reason": str(reason or "unknown"),
-        "raw": [],
-        "episodic": [],
-        "semantic": [],
-        "raw_text": "",
-        "episodic_text": "",
-        "semantic_text": "",
-        "rendered_text": "",
-    }
