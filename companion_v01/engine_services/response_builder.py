@@ -20,9 +20,7 @@ from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RE
 logger = logging.getLogger("akane.response_builder")
 
 PROMPT_USER_CONTENT_FIELD = "_akane_prompt_user_content"
-PROJECTION_READ_MIGRATION_REASONS = frozenset(
-    {"event_projection_pending", "legacy_memory_backend"}
-)
+PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
 
 
 QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS = (
@@ -178,7 +176,6 @@ def prepare_context(
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
         chat_model_override=chat_model_override,
-        prompt_scope=normalized_prompt_scope,
     )
     projection_read_active = bool(provider_projection.get("ok"))
     projection_migration_window = (
@@ -729,7 +726,6 @@ def prepare_context(
                     character_pack_id=character_pack_id,
                     current_source_id=current_source_id,
                     chat_model_override=chat_model_override,
-                    prompt_scope=normalized_prompt_scope,
                 )
                 projection_read_active = bool(provider_projection.get("ok"))
                 projection_migration_window = (
@@ -805,7 +801,6 @@ def prepare_context(
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
         chat_model_override=chat_model_override,
-        prompt_scope=normalized_prompt_scope,
     )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
@@ -842,12 +837,9 @@ def _compare_memcore_projection_shadow(
     character_pack_id: str,
     current_source_id: str,
     chat_model_override: str,
-    prompt_scope: str,
 ) -> dict[str, Any]:
     if not bool(getattr(mod_config, "MEMCORE_SHADOW_COMPARE", False)):
         return {"ok": True, "status": "disabled", "reason": "shadow_compare_disabled"}
-    if str(prompt_scope or "").strip():
-        return {"ok": True, "status": "skipped", "reason": "non_ordinary_prompt_scope"}
     manager = getattr(engine, "memcore_manager", None)
     compare = getattr(manager, "compare_context_projection", None)
     runtime = getattr(engine, "llm", None)
@@ -901,12 +893,9 @@ def _build_memcore_provider_history(
     character_pack_id: str,
     current_source_id: str,
     chat_model_override: str,
-    prompt_scope: str,
 ) -> dict[str, Any]:
     if _memory_backend() != "memcore":
         return {"ok": False, "status": "migration_window", "reason": "legacy_memory_backend"}
-    if str(prompt_scope or "").strip():
-        return {"ok": False, "status": "migration_window", "reason": "event_projection_pending"}
     manager = getattr(engine, "memcore_manager", None)
     build_projection = getattr(manager, "build_context_projection", None)
     runtime = getattr(engine, "llm", None)

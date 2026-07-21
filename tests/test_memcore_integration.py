@@ -1657,6 +1657,144 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(event["turn_id"], final["turn_id"])
         self.assertEqual(event["annotation_status"], "accepted_model")
 
+    def test_three_finance_events_keep_one_strict_projection_prefix_and_group_isolation(self) -> None:
+        metadata = {
+            "keywords": ["财经"],
+            "categories": ["event"],
+            "subject_scopes": ["other"],
+            "importance": 0.5,
+            "confidence": 0.8,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                private_prefixes: list[list[dict[str, object]]] = []
+                for index in range(3):
+                    opened = manager.begin_input_turn(
+                        {
+                            "source_id": f"finance-event-{index}",
+                            "content": "",
+                            "timestamp": 1_784_512_320 + (index * 60),
+                        },
+                        external_event={
+                            "event_type": "finance",
+                            "source": "虚拟公开源",
+                            "fields": {
+                                "published_at": f"2026-07-20T08:{52 + index:02d}:00+08:00",
+                                "title": f"虚拟财经事件 {index}",
+                                "summary": f"中性摘要 {index}",
+                                "url": f"https://example.com/finance/{index}",
+                            },
+                        },
+                        profile_user_id="finance-user",
+                        session_id="private:finance-user",
+                        character_pack_id="akane_v1",
+                    )
+                    self.assertTrue(opened["ok"], opened)
+                    open_projection = manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="finance-user",
+                        session_id="private:finance-user",
+                        character_pack_id="akane_v1",
+                    )
+                    self.assertTrue(open_projection["ok"], open_projection)
+                    if private_prefixes:
+                        self.assertEqual(
+                            open_projection["payloads"][: len(private_prefixes[-1])],
+                            private_prefixes[-1],
+                        )
+                    self.assertEqual(open_projection["payloads"][-1]["role"], "user")
+                    self.assertIn(f"虚拟财经事件 {index}", open_projection["payloads"][-1]["content"])
+                    self.assertNotIn("插件", open_projection["payloads"][-1]["content"])
+                    completed = manager.complete_input_turn(
+                        turn_id=str(opened.get("turn_id") or ""),
+                        assistant_record={
+                            "source_id": f"finance-final-{index}",
+                            "content": f"财经分析 {index}",
+                            "timestamp": 1_784_512_321 + (index * 60),
+                        },
+                        memory_metadata=metadata,
+                        provider_output_raw=f'{{"speech":"财经分析 {index}"}}',
+                        profile_user_id="finance-user",
+                        session_id="private:finance-user",
+                        character_pack_id="akane_v1",
+                    )
+                    self.assertTrue(completed["ok"], completed)
+                    projection = manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="finance-user",
+                        session_id="private:finance-user",
+                        character_pack_id="akane_v1",
+                    )
+                    self.assertTrue(projection["ok"], projection)
+                    payloads = [dict(item) for item in projection["payloads"]]
+                    if private_prefixes:
+                        self.assertEqual(payloads[: len(private_prefixes[-1])], private_prefixes[-1])
+                    private_prefixes.append(payloads)
+
+                group_opened = manager.begin_input_turn(
+                    {
+                        "source_id": "group-user-1",
+                        "content": "群里正常聊一下市场。",
+                        "timestamp": 1_784_513_000,
+                    },
+                    profile_user_id="finance-user",
+                    session_id="group:9988",
+                    character_pack_id="akane_v1",
+                )
+                group_completed = manager.complete_input_turn(
+                    turn_id=str(group_opened.get("turn_id") or ""),
+                    assistant_record={
+                        "source_id": "group-final-1",
+                        "content": "可以，我们按普通群聊继续。",
+                        "timestamp": 1_784_513_001,
+                    },
+                    memory_metadata={
+                        "keywords": [],
+                        "categories": [],
+                        "subject_scopes": [],
+                        "importance": 0.0,
+                        "confidence": 0.0,
+                    },
+                    provider_output_raw='{"speech":"可以，我们按普通群聊继续。"}',
+                    profile_user_id="finance-user",
+                    session_id="group:9988",
+                    character_pack_id="akane_v1",
+                )
+                group_projection = manager.build_context_projection(
+                    provider_profile="openai",
+                    profile_user_id="finance-user",
+                    session_id="group:9988",
+                    character_pack_id="akane_v1",
+                )
+                private_after_group = manager.build_context_projection(
+                    provider_profile="openai",
+                    profile_user_id="finance-user",
+                    session_id="private:finance-user",
+                    character_pack_id="akane_v1",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(group_opened["ok"], group_opened)
+        self.assertTrue(group_completed["ok"], group_completed)
+        self.assertTrue(group_projection["ok"], group_projection)
+        self.assertEqual(private_after_group["payloads"], private_prefixes[-1])
+        private_text = repr(private_prefixes[-1])
+        group_text = repr(group_projection["payloads"])
+        self.assertEqual(private_text.count("event.finance"), 3)
+        self.assertNotIn("插件", private_text)
+        self.assertIn("群里正常聊一下市场", group_text)
+        self.assertNotIn("虚拟财经事件", group_text)
+
     def test_dual_write_preserves_qq_actor_during_metadata_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -2703,7 +2841,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
 
-    def test_plugin_proactive_prompt_context_uses_normal_visible_memory_layers(self) -> None:
+    def test_plugin_proactive_prompt_context_uses_memcore_provider_projection(self) -> None:
+        previous_event = (
+            "[2026-07-20 周一 08:50 | 上午] event.finance\n"
+            "source: 东方财富\n"
+            "title: 上一条财经事件"
+        )
         memcore_manager = _PromptContextMemcoreManager(
             {
                 "operation": "build_prompt_context",
@@ -2713,11 +2856,36 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "raw_text": "MEMCORE RAW WITH CURRENT EVENT：真实插件事件",
                 "episodic_text": "MEMCORE EPISODIC",
                 "semantic_text": "MEMCORE SEMANTIC",
-            }
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": previous_event},
+                        "source_ids": ["event-previous"],
+                    },
+                    {
+                        "payload": {"role": "assistant", "content": "上一条事件的分析。"},
+                        "source_ids": ["event-previous-final"],
+                    },
+                    {
+                        "payload": {"role": "user", "content": "真实插件事件"},
+                        "source_ids": ["current"],
+                    },
+                ],
+                "stable_prefix_hash": "d" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
-        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
+            config, "MEMCORE_SHADOW_COMPARE", True
+        ):
             result = response_builder.prepare_context(
                 engine,
                 session_id="s1",
@@ -2735,15 +2903,27 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         captured = engine.prompt_builder.kwargs
-        self.assertEqual(captured["raw_text"], "MEMCORE RAW WITH CURRENT EVENT：真实插件事件")
-        self.assertEqual(captured["episodic_summary_text"], "MEMCORE EPISODIC")
-        self.assertEqual(captured["semantic_summary_text"], "MEMCORE SEMANTIC")
+        self.assertEqual(captured["raw_text"], "")
+        self.assertEqual(captured["episodic_summary_text"], "")
+        self.assertEqual(captured["semantic_summary_text"], "")
         self.assertEqual(captured["memory_text"], "AUTOMATIC RETRIEVAL MUST STAY OUT")
         self.assertEqual(captured["stable_system_context"], "STABLE PLUGIN SYSTEM")
         self.assertTrue(captured["current_message_in_raw"])
+        self.assertEqual(
+            captured["history_turns"],
+            [
+                {"role": "user", "content": previous_event},
+                {"role": "assistant", "content": "上一条事件的分析。"},
+            ],
+        )
         self.assertEqual(captured["prompt_scope"], "plugin_proactive")
         self.assertEqual(result["prompt_scope"], "plugin_proactive")
+        self.assertEqual(result["memcore_projection_read"]["status"], "active")
+        self.assertEqual(result["memcore_projection_shadow"]["status"], "match")
+        self.assertEqual(memcore_manager.compare_calls[0]["exclude_source_ids"], ["current"])
         self.assertEqual(len(memcore_manager.calls), 1)
+        self.assertEqual((repr(captured["history_turns"]) + result["user_prompt"]).count("真实插件事件"), 1)
+        self.assertNotIn("插件", previous_event)
         self.assertNotIn("LEGACY RAW MUST STAY OUT", repr(captured))
 
     def test_plugin_proactive_scope_keeps_normal_akane_modules_enabled(self) -> None:
@@ -2756,7 +2936,22 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "raw_text": "PLUGIN EVENT RAW",
                 "episodic_text": "",
                 "semantic_text": "",
-            }
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": "插件事件"},
+                        "source_ids": ["current"],
+                    }
+                ],
+                "stable_prefix_hash": "f" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
         enabled_modules = {
@@ -2798,7 +2993,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         ]
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            response_builder.prepare_context(
+            result = response_builder.prepare_context(
                 engine,
                 session_id="s1",
                 profile_user_id="u1",
@@ -2826,6 +3021,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
         self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")
+        self.assertEqual(result["memcore_projection_read"]["status"], "active")
 
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
