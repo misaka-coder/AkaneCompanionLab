@@ -22,6 +22,7 @@ import config
 from .attachment_inbox import AttachmentInboxService
 from .background_tasks import BackgroundTaskRunner
 from .deployment_security import QQChannelRuntimeConfig
+from .onebot_transport import OneBotActionTransport
 from .public_url_policy import (
     HostResolver,
     PublicUrlPolicyError,
@@ -181,6 +182,17 @@ class AttachmentIngestService:
         self.ensure_storage_ready = ensure_storage_ready
         self.workspace_uri_resolver = workspace_uri_resolver
         self.qq_channel_config = qq_channel_config
+        transport_config = qq_channel_config or QQChannelRuntimeConfig(
+            enabled=bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
+            profile_ref="",
+            bot_id=str(getattr(config, "QQ_BOT_QQ", "") or "").strip(),
+            onebot_http_url=str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip(),
+            webhook_secret="",
+            onebot_access_token="",
+            require_webhook_auth=False,
+            require_self_id=False,
+        )
+        self._onebot_transport = OneBotActionTransport(transport_config)
         self.public_host_resolver = public_host_resolver
         self.store = store
         self.attachment_service = attachment_service
@@ -1373,51 +1385,24 @@ class AttachmentIngestService:
         origin_name: str,
     ) -> Path | None:
         supplied_token = str(payload.get("file") or payload.get("file_id") or "").strip()
-        if supplied_token:
-            file_token = self._safe_onebot_file_token(supplied_token)
-        else:
-            file_token = self._safe_onebot_file_token(
-                str(payload.get("origin_name") or origin_name or item.get("origin_name") or "").strip()
-            )
+        file_token = self._safe_onebot_file_token(supplied_token, allow_path_shape=True)
+        if not file_token:
+            fallback_name = Path(
+                str(payload.get("origin_name") or origin_name or item.get("origin_name") or "").replace("\\", "/")
+            ).name
+            file_token = self._safe_onebot_file_token(fallback_name)
         if not file_token:
             return None
 
         kind = self._normalize_kind(item.get("kind") or payload.get("kind"))
         endpoints = ["/get_image"] if kind == "image" else []
         endpoints.append("/get_file")
-        if self.qq_channel_config is not None:
-            base_url = self.qq_channel_config.onebot_http_url
-            onebot_headers = self.qq_channel_config.onebot_headers()
-        else:
-            base_url = str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip().rstrip("/")
-            onebot_headers = {}
-        if not base_url:
-            return None
-
         timeout = float(getattr(config, "QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", 20.0) or 20.0)
         for endpoint in endpoints:
-            try:
-                response = requests.post(
-                    f"{base_url}{endpoint}",
-                    json={"file": file_token},
-                    headers=onebot_headers,
-                    timeout=timeout,
-                )
-                response.raise_for_status()
-                payload_data = response.json()
-            except Exception:
+            action_result = self._onebot_transport.call(endpoint, {"file": file_token}, timeout=timeout)
+            if not action_result.ok:
                 continue
-
-            if not isinstance(payload_data, dict):
-                continue
-            status = str(payload_data.get("status") or "").strip().lower()
-            try:
-                retcode = int(payload_data.get("retcode") or 0)
-            except (TypeError, ValueError):
-                retcode = -1
-            if status not in {"ok", "async"} or retcode != 0:
-                continue
-            data = payload_data.get("data") if isinstance(payload_data.get("data"), dict) else {}
+            data = action_result.data
             encoded_file = data.get("base64")
             if isinstance(encoded_file, str) and encoded_file:
                 max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 0)
@@ -1441,11 +1426,11 @@ class AttachmentIngestService:
                 return target_path
         return None
 
-    def _safe_onebot_file_token(self, value: Any) -> str:
+    def _safe_onebot_file_token(self, value: Any, *, allow_path_shape: bool = False) -> str:
         token = str(value or "").strip()
         if not token or len(token) > 512 or any(ord(char) < 32 for char in token):
             return ""
-        if "/" in token or "\\" in token or ":" in token:
+        if not allow_path_shape and ("/" in token or "\\" in token or ":" in token):
             return ""
         if token in {".", ".."}:
             return ""

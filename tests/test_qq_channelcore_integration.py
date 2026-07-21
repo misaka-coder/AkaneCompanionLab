@@ -183,7 +183,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                 }
 
         with (
-            patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()),
+            patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()),
             patch(
                 "companion_v01.qq_gateway.resolve_onebot_quoted_message",
                 wraps=resolve_quoted_message,
@@ -226,7 +226,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertFalse(result["ok"])

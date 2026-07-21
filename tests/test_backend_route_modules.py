@@ -1560,7 +1560,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             def json(self):
                 return self.payload
 
-        def fake_post(url: str, **_kwargs):
+        def fake_post(_method: str, url: str, **_kwargs):
             if url.endswith("/get_group_member_info"):
                 return FakeResponse(
                     {
@@ -1617,7 +1617,7 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         with (
             patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0),
-            patch("companion_v01.qq_gateway.requests.post", side_effect=fake_post) as mocked_post,
+            patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post) as mocked_post,
         ):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1699,7 +1699,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.qq_gateway.requests.post", return_value=FakeResponse()):
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertFalse(result["ok"])
@@ -1718,7 +1718,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         }
         context = gateway.build_message_context(event)
 
-        with patch("companion_v01.qq_gateway.requests.post", side_effect=TimeoutError("offline")):
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=TimeoutError("offline")):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertTrue(context.should_respond)

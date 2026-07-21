@@ -445,7 +445,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
                 qq_channel_config=self.channel,
             )
             with patch(
-                "companion_v01.attachment_ingest.requests.post",
+                "companion_v01.onebot_transport.requests.Session.request",
                 return_value=FakeResponse(),
             ) as mocked_post:
                 service._copy_from_onebot_cache(

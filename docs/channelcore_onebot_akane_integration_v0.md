@@ -49,7 +49,9 @@ OneBot/NapCat webhook
 - session/profile/character/model/reply-mode and memory mapping;
 - group vision settings and product commands (the host only supplies the
   package's `allow_attachment_follow` strategy input);
-- Bot-bound OneBot action transport (URL, token, HTTP status handling);
+- Bot-bound OneBot action transport for quoted-message and attachment-cache
+  lookup (fixed action allowlist, dedicated non-proxying Session, redirect
+  rejection, and separate HTTP/status/retcode validation);
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
 - choice of response media and all outbound OneBot actions.
 
@@ -60,6 +62,13 @@ responses may expose a local path only when it resolves inside an
 explicit `QQ_ONEBOT_CACHE_ROOTS` directory; otherwise Akane requires base64 or
 the later URL download path. Materialization failures persist only stable codes
 and public reasons, not raw paths, URLs, or exceptions.
+
+NapCat may provide a path-shaped `file` value as an opaque `/get_image` or
+`/get_file` token. Akane may return it only through the action transport bound
+to the same Bot; it never becomes local-read authority and is not persisted or
+rendered. An invalid supplied token falls back only to a sanitized
+`origin_name` basename. Direct media URLs remain PUBLIC_ONLY, including
+loopback URLs on the configured OneBot origin.
 
 `QQMessageContext` therefore remains in Akane, but its protocol parsing inputs
 come from `InboundMessage`. Compatibility methods such as

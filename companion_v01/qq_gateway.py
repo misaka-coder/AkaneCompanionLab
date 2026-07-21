@@ -32,6 +32,7 @@ from channelcore_onebot import (
 import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
 from .deployment_security import QQChannelRuntimeConfig
+from .onebot_transport import OneBotActionTransport
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -314,16 +315,23 @@ class NapCatQQGateway:
         wake_words: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         self._channel_config = channel_config
+        transport_config = channel_config or QQChannelRuntimeConfig(
+            enabled=bool(getattr(config, "QQ_BRIDGE_ENABLED", False)),
+            profile_ref="",
+            bot_id=str(getattr(config, "QQ_BOT_QQ", "") or "").strip(),
+            onebot_http_url=str(getattr(config, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001") or "").strip(),
+            webhook_secret="",
+            onebot_access_token="",
+            require_webhook_auth=False,
+            require_self_id=False,
+        )
+        self._onebot_transport = OneBotActionTransport(transport_config)
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
         self._wake_words = _normalize_qq_wake_words(wake_words)
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
         self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
         self._group_trigger = GroupTriggerPolicy(bot_account_id=self.bot_qq)
-        require_self_id = (
-            self._channel_config.require_self_id
-            if self._channel_config is not None
-            else False
-        )
+        require_self_id = self._channel_config.require_self_id if self._channel_config is not None else False
         self._event_admission = OneBotEventAdmission(
             EventAdmissionConfig(
                 bot_account_id=self.bot_qq,
@@ -2077,14 +2085,14 @@ class NapCatQQGateway:
         *,
         timeout_seconds: float,
     ) -> object:
-        response = requests.post(
-            f"{self.onebot_http_url}/{str(action or '').strip().lstrip('/')}",
-            json=dict(params),
-            headers=self.onebot_headers,
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        return response.json()
+        result = self._onebot_transport.call(action, dict(params), timeout=timeout_seconds)
+        if not result.ok and result.code not in {"onebot_status_error", "onebot_retcode_error"}:
+            raise RuntimeError(result.code)
+        return {
+            "status": "ok" if result.ok else "failed",
+            "retcode": 0 if result.ok else -1,
+            "data": result.data,
+        }
 
     @staticmethod
     def _legacy_attachments(attachments: tuple[AttachmentRef, ...]) -> list[dict[str, Any]]:
