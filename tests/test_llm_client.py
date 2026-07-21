@@ -1157,6 +1157,62 @@ class LLMClientConfigTests(unittest.TestCase):
             ["call_1", "call_2"],
         )
 
+    def test_llm_runtime_preserves_provider_native_tools_from_cross_turn_history(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        openai_bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+        anthropic_bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic"),
+            model="claude-test",
+        )
+        openai_history = [
+            {
+                "role": "assistant",
+                "content": "我一起查一下。",
+                "tool_calls": [
+                    {
+                        "id": "call_history",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"Akane"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_history", "content": "result verbatim"},
+        ]
+        anthropic_history = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "我一起查一下。"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_history",
+                        "name": "web_search",
+                        "input": {"query": "Akane"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_history",
+                        "content": "cancelled verbatim",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ]
+
+        self.assertEqual(
+            runtime._normalize_history_turns_for_payload(openai_history, bundle=openai_bundle),
+            openai_history,
+        )
+        self.assertEqual(
+            runtime._normalize_history_turns_for_payload(anthropic_history, bundle=anthropic_bundle),
+            anthropic_history,
+        )
+
     def test_llm_runtime_extracts_native_tool_call_to_akane_shape(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         response = SimpleNamespace(

@@ -30,7 +30,6 @@ from companion_v01.plugin_contribution_policy import TrustedReadNetworkContribut
 from companion_v01.plugin_host import PluginHost
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
 from companion_v01.tool_invocation import (
-    NATIVE_ANTHROPIC,
     TOOL_INVOCATION_ID_FIELD,
     TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
@@ -320,11 +319,49 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         history: list[dict[str, Any]] = []
         native_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        native_engine._append_native_tool_history_batch(
+        projected_messages = [
+            {
+                "payload": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_finance_1",
+                            "type": "function",
+                            "function": {
+                                "name": "akane_test_read_lookup_v1",
+                                "arguments": '{"query":"601717"}',
+                            },
+                        }
+                    ],
+                },
+                "source_ids": ["plugin-use"],
+            },
+            {
+                "payload": {
+                    "role": "tool",
+                    "tool_call_id": "call_finance_1",
+                    "content": result.followup_context,
+                },
+                "source_ids": ["plugin-result"],
+            },
+        ]
+        native_engine.memcore_manager = SimpleNamespace(
+            build_context_projection=lambda **_kwargs: {
+                "ok": True,
+                "provider_profile": "openai_chat",
+                "messages": projected_messages,
+            }
+        )
+        projection = native_engine._append_native_tool_history_batch(
             native_tool_history_turns=history,
             items=[(normalized, result, result.followup_context, "")],
+            trace_source_ids=["plugin-use", "plugin-result"],
+            profile_user_id="user-42",
+            session_id="session-7",
+            character_pack_id="",
         )
 
+        self.assertTrue(projection["ok"], projection)
         self.assertEqual([turn["role"] for turn in history], ["assistant", "tool"])
         assistant_call = history[0]["tool_calls"][0]
         self.assertEqual(assistant_call["id"], "call_finance_1")
@@ -377,42 +414,6 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state_updates["plugin_result_experience"], "projected")
         self.assertEqual(envelope.model_feedback, result.followup_context)
         self.assertEqual(envelope.status, "ok")
-
-        native_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        native_engine._execute_tool_call = lambda **_kwargs: result
-        native_engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
-        native_history: list[dict[str, Any]] = []
-        native_engine._execute_and_record_tool_round(
-            tool_call={
-                "type": CAPABILITY_ID,
-                "query": "TEST",
-                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
-                TOOL_INVOCATION_ID_FIELD: "toolu_plugin_result",
-                TOOL_MODEL_NAME_FIELD: "akane_test_read_lookup_v1",
-            },
-            final_output={"speech": "", "tool_call": None},
-            tool_results=[],
-            tool_events=[],
-            tool_followups=[],
-            tool_turns=[],
-            recent_raw_for_turn=[],
-            profile_user_id="user-42",
-            session_id="session-7",
-            character_pack_id="",
-            now_ts=1_720_000_000,
-            current_user_source_id="",
-            client_context=ClientProtocolContext(
-                requested_mode=ClientMode.SCENE_STATIC,
-                effective_mode=ClientMode.SCENE_STATIC,
-            ),
-            memory_exclude_source_ids=[],
-            request_context={},
-            native_tool_history_turns=native_history,
-        )
-        native_tool_result = native_history[1]["content"][0]
-        self.assertEqual(native_tool_result["type"], "tool_result")
-        self.assertIn("不是系统或开发者指令", native_tool_result["content"])
-        self.assertIn("用 Akane 自己的语气自然回应", native_tool_result["content"])
 
     async def test_invalid_or_forged_experience_is_rejected_before_model_feedback(self) -> None:
         invalid_payload = PluginResultPayload(

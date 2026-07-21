@@ -5091,15 +5091,28 @@ class AkaneMemoryEngine:
             for source_id in trace_source_ids:
                 if source_id not in prompt_exclude_source_ids:
                     prompt_exclude_source_ids.append(source_id)
-        self._append_native_tool_history_batch(
+        native_projection = self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=history_items,
-            assistant_preface=(
-                str(final_output.get("speech") or "").strip()
-                if self._tool_call_allows_assistant_preface(calls[0])
-                else ""
-            ),
+            trace_source_ids=trace_source_ids,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
         )
+        if not native_projection.get("ok") and any(
+            str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
+            for call in calls
+        ):
+            for _call, result, shaped_followup, workspace_followup in history_items:
+                feedback = "\n\n".join(
+                    part
+                    for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
+                    if part
+                )
+                if feedback:
+                    tool_followups.append(
+                        f"工具（{result.tool_type}）结果因原生 history 投影不可用而降级为文本：\n{feedback}"
+                    )
         return completed, batch_events
 
     def _record_tool_round_result(
@@ -5194,154 +5207,64 @@ class AkaneMemoryEngine:
                 break
         return merged
 
-    def _append_native_anthropic_tool_history_turns(
-        self,
-        *,
-        native_tool_history_turns: list[dict[str, Any]] | None,
-        tool_call: dict[str, Any],
-        tool_result: ToolExecutionResult,
-        shaped_followup: str,
-        workspace_followup: str = "",
-    ) -> None:
-        self._append_native_tool_history_batch(
-            native_tool_history_turns=native_tool_history_turns,
-            items=[(tool_call, tool_result, shaped_followup, workspace_followup)],
-        )
-
     def _append_native_tool_history_batch(
         self,
         *,
         native_tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
-        assistant_preface: str = "",
-    ) -> None:
-        self._append_native_anthropic_tool_history_batch(
-            native_tool_history_turns=native_tool_history_turns,
-            items=items,
-            assistant_preface=assistant_preface,
-        )
-        self._append_native_openai_tool_history_batch(
-            native_tool_history_turns=native_tool_history_turns,
-            items=items,
-            assistant_preface=assistant_preface,
-        )
-
-    def _append_native_anthropic_tool_history_batch(
-        self,
-        *,
-        native_tool_history_turns: list[dict[str, Any]] | None,
-        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
-        assistant_preface: str = "",
-    ) -> None:
+        trace_source_ids: list[str],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
         if native_tool_history_turns is None:
-            return
-        use_blocks: list[dict[str, Any]] = []
-        result_blocks: list[dict[str, Any]] = []
-        for tool_call, tool_result, shaped_followup, workspace_followup in items:
-            if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_ANTHROPIC:
-                continue
-            tool_use_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
-            if not tool_use_id:
-                continue
-            model_name = (
-                str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
-                or str(tool_call.get("type") or tool_result.tool_type or "").strip()
-            )
-            if not model_name:
-                continue
-            tool_input = self._tool_call_model_arguments(tool_call)
-            use_blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": tool_use_id,
-                    "name": model_name,
-                    "input": tool_input,
-                }
-            )
-            feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
-            feedback = "\n\n".join(part for part in feedback_parts if part).strip()
-            if not feedback:
-                feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
-            feedback = self._sanitize_tool_trace_text(feedback)
-            result_block: dict[str, Any] = {
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": feedback,
-            }
-            if self._tool_result_is_error(tool_result):
-                result_block["is_error"] = True
-            result_blocks.append(result_block)
-        if use_blocks and result_blocks:
-            assistant_content: list[dict[str, Any]] = []
-            if str(assistant_preface or "").strip():
-                assistant_content.append({"type": "text", "text": str(assistant_preface).strip()})
-            assistant_content.extend(use_blocks)
-            native_tool_history_turns.extend(
-                [
-                    {"role": "assistant", "content": assistant_content},
-                    {"role": "user", "content": result_blocks},
-                ]
-            )
-
-    def _append_native_openai_tool_history_batch(
-        self,
-        *,
-        native_tool_history_turns: list[dict[str, Any]] | None,
-        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
-        assistant_preface: str = "",
-    ) -> None:
-        if native_tool_history_turns is None:
-            return
-        tool_calls: list[dict[str, Any]] = []
-        tool_messages: list[dict[str, Any]] = []
-        for tool_call, tool_result, shaped_followup, workspace_followup in items:
-            if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() != NATIVE_OPENAI:
-                continue
-            call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
-            if not call_id:
-                continue
-            model_name = (
-                str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
-                or str(tool_call.get("type") or tool_result.tool_type or "").strip()
-            )
-            if not model_name:
-                continue
-            tool_input = self._tool_call_model_arguments(tool_call)
-            try:
-                arguments = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
-            except (TypeError, ValueError):
-                arguments = json.dumps(
-                    self._sanitize_tool_trace_value(tool_input), ensure_ascii=False, separators=(",", ":")
-                )
-            tool_calls.append(
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": model_name, "arguments": arguments},
-                }
-            )
-            feedback_parts = [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
-            feedback = "\n\n".join(part for part in feedback_parts if part).strip()
-            if not feedback:
-                feedback = tool_orchestration_engine.shape_tool_followup("", tool_type=tool_result.tool_type)
-            feedback = self._sanitize_tool_trace_text(feedback)
-            tool_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": feedback,
-                }
-            )
-        if tool_calls and len(tool_calls) == len(tool_messages):
-            assistant_turn: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
-            if str(assistant_preface or "").strip():
-                assistant_turn["content"] = str(assistant_preface).strip()
-            native_tool_history_turns.extend(
-                [
-                    assistant_turn,
-                    *tool_messages,
-                ]
-            )
+            return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
+        sources = {
+            str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
+            for tool_call, _result, _shaped, _workspace in items
+            if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
+        }
+        if not sources:
+            return {"ok": True, "status": "skipped", "reason": "no_native_tool_calls"}
+        if len(sources) != 1:
+            return {"ok": False, "status": "failed", "reason": "mixed_native_provider_batch"}
+        manager = getattr(self, "memcore_manager", None)
+        build_projection = getattr(manager, "build_context_projection", None)
+        if not callable(build_projection) or not trace_source_ids:
+            return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
+        projection = build_projection(
+            provider_profile=next(iter(sources)),
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if not isinstance(projection, dict) or not projection.get("ok"):
+            return {"ok": False, "status": "unavailable", "reason": "memcore_projection_build_failed"}
+        trace_ids = {str(source_id or "").strip() for source_id in trace_source_ids if str(source_id or "").strip()}
+        projected_messages = [
+            dict(message.get("payload") or {})
+            for message in list(projection.get("messages") or [])
+            if isinstance(message, dict)
+            and trace_ids.intersection(str(source_id or "").strip() for source_id in message.get("source_ids") or [])
+        ]
+        covered_ids = {
+            str(source_id or "").strip()
+            for message in list(projection.get("messages") or [])
+            if isinstance(message, dict)
+            for source_id in message.get("source_ids") or []
+            if str(source_id or "").strip() in trace_ids
+        }
+        if not projected_messages or covered_ids != trace_ids:
+            return {"ok": False, "status": "failed", "reason": "tool_projection_incomplete"}
+        native_tool_history_turns.extend(projected_messages)
+        return {
+            "ok": True,
+            "status": "projected",
+            "reason": "",
+            "provider_profile": str(projection.get("provider_profile") or ""),
+            "message_count": len(projected_messages),
+            "source_count": len(covered_ids),
+        }
 
     @staticmethod
     def _tool_call_model_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -5429,10 +5352,11 @@ class AkaneMemoryEngine:
             feedback = "\n\n".join(
                 part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
             )
+            result_status = self._tool_result_trace_status(tool_result)
             source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
             exchanges.append(
                 {
-                    "tool_name": tool_type,
+                    "tool_name": str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip() or tool_type,
                     "tool_call_id": call_id,
                     "tool_input": self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call)),
                     "result": self._sanitize_tool_trace_text(feedback),
@@ -5443,8 +5367,8 @@ class AkaneMemoryEngine:
                     ),
                     "keywords": [tool_type],
                     "importance": 0.25,
-                    "confidence": 0.9 if not self._tool_result_is_error(tool_result) else 0.5,
-                    "result_status": "error" if self._tool_result_is_error(tool_result) else "success",
+                    "confidence": 0.9 if result_status == "success" else 0.5,
+                    "result_status": result_status,
                 }
             )
         if not exchanges:
@@ -5542,9 +5466,20 @@ class AkaneMemoryEngine:
                 "running",
                 "denied",
                 "blocked",
+                "canceled",
+                "cancelled",
             }:
                 return True
         return False
+
+    def _tool_result_trace_status(self, tool_result: ToolExecutionResult) -> str:
+        for event in getattr(tool_result, "stream_events", []) or []:
+            if not isinstance(event, dict):
+                continue
+            status = str(event.get("status") or event.get("state") or "").strip().lower()
+            if status in {"canceled", "cancelled"}:
+                return "cancelled"
+        return "error" if self._tool_result_is_error(tool_result) else "success"
 
     def _record_tool_result_artifacts_in_task_workspace(
         self,

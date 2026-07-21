@@ -1473,15 +1473,11 @@ class LLMRuntime:
         *,
         bundle: ModelBundle,
     ) -> list[dict[str, Any]]:
-        del bundle  # Reserved for provider-specific history normalization.
         messages: list[dict[str, Any]] = []
         for turn in history_turns or []:
-            if not isinstance(turn, dict):
-                continue
-            role = str(turn.get("role", "") or "").strip().lower()
-            content = self._normalize_message_content_for_payload(turn.get("content"))
-            if content and role in {"user", "assistant"}:
-                messages.append({"role": role, "content": content})
+            normalized = self._normalize_post_user_turn_for_payload(turn, bundle=bundle)
+            if normalized is not None:
+                messages.append(normalized)
         return messages
 
     def _normalize_post_user_turn_for_payload(

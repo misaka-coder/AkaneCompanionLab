@@ -228,8 +228,8 @@ class _PromptContextMemcoreManager:
             self.projection_payload
             or {
                 "ok": False,
-                "status": "migration_window",
-                "reason": "native_tool_history_pending",
+                "status": "failed",
+                "reason": "projection_build_failed",
             }
         )
 
@@ -1511,6 +1511,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 entries = manager._store.get_turn_entries(namespace=system.namespace, turn_id=turn_id)
                 projection = system.build_context_projection(provider_profile="openai_chat")
+                openai_projection = manager.build_context_projection(
+                    provider_profile="native_openai",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                anthropic_projection = manager.build_context_projection(
+                    provider_profile="native_anthropic",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
                 visible_context = manager.build_prompt_context(
                     profile_user_id="u1",
                     session_id="s1",
@@ -1543,6 +1555,32 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(tool_call_messages), 1)
         self.assertEqual(
             [item["id"] for item in tool_call_messages[0]["tool_calls"]],
+            ["call-weather", "call-news"],
+        )
+        self.assertTrue(openai_projection["ok"], openai_projection)
+        openai_messages = [item["payload"] for item in openai_projection["messages"]]
+        self.assertEqual(openai_messages[1]["content"], "我一起查一下。")
+        self.assertEqual(
+            [item["function"]["name"] for item in openai_messages[1]["tool_calls"]],
+            ["weather", "web_search"],
+        )
+        self.assertEqual(
+            [item["tool_call_id"] for item in openai_messages[2:4]],
+            ["call-weather", "call-news"],
+        )
+        self.assertEqual(
+            [item["content"] for item in openai_messages[2:4]],
+            ["晴，25°C。", "今天有一条公开新闻。"],
+        )
+        self.assertTrue(anthropic_projection["ok"], anthropic_projection)
+        anthropic_messages = [item["payload"] for item in anthropic_projection["messages"]]
+        self.assertEqual(anthropic_messages[1]["content"][0], {"type": "text", "text": "我一起查一下。"})
+        self.assertEqual(
+            [item["id"] for item in anthropic_messages[1]["content"][1:]],
+            ["call-weather", "call-news"],
+        )
+        self.assertEqual(
+            [item["tool_use_id"] for item in anthropic_messages[2]["content"]],
             ["call-weather", "call-news"],
         )
         final = entries[-1]
@@ -2248,7 +2286,29 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(state["memcore_read"]["reason"], "boom")
         self.assertNotIn("snippets", state["memcore_read"])
 
-    def test_final_prompt_context_uses_memcore_visible_layers_in_memcore_mode(self) -> None:
+    def test_final_prompt_context_uses_memcore_provider_projection_in_memcore_mode(self) -> None:
+        projection_messages = [
+            {"payload": {"role": "user", "content": "previous question"}, "source_ids": ["u0"]},
+            {"payload": {"role": "assistant", "content": "previous answer"}, "source_ids": ["a0"]},
+            {
+                "payload": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "source_ids": ["t0-use"],
+            },
+            {
+                "payload": {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+                "source_ids": ["t0-result"],
+            },
+            {"payload": {"role": "user", "content": "现在的问题"}, "source_ids": ["current"]},
+        ]
         memcore_manager = _PromptContextMemcoreManager(
             {
                 "operation": "build_prompt_context",
@@ -2277,7 +2337,17 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "raw_count": 1,
                 "episodic_count": 1,
                 "semantic_count": 1,
-            }
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": projection_messages,
+                "stable_prefix_hash": "a" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
@@ -2308,9 +2378,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         captured = engine.prompt_builder.calls[0]
-        self.assertEqual(captured["raw_text"], "MEMCORE RAW")
-        self.assertEqual(captured["episodic_summary_text"], "MEMCORE EPISODIC")
-        self.assertEqual(captured["semantic_summary_text"], "MEMCORE SEMANTIC")
+        self.assertEqual(captured["raw_text"], "")
+        self.assertEqual(captured["episodic_summary_text"], "")
+        self.assertEqual(captured["semantic_summary_text"], "")
         self.assertNotIn("LEGACY", repr(captured))
         self.assertEqual(memcore_manager.calls[0]["profile_user_id"], "u1")
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
@@ -2318,10 +2388,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["current_user_record"]["source_id"], "current")
         self.assertEqual(
             [turn["role"] for turn in captured["history_turns"]],
-            ["user", "assistant", "assistant", "user"],
+            ["user", "assistant", "assistant", "tool"],
         )
         self.assertNotIn("现在的问题", repr(captured["history_turns"]))
-        self.assertIn("tool input", repr(captured["history_turns"]))
+        self.assertIn("call_1", repr(captured["history_turns"]))
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
@@ -2380,6 +2450,24 @@ class MemcoreIntegrationTests(unittest.TestCase):
             {
                 "payload": {"role": "user", "content": "上一轮问题"},
                 "source_ids": ["previous-user"],
+            },
+            {
+                "payload": {
+                    "role": "assistant",
+                    "content": "我查一下。",
+                    "tool_calls": [
+                        {
+                            "id": "call-history-1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query":"Akane"}'},
+                        }
+                    ],
+                },
+                "source_ids": ["previous-preface", "previous-tool-use"],
+            },
+            {
+                "payload": {"role": "tool", "tool_call_id": "call-history-1", "content": "历史工具结果"},
+                "source_ids": ["previous-tool-result"],
             },
             {
                 "payload": {"role": "assistant", "content": raw_final},
@@ -2441,6 +2529,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["user_prompt"].count("当前问题"), 1)
         self.assertNotIn("当前问题", repr(projected_history))
         self.assertIn(raw_final, repr(projected_history))
+        self.assertEqual(projected_history[2]["tool_calls"][0]["id"], "call-history-1")
+        self.assertEqual(projected_history[3]["tool_call_id"], "call-history-1")
+        self.assertEqual(projected_history[3]["content"], "历史工具结果")
         self.assertNotIn("LEGACY EPISODIC", repr(result["history_turns"]))
         self.assertNotIn("LEGACY SEMANTIC", repr(result["history_turns"]))
 
@@ -2479,7 +2570,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("LEGACY", repr(result["history_turns"]))
         self.assertEqual(result["user_prompt"].count("当前问题"), 1)
 
-    def test_legacy_tool_migration_replays_old_envelope_without_writing_current_envelope(self) -> None:
+    def test_native_tool_projection_ignores_old_envelope_without_writing_current_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
             previous = store.add_message(
@@ -2514,6 +2605,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char",
                 prompt_text=exact_previous,
             )
+            projected_previous = "MemCore projected previous"
             memcore_manager = _PromptContextMemcoreManager(
                 {
                     "operation": "build_prompt_context",
@@ -2523,7 +2615,30 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "raw_text": "MEMCORE RAW",
                     "episodic_text": "",
                     "semantic_text": "",
-                }
+                },
+                projection_payload={
+                    "ok": True,
+                    "status": "ok",
+                    "provider_profile": "openai_chat",
+                    "messages": [
+                        {
+                            "payload": {"role": "user", "content": projected_previous},
+                            "source_ids": [previous["source_id"]],
+                        },
+                        {
+                            "payload": {"role": "assistant", "content": "上一条回复"},
+                            "source_ids": [assistant["source_id"]],
+                        },
+                        {
+                            "payload": {"role": "user", "content": "现在的问题"},
+                            "source_ids": [current["source_id"]],
+                        },
+                    ],
+                    "stable_prefix_hash": "c" * 64,
+                    "projection_version": 1,
+                    "compaction_generation": 0,
+                    "projection_generation": 1,
+                },
             )
             engine = _PromptContextEngine(memcore_manager=memcore_manager)
             engine.store = store
@@ -2544,7 +2659,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
 
             captured = engine.prompt_builder.kwargs
-            self.assertEqual(captured["history_turns"][0]["content"], exact_previous)
+            self.assertEqual(captured["history_turns"][0]["content"], projected_previous)
+            self.assertNotIn(exact_previous, repr(captured["history_turns"]))
             self.assertEqual(captured["history_turns"][1]["role"], "assistant")
             stored_current = store.get_message_prompt_envelopes(
                 [current["source_id"]],
@@ -2555,22 +2671,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertNotIn(current["source_id"], stored_current)
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["content"], "现在的问题")
             self.assertEqual(store.get_message_by_source_id(current["source_id"])["memory_metadata"], {})
-
-            runtime = LLMRuntime.__new__(LLMRuntime)
-            first_request = runtime._responses_input_from_messages(
-                [
-                    {"role": "user", "content": "stable prompt context"},
-                    {"role": "user", "content": exact_previous},
-                ]
-            )
-            second_request = runtime._responses_input_from_messages(
-                [
-                    {"role": "user", "content": "stable prompt context"},
-                    *captured["history_turns"],
-                    {"role": "user", "content": captured["current_message_text"]},
-                ]
-            )
-            self.assertEqual(first_request[0], second_request[0])
 
     def test_final_prompt_context_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(

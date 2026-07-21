@@ -27,10 +27,12 @@ SUPPORTED_MEMORY_BACKENDS = frozenset({"legacy", "dual", "memcore"})
 MEMCORE_PROVIDER_PROFILE_ALIASES = {
     "openai": "openai_chat",
     "openai_chat": "openai_chat",
+    "native_openai": "openai_chat",
     "responses": "openai_chat",
     "ollama": "openai_chat",
     "anthropic": "anthropic_messages",
     "anthropic_messages": "anthropic_messages",
+    "native_anthropic": "anthropic_messages",
     "canonical": "canonical_user_assistant",
     "canonical_user_assistant": "canonical_user_assistant",
 }

@@ -27,6 +27,101 @@ from companion_v01.tool_invocation import (
 from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult
 
 
+class _NativeToolProjectionManager:
+    """Small public-facade fake; provider rendering itself is covered by MemCore tests."""
+
+    enabled = True
+
+    def __init__(self, provider: str, *, assistant_preface: str = "") -> None:
+        self.provider = provider
+        self.assistant_preface = assistant_preface
+        self.exchanges: list[dict] = []
+        self.source_pairs: list[tuple[str, str]] = []
+
+    def record_tool_batch(self, **kwargs):
+        self.exchanges = [dict(item) for item in kwargs["exchanges"]]
+        self.source_pairs = [(f"test-use-{index}", f"test-result-{index}") for index in range(len(self.exchanges))]
+        return {
+            "ok": True,
+            "status": "recorded",
+            "exchanges": [
+                {"tool_use_source_id": use_id, "tool_result_source_id": result_id}
+                for use_id, result_id in self.source_pairs
+            ],
+        }
+
+    def build_context_projection(self, **kwargs):
+        self.assert_provider(kwargs["provider_profile"])
+        if self.provider == NATIVE_ANTHROPIC:
+            assistant_content = []
+            if self.assistant_preface:
+                assistant_content.append({"type": "text", "text": self.assistant_preface})
+            assistant_content.extend(
+                {
+                    "type": "tool_use",
+                    "id": item["tool_call_id"],
+                    "name": item["tool_name"],
+                    "input": item["tool_input"],
+                }
+                for item in self.exchanges
+            )
+            result_content = []
+            for item in self.exchanges:
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": item["tool_call_id"],
+                    "content": item["result"],
+                }
+                if item["result_status"] in {"error", "cancelled"}:
+                    block["is_error"] = True
+                result_content.append(block)
+            payloads = [
+                {"role": "assistant", "content": assistant_content},
+                {"role": "user", "content": result_content},
+            ]
+            source_ids = [
+                [use_id for use_id, _result_id in self.source_pairs],
+                [result_id for _use_id, result_id in self.source_pairs],
+            ]
+        else:
+            assistant = {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": item["tool_call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": item["tool_name"],
+                            "arguments": json.dumps(item["tool_input"], ensure_ascii=False, separators=(",", ":")),
+                        },
+                    }
+                    for item in self.exchanges
+                ],
+            }
+            if self.assistant_preface:
+                assistant["content"] = self.assistant_preface
+            payloads = [assistant] + [
+                {"role": "tool", "tool_call_id": item["tool_call_id"], "content": item["result"]}
+                for item in self.exchanges
+            ]
+            source_ids = [
+                [use_id for use_id, _result_id in self.source_pairs],
+                *[[result_id] for _use_id, result_id in self.source_pairs],
+            ]
+        return {
+            "ok": True,
+            "status": "ok",
+            "provider_profile": self.provider,
+            "messages": [
+                {"payload": payload, "source_ids": ids} for payload, ids in zip(payloads, source_ids)
+            ],
+        }
+
+    def assert_provider(self, provider: str) -> None:
+        if provider != self.provider:
+            raise AssertionError(f"unexpected provider profile: {provider}")
+
+
 class NativeWebSearchToolingTests(unittest.TestCase):
     def test_engine_native_chat_vision_requires_same_chat_and_vision_route(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -841,6 +936,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_engine_tool_round_builds_native_anthropic_tool_result_history(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _NativeToolProjectionManager(
+            NATIVE_ANTHROPIC,
+            assistant_preface="我先试一下这个工具。",
+        )
         engine._execute_tool_call = lambda **_kwargs: ToolExecutionResult(
             tool_type="mcp.demo.echo",
             followup_context="echo ok",
@@ -876,6 +975,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             memory_exclude_source_ids=[],
             request_context={},
             native_tool_history_turns=native_history,
+            memcore_turn_id="turn-native-anthropic",
         )
 
         self.assertEqual([turn["role"] for turn in native_history], ["assistant", "user"])
@@ -938,6 +1038,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_engine_parallel_batch_groups_anthropic_history_in_original_order(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _NativeToolProjectionManager(NATIVE_ANTHROPIC)
         barrier = threading.Barrier(2)
 
         def execute(**kwargs):
@@ -991,6 +1092,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             memory_exclude_source_ids=[],
             request_context={},
             native_tool_history_turns=native_history,
+            memcore_turn_id="turn-parallel-anthropic",
         )
 
         self.assertEqual([result.tool_type for result in results], ["web_search", "retrieve_memory"])
@@ -1007,6 +1109,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_engine_parallel_batch_builds_standard_openai_tool_history(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _NativeToolProjectionManager(
+            NATIVE_OPENAI,
+            assistant_preface="我一起查一下。",
+        )
         engine._execute_tool_call = lambda **kwargs: ToolExecutionResult(
             tool_type=kwargs["tool_call"]["type"],
             followup_context=f"result:{kwargs['tool_call']['type']}",
@@ -1052,6 +1158,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             memory_exclude_source_ids=[],
             request_context={},
             native_tool_history_turns=native_history,
+            memcore_turn_id="turn-parallel-openai",
         )
 
         self.assertEqual([turn["role"] for turn in native_history], ["assistant", "tool", "tool"])
@@ -1227,27 +1334,22 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(len(normalized[NATIVE_TOOL_CALLS_FIELD]), 2)
         self.assertEqual(normalized["speech"], "")
 
-    def test_engine_native_anthropic_tool_result_marks_errors(self) -> None:
+    def test_engine_native_tool_trace_preserves_error_and_cancelled_statuses(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        native_history: list[dict] = []
-
-        engine._append_native_anthropic_tool_history_turns(
-            native_tool_history_turns=native_history,
-            tool_call={
-                "type": "web_search",
-                "query": "Akane",
-                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
-                TOOL_INVOCATION_ID_FIELD: "toolu_error",
-            },
-            tool_result=ToolExecutionResult(
-                tool_type="web_search",
-                followup_context="<tool_use_error>网络不可用</tool_use_error>",
-                stream_events=[],
-            ),
-            shaped_followup="<tool_use_error>网络不可用</tool_use_error>",
+        error = ToolExecutionResult(
+            tool_type="web_search",
+            followup_context="<tool_use_error>网络不可用</tool_use_error>",
+        )
+        cancelled = ToolExecutionResult(
+            tool_type="web_search",
+            followup_context="工具已取消。",
+            stream_events=[{"type": "tool_cancelled", "status": "cancelled"}],
         )
 
-        self.assertTrue(native_history[1]["content"][0]["is_error"])
+        self.assertEqual(engine._tool_result_trace_status(error), "error")
+        self.assertEqual(engine._tool_result_trace_status(cancelled), "cancelled")
+        self.assertTrue(engine._tool_result_is_error(error))
+        self.assertTrue(engine._tool_result_is_error(cancelled))
 
     def test_tool_call_signature_ignores_native_invocation_metadata(self) -> None:
         first = tool_orchestration_engine.tool_call_signature(

@@ -21,7 +21,7 @@ logger = logging.getLogger("akane.response_builder")
 
 PROMPT_USER_CONTENT_FIELD = "_akane_prompt_user_content"
 PROJECTION_READ_MIGRATION_REASONS = frozenset(
-    {"event_projection_pending", "legacy_memory_backend", "native_tool_history_pending"}
+    {"event_projection_pending", "legacy_memory_backend"}
 )
 
 
@@ -186,8 +186,8 @@ def prepare_context(
     )
     projection_authoritative = not projection_migration_window
     if projection_migration_window:
-        # Documented migration window: histories containing provider-native
-        # tool messages remain on the legacy envelope reader until Slice E.
+        # Event projections and non-MemCore backends remain in the documented
+        # migration window until their dedicated cutover slices.
         _attach_message_prompt_envelopes(
             engine,
             raw_records,
@@ -650,7 +650,7 @@ def prepare_context(
                 ]
         generation_context = prompt_builder.build_final_generation_context(
             now_ts=now_ts,
-            raw_text=raw_text,
+            raw_text="" if projection_authoritative else raw_text,
             history_turns=history_turns,
             current_message_text=current_message_text,
             episodic_summary_text="" if projection_authoritative else episodic_summary_text,
@@ -940,10 +940,8 @@ def _build_memcore_provider_history(
                 current_source_visible = True
                 continue
             payload = dict(message.get("payload") or {})
-            if _is_provider_native_tool_history_message(payload):
-                return {"ok": False, "status": "migration_window", "reason": "native_tool_history_pending"}
             role = str(payload.get("role") or "").strip().lower()
-            if role not in {"user", "assistant"} or "content" not in payload:
+            if role not in {"user", "assistant", "tool"}:
                 return {"ok": False, "status": "failed", "reason": "projection_message_unsupported"}
             history_turns.append(payload)
             history_source_ids.extend(source_id for source_id in source_ids if source_id)
@@ -967,16 +965,6 @@ def _build_memcore_provider_history(
     except Exception as exc:
         logger.warning("memcore projection read unavailable: %s", exc.__class__.__name__)
         return {"ok": False, "status": "failed", "reason": "projection_read_failed"}
-
-
-def _is_provider_native_tool_history_message(payload: dict[str, Any]) -> bool:
-    if str(payload.get("role") or "").strip().lower() == "tool" or payload.get("tool_calls"):
-        return True
-    content = payload.get("content")
-    return isinstance(content, list) and any(
-        isinstance(item, dict) and str(item.get("type") or "").strip() in {"tool_use", "tool_result"}
-        for item in content
-    )
 
 
 def _estimate_generation_context_tokens(
