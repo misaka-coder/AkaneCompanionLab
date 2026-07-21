@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import (
     _filter_unsent_reply_messages,
     _process_qq_turn_streaming,
@@ -65,6 +66,70 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_streamed_segments_use_only_one_onebot_reply_frame(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "在"}
+                yield {"type": "speech_segment", "text": "怎么了"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "在\n怎么了",
+                        "speech_segments": ["在", "怎么了"],
+                        "tool_events": [],
+                    },
+                }
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {}}
+
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "group_id": 30003,
+                "user_id": 20002,
+                "message_id": "stream-route-reply-budget-1",
+                "message": [
+                    {"type": "at", "data": {"qq": "10001"}},
+                    {"type": "text", "data": {"text": " 在吗"}},
+                ],
+            }
+        )
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request",
+            side_effect=[FakeResponse(), FakeResponse()],
+        ) as request:
+            result = _process_qq_turn_streaming(
+                engine=FakeEngine(),
+                qq_gateway=gateway,
+                context=context,
+                turn_payload=context.to_turn_payload(),
+                config_module=SimpleNamespace(
+                    QQ_STREAM_REPLIES_ENABLED=True,
+                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_REPLY_MAX_SEGMENTS=8,
+                    QQ_VOICE_MAX_SEGMENTS=3,
+                    QQ_VOICE_MAX_TEXT_CHARS=280,
+                ),
+            )
+
+        self.assertTrue(result["send_result"]["ok"])
+        self.assertEqual(request.call_count, 2)
+        messages = [call.kwargs["json"]["message"] for call in request.call_args_list]
+        self.assertEqual([segment["type"] for segment in messages[0]], ["reply", "text"])
+        self.assertEqual([segment["type"] for segment in messages[1]], ["text"])
+        self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
+
     def test_auto_mode_sends_native_tool_preface_without_waiting_for_delivery_hint(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):

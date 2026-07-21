@@ -1427,6 +1427,49 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(first_message[0], {"type": "reply", "data": {"id": "multi-reply-1"}})
         self.assertEqual(second_message, [{"type": "text", "data": {"text": "第二段"}}])
 
+    def test_individual_stream_and_media_actions_quote_source_only_once(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "stream-reply-budget-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " 在吗"}},
+                ],
+            }
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {}}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "happy.png"
+            image_path.write_bytes(b"png")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=[FakeResponse(), FakeResponse(), FakeResponse()],
+            ) as request:
+                first = gateway.send_reply(context, "在")
+                second = gateway.send_reply(context, "怎么了")
+                image_result = gateway.send_image(context, image_path=str(image_path), name="happy")
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertTrue(image_result["ok"])
+        messages = [call.kwargs["json"]["message"] for call in request.call_args_list]
+        self.assertEqual(messages[0][0], {"type": "reply", "data": {"id": "stream-reply-budget-1"}})
+        self.assertEqual(messages[1], [{"type": "text", "data": {"text": "怎么了"}}])
+        self.assertEqual([segment["type"] for segment in messages[2]], ["image"])
+        self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
+
     def test_send_image_checks_onebot_result_and_falls_back_to_base64(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(

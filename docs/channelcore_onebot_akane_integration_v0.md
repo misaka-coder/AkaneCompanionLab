@@ -95,8 +95,10 @@ advertised.
 
 The transport remains Akane-owned. M4 moved OneBot target/segment/action/result
 protocol authority into `channelcore-onebot`; `qq_gateway.py` supplies product
-content and safe local-media candidates to package plans. Text and media
-replies include a real reply segment when the inbound event has a message id.
+content and safe local-media candidates to package plans. When an inbound event
+has a message id, Akane gives only the first reply-capable outbound action a
+real reply segment; later streamed text and media in the same turn do not repeat
+the QQ quote frame.
 `qq_gateway.py` no longer performs direct OneBot HTTP requests or owns logical
 status/retcode validation.
 

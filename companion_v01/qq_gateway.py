@@ -49,6 +49,8 @@ QQ_TEXT_CAPABILITIES = (
     "tool_actions",
 )
 
+QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
+
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
 QQ_CHARACTER_LIST_COMMANDS = {
@@ -323,6 +325,8 @@ class NapCatQQGateway:
             require_self_id=False,
         )
         self._onebot_transport = OneBotActionTransport(transport_config)
+        self._reply_reference_claims: dict[tuple[str, str, str], None] = {}
+        self._reply_reference_lock = threading.RLock()
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
         self._wake_words = _normalize_qq_wake_words(wake_words)
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
@@ -2910,7 +2914,7 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [text_segment(clean_message)],
-                reply_to=context.source_message_id if include_reply else "",
+                reply_to=self._claim_reply_message_id(context, include_reply=include_reply),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -2928,7 +2932,7 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [mface_segment(data)],
-                reply_to=context.source_message_id,
+                reply_to=self._claim_reply_message_id(context),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -3072,6 +3076,7 @@ class NapCatQQGateway:
             return {"ok": False, "reason": "image_not_found"}
 
         resolved_path = path_obj.resolve()
+        reply_to = self._claim_reply_message_id(context)
         file_candidates = [
             ("file_uri", resolved_path.as_uri()),
             ("absolute_path", str(resolved_path)),
@@ -3091,7 +3096,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [image_segment(file_value, summary=name or path_obj.name)],
-                    reply_to=context.source_message_id,
+                    reply_to=reply_to,
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -3113,6 +3118,7 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "audio_not_found"}
 
+        reply_to = self._claim_reply_message_id(context)
         file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
         last_result = None
         for file_value in file_candidates:
@@ -3120,7 +3126,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(file_value, summary=name or path_obj.name)],
-                    reply_to=context.source_message_id,
+                    reply_to=reply_to,
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -3147,6 +3153,22 @@ class NapCatQQGateway:
     @staticmethod
     def _outbound_target(context: QQMessageContext) -> OutboundTarget:
         return OutboundTarget("group" if context.is_group else "private", context.target_id)
+
+    def _claim_reply_message_id(self, context: QQMessageContext, *, include_reply: bool = True) -> str:
+        """Allow at most one visible OneBot reply frame for each inbound message."""
+        if not include_reply:
+            return ""
+        message_id = str(context.source_message_id or "").strip()
+        if not message_id:
+            return ""
+        key = ("group" if context.is_group else "private", str(context.target_id or ""), message_id)
+        with self._reply_reference_lock:
+            if key in self._reply_reference_claims:
+                return ""
+            self._reply_reference_claims[key] = None
+            while len(self._reply_reference_claims) > QQ_REPLY_REFERENCE_MAX_CLAIMS:
+                self._reply_reference_claims.pop(next(iter(self._reply_reference_claims)))
+        return message_id
 
     def _send_outbound_plan(self, plan: OutboundAction, *, timeout: float) -> dict[str, Any]:
         return self._onebot_transport.call(plan.action, plan.params(), timeout=timeout).as_dict()
