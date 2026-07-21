@@ -332,10 +332,6 @@ class PromptBuilder:
             ),
         ]
         runtime_context_text = "\n\n".join(part for part in stable_runtime_context_parts if part)
-        if runtime_context_text:
-            structured_history_turns.append(
-                {"role": "user", "content": runtime_context_text}
-            )
         structured_history_turns.extend(
             dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict)
         )
@@ -347,6 +343,7 @@ class PromptBuilder:
             # using prefix caches (notably the Responses wire protocol).
             dynamic_tail_parts = [
                 str(current_message_text or "").strip(),
+                runtime_context_text,
                 str(volatile_extra_context or "").strip(),
                 (
                     "当前演出状态（本轮基准参考，不是硬锁定）：\n"
@@ -358,11 +355,16 @@ class PromptBuilder:
             user_prompt = "\n\n".join(part for part in dynamic_tail_parts if part)
         else:
             dynamic_tail_parts = [
-                f"可用回忆片段：\n{memory_text}",
+                f"当前时间线消息：\n{current_message_text}",
+                f"可用回忆片段：\n{memory_text}" if str(memory_text or "").strip() else "",
+                runtime_context_text,
                 str(volatile_extra_context or "").strip(),
-                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}",
+                (
+                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
+                    if str(current_visual_context or "").strip()
+                    else ""
+                ),
             ]
-            dynamic_tail_parts.append(f"当前时间线消息：\n{current_message_text}")
             if not current_message_in_raw:
                 dynamic_tail_parts.append(f"当前时间：{current_time_text}")
             dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)

@@ -207,6 +207,8 @@ def execute_retrieve_memory_tool(
     categories = [str(item).strip() for item in list(call.get("categories") or []) if str(item).strip()]
     importance_min = call.get("importance_min")
     limit = call.get("limit")
+    include_explicit = call.get("include_explicit") is True
+    kind_patterns = [str(item).strip() for item in list(call.get("kind_patterns") or []) if str(item).strip()]
     current_user_record = (
         engine.store.get_message_by_source_id(context.current_user_source_id)
         if str(context.current_user_source_id or "").strip()
@@ -240,6 +242,8 @@ def execute_retrieve_memory_tool(
             importance_min=importance_min,
             limit=limit,
             exclude_source_ids=exclude_source_ids,
+            include_explicit=include_explicit,
+            kind_patterns=kind_patterns,
         )
         if memcore_read_payload.get("ok"):
             snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
@@ -448,6 +452,8 @@ def execute_memcore_retrieve_memory(
     importance_min: Any,
     limit: Any,
     exclude_source_ids: list[str],
+    include_explicit: bool = False,
+    kind_patterns: list[str] | None = None,
 ) -> dict[str, Any]:
     manager = getattr(engine, "memcore_manager", None)
     if manager is None or not getattr(manager, "enabled", False):
@@ -486,6 +492,8 @@ def execute_memcore_retrieve_memory(
             importance_min=importance_min,
             limit=limit,
             exclude_source_ids=exclude_source_ids,
+            include_explicit=include_explicit,
+            kind_patterns=list(kind_patterns or []),
         )
     except Exception as exc:
         return {

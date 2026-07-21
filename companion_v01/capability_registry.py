@@ -333,6 +333,22 @@ RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
                 "maximum": 1,
                 "description": "Optional minimum importance score.",
             },
+            "include_explicit": {
+                "type": "boolean",
+                "description": (
+                    "Set true only when the answer needs explicit tool, event, skill, or material records; "
+                    "kind_patterns is then required."
+                ),
+            },
+            "kind_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 8,
+                "description": (
+                    "Exact kinds or trailing-wildcard prefixes such as event.finance.*, tool.web_search.*, "
+                    "skill.*, or material.*. Host policy may reject unsupported prefixes."
+                ),
+            },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -346,7 +362,7 @@ RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
+    spec_version="1.1.0",
     schema_version=1,
     execution_class="sync",
     idempotency="read_only",

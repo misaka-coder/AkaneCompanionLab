@@ -271,7 +271,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_3")
         self.assertEqual("".join(runtime._extract_stream_text(chunk) for chunk in chunks), '{"speech":"checking"}')
 
-    def test_responses_input_coalesces_adjacent_plain_messages_for_stable_stream_cache_prefix(self) -> None:
+    def test_responses_input_preserves_plain_message_boundaries_for_source_attribution(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         messages = [
             {"role": "user", "content": "stable tool context"},
@@ -287,12 +287,126 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(
             result,
             [
-                {"role": "user", "content": "stable tool context\n\nstable memory context"},
-                {"role": "assistant", "content": "first assistant fragment\n\nsecond assistant fragment"},
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable memory context"},
+                {"role": "assistant", "content": "first assistant fragment"},
+                {"role": "assistant", "content": "second assistant fragment"},
                 {"role": "user", "content": [{"type": "input_text", "text": "multimodal text"}]},
                 {"role": "user", "content": "plain text after structured content"},
             ],
         )
+
+    def test_request_observer_sees_final_responses_wire_without_plain_message_coalescing(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        seen: list[dict[str, object]] = []
+        bundle = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="responses", protocol="responses"),
+            model="gpt-test",
+        )
+        payload = {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "stable"},
+                {"role": "user", "content": "current"},
+            ],
+            "tools": [],
+        }
+
+        runtime._observe_completion_request(
+            bundle=bundle,
+            payload=payload,
+            observer=lambda request: seen.append(request) or {"ok": True},
+        )
+
+        self.assertEqual(
+            seen[0]["audit_history_messages"],
+            [
+                {"role": "user", "content": "stable"},
+                {"role": "user", "content": "current"},
+            ],
+        )
+
+    def test_request_observer_rejection_stops_nonstream_before_provider_transport(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        provider_calls: list[dict[str, object]] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "stable system"},
+                {"role": "user", "content": "current"},
+            ],
+        }
+        runtime._create_completion = lambda **kwargs: provider_calls.append(dict(kwargs))
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: None
+
+        result = runtime._call_json_result(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="openai", protocol="openai"),
+                model="gpt-test",
+            ),
+            system_prompt="stable system",
+            user_prompt="current",
+            fallback={"speech": "persona fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+            request_observer=lambda _request: {
+                "ok": False,
+                "status": "failed",
+                "reason": "projection_write_failed",
+            },
+        )
+
+        self.assertEqual(provider_calls, [])
+        self.assertIn("request_observer_rejected:projection_write_failed", result.error)
+        self.assertEqual(result.raw_text, "")
+
+    def test_request_observer_rejection_stops_stream_before_provider_transport(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        provider_calls: list[dict[str, object]] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "stable system"},
+                {"role": "user", "content": "current"},
+            ],
+        }
+        runtime._create_completion = lambda **kwargs: provider_calls.append(dict(kwargs)) or []
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._close_stream = lambda *_args, **_kwargs: None
+        runtime._stream_native_tool_calls_from_parts = lambda *_args, **_kwargs: []
+        runtime._note_parse_fallback = lambda *_args, **_kwargs: None
+
+        generator = runtime._stream_chat_json(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="openai", protocol="openai"),
+                model="gpt-test",
+            ),
+            system_prompt="stable system",
+            user_prompt="current",
+            fallback={"speech": "persona fallback"},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="",
+            request_observer=lambda _request: {
+                "ok": False,
+                "status": "failed",
+                "reason": "projection_write_failed",
+            },
+        )
+        with self.assertRaises(StopIteration) as stopped:
+            while True:
+                next(generator)
+        result = stopped.exception.value
+
+        self.assertEqual(provider_calls, [])
+        self.assertIn("request_observer_rejected:projection_write_failed", result.error)
+        self.assertEqual(result.raw_text, "")
 
     def test_responses_failures_surface_bounded_structured_reasons(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

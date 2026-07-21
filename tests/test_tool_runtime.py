@@ -60,6 +60,23 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertEqual(call["importance_min"], 0.0)
         self.assertEqual(call["limit"], 12)
 
+    def test_normalize_call_preserves_bounded_explicit_kind_request(self) -> None:
+        handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
+
+        call = handler.normalize_call(
+            {
+                "type": "retrieve_memory",
+                "query": "政策快讯",
+                "include_explicit": True,
+                "kind_patterns": ["EVENT.FINANCE.*", "event.finance.*", "message.*", "bad pattern"],
+            }
+        )
+
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertTrue(call["include_explicit"])
+        self.assertEqual(call["kind_patterns"], ["event.finance.*", "message.*"])
+
 
 class AdapterCapabilityToolHandlerTests(unittest.TestCase):
     def _context(self) -> ToolExecutionContext:

@@ -70,6 +70,8 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertIn("long-term memory", function["description"])
         self.assertEqual(function["parameters"]["additionalProperties"], False)
         self.assertIn("query", function["parameters"]["required"])
+        self.assertIn("include_explicit", function["parameters"]["properties"])
+        self.assertIn("kind_patterns", function["parameters"]["properties"])
         self.assertNotIn("description", function["parameters"])
 
     def test_adapter_capability_native_schema_uses_capcore_projection(self) -> None:

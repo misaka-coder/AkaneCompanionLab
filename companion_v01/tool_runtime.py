@@ -1389,6 +1389,8 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             '"time_hint":{"date_label":"YYYY-MM-DD","time_of_day":"morning|afternoon|night|midnight"},'
             '"source_layers":["raw","summary","semantic_summary"],"subject_scopes":["user","assistant","other"],'
             '"categories":["preference","plan_goal","project_work"],"importance_min":0.0,"limit":4}。'
+            "只有确实需要工具、事件、skill 或材料记录时才设置 include_explicit=true，并同时给出精确的 kind_patterns；"
+            "普通记忆检索不要打开。"
             "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
             "例：我的生日是哪天、我喜欢什么、我们之前约定了什么、那张图是谁发的 -> retrieve_memory。"
             "如果用户明确要求查看某一天、某段日期或某个时段的原始逐句对话，不要用本工具，改用 read_memory_timeline。"
@@ -1500,6 +1502,23 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         raw_importance_min = value.get("importance_min") if "importance_min" in value else value.get("min_importance")
         importance_min = self._coerce_optional_float(raw_importance_min)
         limit = self._coerce_optional_int(value.get("limit"))
+        include_explicit = value.get("include_explicit") is True
+        kind_patterns: list[str] = []
+        raw_kind_patterns = value.get("kind_patterns")
+        if isinstance(raw_kind_patterns, str):
+            raw_kind_patterns = [raw_kind_patterns]
+        if isinstance(raw_kind_patterns, list):
+            seen_patterns: set[str] = set()
+            for item in raw_kind_patterns:
+                pattern = normalize_text(item).strip().lower()
+                if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?", pattern):
+                    continue
+                if pattern in seen_patterns:
+                    continue
+                seen_patterns.add(pattern)
+                kind_patterns.append(pattern)
+                if len(kind_patterns) >= 8:
+                    break
 
         return {
             "type": self.tool_type,
@@ -1511,6 +1530,8 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "categories": categories,
             "importance_min": importance_min,
             "limit": limit,
+            "include_explicit": include_explicit,
+            "kind_patterns": kind_patterns,
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:

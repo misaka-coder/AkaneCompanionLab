@@ -323,7 +323,8 @@ system = "semantic reinforcement system"
             self.assertIn("- fake tool", history_text)
             self.assertNotIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", result["system_prompt"])
             self.assertNotIn("persona state", result["system_prompt"])
-            self.assertIn("persona state", history_text)
+            self.assertNotIn("persona state", history_text)
+            self.assertIn("persona state", result["user_prompt"])
             self.assertEqual(
                 result["system_extra_blocks"],
                 [
@@ -349,13 +350,13 @@ system = "semantic reinforcement system"
                 provider_text.index("- fake tool"),
                 provider_text.index("较长期的语义记忆"),
             )
-            self.assertIn("extra", history_text)
-            self.assertIn("persona refs", history_text)
-            self.assertNotIn("extra", result["user_prompt"])
-            self.assertNotIn("persona refs", result["user_prompt"])
+            self.assertNotIn("extra", history_text)
+            self.assertNotIn("persona refs", history_text)
+            self.assertIn("extra", result["user_prompt"])
+            self.assertIn("persona refs", result["user_prompt"])
             self.assertLess(provider_text.index("较长期的语义记忆"), provider_text.index("extra"))
-            self.assertLess(history_text.index("extra"), history_text.index("persona refs"))
-            self.assertLess(history_text.index("persona refs"), history_text.index("User: hi"))
+            self.assertLess(result["user_prompt"].index("User: current"), result["user_prompt"].index("extra"))
+            self.assertLess(result["user_prompt"].index("extra"), result["user_prompt"].index("persona refs"))
             self.assertLess(provider_text.index("User: hi"), provider_text.index("当前演出状态"))
             audit_names = [section["name"] for section in result["prompt_audit_sections"]]
             self.assertIn("system.full", audit_names)
@@ -416,7 +417,7 @@ system = "semantic reinforcement system"
         self.assertIn("当前时间线消息", latent["user_prompt"])
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
-    def test_runtime_context_precedes_append_only_raw_history_and_keeps_current_tail_short(self) -> None:
+    def test_runtime_context_follows_append_only_history_and_is_frozen_with_current_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())
         common = {
             "now_ts": 1_712_400_000,
@@ -462,12 +463,16 @@ system = "semantic reinforcement system"
         first_history = _history_text(first)
         second_history = _history_text(second)
         self.assertLess(first_history.index("stable tool contract"), first_history.index("User: first event"))
-        self.assertIn("persona state A", first_history)
-        self.assertNotIn("persona state A", first["user_prompt"])
-        self.assertNotIn("dynamic extra", first["user_prompt"])
-        self.assertNotIn("dynamic reference", first["user_prompt"])
+        self.assertNotIn("persona state A", first_history)
+        self.assertNotIn("dynamic extra", first_history)
+        self.assertNotIn("dynamic reference", first_history)
+        self.assertIn("persona state A", first["user_prompt"])
+        self.assertIn("dynamic extra", first["user_prompt"])
+        self.assertIn("dynamic reference", first["user_prompt"])
         self.assertIn("dynamic visual", first["user_prompt"])
         self.assertIn("User: current A", first["user_prompt"])
+        self.assertLess(first["user_prompt"].index("User: current A"), first["user_prompt"].index("dynamic extra"))
+        self.assertLess(first["user_prompt"].index("dynamic extra"), first["user_prompt"].index("persona state A"))
         first_event_end = first_history.index("User: first event") + len("User: first event")
         self.assertEqual(first_history[:first_event_end], second_history[:first_event_end])
         self.assertEqual(
@@ -568,17 +573,19 @@ system = "semantic reinforcement system"
         self.assertIn("automatic retrieval evidence", prompt)
         self.assertIn("Assistant: earlier analysis", prompt)
         self.assertEqual(prompt.count("real finance event"), 1)
-        self.assertIn("\n当前时间线消息：\n", prompt)
+        self.assertIn("当前时间线消息：\n", prompt)
         self.assertNotIn("当前时间：", prompt)
         self.assertNotIn("debug_enabled=", prompt)
         self.assertNotIn("debug_enabled=", result["system_prompt"])
         self.assertLess(prompt.index("stable finance capability contract"), prompt.index("ordinary semantic memory"))
         self.assertLess(prompt.index("ordinary semantic memory"), prompt.index("ordinary episodic memory"))
-        self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("stable plugin runtime"))
-        self.assertLess(prompt.index("stable plugin runtime"), prompt.index("Assistant: earlier analysis"))
         self.assertLess(prompt.index("ordinary episodic memory"), prompt.index("Assistant: earlier analysis"))
-        self.assertLess(prompt.index("Assistant: earlier analysis"), prompt.index("dynamic plugin instruction"))
-        self.assertNotIn("stable plugin runtime", result["user_prompt"])
+        self.assertLess(prompt.index("Assistant: earlier analysis"), prompt.index("automatic retrieval evidence"))
+        self.assertLess(prompt.index("real finance event"), prompt.index("automatic retrieval evidence"))
+        self.assertLess(prompt.index("automatic retrieval evidence"), prompt.index("stable plugin runtime"))
+        self.assertLess(prompt.index("stable plugin runtime"), prompt.index("dynamic plugin instruction"))
+        self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("bounded proactive visual state"))
+        self.assertIn("stable plugin runtime", result["user_prompt"])
         self.assertIn("dynamic plugin instruction", result["user_prompt"])
         self.assertTrue(result["stable_system_context_hash"])
 
@@ -650,10 +657,14 @@ system = "semantic reinforcement system"
             result["user_prompt"].index("stable delivery limit"),
         )
         history = _history_text(result)
-        self.assertIn("stable proactive runtime", history)
+        self.assertNotIn("stable proactive runtime", history)
         self.assertNotIn("stable delivery limit", history)
         self.assertNotIn("stable proactive visual", history)
-        self.assertLess(history.index("stable proactive runtime"), history.index("Assistant: earlier analysis"))
+        self.assertIn("stable proactive runtime", result["user_prompt"])
+        self.assertLess(
+            result["user_prompt"].index("User: exact finance event"),
+            result["user_prompt"].index("stable proactive runtime"),
+        )
 
     def test_normal_and_proactive_scopes_share_one_append_only_timeline_layout(self) -> None:
         builder = PromptBuilder(load_persona_config())
@@ -1037,7 +1048,8 @@ system = "semantic reinforcement system"
 
         self.assertIn("desktop_pet 桌宠模式", result["system_prompt"])
         self.assertNotIn("角色包身份：Mika", result["system_prompt"])
-        self.assertIn("角色包身份：Mika", _history_text(result))
+        self.assertNotIn("角色包身份：Mika", _history_text(result))
+        self.assertIn("角色包身份：Mika", result["user_prompt"])
         self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
         self.assertIn("memory_metadata", result["fallback"])

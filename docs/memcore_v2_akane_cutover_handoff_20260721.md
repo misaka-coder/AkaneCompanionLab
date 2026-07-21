@@ -1,5 +1,33 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
+## 最新 repair pass 状态（后续章节中的“尚未切读链”描述已过期）
+
+截至本轮未提交工作区，Akane 已经切到 MemCore provider projection 读权威，并完成以下收口：
+
+- transport 前 request observer 记录真实 Chat/Responses wire；observer 拒绝时不会调用 provider；
+- 请求冻结按 projection message 生效，不再按整个 turn 锁死；已冻结旧消息不可改，后追加工具消息可分别首次冻结；
+- 普通消息、`event.*`、单工具和并行工具使用同一线性 turn；Responses 不再合并相邻同 role 消息；
+- final 保存真实 provider raw，缺少 LLM runtime 的轻量完成路径仍能原样提交 raw；
+- 动态检索/runtime/persona/visual 上下文放在 append-only 历史和当前消息之后；空动态块不渲染；
+- `tool/event/skill/material` 显式 kind 检索由宿主 allowlist 授权，模型只能缩小权限；
+- MemCore projection 读取/冻结失败返回结构化记忆错误，不落入人格兜底，也不持久化失败回复；
+- 工具新加载的图片不再回填到已冻结的原始 user message，而是在 tool result 后追加
+  `material.model_input`；原图只走当前 provider request，持久化投影使用 media omission marker；
+- MemCore 模式下最终生成重试复用完全相同的 user payload，不追加临时 retry note。
+
+当前新增/重点测试位于：
+
+```text
+tests/test_memcore_integration.py
+tests/test_provider_raw_result.py
+tests/test_llm_client.py
+memcore/tests/test_projection_cache.py
+```
+
+最新已单独通过：无 runtime 的 raw final 完成、工具产图冻结、重试 payload 一致、原生工具与 provider raw
+聚焦测试。完整回归和真实云端 provider/QQ 验收仍需在本 repair pass 末尾执行；在此之前不要把本地状态写成
+“线上已完成”。后续章节保留的是切换前历史，定位旧代码和理解迁移顺序仍有价值，但“当前阶段”以本节为准。
+
 > 用途：把本文件全文复制给新的 Codex/AI 账号，即可继续当前主线。
 > 当前不是重新设计阶段；MemCore V2 核心和 Akane V2 写链已经完成，下一步是补真实 provider raw output、切换读链、删除旧权威并做真实链路验收。
 

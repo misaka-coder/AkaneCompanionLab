@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from concurrent.futures import Future, wait
 import hashlib
+import json
 import logging
 from pathlib import Path
 import re
@@ -37,6 +38,9 @@ MEMCORE_PROVIDER_PROFILE_ALIASES = {
     "canonical_user_assistant": "canonical_user_assistant",
 }
 logger = logging.getLogger("akane.memcore")
+
+_EXPLICIT_RETRIEVAL_KIND_ROOTS = ("tool", "event", "skill", "material")
+_EXPLICIT_KIND_PATTERN = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?")
 
 
 _PROCESS_RUNTIME_LOCK = threading.RLock()
@@ -536,6 +540,124 @@ class MemcoreManager:
             logger.warning("memcore tool batch record failed: %s", reason)
             return {**self._status(operation, False, "failed", reason=reason), "exchanges": []}
 
+    def append_turn_media_input(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        related_source_ids: list[str] | None = None,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Append a safe placeholder for provider-only media after a tool result.
+
+        Raw bytes/data URLs deliberately never cross this boundary.  The actual
+        multimodal blocks are frozen from the observed provider request, where
+        MemCore replaces them with its persistent media-omitted marker.
+        """
+
+        operation = "append_turn_media_input"
+        resolved_turn_id = str(turn_id or "").strip()
+        if not resolved_turn_id:
+            return self._status(operation, False, "invalid_record", reason="turn_id_required")
+        safe_items: list[dict[str, str]] = []
+        for index, raw in enumerate(list(items or [])[:5]):
+            if not isinstance(raw, dict):
+                continue
+            attachment_id = self._safe_media_reference(raw.get("attachment_id"))
+            handle = self._safe_media_reference(raw.get("attachment_handle"))
+            mime_type = str(raw.get("mime_type") or raw.get("content_type") or "").strip().lower()
+            if not re.fullmatch(r"image/[a-z0-9.+-]{1,80}", mime_type):
+                mime_type = "image"
+            safe_items.append(
+                {
+                    "attachment_id": attachment_id,
+                    "attachment_handle": handle or f"image_{index + 1}",
+                    "mime_type": mime_type,
+                }
+            )
+        if not safe_items:
+            return self._status(operation, False, "invalid_record", reason="media_items_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        related = sorted(
+            {
+                str(source_id or "").strip()
+                for source_id in list(related_source_ids or [])
+                if str(source_id or "").strip()
+            }
+        )
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "turn_id": resolved_turn_id,
+                    "items": safe_items,
+                    "related_source_ids": related,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8", errors="ignore")
+        ).hexdigest()[:32]
+        source_id = f"media:{fingerprint}"
+        labels = [item["attachment_handle"] for item in safe_items]
+        try:
+            memcore = self._memcore_module or self._import_memcore()
+            entry = memcore.TimelineEntryInput(
+                source_id=source_id,
+                kind="material.model_input",
+                origin=memcore.EntryOrigin.ENVIRONMENT,
+                turn_role=memcore.TurnRole.INTERMEDIATE,
+                semantic_text=f"工具为当前模型请求加载了图片：{', '.join(labels)}。",
+                timestamp=int(timestamp or time.time()),
+                payload={"items": safe_items},
+                trace_metadata={"status": "ready", "media_count": len(safe_items)},
+                memory_metadata={
+                    "categories": ["material_trace"],
+                    "keywords": labels[:4],
+                    "subject_scopes": ["assistant"],
+                    "importance": 0.2,
+                    "confidence": 1.0,
+                },
+                annotation_status=memcore.AnnotationStatus.UNANNOTATED,
+                retrieval_policy=memcore.RetrievalPolicy.EXPLICIT,
+                retrieval_visibility=memcore.RetrievalVisibility.EXPLICIT,
+                semanticize=False,
+                prompt_visible=True,
+                compatibility_role="user.attachment image",
+            )
+            stored = system.append_entry(entry, turn_id=resolved_turn_id)
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "recorded",
+                    source_id=stored.source_id,
+                    index_status=stored.index_status,
+                ),
+                "turn_id": resolved_turn_id,
+                "item_count": len(safe_items),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
+    @staticmethod
+    def _safe_media_reference(value: Any) -> str:
+        reference = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", reference):
+            return ""
+        return reference
+
     def record_material_reference(
         self,
         *,
@@ -645,6 +767,8 @@ class MemcoreManager:
         session_id: str,
         character_pack_id: str = "",
         provider_output_raw: str = "",
+        provider_profile: str = "",
+        provider_projection: dict[str, Any] | None = None,
         annotation_status: str = "accepted_model",
     ) -> dict[str, Any]:
         operation = "complete_input_turn"
@@ -667,6 +791,11 @@ class MemcoreManager:
         if system is None:
             return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
         try:
+            resolved_provider_profile = (
+                resolve_memcore_provider_profile(provider_profile)
+                if isinstance(provider_projection, dict)
+                else ""
+            )
             result = system.complete_turn(
                 turn_id=resolved_turn_id,
                 semantic_text=str((assistant_record or {}).get("content") or ""),
@@ -678,6 +807,12 @@ class MemcoreManager:
                 payload={
                     "semantic_tags": list((assistant_record or {}).get("semantic_tags") or []),
                 },
+                provider_profile=resolved_provider_profile,
+                provider_projection=(
+                    dict(provider_projection)
+                    if resolved_provider_profile and isinstance(provider_projection, dict)
+                    else None
+                ),
             )
             final_entry = getattr(result, "final_entry", None)
             result_status = str(getattr(result, "status", "") or "")
@@ -1191,6 +1326,7 @@ class MemcoreManager:
             projection = system.build_context_projection(provider_profile=profile)
             messages = [
                 {
+                    "turn_id": str(message.turn_id or ""),
                     "payload": dict(message.payload),
                     "source_ids": list(message.source_ids),
                     "payload_hash": str(message.payload_hash or ""),
@@ -1238,10 +1374,11 @@ class MemcoreManager:
         provider_profile: str,
         turn_messages: list[dict[str, Any]],
         history_messages: list[dict[str, Any]],
-        attempt: int,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        audit_history_messages: list[dict[str, Any]] | None = None,
+        attempt: int = 0,
         model_route: Any = "",
         system_prefix: Any = "",
         tool_schema: Any = (),
@@ -1285,6 +1422,11 @@ class MemcoreManager:
                 provider_profile=profile,
                 turn_messages=prepared,
                 history_messages=[dict(message) for message in list(history_messages or [])],
+                audit_history_messages=(
+                    [dict(message) for message in list(audit_history_messages or [])]
+                    if audit_history_messages is not None
+                    else None
+                ),
                 attempt=int(attempt),
                 model_route=model_route,
                 system_prefix=system_prefix,
@@ -1489,6 +1631,8 @@ class MemcoreManager:
         importance_min: float | int | str | None = None,
         limit: int | None = None,
         exclude_source_ids: list[str] | None = None,
+        include_explicit: bool = False,
+        kind_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         shadow_enabled = bool(getattr(config, "MEMCORE_SHADOW_COMPARE", self.shadow_compare))
         if not shadow_enabled:
@@ -1508,6 +1652,8 @@ class MemcoreManager:
             importance_min=importance_min,
             limit=limit,
             exclude_source_ids=exclude_source_ids,
+            include_explicit=include_explicit,
+            kind_patterns=kind_patterns,
             include_snippets=False,
         )
         if "snippets" in result:
@@ -1531,6 +1677,8 @@ class MemcoreManager:
         importance_min: float | int | str | None = None,
         limit: int | None = None,
         exclude_source_ids: list[str] | None = None,
+        include_explicit: bool = False,
+        kind_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         return self._retrieve_memory(
             operation="retrieve_memory",
@@ -1547,6 +1695,8 @@ class MemcoreManager:
             importance_min=importance_min,
             limit=limit,
             exclude_source_ids=exclude_source_ids,
+            include_explicit=include_explicit,
+            kind_patterns=kind_patterns,
             include_snippets=True,
         )
 
@@ -1567,6 +1717,8 @@ class MemcoreManager:
         importance_min: float | int | str | None,
         limit: int | None,
         exclude_source_ids: list[str] | None,
+        include_explicit: bool,
+        kind_patterns: list[str] | None,
         include_snippets: bool,
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
@@ -1589,8 +1741,20 @@ class MemcoreManager:
             current["source_id"] = str(exclude_source_ids[0] or "").strip()
         if not int(current.get("timestamp") or 0):
             current["timestamp"] = int(time.time())
+        explicit_patterns, explicit_error = self._authorize_explicit_kind_patterns(
+            include_explicit=include_explicit,
+            kind_patterns=kind_patterns,
+        )
+        if explicit_error:
+            status, reason = explicit_error
+            return {
+                **self._status(operation, False, status, reason=reason),
+                "snippet_count": 0,
+                "snippet_hashes": [],
+                **({"snippets": []} if include_snippets else {}),
+            }
         try:
-            snippets = system.retrieve_for_turn(
+            retrieval = system.retrieve_for_turn_structured(
                 current=current,
                 query=str(query or ""),
                 keywords=[str(item).strip() for item in (keywords or []) if str(item).strip()],
@@ -1600,10 +1764,29 @@ class MemcoreManager:
                 categories=[str(item).strip() for item in (categories or []) if str(item).strip()],
                 importance_min=self._coerce_optional_unit_float(importance_min),
                 exclude_source_ids=[str(item).strip() for item in (exclude_source_ids or []) if str(item).strip()],
+                include_explicit=bool(include_explicit),
+                kind_patterns=explicit_patterns,
+                cross_conversation=True,
+                max_matches=max(0, int(limit or 0)),
             )
+            retrieval_status = str(getattr(retrieval, "status", "failed") or "failed")
+            if retrieval_status not in {"found", "empty"}:
+                return {
+                    **self._status(
+                        operation,
+                        False,
+                        retrieval_status,
+                        reason=str(getattr(retrieval, "reason", "") or "retrieval_failed"),
+                    ),
+                    "snippet_count": 0,
+                    "snippet_hashes": [],
+                    **({"snippets": []} if include_snippets else {}),
+                }
+            snippets = list(getattr(retrieval, "rendered_texts", ()) or ())
             snippets = self._apply_limit(snippets, limit)
             payload = {
                 **self._status(operation, True, "ok"),
+                "retrieval_status": retrieval_status,
                 "snippet_count": len(snippets),
                 "snippet_hashes": snippet_hashes(snippets),
                 "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
@@ -1621,6 +1804,32 @@ class MemcoreManager:
                 "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
                 **({"snippets": []} if include_snippets else {}),
             }
+
+    @staticmethod
+    def _authorize_explicit_kind_patterns(
+        *,
+        include_explicit: bool,
+        kind_patterns: list[str] | None,
+    ) -> tuple[list[str], tuple[str, str] | None]:
+        patterns = [str(item or "").strip().lower() for item in list(kind_patterns or []) if str(item or "").strip()]
+        if not include_explicit:
+            if patterns:
+                return [], ("invalid_request", "kind_patterns_require_include_explicit")
+            return [], None
+        if not patterns:
+            return [], ("invalid_request", "explicit_kind_patterns_required")
+        normalized: list[str] = []
+        for pattern in patterns:
+            if not _EXPLICIT_KIND_PATTERN.fullmatch(pattern):
+                return [], ("invalid_request", "invalid_kind_pattern")
+            root = pattern.split(".", 1)[0]
+            if root not in _EXPLICIT_RETRIEVAL_KIND_ROOTS:
+                return [], ("forbidden", "kind_pattern_not_authorized")
+            if pattern not in normalized:
+                normalized.append(pattern)
+            if len(normalized) >= 8:
+                break
+        return normalized, None
 
     def _bootstrap(self) -> None:
         store = None

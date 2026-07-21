@@ -894,6 +894,7 @@ class AkaneMemoryEngine:
         assistant_record: dict[str, Any],
         memory_metadata: dict[str, Any] | None,
         provider_output_raw: str,
+        chat_model_override: str = "",
         annotation_status: str = "",
         profile_user_id: str,
         session_id: str,
@@ -903,11 +904,27 @@ class AkaneMemoryEngine:
         if manager is None or not str(turn_id or "").strip():
             return {}
         try:
+            provider_profile = ""
+            provider_projection: dict[str, Any] | None = None
+            if str(provider_output_raw or ""):
+                runtime = getattr(self, "llm", None)
+                protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+                if callable(protocol_getter):
+                    provider_profile = str(
+                        protocol_getter(chat_model_override=chat_model_override) or ""
+                    ).strip()
+                if provider_profile:
+                    provider_projection = {
+                        "role": "assistant",
+                        "content": str(provider_output_raw),
+                    }
             result = manager.complete_input_turn(
                 turn_id=turn_id,
                 assistant_record=assistant_record,
                 memory_metadata=memory_metadata,
                 provider_output_raw=str(provider_output_raw or ""),
+                provider_profile=provider_profile,
+                provider_projection=provider_projection,
                 annotation_status=(
                     str(annotation_status or "").strip()
                     or ("accepted_model" if isinstance(memory_metadata, dict) else "missing")
@@ -3194,7 +3211,10 @@ class AkaneMemoryEngine:
                 memcore_turn_id=memcore_turn_id,
             )
             tool_result = batch_results[-1] if batch_results else None
-            turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
+            batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
+            if batch_memcore_failure is not None:
+                final_output = self._memcore_projection_failure_output(batch_memcore_failure)
+                break
 
             stop_after_tool = self._should_stop_after_tool_events(
                 _current_events,
@@ -3326,6 +3346,7 @@ class AkaneMemoryEngine:
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
+                    chat_model_override=chat_model_override,
                     annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -3749,9 +3770,12 @@ class AkaneMemoryEngine:
                 memcore_turn_id=memcore_turn_id,
             )
             tool_result = batch_results[-1] if batch_results else None
-            turn_user_images = self._merge_tool_model_image_inputs(turn_user_images, batch_results)
             for stream_event in current_events:
                 yield stream_event
+            batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
+            if batch_memcore_failure is not None:
+                final_output = self._memcore_projection_failure_output(batch_memcore_failure)
+                break
 
             stop_after_tool = self._should_stop_after_tool_events(
                 current_events,
@@ -3885,6 +3909,7 @@ class AkaneMemoryEngine:
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
+                    chat_model_override=chat_model_override,
                     annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -4120,6 +4145,15 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
+        projection_failure = generation_context.get("memcore_projection_failure")
+        if isinstance(projection_failure, dict):
+            return self._memcore_projection_failure_output(projection_failure)
+        request_observer = self._build_memcore_request_observer(
+            generation_context=generation_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
         max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
@@ -4127,47 +4161,40 @@ class AkaneMemoryEngine:
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
-            if attempt > 1:
+            if attempt > 1 and request_observer is None:
                 retry_note = (
                     "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
                     "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
                     "不要只输出通用兜底语、处理中占位语或未完成声明。"
                     "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
                 )
+            request_kwargs = {
+                "system_prompt": str(generation_context["system_prompt"]),
+                "user_prompt": str(generation_context["user_prompt"]) + retry_note,
+                "fallback": dict(generation_context["fallback"]),
+                "temperature": 0.7,
+                "prompt_cache_key": prompt_cache_key,
+                "user_images": user_images,
+                "system_extra_blocks": generation_context.get("system_extra_blocks"),
+                "history_turns": generation_context.get("history_turns"),
+                "post_user_turns": generation_context.get("post_user_turns"),
+                "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
+                "native_tools": generation_context.get("native_tools"),
+                "native_tool_choice": generation_context.get("native_tool_choice", ""),
+                "chat_model_override": chat_model_override,
+            }
+            if request_observer is not None:
+                request_kwargs["request_observer"] = request_observer
             call_result = (
-                self.llm.call_chat_json_result(
-                    system_prompt=str(generation_context["system_prompt"]),
-                    user_prompt=str(generation_context["user_prompt"]) + retry_note,
-                    fallback=dict(generation_context["fallback"]),
-                    temperature=0.7,
-                    prompt_cache_key=prompt_cache_key,
-                    user_images=user_images,
-                    system_extra_blocks=generation_context.get("system_extra_blocks"),
-                    history_turns=generation_context.get("history_turns"),
-                    post_user_turns=generation_context.get("post_user_turns"),
-                    prompt_audit_sections=generation_context.get("prompt_audit_sections"),
-                    native_tools=generation_context.get("native_tools"),
-                    native_tool_choice=generation_context.get("native_tool_choice", ""),
-                    chat_model_override=chat_model_override,
-                )
+                self.llm.call_chat_json_result(**request_kwargs)
                 if hasattr(self.llm, "call_chat_json_result")
                 else None
             )
-            result = call_result.parsed if call_result is not None else self.llm.call_chat_json(
-                system_prompt=str(generation_context["system_prompt"]),
-                user_prompt=str(generation_context["user_prompt"]) + retry_note,
-                fallback=dict(generation_context["fallback"]),
-                temperature=0.7,
-                prompt_cache_key=prompt_cache_key,
-                user_images=user_images,
-                system_extra_blocks=generation_context.get("system_extra_blocks"),
-                history_turns=generation_context.get("history_turns"),
-                post_user_turns=generation_context.get("post_user_turns"),
-                prompt_audit_sections=generation_context.get("prompt_audit_sections"),
-                native_tools=generation_context.get("native_tools"),
-                native_tool_choice=generation_context.get("native_tool_choice", ""),
-                chat_model_override=chat_model_override,
-            )
+            result = call_result.parsed if call_result is not None else self.llm.call_chat_json(**request_kwargs)
+            if "request_observer_rejected:" in str(getattr(call_result, "error", "") or ""):
+                return self._memcore_projection_failure_output(
+                    {"status": "failed", "reason": "request_projection_record_failed"}
+                )
             provider_output_raw = str(getattr(call_result, "raw_text", "") or "")
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
@@ -4310,6 +4337,17 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
+        projection_failure = generation_context.get("memcore_projection_failure")
+        if isinstance(projection_failure, dict):
+            failure_output = self._memcore_projection_failure_output(projection_failure)
+            yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
+            return failure_output
+        request_observer = self._build_memcore_request_observer(
+            generation_context=generation_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context,
             character_pack_id,
@@ -4330,7 +4368,7 @@ class AkaneMemoryEngine:
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
-            if attempt > 1:
+            if attempt > 1 and request_observer is None:
                 retry_note = (
                     "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
                     "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
@@ -4352,6 +4390,8 @@ class AkaneMemoryEngine:
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "chat_model_override": chat_model_override,
             }
+            if request_observer is not None:
+                request_kwargs["request_observer"] = request_observer
             iterator = self.llm.stream_chat_json(
                 **request_kwargs,
                 early_tool_call_validator=(
@@ -4395,6 +4435,12 @@ class AkaneMemoryEngine:
             )
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
             provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
+            if "request_observer_rejected:" in stream_error:
+                failure_output = self._memcore_projection_failure_output(
+                    {"status": "failed", "reason": "request_projection_record_failed"}
+                )
+                yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
+                return failure_output
             if stream_error:
                 unrecovered_stream_error = stream_error
                 unrecovered_stream_partial = {
@@ -4444,6 +4490,13 @@ class AkaneMemoryEngine:
                     if fallback_call_result is not None
                     else self.llm.call_chat_json(**request_kwargs)
                 )
+                fallback_error = str(getattr(fallback_call_result, "error", "") or "").strip()
+                if "request_observer_rejected:" in fallback_error:
+                    failure_output = self._memcore_projection_failure_output(
+                        {"status": "failed", "reason": "request_projection_record_failed"}
+                    )
+                    yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
+                    return failure_output
                 provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
                 fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                 fallback_parse_failure = int(fallback_metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
@@ -4488,6 +4541,13 @@ class AkaneMemoryEngine:
                         if uncached_call_result is not None
                         else self.llm.call_chat_json(**uncached_request_kwargs)
                     )
+                    uncached_error = str(getattr(uncached_call_result, "error", "") or "").strip()
+                    if "request_observer_rejected:" in uncached_error:
+                        failure_output = self._memcore_projection_failure_output(
+                            {"status": "failed", "reason": "request_projection_record_failed"}
+                        )
+                        yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
+                        return failure_output
                     provider_output_raw = str(getattr(uncached_call_result, "raw_text", "") or "")
                     uncached_metrics_after = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -4610,6 +4670,122 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
         )
+
+    @staticmethod
+    def _memcore_projection_failure_output(failure: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "emotion": "concerned",
+            "speech": "这次会话记忆暂时读取失败，我先不在缺少上下文的情况下继续回答。请稍后再试。",
+            "speech_segments": ["这次会话记忆暂时读取失败，我先不在缺少上下文的情况下继续回答。请稍后再试。"],
+            "tool_call": None,
+            "memory_metadata": {},
+            "_transient_final_failure": True,
+            "_memcore_failure": {
+                "status": str(failure.get("status") or "failed")[:40],
+                "reason": str(failure.get("reason") or "projection_unavailable")[:120],
+            },
+        }
+
+    def _build_memcore_request_observer(
+        self,
+        *,
+        generation_context: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> Any:
+        if not bool(getattr(self.llm, "supports_request_observer", False)):
+            return None
+        manager = getattr(self, "memcore_manager", None)
+        recorder = getattr(manager, "record_request_projection", None)
+        projection_read = generation_context.get("memcore_projection_read")
+        if not callable(recorder) or not isinstance(projection_read, dict):
+            return None
+        turn_id = str(projection_read.get("current_turn_id") or "").strip()
+        current_messages = [
+            dict(message)
+            for message in list(projection_read.get("current_turn_messages") or [])
+            if isinstance(message, dict)
+        ]
+        if not turn_id or not current_messages:
+            return None
+        frozen_turn_messages: list[dict[str, Any]] = []
+
+        def observe(request: dict[str, Any]) -> dict[str, Any]:
+            nonlocal frozen_turn_messages
+            if not isinstance(request, dict):
+                return {"ok": False, "status": "failed", "reason": "request_observation_invalid"}
+            if not frozen_turn_messages:
+                history = [
+                    dict(message)
+                    for message in list(request.get("history_messages") or [])
+                    if isinstance(message, dict)
+                ]
+                if len(history) < len(current_messages):
+                    return {"ok": False, "status": "failed", "reason": "current_turn_suffix_missing"}
+                actual_tail = history[-len(current_messages) :]
+                prepared: list[dict[str, Any]] = []
+                for metadata, actual in zip(current_messages, actual_tail):
+                    expected_role = str(dict(metadata.get("payload") or {}).get("role") or "").strip().lower()
+                    actual_role = str(actual.get("role") or "").strip().lower()
+                    if expected_role and expected_role != actual_role:
+                        return {"ok": False, "status": "failed", "reason": "current_turn_role_mismatch"}
+                    source_ids = [
+                        str(source_id or "").strip()
+                        for source_id in list(metadata.get("source_ids") or [])
+                        if str(source_id or "").strip()
+                    ]
+                    if not source_ids:
+                        return {"ok": False, "status": "failed", "reason": "current_turn_source_ids_missing"}
+                    prepared.append(
+                        {
+                            **metadata,
+                            "payload": dict(actual),
+                            "source_ids": source_ids,
+                        }
+                    )
+                frozen_turn_messages = prepared
+            result = recorder(
+                turn_id=turn_id,
+                provider_profile=str(request.get("protocol") or ""),
+                turn_messages=[dict(message) for message in frozen_turn_messages],
+                history_messages=[dict(message.get("payload") or {}) for message in frozen_turn_messages],
+                audit_history_messages=[
+                    dict(message)
+                    for message in list(request.get("audit_history_messages") or [])
+                    if isinstance(message, dict)
+                ],
+                attempt=0,
+                model_route=request.get("model_route") or {},
+                system_prefix=request.get("system_prefix") or "",
+                tool_schema=request.get("tool_schema") or [],
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            if isinstance(result, dict) and result.get("ok"):
+                generation_context["memcore_request_projection"] = {
+                    key: result.get(key)
+                    for key in (
+                        "status",
+                        "turn_id",
+                        "attempt",
+                        "provider_profile",
+                        "projection_count",
+                        "projection_hashes",
+                        "history_hash",
+                        "full_prefix_hash",
+                        "media_omitted",
+                    )
+                }
+                return {"ok": True, "status": "recorded"}
+            return {
+                "ok": False,
+                "status": str((result or {}).get("status") or "failed"),
+                "reason": str((result or {}).get("reason") or "request_projection_record_failed"),
+            }
+
+        return observe
 
     @staticmethod
     def _attach_tool_execution_receipts(
@@ -5163,18 +5339,52 @@ class AkaneMemoryEngine:
             memcore_turn_id=memcore_turn_id,
             recorded_tool_call_ids=recorded_tool_call_ids,
         )
+        batch_model_images = self._merge_tool_model_image_inputs(
+            [],
+            [result for _call, result, _shaped, _workspace in history_items],
+        )
+        media_source_ids = self._record_memcore_tool_media_input(
+            model_image_inputs=batch_model_images,
+            related_source_ids=trace_source_ids,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            now_ts=now_ts,
+            memcore_turn_id=memcore_turn_id,
+        )
         if prompt_exclude_source_ids is not None:
-            for source_id in trace_source_ids:
+            for source_id in [*trace_source_ids, *media_source_ids]:
                 if source_id not in prompt_exclude_source_ids:
                     prompt_exclude_source_ids.append(source_id)
         native_projection = self._append_native_tool_history_batch(
             native_tool_history_turns=native_tool_history_turns,
             items=history_items,
             trace_source_ids=trace_source_ids,
+            media_source_ids=media_source_ids,
+            model_image_inputs=batch_model_images,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
         )
+        manager = getattr(self, "memcore_manager", None)
+        memcore_required = bool(
+            str(memcore_turn_id or "").strip()
+            and manager is not None
+            and getattr(manager, "enabled", False)
+        )
+        memcore_failure: dict[str, Any] | None = None
+        if memcore_required and len(trace_source_ids) != 2 * len(history_items):
+            memcore_failure = {"status": "failed", "reason": "tool_trace_record_failed"}
+        elif memcore_required and batch_model_images and not media_source_ids:
+            memcore_failure = {"status": "failed", "reason": "tool_media_record_failed"}
+        elif memcore_required and any(
+            str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
+            for call in calls
+        ) and not native_projection.get("ok"):
+            memcore_failure = {"status": "failed", "reason": "tool_projection_build_failed"}
+        if memcore_failure is not None:
+            for result in completed:
+                result.state_updates["_memcore_failure"] = dict(memcore_failure)
         if not native_projection.get("ok") and any(
             str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
             for call in calls
@@ -5190,6 +5400,17 @@ class AkaneMemoryEngine:
                         f"工具（{result.tool_type}）结果因原生 history 投影不可用而降级为文本：\n{feedback}"
                     )
         return completed, batch_events
+
+    @staticmethod
+    def _tool_batch_memcore_failure(
+        tool_results: list[ToolExecutionResult],
+    ) -> dict[str, Any] | None:
+        for result in list(tool_results or []):
+            state_updates = getattr(result, "state_updates", None)
+            failure = state_updates.get("_memcore_failure") if isinstance(state_updates, dict) else None
+            if isinstance(failure, dict):
+                return dict(failure)
+        return None
 
     def _record_tool_round_result(
         self,
@@ -5289,6 +5510,8 @@ class AkaneMemoryEngine:
         native_tool_history_turns: list[dict[str, Any]] | None,
         items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
         trace_source_ids: list[str],
+        media_source_ids: list[str] | None = None,
+        model_image_inputs: list[dict[str, Any]] | None = None,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -5300,38 +5523,78 @@ class AkaneMemoryEngine:
             for tool_call, _result, _shaped, _workspace in items
             if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
         }
-        if not sources:
+        media_ids = {
+            str(source_id or "").strip()
+            for source_id in list(media_source_ids or [])
+            if str(source_id or "").strip()
+        }
+        if not sources and not media_ids:
             return {"ok": True, "status": "skipped", "reason": "no_native_tool_calls"}
         if len(sources) != 1:
-            return {"ok": False, "status": "failed", "reason": "mixed_native_provider_batch"}
+            if sources:
+                return {"ok": False, "status": "failed", "reason": "mixed_native_provider_batch"}
         manager = getattr(self, "memcore_manager", None)
         build_projection = getattr(manager, "build_context_projection", None)
-        if not callable(build_projection) or not trace_source_ids:
+        selected_ids = set(media_ids)
+        if sources:
+            selected_ids.update(
+                str(source_id or "").strip()
+                for source_id in trace_source_ids
+                if str(source_id or "").strip()
+            )
+        if not callable(build_projection) or not selected_ids:
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
+        provider_profile = next(iter(sources), "")
+        if not provider_profile:
+            runtime = getattr(self, "llm", None)
+            protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+            if callable(protocol_getter):
+                provider_profile = str(protocol_getter() or "").strip()
+        if not provider_profile:
+            return {"ok": False, "status": "unavailable", "reason": "provider_profile_unavailable"}
         projection = build_projection(
-            provider_profile=next(iter(sources)),
+            provider_profile=provider_profile,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
         )
         if not isinstance(projection, dict) or not projection.get("ok"):
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_build_failed"}
-        trace_ids = {str(source_id or "").strip() for source_id in trace_source_ids if str(source_id or "").strip()}
-        projected_messages = [
-            dict(message.get("payload") or {})
+        selected_messages = [
+            message
             for message in list(projection.get("messages") or [])
             if isinstance(message, dict)
-            and trace_ids.intersection(str(source_id or "").strip() for source_id in message.get("source_ids") or [])
+            and selected_ids.intersection(
+                str(source_id or "").strip() for source_id in message.get("source_ids") or []
+            )
         ]
+        projected_messages: list[dict[str, Any]] = []
+        media_attached = False
+        for message in selected_messages:
+            payload = dict(message.get("payload") or {})
+            message_source_ids = {
+                str(source_id or "").strip()
+                for source_id in message.get("source_ids") or []
+                if str(source_id or "").strip()
+            }
+            if media_ids.intersection(message_source_ids):
+                payload = self._attach_model_images_to_projection(
+                    payload,
+                    model_image_inputs=list(model_image_inputs or []),
+                )
+                media_attached = True
+            projected_messages.append(payload)
         covered_ids = {
             str(source_id or "").strip()
-            for message in list(projection.get("messages") or [])
+            for message in selected_messages
             if isinstance(message, dict)
             for source_id in message.get("source_ids") or []
-            if str(source_id or "").strip() in trace_ids
+            if str(source_id or "").strip() in selected_ids
         }
-        if not projected_messages or covered_ids != trace_ids:
+        if not projected_messages or covered_ids != selected_ids:
             return {"ok": False, "status": "failed", "reason": "tool_projection_incomplete"}
+        if media_ids and not media_attached:
+            return {"ok": False, "status": "failed", "reason": "media_projection_incomplete"}
         native_tool_history_turns.extend(projected_messages)
         return {
             "ok": True,
@@ -5341,6 +5604,70 @@ class AkaneMemoryEngine:
             "message_count": len(projected_messages),
             "source_count": len(covered_ids),
         }
+
+    @staticmethod
+    def _attach_model_images_to_projection(
+        payload: dict[str, Any],
+        *,
+        model_image_inputs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if str(payload.get("role") or "").strip().lower() != "user":
+            return dict(payload)
+        content = payload.get("content")
+        if isinstance(content, list):
+            blocks = [dict(item) for item in content if isinstance(item, dict)]
+        else:
+            blocks = [{"type": "text", "text": str(content or "")}]
+        for item in list(model_image_inputs or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            data_url = str(item.get("data_url") or "").strip()
+            if data_url.startswith("data:image/"):
+                blocks.append({"type": "image_url", "image_url": {"url": data_url}})
+        return {**dict(payload), "content": blocks}
+
+    def _record_memcore_tool_media_input(
+        self,
+        *,
+        model_image_inputs: list[dict[str, Any]],
+        related_source_ids: list[str],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        now_ts: int,
+        memcore_turn_id: str,
+    ) -> list[str]:
+        if not model_image_inputs or not str(memcore_turn_id or "").strip():
+            return []
+        manager = getattr(self, "memcore_manager", None)
+        append_media = getattr(manager, "append_turn_media_input", None)
+        if not callable(append_media):
+            return []
+        safe_items = [
+            {
+                "attachment_id": str(item.get("attachment_id") or "").strip(),
+                "attachment_handle": str(item.get("attachment_handle") or "").strip(),
+                "mime_type": str(item.get("mime_type") or item.get("content_type") or "").strip(),
+            }
+            for item in model_image_inputs
+            if isinstance(item, dict)
+        ]
+        try:
+            recorded = append_media(
+                items=safe_items,
+                turn_id=memcore_turn_id,
+                related_source_ids=related_source_ids,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                timestamp=max(now_ts, int(time.time())),
+            )
+            self._warn_memcore_write_result("tool media input record", recorded)
+            source_id = str((recorded or {}).get("source_id") or "").strip()
+            return [source_id] if bool((recorded or {}).get("ok")) and source_id else []
+        except Exception as exc:
+            logger.warning("memcore tool media input record failed reason=%s", type(exc).__name__)
+            return []
 
     @staticmethod
     def _tool_call_model_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:

@@ -260,9 +260,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
     def test_native_schema_allowlist_can_include_read_only_memory_tools(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        original_memory_backend = getattr(config, "MEMORY_BACKEND", "memcore")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
             config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+            config.MEMORY_BACKEND = "legacy"
 
             schemas = tool_orchestration_engine.build_native_tool_schemas(
                 {
@@ -287,10 +289,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+            config.MEMORY_BACKEND = original_memory_backend
 
     def test_native_tool_decision_plan_enables_single_prompt_channel(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        original_memory_backend = getattr(config, "MEMORY_BACKEND", "memcore")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
             config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search"
@@ -542,9 +546,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
     def test_final_response_context_scopes_native_tools_to_capability_selection(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        original_memory_backend = getattr(config, "MEMORY_BACKEND", "memcore")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
             config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory,read_memory_timeline"
+            config.MEMORY_BACKEND = "legacy"
             engine = build_native_context_engine(
                 selected_tool_names=("retrieve_memory", "send_file"),
             )
@@ -576,13 +582,16 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+            config.MEMORY_BACKEND = original_memory_backend
 
     def test_final_response_context_keeps_native_schema_when_tool_budget_is_closed(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        original_memory_backend = getattr(config, "MEMORY_BACKEND", "memcore")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
             config.NATIVE_TOOL_DECISION_ALLOWLIST = "retrieve_memory"
+            config.MEMORY_BACKEND = "legacy"
             engine = build_native_context_engine(selected_tool_names=("retrieve_memory",))
             common = {
                 "session_id": "s",
@@ -628,8 +637,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             self.assertEqual([tool["function"]["name"] for tool in context["native_tools"]], ["retrieve_memory"])
             self.assertEqual(context["native_tool_choice"], "none")
             self.assertFalse(context["allow_tool_call"])
-            self.assertEqual(context["post_user_turns"][-1]["role"], "user")
-            self.assertIn("宿主工具控制", context["post_user_turns"][-1]["content"])
+            self.assertEqual(context["post_user_turns"], native_history)
+            self.assertEqual(context["post_user_turns"][-1]["role"], "tool")
             self.assertEqual(len(native_history), 2)
             payload = LLMRuntime()._build_completion_kwargs(
                 bundle=ModelBundle(
@@ -647,13 +656,16 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+            config.MEMORY_BACKEND = original_memory_backend
 
     def test_final_response_context_keeps_legacy_when_native_candidates_not_selected(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        original_memory_backend = getattr(config, "MEMORY_BACKEND", "memcore")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
             config.NATIVE_TOOL_DECISION_ALLOWLIST = "web_search,retrieve_memory"
+            config.MEMORY_BACKEND = "legacy"
             engine = build_native_context_engine(
                 selected_tool_names=("send_file",),
             )
@@ -683,6 +695,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         finally:
             config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
+            config.MEMORY_BACKEND = original_memory_backend
 
     def test_native_tool_round_instruction_keeps_native_out_of_json_tool_call(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -1223,6 +1236,55 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual([result.tool_type for result in results], ["broken_tool", "working_tool"])
         self.assertIn("<tool_use_error>", results[0].followup_context)
         self.assertEqual(results[1].followup_context, "ok")
+
+    def test_tool_media_projection_write_failure_is_structured_before_next_model_request(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = _NativeToolProjectionManager(NATIVE_OPENAI)
+        engine._execute_tool_call = lambda **_kwargs: ToolExecutionResult(
+            tool_type="load_material",
+            followup_context="图片已加载。",
+            model_image_inputs=[
+                {
+                    "attachment_id": "attachment-1",
+                    "attachment_handle": "img_001",
+                    "data_url": "data:image/png;base64,AAAA",
+                }
+            ],
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+
+        results, _events = engine._execute_and_record_tool_batch(
+            tool_calls=[
+                {
+                    "type": "load_material",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call-image",
+                }
+            ],
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=100,
+            current_user_source_id="user:1",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            native_tool_history_turns=[],
+            memcore_turn_id="turn-image",
+        )
+
+        failure = engine._tool_batch_memcore_failure(results)
+        self.assertEqual(failure, {"status": "failed", "reason": "tool_media_record_failed"})
 
     def test_engine_tool_batch_records_sanitized_memcore_trace_once_per_call(self) -> None:
         class FakeMemcoreManager:

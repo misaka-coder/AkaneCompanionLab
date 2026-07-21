@@ -639,6 +639,8 @@ class _TopLevelJSONStreamTap:
 
 
 class LLMRuntime:
+    supports_request_observer = True
+
     def __init__(
         self,
         *,
@@ -784,6 +786,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> dict[str, Any]:
         return self.call_chat_json_result(
             system_prompt=system_prompt,
@@ -799,6 +802,7 @@ class LLMRuntime:
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             chat_model_override=chat_model_override,
+            request_observer=request_observer,
         ).parsed
 
     def call_chat_json_result(
@@ -817,6 +821,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> ChatJSONResult:
         self._record_metric("chat_json_calls")
         return self._call_json_result(
@@ -833,6 +838,7 @@ class LLMRuntime:
             history_turns=history_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
+            request_observer=request_observer,
         )
 
     def chat_supports_native_tools(self, *, chat_model_override: str = "") -> bool:
@@ -892,6 +898,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         self._record_metric("chat_stream_calls")
         return self._stream_chat_json(
@@ -909,6 +916,7 @@ class LLMRuntime:
             history_turns=history_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
+            request_observer=request_observer,
         )
 
     def _call_json(
@@ -927,6 +935,7 @@ class LLMRuntime:
         history_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> dict[str, Any]:
         return self._call_json_result(
             bundle=bundle,
@@ -942,6 +951,7 @@ class LLMRuntime:
             history_turns=history_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
+            request_observer=request_observer,
         ).parsed
 
     def _call_json_result(
@@ -960,28 +970,32 @@ class LLMRuntime:
         history_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> ChatJSONResult:
         native_requested = bool(self._normalize_native_tools(native_tools))
         content = ""
         try:
-            response = self._create_completion(
+            request_payload = self._build_completion_kwargs(
                 bundle=bundle,
-                payload=self._build_completion_kwargs(
-                    bundle=bundle,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=temperature,
-                    json_mode=True,
-                    prompt_cache_key=prompt_cache_key,
-                    user_images=user_images,
-                    native_tools=native_tools,
-                    native_tool_choice=native_tool_choice,
-                    system_extra_blocks=system_extra_blocks,
-                    history_turns=history_turns,
-                    post_user_turns=post_user_turns,
-                    prompt_audit_sections=prompt_audit_sections,
-                ),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=True,
+                prompt_cache_key=prompt_cache_key,
+                user_images=user_images,
+                native_tools=native_tools,
+                native_tool_choice=native_tool_choice,
+                system_extra_blocks=system_extra_blocks,
+                history_turns=history_turns,
+                post_user_turns=post_user_turns,
+                prompt_audit_sections=prompt_audit_sections,
             )
+            self._observe_completion_request(
+                bundle=bundle,
+                payload=request_payload,
+                observer=request_observer,
+            )
+            response = self._create_completion(bundle=bundle, payload=request_payload)
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             native_tool_calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
             if native_tool_calls:
@@ -1172,6 +1186,7 @@ class LLMRuntime:
         history_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -1186,25 +1201,28 @@ class LLMRuntime:
         early_tool_call: dict[str, Any] | None = None
         tool_probe_disabled = False
         try:
-            response = self._create_completion(
+            request_payload = self._build_completion_kwargs(
                 bundle=bundle,
-                payload=self._build_completion_kwargs(
-                    bundle=bundle,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=temperature,
-                    stream=True,
-                    json_mode=True,
-                    prompt_cache_key=prompt_cache_key,
-                    user_images=user_images,
-                    native_tools=native_tools,
-                    native_tool_choice=native_tool_choice,
-                    system_extra_blocks=system_extra_blocks,
-                    history_turns=history_turns,
-                    post_user_turns=post_user_turns,
-                    prompt_audit_sections=prompt_audit_sections,
-                ),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                stream=True,
+                json_mode=True,
+                prompt_cache_key=prompt_cache_key,
+                user_images=user_images,
+                native_tools=native_tools,
+                native_tool_choice=native_tool_choice,
+                system_extra_blocks=system_extra_blocks,
+                history_turns=history_turns,
+                post_user_turns=post_user_turns,
+                prompt_audit_sections=prompt_audit_sections,
             )
+            self._observe_completion_request(
+                bundle=bundle,
+                payload=request_payload,
+                observer=request_observer,
+            )
+            response = self._create_completion(bundle=bundle, payload=request_payload)
             for chunk in response:
                 self._record_cache_metrics(chunk, prompt_cache_key=prompt_cache_key)
                 self._collect_stream_native_tool_call_parts(chunk, native_tool_parts, bundle=bundle)
@@ -2477,6 +2495,58 @@ class LLMRuntime:
                     return bundle.client.chat.completions.create(**stripped)
             raise
 
+    def _observe_completion_request(
+        self,
+        *,
+        bundle: ModelBundle,
+        payload: dict[str, Any],
+        observer: Callable[[dict[str, Any]], Any] | None,
+    ) -> None:
+        """Expose the final provider request shape immediately before transport.
+
+        The callback is deliberately generic: MemCore remains owned by the host,
+        while the runtime is the only place that knows the exact Chat/Responses
+        conversion. Request contents are never logged by this boundary.
+        """
+
+        if not callable(observer):
+            return
+        messages = [dict(message) for message in list(payload.get("messages") or []) if isinstance(message, dict)]
+        system_message = (
+            dict(messages[0])
+            if messages and str(messages[0].get("role") or "").strip().lower() == "system"
+            else {}
+        )
+        chat_history = messages[1:] if system_message else messages
+        protocol = str(
+            getattr(bundle.client, "_akane_protocol", getattr(bundle.client, "protocol", "")) or ""
+        ).strip().lower()
+        if self._is_responses_protocol(bundle):
+            wire_request = self._responses_payload_from_chat(payload)
+            audit_history = [dict(item) for item in list(wire_request.get("input") or []) if isinstance(item, dict)]
+            system_prefix: Any = wire_request.get("instructions", "")
+            tool_schema: Any = wire_request.get("tools") or []
+        else:
+            audit_history = [dict(message) for message in chat_history]
+            system_prefix = {
+                "message": system_message,
+                "extra_blocks": list(payload.get("system_extra_blocks") or []),
+            }
+            tool_schema = list(payload.get("tools") or [])
+        result = observer(
+            {
+                "protocol": protocol,
+                "model_route": {"protocol": protocol, "model": str(payload.get("model") or "")},
+                "system_prefix": system_prefix,
+                "tool_schema": tool_schema,
+                "history_messages": [dict(message) for message in chat_history],
+                "audit_history_messages": audit_history,
+            }
+        )
+        if isinstance(result, dict) and not bool(result.get("ok", True)):
+            reason = str(result.get("reason") or result.get("status") or "request_observer_rejected").strip()
+            raise RuntimeError(f"request_observer_rejected:{reason[:120]}")
+
     def _create_responses_completion(self, *, bundle: ModelBundle, payload: dict[str, Any]) -> Any:
         request = self._responses_payload_from_chat(payload)
         self._record_responses_request_audit_if_enabled(bundle=bundle, request=request)
@@ -2598,19 +2668,6 @@ class LLMRuntime:
         items: list[dict[str, Any]] = []
 
         def append_plain_message(role: str, content: Any) -> None:
-            if (
-                role in {"user", "assistant"}
-                and isinstance(content, str)
-                and content
-                and items
-                and isinstance(items[-1], dict)
-                and str(items[-1].get("role") or "") == role
-                and isinstance(items[-1].get("content"), str)
-                and items[-1].get("content")
-                and set(items[-1]).issubset({"role", "content"})
-            ):
-                items[-1]["content"] = f"{items[-1]['content']}\n\n{content}"
-                return
             items.append({"role": role, "content": content})
 
         for message in messages:

@@ -164,12 +164,15 @@ def prepare_context(
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
         chat_model_override=chat_model_override,
+        exclude_source_ids=list(excluded_prompt_sources),
     )
     projection_read_active = bool(provider_projection.get("ok"))
     projection_migration_window = (
         str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
     )
     projection_authoritative = not projection_migration_window
+    if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
+        return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -580,8 +583,6 @@ def prepare_context(
     effective_post_user_turns = [
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
-    if native_tools and not effective_allow_tool_call and effective_post_user_turns:
-        _append_post_user_tool_control(effective_post_user_turns)
     system_prompt_override = prompt_profile.system_prompt_override
     if not care_enabled and not system_prompt_override:
         system_prompt_override = prompt_builder.persona.final_system_prompt
@@ -689,12 +690,15 @@ def prepare_context(
                 character_pack_id=character_pack_id,
                 current_source_id=current_source_id,
                 chat_model_override=chat_model_override,
+                exclude_source_ids=list(excluded_prompt_sources),
             )
             projection_read_active = bool(provider_projection.get("ok"))
             projection_migration_window = (
                 str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
             )
             projection_authoritative = not projection_migration_window
+            if not projection_read_active and not projection_migration_window:
+                return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
             generation_context = _build_generation_context()
 
     # Emergency second boundary: compaction normally keeps these layers small,
@@ -845,6 +849,7 @@ def _build_memcore_provider_history(
     character_pack_id: str,
     current_source_id: str,
     chat_model_override: str,
+    exclude_source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if _memory_backend() != "memcore":
         return {"ok": False, "status": "migration_window", "reason": "legacy_memory_backend"}
@@ -858,12 +863,19 @@ def _build_memcore_provider_history(
         return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
     try:
         protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
-        projection = build_projection(
-            provider_profile=protocol,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
+        projection: dict[str, Any] = {}
+        for _attempt in range(2):
+            candidate = build_projection(
+                provider_profile=protocol,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            projection = candidate if isinstance(candidate, dict) else {}
+            if projection.get("ok"):
+                break
+            if str(projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS:
+                break
         if not isinstance(projection, dict) or not projection.get("ok"):
             migration_reason = str((projection or {}).get("reason") or "")
             if migration_reason in PROJECTION_READ_MIGRATION_REASONS:
@@ -871,14 +883,48 @@ def _build_memcore_provider_history(
             return {"ok": False, "status": "unavailable", "reason": "projection_build_failed"}
         current_sid = str(current_source_id).strip()
         current_source_visible = False
-        history_turns: list[dict[str, Any]] = []
-        history_source_ids: list[str] = []
-        for message in list(projection.get("messages") or []):
+        current_turn_id = ""
+        current_turn_metadata_present = False
+        projection_messages = list(projection.get("messages") or [])
+        for message in projection_messages:
             if not isinstance(message, dict):
                 return {"ok": False, "status": "failed", "reason": "projection_message_invalid"}
             source_ids = [str(item or "").strip() for item in list(message.get("source_ids") or [])]
             if current_sid in source_ids:
                 current_source_visible = True
+                current_turn_metadata_present = "turn_id" in message
+                current_turn_id = str(message.get("turn_id") or "").strip()
+                break
+        if not current_source_visible:
+            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
+        if current_turn_metadata_present and not current_turn_id:
+            return {"ok": False, "status": "failed", "reason": "current_turn_id_missing"}
+
+        history_turns: list[dict[str, Any]] = []
+        history_source_ids: list[str] = []
+        current_turn_messages: list[dict[str, Any]] = []
+        excluded = {
+            str(source_id or "").strip()
+            for source_id in list(exclude_source_ids or [])
+            if str(source_id or "").strip()
+        }
+        for message in projection_messages:
+            if not isinstance(message, dict):
+                return {"ok": False, "status": "failed", "reason": "projection_message_invalid"}
+            source_ids = [str(item or "").strip() for item in list(message.get("source_ids") or [])]
+            message_turn_id = str(message.get("turn_id") or "").strip()
+            is_current_turn = bool(current_turn_id and message_turn_id == current_turn_id)
+            if is_current_turn or current_sid in source_ids or (not current_turn_id and excluded.intersection(source_ids)):
+                current_turn_messages.append(
+                    {
+                        "turn_id": message_turn_id or current_turn_id,
+                        "payload": dict(message.get("payload") or {}),
+                        "source_ids": source_ids,
+                        "projection_index": int(message.get("projection_index", -1)),
+                        "projection_status": str(message.get("projection_status") or "complete"),
+                        "projection_version": int(message.get("projection_version") or 1),
+                    }
+                )
                 continue
             payload = dict(message.get("payload") or {})
             role = str(payload.get("role") or "").strip().lower()
@@ -886,14 +932,14 @@ def _build_memcore_provider_history(
                 return {"ok": False, "status": "failed", "reason": "projection_message_unsupported"}
             history_turns.append(payload)
             history_source_ids.extend(source_id for source_id in source_ids if source_id)
-        if not current_source_visible:
-            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
         return {
             "ok": True,
             "status": "active",
             "reason": "",
             "provider_profile": str(projection.get("provider_profile") or ""),
             "history_turns": history_turns,
+            "current_turn_id": current_turn_id,
+            "current_turn_messages": current_turn_messages,
             "source_ids": list(dict.fromkeys(history_source_ids)),
             "source_count": len(set(history_source_ids)),
             "message_count": len(history_turns),
@@ -906,6 +952,18 @@ def _build_memcore_provider_history(
     except Exception as exc:
         logger.warning("memcore projection read unavailable: %s", exc.__class__.__name__)
         return {"ok": False, "status": "failed", "reason": "projection_read_failed"}
+
+
+def _projection_failure_context(projection: dict[str, Any], *, prompt_scope: str) -> dict[str, Any]:
+    status = str((projection or {}).get("status") or "unavailable").strip()[:40] or "unavailable"
+    reason = str((projection or {}).get("reason") or "projection_unavailable").strip()[:120]
+    return {
+        "memcore_projection_failure": {
+            "status": status,
+            "reason": reason or "projection_unavailable",
+        },
+        "prompt_scope": str(prompt_scope or "").strip(),
+    }
 
 
 def _estimate_generation_context_tokens(
@@ -936,18 +994,6 @@ def _estimate_generation_context_tokens(
     cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
     non_cjk_chars = max(0, len(text) - cjk_chars)
     return int(cjk_chars + ((non_cjk_chars + 3) // 4))
-
-
-def _append_post_user_tool_control(post_user_turns: list[dict[str, Any]]) -> None:
-    control_text = (
-        "【宿主工具控制】本轮通用工具预算已经结束，不要继续调用任何工具；"
-        "请基于已经取得的结构化结果完成答复。"
-    )
-    last_turn = post_user_turns[-1]
-    if str(last_turn.get("role") or "").strip().lower() == "user" and isinstance(last_turn.get("content"), list):
-        last_turn["content"] = [*list(last_turn["content"]), {"type": "text", "text": control_text}]
-        return
-    post_user_turns.append({"role": "user", "content": control_text})
 
 
 def _drop_oldest_prompt_lines(text: str) -> str:
