@@ -22,6 +22,18 @@ def _latency_ms(start: float) -> int:
     return max(0, int((time.perf_counter() - start) * 1000))
 
 
+def _max_attempts(request: Any) -> int:
+    try:
+        retries = int(getattr(request, "max_retries", 1) or 0)
+    except (TypeError, ValueError):
+        retries = 0
+    return 1 + max(0, retries)
+
+
+def _wait_before_retry(attempts: int) -> None:
+    time.sleep(min(1.0, 0.25 * (2 ** max(0, attempts - 1))))
+
+
 def build_akane_llm_client(llm: Any) -> Any:
     """Build a memcore.LLMClient wrapper around Akane's LLMRuntime."""
 
@@ -34,51 +46,74 @@ def build_akane_llm_client(llm: Any) -> Any:
         def call(self, request: Any) -> Any:
             start = time.perf_counter()
             fallback = request.fallback if isinstance(getattr(request, "fallback", None), dict) else {}
-            try:
-                response_format = _response_format_value(getattr(request, "response_format", ""))
-                if response_format == "ndjson":
-                    result = self.runtime.call_aux_ndjson(
-                        system_prompt=str(request.system_prompt or ""),
-                        user_prompt=str(request.user_prompt or ""),
-                        temperature=float(getattr(request, "temperature", 0.2) or 0.2),
-                        prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
-                    )
-                    events = list(getattr(result, "events", []) or [])
-                    error = str(getattr(result, "error", "") or "")
-                    return LLMResult(
-                        ok=not error and bool(events),
-                        data=events,
-                        error=error,
-                        latency_ms=_latency_ms(start),
-                        attempts=max(1, int(getattr(request, "max_retries", 1) or 1)),
-                        degraded_to_fallback=bool(error),
-                    )
+            response_format = _response_format_value(getattr(request, "response_format", ""))
+            max_attempts = _max_attempts(request)
+            attempts = 0
+            last_error = ""
+            last_events: list[Any] = []
+            while attempts < max_attempts:
+                attempts += 1
+                try:
+                    if response_format == "ndjson":
+                        result = self.runtime.call_aux_ndjson(
+                            system_prompt=str(request.system_prompt or ""),
+                            user_prompt=str(request.user_prompt or ""),
+                            temperature=float(getattr(request, "temperature", 0.2) or 0.2),
+                            prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
+                        )
+                        last_events = list(getattr(result, "events", []) or [])
+                        last_error = str(getattr(result, "error", "") or "")
+                        if not last_error and last_events:
+                            return LLMResult(
+                                ok=True,
+                                data=last_events,
+                                latency_ms=_latency_ms(start),
+                                attempts=attempts,
+                                degraded_to_fallback=False,
+                            )
+                        if not last_error:
+                            last_error = "empty_events_returned"
+                    else:
+                        data = self.runtime.call_aux_json(
+                            system_prompt=str(request.system_prompt or ""),
+                            user_prompt=str(request.user_prompt or ""),
+                            fallback=fallback,
+                            temperature=float(getattr(request, "temperature", 0.2) or 0.2),
+                            prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
+                        )
+                        degraded = dict(data or {}) == fallback
+                        if isinstance(data, dict) and not degraded:
+                            return LLMResult(
+                                ok=True,
+                                data=dict(data),
+                                latency_ms=_latency_ms(start),
+                                attempts=attempts,
+                                degraded_to_fallback=False,
+                            )
+                        last_error = "fallback_returned" if degraded else "invalid_json_result"
+                except Exception as exc:
+                    last_error = str(exc) or exc.__class__.__name__
 
-                data = self.runtime.call_aux_json(
-                    system_prompt=str(request.system_prompt or ""),
-                    user_prompt=str(request.user_prompt or ""),
-                    fallback=fallback,
-                    temperature=float(getattr(request, "temperature", 0.2) or 0.2),
-                    prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
-                )
-                degraded = dict(data or {}) == fallback
-                return LLMResult(
-                    ok=isinstance(data, dict) and not degraded,
-                    data=dict(data or fallback),
-                    error="fallback_returned" if degraded else "",
-                    latency_ms=_latency_ms(start),
-                    attempts=max(1, int(getattr(request, "max_retries", 1) or 1)),
-                    degraded_to_fallback=degraded,
-                )
-            except Exception as exc:
+                if attempts < max_attempts:
+                    _wait_before_retry(attempts)
+
+            if response_format == "ndjson":
                 return LLMResult(
                     ok=False,
-                    data=fallback,
-                    error=str(exc) or exc.__class__.__name__,
+                    data=last_events,
+                    error=last_error or "ndjson_call_failed",
                     latency_ms=_latency_ms(start),
-                    attempts=max(1, int(getattr(request, "max_retries", 1) or 1)),
+                    attempts=attempts,
                     degraded_to_fallback=True,
                 )
+            return LLMResult(
+                ok=False,
+                data=fallback,
+                error=last_error or "json_call_failed",
+                latency_ms=_latency_ms(start),
+                attempts=attempts,
+                degraded_to_fallback=True,
+            )
 
     return AkaneLLMClient(llm)
 
