@@ -177,6 +177,8 @@ class MemcoreManager:
         self._systems: dict[tuple[str, str, str], Any] = {}
         self._warmed_index_keys: set[tuple[str, str, str]] = set()
         self._background_futures: set[Future[Any]] = set()
+        self._background_compactions: dict[tuple[str, str, str, str], Future[Any]] = {}
+        self._pending_compactions: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
         self._lock = threading.RLock()
         self._closing = False
         self._closed = False
@@ -225,6 +227,7 @@ class MemcoreManager:
             if self._closed or self._closing:
                 return
             self._closing = True
+            self._pending_compactions.clear()
             futures = list(self._background_futures)
         # A shared runtime cannot cancel work by manager. Track our own jobs so
         # this store remains valid until its running warmup/compaction finishes.
@@ -243,6 +246,8 @@ class MemcoreManager:
             self._runtime = None
             self._uses_process_runtime = False
             self._background_futures.clear()
+            self._background_compactions.clear()
+            self._pending_compactions.clear()
         for system in systems:
             try:
                 system.close()
@@ -898,16 +903,22 @@ class MemcoreManager:
             with self._lock:
                 if self._closing or self._closed:
                     raise RuntimeError("memcore_manager_closed")
-                future = system.compact_due_background(provider_profile=resolved_profile)
-                self._track_background_future_locked(future)
-            namespace_hash = self._compaction_namespace_hash(system)
-            future.add_done_callback(
-                lambda completed, namespace_hash=namespace_hash, profile=resolved_profile: self._log_compaction_result(
-                    completed,
-                    namespace_hash=namespace_hash,
-                    requested_profile=profile,
+                compaction_key = self._compaction_namespace_key(system)
+                active = self._background_compactions.get(compaction_key)
+                if active is not None and not active.done():
+                    self._pending_compactions[compaction_key] = (system, resolved_profile)
+                    return {
+                        **self._status("compact_due_background", True, "coalesced"),
+                        "provider_profile": resolved_profile,
+                    }
+                if active is not None:
+                    self._background_compactions.pop(compaction_key, None)
+                    self._pending_compactions.pop(compaction_key, None)
+                self._submit_compaction_locked(
+                    compaction_key=compaction_key,
+                    system=system,
+                    provider_profile=resolved_profile,
                 )
-            )
             return {
                 **self._status("compact_due_background", True, "scheduled"),
                 "provider_profile": resolved_profile,
@@ -2509,6 +2520,62 @@ class MemcoreManager:
         self._background_futures.add(future)
         future.add_done_callback(self._discard_background_future)
 
+    def _submit_compaction_locked(
+        self,
+        *,
+        compaction_key: tuple[str, str, str, str],
+        system: Any,
+        provider_profile: str,
+    ) -> None:
+        future = system.compact_due_background(provider_profile=provider_profile)
+        self._background_compactions[compaction_key] = future
+        self._background_futures.add(future)
+        namespace_hash = self._compaction_namespace_hash(system)
+        future.add_done_callback(
+            lambda completed, key=compaction_key, namespace_hash=namespace_hash, profile=provider_profile: (
+                self._finish_compaction(
+                    completed,
+                    compaction_key=key,
+                    namespace_hash=namespace_hash,
+                    requested_profile=profile,
+                )
+            )
+        )
+
+    def _finish_compaction(
+        self,
+        future: Future[Any],
+        *,
+        compaction_key: tuple[str, str, str, str],
+        namespace_hash: str,
+        requested_profile: str,
+    ) -> None:
+        self._log_compaction_result(
+            future,
+            namespace_hash=namespace_hash,
+            requested_profile=requested_profile,
+        )
+        with self._lock:
+            self._background_futures.discard(future)
+            if self._background_compactions.get(compaction_key) is not future:
+                return
+            self._background_compactions.pop(compaction_key, None)
+            pending = self._pending_compactions.pop(compaction_key, None)
+            if pending is None or self._closing or self._closed:
+                return
+            system, provider_profile = pending
+            try:
+                self._submit_compaction_locked(
+                    compaction_key=compaction_key,
+                    system=system,
+                    provider_profile=provider_profile,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "memcore coalesced compaction scheduling failed: %s",
+                    str(exc) or exc.__class__.__name__,
+                )
+
     def _discard_background_future(self, future: Future[Any]) -> None:
         with self._lock:
             self._background_futures.discard(future)
@@ -2678,16 +2745,22 @@ class MemcoreManager:
 
     @staticmethod
     def _compaction_namespace_hash(system: Any) -> str:
+        values = MemcoreManager._compaction_namespace_key(system)
+        if values == ("", "", "", ""):
+            return "unknown"
+        return hashlib.sha256("\x1f".join(values).encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    @staticmethod
+    def _compaction_namespace_key(system: Any) -> tuple[str, str, str, str]:
         namespace = getattr(system, "namespace", None)
         if namespace is None:
-            return "unknown"
-        values = (
+            return ("", "", "", "")
+        return (
             str(getattr(namespace, "tenant_id", "") or ""),
             str(getattr(namespace, "user_id", "") or ""),
             str(getattr(namespace, "domain_id", "") or ""),
             str(getattr(namespace, "conversation_id", "") or ""),
         )
-        return hashlib.sha256("\x1f".join(values).encode("utf-8", errors="ignore")).hexdigest()[:12]
 
     @staticmethod
     def _log_compaction_stats(

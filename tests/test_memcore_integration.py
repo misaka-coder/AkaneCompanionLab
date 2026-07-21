@@ -2019,6 +2019,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 self.assertEqual(scheduled["provider_profile"], "openai_chat")
                 self.assertEqual(submitted_profiles, ["openai_chat"])
                 self.assertTrue(started.wait(timeout=1))
+                coalesced = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="private:user",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(coalesced["status"], "coalesced")
+                self.assertEqual(submitted_profiles, ["openai_chat"])
 
                 close_thread = threading.Thread(target=manager.close)
                 close_thread.start()
@@ -2028,8 +2036,94 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 close_thread.join(timeout=1)
                 self.assertFalse(close_thread.is_alive())
                 self.assertTrue(manager._closed)
+                self.assertEqual(submitted_profiles, ["openai_chat"])
         finally:
             release.set()
+            runtime.close()
+
+    def test_manager_coalesces_burst_into_one_followup_compaction(self) -> None:
+        from memcore import MemCoreRuntime
+
+        runtime = MemCoreRuntime(compaction_workers=1, index_workers=1)
+        first_started = threading.Event()
+        first_release = threading.Event()
+        second_started = threading.Event()
+        second_release = threading.Event()
+        calls = 0
+        calls_lock = threading.Lock()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "memcore_v01.db",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                    runtime=runtime,
+                )
+                system = manager._get_system(
+                    profile_user_id="user",
+                    session_id="group:busy-room",
+                    character_pack_id="akane",
+                )
+
+                def _run_compaction():
+                    nonlocal calls
+                    with calls_lock:
+                        calls += 1
+                        call_number = calls
+                    if call_number == 1:
+                        first_started.set()
+                        first_release.wait(timeout=2)
+                    elif call_number == 2:
+                        second_started.set()
+                        second_release.wait(timeout=2)
+                    return {"status": "not_due"}
+
+                submitted_profiles: list[str] = []
+
+                def _submit_compaction(**kwargs):
+                    submitted_profiles.append(str(kwargs.get("provider_profile") or ""))
+                    return runtime.submit_compaction(_run_compaction)
+
+                system.compact_due_background = _submit_compaction
+                first = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="group:busy-room",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(first["status"], "scheduled")
+                self.assertTrue(first_started.wait(timeout=1))
+
+                repeated = [
+                    manager.compact_due_background(
+                        profile_user_id="user",
+                        session_id="group:busy-room",
+                        character_pack_id="akane",
+                        provider_profile="responses",
+                    )
+                    for _ in range(20)
+                ]
+                self.assertTrue(all(item["status"] == "coalesced" for item in repeated))
+                self.assertEqual(submitted_profiles, ["openai_chat"])
+
+                first_release.set()
+                self.assertTrue(second_started.wait(timeout=1))
+                self.assertEqual(submitted_profiles, ["openai_chat", "openai_chat"])
+                second_release.set()
+
+                deadline = time.monotonic() + 1
+                while manager._background_futures and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(calls, 2)
+                self.assertFalse(manager._background_futures)
+                manager.close()
+        finally:
+            first_release.set()
+            second_release.set()
             runtime.close()
 
     def test_compaction_result_log_reports_safe_structured_counts(self) -> None:
