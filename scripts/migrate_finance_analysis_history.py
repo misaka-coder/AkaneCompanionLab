@@ -44,9 +44,9 @@ class LegacyDeliveredAnalysis:
 class TimelineFacade(Protocol):
     def inspect_turn_source(self, source_id: str, **scope: Any) -> dict[str, Any]: ...
 
-    def record_user_turn(self, record: dict[str, Any], **scope: Any) -> dict[str, Any]: ...
-
-    def record_assistant_turn(self, record: dict[str, Any], **scope: Any) -> dict[str, Any]: ...
+    def import_legacy_message(
+        self, record: dict[str, Any], *, role: str, **scope: Any
+    ) -> dict[str, Any]: ...
 
     def compact_due_sync(self, **scope: Any) -> dict[str, Any]: ...
 
@@ -148,7 +148,7 @@ def migrate_delivered_history(
             report["pairs_completed"] += 1
             continue
         if not event_exists:
-            result = timeline.record_user_turn(
+            result = timeline.import_legacy_message(
                 {
                     "source_id": event_source_id,
                     "content": _render_event_message(entry.event_payload),
@@ -161,6 +161,7 @@ def migrate_delivered_history(
                     },
                     "index_in_vector": True,
                 },
+                role="user",
                 **scope,
             )
             if not bool(result.get("ok")):
@@ -169,7 +170,7 @@ def migrate_delivered_history(
                 return report
             report["turns_written"] += 1
         if not analysis_exists:
-            result = timeline.record_assistant_turn(
+            result = timeline.import_legacy_message(
                 {
                     "source_id": analysis_source_id,
                     "content": _render_historical_analysis(entry.analysis_text),
@@ -181,6 +182,7 @@ def migrate_delivered_history(
                         "confidence": 0.6,
                     },
                 },
+                role="assistant",
                 **scope,
             )
             if not bool(result.get("ok")):

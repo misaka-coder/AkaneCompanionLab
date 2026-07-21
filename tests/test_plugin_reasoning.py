@@ -284,7 +284,7 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
             event_calls.append(dict(kwargs))
             raise self._StopAfterUserWrite()
 
-        engine._record_memcore_input_turn = stop_after_external_event_write
+        engine._begin_memcore_input_turn = stop_after_external_event_write
         return engine, event_calls
 
     def test_sync_and_stream_paths_use_same_hashed_user_source_id_and_consume_raw_key(self) -> None:

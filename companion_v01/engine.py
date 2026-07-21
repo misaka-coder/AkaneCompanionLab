@@ -772,7 +772,7 @@ class AkaneMemoryEngine:
         )
         return recent_raw, recent_episodic_summaries, recent_semantic_summaries
 
-    def _record_memcore_user_turn(
+    def _append_memcore_passive_message(
         self,
         *,
         user_record: dict[str, Any],
@@ -786,8 +786,9 @@ class AkaneMemoryEngine:
         if manager is None:
             return {}
         try:
-            return manager.record_user_turn(
+            return manager.append_standalone_message(
                 user_record,
+                role="user",
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
@@ -795,10 +796,10 @@ class AkaneMemoryEngine:
                 actor_display_name=actor_display_name,
             )
         except Exception as exc:
-            logger.warning("memcore user dual-write failed: %s", exc)
+            logger.warning("memcore passive message append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
-    def _record_memcore_input_turn(
+    def _begin_memcore_input_turn(
         self,
         *,
         user_record: dict[str, Any],
@@ -828,7 +829,7 @@ class AkaneMemoryEngine:
             logger.warning("memcore input turn open failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
-    def _update_memcore_turn_metadata(
+    def _stage_memcore_turn_metadata(
         self,
         *,
         source_id: str,
@@ -855,7 +856,7 @@ class AkaneMemoryEngine:
             self._warn_memcore_write_result("metadata staging", result)
             return result
         except Exception as exc:
-            logger.warning("memcore metadata dual-write failed: %s", exc)
+            logger.warning("memcore metadata staging failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
     def _append_memcore_turn_intermediate(
@@ -2594,7 +2595,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
             )
-        memcore_result = self._record_memcore_user_turn(
+        memcore_result = self._append_memcore_passive_message(
             user_record=user_record,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -2939,7 +2940,7 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            memcore_open = self._record_memcore_input_turn(
+            memcore_open = self._begin_memcore_input_turn(
                 user_record=user_record,
                 external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
@@ -3226,7 +3227,7 @@ class AkaneMemoryEngine:
                 memory_metadata=memory_metadata,
             )
         if memcore_turn_id:
-            self._update_memcore_turn_metadata(
+            self._stage_memcore_turn_metadata(
                 source_id=str(user_record.get("source_id") or ""),
                 memory_metadata=memory_metadata,
                 profile_user_id=profile_user_id,
@@ -3470,7 +3471,7 @@ class AkaneMemoryEngine:
                 router_output=router_output,
             )
             self._upsert_raw_record(user_record)
-            memcore_open = self._record_memcore_input_turn(
+            memcore_open = self._begin_memcore_input_turn(
                 user_record=user_record,
                 external_event=plugin_external_event,
                 profile_user_id=profile_user_id,
@@ -3781,7 +3782,7 @@ class AkaneMemoryEngine:
                 memory_metadata=memory_metadata,
             )
         if memcore_turn_id:
-            self._update_memcore_turn_metadata(
+            self._stage_memcore_turn_metadata(
                 source_id=str(user_record.get("source_id") or ""),
                 memory_metadata=memory_metadata,
                 profile_user_id=profile_user_id,
@@ -5294,32 +5295,6 @@ class AkaneMemoryEngine:
                 if not str(key).startswith("_tool_")
             }
         return payload
-
-    def _record_memcore_tool_exchange(
-        self,
-        *,
-        tool_call: dict[str, Any],
-        tool_result: ToolExecutionResult,
-        shaped_followup: str,
-        workspace_followup: str,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str,
-        now_ts: int,
-        current_user_source_id: str,
-        recorded_tool_call_ids: set[str] | None,
-        memcore_turn_id: str = "",
-    ) -> list[str]:
-        return self._record_memcore_tool_batch(
-            items=[(tool_call, tool_result, shaped_followup, workspace_followup)],
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            now_ts=now_ts,
-            current_user_source_id=current_user_source_id,
-            memcore_turn_id=memcore_turn_id,
-            recorded_tool_call_ids=recorded_tool_call_ids,
-        )
 
     def _record_memcore_tool_batch(
         self,

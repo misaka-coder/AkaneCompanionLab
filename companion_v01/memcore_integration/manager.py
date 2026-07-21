@@ -256,19 +256,31 @@ class MemcoreManager:
             self._closed = True
             self._closing = False
 
-    def record_user_turn(
+    def append_standalone_message(
         self,
         record: dict[str, Any],
         *,
+        role: str,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
         actor_stable_id: str = "",
         actor_display_name: str = "",
     ) -> dict[str, Any]:
+        """Append a message that intentionally has no model-response turn."""
+
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role not in {"user", "assistant"}:
+            return self._status(
+                "append_standalone_message",
+                False,
+                "invalid_record",
+                source_id=str((record or {}).get("source_id") or ""),
+                reason="role_must_be_user_or_assistant",
+            )
         return self._append_standalone_turn(
-            operation="record_user_turn",
-            role="user",
+            operation="append_standalone_message",
+            role=normalized_role,
             record=record,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -277,21 +289,34 @@ class MemcoreManager:
             actor_display_name=actor_display_name,
         )
 
-    def record_assistant_turn(
+    def import_legacy_message(
         self,
         record: dict[str, Any],
         *,
+        role: str,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
     ) -> dict[str, Any]:
+        """One-time maintenance adapter; never use for a live model turn."""
+
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role not in {"user", "assistant"}:
+            return self._status(
+                "import_legacy_message",
+                False,
+                "invalid_record",
+                source_id=str((record or {}).get("source_id") or ""),
+                reason="role_must_be_user_or_assistant",
+            )
         return self._append_standalone_turn(
-            operation="record_assistant_turn",
-            role="assistant",
+            operation="import_legacy_message",
+            role=normalized_role,
             record=record,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            legacy_import=True,
         )
 
     def begin_input_turn(
@@ -402,59 +427,6 @@ class MemcoreManager:
             logger.warning("memcore %s failed: %s", operation, reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=reason)
 
-    def record_external_event(
-        self,
-        *,
-        event_type: str,
-        fields: dict[str, Any],
-        source: str,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str = "",
-        timestamp: int | None = None,
-        source_id: str = "",
-    ) -> dict[str, Any]:
-        operation = "record_external_event"
-        system = self._get_system_or_none(
-            operation=operation,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
-        if system is None:
-            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
-        try:
-            event = {
-                "event_type": str(event_type or "").strip(),
-                "fields": dict(fields or {}),
-                "source": str(source or "").strip(),
-            }
-            record = {
-                "source_id": str(source_id or "").strip(),
-                "content": "",
-                "timestamp": int(timestamp or time.time()),
-                "memory_metadata": self._external_event_metadata(event),
-                "index_in_vector": True,
-            }
-            entry = self._build_timeline_input(
-                role="user",
-                record=record,
-                turn_role=None,
-                external_event=event,
-            )
-            written = system.append_standalone_entry(entry)
-            return self._status(
-                operation,
-                True,
-                "recorded",
-                source_id=str(written.source_id or source_id),
-                index_status=str(written.index_status or ""),
-            )
-        except Exception as exc:
-            reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore external event dual-write failed: %s", reason)
-            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
-
     def inspect_turn_source(
         self,
         source_id: str,
@@ -513,54 +485,6 @@ class MemcoreManager:
                 **self._status(operation, False, "failed", source_id=sid, reason=reason),
                 "exists": False,
             }
-
-    def record_tool_exchange(
-        self,
-        *,
-        tool_name: str,
-        result: Any,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str = "",
-        tool_input: Any = None,
-        tool_call_id: str = "",
-        source: str = "",
-        timestamp: int | None = None,
-        source_id_prefix: str = "",
-        keywords: list[str] | None = None,
-        importance: float = 0.2,
-        confidence: float = 1.0,
-        turn_id: str = "",
-        result_status: str = "success",
-    ) -> dict[str, Any]:
-        result_payload = self.record_tool_batch(
-            exchanges=[
-                {
-                    "tool_name": tool_name,
-                    "result": result,
-                    "tool_input": tool_input,
-                    "tool_call_id": tool_call_id,
-                    "source": source,
-                    "timestamp": timestamp,
-                    "source_id_prefix": source_id_prefix,
-                    "keywords": list(keywords or []),
-                    "importance": importance,
-                    "confidence": confidence,
-                    "result_status": result_status,
-                }
-            ],
-            turn_id=turn_id,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
-        first = next(iter(result_payload.get("exchanges") or []), {})
-        return {
-            **dict(result_payload, operation="record_tool_exchange"),
-            "correlation_id": str(first.get("correlation_id") or ""),
-            "tool_use_source_id": str(first.get("tool_use_source_id") or ""),
-            "tool_result_source_id": str(first.get("tool_result_source_id") or ""),
-        }
 
     def record_tool_batch(
         self,
@@ -676,28 +600,6 @@ class MemcoreManager:
         except Exception as exc:
             logger.debug("memcore acquaintance_note failed: %s", exc)
             return ""
-
-    def update_turn_metadata(
-        self,
-        source_id: str,
-        memory_metadata: dict[str, Any] | None,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str = "",
-        actor_stable_id: str = "",
-        actor_display_name: str = "",
-    ) -> dict[str, Any]:
-        result = self.stage_turn_metadata(
-            source_id,
-            memory_metadata,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            actor_stable_id=actor_stable_id,
-            actor_display_name=actor_display_name,
-        )
-        return dict(result, operation="update_turn_metadata")
 
     def stage_turn_metadata(
         self,
@@ -958,6 +860,7 @@ class MemcoreManager:
                         profile_user_id=record_profile,
                         session_id=str(record.get("session_id") or "").strip(),
                         character_pack_id=record_character,
+                        legacy_import=True,
                     )
                     if bool(result.get("ok")):
                         upserted += 1
@@ -1810,6 +1713,7 @@ class MemcoreManager:
         character_pack_id: str,
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        legacy_import: bool = False,
     ) -> dict[str, Any]:
         source_id = str((record or {}).get("source_id") or "").strip()
         if not source_id:
@@ -1830,7 +1734,7 @@ class MemcoreManager:
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
                 turn_role=None,
-                legacy_import=operation == "import_legacy_raw_messages",
+                legacy_import=legacy_import,
             )
             written = system.append_standalone_entry(entry)
             return self._status(

@@ -33,11 +33,10 @@ class _FakeTimeline:
             "source_id": source_id,
         }
 
-    def record_user_turn(self, record: dict[str, Any], **scope: Any) -> dict[str, Any]:
-        return self._record("user", record, scope)
-
-    def record_assistant_turn(self, record: dict[str, Any], **scope: Any) -> dict[str, Any]:
-        return self._record("assistant", record, scope)
+    def import_legacy_message(
+        self, record: dict[str, Any], *, role: str, **scope: Any
+    ) -> dict[str, Any]:
+        return self._record(role, record, scope)
 
     def _record(self, role: str, record: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]:
         source_id = str(record["source_id"])

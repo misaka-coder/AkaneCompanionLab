@@ -415,8 +415,10 @@ class _ActorCaptureMemcoreManager:
         self.user_calls.append({"record": dict(record), **dict(kwargs)})
         return {"ok": True, "status": "opened", "turn_id": "turn-1"}
 
-    def record_user_turn(self, record: dict[str, object], **kwargs) -> dict[str, object]:
-        self.user_calls.append({"record": dict(record), **dict(kwargs)})
+    def append_standalone_message(
+        self, record: dict[str, object], *, role: str, **kwargs
+    ) -> dict[str, object]:
+        self.user_calls.append({"record": dict(record), "role": role, **dict(kwargs)})
         return {"ok": True, "status": "recorded"}
 
     def stage_turn_metadata(
@@ -698,14 +700,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
-                trace = manager.record_tool_exchange(
-                    tool_name="web_search",
-                    tool_call_id="call_1",
-                    tool_input={"query": "北京天气"},
-                    result="北京今天晴，25°C。",
-                    source="anysearch",
-                    timestamp=101,
-                    source_id_prefix="trace-1",
+                trace = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "web_search",
+                            "tool_call_id": "call_1",
+                            "tool_input": {"query": "北京天气"},
+                            "result": "北京今天晴，25°C。",
+                            "source": "anysearch",
+                            "timestamp": 101,
+                            "source_id_prefix": "trace-1",
+                        }
+                    ],
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
@@ -948,8 +954,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     llm=_FakeLLM(),
                     embedding_provider=_FakeEmbeddingProvider(),
                 )
-        result = manager.record_user_turn(
+        result = manager.append_standalone_message(
             {"source_id": "u1", "content": "hello", "timestamp": 100},
+            role="user",
             profile_user_id="user-a",
             session_id="session-a",
             character_pack_id="char-a",
@@ -1952,7 +1959,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored["memory_metadata"]["keywords"], ["稳健型基金", "基金偏好"])
             manager.close()
 
-    def test_manager_records_structured_external_event_in_linear_timeline(self) -> None:
+    def test_manager_does_not_expose_standalone_external_event_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="dual",
@@ -1963,35 +1970,42 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
+            self.assertFalse(hasattr(manager, "record_external_event"))
+            manager.close()
 
-            result = manager.record_external_event(
-                event_type="finance",
-                source="东方财富",
-                fields={
-                    "url": "https://finance.eastmoney.com/example.html",
-                    "summary": "公开快讯摘要。",
-                    "title": "科创债ETF规模出现新变化",
-                    "published_at": "2026-07-14T14:30:00+08:00",
+    def test_manager_marks_explicit_legacy_message_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+
+            result = manager.import_legacy_message(
+                {
+                    "source_id": "legacy-assistant-1",
+                    "content": "历史分析结果。",
+                    "timestamp": 100,
+                    "memory_metadata": {
+                        "categories": ["finance_event"],
+                        "importance": 0.8,
+                    },
                 },
-                profile_user_id="qq-user",
-                session_id="qq-session",
-                character_pack_id="akane_v1",
-                timestamp=1_784_016_000,
-                source_id="plugin-event:structured-1",
+                role="assistant",
+                profile_user_id="u1",
+                session_id="legacy-session",
+                character_pack_id="char",
             )
 
             self.assertTrue(result["ok"], result)
-            stored = manager._store.get_record_by_source_id("plugin-event:structured-1")
-            self.assertEqual(stored["role"], "event.finance")
-            self.assertEqual(stored["memory_metadata"]["categories"], ["event_trace"])
-            self.assertEqual(
-                stored["content"],
-                "source: 东方财富\n"
-                "published_at: 2026-07-14T14:30:00+08:00\n"
-                "title: 科创债ETF规模出现新变化\n"
-                "summary: 公开快讯摘要。\n"
-                "url: https://finance.eastmoney.com/example.html",
-            )
+            stored = manager._store.get_record_by_source_id("legacy-assistant-1")
+            self.assertEqual(stored["role"], "assistant")
+            self.assertEqual(stored["annotation_status"], "accepted_legacy")
+            self.assertEqual(stored["relation_status"], "standalone")
             manager.close()
 
     def test_engine_memcore_wrappers_forward_turn_actor(self) -> None:
@@ -1999,7 +2013,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.memcore_manager = manager
 
-        recorded = engine._record_memcore_input_turn(
+        recorded = engine._begin_memcore_input_turn(
             user_record={"source_id": "qq-turn-1", "content": "关注黄金", "timestamp": 100},
             external_event=None,
             profile_user_id="qq-group-1",
@@ -2008,7 +2022,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             actor_stable_id="qq:10001",
             actor_display_name="张三",
         )
-        updated = engine._update_memcore_turn_metadata(
+        updated = engine._stage_memcore_turn_metadata(
             source_id="qq-turn-1",
             memory_metadata={"keywords": ["黄金"]},
             profile_user_id="qq-group-1",
@@ -2017,11 +2031,23 @@ class MemcoreIntegrationTests(unittest.TestCase):
             actor_stable_id="qq:10001",
             actor_display_name="张三",
         )
+        passive = engine._append_memcore_passive_message(
+            user_record={"source_id": "qq-passive-1", "content": "群里路过", "timestamp": 101},
+            profile_user_id="qq-group-1",
+            session_id="qq-group-1",
+            character_pack_id="char-1",
+            actor_stable_id="qq:10002",
+            actor_display_name="李四",
+        )
 
         self.assertTrue(recorded["ok"])
         self.assertTrue(updated["ok"])
+        self.assertTrue(passive["ok"])
         self.assertEqual(manager.user_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.user_calls[0]["actor_display_name"], "张三")
+        self.assertEqual(manager.user_calls[1]["role"], "user")
+        self.assertEqual(manager.user_calls[1]["actor_stable_id"], "qq:10002")
+        self.assertEqual(manager.user_calls[1]["actor_display_name"], "李四")
         self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
 
@@ -2097,6 +2123,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
             self.assertFalse(hasattr(manager, "build_prompt_context"))
             self.assertFalse(hasattr(manager, "_render_prompt_context_layers"))
+            self.assertFalse(hasattr(manager, "record_user_turn"))
+            self.assertFalse(hasattr(manager, "record_assistant_turn"))
+            self.assertFalse(hasattr(manager, "record_external_event"))
+            self.assertFalse(hasattr(manager, "record_tool_exchange"))
+            self.assertFalse(hasattr(manager, "update_turn_metadata"))
             manager.close()
 
     def test_read_memory_timeline_returns_memcore_raw_and_excludes_current_turn(self) -> None:
@@ -2110,24 +2141,26 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
-            manager.record_user_turn(
+            manager.append_standalone_message(
                 {
                     "source_id": "old-morning",
                     "content": "上午讨论了角色提示词。",
                     "timestamp": _ts(2026, 6, 13, 9, 0),
                     "memory_metadata": {"keywords": ["提示词"], "categories": ["project_work"], "importance": 0.8},
                 },
+                role="user",
                 profile_user_id="u1",
                 session_id="old-session",
                 character_pack_id="char",
             )
-            manager.record_user_turn(
+            manager.append_standalone_message(
                 {
                     "source_id": "current-query",
                     "content": "请读取今天上午的原始对话。",
                     "timestamp": _ts(2026, 6, 13, 10, 0),
                     "memory_metadata": {},
                 },
+                role="user",
                 profile_user_id="u1",
                 session_id="current-session",
                 character_pack_id="char",
@@ -2194,13 +2227,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
-            result = manager.record_user_turn(
+            result = manager.append_standalone_message(
                 {
                     "source_id": "memory-query-turn",
                     "content": "你还记得我之前说过什么吗？",
                     "timestamp": 123,
                     "index_in_vector": False,
                 },
+                role="user",
                 profile_user_id="u1",
                 session_id="s1",
                 character_pack_id="char",
@@ -2228,13 +2262,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 llm=_FakeLLM(),
                 embedding_provider=_FakeEmbeddingProvider(),
             )
-            manager.record_user_turn(
+            manager.append_standalone_message(
                 {
                     "source_id": "old-like",
                     "content": "我以前说过我喜欢冰可乐。",
                     "timestamp": 1_777_700_000,
                     "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.9},
                 },
+                role="user",
                 profile_user_id="u1",
                 session_id="older-session",
                 character_pack_id="char",
@@ -2245,8 +2280,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "timestamp": 1_777_800_000,
                 "memory_metadata": {},
             }
-            manager.record_user_turn(
+            manager.append_standalone_message(
                 current,
+                role="user",
                 profile_user_id="u1",
                 session_id="current-session",
                 character_pack_id="char",
@@ -2284,7 +2320,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 embedding_provider=_FakeEmbeddingProvider(),
             )
             for index, drink in enumerate(["冰可乐", "无糖可乐"], start=1):
-                manager.record_user_turn(
+                manager.append_standalone_message(
                     {
                         "source_id": f"old-like-{index}",
                         "content": f"我以前说过我喜欢{drink}。",
@@ -2296,6 +2332,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                             "importance": 0.9,
                         },
                     },
+                    role="user",
                     profile_user_id="u1",
                     session_id=f"older-session-{index}",
                     character_pack_id="char",
@@ -2306,8 +2343,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "timestamp": 1_777_800_000,
                 "memory_metadata": {},
             }
-            manager.record_user_turn(
+            manager.append_standalone_message(
                 current,
+                role="user",
                 profile_user_id="u1",
                 session_id="current-session",
                 character_pack_id="char",
