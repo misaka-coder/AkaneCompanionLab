@@ -54,7 +54,8 @@ def _acquire_process_runtime(memcore: Any) -> Any:
     global _PROCESS_RUNTIME, _PROCESS_RUNTIME_LEASES
     with _PROCESS_RUNTIME_LOCK:
         if _PROCESS_RUNTIME is None:
-            _PROCESS_RUNTIME = memcore.MemCoreRuntime()
+            workers = max(1, min(8, int(getattr(config, "MEMCORE_COMPACTION_WORKERS", 1) or 1)))
+            _PROCESS_RUNTIME = memcore.MemCoreRuntime(compaction_workers=workers)
         _PROCESS_RUNTIME_LEASES += 1
         return _PROCESS_RUNTIME
 
@@ -179,6 +180,7 @@ class MemcoreManager:
         self._background_futures: set[Future[Any]] = set()
         self._background_compactions: dict[tuple[str, str, str, str], Future[Any]] = {}
         self._pending_compactions: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
+        self._compaction_retry_after: dict[tuple[str, str, str, str], float] = {}
         self._lock = threading.RLock()
         self._closing = False
         self._closed = False
@@ -248,6 +250,7 @@ class MemcoreManager:
             self._background_futures.clear()
             self._background_compactions.clear()
             self._pending_compactions.clear()
+            self._compaction_retry_after.clear()
         for system in systems:
             try:
                 system.close()
@@ -914,6 +917,15 @@ class MemcoreManager:
                 if active is not None:
                     self._background_compactions.pop(compaction_key, None)
                     self._pending_compactions.pop(compaction_key, None)
+                retry_after = self._compaction_retry_after.get(compaction_key, 0.0)
+                retry_after_seconds = max(0.0, retry_after - time.monotonic())
+                if retry_after_seconds > 0:
+                    return {
+                        **self._status("compact_due_background", True, "deferred"),
+                        "provider_profile": resolved_profile,
+                        "retry_after_seconds": max(1, int(retry_after_seconds + 0.999)),
+                    }
+                self._compaction_retry_after.pop(compaction_key, None)
                 self._submit_compaction_locked(
                     compaction_key=compaction_key,
                     system=system,
@@ -2561,6 +2573,13 @@ class MemcoreManager:
                 return
             self._background_compactions.pop(compaction_key, None)
             pending = self._pending_compactions.pop(compaction_key, None)
+            compaction_status = self._compaction_future_status(future)
+            if compaction_status not in {"compacted", "not_due"}:
+                cooldown = self._compaction_failure_cooldown_seconds()
+                if cooldown > 0 and not self._closing and not self._closed:
+                    self._compaction_retry_after[compaction_key] = time.monotonic() + cooldown
+                return
+            self._compaction_retry_after.pop(compaction_key, None)
             if pending is None or self._closing or self._closed:
                 return
             system, provider_profile = pending
@@ -2575,6 +2594,24 @@ class MemcoreManager:
                     "memcore coalesced compaction scheduling failed: %s",
                     str(exc) or exc.__class__.__name__,
                 )
+
+    @staticmethod
+    def _compaction_future_status(future: Future[Any]) -> str:
+        if future.cancelled():
+            return "cancelled"
+        try:
+            result = future.result()
+        except Exception:
+            return "failed"
+        return str(result.get("status") or "") if isinstance(result, dict) else "invalid_result"
+
+    @staticmethod
+    def _compaction_failure_cooldown_seconds() -> float:
+        try:
+            value = float(getattr(config, "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS", 60.0) or 0.0)
+        except (TypeError, ValueError):
+            value = 60.0
+        return max(0.0, min(3600.0, value))
 
     def _discard_background_future(self, future: Future[Any]) -> None:
         with self._lock:

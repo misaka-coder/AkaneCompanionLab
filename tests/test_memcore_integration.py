@@ -582,6 +582,28 @@ class MemcoreIntegrationTests(unittest.TestCase):
             memory_config = manager._build_memory_config(fake_memcore)
         self.assertEqual(memory_config.compaction_max_source_tokens, 12000)
 
+    def test_process_runtime_uses_configured_compaction_workers(self) -> None:
+        from companion_v01.memcore_integration import manager as manager_module
+
+        created: list[int] = []
+
+        class _Runtime:
+            def __init__(self, *, compaction_workers: int) -> None:
+                created.append(compaction_workers)
+
+            def close(self, *, wait: bool) -> None:
+                self.wait = wait
+
+        fake_memcore = SimpleNamespace(MemCoreRuntime=_Runtime)
+        with (
+            patch.object(config, "MEMCORE_COMPACTION_WORKERS", 3, create=True),
+            patch.object(manager_module, "_PROCESS_RUNTIME", None),
+            patch.object(manager_module, "_PROCESS_RUNTIME_LEASES", 0),
+        ):
+            runtime = manager_module._acquire_process_runtime(fake_memcore)
+            manager_module._release_process_runtime(runtime)
+        self.assertEqual(created, [3])
+
     def test_projection_facades_delegate_to_memcore_and_return_safe_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -2124,6 +2146,95 @@ class MemcoreIntegrationTests(unittest.TestCase):
         finally:
             first_release.set()
             second_release.set()
+            runtime.close()
+
+    def test_manager_cools_down_failed_compaction_without_queued_retry_burst(self) -> None:
+        from memcore import MemCoreRuntime
+
+        runtime = MemCoreRuntime(compaction_workers=1, index_workers=1)
+        started = threading.Event()
+        release = threading.Event()
+        calls = 0
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+                config,
+                "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",
+                0.2,
+                create=True,
+            ):
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "memcore_v01.db",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                    runtime=runtime,
+                )
+                system = manager._get_system(
+                    profile_user_id="user",
+                    session_id="group:failing-room",
+                    character_pack_id="akane",
+                )
+
+                def _run_compaction():
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        started.set()
+                        release.wait(timeout=2)
+                        return {"status": "failed", "reason": "summary_retry_pending"}
+                    return {"status": "not_due"}
+
+                system.compact_due_background = lambda **_kwargs: runtime.submit_compaction(_run_compaction)
+                first = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="group:failing-room",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(first["status"], "scheduled")
+                self.assertTrue(started.wait(timeout=1))
+                pending = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="group:failing-room",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(pending["status"], "coalesced")
+
+                release.set()
+                deadline = time.monotonic() + 1
+                while manager._background_futures and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(calls, 1)
+
+                deferred = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="group:failing-room",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(deferred["status"], "deferred")
+                self.assertGreaterEqual(deferred["retry_after_seconds"], 1)
+                self.assertEqual(calls, 1)
+
+                time.sleep(0.22)
+                resumed = manager.compact_due_background(
+                    profile_user_id="user",
+                    session_id="group:failing-room",
+                    character_pack_id="akane",
+                    provider_profile="responses",
+                )
+                self.assertEqual(resumed["status"], "scheduled")
+                deadline = time.monotonic() + 1
+                while manager._background_futures and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(calls, 2)
+                manager.close()
+        finally:
+            release.set()
             runtime.close()
 
     def test_compaction_result_log_reports_safe_structured_counts(self) -> None:

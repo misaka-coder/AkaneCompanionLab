@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     MEMCORE_SHADOW_COMPARE: bool = False
     # 单轮压缩最多选择多少 source tokens；完整 turn/component 边界可合理越界
     MEMCORE_COMPACTION_MAX_SOURCE_TOKENS: int = 24000
+    # 后台压缩全局 worker 数；与用户聊天/工具并行度无关
+    MEMCORE_COMPACTION_WORKERS: int = 1
+    # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
+    MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
     # Bound one persisted tool result so a large provider payload cannot keep
     # inflating the visible raw timeline before normal MemCore compaction runs.
     MEMCORE_TOOL_TRACE_MAX_CHARS: int = 12000
@@ -538,7 +542,8 @@ def _apply_settings(s: Settings) -> None:
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
-    global MEMCORE_COMPACTION_MAX_SOURCE_TOKENS
+    global MEMCORE_COMPACTION_MAX_SOURCE_TOKENS, MEMCORE_COMPACTION_WORKERS
+    global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
     global MEMCORE_TOOL_TRACE_MAX_CHARS
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
@@ -778,6 +783,11 @@ def _apply_settings(s: Settings) -> None:
     MEMCORE_COMPACTION_MAX_SOURCE_TOKENS = max(
         1000,
         min(200000, int(s.MEMCORE_COMPACTION_MAX_SOURCE_TOKENS or 24000)),
+    )
+    MEMCORE_COMPACTION_WORKERS = max(1, min(8, int(s.MEMCORE_COMPACTION_WORKERS or 1)))
+    MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS = max(
+        0.0,
+        min(3600.0, float(s.MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS or 0.0)),
     )
     MEMCORE_TOOL_TRACE_MAX_CHARS = max(1000, min(100000, int(s.MEMCORE_TOOL_TRACE_MAX_CHARS or 12000)))
 

@@ -139,6 +139,13 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RESTART_CLIENT,
         "memcore 单轮压缩 source token 上限（保留完整 turn/component 边界）",
     ),
+    _s("MEMCORE_COMPACTION_WORKERS", _MEM, SCOPE_RESTART_CLIENT, "memcore 后台压缩全局 worker 数"),
+    _s(
+        "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",
+        _MEM,
+        SCOPE_RUNTIME,
+        "memcore 压缩重试失败后的同 namespace 冷却秒数",
+    ),
     # LLM 密钥 & 接入（密钥/接入由模型服务页管理）
     _s(
         "TEXT_API_KEY",
