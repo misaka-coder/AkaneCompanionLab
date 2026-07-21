@@ -1933,6 +1933,10 @@ class MemcoreManager:
                 int(getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5) or 5),
             ),
             semantic_visible_limit=max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 5) or 5)),
+            compaction_max_source_tokens=max(
+                1000,
+                int(getattr(config, "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS", 24000) or 24000),
+            ),
             semantic_reinforcement_lookback=max(
                 1,
                 int(getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8) or 8),

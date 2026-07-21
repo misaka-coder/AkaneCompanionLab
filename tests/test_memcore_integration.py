@@ -570,6 +570,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(resolve_memcore_provider_profile("canonical"), "canonical_user_assistant")
         self.assertEqual(resolve_memcore_provider_profile("finance_bot"), "")
 
+    def test_compaction_source_limit_is_host_configurable(self) -> None:
+        manager = MemcoreManager.__new__(MemcoreManager)
+        manager.visible_scope = "user"
+        manager.enable_flavor = True
+        fake_memcore = SimpleNamespace(
+            DEFAULT_CATEGORIES=("tool_trace",),
+            MemoryConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+        )
+        with patch.object(config, "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS", 12000, create=True):
+            memory_config = manager._build_memory_config(fake_memcore)
+        self.assertEqual(memory_config.compaction_max_source_tokens, 12000)
+
     def test_projection_facades_delegate_to_memcore_and_return_safe_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

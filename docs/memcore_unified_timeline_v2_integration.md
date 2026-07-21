@@ -365,12 +365,15 @@ MEMCORE_STORAGE_PATH=
 MEMCORE_VISIBLE_SCOPE=user
 MEMCORE_ENABLE_FLAVOR=true
 MEMCORE_SHADOW_COMPARE=false
+MEMCORE_COMPACTION_MAX_SOURCE_TOKENS=24000
 MEMCORE_TOOL_TRACE_MAX_CHARS=12000
 ```
 
 - `MEMCORE_STORAGE_PATH` 留空时使用当前 Akane 实例数据目录中的 `memcore_v01.db`。
 - `MEMCORE_VISIBLE_SCOPE=user` 允许同一用户跨会话连续；`conversation` 只显示当前会话窗口。
 - `MEMCORE_SHADOW_COMPARE` 是迁移诊断开关，不会双发模型请求或双执行工具。
+- `MEMCORE_COMPACTION_MAX_SOURCE_TOKENS` 限制单轮摘要选择的 source tokens；完整 turn/component
+  边界仍会保留，因此实际选择量可小幅越界。中转对大请求承载较弱时可调低，无需改代码。
 - 新接入应使用 `memcore`。`legacy/dual` 只用于明确的迁移窗口，不应继续扩展旧权威。
 
 Akane 内部推荐接口：

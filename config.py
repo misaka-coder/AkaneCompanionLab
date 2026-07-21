@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     MEMCORE_ENABLE_FLAVOR: bool = True
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
     MEMCORE_SHADOW_COMPARE: bool = False
+    # 单轮压缩最多选择多少 source tokens；完整 turn/component 边界可合理越界
+    MEMCORE_COMPACTION_MAX_SOURCE_TOKENS: int = 24000
     # Bound one persisted tool result so a large provider payload cannot keep
     # inflating the visible raw timeline before normal MemCore compaction runs.
     MEMCORE_TOOL_TRACE_MAX_CHARS: int = 12000
@@ -536,6 +538,7 @@ def _apply_settings(s: Settings) -> None:
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
+    global MEMCORE_COMPACTION_MAX_SOURCE_TOKENS
     global MEMCORE_TOOL_TRACE_MAX_CHARS
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
@@ -772,6 +775,10 @@ def _apply_settings(s: Settings) -> None:
     )
     MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
+    MEMCORE_COMPACTION_MAX_SOURCE_TOKENS = max(
+        1000,
+        min(200000, int(s.MEMCORE_COMPACTION_MAX_SOURCE_TOKENS or 24000)),
+    )
     MEMCORE_TOOL_TRACE_MAX_CHARS = max(1000, min(100000, int(s.MEMCORE_TOOL_TRACE_MAX_CHARS or 12000)))
 
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()

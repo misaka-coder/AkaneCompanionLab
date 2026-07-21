@@ -133,6 +133,12 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MEMCORE_VISIBLE_SCOPE", _MEM, SCOPE_RESTART_CLIENT, "memcore 可见长期记忆作用域：conversation/user"),
     _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
     _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
+    _s(
+        "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 单轮压缩 source token 上限（保留完整 turn/component 边界）",
+    ),
     # LLM 密钥 & 接入（密钥/接入由模型服务页管理）
     _s(
         "TEXT_API_KEY",
