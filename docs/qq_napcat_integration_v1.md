@@ -13,6 +13,10 @@ QQ / NapCat
   -> OneBot HTTP send_private_msg / send_group_msg
 ```
 
+当前回复由 `channelcore-onebot` 生成标准 OneBot action plan。文字、图片、
+语音和 mface 在入站事件有 `message_id` 时携带真实 `reply` 段；文件仍使用
+NapCat 私聊/群文件上传 action。Akane 保留内容、媒介和本地文件安全决策。
+
 暂不启用旧项目的 WebSocket bridge 进程。旧项目的 `qq_bridge.py` 仍然很有参考价值，但里面包含任务执行、进度推送、插件运行、主动提醒等大量逻辑，直接搬会污染当前架构。
 
 ## 2. 环境变量

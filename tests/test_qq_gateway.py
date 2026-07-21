@@ -1389,8 +1389,43 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         payload = mocked_post.call_args.kwargs["json"]
         self.assertEqual(payload["user_id"], QQ_USER_FIXTURE_ID)
-        self.assertEqual(payload["message"][0]["type"], "record")
-        self.assertIn("file", payload["message"][0]["data"])
+        self.assertEqual(payload["message"][0], {"type": "reply", "data": {"id": "send-voice-1"}})
+        record = next(item for item in payload["message"] if item["type"] == "record")
+        self.assertIn("file", record["data"])
+
+    def test_send_replies_quotes_only_the_first_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "multi-reply-1",
+                "raw_message": "分段回复",
+            }
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {}}
+
+        with (
+            patch("companion_v01.qq_gateway.config.QQ_REPLY_SEGMENT_DELAY_SECONDS", 0),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=[FakeResponse(), FakeResponse()],
+            ) as request,
+        ):
+            result = gateway.send_replies(context, ["第一段", "第二段"])
+
+        self.assertTrue(result["ok"])
+        first_message = request.call_args_list[0].kwargs["json"]["message"]
+        second_message = request.call_args_list[1].kwargs["json"]["message"]
+        self.assertEqual(first_message[0], {"type": "reply", "data": {"id": "multi-reply-1"}})
+        self.assertEqual(second_message, [{"type": "text", "data": {"text": "第二段"}}])
 
     def test_send_image_checks_onebot_result_and_falls_back_to_base64(self) -> None:
         gateway = NapCatQQGateway()
@@ -1429,7 +1464,8 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["transport"], "base64")
         self.assertEqual(mocked_post.call_count, 3)
-        final_file = mocked_post.call_args.kwargs["json"]["message"][0]["data"]["file"]
+        image = next(item for item in mocked_post.call_args.kwargs["json"]["message"] if item["type"] == "image")
+        final_file = image["data"]["file"]
         self.assertTrue(final_file.startswith("base64://"))
         self.assertNotIn("fake-png-bytes", str(result))
 
@@ -1602,7 +1638,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(mocked_post.call_count, 1)
         payload = mocked_post.call_args.kwargs["json"]
         self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
-        self.assertEqual(payload["message"][0]["type"], "image")
+        self.assertEqual(next(item for item in payload["message"] if item["type"] == "image")["type"], "image")
 
     def test_emotion_images_are_suppressed_during_generated_file_delivery(self) -> None:
         gateway = NapCatQQGateway()
@@ -1939,7 +1975,8 @@ class QQGatewayTests(unittest.TestCase):
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/send_private_msg"))
         self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
-        self.assertEqual(payload["message"][0]["type"], "image")
+        self.assertEqual(payload["message"][0], {"type": "reply", "data": {"id": "generated-image-send-1"}})
+        self.assertEqual(payload["message"][1]["type"], "image")
 
     def test_send_generated_files_trusts_current_structured_delivery_event(self) -> None:
         gateway = NapCatQQGateway()

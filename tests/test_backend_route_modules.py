@@ -51,6 +51,19 @@ QQ_USER_FIXTURE_ID = 10003
 QQ_GROUP_FIXTURE_ID = 20001
 
 
+def _onebot_message_text(payload: dict[str, Any]) -> str:
+    message = payload.get("message")
+    if isinstance(message, str):
+        return message
+    if not isinstance(message, list):
+        return ""
+    return "".join(
+        str(item.get("data", {}).get("text") or "")
+        for item in message
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("data"), dict)
+    )
+
+
 class FakeRuntimeMetrics:
     def __init__(self) -> None:
         self.observed: list[tuple[str, bool]] = []
@@ -765,7 +778,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(process_calls, [])
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertIn("已切换本 QQ 会话角色为", sent_payload["message"])
+        self.assertIn("已切换本 QQ 会话角色为", _onebot_message_text(sent_payload))
 
     def test_qq_router_returns_structured_disabled_for_care_command(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -821,7 +834,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertFalse(payload["command_ok"])
         self.assertEqual(process_calls, [])
         mocked_post.assert_called_once()
-        self.assertIn("养成模块未启用", mocked_post.call_args.kwargs["json"]["message"])
+        self.assertIn("养成模块未启用", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
 
     def test_qq_router_does_not_intercept_retired_finance_mode_command(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -887,7 +900,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertFalse(hasattr(gateway, "send_finance_reports"))
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertIn("普通对话继续运行", sent_payload["message"])
+        self.assertIn("普通对话继续运行", _onebot_message_text(sent_payload))
 
     def test_qq_router_remote_url_security_failure_still_sends_text_reply(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -969,7 +982,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         self.assertNotIn("topsecret", repr(mocked_post.call_args_list))
         self.assertNotIn("topsecret", repr(log_calls))
-        self.assertIn("请换公开直链", mocked_post.call_args.kwargs["json"]["message"])
+        self.assertIn("请换公开直链", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
         self.assertEqual(
             store.list_attachment_inbox_items(
                 profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
@@ -1047,7 +1060,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(dispatch_calls[0]["args"], "subscribe 000001")
         self.assertEqual(dispatch_calls[0]["sender_role"], "admin")
         mocked_post.assert_called_once()
-        self.assertIn("财经命令已处理", mocked_post.call_args.kwargs["json"]["message"])
+        self.assertIn("财经命令已处理", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
 
     def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -1233,7 +1246,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertTrue(clear_calls[0]["delete_storage"])
         self.assertEqual(clear_calls[1]["target"], "current")
         self.assertFalse(clear_calls[1]["delete_storage"])
-        sent_messages = [call.kwargs["json"]["message"] for call in mocked_post.call_args_list]
+        sent_messages = [_onebot_message_text(call.kwargs["json"]) for call in mocked_post.call_args_list]
         self.assertTrue(any("当前工作台" in message and "file_001" in message for message in sent_messages))
         self.assertTrue(any("已删除原始附件文件：2 个" in message for message in sent_messages))
         self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
@@ -1887,7 +1900,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(sent_logs), 1)
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertIn("我看到这张图了", sent_payload["message"])
+        self.assertIn("我看到这张图了", _onebot_message_text(sent_payload))
 
     def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -1963,7 +1976,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("我在 QQ 里戳了戳", poke_logs[0]["turn_message"])
         mocked_post.assert_called_once()
         sent_payload = mocked_post.call_args.kwargs["json"]
-        self.assertEqual(str(sent_payload["message"]).rstrip("。"), "别戳了")
+        self.assertEqual(_onebot_message_text(sent_payload).rstrip("。"), "别戳了")
 
     # ---------- control center action contract ----------
 

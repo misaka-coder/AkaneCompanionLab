@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from channelcore_onebot import normalize_inbound_event, resolve_quoted_message
+from channelcore_onebot import (
+    build_message_action,
+    normalize_action_response,
+    normalize_inbound_event,
+    resolve_quoted_message,
+)
 
 from companion_v01.qq_gateway import NapCatQQGateway
 
@@ -232,6 +238,56 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "scope_unverifiable")
         self.assertEqual(result["attachments"], [])
+
+    def test_gateway_outbound_reply_uses_package_plan_and_real_reply_segment(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": BOT_ID,
+                "user_id": USER_ID,
+                "message_id": "outbound-current-1",
+                "raw_message": "hello",
+            }
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": "sent-1"}}
+
+        with (
+            patch("companion_v01.qq_gateway.build_message_action", wraps=build_message_action) as package_builder,
+            patch(
+                "companion_v01.onebot_transport.normalize_action_response",
+                wraps=normalize_action_response,
+            ) as package_result_parser,
+            patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()) as request,
+        ):
+            result = gateway.send_reply(context, "world")
+
+        self.assertTrue(result["ok"])
+        package_builder.assert_called_once()
+        package_result_parser.assert_called_once()
+        self.assertEqual(
+            request.call_args.kwargs["json"]["message"],
+            [
+                {"type": "reply", "data": {"id": "outbound-current-1"}},
+                {"type": "text", "data": {"text": "world"}},
+            ],
+        )
+
+    def test_gateway_has_no_second_outbound_protocol_implementation(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
+        self.assertNotIn('"send_private_msg"', source)
+        self.assertNotIn('"send_group_msg"', source)
+        self.assertNotIn('"upload_private_file"', source)
+        self.assertNotIn('"upload_group_file"', source)
+        self.assertNotIn('"type": "record"', source)
+        self.assertIn("build_message_action(", source)
+        self.assertIn("build_upload_file_action(", source)
 
 
 if __name__ == "__main__":

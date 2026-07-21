@@ -1,6 +1,6 @@
 # channelcore-onebot Akane integration v0
 
-Status: inbound normalization + event-admission + group-trigger + quoted-message slices integrated.
+Status: inbound normalization, admission, group-trigger, quoted-message, and M4 outbound slices integrated.
 
 ## Decision
 
@@ -20,7 +20,9 @@ OneBot/NapCat webhook
   -> Akane QQMessageContext product projection
   -> channelcore_onebot.resolve_quoted_message(..., call_action=bot_transport)
   -> Akane commands, safe attachment materialization, vision, MemCore/LLM, TTS
-  -> current Akane OneBot delivery path
+  -> channelcore_onebot builds outbound target/segments/action plan
+  -> Akane Bot-bound HTTP transport executes the plan
+  -> channelcore_onebot normalizes the OneBot action result
 ```
 
 ## Package-owned in this slice
@@ -41,6 +43,9 @@ OneBot/NapCat webhook
   normalization, and group/private reply scope validation;
 - fail-closed `scope_unverifiable` for private replies without enough participant
   data.
+- private/group outbound targets; text, image, voice, reply, and mface segment
+  construction; message/file-upload action selection; and safe logical result
+  normalization.
 
 ## Akane-owned
 
@@ -52,9 +57,10 @@ OneBot/NapCat webhook
 - Bot-bound OneBot action transport for self-check, member/quoted-message and
   attachment-cache lookup, and the current outbound actions (fixed action
   allowlist, dedicated non-proxying Session, redirect rejection, and separate
-  HTTP/status/retcode validation);
+  HTTP handling; logical status/retcode validation is package-owned);
 - safe attachment download/materialization, vision, MemCore, model, and TTS;
-- choice of response media and all outbound OneBot actions.
+- choice of response media, local-file authorization/fallback candidates, and
+  Bot-bound HTTP execution.
 
 Akane's materialization boundary treats `AttachmentRef.locator` as untrusted
 input. QQ event `path`, `local_path`, and `workspace_uri` never authorize a
@@ -87,24 +93,21 @@ message, attachment, reply, mention, wake-word, and poke shapes now pass
   before materialization. No vision, reply-send, or new sticker behavior is
 advertised.
 
-The transport remains Akane-owned in this repair. Outbound product decisions
-and OneBot message construction have not moved into `channelcore-onebot`, so
-this does not start M4 or create a parallel package sender. `qq_gateway.py` no
-longer performs direct OneBot HTTP requests; transport results expose only
-stable codes, public reasons, and action-specific safe acknowledgement data.
+The transport remains Akane-owned. M4 moved OneBot target/segment/action/result
+protocol authority into `channelcore-onebot`; `qq_gateway.py` supplies product
+content and safe local-media candidates to package plans. Text and media
+replies include a real reply segment when the inbound event has a message id.
+`qq_gateway.py` no longer performs direct OneBot HTTP requests or owns logical
+status/retcode validation.
 
 ## Remaining protocol slices
 
-Later work may replace, one boundary at a time:
-
-1. text/image/voice/file/mface outbound actions with one sanitized structured
-   result contract;
-2. real reply-segment sending and face/mface host consumption.
-
-Each applied slice must delete or thin the corresponding Akane authority in the
-same change. In particular, HTTP 200 with a non-zero OneBot retcode must not be
-reported as success, and outbound results must not expose local paths, tokens,
-attachment URLs, raw exceptions, or raw OneBot payloads.
+M4 covers the active text/image/voice/file/reply/mface paths. A future `face`
+slice should be added only when Akane has a real outbound face consumer. New
+outbound segment/action rules belong in the package rather than
+`qq_gateway.py`. HTTP 200 with a non-zero OneBot retcode is not success, and
+outbound results do not expose local paths, tokens, attachment URLs, raw
+exceptions, or raw OneBot payloads.
 
 The Akane-owned remote materialization repair now validates public HTTP/HTTPS
 URLs before creating a pending item, requires every resolved A/AAAA address to

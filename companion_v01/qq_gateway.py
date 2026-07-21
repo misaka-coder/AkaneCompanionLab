@@ -16,6 +16,10 @@ from channelcore_onebot import (
     EventAdmissionConfig,
     GroupTriggerPolicy,
     OneBotEventAdmission,
+    OutboundAction,
+    OutboundTarget,
+    build_message_action,
+    build_upload_file_action,
     clean_message_text as clean_onebot_message_text,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
     compile_wake_word_search as _compile_qq_wake_word_search,
@@ -26,6 +30,10 @@ from channelcore_onebot import (
     parse_cq_params as parse_onebot_cq_params,
     render_message_text as render_onebot_message_text,
     resolve_quoted_message as resolve_onebot_quoted_message,
+    image_segment,
+    mface_segment,
+    text_segment,
+    voice_segment,
 )
 
 import config
@@ -234,6 +242,7 @@ class QQMessageContext:
     reply_mode: str = ""
     chat_model_override: str = ""
     attachments: list[dict[str, Any]] | None = None
+    source_message_id: str = ""
 
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
@@ -275,6 +284,7 @@ class QQMessageContext:
             "clean_message": self.clean_message,
             "raw_message": self.raw_message,
             "sender_label": self.sender_label,
+            "source_message_id": self.source_message_id,
         }
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
@@ -752,6 +762,7 @@ class NapCatQQGateway:
                     reply_mode=reply_mode,
                     chat_model_override=chat_model_override,
                     attachments=attachments,
+                    source_message_id=str(event.get("message_id") or "").strip(),
                 )
 
         return QQMessageContext(
@@ -770,6 +781,7 @@ class NapCatQQGateway:
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
             attachments=attachments,
+            source_message_id=str(event.get("message_id") or "").strip(),
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,
@@ -860,6 +872,7 @@ class NapCatQQGateway:
             reply_mode=_safe_reply_mode(value.get("reply_mode") or value.get("replyMode"), default=""),
             chat_model_override=_safe_chat_model_id(value.get("chat_model_override") or value.get("chatModelOverride")),
             attachments=[],
+            source_message_id=str(value.get("source_message_id") or value.get("sourceMessageId") or "").strip(),
         )
 
     def resolve_character_pack_id(self, session_id: str) -> str:
@@ -2162,7 +2175,7 @@ class NapCatQQGateway:
         for index, message in enumerate(clean_messages):
             if index > 0:
                 time.sleep(delay_seconds)
-            results.append(self.send_reply(context, message))
+            results.append(self.send_reply(context, message, include_reply=index == 0))
         return {
             "ok": all(bool(result.get("ok")) for result in results),
             "count": len(results),
@@ -2884,18 +2897,25 @@ class NapCatQQGateway:
 
         return None
 
-    def send_reply(self, context: QQMessageContext, message: str) -> dict[str, Any]:
+    def send_reply(
+        self,
+        context: QQMessageContext,
+        message: str,
+        *,
+        include_reply: bool = True,
+    ) -> dict[str, Any]:
         clean_message = self._trim_segment_ending(str(message or ""))
         if not context.target_id or not clean_message:
             return {"ok": False, "reason": "empty_target_or_message"}
-
-        action = "send_group_msg" if context.is_group else "send_private_msg"
-        payload = (
-            {"group_id": context.target_id, "message": clean_message}
-            if context.is_group
-            else {"user_id": context.target_id, "message": clean_message}
-        )
-        return self._onebot_transport.call(action, payload, timeout=8).as_dict()
+        try:
+            plan = build_message_action(
+                self._outbound_target(context),
+                [text_segment(clean_message)],
+                reply_to=context.source_message_id if include_reply else "",
+            )
+        except ValueError as exc:
+            return self._outbound_plan_failure(exc)
+        return self._send_outbound_plan(plan, timeout=8)
 
     def send_mface(self, context: QQMessageContext, *, mface: dict[str, Any]) -> dict[str, Any]:
         """Send a NapCat / OneBot marketplace emoji message segment."""
@@ -2905,19 +2925,15 @@ class NapCatQQGateway:
         if not data:
             return {"ok": False, "reason": "invalid_mface_payload"}
 
-        action = "send_group_msg" if context.is_group else "send_private_msg"
-        payload = (
-            {
-                "group_id": context.target_id,
-                "message": [{"type": "mface", "data": data}],
-            }
-            if context.is_group
-            else {
-                "user_id": context.target_id,
-                "message": [{"type": "mface", "data": data}],
-            }
-        )
-        return self._onebot_transport.call(action, payload, timeout=8).as_dict()
+        try:
+            plan = build_message_action(
+                self._outbound_target(context),
+                [mface_segment(data)],
+                reply_to=context.source_message_id,
+            )
+        except ValueError as exc:
+            return self._outbound_plan_failure(exc)
+        return self._send_outbound_plan(plan, timeout=8)
 
     def send_emotion_mface(
         self,
@@ -3056,8 +3072,6 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "image_not_found"}
 
-        action = "send_group_msg" if context.is_group else "send_private_msg"
-        base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
         resolved_path = path_obj.resolve()
         file_candidates = [
             ("file_uri", resolved_path.as_uri()),
@@ -3074,19 +3088,15 @@ class NapCatQQGateway:
             inline_fallback_skipped = True
         last_result = None
         for transport, file_value in file_candidates:
-            payload = {
-                **base_payload,
-                "message": [
-                    {
-                        "type": "image",
-                        "data": {
-                            "file": file_value,
-                            "summary": name or path_obj.name,
-                        },
-                    }
-                ],
-            }
-            last_result = self._onebot_transport.call(action, payload, timeout=20)
+            try:
+                plan = build_message_action(
+                    self._outbound_target(context),
+                    [image_segment(file_value, summary=name or path_obj.name)],
+                    reply_to=context.source_message_id,
+                )
+            except ValueError as exc:
+                return self._outbound_plan_failure(exc)
+            last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=20)
             if last_result.ok:
                 result = last_result.as_dict()
                 result["transport"] = transport
@@ -3104,24 +3114,18 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "audio_not_found"}
 
-        action = "send_group_msg" if context.is_group else "send_private_msg"
-        base_payload = {"group_id": context.target_id} if context.is_group else {"user_id": context.target_id}
         file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
         last_result = None
         for file_value in file_candidates:
-            payload = {
-                **base_payload,
-                "message": [
-                    {
-                        "type": "record",
-                        "data": {
-                            "file": file_value,
-                            "summary": name or path_obj.name,
-                        },
-                    }
-                ],
-            }
-            last_result = self._onebot_transport.call(action, payload, timeout=30)
+            try:
+                plan = build_message_action(
+                    self._outbound_target(context),
+                    [voice_segment(file_value, summary=name or path_obj.name)],
+                    reply_to=context.source_message_id,
+                )
+            except ValueError as exc:
+                return self._outbound_plan_failure(exc)
+            last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
             if last_result.ok:
                 return last_result.as_dict()
         return (last_result or self._onebot_transport.call("unknown", {})).as_dict()
@@ -3131,13 +3135,33 @@ class NapCatQQGateway:
         if not context.target_id or not clean_path:
             return {"ok": False, "reason": "empty_target_or_file"}
 
-        action = "upload_group_file" if context.is_group else "upload_private_file"
-        payload = (
-            {"group_id": context.target_id, "file": clean_path, "name": name or Path(clean_path).name}
-            if context.is_group
-            else {"user_id": context.target_id, "file": clean_path, "name": name or Path(clean_path).name}
-        )
-        return self._onebot_transport.call(action, payload, timeout=20).as_dict()
+        try:
+            plan = build_upload_file_action(
+                self._outbound_target(context),
+                file_ref=clean_path,
+                name=name or Path(clean_path).name,
+            )
+        except ValueError as exc:
+            return self._outbound_plan_failure(exc)
+        return self._send_outbound_plan(plan, timeout=20)
+
+    @staticmethod
+    def _outbound_target(context: QQMessageContext) -> OutboundTarget:
+        return OutboundTarget("group" if context.is_group else "private", context.target_id)
+
+    def _send_outbound_plan(self, plan: OutboundAction, *, timeout: float) -> dict[str, Any]:
+        return self._onebot_transport.call(plan.action, plan.params(), timeout=timeout).as_dict()
+
+    @staticmethod
+    def _outbound_plan_failure(exc: ValueError) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "failed",
+            "code": str(exc) or "onebot_outbound_plan_invalid",
+            "action": "unknown",
+            "data": {},
+            "public_reason": "OneBot 出站消息参数无效。",
+        }
 
     def register_attachment_debounce(
         self,

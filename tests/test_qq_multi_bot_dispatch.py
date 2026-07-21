@@ -56,6 +56,12 @@ class _Response:
         return {"status": "ok"}
 
 
+def _message_text(post: dict[str, Any]) -> str:
+    return "".join(
+        str(item.get("data", {}).get("text") or "") for item in post["json"]["message"] if item.get("type") == "text"
+    )
+
+
 class _Broker:
     def __init__(self, reply: str) -> None:
         self.reply = reply
@@ -204,8 +210,8 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         )
         self.assertEqual(posts[0]["headers"]["Authorization"], "Bearer token-a")
         self.assertEqual(posts[1]["headers"]["Authorization"], "Bearer token-b")
-        self.assertIn("A 的正常回复", posts[0]["json"]["message"])
-        self.assertIn("B 的正常回复", posts[1]["json"]["message"])
+        self.assertIn("A 的正常回复", _message_text(posts[0]))
+        self.assertIn("B 的正常回复", _message_text(posts[1]))
 
     def test_legacy_path_is_only_an_alias_for_default_bot(self) -> None:
         app, engine_a, engine_b, _gateway_a, _gateway_b = self._app()
@@ -322,8 +328,8 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         self.assertEqual([item["idempotency_key"] for item in broker_b.calls], ["command-b"])
         self.assertEqual(engine_a.turns, [])
         self.assertEqual(engine_b.turns, [])
-        self.assertIn("A 插件命令", posts[0]["json"]["message"])
-        self.assertIn("B 插件命令", posts[1]["json"]["message"])
+        self.assertIn("A 插件命令", _message_text(posts[0]))
+        self.assertIn("B 插件命令", _message_text(posts[1]))
 
 
 if __name__ == "__main__":

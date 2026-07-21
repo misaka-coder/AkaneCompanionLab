@@ -232,6 +232,8 @@ Current Akane use:
 
 - `companion_v01/qq_gateway.py` delegates OneBot message text, CQ segment,
   attachment, reply, mention, wake-word, and poke normalization to the package.
+- It also delegates outbound target, text/image/voice/reply/mface segments,
+  message/file action selection, and logical result normalization.
 - `QQMessageContext` remains an Akane product projection that adds session,
   profile, character, reply-mode, model, prompt, and memory-facing fields.
 
@@ -240,28 +242,31 @@ Authority:
 - `channelcore-onebot` owns the neutral inbound contracts and OneBot
   event/message-segment normalization plus the M1 self-id, stale, and atomic
   replay admission boundary, the M2 neutral group-trigger/follow decision,
-  and the M3 quoted-message lookup/scope boundary.
+  the M3 quoted-message lookup/scope boundary, and the M4 outbound protocol
+  plan/result boundary.
 - Akane owns webhook authentication and HTTP status mapping, session/profile mapping, product commands,
   attachment materialization, vision, MemCore, model calls, TTS, and delivery
   policy.
 - Group vision enablement remains Akane-owned and is passed into the package as
   `allow_attachment_follow`; Akane supplies only the Bot-bound action transport
   for quoted lookup, attachment-cache lookup, self-check, and current outbound
-  delivery. The HTTP transport is a single Akane-owned implementation;
-  outbound protocol/message construction remains Akane-owned until a later
-  replacement slice moves that behavior and removes its old implementation.
+  delivery. The HTTP transport, product media choice, local-file authorization,
+  and fallback ordering remain Akane-owned; protocol/message construction and
+  logical acknowledgement validation are package-owned.
 
 Old implementation status:
 
 ```text
-thin adapter for inbound normalization, admission, group trigger policy, and
-quoted lookup projection
+thin adapter for inbound normalization, admission, group trigger policy,
+quoted lookup projection, and outbound product-to-protocol projection
 ```
 
 The old parsing and replay helpers in `qq_gateway.py` are now deleted or pure
 compatibility projections. Akane must not add new OneBot segment, identity,
-freshness, or replay rules there. The package currently does not claim outbound
-ownership, so existing sending code is not a parallel package implementation.
+freshness, replay, outbound segment, action-selection, or logical result rules
+there. Akane's remaining sending code prepares product content and safe local
+media candidates, then executes the package plan through its Bot-bound
+transport.
 
 ### `capcore`
 
