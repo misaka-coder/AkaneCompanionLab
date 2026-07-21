@@ -178,6 +178,13 @@ class NDJSONCallResult:
 
 
 @dataclass
+class ChatJSONResult:
+    parsed: dict[str, Any]
+    raw_text: str
+    error: str = ""
+
+
+@dataclass
 class ChatJSONStreamResult:
     parsed: dict[str, Any]
     raw_text: str
@@ -736,8 +743,41 @@ class LLMRuntime:
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
     ) -> dict[str, Any]:
+        return self.call_chat_json_result(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+            user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=native_tool_choice,
+            system_extra_blocks=system_extra_blocks,
+            history_turns=history_turns,
+            post_user_turns=post_user_turns,
+            prompt_audit_sections=prompt_audit_sections,
+            chat_model_override=chat_model_override,
+        ).parsed
+
+    def call_chat_json_result(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: dict[str, Any],
+        temperature: float = 0.7,
+        prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
+        chat_model_override: str = "",
+    ) -> ChatJSONResult:
         self._record_metric("chat_json_calls")
-        return self._call_json(
+        return self._call_json_result(
             bundle=self._chat_bundle_for_override(chat_model_override),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -832,7 +872,41 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        return self._call_json_result(
+            bundle=bundle,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+            user_images=user_images,
+            native_tools=native_tools,
+            native_tool_choice=native_tool_choice,
+            system_extra_blocks=system_extra_blocks,
+            history_turns=history_turns,
+            post_user_turns=post_user_turns,
+            prompt_audit_sections=prompt_audit_sections,
+        ).parsed
+
+    def _call_json_result(
+        self,
+        *,
+        bundle: ModelBundle,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: dict[str, Any],
+        temperature: float,
+        prompt_cache_key: str,
+        user_images: list[dict[str, Any]] | None = None,
+        native_tools: list[dict[str, Any]] | None = None,
+        native_tool_choice: Any = "",
+        system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
+    ) -> ChatJSONResult:
         native_requested = bool(self._normalize_native_tools(native_tools))
+        content = ""
         try:
             response = self._create_completion(
                 bundle=bundle,
@@ -861,27 +935,30 @@ class LLMRuntime:
                     NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
                     "tool_call": None,
                 }
-                native_preface_text = self._native_preface_text_from_content(self._extract_text(response))
+                content = self._extract_text(response)
+                native_preface_text = self._native_preface_text_from_content(content)
                 if native_preface_text:
                     parsed["speech"] = native_preface_text
                     parsed["speech_segments"] = [native_preface_text]
-                return parsed
+                return ChatJSONResult(parsed=parsed, raw_text=content)
             if native_requested:
                 self._record_metric("native_tool_no_call")
             self._note_truncation(response, phase="call_json")
             content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
-                return parsed
+                return ChatJSONResult(parsed=parsed, raw_text=content)
             recovered = self._recover_partial_chat_json(content, fallback=fallback)
             if isinstance(recovered, dict):
-                return recovered
+                return ChatJSONResult(parsed=recovered, raw_text=content)
             self._note_parse_fallback(content, phase="call_json")
         except Exception as exc:
             self._record_metric("errors")
             self._capture_runtime_error(exc, phase="call_json")
+            self._record_metric("chat_json_fallbacks")
+            return ChatJSONResult(parsed=dict(fallback), raw_text="", error=str(exc or "").strip())
         self._record_metric("chat_json_fallbacks")
-        return dict(fallback)
+        return ChatJSONResult(parsed=dict(fallback), raw_text=content)
 
     def _call_ndjson(
         self,

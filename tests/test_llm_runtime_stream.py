@@ -7,6 +7,53 @@ from companion_v01.llm_runtime import LLMRuntime, _TopLevelJSONStreamTap
 
 
 class TopLevelJSONStreamTapTests(unittest.TestCase):
+    @staticmethod
+    def _sync_runtime(raw_text: str) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._create_completion = lambda **_kwargs: SimpleNamespace()
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._extract_native_tool_calls = lambda *_args, **_kwargs: []
+        runtime._note_truncation = lambda *_args, **_kwargs: None
+        runtime._extract_text = lambda _response: raw_text
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._note_parse_fallback = lambda *_args, **_kwargs: None
+        return runtime
+
+    def test_sync_chat_json_result_preserves_exact_provider_text(self) -> None:
+        raw_text = '{  "speech": "在的。", "emotion": "happy"  }'
+        runtime = self._sync_runtime(raw_text)
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.parsed, {"speech": "在的。", "emotion": "happy"})
+        self.assertEqual(result.raw_text, raw_text)
+        self.assertNotEqual(result.raw_text, '{"speech": "在的。", "emotion": "happy"}')
+
+    def test_sync_parse_fallback_keeps_real_raw_separate_from_fallback(self) -> None:
+        raw_text = "provider returned broken json"
+        runtime = self._sync_runtime(raw_text)
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.parsed, {"speech": "fallback"})
+        self.assertEqual(result.raw_text, raw_text)
+
     def test_emits_ui_event_and_speech_chunks_from_split_json(self) -> None:
         tap = _TopLevelJSONStreamTap()
         events = []
@@ -145,6 +192,10 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertTrue(result.stopped_early)
         self.assertEqual(result.parsed["tool_call"]["type"], "retrieve_memory")
         self.assertEqual(result.parsed["tool_call"]["query"], "扬州城")
+        self.assertEqual(
+            result.raw_text,
+            '{"emotion":"normal","speech":"我查一下。","speech_segments":[],"tool_call":{"type":"retrieve_memory","query":"扬州城"}}',
+        )
         self.assertNotIn('"status"', result.raw_text)
 
     def test_extract_text_flattens_content_blocks(self) -> None:

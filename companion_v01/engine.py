@@ -890,6 +890,7 @@ class AkaneMemoryEngine:
         turn_id: str,
         assistant_record: dict[str, Any],
         memory_metadata: dict[str, Any] | None,
+        provider_output_raw: str,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -902,7 +903,7 @@ class AkaneMemoryEngine:
                 turn_id=turn_id,
                 assistant_record=assistant_record,
                 memory_metadata=memory_metadata,
-                provider_output_raw="",
+                provider_output_raw=str(provider_output_raw or ""),
                 annotation_status="accepted_model" if isinstance(memory_metadata, dict) else "missing",
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -2984,12 +2985,14 @@ class AkaneMemoryEngine:
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
+        provider_output_raw = ""
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
+            provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
                 user_message=user_message,
@@ -3207,6 +3210,7 @@ class AkaneMemoryEngine:
             payload=payload,
             now_ts=now_ts,
         )
+        provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -3264,6 +3268,7 @@ class AkaneMemoryEngine:
                     turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
+                    provider_output_raw=provider_output_raw,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -3511,12 +3516,14 @@ class AkaneMemoryEngine:
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
         tool_round_index = 0
+        provider_output_raw = ""
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
         while tool_round_index < max_tool_rounds:
+            provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
                 user_message=user_message,
@@ -3758,6 +3765,7 @@ class AkaneMemoryEngine:
             payload=payload,
             now_ts=now_ts,
         )
+        provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
         memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
@@ -3817,6 +3825,7 @@ class AkaneMemoryEngine:
                     turn_id=memcore_turn_id,
                     assistant_record=assistant_record,
                     memory_metadata=memory_metadata,
+                    provider_output_raw=provider_output_raw,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
@@ -4054,6 +4063,7 @@ class AkaneMemoryEngine:
         max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
+        provider_output_raw = ""
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
@@ -4064,7 +4074,26 @@ class AkaneMemoryEngine:
                     "不要只输出通用兜底语、处理中占位语或未完成声明。"
                     "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
                 )
-            result = self.llm.call_chat_json(
+            call_result = (
+                self.llm.call_chat_json_result(
+                    system_prompt=str(generation_context["system_prompt"]),
+                    user_prompt=str(generation_context["user_prompt"]) + retry_note,
+                    fallback=dict(generation_context["fallback"]),
+                    temperature=0.7,
+                    prompt_cache_key=prompt_cache_key,
+                    user_images=user_images,
+                    system_extra_blocks=generation_context.get("system_extra_blocks"),
+                    history_turns=generation_context.get("history_turns"),
+                    post_user_turns=generation_context.get("post_user_turns"),
+                    prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+                    native_tools=generation_context.get("native_tools"),
+                    native_tool_choice=generation_context.get("native_tool_choice", ""),
+                    chat_model_override=chat_model_override,
+                )
+                if hasattr(self.llm, "call_chat_json_result")
+                else None
+            )
+            result = call_result.parsed if call_result is not None else self.llm.call_chat_json(
                 system_prompt=str(generation_context["system_prompt"]),
                 user_prompt=str(generation_context["user_prompt"]) + retry_note,
                 fallback=dict(generation_context["fallback"]),
@@ -4079,6 +4108,7 @@ class AkaneMemoryEngine:
                 native_tool_choice=generation_context.get("native_tool_choice", ""),
                 chat_model_override=chat_model_override,
             )
+            provider_output_raw = str(getattr(call_result, "raw_text", "") or "")
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                 metrics_before.get("chat_json_fallbacks", 0) or 0
@@ -4096,10 +4126,13 @@ class AkaneMemoryEngine:
             )
             self._attach_tool_execution_receipts(normalized, generation_context)
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
+                if provider_output_raw:
+                    normalized["_provider_output_raw"] = provider_output_raw
                 return normalized
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
         normalized["_transient_final_failure"] = True
+        normalized.pop("_provider_output_raw", None)
         return normalized
 
     @staticmethod
@@ -4232,6 +4265,7 @@ class AkaneMemoryEngine:
         streamed_speech_to_user = False
         unrecovered_stream_error = ""
         unrecovered_stream_partial: dict[str, str] = {}
+        provider_output_raw = ""
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
@@ -4299,6 +4333,7 @@ class AkaneMemoryEngine:
                 metrics_before.get("chat_json_fallbacks", 0) or 0
             )
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
+            provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
             if stream_error:
                 unrecovered_stream_error = stream_error
                 unrecovered_stream_partial = {
@@ -4333,7 +4368,17 @@ class AkaneMemoryEngine:
                 if hasattr(self.llm, "record_metric"):
                     self.llm.record_metric("chat_stream_nonstream_fallbacks")
                 fallback_metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-                fallback_result = self.llm.call_chat_json(**request_kwargs)
+                fallback_call_result = (
+                    self.llm.call_chat_json_result(**request_kwargs)
+                    if hasattr(self.llm, "call_chat_json_result")
+                    else None
+                )
+                fallback_result = (
+                    fallback_call_result.parsed
+                    if fallback_call_result is not None
+                    else self.llm.call_chat_json(**request_kwargs)
+                )
+                provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
                 fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                 fallback_parse_failure = int(fallback_metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
                     fallback_metrics_before.get("chat_json_fallbacks", 0) or 0
@@ -4362,7 +4407,17 @@ class AkaneMemoryEngine:
                     uncached_metrics_before = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                     )
-                    uncached_result = self.llm.call_chat_json(**uncached_request_kwargs)
+                    uncached_call_result = (
+                        self.llm.call_chat_json_result(**uncached_request_kwargs)
+                        if hasattr(self.llm, "call_chat_json_result")
+                        else None
+                    )
+                    uncached_result = (
+                        uncached_call_result.parsed
+                        if uncached_call_result is not None
+                        else self.llm.call_chat_json(**uncached_request_kwargs)
+                    )
+                    provider_output_raw = str(getattr(uncached_call_result, "raw_text", "") or "")
                     uncached_metrics_after = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                     )
@@ -4420,6 +4475,10 @@ class AkaneMemoryEngine:
             }
         if self._is_retryable_final_output(normalized):
             normalized["_transient_final_failure"] = True
+            normalized.pop("_provider_output_raw", None)
+        else:
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
         return normalized
 
     def _prepare_final_response_context(
