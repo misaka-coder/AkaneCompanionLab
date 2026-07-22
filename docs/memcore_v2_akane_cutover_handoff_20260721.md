@@ -21,10 +21,12 @@ MemCore，备份库 `quick_check=ok`；云端 79 项 Akane MemCore integration t
 均为 `connected`，两份运行库 `quick_check=ok`，`NRestarts=0`，近期启动日志没有
 MemCore 配置或 compaction failure。
 
-同一维护窗口按用户要求只把 personal 的主回复临时切为 DeepSeek
-`deepseek-v4-pro`、辅助请求切为 `deepseek-v4-flash`；personal 识图仍使用原 PinAI
-视觉配置，finance 仍为 PinAI `gpt-5.6-luna`，未改金融配置。控制中心读取和真实
-model-service connection test 均确认 personal DeepSeek 配置已生效。
+同一维护窗口按用户要求只把 personal 临时切为 DeepSeek `deepseek-v4-pro`。
+当前持久化 model-service 覆盖会把 `TEXT/AUX/CHAT` 三条运行时路由统一设为该模型，
+所以 MemCore 总结也使用 pro；`useForVision=false` 会按既有产品语义关闭 personal
+视觉，不会继续使用旧 PinAI 视觉配置。finance 仍为 PinAI `gpt-5.6-luna`，未改
+金融配置。控制中心读取和真实 model-service connection test 均确认 personal
+DeepSeek 配置已生效。
 
 > 2026-07-22 后续修订：本文记录的 bounded V2 source/episode pass 会提前
 > 截断原有 token 差值目标，在活跃群造成连续 prompt 前缀重写。当前权威改为
