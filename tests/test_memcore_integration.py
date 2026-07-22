@@ -570,7 +570,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(resolve_memcore_provider_profile("canonical"), "canonical_user_assistant")
         self.assertEqual(resolve_memcore_provider_profile("finance_bot"), "")
 
-    def test_compaction_source_limit_is_host_configurable(self) -> None:
+    def test_compaction_token_difference_policy_is_host_configurable(self) -> None:
         manager = MemcoreManager.__new__(MemcoreManager)
         manager.visible_scope = "user"
         manager.enable_flavor = True
@@ -578,9 +578,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
             DEFAULT_CATEGORIES=("tool_trace",),
             MemoryConfig=lambda **kwargs: SimpleNamespace(**kwargs),
         )
-        with patch.object(config, "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS", 12000, create=True):
+        with (
+            patch.object(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000, create=True),
+            patch.object(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67, create=True),
+        ):
             memory_config = manager._build_memory_config(fake_memcore)
-        self.assertEqual(memory_config.compaction_max_source_tokens, 12000)
+        self.assertEqual(memory_config.raw_token_trigger, 24000)
+        self.assertEqual(memory_config.raw_token_batch_ratio, 0.67)
 
     def test_process_runtime_uses_configured_compaction_workers(self) -> None:
         from companion_v01.memcore_integration import manager as manager_module
@@ -2245,6 +2249,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "provider_profile": "openai_chat",
                 "before_projected_tokens": 220_000,
                 "after_projected_tokens": 28_000,
+                "before_raw_projected_tokens": 24_100,
+                "after_raw_projected_tokens": 8_000,
+                "planned_source_tokens": 16_080,
+                "selected_projected_tokens": 16_100,
                 "compaction_generation": 2,
                 "source_turn_count": 39,
                 "source_entry_count": 78,
@@ -2264,6 +2272,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("status=compacted", rendered)
         self.assertIn("before_tokens=220000", rendered)
         self.assertIn("after_tokens=28000", rendered)
+        self.assertIn("raw_before_tokens=24100", rendered)
+        self.assertIn("raw_after_tokens=8000", rendered)
+        self.assertIn("planned_source_tokens=16080", rendered)
+        self.assertIn("selected_source_tokens=16100", rendered)
         self.assertIn("namespace=abc123def456", rendered)
         self.assertNotIn("must-not-be-logged", rendered)
 

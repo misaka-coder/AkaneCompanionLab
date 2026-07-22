@@ -1936,6 +1936,14 @@ class MemcoreManager:
         return memcore.MemoryConfig(
             raw_trigger_count=max(1, int(getattr(config, "SUMMARY_TRIGGER_COUNT", 30) or 30)),
             summary_batch_size=max(1, int(getattr(config, "SUMMARY_BATCH_SIZE", 20) or 20)),
+            raw_token_trigger=max(
+                1000,
+                int(getattr(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000) or 24000),
+            ),
+            raw_token_batch_ratio=max(
+                0.01,
+                min(0.99, float(getattr(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67) or 0.67)),
+            ),
             episodic_visible_max=max(
                 1,
                 int(
@@ -1956,10 +1964,6 @@ class MemcoreManager:
                 int(getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5) or 5),
             ),
             semantic_visible_limit=max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 5) or 5)),
-            compaction_max_source_tokens=max(
-                1000,
-                int(getattr(config, "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS", 24000) or 24000),
-            ),
             semantic_reinforcement_lookback=max(
                 1,
                 int(getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8) or 8),
@@ -2825,8 +2829,9 @@ class MemcoreManager:
 
         fields = (
             "memcore_compaction status=%s namespace=%s profile=%s reason=%s "
-            "before_tokens=%d after_tokens=%d generation=%d source_turns=%d "
-            "source_entries=%d summaries=%d"
+            "before_tokens=%d after_tokens=%d raw_before_tokens=%d raw_after_tokens=%d "
+            "planned_source_tokens=%d selected_source_tokens=%d generation=%d "
+            "source_turns=%d source_entries=%d summaries=%d"
         )
         args = (
             status,
@@ -2835,6 +2840,10 @@ class MemcoreManager:
             reason or "none",
             _safe_int(stats.get("before_projected_tokens")),
             _safe_int(stats.get("after_projected_tokens")),
+            _safe_int(stats.get("before_raw_projected_tokens")),
+            _safe_int(stats.get("after_raw_projected_tokens")),
+            _safe_int(stats.get("planned_source_tokens")),
+            _safe_int(stats.get("selected_projected_tokens")),
             _safe_int(stats.get("compaction_generation")),
             _safe_int(stats.get("source_turn_count")),
             _safe_int(stats.get("source_entry_count")),

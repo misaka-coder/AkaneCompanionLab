@@ -1,5 +1,12 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
+> 2026-07-22 后续修订：本文记录的 bounded V2 source/episode pass 会提前
+> 截断原有 token 差值目标，在活跃群造成连续 prompt 前缀重写。当前权威改为
+> `MEMCORE_RAW_TOKEN_TRIGGER=24000` 与
+> `MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67`；projected-token 模式在一个原子
+> generation 内按完整 terminal turn/relation component 达到比例目标。下文历史
+> `max_prompt_history_tokens/target_prompt_history_tokens` smoke 值仅描述旧 release。
+
 ## 最新 repair pass 状态（后续章节中的“尚未切读链”描述已过期）
 
 截至本轮未提交工作区，Akane 已经切到 MemCore provider projection 读权威，并完成以下收口：

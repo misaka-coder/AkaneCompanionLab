@@ -134,10 +134,16 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
     _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
     _s(
-        "MEMCORE_COMPACTION_MAX_SOURCE_TOKENS",
+        "MEMCORE_RAW_TOKEN_TRIGGER",
         _MEM,
         SCOPE_RESTART_CLIENT,
-        "memcore 单轮压缩 source token 上限（保留完整 turn/component 边界）",
+        "memcore raw projection token 压缩触发线",
+    ),
+    _s(
+        "MEMCORE_RAW_TOKEN_BATCH_RATIO",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 触发后计划压缩的旧 raw token 比例",
     ),
     _s("MEMCORE_COMPACTION_WORKERS", _MEM, SCOPE_RESTART_CLIENT, "memcore 后台压缩全局 worker 数"),
     _s(
