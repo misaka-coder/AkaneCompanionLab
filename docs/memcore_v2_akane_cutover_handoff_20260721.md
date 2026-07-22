@@ -1,5 +1,18 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
+### 2026-07-22 被动群记忆策略上线
+
+Akane release `108bdc4` 已部署到统一 Host。新增每 Bot 独立的
+`QQ_GROUP_PASSIVE_MEMORY_MODE=all/allowlist/denylist/off` 与
+`QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS`：它们只过滤未触发 Bot 的背景群消息，
+不会关闭 @、唤醒词、附件缓冲或其他正常回复轮的 Raw 写入与压缩。默认保持
+`all`，部署本身未擅自停止任何群记忆；实际名单由运营配置选择。
+
+本地 90 项后端路由与 92 项 QQ/双 Bot/ChannelCore 回归通过，远端聚焦路由
+测试通过。Host `/health` 正常，personal/finance QQ self-check 均为
+`connected`，`NRestarts=0`。未修改 MemCore wheel、数据库、Bot 账号、
+NapCat 登录态或模型路由。
+
 ### 2026-07-22 可变工作上下文缓存修复上线
 
 Akane release `bd06c51` 已部署到统一 Host。此前附件焦点、任务工作区、
