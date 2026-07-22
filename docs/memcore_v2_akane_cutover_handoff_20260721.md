@@ -1,5 +1,19 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
+### 2026-07-22 可变工作上下文缓存修复上线
+
+Akane release `bd06c51` 已部署到统一 Host。此前附件焦点、任务工作区、
+工作区文件、生成文件和待处理礼物等可变状态被误放在 MemCore 投影之前；群聊中
+这些状态变化会改写 append-only 时间线前面的 provider 前缀。当前这些内容仍完整
+提供给模型，但统一位于 MemCore 时间线后的动态尾部；`client_mode` 与关系上下文
+保持原有位置。
+
+远端 79 项 Akane MemCore integration tests 通过；Host `/health` 为
+`ok / personal / root_binding=valid`，personal/finance QQ self-check 均为
+`connected`，`NRestarts=0`。切换后的同一 personal 群真实主回复缓存命中依次为
+`18.5% → 90.9% → 98.1%`：第一轮为新请求布局落盘，后续已经恢复稳定高命中。
+未修改 MemCore wheel、数据库、Bot 账号、NapCat 登录态或模型路由。
+
 ### 2026-07-22 V1/V2 单权威清理（本地与云端完成）
 
 MemCore `b085dae` 已删除 flat V1 compactor、count compatibility planner、旧
