@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import config
 
-from .adapters import build_akane_embedding_provider, build_akane_llm_client
+from .adapters import build_akane_embedding_provider, build_akane_llm_client, build_akane_token_counter
 from .diagnostics import snippet_hashes
 
 
@@ -170,6 +170,7 @@ class MemcoreManager:
         self._memcore_module: Any | None = None
         self._llm_client: Any | None = None
         self._embedding: Any | None = None
+        self._token_counter: Any | None = None
         self._memory_config: Any | None = None
         self._store: Any | None = None
         self._index: Any | None = None
@@ -1898,6 +1899,7 @@ class MemcoreManager:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             self._llm_client = build_akane_llm_client(self.llm)
             self._embedding = build_akane_embedding_provider(self.embedding_provider)
+            self._token_counter = build_akane_token_counter()
             self._memory_config = self._build_memory_config(memcore)
             store = memcore.SQLiteMemoryStore(str(self.storage_path))
             index = memcore.InMemoryVectorIndex(embedding=self._embedding)
@@ -1934,8 +1936,6 @@ class MemcoreManager:
     def _build_memory_config(self, memcore: Any) -> Any:
         base_categories = tuple(getattr(memcore, "DEFAULT_CATEGORIES", ()))
         return memcore.MemoryConfig(
-            raw_trigger_count=max(1, int(getattr(config, "SUMMARY_TRIGGER_COUNT", 30) or 30)),
-            summary_batch_size=max(1, int(getattr(config, "SUMMARY_BATCH_SIZE", 20) or 20)),
             raw_token_trigger=max(
                 1000,
                 int(getattr(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000) or 24000),
@@ -1964,6 +1964,10 @@ class MemcoreManager:
                 int(getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5) or 5),
             ),
             semantic_visible_limit=max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 5) or 5)),
+            retrieval_result_token_budget=max(
+                0,
+                int(getattr(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 2000) or 0),
+            ),
             semantic_reinforcement_lookback=max(
                 1,
                 int(getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8) or 8),
@@ -2481,6 +2485,7 @@ class MemcoreManager:
                     store=self._store,
                     index=self._index,
                     embedding=self._embedding,
+                    token_counter=self._token_counter,
                     persona_text=persona_text,
                     prompt_overrides=self._build_prompt_overrides(persona_text),
                     runtime=self._runtime,

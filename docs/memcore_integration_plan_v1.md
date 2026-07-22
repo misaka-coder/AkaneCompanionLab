@@ -92,13 +92,14 @@ Akane 的 `BaseEmbeddingProvider` 和 memcore 的 `EmbeddingProvider` 不是同�
 - `embed_text()` / `embed_texts()` 转发。
 - 如果 Akane 当前 provider 是 hashed，要在状态里显式标记 degraded。第一切片可以允许继续跑，但不要在文档或日志里假装它是高质量语义检索。
 
-### MemoryConfig 映射
+### MemoryConfig 映射（当前实现；早期 count 方案已废弃）
 
-第一阶段用 count policy，不上 token policy:
+MemCore 只使用 token/ratio planner：
 
 ```text
-raw_trigger_count              <- SUMMARY_TRIGGER_COUNT
-summary_batch_size             <- SUMMARY_BATCH_SIZE
+raw_token_trigger              <- MEMCORE_RAW_TOKEN_TRIGGER
+raw_token_batch_ratio          <- MEMCORE_RAW_TOKEN_BATCH_RATIO
+retrieval_result_token_budget  <- MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET
 episodic_visible_max           <- EPISODIC_VISIBLE_MAX
 episodic_compact_trigger_count <- EPISODIC_COMPACT_TRIGGER_COUNT
 episodic_compact_batch_size    <- EPISODIC_COMPACT_BATCH_SIZE
@@ -108,7 +109,8 @@ visible_memory_scope           <- "user" for Akane 陪伴连续感，或配置�
 enable_flavor                  <- true/false 配置项，Akane 桌宠可开，通用模式可关
 ```
 
-注意 memcore 的差值约束会在构造时校验，Akane 配置如果不满足要启动时报结构化错误，不能吞掉。
+Akane 注入明确标为 `estimated` 的 TokenCounter。MemCore 的 token/ratio 与
+episodic 差值约束会在构造时校验；配置不合法要启动时报结构化错误，不能吞掉。
 
 ### 存储路径
 
@@ -132,6 +134,7 @@ MEMCORE_ENABLE_FLAVOR=true
 MEMCORE_SHADOW_COMPARE=false
 MEMCORE_RAW_TOKEN_TRIGGER=24000
 MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67
+MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 ```
 
 含义:

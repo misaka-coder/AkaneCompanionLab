@@ -1,5 +1,22 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
+### 2026-07-22 V1/V2 单权威清理（本地完成，尚未部署云端）
+
+MemCore `b085dae` 已删除 flat V1 compactor、count compatibility planner、旧
+selector/config 和 facade `_record → add_message` 直写路径。当前唯一 raw 生命周期
+是 provider projection token 触发、按比例选择完整 terminal turn/relation
+component、原子提交 episode/operation partitions。无 `turn_id` 历史记录作为
+closed standalone component 进入同一 planner，不丢数据、不保留第二套实现。
+
+Akane 本地 manager 已同步：不再传 `SUMMARY_TRIGGER_COUNT/SUMMARY_BATCH_SIZE`；
+注入与 prompt audit 同公式且明确标记 `quality=estimated` 的 token counter；新增
+`MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000`。新 wheel 安装后的真实 manager
+smoke 已确认 count 字段不存在，MemCore 310 tests、Akane MemCore integration
+79 tests 与相关 provider/tool 回归均通过。
+
+这部分尚未替换云端 wheel/release。当前云端仍保持上一稳定版本，不能把本节写成
+线上已完成。
+
 > 2026-07-22 后续修订：本文记录的 bounded V2 source/episode pass 会提前
 > 截断原有 token 差值目标，在活跃群造成连续 prompt 前缀重写。当前权威改为
 > `MEMCORE_RAW_TOKEN_TRIGGER=24000` 与

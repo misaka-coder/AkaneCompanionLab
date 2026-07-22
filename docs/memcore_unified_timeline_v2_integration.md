@@ -367,6 +367,7 @@ MEMCORE_ENABLE_FLAVOR=true
 MEMCORE_SHADOW_COMPARE=false
 MEMCORE_RAW_TOKEN_TRIGGER=24000
 MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67
+MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 MEMCORE_TOOL_TRACE_MAX_CHARS=12000
 ```
 
@@ -375,8 +376,12 @@ MEMCORE_TOOL_TRACE_MAX_CHARS=12000
 - `MEMCORE_SHADOW_COMPARE` 是迁移诊断开关，不会双发模型请求或双执行工具。
 - `MEMCORE_RAW_TOKEN_TRIGGER` 是未摘要 raw provider projection 的实际触发线；
   `MEMCORE_RAW_TOKEN_BATCH_RATIO` 决定触发后计划压缩的旧 raw 比例。MemCore
-  最终按完整 turn/relation component 落切点，`SUMMARY_BATCH_SIZE` 不参与 token
-  模式截断。
+  最终按完整 turn/relation component 落切点。Akane 不再把
+  `SUMMARY_TRIGGER_COUNT/SUMMARY_BATCH_SIZE` 传给 MemCore；这两个字段只属于仍可显式启动的 legacy backend。
+- `MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET` 限制一次结构化检索回填的 token；
+  `0` 表示不设预算。它不参与 raw 压缩规划。
+- Akane 注入与自身 prompt audit 相同公式的 `TokenCounter`，并明确报告
+  `quality=estimated`；不会把多 provider 共用估算伪装成精确 tokenizer。
 - 新接入应使用 `memcore`。`legacy/dual` 只用于明确的迁移窗口，不应继续扩展旧权威。
 
 Akane 内部推荐接口：

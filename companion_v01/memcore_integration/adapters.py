@@ -151,3 +151,30 @@ def build_akane_embedding_provider(provider: Any) -> Any:
             return [self.embed_text(str(text or "")) for text in texts]
 
     return AkaneEmbeddingProvider(provider)
+
+
+def build_akane_token_counter() -> Any:
+    """Build the explicit estimated counter used by Akane prompt audits.
+
+    Akane supports several OpenAI-compatible routes with different tokenizers,
+    so claiming an exact model tokenizer here would be false.  This estimator
+    matches the host's existing audit/guardrail formula and advertises
+    ``quality=estimated`` to MemCore compaction metrics.
+    """
+
+    from memcore import TokenCounter
+
+    class AkaneEstimatedTokenCounter(TokenCounter):
+        @property
+        def quality(self) -> str:
+            return "estimated"
+
+        def count_text(self, text: str) -> int:
+            raw = str(text or "")
+            if not raw:
+                return 0
+            cjk_chars = sum(1 for char in raw if "\u4e00" <= char <= "\u9fff")
+            non_cjk_chars = max(0, len(raw) - cjk_chars)
+            return int(cjk_chars + ((non_cjk_chars + 3) // 4))
+
+    return AkaneEstimatedTokenCounter()

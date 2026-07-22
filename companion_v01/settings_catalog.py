@@ -145,6 +145,12 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RESTART_CLIENT,
         "memcore 触发后计划压缩的旧 raw token 比例",
     ),
+    _s(
+        "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 单次检索结果 token 预算（0=不限）",
+    ),
     _s("MEMCORE_COMPACTION_WORKERS", _MEM, SCOPE_RESTART_CLIENT, "memcore 后台压缩全局 worker 数"),
     _s(
         "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",

@@ -21,6 +21,7 @@ from companion_v01.memcore_integration.manager import (
     normalize_memory_backend,
     resolve_memcore_provider_profile,
 )
+from companion_v01.memcore_integration.adapters import build_akane_token_counter
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
 from companion_v01.prompt_profiles import PromptModule
 from companion_v01.retrieval_types import RetrievalPipelineResult
@@ -581,10 +582,48 @@ class MemcoreIntegrationTests(unittest.TestCase):
         with (
             patch.object(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000, create=True),
             patch.object(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67, create=True),
+            patch.object(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 3200, create=True),
         ):
             memory_config = manager._build_memory_config(fake_memcore)
         self.assertEqual(memory_config.raw_token_trigger, 24000)
         self.assertEqual(memory_config.raw_token_batch_ratio, 0.67)
+        self.assertEqual(memory_config.retrieval_result_token_budget, 3200)
+        self.assertFalse(hasattr(memory_config, "raw_trigger_count"))
+        self.assertFalse(hasattr(memory_config, "summary_batch_size"))
+
+    def test_akane_token_counter_is_explicitly_estimated(self) -> None:
+        counter = build_akane_token_counter()
+        self.assertEqual(counter.quality, "estimated")
+        self.assertEqual(counter.count_text("中文ab12"), 3)
+        self.assertEqual(counter.count_text(""), 0)
+
+    def test_manager_injects_single_v2_config_and_estimated_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v2.db",
+                visible_scope="conversation",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                system = manager._get_system(
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertEqual(system.token_counter.quality, "estimated")
+                self.assertEqual(system.config.raw_token_trigger, config.MEMCORE_RAW_TOKEN_TRIGGER)
+                self.assertEqual(
+                    system.config.retrieval_result_token_budget,
+                    config.MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET,
+                )
+                self.assertFalse(hasattr(system.config, "raw_trigger_count"))
+                self.assertFalse(hasattr(system.config, "summary_batch_size"))
+            finally:
+                manager.close()
 
     def test_process_runtime_uses_configured_compaction_workers(self) -> None:
         from companion_v01.memcore_integration import manager as manager_module
