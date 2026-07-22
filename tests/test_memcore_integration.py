@@ -4695,6 +4695,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._get_task_workspace_service = lambda: SimpleNamespace(
             build_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
         )
+        engine._get_attachment_inbox_service = lambda: SimpleNamespace(
+            build_prompt_context=lambda **_kwargs: "ATTACHMENT FOCUS CONTEXT"
+        )
         engine.gift_service = SimpleNamespace(
             build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",
             resolve_focus_asset=lambda **_kwargs: None,
@@ -4735,10 +4738,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         captured = engine.prompt_builder.kwargs
         self.assertEqual(care_values, [True])
         self.assertIn("RELATIONSHIP CONTEXT", captured["extra_context"])
-        self.assertIn("TASK WORKSPACE CONTEXT", captured["extra_context"])
-        self.assertIn("PENDING GIFT CONTEXT", captured["extra_context"])
+        self.assertNotIn("TASK WORKSPACE CONTEXT", captured["extra_context"])
+        self.assertNotIn("ATTACHMENT FOCUS CONTEXT", captured["extra_context"])
+        self.assertNotIn("PENDING GIFT CONTEXT", captured["extra_context"])
         self.assertNotIn("TURN CONTEXT", captured["extra_context"])
-        self.assertEqual(captured["volatile_extra_context"], "TURN CONTEXT")
+        self.assertEqual(
+            captured["volatile_extra_context"],
+            "TASK WORKSPACE CONTEXT\n\nATTACHMENT FOCUS CONTEXT\n\nPENDING GIFT CONTEXT\n\nTURN CONTEXT",
+        )
         self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
         self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")

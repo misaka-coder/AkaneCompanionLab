@@ -368,12 +368,15 @@ def prepare_context(
             ),
             False,
         ),
-        ("task_workspace", task_workspace_context, False),
-        ("workspace_files", workspace_file_context, False),
-        ("attachment_focus", attachment_focus_context, False),
-        ("generated_files", generated_file_context, False),
-        ("pending_gifts", pending_gift_context, False),
-        ("gift_observation", gift_observation_context, False),
+        # Working sets can change after any attachment/tool/task transition.
+        # They must stay behind the append-only MemCore projection; otherwise
+        # one status update rewrites the provider prefix before the timeline.
+        ("task_workspace", task_workspace_context, True),
+        ("workspace_files", workspace_file_context, True),
+        ("attachment_focus", attachment_focus_context, True),
+        ("generated_files", generated_file_context, True),
+        ("pending_gifts", pending_gift_context, True),
+        ("gift_observation", gift_observation_context, True),
         (
             "turn_extra_context",
             extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
