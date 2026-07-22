@@ -313,6 +313,10 @@ class Settings(BaseSettings):
     QQ_VOICE_MAX_SEGMENTS: int = 3
     # 允许群聊使用明文（非 JSON 卡片）模式
     QQ_GROUP_PLAINTEXT_ENABLED: bool = False
+    # 未触发 Bot 的群消息是否写入被动群记忆：all/allowlist/denylist/off
+    QQ_GROUP_PASSIVE_MEMORY_MODE: str = "all"
+    # allowlist/denylist 使用的群号，支持逗号、分号或空白分隔
+    QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS: str = ""
     # 群聊对话跟随 TTL（秒），超时后新卡片
     QQ_GROUP_FOLLOW_TTL_SECONDS: int = 180
     # 群附件缓冲 TTL（秒），等待多张图片到齐
@@ -522,7 +526,12 @@ def _apply_settings(s: Settings) -> None:
         QQ_WEB_SEARCH_PROFILE_USER_ID, \
         QQ_VOICE_MAX_TEXT_CHARS, \
         QQ_VOICE_MAX_SEGMENTS
-    global QQ_GROUP_PLAINTEXT_ENABLED, QQ_GROUP_FOLLOW_TTL_SECONDS, QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
+    global \
+        QQ_GROUP_PLAINTEXT_ENABLED, \
+        QQ_GROUP_PASSIVE_MEMORY_MODE, \
+        QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS, \
+        QQ_GROUP_FOLLOW_TTL_SECONDS, \
+        QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
     global QQ_EVENT_MAX_AGE_SECONDS, QQ_ALLOW_STALE_EVENTS
     global QQ_ATTACHMENT_DOWNLOAD_TIMEOUT, QQ_ATTACHMENT_MAX_BYTES, QQ_TEXT_ATTACHMENT_MAX_READ_BYTES
@@ -714,6 +723,16 @@ def _apply_settings(s: Settings) -> None:
     QQ_VOICE_MAX_TEXT_CHARS = max(20, min(1200, int(s.QQ_VOICE_MAX_TEXT_CHARS)))
     QQ_VOICE_MAX_SEGMENTS = max(1, min(10, int(s.QQ_VOICE_MAX_SEGMENTS)))
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
+    raw_group_passive_memory_mode = str(s.QQ_GROUP_PASSIVE_MEMORY_MODE or "all").strip().lower()
+    QQ_GROUP_PASSIVE_MEMORY_MODE = {
+        "whitelist": "allowlist",
+        "blacklist": "denylist",
+        "enabled": "all",
+        "disabled": "off",
+    }.get(raw_group_passive_memory_mode, raw_group_passive_memory_mode)
+    if QQ_GROUP_PASSIVE_MEMORY_MODE not in {"all", "allowlist", "denylist", "off"}:
+        QQ_GROUP_PASSIVE_MEMORY_MODE = "all"
+    QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(s.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS or "").strip()
     QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(s.QQ_GROUP_FOLLOW_TTL_SECONDS))
     QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(
         20,

@@ -361,6 +361,18 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("QQ_VOICE_MAX_TEXT_CHARS", _QQ, SCOPE_RUNTIME, "QQ 语音最大合成文本长度（超过降级文字）"),
     _s("QQ_VOICE_MAX_SEGMENTS", _QQ, SCOPE_RUNTIME, "QQ 语音最多合成的 segment 数"),
     _s("QQ_GROUP_PLAINTEXT_ENABLED", _QQ, SCOPE_RUNTIME, "允许群聊明文（非 JSON 卡片）模式"),
+    _s(
+        "QQ_GROUP_PASSIVE_MEMORY_MODE",
+        _QQ,
+        SCOPE_RUNTIME,
+        "未触发 Bot 的群消息记忆策略：all/allowlist/denylist/off",
+    ),
+    _s(
+        "QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS",
+        _QQ,
+        SCOPE_RUNTIME,
+        "被动群记忆 allowlist/denylist 群号（逗号、分号或空白分隔）",
+    ),
     _s("QQ_GROUP_FOLLOW_TTL_SECONDS", _QQ, SCOPE_RUNTIME, "群聊跟随 TTL（秒）"),
     _s("QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS", _QQ, SCOPE_RESTART, "群附件缓冲 TTL（秒）"),
     _s("QQ_ATTACHMENT_DEBOUNCE_SECONDS", _QQ, SCOPE_RUNTIME, "附件去抖间隔（秒）"),

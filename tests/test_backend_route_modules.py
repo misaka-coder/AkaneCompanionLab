@@ -1114,6 +1114,71 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(process_calls, [])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
 
+    def test_qq_router_filters_only_passive_group_memory_by_runtime_policy(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        record_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            def record_passive_qq_message(self, payload: dict):
+                record_calls.append(payload)
+                return {"ok": True, "status": "recorded", "source_id": f"passive-{len(record_calls)}"}
+
+        runtime_config = SimpleNamespace(
+            QQ_BRIDGE_ENABLED=True,
+            QQ_GROUP_PASSIVE_MEMORY_MODE="allowlist",
+            QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS=str(QQ_GROUP_FIXTURE_ID),
+        )
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=runtime_config,
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+        client = TestClient(app)
+
+        def post(message_id: str) -> dict[str, Any]:
+            response = client.post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": message_id,
+                    "message": [{"type": "text", "data": {"text": f"背景群消息 {message_id}"}}],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            return response.json()
+
+        self.assertEqual(post("passive-policy-allowlisted")["status"], "recorded")
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID + 1)
+        filtered = post("passive-policy-not-allowlisted")
+        self.assertEqual(filtered["status"], "ignored")
+        self.assertEqual(filtered["reason"], "group_passive_memory_filtered")
+        self.assertEqual(filtered["policy_mode"], "allowlist")
+
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "denylist"
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(post("passive-policy-denylisted")["status"], "ignored")
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID + 1)
+        self.assertEqual(post("passive-policy-not-denylisted")["status"], "recorded")
+
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "off"
+        self.assertEqual(post("passive-policy-off")["status"], "ignored")
+        self.assertEqual(len(record_calls), 2)
+        skipped_logs = [payload for name, payload in log_calls if name == "qq_passive_group_message_skipped"]
+        self.assertEqual(len(skipped_logs), 3)
+        self.assertNotIn("QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS", repr(skipped_logs))
+
     def test_qq_router_workspace_command_lists_and_clears_without_llm(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
@@ -1471,7 +1536,10 @@ class BackendRouteModuleTests(unittest.TestCase):
         app.include_router(
             build_qq_router(
                 engine=FakeEngine(),
-                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_GROUP_PASSIVE_MEMORY_MODE="off",
+                ),
                 qq_gateway=gateway,
                 runtime_metrics=runtime,
                 logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 LogEvent = Callable[..., None]
 _QQ_ROUTE_BASE_RE = re.compile(r"^/api(?:/[A-Za-z0-9._-]+)+$")
+_QQ_GROUP_PASSIVE_MEMORY_MODES = frozenset({"all", "allowlist", "denylist", "off"})
 
 
 def _normalize_qq_route_base(value: Any) -> str:
@@ -49,6 +50,44 @@ def _normalize_qq_route_base(value: Any) -> str:
     if _QQ_ROUTE_BASE_RE.fullmatch(normalized) is None:
         raise ValueError("invalid_qq_route_base")
     return normalized
+
+
+def _resolve_group_passive_memory_policy(config_module: Any, group_id: Any) -> dict[str, Any]:
+    """Resolve host-owned passive group memory policy without changing reply turns."""
+
+    aliases = {
+        "whitelist": "allowlist",
+        "blacklist": "denylist",
+        "enabled": "all",
+        "disabled": "off",
+    }
+    raw_mode = str(getattr(config_module, "QQ_GROUP_PASSIVE_MEMORY_MODE", "all") or "all").strip().lower()
+    mode = aliases.get(raw_mode, raw_mode)
+    if mode not in _QQ_GROUP_PASSIVE_MEMORY_MODES:
+        mode = "all"
+    try:
+        normalized_group_id = int(group_id or 0)
+    except (TypeError, ValueError):
+        normalized_group_id = 0
+    raw_ids = str(getattr(config_module, "QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS", "") or "")
+    configured_ids: set[int] = set()
+    for token in re.split(r"[,;，；\s]+", raw_ids):
+        if not token.isdigit() or len(token) > 20:
+            continue
+        value = int(token)
+        if value > 0:
+            configured_ids.add(value)
+    if normalized_group_id <= 0:
+        enabled = False
+    elif mode == "off":
+        enabled = False
+    elif mode == "allowlist":
+        enabled = normalized_group_id in configured_ids
+    elif mode == "denylist":
+        enabled = normalized_group_id not in configured_ids
+    else:
+        enabled = True
+    return {"enabled": enabled, "mode": mode}
 
 
 QQ_REPLY_OBJECT_TERMS = ("工作台", "文件", "结果", "成果", "产物", "音频", "视频", "人声", "伴奏", "任务")
@@ -1722,6 +1761,34 @@ def build_qq_router(
             context = qq_gateway.build_message_context(event)
             if not context.should_respond:
                 if bool(getattr(context, "should_record", False)):
+                    passive_memory_policy = _resolve_group_passive_memory_policy(
+                        config_module,
+                        getattr(context, "group_id", 0),
+                    )
+                    if not bool(passive_memory_policy.get("enabled")):
+                        duration_ms = (time.perf_counter() - started_at) * 1000
+                        runtime_metrics.observe_request(
+                            "qq_napcat_event",
+                            duration_ms=duration_ms,
+                            ok=True,
+                        )
+                        log_event(
+                            "qq_passive_group_message_skipped",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            group_id=int(getattr(context, "group_id", 0) or 0),
+                            user_id=int(getattr(context, "user_id", 0) or 0),
+                            reason="group_passive_memory_filtered",
+                            policy_mode=str(passive_memory_policy.get("mode") or "all"),
+                            duration_ms=round(duration_ms, 1),
+                        )
+                        return JSONResponse(
+                            {
+                                "status": "ignored",
+                                "reason": "group_passive_memory_filtered",
+                                "policy_mode": str(passive_memory_policy.get("mode") or "all"),
+                            }
+                        )
                     recorder = getattr(engine, "record_passive_qq_message", None)
                     turn_payload = context.to_turn_payload()
                     turn_payload["timestamp"] = int(event.get("time") or time.time())
