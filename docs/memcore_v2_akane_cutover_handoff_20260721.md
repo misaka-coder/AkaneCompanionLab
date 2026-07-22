@@ -7,6 +7,29 @@
 > generation 内按完整 terminal turn/relation component 达到比例目标。下文历史
 > `max_prompt_history_tokens/target_prompt_history_tokens` smoke 值仅描述旧 release。
 
+### 2026-07-22 比例压缩修复上线
+
+MemCore `7a00912` 已恢复 V1 的 `token 触发 + 比例压缩`，同时保留 V2 的完整
+terminal turn/relation component 切点与原子 lineage commit。Akane 宿主
+`97f91ce` 已部署到统一 Host；运行进程实际环境为：
+
+```text
+MEMCORE_RAW_TOKEN_TRIGGER=24000
+MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67
+MEMCORE_COMPACTION_WORKERS=1
+```
+
+旧 systemd 覆盖项 `MEMCORE_COMPACTION_MAX_SOURCE_TOKENS=12000` 与
+`SUMMARY_BATCH_SIZE=5` 已移除。新 release 内 77 项 MemCore 宿主集成测试通过，
+personal/finance QQ self-check 均为 `connected`，Host `/health` 为
+`ok / root_binding=valid`，双 Bot catalog 均为 `online`，`NRestarts=0`。
+可回滚备份位于部署备份 `memcore-ratio-97f91ce-7a00912-20260722`；未修改两份
+MemCore 数据库、Bot 账号、NapCat 登录态、OneBot token 或金融插件配置。
+
+真实缓存验收仍需等待 QQ 活跃回复跨过一次 24000-token 压缩：压缩后的第一轮允许
+一次低命中，随后连续 append-only 轮应恢复 95%+；验收必须同时确认一次压缩把 raw
+投影回落到约最近三分之一，且不再十几秒连续压缩。
+
 ## 最新 repair pass 状态（后续章节中的“尚未切读链”描述已过期）
 
 截至本轮未提交工作区，Akane 已经切到 MemCore provider projection 读权威，并完成以下收口：
