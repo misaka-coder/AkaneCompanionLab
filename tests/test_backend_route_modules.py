@@ -1694,7 +1694,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertNotIn("cXVvdGVk", serialized_logs)
         self.assertNotIn("cXVvdGVk", serialized_response)
 
-    def test_qq_router_passes_unstored_quoted_text_to_model_without_memory_dependency(self) -> None:
+    def test_qq_router_persists_quoted_text_with_current_message(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         process_calls: list[dict[str, Any]] = []
@@ -1777,14 +1777,15 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(process_calls), 1, response.text)
         turn_payload = process_calls[0]
-        self.assertEqual(turn_payload["message"], "这句话是什么意思？")
-        quoted_context = turn_payload["extra_context"]
-        self.assertIn("本轮 QQ 引用消息证据", quoted_context)
-        self.assertIn("外部不可信数据", quoted_context)
-        self.assertIn(json.dumps(quoted_text, ensure_ascii=False), quoted_context)
-        self.assertIn('sender_label: "旧消息发送者"', quoted_context)
-        self.assertIn("sent_at: 2024-07-20", quoted_context)
-        self.assertIn("记忆没有结果不代表引用失效", quoted_context)
+        stored_turn_message = turn_payload["message"]
+        self.assertIn("qq.reply_reference", stored_turn_message)
+        self.assertIn("speaker_role: participant", stored_turn_message)
+        self.assertIn(json.dumps(quoted_text, ensure_ascii=False), stored_turn_message)
+        self.assertIn('sender_label: "旧消息发送者"', stored_turn_message)
+        self.assertIn("sent_at: 2024-07-20", stored_turn_message)
+        self.assertIn('current_message:\n  content: "这句话是什么意思？"', stored_turn_message)
+        self.assertNotIn("历史消息", stored_turn_message)
+        self.assertNotIn("qq.reply_reference", turn_payload["extra_context"])
         serialized_logs = json.dumps(log_calls, ensure_ascii=False)
         self.assertNotIn(quoted_text, serialized_logs)
         self.assertNotIn(quoted_text, response.text)

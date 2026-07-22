@@ -206,11 +206,55 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["quoted_message"]["text"], "这是很久以前的原话 [图片]")
         self.assertEqual(result["quoted_message"]["actor_id"], USER_ID)
         self.assertEqual(result["quoted_message"]["actor_label"], "伙伴")
+        self.assertFalse(result["quoted_message"]["actor_is_bot"])
         self.assertEqual(result["quoted_message"]["timestamp"], 1_721_485_640)
         self.assertEqual(result["quoted_message"]["conversation_kind"], "group")
         self.assertEqual(result["quoted_message"]["conversation_id"], GROUP_ID)
         self.assertEqual(result["attachments"][0]["quoted_message_id"], "quoted-1")
         self.assertEqual(result["attachments"][0]["sender_label"], "伙伴")
+
+    def test_gateway_marks_quoted_bot_reply_as_assistant_self(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "message_id": "current-private-self-quote",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-bot-reply"}},
+                {"type": "text", "data": {"text": "你这句是什么意思？"}},
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_id": "quoted-bot-reply",
+                        "self_id": BOT_ID,
+                        "message_type": "private",
+                        "user_id": BOT_ID,
+                        "target_id": USER_ID,
+                        "sender": {"user_id": BOT_ID, "nickname": "Akane群昵称"},
+                        "message": [{"type": "text", "data": {"text": "我刚才分段发出的其中一句。"}}],
+                    },
+                }
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            result = gateway.resolve_quoted_message_evidence(event, context=context)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "resolved")
+        self.assertTrue(result["quoted_message"]["actor_is_bot"])
+        self.assertEqual(result["quoted_message"]["actor_label"], "Akane群昵称")
+        self.assertEqual(result["quoted_message"]["text"], "我刚才分段发出的其中一句。")
 
     def test_gateway_private_quote_fails_closed_when_scope_cannot_be_verified(self) -> None:
         gateway = NapCatQQGateway()

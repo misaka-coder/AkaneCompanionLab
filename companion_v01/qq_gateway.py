@@ -1953,11 +1953,14 @@ class NapCatQQGateway:
         if result.ok and result.message is not None:
             message = result.message
             status = "resolved"
+            actor_id = str(message.actor.id or "").strip()
+            bot_account_id = str(inbound.bot_account_id or event.get("self_id") or self.bot_qq or "").strip()
             quoted_message = {
                 "message_id": message.message_id,
                 "text": message.text,
-                "actor_id": message.actor.id,
+                "actor_id": actor_id,
                 "actor_label": message.actor.display_name,
+                "actor_is_bot": bool(actor_id and bot_account_id and actor_id == bot_account_id),
                 "timestamp": message.timestamp,
                 "conversation_kind": message.conversation.kind,
                 "conversation_id": message.conversation.id,
