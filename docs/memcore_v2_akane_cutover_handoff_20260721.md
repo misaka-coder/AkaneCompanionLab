@@ -1,6 +1,6 @@
 # MemCore V2 → Akane 接管工作交接（2026-07-21）
 
-### 2026-07-22 V1/V2 单权威清理（本地完成，尚未部署云端）
+### 2026-07-22 V1/V2 单权威清理（本地与云端完成）
 
 MemCore `b085dae` 已删除 flat V1 compactor、count compatibility planner、旧
 selector/config 和 facade `_record → add_message` 直写路径。当前唯一 raw 生命周期
@@ -14,8 +14,17 @@ Akane 本地 manager 已同步：不再传 `SUMMARY_TRIGGER_COUNT/SUMMARY_BATCH_
 smoke 已确认 count 字段不存在，MemCore 310 tests、Akane MemCore integration
 79 tests 与相关 provider/tool 回归均通过。
 
-这部分尚未替换云端 wheel/release。当前云端仍保持上一稳定版本，不能把本节写成
-线上已完成。
+云端已从 `97f91ce` 切到 Akane release `0a0d936`，并安装 MemCore
+`b085dae` wheel。部署前分别用 SQLite online backup 保存 personal/finance
+MemCore，备份库 `quick_check=ok`；云端 79 项 Akane MemCore integration tests
+通过。切换后 Host `/health` 为 `ok / personal`，personal/finance QQ self-check
+均为 `connected`，两份运行库 `quick_check=ok`，`NRestarts=0`，近期启动日志没有
+MemCore 配置或 compaction failure。
+
+同一维护窗口按用户要求只把 personal 的主回复临时切为 DeepSeek
+`deepseek-v4-pro`、辅助请求切为 `deepseek-v4-flash`；personal 识图仍使用原 PinAI
+视觉配置，finance 仍为 PinAI `gpt-5.6-luna`，未改金融配置。控制中心读取和真实
+model-service connection test 均确认 personal DeepSeek 配置已生效。
 
 > 2026-07-22 后续修订：本文记录的 bounded V2 source/episode pass 会提前
 > 截断原有 token 差值目标，在活跃群造成连续 prompt 前缀重写。当前权威改为
