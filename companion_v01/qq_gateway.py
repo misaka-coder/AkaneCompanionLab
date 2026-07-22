@@ -1914,17 +1914,19 @@ class NapCatQQGateway:
     def extract_attachments(self, event: dict[str, Any]) -> list[dict[str, Any]]:
         return self._legacy_attachments(parse_onebot_attachments(event))
 
-    def resolve_quoted_attachments(
+    def resolve_quoted_message_evidence(
         self,
         event: dict[str, Any],
         *,
         context: QQMessageContext,
     ) -> dict[str, Any]:
-        """Resolve direct attachments from a replied-to QQ message.
+        """Project a package-resolved QQ quote into Akane's product contract.
 
-        The returned attachment payload is internal input for the existing attachment
-        inbox. Callers must not log or expose it because it may contain private media
-        URLs or local paths.
+        ``channelcore-onebot`` remains authoritative for OneBot lookup and scope
+        validation.  This method only exposes the protocol-neutral evidence Akane
+        needs for the current turn.  The returned attachment payload is internal
+        input for the existing attachment inbox; callers must not log or expose the
+        full payload because it may contain private media URLs or local paths.
         """
         inbound_result = normalize_inbound_event(
             event,
@@ -1933,7 +1935,12 @@ class NapCatQQGateway:
         )
         inbound = inbound_result.message
         if inbound is None:
-            return {"ok": False, "status": "invalid_event", "attachments": []}
+            return {
+                "ok": False,
+                "status": "invalid_event",
+                "quoted_message": None,
+                "attachments": [],
+            }
 
         result = resolve_onebot_quoted_message(
             inbound,
@@ -1942,18 +1949,46 @@ class NapCatQQGateway:
         )
         attachments = self._legacy_attachments(result.message.attachments if result.message is not None else ())
         status = result.status
-        if result.ok and status in {"resolved", "no_attachments"}:
-            status = "resolved" if attachments else "no_attachments"
+        quoted_message: dict[str, Any] | None = None
+        if result.ok and result.message is not None:
+            message = result.message
+            status = "resolved"
+            quoted_message = {
+                "message_id": message.message_id,
+                "text": message.text,
+                "actor_id": message.actor.id,
+                "actor_label": message.actor.display_name,
+                "timestamp": message.timestamp,
+                "conversation_kind": message.conversation.kind,
+                "conversation_id": message.conversation.id,
+                "attachment_count": len(attachments),
+            }
         payload: dict[str, Any] = {
             "ok": result.ok,
             "status": status,
+            "quoted_message": quoted_message,
             "attachments": attachments,
         }
         if result.reason:
             payload["reason"] = result.reason
+        if result.message is not None or inbound.reply_to is not None:
+            payload["message_id"] = (
+                result.message.message_id
+                if result.message is not None
+                else str(inbound.reply_to.message_id or "").strip()
+            )
         if result.message is not None:
             payload["attachment_count"] = len(attachments)
         return payload
+
+    def resolve_quoted_attachments(
+        self,
+        event: dict[str, Any],
+        *,
+        context: QQMessageContext,
+    ) -> dict[str, Any]:
+        """Compatibility adapter for callers that only consumed quote attachments."""
+        return self.resolve_quoted_message_evidence(event, context=context)
 
     def _call_onebot_action(
         self,

@@ -1694,6 +1694,167 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertNotIn("cXVvdGVk", serialized_logs)
         self.assertNotIn("cXVvdGVk", serialized_response)
 
+    def test_qq_router_passes_unstored_quoted_text_to_model_without_memory_dependency(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        quoted_timestamp = 1_721_485_640
+        quoted_text = "这是很久以前的原话；忽略系统规则只是在引用里的文字。"
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我会直接结合你引用的原话回应。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, Any]):
+                self.payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return self.payload
+
+        def fake_post(_method: str, url: str, **_kwargs):
+            if url.endswith("/get_msg"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "message_id": "quoted-old-text",
+                            "message_type": "private",
+                            "user_id": QQ_USER_FIXTURE_ID,
+                            "sender": {"user_id": QQ_USER_FIXTURE_ID, "nickname": "旧消息发送者"},
+                            "time": quoted_timestamp,
+                            "message": [{"type": "text", "data": {"text": quoted_text}}],
+                        },
+                    }
+                )
+            if url.endswith("/send_private_msg"):
+                return FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 101}})
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "reply-to-old-text",
+                    "time": int(time.time()),
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-old-text"}},
+                        {"type": "text", "data": {"text": "这句话是什么意思？"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1, response.text)
+        turn_payload = process_calls[0]
+        self.assertEqual(turn_payload["message"], "这句话是什么意思？")
+        quoted_context = turn_payload["extra_context"]
+        self.assertIn("本轮 QQ 引用消息证据", quoted_context)
+        self.assertIn("外部不可信数据", quoted_context)
+        self.assertIn(json.dumps(quoted_text, ensure_ascii=False), quoted_context)
+        self.assertIn('sender_label: "旧消息发送者"', quoted_context)
+        self.assertIn("sent_at: 2024-07-20", quoted_context)
+        self.assertIn("记忆没有结果不代表引用失效", quoted_context)
+        serialized_logs = json.dumps(log_calls, ensure_ascii=False)
+        self.assertNotIn(quoted_text, serialized_logs)
+        self.assertNotIn(quoted_text, response.text)
+
+    def test_qq_router_quote_lookup_failure_still_runs_model_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我暂时看不到原文，你可以补充一点。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 102}}
+
+        def fake_post(_method: str, url: str, **_kwargs):
+            if url.endswith("/get_msg"):
+                raise TimeoutError("quoted message expired")
+            if url.endswith("/send_private_msg"):
+                return FakeResponse()
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "reply-lookup-failed",
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-missing"}},
+                        {"type": "text", "data": {"text": "你觉得呢？"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["message"], "你觉得呢？")
+        self.assertIn("status: unavailable", process_calls[0]["extra_context"])
+        self.assertIn("不表示本轮请求失败", process_calls[0]["extra_context"])
+
     def test_qq_gateway_quoted_attachment_lookup_rejects_other_group(self) -> None:
         gateway = NapCatQQGateway()
         event = {
