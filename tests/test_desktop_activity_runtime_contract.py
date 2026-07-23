@@ -12,7 +12,7 @@ from companion_v01.client_protocol import (
 )
 from companion_v01.desktop_music_timeline import DesktopMusicTimelineService
 from companion_v01.engine import AkaneMemoryEngine
-from companion_v01.prompt_blocks import build_desktop_pet_system_prompt
+from companion_v01.prompt_blocks import build_desktop_pet_system_prompt, build_qq_text_system_prompt
 
 
 FORBIDDEN_MUSIC_PROMPT_TERMS = ("转写稿", "时间轴", "ASR", "人声分离", "系统片段", "后台处理", "后台准备")
@@ -97,25 +97,20 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             _desktop_context(),
         )
 
-        self.assertIn("【当前养成状态（本轮临时状态，不写入长期记忆）】", prompt)
-        self.assertIn("饥饿值越低表示越饿", prompt)
-        self.assertIn("精力值越高表示越精神", prompt)
-        self.assertIn("不要把饥饿和精力对调", prompt)
-        self.assertIn("当前生理状态只以本轮这组数值为准", prompt)
-        self.assertIn("历史聊天、历史投喂、历史道具效果", prompt)
-        self.assertIn("如果历史与本轮数值冲突，忽略历史", prompt)
-        self.assertIn("饥饿 9/100，精力 18/100，好感 62/100", prompt)
-        self.assertIn("生活节奏", prompt)
-        self.assertIn("身体状态偏低，容易没精神也惦记吃的", prompt)
-        self.assertIn("【饥饿压制】", prompt)
-        self.assertIn("平时的独立感和矜持会完全瓦解", prompt)
-        self.assertIn("饥饿值很低不是不饿", prompt)
-        self.assertIn("不要说'不饿了'", prompt)
-        self.assertIn("表情倾向：hungry 或 snack", prompt)
-        self.assertIn("好感阶段", prompt)
-        self.assertIn("关系已经变暖", prompt)
-        self.assertIn("state_request.affinity 可给较高正值", prompt)
-        self.assertIn("不要生硬复述这些数值", prompt)
+        system_prompt = build_desktop_pet_system_prompt()
+
+        self.assertIn("【care.state｜宿主当前值】", prompt)
+        self.assertIn("scope: desktop_pet", prompt)
+        self.assertIn("hunger=9/100, hunger_level=critical", prompt)
+        self.assertIn("energy=18/100, energy_level=low", prompt)
+        self.assertIn("affection: 62/100 (affection_tier=warm)", prompt)
+        self.assertIn("time_phase:", prompt)
+        self.assertNotIn("历史聊天、历史投喂、历史道具效果", prompt)
+        self.assertIn("可信当前状态，优先级高于历史聊天、记忆、旧投喂", system_prompt)
+        self.assertIn("hunger_level=critical", system_prompt)
+        self.assertIn("不能说成不饿、胃口消失或继续硬撑", system_prompt)
+        self.assertIn("warm 可以偶尔柔软、打趣或主动说话", system_prompt)
+        self.assertIn("不要生硬复述数值", system_prompt)
 
     def test_desktop_care_prompt_combines_hungry_and_sleepy_state(self) -> None:
         prompt = self.engine._build_turn_extra_user_context(
@@ -131,15 +126,17 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             _desktop_context(),
         )
 
+        system_prompt = build_desktop_pet_system_prompt()
+
         self.assertIn("深夜", prompt)
-        self.assertIn("又饿又困", prompt)
-        self.assertIn("【生理压制】", prompt)
-        self.assertIn("什么没节操的事都做得出来", prompt)
-        self.assertIn("hungry、sleepy、tired 或 yawn", prompt)
-        self.assertNotIn("饥饿已经很低", prompt)
-        self.assertNotIn("精力已经很低", prompt)
-        self.assertIn("好感阶段", prompt)
-        self.assertIn("还不太了解这个人", prompt)
+        self.assertIn("state=又饿又困——两项都到临界线", prompt)
+        self.assertIn("hunger=5/100, hunger_level=critical", prompt)
+        self.assertIn("energy=4/100, energy_level=critical", prompt)
+        self.assertIn("affection_tier=stranger", prompt)
+        self.assertIn("两项同时 critical", system_prompt)
+        self.assertIn("直接讨食、请求投喂", system_prompt)
+        self.assertIn("显出疲惫、话变少或想休息", system_prompt)
+        self.assertIn("stranger 保持礼貌距离", system_prompt)
 
     def test_desktop_pet_frontend_consumes_authoritative_care_snapshot(self) -> None:
         source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
@@ -185,11 +182,15 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             _qq_context(),
         )
 
-        self.assertIn("【当前养成状态（QQ 临时上下文；本轮不写入长期记忆）】", prompt)
-        self.assertIn("饥饿 18/100，精力 23/100，QQ好感 14/100", prompt)
-        self.assertIn("饥饿和精力与桌宠共享", prompt)
-        self.assertIn("QQ好感只代表 QQ 互动关系", prompt)
-        self.assertIn("和桌宠好感分开计算", prompt)
+        system_prompt = build_qq_text_system_prompt()
+
+        self.assertIn("【care.state｜宿主当前值】", prompt)
+        self.assertIn("scope: qq_text（饥饿/精力与桌宠共享；affection 为 QQ 独立好感）", prompt)
+        self.assertIn("hunger=18/100, hunger_level=low", prompt)
+        self.assertIn("energy=23/100, energy_level=low", prompt)
+        self.assertIn("affection: 14/100 (affection_tier=stranger)", prompt)
+        self.assertIn("scope=qq_text", system_prompt)
+        self.assertIn("不要混用两条关系线", system_prompt)
 
     def test_audio_playback_prompt_does_not_imply_interruption(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(

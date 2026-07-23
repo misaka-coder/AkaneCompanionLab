@@ -308,13 +308,14 @@ def prepare_context(
             ),
         ),
         PromptContextContribution(name="character_automatic_context", content=automatic_character_context),
-        # Active outfit/emotion ids and normalized examples are intentionally
-        # separate from stable character identity. They remain fully visible
-        # this turn without rewriting the MemCore history prefix on outfit
-        # changes.
+        # Active outfit/emotion ids change far less often than conversation
+        # history. Keep them in their own stable pre-history block: ordinary
+        # turns reuse them, while a real outfit/resource change invalidates the
+        # prefix once without hiding any current resource from the model.
         PromptContextContribution(
             name="character_resources",
             content=str(persona_context.get("resource_context") or "").strip(),
+            lifecycle=PromptContextLifecycle.STABLE,
         ),
         PromptContextContribution(name="pending_gifts", content=pending_gift_context),
         PromptContextContribution(name="gift_observation", content=gift_observation_context),

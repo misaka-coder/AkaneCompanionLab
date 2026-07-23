@@ -5001,11 +5001,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("ACTIVE OUTFIT EMOTIONS", captured["persona_system_context"])
         self.assertNotIn("ACTIVE OUTFIT EMOTIONS", captured["persona_reference_context"])
         self.assertIn("AUTOMATIC MARISA REFERENCE", captured["volatile_extra_context"])
-        self.assertIn("ACTIVE OUTFIT EMOTIONS", captured["volatile_extra_context"])
+        self.assertNotIn("ACTIVE OUTFIT EMOTIONS", captured["volatile_extra_context"])
+        self.assertIn("ACTIVE OUTFIT EMOTIONS", captured["extra_context"])
         self.assertNotIn("AUTOMATIC MARISA REFERENCE", repr(captured["history_turns"]))
         self.assertNotIn("ACTIVE OUTFIT EMOTIONS", repr(captured["history_turns"]))
         self.assertIn("AUTOMATIC MARISA REFERENCE", result["ephemeral_turns"][0]["content"])
-        self.assertIn("ACTIVE OUTFIT EMOTIONS", result["ephemeral_turns"][0]["content"])
+        self.assertNotIn("ACTIVE OUTFIT EMOTIONS", result["ephemeral_turns"][0]["content"])
 
     def test_persona_context_merge_preserves_resource_context_as_a_separate_channel(self) -> None:
         merged = AkaneMemoryEngine._merge_prompt_persona_contexts(

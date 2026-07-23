@@ -13,6 +13,7 @@ from .prompt_blocks import (
     build_desktop_pet_system_prompt,
     build_qq_text_system_prompt,
     build_scene_static_system_prompt,
+    build_system_prompt,
     strip_care_prompt_contract,
 )
 
@@ -161,15 +162,22 @@ class PromptProfileRegistry:
         }
 
         self._care_disabled_profiles = {
-            mode: replace(
-                profile,
-                system_block_ids=tuple(block_id for block_id in profile.system_block_ids if block_id != "state_request"),
-                system_prompt_override=strip_care_prompt_contract(profile.system_prompt_override),
-                fast_mode_prompt=strip_care_prompt_contract(profile.fast_mode_prompt),
-                debug_mode_prompt=strip_care_prompt_contract(profile.debug_mode_prompt),
-            )
+            mode: self._without_care(profile)
             for mode, profile in self._profiles.items()
         }
+
+    @staticmethod
+    def _without_care(profile: PromptProfile) -> PromptProfile:
+        system_block_ids = tuple(
+            block_id for block_id in profile.system_block_ids if block_id not in {"state_request", "care_runtime"}
+        )
+        return replace(
+            profile,
+            system_block_ids=system_block_ids,
+            system_prompt_override=build_system_prompt(*system_block_ids),
+            fast_mode_prompt=strip_care_prompt_contract(profile.fast_mode_prompt),
+            debug_mode_prompt=strip_care_prompt_contract(profile.debug_mode_prompt),
+        )
 
     def resolve(self, client_context: ClientProtocolContext | None, *, care_enabled: bool = True) -> PromptProfile:
         mode = ClientMode.SCENE_STATIC

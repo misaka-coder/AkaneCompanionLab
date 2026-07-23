@@ -706,3 +706,17 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 本地验收：Akane 本轮相关 363 项测试通过；MemCore 322 项通过（4 skipped），Ruff、format check、sdist/wheel build 与 `git diff --check` 通过；charpack-core 30 项、Ruff、format check、sdist/wheel build 与 `git diff --check` 通过。Akane 全套 1705 项中 1702 项通过，剩余 3 项位于本轮未修改的 capability selection/settings catalog 漂移测试，不能作为本切片行为通过或失败的替代证据。缓存命中仍必须部署后通过真实 personal 私聊/群聊、图片、附件、工具和 finance 事件交织请求验收，不能从本地 prompt 长度直接宣称达到 95%。
 
 不可变 Akane release `64b8d56` 已部署，共享 venv 安装 MemCore `7b32d5d` 与 charpack-core `cea3eb1` 构建的 wheel；安装后的关键源码哈希与本地提交逐字一致。新 release 只从旧 `12f817e` 复制云端既有且本轮未修改的 `capcore`、`channelcore_onebot`、`promptpack_core` 三个抽包依赖目录，没有复制旧 MemCore/charpack 实现。第一次切换时验收脚本因 Bot JSON 临时文件路径引号错误产生假阴性，按预案恢复 `12f817e`；日志确认新 release 当时其实已正常返回 health 和双 Bot catalog。修正验收后再次切换成功：Host `NRestarts=0`，`/health` root binding 有效，personal/finance 均为 `online / active`，两条 QQ self-check 均为 `connected`。`/etc/akane/host.env` 哈希与切换前一致，未修改 Bot 账号、NapCat/OneBot、模型密钥、插件选择或两份 MemCore 数据根。真实回复质量、图片/附件/工具表现和 cache usage 仍以用户随后从 QQ 发出的请求为准。
+
+## 22. 角色资源与 Care 实时尾部收敛
+
+`64b8d56` 上线后的 personal 群真实 DeepSeek 稳态样本为连续 12 轮 96.50%~96.84%，平均 96.69%；每轮约 1,382 个 miss tokens。安全 prompt audit 进一步确认其中约 440 tokens 来自 12 轮逐字不变的当前角色资源，约 549 tokens 来自每轮变化的 Care/QQ 临时状态，工具数、工具 schema 和 system hash 均未抖动，期间没有 compaction。
+
+本切片不删除这两类信息，而是重新放置生命周期：
+
+- 当前 outfit/emotion id、alias 和角色资源示例继续完整提供给模型，但从 MemCore 历史后的 volatile tail 移到历史前的独立 stable block；普通回合可持续缓存，真实换装或资源版本变化时只允许该块及其后缀重新建立一次缓存；
+- Care 的数值语义、critical/low 表现、可用表情倾向、affection tier 行为、QQ/桌宠好感隔离和关系升降表现进入 care-enabled QQ/desktop stable system block；Care 关闭时 block 与 `state_request` 一起从 profile 中删除，不留下 future-only 提示；
+- 每轮 `care.state` 只保留 scope、hunger/energy 数值与 level、综合状态、affection 与 tier、时间段，以及确实发生的一次性 tier event、工作状态和关系锚点；历史记录不能覆盖当前值的规则仍在稳定 system；
+- 临界饥饿、疲惫和又饿又困的表现强度没有降级；模型仍必须按当前资源选择表情，不会因缓存优化编造 emotion；
+- 自动命中的角色资料正文仍是本轮 ephemeral evidence，当前图片、引用、附件和工具结果位置没有改变。
+
+本地相关回归 394 项通过，Ruff、py_compile 与 `git diff --check` 通过。预计稳定轮 miss 会明显低于 `64b8d56` 的约 1,382 tokens，但最终数值必须以新 release 上连续真实 QQ 样本为准，不能用本地字符数换算冒充 provider usage。

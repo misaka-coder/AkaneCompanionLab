@@ -1125,7 +1125,9 @@ system = "semantic reinforcement system"
             profile = registry.get(mode, care_enabled=False)
             combined = "\n".join([profile.system_prompt_override, profile.fast_mode_prompt, profile.debug_mode_prompt])
             self.assertNotIn("state_request", combined)
+            self.assertNotIn("care.state", combined)
             self.assertNotIn("state_request", profile.system_block_ids)
+            self.assertNotIn("care_runtime", profile.system_block_ids)
 
         desktop = registry.get(ClientMode.DESKTOP_PET, care_enabled=False)
         self.assertIn("emotion", desktop.fast_mode_prompt)
