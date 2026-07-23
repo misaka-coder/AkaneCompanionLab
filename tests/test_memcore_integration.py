@@ -4924,6 +4924,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._build_desktop_pet_character_pack_prompt_context = lambda **_kwargs: {
             "system_context": "STABLE CHARACTER SYSTEM",
             "reference_context": "STABLE CHARACTER REFERENCE",
+            "resource_context": "ACTIVE OUTFIT EMOTIONS",
             "active_id": "char",
         }
         engine._merge_prompt_persona_contexts = lambda character, _profile: dict(character)
@@ -4957,9 +4958,69 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["persona_system_context"], "STABLE CHARACTER SYSTEM")
         self.assertEqual(captured["persona_reference_context"], "STABLE CHARACTER REFERENCE")
         self.assertNotIn("AUTOMATIC MARISA REFERENCE", captured["persona_reference_context"])
+        self.assertNotIn("ACTIVE OUTFIT EMOTIONS", captured["persona_system_context"])
+        self.assertNotIn("ACTIVE OUTFIT EMOTIONS", captured["persona_reference_context"])
         self.assertIn("AUTOMATIC MARISA REFERENCE", captured["volatile_extra_context"])
+        self.assertIn("ACTIVE OUTFIT EMOTIONS", captured["volatile_extra_context"])
         self.assertNotIn("AUTOMATIC MARISA REFERENCE", repr(captured["history_turns"]))
+        self.assertNotIn("ACTIVE OUTFIT EMOTIONS", repr(captured["history_turns"]))
         self.assertIn("AUTOMATIC MARISA REFERENCE", result["ephemeral_turns"][0]["content"])
+        self.assertIn("ACTIVE OUTFIT EMOTIONS", result["ephemeral_turns"][0]["content"])
+
+    def test_persona_context_merge_preserves_resource_context_as_a_separate_channel(self) -> None:
+        merged = AkaneMemoryEngine._merge_prompt_persona_contexts(
+            {
+                "system_context": "CHARACTER SYSTEM",
+                "reference_context": "CHARACTER REFERENCE",
+                "resource_context": "ACTIVE CHARACTER RESOURCES",
+                "active_id": "character",
+            },
+            {
+                "system_context": "PROFILE SYSTEM",
+                "reference_context": "PROFILE REFERENCE",
+                "active_id": "profile",
+            },
+        )
+
+        self.assertEqual(merged["system_context"], "CHARACTER SYSTEM\n\nPROFILE SYSTEM")
+        self.assertEqual(merged["reference_context"], "CHARACTER REFERENCE\n\nPROFILE REFERENCE")
+        self.assertEqual(merged["resource_context"], "ACTIVE CHARACTER RESOURCES")
+        self.assertEqual(merged["active_id"], "profile")
+
+    def test_character_pack_prompt_context_forwards_host_runtime_outfits(self) -> None:
+        captured: dict[str, object] = {}
+
+        def build_context(_pack_id: str, **kwargs) -> dict[str, str]:
+            captured.update(kwargs)
+            return {
+                "system_context": "SYSTEM",
+                "reference_context": "REFERENCE",
+                "resource_context": "ACTIVE RESOURCES",
+                "active_id": "character",
+            }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.desktop_pet_character_resources = SimpleNamespace(
+            build_persona_prompt_context=build_context,
+        )
+        runtime_outfits = [
+            {
+                "id": "gift_outfit",
+                "name": "礼服",
+                "emotions": [{"id": "quiet", "name": "安静"}],
+            }
+        ]
+
+        context = engine._build_desktop_pet_character_pack_prompt_context(
+            character_pack_id="character",
+            resource_manifest=SimpleNamespace(),
+            client_mode="desktop_pet",
+            preferred_outfit="gift_outfit",
+            extra_character_outfits=runtime_outfits,
+        )
+
+        self.assertEqual(captured["extra_character_outfits"], runtime_outfits)
+        self.assertEqual(context["resource_context"], "ACTIVE RESOURCES")
 
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()

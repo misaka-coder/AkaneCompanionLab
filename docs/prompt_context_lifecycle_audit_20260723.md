@@ -635,3 +635,19 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 没命中资料时仍为空，不新增占位提示；显式角色资料工具与角色工坊文件没有改变。
 
 本地验证覆盖稳定 persona reference 保持在原位、自动资料位于历史后、本轮 provider 仍可见、下一轮历史不包含临时正文，以及角色资料库原有自动/手动加载行为。Slice 5 的 outfit/emotion 资源版本与真实换装事件仍未处理。
+
+## 17. Slice 5b 本地实现记录
+
+角色包稳定人格与当前服装资源已在 `charpack-core` 权威实现内拆分，没有在 Akane 宿主按字符串截取：
+
+- `system_context` 继续包含角色身份、自称、称呼、关系、客户端表达边界、主动搭话风格和角色资料库目录；
+- `reference_context` 继续包含 persona form 的稳定表达原则和 `persona.md`；
+- 新增 `resource_context`，只承载当前服装、当前真实 emotion、当前 outfit 过滤后的 alias，以及经过当前资源归一化的示例/点击台词；
+- 同一角色包、同一客户端模式下切换服装，`system_context` 与 `reference_context` 逐字不变；只有 `resource_context` 改变；
+- `ResourceManifest.build_character_catalog_prompt_context()` 提供与当前服装无关的全量服装/表情目录；Akane 将该稳定目录继续放在历史前，将 `resource_context` 放到 MemCore 历史后的 ephemeral evidence；
+- QQ 不再额外重复“emotion 已被清单约束”的占位资源句；真实当前 emotion 清单仍完整可见；
+- 宿主生成的额外服装会同时传入 catalog、当前资源选择和 emotion 归一化，不会因拆分而从模型视野或渲染链消失；
+- `normalize_emotion_id()` 不再跨服装借用图片；当请求的 emotion 不存在时，只在当前 outfit 内回退，避免模型输出“服装 A + 服装 B 的表情”而导致 QQ 表情或桌宠立绘缺图；
+- 最终输出仍经过 manifest normalize，QQ mface、桌宠立绘、TTS 和普通文字交付没有新增第二实现。
+
+`charpack-core` 对应提交为 `cac9211` 与 `c6484b9`。包级 30 项测试、Ruff、最小示例与 sdist/wheel 构建均通过。Akane 本地集成验证覆盖角色资源、资料库、persona 合并、ephemeral 位置与宿主额外服装透传；尚未部署，因此真实换装后的 provider cache、QQ 表情图片和桌宠立绘仍属于统一部署验收项。

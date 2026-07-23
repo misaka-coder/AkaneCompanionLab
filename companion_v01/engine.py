@@ -1561,47 +1561,76 @@ class AkaneMemoryEngine:
         resource_manifest: ResourceManifest | None = None,
         client_mode: str = ClientMode.DESKTOP_PET.value,
         preferred_outfit: str = "",
+        extra_character_outfits: list[dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         service = getattr(self, "desktop_pet_character_resources", None)
         if service is None or not character_pack_id:
-            return {"system_context": "", "reference_context": "", "active_id": ""}
+            return {
+                "system_context": "",
+                "reference_context": "",
+                "resource_context": "",
+                "active_id": "",
+            }
         builder = getattr(service, "build_persona_prompt_context", None)
         if builder is None:
-            return {"system_context": "", "reference_context": "", "active_id": ""}
+            return {
+                "system_context": "",
+                "reference_context": "",
+                "resource_context": "",
+                "active_id": "",
+            }
         try:
             context = builder(
                 character_pack_id,
                 resource_manifest=resource_manifest,
                 client_mode=client_mode,
                 preferred_outfit=preferred_outfit,
+                extra_character_outfits=extra_character_outfits,
             )
         except Exception as exc:
             logger.warning("desktop pet character pack prompt context failed: %s", exc)
-            return {"system_context": "", "reference_context": "", "active_id": ""}
+            return {
+                "system_context": "",
+                "reference_context": "",
+                "resource_context": "",
+                "active_id": "",
+            }
         return (
-            context if isinstance(context, dict) else {"system_context": "", "reference_context": "", "active_id": ""}
+            context
+            if isinstance(context, dict)
+            else {
+                "system_context": "",
+                "reference_context": "",
+                "resource_context": "",
+                "active_id": "",
+            }
         )
 
     @staticmethod
     def _merge_prompt_persona_contexts(*contexts: dict[str, Any]) -> dict[str, str]:
         system_parts: list[str] = []
         reference_parts: list[str] = []
+        resource_parts: list[str] = []
         active_id = ""
         for context in contexts:
             if not isinstance(context, dict):
                 continue
             system_context = str(context.get("system_context") or "").strip()
             reference_context = str(context.get("reference_context") or "").strip()
+            resource_context = str(context.get("resource_context") or "").strip()
             current_active_id = str(context.get("active_id") or "").strip()
             if system_context:
                 system_parts.append(system_context)
             if reference_context:
                 reference_parts.append(reference_context)
+            if resource_context:
+                resource_parts.append(resource_context)
             if current_active_id:
                 active_id = current_active_id
         return {
             "system_context": "\n\n".join(system_parts),
             "reference_context": "\n\n".join(reference_parts),
+            "resource_context": "\n\n".join(resource_parts),
             "active_id": active_id,
         }
 

@@ -105,6 +105,7 @@ A host turn should usually look like this:
 identity = character_packs.build_character_identity(pack_id)
 persona = character_packs.build_persona_prompt_context(pack_id, client_mode=client_mode)
 manifest = character_packs.get_manifest(pack_id)
+stable_character_resources = manifest.build_character_catalog_prompt_context()
 
 cur = mem.record_user_turn(user_text, timestamp=now_ts)
 visible_memory = mem.render_prompt_context(mem.build_prompt_context(current=cur))
@@ -114,9 +115,11 @@ result = call_chat_model(
     stable_system_prompt,
     persona["system_context"],
     persona["reference_context"],
+    stable_character_resources,
     visible_memory,
-    tools,
     user_text,
+    persona["resource_context"],
+    tools,
 )
 
 # If the model calls tools:
@@ -127,8 +130,10 @@ mem.record_assistant_turn(final_speech, in_reply_to=cur, timestamp=now_ts2)
 mem.compact_due_background()
 ```
 
-Keep stable product/tool rules separate from dynamic character, memory, and tool
-result content so provider prefix caches can work.
+Keep stable product/tool rules, character identity/reference, and resource
+catalog before append-only memory. Keep the active outfit/emotion resource
+context near the current turn, then normalize the model output through the same
+manifest. This preserves provider prefixes without hiding current resources.
 
 ## Cross-Package Smoke
 

@@ -161,13 +161,18 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         )
         self.assertIn("Mika Pet / Mika", context["system_context"])
         self.assertIn("默认称呼用户：店长", context["system_context"])
-        self.assertIn("cheerful -> 开心", context["system_context"])
+        self.assertIn("cheerful -> 开心", context["resource_context"])
         self.assertIn("底层项目名", context["system_context"])
         self.assertIn("Mika speaks warmly", context["reference_context"])
-        self.assertIn("店长，我在。", context["reference_context"])
+        self.assertIn("店长，我在。", context["resource_context"])
         self.assertEqual(
             service.build_persona_prompt_context("../web"),
-            {"system_context": "", "reference_context": "", "active_id": ""},
+            {
+                "system_context": "",
+                "reference_context": "",
+                "resource_context": "",
+                "active_id": "",
+            },
         )
 
     def test_character_pack_metadata_drives_qq_persona_context_with_shared_emotion_ids(self) -> None:
@@ -210,11 +215,11 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("角色自称：我", context["system_context"])
         self.assertIn("会在 QQ 里陪店长聊天", context["system_context"])
         self.assertIn("图片文件名去掉扩展名", context["system_context"])
-        self.assertIn("当前角色包可用服装：", context["system_context"])
-        self.assertIn("- 猫娘", context["system_context"])
-        self.assertIn("当前服装 猫娘 可用 emotion：", context["system_context"])
-        self.assertIn("- 开心", context["system_context"])
-        self.assertIn("cheerful -> 开心", context["system_context"])
+        self.assertNotIn("当前角色包可用服装：", context["system_context"])
+        self.assertNotIn("当前角色包可用服装：", context["resource_context"])
+        self.assertIn("当前服装 猫娘 可用 emotion：", context["resource_context"])
+        self.assertIn("- 开心", context["resource_context"])
+        self.assertIn("cheerful -> 开心", context["resource_context"])
         self.assertIn("说话风格: 温柔但简短。", context["reference_context"])
         self.assertIn("边界与禁忌: 不要把自己说成通用客服。", context["reference_context"])
         self.assertNotIn("desktop_pet only", context["system_context"])
@@ -254,13 +259,12 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
             preferred_outfit="sailor",
         )
 
-        self.assertIn("当前角色包可用服装：", context["system_context"])
-        self.assertIn("id:default", context["system_context"])
-        self.assertIn("- sailor", context["system_context"])
-        self.assertIn("当前服装 sailor 可用 emotion：", context["system_context"])
-        self.assertIn("- 害羞", context["system_context"])
-        self.assertIn("shy -> 害羞", context["system_context"])
-        self.assertNotIn("happy -> 开心", context["system_context"])
+        self.assertNotIn("当前角色包可用服装：", context["system_context"])
+        self.assertNotIn("当前角色包可用服装：", context["resource_context"])
+        self.assertIn("当前服装 sailor 可用 emotion：", context["resource_context"])
+        self.assertIn("- 害羞", context["resource_context"])
+        self.assertIn("shy -> 害羞", context["resource_context"])
+        self.assertNotIn("happy -> 开心", context["resource_context"])
 
     def test_qq_delivery_mface_map_expands_only_current_pack_emotion_aliases(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -404,8 +408,9 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
             client_mode="qq_text",
         )
 
-        combined = "\n".join([context["system_context"], context["reference_context"]])
-        self.assertIn("当前角色包可用服装：", combined)
+        combined = "\n".join(
+            [context["system_context"], context["reference_context"], context["resource_context"]]
+        )
         self.assertIn("当前服装 默认 (id:default) 可用 emotion：", combined)
         self.assertIn("- 害羞", combined)
         self.assertEqual(combined.count("emotion=害羞"), 3)
@@ -473,7 +478,7 @@ class DesktopPetCharacterResourceTests(unittest.TestCase):
         self.assertIn("角色核心: 看起来没干劲，但其实很可靠。", context["reference_context"])
         self.assertIn("行为倾向: 用户忙碌时少打扰", context["reference_context"])
         self.assertIn("互动原则: 不要长篇说教", context["reference_context"])
-        self.assertIn("又卡住了？把问题说出来。", context["reference_context"])
+        self.assertIn("又卡住了？把问题说出来。", context["resource_context"])
 
     def test_character_voice_preference_is_declarative_and_sanitized(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()

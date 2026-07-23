@@ -308,6 +308,7 @@ def prepare_context(
             resource_manifest=resource_manifest,
             client_mode=client_context.effective_mode.value,
             preferred_outfit=current_character_outfit,
+            extra_character_outfits=user_character_outfits,
         )
         if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
         else {"system_context": "", "reference_context": "", "active_id": ""}
@@ -372,6 +373,15 @@ def prepare_context(
         ("attachment_focus", attachment_focus_context, True),
         ("generated_files", generated_file_context, True),
         ("character_automatic_context", automatic_character_context, True),
+        # Active outfit/emotion ids and normalized examples are intentionally
+        # separate from stable character identity. They remain fully visible
+        # this turn without rewriting the MemCore history prefix on outfit
+        # changes.
+        (
+            "character_resources",
+            str(persona_context.get("resource_context") or "").strip(),
+            True,
+        ),
         ("pending_gifts", pending_gift_context, True),
         ("gift_observation", gift_observation_context, True),
         (
@@ -453,16 +463,13 @@ def prepare_context(
             logger.warning("current visual defaults failed: %s", exc)
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         resource_context = (
-            "emotion 的可选值已由当前角色包表情图片清单约束。"
-            if resource_manifest
-            else "当前角色包没有可用的表情图片清单。"
+            "" if resource_manifest else "当前角色包没有可用的表情图片清单。"
         )
     else:
         resource_context = (
             (
-                resource_manifest.build_character_prompt_context(
+                resource_manifest.build_character_catalog_prompt_context(
                     extra_character_outfits=user_character_outfits,
-                    preferred_outfit=str(visual_defaults.get("outfit") or current_character_outfit),
                 )
                 if desktop_pet_character_only
                 else resource_manifest.build_prompt_context(

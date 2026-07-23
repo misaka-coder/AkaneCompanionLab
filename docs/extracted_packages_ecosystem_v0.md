@@ -81,14 +81,18 @@ For a normal AI product turn:
 5. Build character/resource context with `charpack-core` if the product has a
    character pack:
    - `build_persona_prompt_context(...)`;
-   - `manifest.build_character_prompt_context()` or
-     `manifest.build_emotion_prompt_context()`;
+   - stable identity/reference before history;
+   - `manifest.build_character_catalog_prompt_context()` as the stable visual
+     catalog when relevant;
+   - `persona["resource_context"]` near the current turn for the active outfit
+     and valid emotion ids;
    - normalize visual output after the model reply.
 6. Assemble prompt sections with `promptpack-core`:
    - stable system/developer rules first;
-   - semi-stable persona/resource/reference context next;
-   - dynamic memory, retrieved snippets, current time, state, user input, and
-     tool results at the tail.
+   - stable persona/reference/resource catalog next;
+   - append-only memory after the stable prefix;
+   - current input, active resource state, retrieved snippets, current time,
+     live state, and tool results at the tail.
 7. Build model-native tool schemas from selected capcore capabilities:
    - OpenAI: `build_openai_chat_tool_set(...)`;
    - Anthropic: `build_anthropic_messages_tool_set(...)`;
