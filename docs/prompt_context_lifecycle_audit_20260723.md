@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0~4 已在本地实现并通过回归，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~4 与 Slice 5a 已在本地实现并通过回归，尚未部署
 
 日期：2026-07-23
 
@@ -623,3 +623,15 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - character pack id 只作为内部 MemCore namespace 选择写入 task metadata，不进入模型可见事件；QQ delivery context 仍按原逻辑工作。
 
 本地验证覆盖任务创建/完成/清理的结构化写入状态、超过旧上限的多活跃任务、waiting user、completed pending handoff、产物 handle、路径/密钥脱敏、后台 worker、QQ 完成通知与文件交付、资源可见性，以及 MemCore raw/projection 回归。真实后台任务与普通聊天交织时的缓存、气泡/TTS 和交付表现仍待统一部署后验收。
+
+## 16. Slice 5a 本地实现记录
+
+角色资料库按本轮关键词自动命中的正文已从 persona prefix 拆出：
+
+- 稳定角色身份、persona system、persona reference 和角色包 active id 保持原路径；
+- `build_automatic_context(character_pack_id, user_message)` 的命中逻辑、资料正文和异常降级均未删除；
+- 自动命中的正文现在作为 `character_automatic_context` 放在 MemCore 历史后的 ephemeral evidence，本轮模型看到的信息不变；
+- 这份正文不再因为本轮出现某个角色/事件关键词而改写历史前的 persona reference，也不会冻结进下一轮 persistent history；
+- 没命中资料时仍为空，不新增占位提示；显式角色资料工具与角色工坊文件没有改变。
+
+本地验证覆盖稳定 persona reference 保持在原位、自动资料位于历史后、本轮 provider 仍可见、下一轮历史不包含临时正文，以及角色资料库原有自动/手动加载行为。Slice 5 的 outfit/emotion 资源版本与真实换装事件仍未处理。

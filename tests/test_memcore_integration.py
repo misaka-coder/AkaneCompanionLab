@@ -4878,6 +4878,89 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
 
+    def test_automatic_character_library_context_stays_after_history_not_in_persona_prefix(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw": [{"source_id": "current", "role": "user", "content": "聊聊魔理沙"}],
+                "raw_text": "聊聊魔理沙",
+                "episodic_text": "",
+                "semantic_text": "",
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": "先前的稳定对话"},
+                        "source_ids": ["previous"],
+                    },
+                    {
+                        "payload": {"role": "user", "content": "聊聊魔理沙"},
+                        "source_ids": ["current"],
+                    },
+                ],
+                "stable_prefix_hash": "e" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        enabled_modules = {PromptModule.EXTRA_CONTEXT, PromptModule.PERSONA}
+        profile = SimpleNamespace(
+            supports_thought_debug=False,
+            system_prompt_override="",
+            includes=lambda module: module in enabled_modules,
+            mode_prompt_override=lambda **_kwargs: "",
+            to_public_dict=lambda: {"name": "character-test"},
+        )
+        engine._get_prompt_profile_registry = lambda: SimpleNamespace(
+            resolve=lambda _context, **_kwargs: profile
+        )
+        engine._build_desktop_pet_character_pack_prompt_context = lambda **_kwargs: {
+            "system_context": "STABLE CHARACTER SYSTEM",
+            "reference_context": "STABLE CHARACTER REFERENCE",
+            "active_id": "char",
+        }
+        engine._merge_prompt_persona_contexts = lambda character, _profile: dict(character)
+        engine.desktop_pet_character_resources = SimpleNamespace(
+            context_libraries=SimpleNamespace(
+                build_automatic_context=lambda character_pack_id, text: (
+                    "AUTOMATIC MARISA REFERENCE" if character_pack_id == "char" and "魔理沙" in text else ""
+                )
+            )
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="聊聊魔理沙",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                character_pack_id="char",
+                client_context=ClientProtocolContext(
+                    requested_mode=ClientMode.QQ_TEXT,
+                    effective_mode=ClientMode.QQ_TEXT,
+                ),
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(captured["persona_system_context"], "STABLE CHARACTER SYSTEM")
+        self.assertEqual(captured["persona_reference_context"], "STABLE CHARACTER REFERENCE")
+        self.assertNotIn("AUTOMATIC MARISA REFERENCE", captured["persona_reference_context"])
+        self.assertIn("AUTOMATIC MARISA REFERENCE", captured["volatile_extra_context"])
+        self.assertNotIn("AUTOMATIC MARISA REFERENCE", repr(captured["history_turns"]))
+        self.assertIn("AUTOMATIC MARISA REFERENCE", result["ephemeral_turns"][0]["content"])
+
     def test_read_memory_timeline_tool_uses_memcore_adapter_in_memcore_mode(self) -> None:
         legacy = _TimelineLegacyService()
         memcore_manager = _TimelineMemcoreManager()

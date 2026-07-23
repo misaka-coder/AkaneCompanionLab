@@ -312,6 +312,7 @@ def prepare_context(
         if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
         else {"system_context": "", "reference_context": "", "active_id": ""}
     )
+    automatic_character_context = ""
     if character_pack_persona_enabled and character_pack_id:
         context_library_service = getattr(
             getattr(engine, "desktop_pet_character_resources", None),
@@ -325,16 +326,12 @@ def prepare_context(
         )
         if automatic_context_builder is not None:
             try:
-                automatic_context = str(automatic_context_builder(character_pack_id, user_message) or "").strip()
+                automatic_character_context = str(
+                    automatic_context_builder(character_pack_id, user_message) or ""
+                ).strip()
             except Exception as exc:
                 logger.warning("automatic character context loading failed: %s", exc)
-                automatic_context = ""
-            if automatic_context:
-                character_pack_persona_context = dict(character_pack_persona_context)
-                existing_reference = str(character_pack_persona_context.get("reference_context") or "").strip()
-                character_pack_persona_context["reference_context"] = "\n\n".join(
-                    part for part in [existing_reference, automatic_context] if part
-                )
+                automatic_character_context = ""
     persona_context = engine._merge_prompt_persona_contexts(
         character_pack_persona_context,
         persona_context,
@@ -374,6 +371,7 @@ def prepare_context(
         ("workspace_files", workspace_file_context, True),
         ("attachment_focus", attachment_focus_context, True),
         ("generated_files", generated_file_context, True),
+        ("character_automatic_context", automatic_character_context, True),
         ("pending_gifts", pending_gift_context, True),
         ("gift_observation", gift_observation_context, True),
         (
