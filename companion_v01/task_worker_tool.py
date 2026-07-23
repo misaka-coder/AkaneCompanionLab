@@ -72,6 +72,7 @@ class DelegateTaskToolHandler(BaseToolHandler):
             inputs=list(call.get("inputs") or []),
             expected_outputs=list(call.get("expected_outputs") or []),
             delivery_context=delivery_context,
+            character_pack_id=context.character_pack_id,
             auto_start=True,
             timestamp=context.now_ts,
         )

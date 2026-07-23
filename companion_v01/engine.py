@@ -353,7 +353,10 @@ class AkaneMemoryEngine:
             public_path_builder=self.gift_service._build_public_path,
         )
         self.persona_card_service = PersonaCardService(store=self.store)
-        self.task_workspace_service = TaskWorkspaceService(store=self.store)
+        self.task_workspace_service = TaskWorkspaceService(
+            store=self.store,
+            timeline_event_recorder=self._record_task_workspace_trace,
+        )
         self.generated_file_service = GeneratedFileService(
             base_dir=generated_workspace_dir,
             store=self.store,
@@ -1126,6 +1129,32 @@ class AkaneMemoryEngine:
             logger.warning("memcore attachment material trace failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _record_task_workspace_trace(
+        self,
+        *,
+        task: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {"ok": True, "status": "skipped", "reason": "memcore_disabled"}
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
+        character_pack_id = str(
+            metadata.get("character_pack_id") or delivery.get("character_pack_id") or ""
+        ).strip()
+        try:
+            return manager.record_task_event(
+                task=task,
+                event=event,
+                profile_user_id=str(task.get("profile_user_id") or ""),
+                session_id=str(task.get("session_id") or ""),
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore task workspace trace failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
     def _schedule_memcore_compaction(
         self,
         *,
@@ -1624,7 +1653,10 @@ class AkaneMemoryEngine:
         store = getattr(self, "store", None)
         if store is None:
             return None
-        service = TaskWorkspaceService(store=store)
+        service = TaskWorkspaceService(
+            store=store,
+            timeline_event_recorder=self._record_task_workspace_trace,
+        )
         self.task_workspace_service = service
         return service
 

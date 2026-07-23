@@ -11,6 +11,118 @@ from companion_v01.tool_runtime import ManageTaskWorkspaceToolHandler, ToolExecu
 
 
 class TaskWorkspaceStoreTests(unittest.TestCase):
+    def test_task_database_update_survives_timeline_failure_with_structured_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+
+            def fail_recorder(**_kwargs):
+                raise RuntimeError("timeline unavailable")
+
+            service = TaskWorkspaceService(store, timeline_event_recorder=fail_recorder)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="保留这项任务",
+                timestamp=100,
+            )
+
+            self.assertFalse(task["timeline_event_status"]["ok"])
+            self.assertEqual(task["timeline_event_status"]["status"], "failed")
+            self.assertIn("timeline unavailable", task["timeline_event_status"]["reason"])
+            self.assertIsNotNone(service.get_task(task["task_id"]))
+
+    def test_service_records_structured_timeline_status_for_task_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calls: list[dict[str, object]] = []
+
+            def recorder(**kwargs):
+                calls.append(kwargs)
+                event = kwargs.get("event") if isinstance(kwargs.get("event"), dict) else {}
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "source_id": f"task:{event.get('event_id')}",
+                    "reason": "",
+                }
+
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store, timeline_event_recorder=recorder)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="整理材料",
+                normalized_goal="整理材料并交付。",
+                timestamp=100,
+            )
+            completed = service.complete_task(task_id=task["task_id"], timestamp=120)
+            cleaned = service.cleanup_task(task_id=task["task_id"], timestamp=130)
+
+            self.assertEqual(task["timeline_event_status"]["status"], "recorded")
+            self.assertEqual(completed["timeline_event_status"]["status"], "recorded")
+            self.assertEqual(cleaned["timeline_event_status"]["status"], "recorded")
+            self.assertEqual(
+                [call["event"]["event_type"] for call in calls],
+                ["task_created", "task_completed", "task_cleaned"],
+            )
+
+    def test_activity_prompt_lists_all_open_and_pending_handoff_tasks_without_full_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            tasks = []
+            for index in range(4):
+                task = service.create_task(
+                    profile_user_id="master",
+                    session_id="qq-private",
+                    raw_request_text=f"任务 {index}",
+                    normalized_goal=(
+                        "读取 F:\\Private\\secret.txt 并整理。" if index == 0 else f"完成任务 {index}。"
+                    ),
+                    steps=[{"title": f"PRIVATE STEP {index}", "status": "running"}],
+                    artifacts=[{"id": f"gen_{index:03d}", "title": f"PRIVATE TITLE {index}"}],
+                    status="waiting_user" if index == 1 else "running",
+                    timestamp=100 + index,
+                )
+                tasks.append(task)
+            service.update_task(
+                task_id=tasks[1]["task_id"],
+                pending_question={"text": "需要导出 PDF 还是 DOCX？"},
+                timestamp=120,
+            )
+            completed = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="生成终稿",
+                normalized_goal="生成终稿并交付。",
+                artifacts=[{"id": "gen_final", "title": "终稿"}],
+                timestamp=130,
+            )
+            service.complete_task(task_id=completed["task_id"], timestamp=140)
+            service.append_event(
+                task_id=completed["task_id"],
+                event_type="worker_completed",
+                message="终稿已经准备好。",
+                payload={"handoff": {"status": "completed", "summary": "终稿已经准备好。"}},
+                status="pending",
+                timestamp=150,
+            )
+
+            prompt = service.build_activity_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+            )
+
+            self.assertIn("task.workspace", prompt)
+            for task in [*tasks, completed]:
+                self.assertIn(str(task["task_id"]), prompt)
+            self.assertIn("requires_user=true", prompt)
+            self.assertIn("需要导出 PDF 还是 DOCX", prompt)
+            self.assertIn("gen_final", prompt)
+            self.assertIn("[local_path]", prompt)
+            self.assertNotIn("F:\\Private", prompt)
+            self.assertNotIn("PRIVATE STEP", prompt)
+            self.assertNotIn("PRIVATE TITLE", prompt)
+
     def test_store_roundtrip_update_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

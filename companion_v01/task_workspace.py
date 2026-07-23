@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
+import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .store import MemoryStore
 
 
 TASK_WORKSPACE_PROMPT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 TASK_WORKSPACE_PROMPT_SCAN_LIMIT = 80
+logger = logging.getLogger("akane.task_workspace")
 
 
 class TaskWorkspaceService:
@@ -18,8 +22,14 @@ class TaskWorkspaceService:
     stable workspace later.
     """
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        *,
+        timeline_event_recorder: Callable[..., dict[str, Any]] | None = None,
+    ) -> None:
         self.store = store
+        self.timeline_event_recorder = timeline_event_recorder
 
     def create_task(
         self,
@@ -57,10 +67,8 @@ class TaskWorkspaceService:
             metadata=metadata or {},
             timestamp=effective_ts,
         )
-        self.store.append_task_workspace_event(
+        event = self.append_event(
             task_id=str(task["task_id"]),
-            profile_user_id=profile_user_id,
-            session_id=session_id,
             event_type="task_created",
             from_actor=owner,
             priority="normal",
@@ -72,7 +80,7 @@ class TaskWorkspaceService:
             status="handled",
             timestamp=effective_ts,
         )
-        return task
+        return {**task, "timeline_event_status": dict(event.get("timeline_event_status") or {})}
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.store.get_task_workspace(task_id)
@@ -83,7 +91,7 @@ class TaskWorkspaceService:
         profile_user_id: str,
         session_id: str | None = None,
         statuses: list[str] | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> list[dict[str, Any]]:
         return self.store.list_task_workspaces(
             profile_user_id=profile_user_id,
@@ -131,7 +139,7 @@ class TaskWorkspaceService:
         task = self.store.get_task_workspace(task_id)
         if not task:
             raise ValueError(f"Task workspace not found: {task_id}")
-        return self.store.append_task_workspace_event(
+        event = self.store.append_task_workspace_event(
             task_id=task_id,
             profile_user_id=str(task["profile_user_id"]),
             session_id=str(task["session_id"]),
@@ -144,19 +152,160 @@ class TaskWorkspaceService:
             status=status,
             timestamp=timestamp,
         )
+        return {
+            **event,
+            "timeline_event_status": self._record_timeline_event(task=task, event=event),
+        }
 
     def list_events(
         self,
         *,
         task_id: str,
         status: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[dict[str, Any]]:
         return self.store.list_task_workspace_events(
             task_id=task_id,
             status=status,
             limit=limit,
         )
+
+    def build_activity_prompt_context(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+    ) -> str:
+        """Render every active task as a short state index for main chat."""
+
+        tasks = self.list_tasks(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["running", "waiting_user", "queued"],
+            limit=None,
+        )
+        task_map = {
+            str(task.get("task_id") or "").strip(): task
+            for task in tasks
+            if str(task.get("task_id") or "").strip()
+        }
+        pending_events = self.store.list_task_workspace_events(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            status="pending",
+            limit=None,
+        )
+        for event in reversed(pending_events):
+            task_id = str(event.get("task_id") or "").strip()
+            if not task_id or task_id in task_map:
+                continue
+            task = self.get_task(task_id)
+            if not task or str(task.get("status") or "").strip().lower() in {"cleaned", "canceled"}:
+                continue
+            task_map[task_id] = task
+        if not task_map:
+            return ""
+
+        ordered = sorted(
+            task_map.values(),
+            key=lambda item: int(item.get("updated_at") or item.get("created_at") or 0),
+            reverse=True,
+        )
+        lines = [
+            "task.workspace",
+            "以下是当前会话仍需跟进的任务索引；完整步骤、交接和事件可按 id inspect。",
+        ]
+        for task in ordered:
+            task_id = self._safe_activity_text(task.get("task_id"), limit=96)
+            summary = self._build_task_status_summary(task)
+            status = self._safe_activity_text(summary.get("status") or task.get("status"), limit=32)
+            title = self._safe_activity_text(summary.get("title"), limit=160)
+            state_summary = self._safe_activity_text(summary.get("summary"), limit=260)
+            fields = [f"id={task_id}", f"status={status or 'running'}"]
+            if title:
+                fields.append("goal=" + json.dumps(title, ensure_ascii=False))
+            if state_summary:
+                fields.append("summary=" + json.dumps(state_summary, ensure_ascii=False))
+            question = self._task_activity_question(task)
+            if question:
+                fields.extend(["requires_user=true", "question=" + json.dumps(question, ensure_ascii=False)])
+            artifacts = self._task_activity_artifact_handles(task)
+            if artifacts:
+                fields.append("artifacts=" + json.dumps(artifacts, ensure_ascii=False))
+            lines.append("- " + " ".join(fields))
+        return "\n".join(lines)
+
+    def _record_timeline_event(self, *, task: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        recorder = self.timeline_event_recorder
+        if recorder is None:
+            return {"ok": True, "status": "not_configured", "reason": ""}
+        try:
+            result = recorder(task=dict(task), event=dict(event))
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("task timeline event recorder failed: %s", reason)
+            return {"ok": False, "status": "failed", "reason": reason}
+        if not isinstance(result, dict):
+            logger.warning("task timeline event recorder returned no structured status")
+            return {"ok": False, "status": "invalid_result", "reason": "structured_status_required"}
+        normalized = dict(result)
+        normalized.setdefault("ok", False)
+        normalized.setdefault("status", "unknown")
+        normalized.setdefault("reason", "")
+        if not bool(normalized.get("ok")):
+            logger.warning(
+                "task timeline event was not recorded: status=%s reason=%s",
+                str(normalized.get("status") or "unknown")[:80],
+                str(normalized.get("reason") or "")[:160],
+            )
+        return normalized
+
+    @staticmethod
+    def _safe_activity_text(value: Any, *, limit: int) -> str:
+        text = str(value or "")
+        text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
+        text = re.sub(
+            r"(?i)\b(api[_-]?key|password|secret|token|authorization)\s*[:=]\s*[^\s,;]+",
+            r"\1=[redacted]",
+            text,
+        )
+        text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[: max(1, int(limit or 1))]
+
+    def _task_activity_question(self, task: dict[str, Any]) -> str:
+        pending = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
+        question = str(pending.get("text") or pending.get("question") or "").strip()
+        if not question:
+            handoff = self.get_task_handoff(task)
+            question = str(handoff.get("user_question") or "").strip()
+        return self._safe_activity_text(question, limit=260)
+
+    def _task_activity_artifact_handles(self, task: dict[str, Any]) -> list[str]:
+        handoff = self.get_task_handoff(task)
+        candidates = [
+            *list(task.get("artifacts") or []),
+            *list(handoff.get("artifacts") or []),
+        ]
+        handles: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            if isinstance(item, dict):
+                raw = (
+                    item.get("id")
+                    or item.get("handle")
+                    or item.get("generated_handle")
+                    or item.get("attachment_handle")
+                )
+            else:
+                raw = item
+            handle = self._safe_activity_text(raw, limit=120)
+            if not handle or handle.lower() in seen:
+                continue
+            seen.add(handle.lower())
+            handles.append(handle)
+        return handles
 
     def build_prompt_context(
         self,
@@ -411,9 +560,9 @@ class TaskWorkspaceService:
         task_id = str(task.get("task_id") or "").strip()
         if not task_id:
             return {}
-        events = self.list_events(task_id=task_id, status="pending", limit=20)
+        events = self.list_events(task_id=task_id, status="pending", limit=None)
         if not events:
-            events = self.list_events(task_id=task_id, limit=20)
+            events = self.list_events(task_id=task_id, limit=None)
         for event in reversed(events):
             if not isinstance(event, dict):
                 continue
@@ -796,7 +945,7 @@ class TaskWorkspaceService:
             updated_at=effective_ts,
         )
         if updated:
-            self.append_event(
+            event = self.append_event(
                 task_id=task_id,
                 event_type="task_completed",
                 from_actor="system",
@@ -805,6 +954,7 @@ class TaskWorkspaceService:
                 status="handled",
                 timestamp=effective_ts,
             )
+            updated = {**updated, "timeline_event_status": dict(event.get("timeline_event_status") or {})}
         return updated
 
     def cleanup_task(
@@ -832,10 +982,8 @@ class TaskWorkspaceService:
             cleaned_at=effective_ts,
             updated_at=effective_ts,
         )
-        self.store.append_task_workspace_event(
+        event = self.append_event(
             task_id=task_id,
-            profile_user_id=str(task["profile_user_id"]),
-            session_id=str(task["session_id"]),
             event_type="task_cleaned",
             from_actor="frontstage",
             message=reason,
@@ -843,4 +991,6 @@ class TaskWorkspaceService:
             status="handled",
             timestamp=effective_ts,
         )
+        if updated:
+            return {**updated, "timeline_event_status": dict(event.get("timeline_event_status") or {})}
         return updated

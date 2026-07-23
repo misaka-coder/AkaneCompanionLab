@@ -168,6 +168,7 @@ class TaskWorkerService:
         inputs: list[Any] | None = None,
         expected_outputs: list[Any] | None = None,
         delivery_context: dict[str, Any] | None = None,
+        character_pack_id: str = "",
         auto_start: bool = True,
         timestamp: int | None = None,
     ) -> WorkerDelegation:
@@ -192,6 +193,8 @@ class TaskWorkerService:
             normalized_delivery_context = self._normalize_delivery_context(delivery_context)
             if normalized_delivery_context:
                 metadata["delivery"] = normalized_delivery_context
+            if str(character_pack_id or "").strip():
+                metadata["character_pack_id"] = normalize_character_pack_id(character_pack_id)
             task = self.task_workspace_service.create_task(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -225,6 +228,8 @@ class TaskWorkerService:
             normalized_delivery_context = self._normalize_delivery_context(delivery_context)
             if normalized_delivery_context and not isinstance(metadata.get("delivery"), dict):
                 metadata["delivery"] = normalized_delivery_context
+            if str(character_pack_id or "").strip() and not str(metadata.get("character_pack_id") or "").strip():
+                metadata["character_pack_id"] = normalize_character_pack_id(character_pack_id)
             task = (
                 self.task_workspace_service.update_task(
                     task_id=str(task["task_id"]),

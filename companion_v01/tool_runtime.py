@@ -6741,6 +6741,9 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
                 tool_type=self.tool_type,
                 followup_context="你刚刚想创建任务工作区，但目标为空。请自然确认用户要完成什么，不要重复调用空的 create。",
             )
+        metadata = self._normalize_dict(call.get("metadata"))
+        if str(context.character_pack_id or "").strip():
+            metadata.setdefault("character_pack_id", str(context.character_pack_id).strip())
         task = self.task_workspace_service.create_task(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
@@ -6751,7 +6754,7 @@ class ManageTaskWorkspaceToolHandler(BaseToolHandler):
             constraints=list(call.get("constraints") or []),
             steps=list(call.get("steps") or []),
             artifacts=list(call.get("artifacts") or []),
-            metadata=self._normalize_dict(call.get("metadata")),
+            metadata=metadata,
             owner="frontstage",
             status="running" if list(call.get("steps") or []) else "queued",
             timestamp=context.now_ts,

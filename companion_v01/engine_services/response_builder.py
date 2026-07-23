@@ -219,10 +219,9 @@ def prepare_context(
     )
     task_workspace_service = engine._get_task_workspace_service()
     task_workspace_context = (
-        task_workspace_service.build_prompt_context(
+        task_workspace_service.build_activity_prompt_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
-            now_ts=now_ts,
         )
         if (
             task_workspace_service is not None

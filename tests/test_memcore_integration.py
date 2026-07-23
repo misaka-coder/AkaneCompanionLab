@@ -3587,6 +3587,60 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_cleanup["payload"]["reason"], "聊完了")
         self.assertEqual(stored_cleanup["turn_id"], "")
 
+    def test_task_event_bridge_records_safe_explicit_timeline_event(self) -> None:
+        task = {
+            "task_id": "task::abc",
+            "profile_user_id": "master",
+            "session_id": "qq_group_1",
+            "status": "completed",
+            "normalized_goal": "整理 F:\\Private\\report.docx 并交付。",
+            "artifacts": [{"id": "gen_001", "storage_relpath": "private/output.docx"}],
+            "updated_at": 120,
+        }
+        event = {
+            "event_id": "task_event::done",
+            "event_type": "worker_completed",
+            "from_actor": "document_agent",
+            "priority": "high",
+            "requires_user": False,
+            "message": "任务完成，token=private-value，文件在 C:\\Private\\output.docx。",
+            "payload": {
+                "handoff": {
+                    "summary": "终稿已生成。",
+                    "artifacts": [{"id": "gen_001"}],
+                }
+            },
+            "created_at": 120,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                result = manager.record_task_event(task=task, event=event, character_pack_id="akane_v1")
+                stored = manager._store.get_record_by_source_id(result["source_id"])
+            finally:
+                manager.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(stored["kind"], "event.task.worker_completed")
+        self.assertEqual(stored["payload"]["source"], "task_workspace")
+        self.assertEqual(stored["payload"]["task_id"], "task::abc")
+        self.assertEqual(stored["payload"]["artifacts"], "gen_001")
+        self.assertEqual(stored["retrieval_policy"], "explicit")
+        self.assertEqual(stored["retrieval_visibility"], "explicit")
+        self.assertNotIn("private-value", str(stored))
+        self.assertNotIn("F:\\Private", str(stored))
+        self.assertNotIn("C:\\Private", str(stored))
+        self.assertNotIn("storage_relpath", str(stored))
+
     def test_manager_does_not_expose_v1_prompt_context_facade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -4766,7 +4820,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             resolve=lambda _context, *, care_enabled: care_values.append(bool(care_enabled)) or profile
         )
         engine._get_task_workspace_service = lambda: SimpleNamespace(
-            build_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
+            build_activity_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
         )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
             build_activity_prompt_context=lambda **_kwargs: "ATTACHMENT FOCUS CONTEXT"

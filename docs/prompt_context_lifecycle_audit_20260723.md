@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0~3 已在本地实现并通过回归，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~4 已在本地实现并通过回归，尚未部署
 
 日期：2026-07-23
 
@@ -607,3 +607,19 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 后台任务继续通过 `_build_task_worker_attachment_context()` 获得完整材料，没有因主聊天缩短而退化。
 
 本地验证覆盖 65 个以上活跃材料不被短索引截断、ready/pending/failed 状态、安全路径与正文不泄露、完整资源可见性契约、附件工具、后台 task worker，以及 QQ 当前/引用图片直接进入原生多模态请求。真实 QQ 识图、历史材料重新加载、input token 与 cache miss 变化仍待统一部署后验收。
+
+## 15. Slice 4 本地实现记录
+
+任务工作区不再只存在于任务数据库和每轮重复大卡片中：
+
+- `TaskWorkspaceService` 接受通用 timeline event recorder；任务 DB 事件写入后，会把同一既成事实投影为中性的 `event.task.*`；
+- 任务事件复用 MemCore 的通用 `record_external_event()`，没有给 MemCore 增加 task 表或第二历史区；
+- task created、steps/artifact update、worker delegated/started/tool/waiting/blocked/completed、user question、cleaned 等现有事件都走同一桥接；
+- MemCore 事件只包含 task id、当前状态、目标、actor、短消息、是否等待用户、问题、handoff 摘要和产物 handle，不写完整步骤 payload、工具 followup、文件正文、storage path 或 delivery 账号；
+- 本地绝对路径、Bearer 与 key/token/password/secret 样式在进入 MemCore 前脱敏；
+- 事件写入返回结构化 `ok/status/reason/source_id`，失败会附在 TaskWorkspaceService 返回值并写 warning，不伪装成已记录；任务数据库本身仍可独立完成状态更新；
+- 主聊天改用 `task.workspace` 短索引，保留全部 active task、全部 pending handoff task、待回答问题和产物 handle，不再每轮展开步骤、工坊说明、交接明细、最近事件与前台话术；
+- 短索引没有沿用旧的两条 task 上限或七天静默隐藏；完整 `build_prompt_context()` 继续供后台 worker 使用，`manage_task_workspace inspect` 继续按需返回完整步骤和交接；
+- character pack id 只作为内部 MemCore namespace 选择写入 task metadata，不进入模型可见事件；QQ delivery context 仍按原逻辑工作。
+
+本地验证覆盖任务创建/完成/清理的结构化写入状态、超过旧上限的多活跃任务、waiting user、completed pending handoff、产物 handle、路径/密钥脱敏、后台 worker、QQ 完成通知与文件交付、资源可见性，以及 MemCore raw/projection 回归。真实后台任务与普通聊天交织时的缓存、气泡/TTS 和交付表现仍待统一部署后验收。

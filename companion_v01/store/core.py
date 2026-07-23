@@ -3785,7 +3785,7 @@ class MemoryStore:
         profile_user_id: str,
         session_id: str | None = None,
         statuses: list[str] | tuple[str, ...] | set[str] | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> list[dict[str, Any]]:
         query = [
             """
@@ -3803,13 +3803,10 @@ class MemoryStore:
             placeholders = ", ".join("?" for _ in normalized_statuses)
             query.append(f"AND status IN ({placeholders})")
             params.extend(normalized_statuses)
-        query.append(
-            """
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT ?
-            """
-        )
-        params.append(max(1, int(limit or 20)))
+        query.append("ORDER BY updated_at DESC, created_at DESC")
+        if limit is not None:
+            query.append("LIMIT ?")
+            params.append(max(1, int(limit or 20)))
         with self._connect() as conn:
             rows = conn.execute("\n".join(query), tuple(params)).fetchall()
         return [self._row_to_task_workspace(dict(row)) for row in rows]
@@ -3973,7 +3970,7 @@ class MemoryStore:
         profile_user_id: str | None = None,
         session_id: str | None = None,
         status: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -3994,14 +3991,17 @@ class MemoryStore:
             clauses.append("status = ?")
             params.append(self._normalize_task_event_status(normalized_status))
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(max(1, int(limit or 50)))
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(max(1, int(limit or 50)))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM task_workspace_events
                 {where_sql}
                 ORDER BY created_at ASC
-                LIMIT ?
+                {limit_sql}
                 """,
                 tuple(params),
             ).fetchall()
