@@ -4819,11 +4819,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._get_prompt_profile_registry = lambda: SimpleNamespace(
             resolve=lambda _context, *, care_enabled: care_values.append(bool(care_enabled)) or profile
         )
+        task_index_reads: list[dict[str, object]] = []
+        attachment_index_reads: list[dict[str, object]] = []
         engine._get_task_workspace_service = lambda: SimpleNamespace(
-            build_activity_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
+            build_activity_prompt_context=lambda **kwargs: task_index_reads.append(dict(kwargs))
+            or "TASK WORKSPACE CONTEXT"
         )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
-            build_activity_prompt_context=lambda **_kwargs: "ATTACHMENT FOCUS CONTEXT"
+            build_activity_prompt_context=lambda **kwargs: attachment_index_reads.append(dict(kwargs))
+            or "ATTACHMENT FOCUS CONTEXT"
         )
         engine.gift_service = SimpleNamespace(
             build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",
@@ -4871,7 +4875,19 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("TURN CONTEXT", captured["extra_context"])
         self.assertEqual(
             captured["volatile_extra_context"],
-            "TASK WORKSPACE CONTEXT\n\nATTACHMENT FOCUS CONTEXT\n\nPENDING GIFT CONTEXT\n\nTURN CONTEXT",
+            "PENDING GIFT CONTEXT\n\nTURN CONTEXT",
+        )
+        self.assertNotIn("TASK WORKSPACE CONTEXT", captured["volatile_extra_context"])
+        self.assertNotIn("ATTACHMENT FOCUS CONTEXT", captured["volatile_extra_context"])
+        self.assertEqual(task_index_reads, [])
+        self.assertEqual(attachment_index_reads, [])
+        self.assertEqual(
+            result["working_state_context"],
+            {
+                "mode": "timeline_events_on_demand",
+                "task_index_included": False,
+                "attachment_index_included": False,
+            },
         )
         self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
         self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")

@@ -80,6 +80,8 @@ class PersonaConfigTomlTests(unittest.TestCase):
     def test_stable_tool_rules_distinguish_parallel_native_from_single_legacy_field(self) -> None:
         self.assertIn("多个互不依赖的工具", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("JSON `tool_call` 字段每轮仍只容纳一个", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("普通回合不一定重复展开完整清单", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """

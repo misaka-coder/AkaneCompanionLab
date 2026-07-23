@@ -173,6 +173,19 @@ def prepare_context(
     projection_authoritative = not projection_migration_window
     if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
         return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+    # MemCore already records attachment and task state transitions as
+    # append-only material.* / event.task.* timeline entries.  Rebuilding the
+    # complete active indexes on every chat request repeats the same database
+    # state after the current user message, so none of those tokens can reuse
+    # the preceding request's linear prefix.  Keep the indexes only for the
+    # legacy projection window; the authoritative MemCore path can recover
+    # details through the existing inspect tools when the visible events are
+    # not sufficient.
+    working_state_from_timeline = bool(
+        _memory_backend() == "memcore"
+        and projection_read_active
+        and projection_authoritative
+    )
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
@@ -185,6 +198,7 @@ def prepare_context(
             attachment_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
             and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
+            and not working_state_from_timeline
         )
         else ""
     )
@@ -226,6 +240,7 @@ def prepare_context(
         if (
             task_workspace_service is not None
             and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+            and not working_state_from_timeline
         )
         else ""
     )
@@ -675,6 +690,11 @@ def prepare_context(
             key: value
             for key, value in provider_projection.items()
             if key not in {"history_turns"}
+        }
+        generation_context["working_state_context"] = {
+            "mode": "timeline_events_on_demand" if working_state_from_timeline else "inline_indexes",
+            "task_index_included": bool(task_workspace_context),
+            "attachment_index_included": bool(attachment_focus_context),
         }
         return generation_context
 

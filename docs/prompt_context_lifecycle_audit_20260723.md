@@ -672,3 +672,19 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 新 Host 进程的 MemCore 摘要请求真实进入 DeepSeek 并返回 200；同一 finance 积压 namespace 首次成功压缩 `raw 111364 → 91962`，没有再出现 `summary_retry_pending`；后续正常 turn 会继续按批次追平；
 - systemd 仍固定 `MEMCORE_RAW_TOKEN_TRIGGER=24000` 与 `MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67`，没有上调阈值；
 - finance QQ 自检为 connected；personal NapCat 容器仍运行，但账号自检为 `account_offline`，需要重新扫码后才能完成 personal 的文字、图片、表情和语音真实表现验收。
+
+## 20. Slice 6a：MemCore 工作状态改为事件优先、按需展开
+
+真实 personal 白名单群连续请求显示，稳定 system、人格、14 个工具及 schema 均未抖动，但主聊天仍在每轮末尾重复发送约 4,915 tokens 的任务索引和约 2,664 tokens 的附件索引。它们没有写进 MemCore 历史，却作为 `ephemeral_context` 每轮从数据库重建，因此同样持续消耗输入与 cache miss；真实稳态命中只有约 75%~78%。
+
+本切片按原生命周期规则收口：
+
+- MemCore provider projection 权威可用时，主聊天不再读取或发送 `task.workspace` 与 `attachment.workspace` 全量活动索引；
+- 任务创建、更新、等待、完成和清理继续只在真实状态变化时写入一次 `event.task.*`；
+- 附件接收、解析就绪和清理继续只在真实状态变化时写入一次 `material.reference/cleanup`；
+- 可见事件不足以回答当前问题时，模型使用本轮真实可用的 `manage_task_workspace inspect`、`inspect_attachment`、`load_material` 等工具按需恢复详情；缺少重复清单不等于工作区为空；
+- 非 MemCore/迁移窗口仍保留 inline index，避免旧投影消费者无事件可读；
+- 当前上传图片的原生多模态输入、引用证据、用户自然询问工作台时的实时状态同步、条件式生成文件上下文、当前角色表情资源和本轮视觉状态均未删除；
+- 没有提高 24k 压缩阈值，没有按 token 或条目数截断活动状态，也没有新增 Bot-specific 分支或第二工作区实现。
+
+本地验证覆盖 PromptBuilder、MemCore 集成、附件工作台、任务工作区和 QQ 后端路由，共 246 项测试通过。云端验收需重新观察相同 personal 群缓存 key 下的连续真实请求：预期普通回合 `user.extra_context.task_workspace` 与 `user.extra_context.attachment_focus` 消失，动态尾部减少约 7,600 tokens；角色/本轮上下文产生的必要 miss 仍保留。
