@@ -152,6 +152,58 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
 DEFAULT_MAX_TOOL_FOLLOWUP_CHARS = 8000
 
 
+def append_structured_artifact_receipts(
+    followup_context: Any,
+    *,
+    stream_events: Iterable[Mapping[str, Any]] | None,
+) -> str:
+    """Ensure newly created artifacts are visible in the tool result once.
+
+    Tool implementations may describe their result naturally, but managed
+    artifact bridges are also allowed to report only a structured
+    ``generated_file_ready`` event.  The model still needs the stable handle
+    in the very next tool round so it can send or reuse the file directly.
+    This projection is based only on the result event contract; it never
+    guesses from user wording and never injects a persistent workspace list.
+    """
+
+    text = str(followup_context or "").strip()
+    receipts: list[str] = []
+    seen_handles: set[str] = set()
+    for raw_event in stream_events or ():
+        if not isinstance(raw_event, Mapping):
+            continue
+        if str(raw_event.get("type") or "").strip() != "generated_file_ready":
+            continue
+        generated = raw_event.get("generated_file")
+        if not isinstance(generated, Mapping):
+            continue
+        handle = " ".join(str(generated.get("generated_handle") or "").split())[:120]
+        if not handle or handle in seen_handles or handle in text:
+            continue
+        seen_handles.add(handle)
+        title = " ".join(str(generated.get("output_title") or "").split())[:160]
+        output_format = " ".join(
+            str(generated.get("output_format") or generated.get("file_ext") or "").split()
+        )[:40]
+        attributes = [f"handle={handle}"]
+        if title:
+            attributes.append(f"title={title}")
+        if output_format:
+            attributes.append(f"format={output_format}")
+        receipts.append("- generated_file " + " ".join(attributes))
+    if not receipts:
+        return text
+    receipt_block = "\n".join(
+        [
+            "【本轮新生成文件】",
+            *receipts,
+            "这些 handle 已可直接交给后续工具；如果用户已明确要收到文件，可直接调用 send_file，无需先查询生成文件工作台。",
+        ]
+    )
+    return "\n\n".join(part for part in (text, receipt_block) if part)
+
+
 def shape_tool_followup(
     followup_context: Any,
     *,

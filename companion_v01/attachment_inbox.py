@@ -51,6 +51,22 @@ class AttachmentInboxService:
         ]
         self.workspace_uri_resolver = workspace_uri_resolver
         self.material_trace_recorder = material_trace_recorder
+        self._material_timeline_healthy = callable(material_trace_recorder)
+
+    def activity_prompt_context_lifecycle(self) -> str:
+        """Declare how the main-chat activity index is delivered.
+
+        A configured recorder writes reference/ready/cleanup transitions to
+        the append-only timeline, so an authoritative projection does not
+        need the complete index repeated on every turn.  Standalone consumers
+        without that recorder retain the per-turn fallback.
+        """
+
+        return (
+            "event_backed"
+            if callable(self.material_trace_recorder) and self._material_timeline_healthy
+            else "turn"
+        )
 
     def create_pending(
         self,
@@ -126,14 +142,16 @@ class AttachmentInboxService:
         if recorder is None or not isinstance(item, dict):
             return
         try:
-            recorder(
+            result = recorder(
                 event_type=str(event_type or "reference"),
                 item=dict(item),
                 timestamp=int(timestamp or item.get("updated_at") or item.get("created_at") or time.time()),
                 reason=str(reason or ""),
                 delete_storage=bool(delete_storage),
             )
+            self._material_timeline_healthy = isinstance(result, dict) and bool(result.get("ok"))
         except Exception as exc:
+            self._material_timeline_healthy = False
             logger.debug("attachment material trace recorder failed: %s", exc)
 
     def wait_for_attachments_settled(
@@ -448,6 +466,17 @@ class AttachmentInboxService:
         kind: str = "any",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
+        if str(target or "").strip().lower() == "all":
+            activity_context = self.build_activity_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            return {
+                "ok": True,
+                "status": "listed",
+                "item": None,
+                "followup_context": activity_context or "attachment.workspace\n当前会话没有可用材料。",
+            }
         resolution = self._resolve_target_result(
             profile_user_id=profile_user_id,
             session_id=session_id,

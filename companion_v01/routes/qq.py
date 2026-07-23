@@ -483,49 +483,11 @@ def _build_qq_workspace_list_reply(service: Any, *, profile_user_id: str, sessio
     return "\n".join(lines)
 
 
-def _should_sync_workspace_state_to_llm(qq_gateway: Any, message: str) -> bool:
-    text = _normalize_qq_workspace_command_text(qq_gateway, message)
-    if not text:
-        return False
-    if _parse_qq_workspace_command(qq_gateway, message) is not None:
-        return False
-    return any(marker in text for marker in ("工作台", "材料", "附件"))
-
-
-def _build_qq_workspace_state_context(service: Any, *, profile_user_id: str, session_id: str) -> str:
-    store = getattr(service, "store", None)
-    if store is None or not hasattr(store, "list_attachment_inbox_items"):
-        return ""
-    items = store.list_attachment_inbox_items(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        statuses=["ready", "pending_observation", "failed"],
-        limit=20,
-    )
-    lines = [
-        "【当前工作台真实状态】",
-        "这是给 Akane 的实时状态同步，不是用户新发来的材料。用户正在自然询问工作台时，请基于这里回答。",
-    ]
-    if not items:
-        lines.append("当前工作台为空。请把“空”作为事实自然回答。")
-        lines.append("不要根据旧记忆、生成文件工作台、之前处理过的 mp3/图片/文件猜测仍有材料。")
-        return "\n".join(lines)
-    lines.append(f"当前工作台有 {len(items)} 个材料。只把下列材料当作当前工作台材料：")
-    for index, item in enumerate(items[:12], start=1):
-        if isinstance(item, dict):
-            lines.append(f"{index}. {_format_qq_workspace_item(item)}")
-    if len(items) > 12:
-        lines.append(f"还有 {len(items) - 12} 个未列出。")
-    lines.append("不要把旧生成文件、聊天记忆或已经清理的材料算进当前工作台。")
-    return "\n".join(lines)
-
-
 def _build_qq_workspace_help_reply() -> str:
     return "\n".join(
         [
             "工作台指令",
             "工作台 / 查看工作台：列出当前材料",
-            "自然询问工作台状态时：会同步真实状态给 Akane，让她自然回答",
             "清理工作台：让所有当前材料退出上下文",
             "清理最新材料：只清最近一个材料",
             "清理工作台 file_001：清指定材料",
@@ -1978,16 +1940,6 @@ def build_qq_router(
                         "send_result": send_result,
                     }
                 )
-
-            if _should_sync_workspace_state_to_llm(qq_gateway, context.clean_message):
-                service_factory = getattr(engine, "_get_attachment_inbox_service", None)
-                attachment_service = service_factory() if callable(service_factory) else None
-                if attachment_service is not None:
-                    _qq_turn_extra_context_note = _build_qq_workspace_state_context(
-                        attachment_service,
-                        profile_user_id=context.profile_user_id,
-                        session_id=context.session_id,
-                    )
 
             character_command_result = qq_gateway.handle_character_command(
                 context,

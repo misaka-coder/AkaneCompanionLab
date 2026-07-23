@@ -30,6 +30,16 @@ class TaskWorkspaceService:
     ) -> None:
         self.store = store
         self.timeline_event_recorder = timeline_event_recorder
+        self._timeline_projection_healthy = callable(timeline_event_recorder)
+
+    def activity_prompt_context_lifecycle(self) -> str:
+        """Declare whether task state already has an append-only event lane."""
+
+        return (
+            "event_backed"
+            if callable(self.timeline_event_recorder) and self._timeline_projection_healthy
+            else "turn"
+        )
 
     def create_task(
         self,
@@ -242,16 +252,19 @@ class TaskWorkspaceService:
         try:
             result = recorder(task=dict(task), event=dict(event))
         except Exception as exc:
+            self._timeline_projection_healthy = False
             reason = str(exc) or exc.__class__.__name__
             logger.warning("task timeline event recorder failed: %s", reason)
             return {"ok": False, "status": "failed", "reason": reason}
         if not isinstance(result, dict):
+            self._timeline_projection_healthy = False
             logger.warning("task timeline event recorder returned no structured status")
             return {"ok": False, "status": "invalid_result", "reason": "structured_status_required"}
         normalized = dict(result)
         normalized.setdefault("ok", False)
         normalized.setdefault("status", "unknown")
         normalized.setdefault("reason", "")
+        self._timeline_projection_healthy = bool(normalized.get("ok"))
         if not bool(normalized.get("ok")):
             logger.warning(
                 "task timeline event was not recorded: status=%s reason=%s",

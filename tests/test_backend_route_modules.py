@@ -1316,7 +1316,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertTrue(any("已删除原始附件文件：2 个" in message for message in sent_messages))
         self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
 
-    def test_qq_router_workspace_natural_question_syncs_state_to_llm(self) -> None:
+    def test_qq_router_workspace_natural_question_does_not_trigger_keyword_state_injection(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         process_calls: list[dict[str, Any]] = []
@@ -1381,9 +1381,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["reason"], "private", response.json())
         self.assertEqual(len(process_calls), 1)
-        self.assertIn("【当前工作台真实状态】", process_calls[0]["extra_context"])
-        self.assertIn("当前工作台为空", process_calls[0]["extra_context"])
-        self.assertIn("不要根据旧记忆、生成文件工作台", process_calls[0]["extra_context"])
+        self.assertEqual(process_calls[0]["message"], "现在工作台还有东西吗")
+        self.assertEqual(process_calls[0]["extra_context"], "qq.reply_delivery: auto")
+        self.assertNotIn("工作台真实状态", process_calls[0]["extra_context"])
         mocked_post.assert_called_once()
 
     def test_qq_router_passes_current_image_to_native_multimodal_chat_once(self) -> None:

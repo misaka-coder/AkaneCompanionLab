@@ -5571,8 +5571,12 @@ class AkaneMemoryEngine:
         )
         current_events.extend(workspace_events)
         tool_events.extend(current_events)
-        shaped_followup = tool_orchestration_engine.shape_tool_followup(
+        result_followup = tool_orchestration_engine.append_structured_artifact_receipts(
             tool_result.followup_context,
+            stream_events=tool_result.stream_events,
+        )
+        shaped_followup = tool_orchestration_engine.shape_tool_followup(
+            result_followup,
             tool_type=tool_result.tool_type,
         )
         if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:

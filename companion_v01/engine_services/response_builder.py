@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 from typing import Any
 
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
@@ -12,6 +11,11 @@ import config as mod_config
 from ..domain_profiles import DomainProfileRegistry, build_domain_profile_prompt
 from ..memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from ..prompt_blocks import strip_care_prompt_contract
+from ..prompt_context_lifecycle import (
+    PromptContextContribution,
+    PromptContextLifecycle,
+    materialize_prompt_contexts,
+)
 from ..prompt_profiles import PromptModule
 from ..resource_manifest import ResourceManifest
 from ..text_utils import render_chat_timeline
@@ -20,46 +24,6 @@ from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RE
 logger = logging.getLogger("akane.response_builder")
 
 PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
-
-
-QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS = (
-    "结果",
-    "成果",
-    "产物",
-    "生成",
-    "导出",
-    "保存",
-    "打包",
-    "压缩",
-    "下载",
-    "发我",
-    "发给我",
-    "给我发",
-    "传给我",
-    "交付",
-    "转换",
-    "转成",
-    "分离",
-    "提取",
-    "修改",
-    "处理",
-)
-QQ_GENERATED_FILE_CONTEXT_HANDLE_RE = re.compile(
-    r"\bgen_\d+\b|\bfile_\d+\b|\bimg_\d+\b|\baudio_\d+\b|\bvideo_\d+\b|"
-    r"\.(?:mp3|wav|flac|m4a|aac|ogg|opus|mp4|mov|mkv|pdf|docx|xlsx|pptx|zip|rar|7z)\b",
-    re.IGNORECASE,
-)
-
-
-def _should_include_generated_file_context(client_context: ClientProtocolContext, user_message: str) -> bool:
-    if client_context.effective_mode != ClientMode.QQ_TEXT:
-        return True
-    normalized = str(user_message or "").strip().lower()
-    if not normalized:
-        return False
-    return bool(QQ_GENERATED_FILE_CONTEXT_HANDLE_RE.search(normalized)) or any(
-        marker in normalized for marker in QQ_GENERATED_FILE_CONTEXT_ACTION_MARKERS
-    )
 
 
 def prepare_context(
@@ -173,51 +137,10 @@ def prepare_context(
     projection_authoritative = not projection_migration_window
     if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
         return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
-    # MemCore already records attachment and task state transitions as
-    # append-only material.* / event.task.* timeline entries.  Rebuilding the
-    # complete active indexes on every chat request repeats the same database
-    # state after the current user message, so none of those tokens can reuse
-    # the preceding request's linear prefix.  Keep the indexes only for the
-    # legacy projection window; the authoritative MemCore path can recover
-    # details through the existing inspect tools when the visible events are
-    # not sufficient.
-    working_state_from_timeline = bool(
-        _memory_backend() == "memcore"
-        and projection_read_active
-        and projection_authoritative
-    )
+    event_timeline_authoritative = bool(projection_read_active and projection_authoritative)
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
-    attachment_focus_context = (
-        attachment_service.build_activity_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        if (
-            attachment_service is not None
-            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-            and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
-            and not working_state_from_timeline
-        )
-        else ""
-    )
-    generated_file_service = engine._get_generated_file_service()
-    include_generated_file_context = _should_include_generated_file_context(client_context, user_message)
-    generated_file_context = (
-        generated_file_service.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=8,
-        )
-        if (
-            generated_file_service is not None
-            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-            and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
-            and include_generated_file_context
-        )
-        else ""
-    )
     workspace_file_service = engine._get_workspace_file_service()
     workspace_file_context = (
         workspace_file_service.build_prompt_context(
@@ -232,18 +155,6 @@ def prepare_context(
         else ""
     )
     task_workspace_service = engine._get_task_workspace_service()
-    task_workspace_context = (
-        task_workspace_service.build_activity_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        if (
-            task_workspace_service is not None
-            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-            and not working_state_from_timeline
-        )
-        else ""
-    )
     pending_gift_context = (
         engine.gift_service.build_pending_prompt_context(
             profile_user_id=profile_user_id,
@@ -363,53 +274,73 @@ def prepare_context(
     # The last flag is a placement contract, not a Bot-specific exception:
     # per-turn transport/event material changes on every request and must stay
     # after append-only history, while durable runtime context can precede it.
-    extra_context_candidates = [
-        (
-            "client_mode",
-            engine._build_client_mode_prompt_context(client_context)
-            if prompt_profile.includes(PromptModule.CLIENT_MODE)
-            else "",
-            False,
+    extra_context_contributions = [
+        PromptContextContribution(
+            name="client_mode",
+            content=(
+                engine._build_client_mode_prompt_context(client_context)
+                if prompt_profile.includes(PromptModule.CLIENT_MODE)
+                else ""
+            ),
+            lifecycle=PromptContextLifecycle.STABLE,
         ),
-        (
-            "relationship",
-            engine._build_memory_relationship_context(
+        PromptContextContribution(
+            name="relationship",
+            content=engine._build_memory_relationship_context(
                 profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
                 now_ts=now_ts,
             ),
-            False,
+            lifecycle=PromptContextLifecycle.STABLE,
         ),
-        # Working sets can change after any attachment/tool/task transition.
-        # They must stay behind the append-only MemCore projection; otherwise
-        # one status update rewrites the provider prefix before the timeline.
-        ("task_workspace", task_workspace_context, True),
-        ("workspace_files", workspace_file_context, True),
-        ("attachment_focus", attachment_focus_context, True),
-        ("generated_files", generated_file_context, True),
-        ("character_automatic_context", automatic_character_context, True),
+        PromptContextContribution(
+            name="task_workspace",
+            content=lambda: task_workspace_service.build_activity_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ),
+            lifecycle=_declared_activity_context_lifecycle(task_workspace_service),
+            enabled=bool(task_workspace_service is not None and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)),
+        ),
+        PromptContextContribution(name="workspace_files", content=workspace_file_context),
+        PromptContextContribution(
+            name="attachment_focus",
+            content=lambda: attachment_service.build_activity_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ),
+            lifecycle=_declared_activity_context_lifecycle(attachment_service),
+            enabled=bool(
+                attachment_service is not None
+                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+                and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
+            ),
+        ),
+        PromptContextContribution(name="character_automatic_context", content=automatic_character_context),
         # Active outfit/emotion ids and normalized examples are intentionally
         # separate from stable character identity. They remain fully visible
         # this turn without rewriting the MemCore history prefix on outfit
         # changes.
-        (
-            "character_resources",
-            str(persona_context.get("resource_context") or "").strip(),
-            True,
+        PromptContextContribution(
+            name="character_resources",
+            content=str(persona_context.get("resource_context") or "").strip(),
         ),
-        ("pending_gifts", pending_gift_context, True),
-        ("gift_observation", gift_observation_context, True),
-        (
-            "turn_extra_context",
-            extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
-            True,
+        PromptContextContribution(name="pending_gifts", content=pending_gift_context),
+        PromptContextContribution(name="gift_observation", content=gift_observation_context),
+        PromptContextContribution(
+            name="turn_extra_context",
+            content=extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
         ),
     ]
+    materialized_contexts = materialize_prompt_contexts(
+        extra_context_contributions,
+        event_timeline_authoritative=event_timeline_authoritative,
+    )
     extra_context_audit_sections = engine._build_extra_context_audit_sections(
-        [(name, text) for name, text, _volatile in extra_context_candidates]
+        [(name, text) for name, text, _volatile in materialized_contexts.sections]
     )
     volatile_names = {
-        name for name, _text, volatile in extra_context_candidates if volatile
+        name for name, _text, volatile in materialized_contexts.sections if volatile
     }
     stable_extra_context_sections = [
         section["text"]
@@ -691,10 +622,9 @@ def prepare_context(
             for key, value in provider_projection.items()
             if key not in {"history_turns"}
         }
-        generation_context["working_state_context"] = {
-            "mode": "timeline_events_on_demand" if working_state_from_timeline else "inline_indexes",
-            "task_index_included": bool(task_workspace_context),
-            "attachment_index_included": bool(attachment_focus_context),
+        generation_context["prompt_context_lifecycle"] = {
+            "event_timeline_authoritative": event_timeline_authoritative,
+            "skipped_event_backed": list(materialized_contexts.skipped_event_backed),
         }
         return generation_context
 
@@ -1080,6 +1010,19 @@ def _trim_oldest_prompt_raw_record(
     else:
         records.pop(candidate_index)
     return True
+
+
+def _declared_activity_context_lifecycle(service: Any) -> PromptContextLifecycle:
+    """Read a producer lifecycle declaration without feature-specific rules."""
+
+    resolver = getattr(service, "activity_prompt_context_lifecycle", None)
+    if not callable(resolver):
+        return PromptContextLifecycle.TURN
+    try:
+        return PromptContextLifecycle.coerce(resolver())
+    except Exception as exc:
+        logger.warning("prompt context lifecycle declaration failed: %s", exc)
+        return PromptContextLifecycle.TURN
 
 
 def _memory_backend() -> str:

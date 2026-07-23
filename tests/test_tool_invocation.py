@@ -319,6 +319,31 @@ class ShapeToolFollowupTests(unittest.TestCase):
         # limit is floored at 500, so we keep a usable preview, not 10 chars.
         self.assertGreater(len(shaped), 400)
 
+    def test_generated_file_event_adds_handle_receipt_only_when_missing(self) -> None:
+        events = [
+            {
+                "type": "generated_file_ready",
+                "generated_file": {
+                    "generated_handle": "gen_007",
+                    "output_title": "会议纪要",
+                    "output_format": "docx",
+                },
+            }
+        ]
+
+        enriched = tool_orchestration_engine.append_structured_artifact_receipts(
+            "文件已经生成。",
+            stream_events=events,
+        )
+        existing = tool_orchestration_engine.append_structured_artifact_receipts(
+            "已经生成 gen_007《会议纪要》。",
+            stream_events=events,
+        )
+
+        self.assertIn("handle=gen_007", enriched)
+        self.assertIn("直接调用 send_file", enriched)
+        self.assertEqual(existing, "已经生成 gen_007《会议纪要》。")
+
 
 class RecordingHandler:
     def __init__(self) -> None:

@@ -730,14 +730,14 @@ INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="inspect_attachment",
     display_name="Inspect attachment",
     description=(
-        "Open and inspect a single image or file in the current attachment workspace. "
+        "List the current attachment workspace, or open and inspect a single image or file. "
         "To compare multiple materials, prefer sync_attachment_workspace."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "Attachment id / title / filename, or 'latest'. Defaults to latest."},
+            "target": {"type": "string", "maxLength": 120, "description": "'all' to list, or attachment id / title / filename / 'latest'. Defaults to latest."},
             "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
         },
         "required": [],

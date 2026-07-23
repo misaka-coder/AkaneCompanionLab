@@ -2226,7 +2226,6 @@ class GeneratedFileTests(unittest.TestCase):
             call = handler.normalize_call(
                 {
                     "type": "inspect_generated_file",
-                    "target": "gen_001",
                     "section": "content",
                 }
             )
@@ -2239,6 +2238,7 @@ class GeneratedFileTests(unittest.TestCase):
 
             result = handler.execute(call=call or {}, context=context)
 
+            self.assertEqual((call or {}).get("target"), "latest")
             self.assertEqual(result.stream_events[0]["type"], "generated_file_inspected")
             self.assertIn("可以回头查看", result.followup_context)
 

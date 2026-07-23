@@ -679,12 +679,15 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 
 本切片按原生命周期规则收口：
 
-- MemCore provider projection 权威可用时，主聊天不再读取或发送 `task.workspace` 与 `attachment.workspace` 全量活动索引；
+- Akane 宿主新增通用上下文生命周期声明：`stable / turn / event_backed`。生命周期物化器不认识 Bot、任务、附件或生成文件；宿主仍负责注册实际来源。任意来源只有在自己声明 `event_backed`、最近一次事件写入成功且权威时间线投影可用时才省略重复快照，未知声明默认仍在本轮可见；MemCore 独立包没有增加任何 Akane 业务字段；
+- 当前任务和附件来源已经有真实变更事件，因此声明为 `event_backed`；主聊天不再读取或发送 `task.workspace` 与 `attachment.workspace` 全量活动索引；
 - 任务创建、更新、等待、完成和清理继续只在真实状态变化时写入一次 `event.task.*`；
 - 附件接收、解析就绪和清理继续只在真实状态变化时写入一次 `material.reference/cleanup`；
 - 可见事件不足以回答当前问题时，模型使用本轮真实可用的 `manage_task_workspace inspect`、`inspect_attachment`、`load_material` 等工具按需恢复详情；缺少重复清单不等于工作区为空；
-- 非 MemCore/迁移窗口仍保留 inline index，避免旧投影消费者无事件可读；
-- 当前上传图片的原生多模态输入、引用证据、用户自然询问工作台时的实时状态同步、条件式生成文件上下文、当前角色表情资源和本轮视觉状态均未删除；
+- 权威时间线不可用、迁移窗口、来源没有事件记录器或最近一次事件写入失败时仍保留 inline index；后续事件记录恢复成功后再回到事件投影，避免为了缓存静默丢信息；
+- 当前上传图片的原生多模态输入、引用证据、显式 QQ 工作台指令、当前角色表情资源和本轮视觉状态均未删除；自然语言问句不再由宿主关键词猜测并注入快照，而由模型按稳定工具协议自主读取；
+- 删除 QQ 生成文件关键词/扩展名猜测和自动清单注入；文件生成结果本身会在同一轮 tool result 中给出 `gen_*` handle，下一工具轮会按真实状态开放 `send_file` 等能力，模型可直接使用该 handle 交付或继续处理，不需要先查询生成文件工作台；只有 handle 已离开可见上下文、指代不明确或确实要重新查看内容时才调用 `inspect_generated_file`；
+- 扩展工具只要返回结构化 `generated_file_ready`，宿主会在其文字结果漏掉 handle 时补一条简短产物回执；该回执与原 tool result 一起只写入一次 MemCore 线性时间线，不建立生成文件专用记忆区，也不重复注入全量清单；
 - 没有提高 24k 压缩阈值，没有按 token 或条目数截断活动状态，也没有新增 Bot-specific 分支或第二工作区实现。
 
-本地验证覆盖 PromptBuilder、MemCore 集成、附件工作台、任务工作区和 QQ 后端路由，共 246 项测试通过。云端验收需重新观察相同 personal 群缓存 key 下的连续真实请求：预期普通回合 `user.extra_context.task_workspace` 与 `user.extra_context.attachment_focus` 消失，动态尾部减少约 7,600 tokens；角色/本轮上下文产生的必要 miss 仍保留。
+本地验证覆盖 PromptBuilder、MemCore 集成、附件工作台、任务工作区、生成文件、工具结果记录和 QQ 后端路由。云端验收需重新观察相同 personal 群缓存 key 下的连续真实请求：预期普通回合 `user.extra_context.task_workspace` 与 `user.extra_context.attachment_focus` 消失，动态尾部减少约 7,600 tokens；角色/本轮上下文产生的必要 miss 仍保留。

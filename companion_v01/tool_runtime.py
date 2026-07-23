@@ -209,7 +209,7 @@ LOAD_CHARACTER_CONTEXT_INPUT_SCHEMA: dict[str, Any] = {
 
 INSPECT_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
-        "Open and inspect a single image or file in the current attachment workspace "
+        "List the current attachment workspace, or open and inspect a single image or file "
         "(temporary context, not gifts/character resources/long-term memory). "
         "To compare multiple materials, prefer sync_attachment_workspace."
     ),
@@ -219,7 +219,7 @@ INSPECT_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
         "target": {
             "type": "string",
             "maxLength": 120,
-            "description": "Attachment id / title / filename, or 'latest'. Defaults to latest.",
+            "description": "'all' to list the workspace, or attachment id / title / filename / 'latest'. Defaults to latest.",
         },
         "kind": {
             "type": "string",
@@ -2061,8 +2061,8 @@ class InspectAttachmentToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- inspect_attachment：当你需要展开查看当前材料工作台里的图片或文件时使用。"
-            '格式为 {"type":"inspect_attachment","target":"可选：附件id/标题/文件名/最近","kind":"any|image|file|document|audio"}。'
+            "- inspect_attachment：当你需要列出当前材料，或展开查看其中一张图片/一个文件时使用。"
+            '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
             "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
             "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
         )

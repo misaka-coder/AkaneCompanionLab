@@ -30,6 +30,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             self.assertEqual(task["timeline_event_status"]["status"], "failed")
             self.assertIn("timeline unavailable", task["timeline_event_status"]["reason"])
             self.assertIsNotNone(service.get_task(task["task_id"]))
+            self.assertEqual(service.activity_prompt_context_lifecycle(), "turn")
 
     def test_service_records_structured_timeline_status_for_task_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -64,6 +65,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
                 [call["event"]["event_type"] for call in calls],
                 ["task_created", "task_completed", "task_cleaned"],
             )
+            self.assertEqual(service.activity_prompt_context_lifecycle(), "event_backed")
 
     def test_activity_prompt_lists_all_open_and_pending_handoff_tasks_without_full_details(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

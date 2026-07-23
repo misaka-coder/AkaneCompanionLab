@@ -883,6 +883,16 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("send_sticker", qq_selection.tool_names)
         self.assertNotIn("media_workbench", qq_selection.module_names)
 
+        qq_selection_with_generated_file = registry.select(
+            CapabilitySnapshot(
+                client_mode=ClientMode.QQ_TEXT,
+                has_generated_file=True,
+            )
+        )
+        self.assertIn("generated_file_management", qq_selection_with_generated_file.module_names)
+        self.assertIn("inspect_generated_file", qq_selection_with_generated_file.tool_names)
+        self.assertIn("send_file", qq_selection_with_generated_file.tool_names)
+
         scene_selection_with_files = registry.select(
             CapabilitySnapshot(
                 client_mode=ClientMode.SCENE_STATIC,

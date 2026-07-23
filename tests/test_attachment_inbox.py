@@ -128,8 +128,9 @@ class AttachmentInboxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             events: list[dict[str, object]] = []
 
-            def recorder(**kwargs) -> None:
+            def recorder(**kwargs) -> dict[str, object]:
                 events.append(dict(kwargs))
+                return {"ok": True, "status": "recorded"}
 
             store = MemoryStore(Path(temp_dir))
             service = AttachmentInboxService(store=store, material_trace_recorder=recorder)
@@ -166,6 +167,25 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertEqual(events[1]["item"]["status"], "ready")  # type: ignore[index]
             self.assertEqual(events[2]["reason"], "聊完了")
             self.assertEqual(events[2]["delete_storage"], False)
+            self.assertEqual(service.activity_prompt_context_lifecycle(), "event_backed")
+
+    def test_material_trace_failure_falls_back_to_visible_turn_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = AttachmentInboxService(
+                store=MemoryStore(Path(temp_dir)),
+                material_trace_recorder=lambda **_kwargs: {"ok": False, "status": "failed"},
+            )
+
+            service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="file",
+                origin_name="notes.txt",
+                timestamp=100,
+            )
+
+            self.assertEqual(service.activity_prompt_context_lifecycle(), "turn")
 
     def test_store_roundtrip_and_clear_latest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -754,6 +774,14 @@ class AttachmentInboxTests(unittest.TestCase):
             )
             self.assertIn("盘子里有面包和热汤", inspected.followup_context)
             self.assertEqual(inspected.stream_events[0]["type"], "attachment_inspected")
+
+            listed = inspect_handler.execute(
+                call=inspect_handler.normalize_call({"type": "inspect_attachment", "target": "all"}) or {},
+                context=context,
+            )
+            self.assertIn("attachment.workspace", listed.followup_context)
+            self.assertIn("handle=img_001", listed.followup_context)
+            self.assertEqual(listed.stream_events, [])
 
             clear_handler = ClearAttachmentFocusToolHandler(
                 attachment_service=service,

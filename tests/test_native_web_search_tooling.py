@@ -1363,6 +1363,78 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertNotIn("top-secret", exchange["result"])
         self.assertIn("[redacted]", exchange["result"])
 
+    def test_generated_artifact_handle_is_recorded_in_memcore_tool_result(self) -> None:
+        class FakeMemcoreManager:
+            enabled = True
+
+            def __init__(self):
+                self.calls = []
+
+            def record_tool_batch(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "exchanges": [
+                        {
+                            "tool_use_source_id": "trace-use-artifact",
+                            "tool_result_source_id": "trace-result-artifact",
+                        }
+                    ],
+                }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        manager = FakeMemcoreManager()
+        engine.memcore_manager = manager
+        engine._execute_tool_call = lambda **kwargs: ToolExecutionResult(
+            tool_type=kwargs["tool_call"]["type"],
+            followup_context="文件已经生成。",
+            stream_events=[
+                {
+                    "type": "generated_file_ready",
+                    "generated_file": {
+                        "generated_handle": "gen_009",
+                        "output_title": "整理结果",
+                        "output_format": "docx",
+                    },
+                }
+            ],
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        engine._execute_and_record_tool_batch(
+            tool_calls=[
+                {
+                    "type": "compose_file",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call_artifact",
+                }
+            ],
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="reimu",
+            now_ts=100,
+            current_user_source_id="user:artifact",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            memcore_turn_id="turn-artifact",
+        )
+
+        exchange = manager.calls[0]["exchanges"][0]
+        self.assertIn("handle=gen_009", exchange["result"])
+        self.assertIn("直接调用 send_file", exchange["result"])
+
     def test_final_output_preserves_internal_native_tool_batch(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.resource_manifest = None

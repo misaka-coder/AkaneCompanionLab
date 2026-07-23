@@ -4821,11 +4821,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         task_index_reads: list[dict[str, object]] = []
         attachment_index_reads: list[dict[str, object]] = []
+        generated_index_reads: list[bool] = []
+        engine._get_generated_file_service = lambda: generated_index_reads.append(True)
         engine._get_task_workspace_service = lambda: SimpleNamespace(
+            activity_prompt_context_lifecycle=lambda: "event_backed",
             build_activity_prompt_context=lambda **kwargs: task_index_reads.append(dict(kwargs))
             or "TASK WORKSPACE CONTEXT"
         )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
+            activity_prompt_context_lifecycle=lambda: "event_backed",
             build_activity_prompt_context=lambda **kwargs: attachment_index_reads.append(dict(kwargs))
             or "ATTACHMENT FOCUS CONTEXT"
         )
@@ -4881,12 +4885,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("ATTACHMENT FOCUS CONTEXT", captured["volatile_extra_context"])
         self.assertEqual(task_index_reads, [])
         self.assertEqual(attachment_index_reads, [])
+        self.assertEqual(generated_index_reads, [])
         self.assertEqual(
-            result["working_state_context"],
+            result["prompt_context_lifecycle"],
             {
-                "mode": "timeline_events_on_demand",
-                "task_index_included": False,
-                "attachment_index_included": False,
+                "event_timeline_authoritative": True,
+                "skipped_event_backed": ["task_workspace", "attachment_focus"],
             },
         )
         self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
