@@ -720,3 +720,5 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 自动命中的角色资料正文仍是本轮 ephemeral evidence，当前图片、引用、附件和工具结果位置没有改变。
 
 本地相关回归 394 项通过，Ruff、py_compile 与 `git diff --check` 通过。预计稳定轮 miss 会明显低于 `64b8d56` 的约 1,382 tokens，但最终数值必须以新 release 上连续真实 QQ 样本为准，不能用本地字符数换算冒充 provider usage。
+
+不可变 release `5107857` 已部署；本切片未修改共享包或 venv，只复用已验收的 MemCore `7b32d5d`、charpack-core `cea3eb1` 以及旧 release 中未修改的三个抽包依赖目录。远端 274 项聚焦回归通过，Host `NRestarts=0`、root binding 有效，personal/finance 均为 `online / active`，两条 QQ self-check 均为 `connected`，`host.env` 哈希未变。新进程启动日志没有 traceback/error；部署前旧进程中已有的 provider 502 与一次 MemCore aborted-turn 警告不属于本 release 启动结果。新的真实 cache miss 需要 personal 群在同一 cache key 下先完成一次冷启动和一次公共前缀落盘，再以之后至少三轮稳态 usage 验收。
