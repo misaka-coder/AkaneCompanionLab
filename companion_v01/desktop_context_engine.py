@@ -769,33 +769,3 @@ def format_activity_time(value: Any) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
-
-
-def build_client_mode_prompt_context(client_context: ClientProtocolContext | None) -> str:
-    if client_context is None:
-        return ""
-    public = client_context.to_public_dict()
-    lines = [
-        "【客户端模式】",
-        f"当前有效模式：{public.get('effective_mode')}",
-        f"输出 profile：{public.get('output_profile')}",
-        "本轮只需要遵循当前 profile 的输出字段；不要在台词里解释这些系统字段。",
-    ]
-    if public.get("degraded_from"):
-        lines.append(
-            f"请求模式 {public.get('degraded_from')} 已降级为 {public.get('effective_mode')}；"
-            "按有效模式输出即可。"
-        )
-    if public.get("effective_mode") == ClientMode.DESKTOP_PET.value:
-        lines.append(
-            "桌宠只实际渲染 character.outfit 与 emotion；scene/bgm 不会在桌宠端表现。"
-            "请优先保持当前服装，只从当前服装可用表情中选择 emotion。"
-        )
-        if client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
-            lines.append(
-                "桌宠支持轻量 activity 控制：只有当【当前桌宠活动】存在且你确实要控制播放时，"
-                "才输出 activity；否则 activity 输出 null。activity 是执行请求，不是完成回执；"
-                "不要在 speech 里假装已经播放、暂停或继续。"
-                "播放、暂停、继续、切歌这类轻量桌宠播放控制不要创建任务工作区或委托后台任务。"
-            )
-    return "\n".join(lines)

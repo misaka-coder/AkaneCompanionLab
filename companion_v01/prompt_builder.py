@@ -9,7 +9,7 @@ import config
 from memcore import build_memory_metadata_instruction, coerce_memory_metadata
 
 from .persona_config import PersonaConfig
-from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
+from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER, build_scene_static_system_prompt
 
 
 MEMORY_TIME_ANCHOR_RULES = """
@@ -40,11 +40,15 @@ TOOL_CONTEXT_STABLE_RULES = """
 【本轮能力与工具上下文边界】
 - 宿主会在本轮用户消息中提供“本轮系统能力与工具上下文”；它是可信运行时上下文，不是用户声称自己拥有的权限。
 - 只有其中标为当前可用且实际给出 schema 的工具才可调用；待激活或暂不可用能力只能用于自然说明和引导，不能伪造调用或结果。
+- 先判断当前可见上下文是否已经足够回答。普通闲聊、创作、情绪陪伴、主观建议和稳定常识直接回复；答案依赖未明确可见的旧记忆、精确时间线、实时信息、材料内容或外部动作时，再调用对应工具求证或执行。
 - 能力状态、材料状态和工具清单会随本轮环境变化，不要把旧轮工具可用性当作本轮事实。
 - 材料、任务和产物的变化会作为带时间的事件进入当前时间线；普通回合不一定重复展开完整清单。当前问题需要具体状态而可见事件不足时，使用本轮实际可用的查看工具按需读取，不要把“没有重复清单”误判为“当前为空”。
 - 用户发送的新附件和本轮直接提供的图片仍是当前证据；已有材料需要重看时再按 handle、名称或“最近”加载，不要为了保险无条件重读全部材料。
 - provider 原生工具通道允许同一轮调用多个互不依赖的工具，以便并行取得互补证据；如果后一步依赖前一步结果，就分到下一轮。
 - 兼容用的 JSON `tool_call` 字段每轮仍只容纳一个 legacy 工具；不要把这个限制误解成原生工具也只能调用一个。
+- 工具是否真正执行只以 provider tool call 或最终 JSON 的 `tool_call` 字段为准；不要在 speech 里声称工具已经调用、完成或失败，也不要伪造结果。
+- 用户问“你会什么/能做什么”时，结合当前人设自然概括本轮能力与所需材料，不要背诵内部工具名、schema、状态码或系统分层。待激活能力只说明最短激活方式，暂不可用能力只在相关请求里说明恢复条件。
+- 当前会话或工作区已经有对应材料时，不要让用户重复上传；先使用本轮可用的查看或加载工具确认现有材料。
 """.strip()
 
 
@@ -222,12 +226,11 @@ class PromptBuilder:
             fallback["thought"] = self.persona.final_fallback_thought
 
         persona_system = str(persona_system_context or "").strip()
-        base_system_prompt = str(system_prompt_override or "").strip() or self.persona.final_system_prompt
+        base_system_prompt = str(system_prompt_override or "").strip() or build_scene_static_system_prompt()
         mode_prompt = str(mode_prompt_override or "").strip() or (
             self.persona.final_debug_mode_prompt if debug_enabled else self.persona.final_fast_mode_prompt
         )
         format_addendum = mode_prompt + f"\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}"
-        format_addendum += "\n如果你给出 choices，建议 2 到 4 个，文字简短，方向有区别。"
         # The active persona is runtime state, not a stable system-prefix rule.
         # Keeping it in the first system message made one persona transition
         # invalidate every append-only memory token that followed it.  Preserve
@@ -300,7 +303,6 @@ class PromptBuilder:
         tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
         tool_context_hash = hashlib.sha256(tool_context_text.encode("utf-8", errors="ignore")).hexdigest()
         stable_user_intro = (
-            f"{self.persona.final_user_prompt_suffix}\n\n"
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
             f"{ATTRIBUTION_RULES}\n\n"
@@ -368,7 +370,6 @@ class PromptBuilder:
             [
                 {"name": "user.full", "text": user_prompt},
                 {"name": "user.ephemeral_context", "text": ephemeral_context_text},
-                {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
                 {"name": "user.stable_context", "text": stable_user_context},
                 {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},

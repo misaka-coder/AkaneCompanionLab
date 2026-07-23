@@ -6571,18 +6571,6 @@ class AkaneMemoryEngine:
                         detail += f" 恢复条件：{item.activation}"
                     parts.append(f"- {detail}")
                 parts.append("")
-            if disclosures:
-                parts.extend(
-                    [
-                        "【能力认知与自然引导】",
-                        "- 上述状态是本轮事实边界：只有“当前可调用”能力才有完整工具；待激活和暂不可用能力不能尝试调用，也不能假装已经完成。",
-                        "- 用户问“你会什么/能做什么”时，结合当前人设自然概括能力与所需材料，不要背诵内部工具名、schema、状态码或系统分层。",
-                        "- 用户表达待激活能力的意图时，直接说明最短激活方式；如果当前会话或工作区已经有对应材料，就不要让用户重复上传。",
-                        "- 暂不可用能力只在用户请求相关任务或询问能力状态时说明原因与恢复条件，不要在无关聊天里主动播报故障。",
-                        "",
-                    ]
-                )
-
         if not handlers:
             if not include_capability_status and excluded:
                 return (
@@ -6614,33 +6602,11 @@ class AkaneMemoryEngine:
                 ]
             )
         lines.extend(media_routing)
-        lines.append("【工具决策原则】")
-        lines.append("- 先判断用户真实意图；人设、情绪和口癖只影响语气，不能改变是否调用工具。")
-        if {"retrieve_memory", "read_memory_timeline"} & set(handlers):
-            lines.append(
-                "- 旧事实/共同经历/偏好/约定/过去材料 -> retrieve_memory；"
-                "具体日期或时段的原始逐句记录 -> read_memory_timeline。例：我的生日是哪天、我们之前约定了什么 -> retrieve_memory。"
-            )
-        if "web_search" in handlers:
-            lines.append(
-                "- 当前/最新/实时/近期/会变化的公开信息 -> web_search，不要用旧知识库硬答。"
-                "例：日经指数现在多少、七月新番有哪些、最新模型价格 -> web_search。"
-            )
-        lines.append(
-            "- 普通闲聊、创作、情绪陪伴、主观建议、稳定常识，或当前上下文已有可靠答案 -> 直接回复。"
-            "例：陪我聊会儿、写一段文案、法国首都是哪里 -> 不用工具。"
-        )
-        lines.append("")
         lines.append("【当前可调用工具】")
         for handler in handlers.values():
             instruction = str(handler.build_prompt_instruction() or "").strip()
             if instruction:
                 lines.append(instruction)
-        lines.append(
-            "重要：真正调用工具只能写在 tool_call 字段；不要在 speech 里写“工具调用：...”或“我调用工具了”来代替。"
-            "如果 tool_call 为 null，系统不会执行任何工具，也不要声称工具已经调用或失败。"
-        )
-        lines.append("如果不需要工具，tool_call 输出 null。当前 JSON tool_call 字段一次只调用一个 legacy 工具。")
         return "\n".join(lines)
 
     def _build_native_tool_round_instruction(self, native_tools: list[dict[str, Any]] | None) -> str:
@@ -6707,9 +6673,6 @@ class AkaneMemoryEngine:
 
     def _format_activity_time(self, value: Any) -> str:
         return desktop_context_engine.format_activity_time(value)
-
-    def _build_client_mode_prompt_context(self, client_context: ClientProtocolContext | None) -> str:
-        return desktop_context_engine.build_client_mode_prompt_context(client_context)
 
     def _build_task_worker_attachment_context(self, profile_user_id: str, session_id: str) -> str:
         service = self._get_attachment_inbox_service()

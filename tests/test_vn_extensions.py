@@ -17,7 +17,7 @@ from companion_v01.memory_compaction_service import MemoryCompactionService
 from companion_v01.memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.persona_config import PERSONA
-from companion_v01.prompt_builder import PromptBuilder
+from companion_v01.prompt_builder import PromptBuilder, TOOL_CONTEXT_STABLE_RULES
 from companion_v01.retrieval_service import RetrievalService
 from companion_v01.store import MemoryStore
 from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
@@ -681,16 +681,10 @@ class EngineExtensionTests(unittest.TestCase):
         prompt = self.engine._build_tool_prompt_context(allow_tool_call=True)
 
         self.assertIn("当前可调用工具", prompt)
-        self.assertIn("工具决策原则", prompt)
-        self.assertIn("日经指数现在多少", prompt)
-        self.assertIn("七月新番有哪些", prompt)
-        self.assertIn("法国首都是哪里", prompt)
-        self.assertIn("人设、情绪和口癖", prompt)
-        self.assertIn("用户真实意图", prompt)
         self.assertIn("\n- fake_tool", prompt)
         self.assertIn("fake_tool", prompt)
-        self.assertIn("tool_call 输出 null", prompt)
-        self.assertIn("真正调用工具只能写在 tool_call 字段", prompt)
+        self.assertNotIn("工具决策原则", prompt)
+        self.assertNotIn("真正调用工具只能写在 tool_call 字段", prompt)
 
     def test_normalize_tool_call_dispatches_to_registered_handler(self) -> None:
         class StubTool:
@@ -1066,7 +1060,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("可按需激活的能力", prompt)
             self.assertIn("当前会话和可见工作区里还没有可处理的文档材料", prompt)
             self.assertIn("用户上传音频/视频、提供可下载的公开媒体链接", prompt)
-            self.assertIn("用户问“你会什么/能做什么”时", prompt)
+            self.assertIn("用户问“你会什么/能做什么”时", TOOL_CONTEXT_STABLE_RULES)
             self.assertNotIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
@@ -1133,7 +1127,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- transcribe_media", prompt)
             self.assertNotIn("还没有可处理的文档材料", prompt)
             self.assertNotIn("还没有可处理的音频或视频", prompt)
-            self.assertIn("当前会话或工作区已经有对应材料，就不要让用户重复上传", prompt)
+            self.assertIn("当前会话或工作区已经有对应材料时，不要让用户重复上传", TOOL_CONTEXT_STABLE_RULES)
 
             qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
             qq_prompt = self.engine._build_tool_prompt_context(

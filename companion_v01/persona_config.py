@@ -23,12 +23,10 @@ class PersonaConfig:
     verifier_system_prompt: str
     verifier_fast_mode_prompt: str
     verifier_debug_mode_prompt: str
-    final_system_prompt: str
     final_fast_mode_prompt: str
     final_debug_mode_prompt: str
     final_fallback_thought: str
     final_fallback_speech: str
-    final_user_prompt_suffix: str
     summary_fallback_diary_template: str
     summary_system_prompt: str
     summary_user_prompt_template: str
@@ -124,12 +122,10 @@ def load_persona_config(
         verifier_system_prompt=_read_string(verifier, "system", context="verifier"),
         verifier_fast_mode_prompt=_read_string(verifier, "fast_mode", context="verifier"),
         verifier_debug_mode_prompt=_read_string(verifier, "debug_mode", context="verifier"),
-        final_system_prompt=_read_string(final, "system", context="final"),
         final_fast_mode_prompt=_read_string(final, "fast_mode", context="final"),
         final_debug_mode_prompt=_read_string(final, "debug_mode", context="final"),
         final_fallback_thought=_read_string(final, "fallback_thought", context="final"),
         final_fallback_speech=_read_string(final, "fallback_speech", context="final"),
-        final_user_prompt_suffix=_read_string(final, "user_prompt_suffix", context="final"),
         summary_fallback_diary_template=_read_string(summary, "fallback_diary_template", context="summary"),
         summary_system_prompt=_read_string(summary, "system", context="summary"),
         summary_user_prompt_template=_read_string_or_default(

@@ -12,12 +12,12 @@ from .prompt_blocks import (
     SCENE_STATIC_SYSTEM_BLOCKS,
     build_desktop_pet_system_prompt,
     build_qq_text_system_prompt,
+    build_scene_static_system_prompt,
     strip_care_prompt_contract,
 )
 
 
 class PromptModule(str, Enum):
-    CLIENT_MODE = "client_mode"
     EXTRA_CONTEXT = "extra_context"
     CURRENT_VISUAL_STATE = "current_visual_state"
     SCENE_OBSERVATION = "scene_observation"
@@ -31,7 +31,6 @@ class PromptModule(str, Enum):
 
 
 SCENE_STATIC_PROMPT_MODULES = (
-    PromptModule.CLIENT_MODE.value,
     PromptModule.EXTRA_CONTEXT.value,
     PromptModule.CURRENT_VISUAL_STATE.value,
     PromptModule.SCENE_OBSERVATION.value,
@@ -82,12 +81,12 @@ class PromptProfileRegistry:
                 mode=ClientMode.SCENE_STATIC,
                 modules=SCENE_STATIC_PROMPT_MODULES,
                 system_block_ids=SCENE_STATIC_SYSTEM_BLOCKS,
+                system_prompt_override=build_scene_static_system_prompt(),
             ),
             ClientMode.SCENE_LIVE2D: PromptProfile(
                 id=ClientMode.SCENE_LIVE2D.value,
                 mode=ClientMode.SCENE_LIVE2D,
                 modules=(
-                    PromptModule.CLIENT_MODE.value,
                     PromptModule.EXTRA_CONTEXT.value,
                     PromptModule.CURRENT_VISUAL_STATE.value,
                     PromptModule.SCENE_OBSERVATION.value,
@@ -99,12 +98,12 @@ class PromptProfileRegistry:
                     PromptModule.TOOLS.value,
                 ),
                 system_block_ids=SCENE_LIVE2D_SYSTEM_BLOCKS,
+                system_prompt_override=build_scene_static_system_prompt(),
             ),
             ClientMode.DESKTOP_PET: PromptProfile(
                 id=ClientMode.DESKTOP_PET.value,
                 mode=ClientMode.DESKTOP_PET,
                 modules=(
-                    PromptModule.CLIENT_MODE.value,
                     PromptModule.EXTRA_CONTEXT.value,
                     PromptModule.CURRENT_VISUAL_STATE.value,
                     PromptModule.RESOURCE_MANIFEST.value,
@@ -133,7 +132,6 @@ class PromptProfileRegistry:
                 id=ClientMode.QQ_TEXT.value,
                 mode=ClientMode.QQ_TEXT,
                 modules=(
-                    PromptModule.CLIENT_MODE.value,
                     PromptModule.EXTRA_CONTEXT.value,
                     PromptModule.PENDING_GIFTS.value,
                     PromptModule.PERSONA.value,

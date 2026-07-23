@@ -12,6 +12,7 @@ from companion_v01.client_protocol import (
 )
 from companion_v01.desktop_music_timeline import DesktopMusicTimelineService
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.prompt_blocks import build_desktop_pet_system_prompt
 
 
 FORBIDDEN_MUSIC_PROMPT_TERMS = ("转写稿", "时间轴", "ASR", "人声分离", "系统片段", "后台处理", "后台准备")
@@ -230,12 +231,12 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assert_no_music_backend_terms(prompt)
 
     def test_desktop_audio_capability_discourages_task_workspace_for_playback_control(self) -> None:
-        prompt = self.engine._build_client_mode_prompt_context(_desktop_context())
+        prompt = build_desktop_pet_system_prompt()
 
-        self.assertIn("桌宠支持轻量 activity 控制", prompt)
-        self.assertIn("activity 是执行请求，不是完成回执", prompt)
-        self.assertIn("不要在 speech 里假装已经播放、暂停或继续", prompt)
-        self.assertIn("播放、暂停、继续、切歌这类轻量桌宠播放控制不要创建任务工作区", prompt)
+        self.assertIn("activity 是给桌宠执行的请求，不是完成回执", prompt)
+        self.assertIn("不要在 speech 里假装动作已经播放、暂停或继续", prompt)
+        self.assertIn("播放、暂停、继续、停止和切歌属于轻量桌宠控制", prompt)
+        self.assertIn("不要为这些动作创建任务工作区或委派后台任务", prompt)
 
     def test_vocal_performance_interrupted_prompt_requires_activity_action(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(

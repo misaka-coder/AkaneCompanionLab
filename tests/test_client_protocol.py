@@ -117,7 +117,6 @@ class ClientProtocolTests(unittest.TestCase):
         profile = PromptProfileRegistry().resolve(context)
 
         self.assertEqual(profile.id, ClientMode.SCENE_STATIC.value)
-        self.assertTrue(profile.includes(PromptModule.CLIENT_MODE))
         self.assertTrue(profile.includes(PromptModule.CURRENT_VISUAL_STATE))
         self.assertTrue(profile.includes(PromptModule.SCENE_OBSERVATION))
         self.assertTrue(profile.includes(PromptModule.OUTFIT_OBSERVATION))
@@ -171,7 +170,6 @@ class ClientProtocolTests(unittest.TestCase):
     def test_desktop_prompt_profile_excludes_scene_observations_but_keeps_pet_context(self) -> None:
         profile = PromptProfileRegistry().get(ClientMode.DESKTOP_PET)
 
-        self.assertTrue(profile.includes(PromptModule.CLIENT_MODE))
         self.assertTrue(profile.includes(PromptModule.CURRENT_VISUAL_STATE))
         self.assertTrue(profile.includes(PromptModule.RESOURCE_MANIFEST))
         self.assertTrue(profile.includes(PromptModule.OUTFIT_OBSERVATION))

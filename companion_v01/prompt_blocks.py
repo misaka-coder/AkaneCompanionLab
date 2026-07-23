@@ -184,7 +184,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     text=(
                         "activity 只用于桌宠播放控制；没有播放、暂停、继续、停止、上一首、下一首或切换音频的真实意图时输出 null。\n"
                         'activity 格式为 {"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}。\n'
-                        "activity 是给桌宠执行的请求，不是完成回执；不要在 speech 里假装动作已经播放、暂停或继续。"
+                        "activity 是给桌宠执行的请求，不是完成回执；不要在 speech 里假装动作已经播放、暂停或继续。\n"
+                        "播放、暂停、继续、停止和切歌属于轻量桌宠控制，不要为这些动作创建任务工作区或委派后台任务。"
                     ),
                 ),
                 PromptBlock(

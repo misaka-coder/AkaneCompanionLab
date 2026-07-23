@@ -182,7 +182,6 @@ class _CapturePromptBuilder:
         self.persona = SimpleNamespace(
             final_debug_mode_prompt="debug mode",
             final_fast_mode_prompt="fast mode",
-            final_system_prompt="system prompt",
         )
 
     def build_final_generation_context(self, **kwargs):
@@ -3568,6 +3567,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 stored_reference = manager._store.get_record_by_source_id(reference["source_id"])
                 stored_cleanup = manager._store.get_record_by_source_id(cleanup["source_id"])
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                )
             finally:
                 manager.close()
 
@@ -3586,6 +3591,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_cleanup["payload"]["file_status"], "deleted")
         self.assertEqual(stored_cleanup["payload"]["reason"], "聊完了")
         self.assertEqual(stored_cleanup["turn_id"], "")
+        projected_text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
+        self.assertEqual(projected_text.count("file_id: img_001"), 2)
+        self.assertNotIn("data:", projected_text)
+        self.assertNotIn("mime_type:", projected_text)
 
     def test_task_event_bridge_records_safe_explicit_timeline_event(self) -> None:
         task = {
@@ -3626,6 +3635,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
             try:
                 result = manager.record_task_event(task=task, event=event, character_pack_id="akane_v1")
                 stored = manager._store.get_record_by_source_id(result["source_id"])
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                )
             finally:
                 manager.close()
 
@@ -3640,6 +3655,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("F:\\Private", str(stored))
         self.assertNotIn("C:\\Private", str(stored))
         self.assertNotIn("storage_relpath", str(stored))
+        projected_text = str(projection["payloads"][0]["content"])
+        self.assertEqual(projected_text.count("source: task_workspace"), 1)
+        self.assertEqual(projected_text.count("task_id: task::abc"), 1)
+        self.assertNotIn("content:", projected_text)
+        self.assertNotIn("data:", projected_text)
 
     def test_manager_does_not_expose_v1_prompt_context_facade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

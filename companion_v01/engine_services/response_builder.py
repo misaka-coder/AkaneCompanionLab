@@ -276,15 +276,6 @@ def prepare_context(
     # after append-only history, while durable runtime context can precede it.
     extra_context_contributions = [
         PromptContextContribution(
-            name="client_mode",
-            content=(
-                engine._build_client_mode_prompt_context(client_context)
-                if prompt_profile.includes(PromptModule.CLIENT_MODE)
-                else ""
-            ),
-            lifecycle=PromptContextLifecycle.STABLE,
-        ),
-        PromptContextContribution(
             name="relationship",
             content=engine._build_memory_relationship_context(
                 profile_user_id=profile_user_id,
@@ -539,8 +530,6 @@ def prepare_context(
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
     system_prompt_override = prompt_profile.system_prompt_override
-    if not care_enabled and not system_prompt_override:
-        system_prompt_override = prompt_builder.persona.final_system_prompt
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
 

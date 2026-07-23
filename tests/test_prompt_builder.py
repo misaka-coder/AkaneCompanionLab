@@ -9,6 +9,7 @@ from companion_v01.persona_config import load_persona_config
 from companion_v01.prompt_blocks import (
     build_desktop_pet_system_prompt,
     build_qq_text_system_prompt,
+    build_scene_static_system_prompt,
     strip_care_prompt_contract,
 )
 from companion_v01.prompt_builder import PromptBuilder, TOOL_CONTEXT_STABLE_RULES
@@ -82,6 +83,7 @@ class PersonaConfigTomlTests(unittest.TestCase):
         self.assertIn("JSON `tool_call` 字段每轮仍只容纳一个", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("普通回合不一定重复展开完整清单", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("不要在 speech 里声称工具已经调用", TOOL_CONTEXT_STABLE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """
@@ -102,7 +104,6 @@ fast_mode = "verifier fast"
 debug_mode = "verifier debug"
 
 [variants.custom.final]
-system = "final system"
 fast_mode = "final fast"
 debug_mode = "final debug"
 fallback_thought = "fallback thought"
@@ -258,7 +259,6 @@ fast_mode = "verifier fast"
 debug_mode = "verifier debug"
 
 [variants.custom.final]
-system = "final system "
 fast_mode = "fast mode "
 debug_mode = "debug mode "
 fallback_thought = "fallback thought"
@@ -319,7 +319,7 @@ system = "semantic reinforcement system"
             self.assertEqual(result["fallback"]["speech_segments"], [])
             self.assertEqual(result["fallback"]["code_snippet"], "")
             self.assertEqual(result["fallback"]["persona"]["active"], "current_card")
-            self.assertIn("final system", result["system_prompt"])
+            self.assertIn("只输出一个合法 JSON 对象", result["system_prompt"])
             self.assertIn("debug mode", result["system_prompt"])
             self.assertIn("历史记忆与当前任务边界", result["system_prompt"])
             self.assertIn("历史状态不是当前待办", result["system_prompt"])
@@ -974,7 +974,7 @@ system = "semantic reinforcement system"
         self.assertIn(
             '"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt
         )
-        self.assertIn("tool_call 必须放在 speech_segments 字段之后", persona.final_system_prompt)
+        self.assertIn("tool_call 必须放在 speech_segments 字段之后", build_scene_static_system_prompt())
 
         result = builder.build_final_generation_context(
             now_ts=1712400000,
@@ -1003,12 +1003,19 @@ system = "semantic reinforcement system"
         self.assertEqual(fallback_keys[:4], ["emotion", "speech", "speech_segments", "tool_call"])
 
     def test_default_prompts_do_not_force_akane_identity(self) -> None:
-        persona = load_persona_config()
+        prompt = build_scene_static_system_prompt()
 
-        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", persona.final_system_prompt)
-        self.assertNotIn("[AKANE CURRENT STATE - EMBODY THIS]", persona.final_system_prompt)
-        self.assertIn("当前前台角色", persona.final_user_prompt_suffix)
-        self.assertNotIn("以 Akane 的身份", persona.final_user_prompt_suffix)
+        self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
+        self.assertNotIn("[AKANE CURRENT STATE - EMBODY THIS]", prompt)
+
+    def test_final_context_does_not_repeat_system_output_contract_in_user_history(self) -> None:
+        result = _build_minimal_final(PromptBuilder(load_persona_config()))
+        history_text = _history_text(result)
+
+        self.assertIn("只输出一个合法 JSON 对象", result["system_prompt"])
+        self.assertNotIn("只输出 JSON 对象本身", history_text)
+        self.assertNotIn("字段必须与当前系统输出契约完全一致", history_text)
+        self.assertNotIn("user.instruction_suffix", [item["name"] for item in result["prompt_audit_sections"]])
 
     def test_desktop_pet_system_prompt_is_block_composed_and_pet_scoped(self) -> None:
         prompt = build_desktop_pet_system_prompt()

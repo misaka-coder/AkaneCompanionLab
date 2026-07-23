@@ -111,15 +111,10 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
     )
     name_text = "、".join(native_tool_names) if native_tool_names else "已提供的 native 工具"
     return (
-        "【native 工具轮优先规则】\n"
-        f"本轮已通过 provider native tools 提供：{name_text}。\n"
-        f"若当前请求需要上述 native 工具，必须直接通过 provider tool_calls 调用；"
-        "不要输出最终表现 JSON 正文，也不要在 JSON 的 tool_call 字段里手写这些 native 工具。\n"
-        "需要多个彼此独立的工具结果时，可以在同一轮发出多个 native tool calls；"
-        "如果后一步依赖前一步结果，再分到下一轮调用。\n"
-        "只有仍在可用工具清单中、且没有通过 native schema 提供的 legacy 工具，才可以继续写入 JSON tool_call。\n"
-        "如果不需要任何 legacy 工具，最终表现 JSON 的 tool_call 字段必须为 null。\n"
-        "不要在 speech 里声称工具已调用、已完成或已失败；真实状态以系统工具结果为准。"
+        "【本轮 provider native 工具】\n"
+        f"{name_text}\n"
+        "需要这些能力时直接通过 provider tool_calls 调用，不要把它们写进最终 JSON 的 legacy tool_call；"
+        "只有未通过 native schema 提供、且仍在本轮清单中的 legacy 工具才使用该字段。"
     )
 
 

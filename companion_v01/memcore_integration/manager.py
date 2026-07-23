@@ -96,15 +96,10 @@ def _build_persona_text_provider(engine: Any) -> Any:
     """Build a persona_text provider that resolves character identity for memcore compaction prompts.
 
     Returns a callable (profile_user_id, character_pack_id) -> str that extracts the
-    character's system_context persona text. Falls back to PERSONA.final_system_prompt
-    when character-pack-specific context is unavailable or fails.
+    character's system_context persona text. Output/tool contracts are not persona
+    material and are never copied into compaction prompts as a fallback.
     """
-    try:
-        from ..persona_config import PERSONA
-    except Exception:
-        PERSONA = None  # type: ignore[assignment]
-
-    default_text = str(getattr(PERSONA, "final_system_prompt", "") or "").strip()
+    default_text = ""
 
     def _resolve(profile_user_id: str, character_pack_id: str) -> str:
         if not profile_user_id:

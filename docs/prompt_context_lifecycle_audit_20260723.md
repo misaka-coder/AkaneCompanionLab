@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0~4 与 Slice 5a 已在本地实现并通过回归，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~6a 与稳定规则去重已在本地实现并通过回归，最新去重切片尚未部署
 
 日期：2026-07-23
 
@@ -691,3 +691,16 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 没有提高 24k 压缩阈值，没有按 token 或条目数截断活动状态，也没有新增 Bot-specific 分支或第二工作区实现。
 
 本地验证覆盖 PromptBuilder、MemCore 集成、附件工作台、任务工作区、生成文件、工具结果记录和 QQ 后端路由。云端验收需重新观察相同 personal 群缓存 key 下的连续真实请求：预期普通回合 `user.extra_context.task_workspace` 与 `user.extra_context.attachment_focus` 消失，动态尾部减少约 7,600 tokens；角色/本轮上下文产生的必要 miss 仍保留。
+
+## 21. 稳定规则唯一权威与通用事件投影去重
+
+本切片继续清理不会随回合变化、却曾从多个入口重复出现的固定说明；没有删除模型实际需要的能力状态、工具 schema、角色身份、当前资源、图片、附件或时间线事实：
+
+- 最终 JSON 输出契约只由 `prompt_blocks.py` 的稳定 system block 提供；删除 `persona_profiles.toml` 中第二套 monolithic final system 和逐轮 user suffix，`PersonaConfig` 也不再暴露这两个旧权威字段；
+- scene、desktop pet 与 QQ profile 均直接组合自己的稳定 system block；删除 `PromptModule.CLIENT_MODE` 和 `desktop_context_engine.py` 中第二套客户端规则生成器，不再逐轮重复客户端字段、降级说明和播放规则；
+- 工具决策、不得伪造执行、能力自然说明、已有材料优先复用、native/legacy 边界集中在稳定 system；动态工具上下文只列本轮能力状态与真实 handler 说明，provider native 轮只补充 native/legacy 映射，不重复长篇示例；
+- MemCore 压缩 persona 缺失时不再把聊天输出契约或工具规则当作角色人格写进摘要提示；缺失角色 persona 时使用空 fallback，而不是复制无关 system；
+- `charpack-core` 删除角色包内重复的 QQ/桌宠固定客户端规则，角色包继续负责身份、称呼、关系和资源 id；宿主稳定 client-mode system 负责传输与渲染规则。对应包提交为 `cea3eb1`；
+- MemCore 为开放的 `event.*` 与 `material.*` 增加通用稳定 renderer。结构化 `semantic_text` 与 payload 表达同一字段时只输出一次，不再同时发送可读文本和重复 `data` JSON；payload 无法表达的自由文本仍以 `content` 保留，不以缩短 token 为由丢失语义；`event.finance` 专用字段顺序和给用户看的财经快讯格式均未改变。对应包提交为 `7b32d5d`。
+
+本地验收：Akane 本轮相关 363 项测试通过；MemCore 322 项通过（4 skipped），Ruff、format check、sdist/wheel build 与 `git diff --check` 通过；charpack-core 30 项、Ruff、format check、sdist/wheel build 与 `git diff --check` 通过。Akane 全套 1705 项中 1702 项通过，剩余 3 项位于本轮未修改的 capability selection/settings catalog 漂移测试，不能作为本切片行为通过或失败的替代证据。缓存命中仍必须部署后通过真实 personal 私聊/群聊、图片、附件、工具和 finance 事件交织请求验收，不能从本地 prompt 长度直接宣称达到 95%。

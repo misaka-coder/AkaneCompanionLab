@@ -705,10 +705,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertIn("web_search", instruction)
         self.assertIn("provider tool_calls", instruction)
-        self.assertIn("同一轮发出多个 native tool calls", instruction)
-        self.assertIn("不要在 JSON 的 tool_call 字段里手写这些 native 工具", instruction)
+        self.assertIn("不要把它们写进最终 JSON 的 legacy tool_call", instruction)
         self.assertIn("legacy 工具", instruction)
-        self.assertIn("tool_call 字段必须为 null", instruction)
+        self.assertNotIn("同一轮发出多个 native tool calls", instruction)
 
     def test_verified_profile_completion_payload_sends_native_tools(self) -> None:
         runtime = LLMRuntime()
@@ -1828,7 +1827,6 @@ class FakePromptProfile:
 
         return module in {
             PromptModule.TOOLS,
-            PromptModule.CLIENT_MODE,
         }
 
     def mode_prompt_override(self, *, debug_enabled: bool = False) -> str:
@@ -1904,7 +1902,6 @@ def build_native_context_engine(*, selected_tool_names: tuple[str, ...]) -> Akan
         "active_id": "",
     }
     engine._resolve_current_visual_payload = lambda **_kwargs: None
-    engine._build_client_mode_prompt_context = lambda _client_context: ""
     engine._build_memory_relationship_context = lambda **_kwargs: ""
     engine._build_extra_context_audit_sections = lambda _candidates: []
     engine._resolve_capability_selection = lambda **_kwargs: selection
