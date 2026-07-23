@@ -650,10 +650,25 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - `normalize_emotion_id()` 不再跨服装借用图片；当请求的 emotion 不存在时，只在当前 outfit 内回退，避免模型输出“服装 A + 服装 B 的表情”而导致 QQ 表情或桌宠立绘缺图；
 - 最终输出仍经过 manifest normalize，QQ mface、桌宠立绘、TTS 和普通文字交付没有新增第二实现。
 
-`charpack-core` 对应提交为 `cac9211` 与 `c6484b9`。包级 30 项测试、Ruff、最小示例与 sdist/wheel 构建均通过。Akane 本地集成验证覆盖角色资源、资料库、persona 合并、ephemeral 位置与宿主额外服装透传；尚未部署，因此真实换装后的 provider cache、QQ 表情图片和桌宠立绘仍属于统一部署验收项。
+`charpack-core` 对应提交为 `cac9211` 与 `c6484b9`。包级 30 项测试、Ruff、最小示例与 sdist/wheel 构建均通过。Akane 本地集成验证覆盖角色资源、资料库、persona 合并、ephemeral 位置与宿主额外服装透传；云端部署状态和剩余真实表现验收见第 19 节。
 
 ## 18. 部署前 AUX 路由修复
 
 保存过的 Bot 模型服务配置原先会无条件同时覆盖 Chat、TEXT 与 AUX。这样 finance 即使在 Host 显式配置了 DeepSeek 摘要路由，也仍会被自身的 PinAI Luna 主模型覆盖；若直接改模型服务配置，又会把主回复一并降级成 DeepSeek。
 
 现在模型服务仍负责主聊天、TEXT 与可选视觉；仅当启动配置没有一条完整可用的 AUX 路由时，AUX 才继承主模型。显式 AUX 配置保持独立，因此可以让 finance 继续用 Luna 聊天，同时让 MemCore 压缩等辅助请求使用 DeepSeek Pro。该规则按配置完整性判断，不识别 Bot id，也不为金融实例复制实现。
+
+## 19. 云端部署与验收记录
+
+不可变 release `12f817e` 已部署；共享环境安装 `charpack-core c6484b9` 与 `memcore 31007b2` 构建的 wheel。新 release 不携带旧 `charpack_core/` 或 `memcore/` 源码副本，避免工作目录遮蔽已验收 wheel；未修改 Bot 账号、OneBot profile、插件选择或两份 MemCore 数据根。
+
+第一次切换因云端旧 MemCore wheel 缺少现版公开导出而被启动门槛拒绝，自动恢复 `108bdc4` 和原 AUX 配置。当前 MemCore wheel 随后通过包级 320 tests（4 skipped）、Ruff、format check、build，并分别完成新旧 Akane release 导入兼容 smoke；第二次切换成功，Host `NRestarts=0`，personal/finance runtime 均 online，根绑定有效。
+
+运行时脱敏快照和真实 HTTP 日志确认：
+
+- personal Chat/AUX 均为 DeepSeek Pro，维持部署前的临时主模型选择；
+- finance Chat/Vision 仍为 PinAI Luna，AUX 单独为 DeepSeek Pro；
+- DeepSeek Pro 独立请求返回 200，并包含缓存命中/未命中 usage 字段；
+- 新 Host 进程的 MemCore 摘要请求真实进入 DeepSeek 并返回 200；同一 finance 积压 namespace 首次成功压缩 `raw 111364 → 91962`，没有再出现 `summary_retry_pending`；后续正常 turn 会继续按批次追平；
+- systemd 仍固定 `MEMCORE_RAW_TOKEN_TRIGGER=24000` 与 `MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67`，没有上调阈值；
+- finance QQ 自检为 connected；personal NapCat 容器仍运行，但账号自检为 `account_offline`，需要重新扫码后才能完成 personal 的文字、图片、表情和语音真实表现验收。
