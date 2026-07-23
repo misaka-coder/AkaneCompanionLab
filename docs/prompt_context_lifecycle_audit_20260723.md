@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0~2 已在本地实现并通过回归，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~3 已在本地实现并通过回归，尚未部署
 
 日期：2026-07-23
 
@@ -592,3 +592,18 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - QQ 角色资源块只描述真实的 emotion 清单状态，不再重复“不渲染立绘”的固定规则。
 
 这一切片不改变消息准入、群聊唤醒、引用正文、识图开关、reply mode 后端强制、模型切换命令、TTS 或文件交付实现。真实 QQ/TTS 表现仍待部署验收。
+
+## 14. Slice 3 本地实现记录
+
+附件完整工作台与主聊天活动索引已拆成两个明确消费者接口：
+
+- `build_prompt_context()` 继续保留图片观察卡、媒体规格、文件正文/预览和 Manifest，后台 task worker 仍使用这个完整接口；
+- 新增 `build_activity_prompt_context()`，主聊天只获得 `attachment.workspace` 下的 handle、kind、status、focus 和安全短名称；
+- 活动索引不读取或渲染视觉描述、文件正文、short hint、media detail、`storage_relpath` 或本地绝对路径；
+- 活动索引读取当前会话全部 active entries，不用固定条目数静默隐藏较早 handle；
+- pending 与 failed 状态仍明确可见，失败原因只经过现有安全、可读错误映射，不把底层异常路径交给模型；
+- `material.reference/cleanup`、`inspect_attachment`、`load_material`、`read_attachment_section`、workspace focus 与清理逻辑均未另建第二实现；
+- 当前 QQ 图片仍由 `build_native_image_inputs()` 直接附给本轮视觉 provider，没有被迫先调用工具；
+- 后台任务继续通过 `_build_task_worker_attachment_context()` 获得完整材料，没有因主聊天缩短而退化。
+
+本地验证覆盖 65 个以上活跃材料不被短索引截断、ready/pending/failed 状态、安全路径与正文不泄露、完整资源可见性契约、附件工具、后台 task worker，以及 QQ 当前/引用图片直接进入原生多模态请求。真实 QQ 识图、历史材料重新加载、input token 与 cache miss 变化仍待统一部署后验收。

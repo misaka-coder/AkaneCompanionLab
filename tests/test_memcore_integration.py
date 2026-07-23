@@ -4769,7 +4769,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             build_prompt_context=lambda **_kwargs: "TASK WORKSPACE CONTEXT"
         )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
-            build_prompt_context=lambda **_kwargs: "ATTACHMENT FOCUS CONTEXT"
+            build_activity_prompt_context=lambda **_kwargs: "ATTACHMENT FOCUS CONTEXT"
         )
         engine.gift_service = SimpleNamespace(
             build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",

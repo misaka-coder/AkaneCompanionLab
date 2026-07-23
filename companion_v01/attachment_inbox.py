@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import csv
 import importlib.util
+import json
 import logging
 import mimetypes
 import time
@@ -307,6 +308,70 @@ class AttachmentInboxService:
             "需要收起暂时不分析的材料、重新指定重点材料，或切换对比对象时，使用 sync_attachment_workspace 整理当前材料工作台；"
             "聊完或用户说不用了，可用 clear_attachment_focus 清理。"
         )
+        return "\n".join(lines)
+
+    def build_activity_prompt_context(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+    ) -> str:
+        """Render the active material handles without repeating their contents.
+
+        Main chat only needs to know which source materials are available and
+        whether they are ready.  Full observations and file contents remain
+        available through the attachment tools and ``build_prompt_context``
+        for consumers such as background tasks that explicitly need them.
+        """
+
+        items = self.store.list_attachment_inbox_items(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=list(ACTIVE_ATTACHMENT_STATUSES),
+            limit=None,
+        )
+        ready_remote_sources = {
+            str(item.get("source_event_id") or "").strip()
+            for item in items
+            if item.get("status") == "ready"
+            and str(item.get("source") or "").strip() == "remote_url"
+            and str(item.get("source_event_id") or "").strip()
+        }
+        visible_items = [
+            item
+            for item in items
+            if not (
+                item.get("status") == "failed"
+                and str(item.get("source") or "").strip() == "remote_url"
+                and str(item.get("source_event_id") or "").strip() in ready_remote_sources
+            )
+        ]
+        if not visible_items:
+            return ""
+
+        lines = [
+            "attachment.workspace",
+            "以下是当前会话可按 handle 使用的原始材料索引；内容未在这里展开，需要时使用材料工具读取。",
+        ]
+        for item in visible_items:
+            handle = self._safe_prompt_label(item.get("attachment_handle") or item.get("attachment_id"))
+            kind = self._safe_prompt_label(item.get("kind") or "file").lower() or "file"
+            status = self._safe_prompt_label(item.get("status") or "unknown").lower() or "unknown"
+            focus = "true" if int(item.get("focus_rank") or 0) > 0 else "false"
+            name = self._activity_display_name(item)
+            fields = [
+                f"handle={handle}",
+                f"kind={kind}",
+                f"status={status}",
+                f"focus={focus}",
+            ]
+            if name:
+                fields.append("name=" + json.dumps(name, ensure_ascii=False))
+            if status == "failed":
+                reason = self._safe_prompt_label(self._readable_failure_message(item))
+                if reason:
+                    fields.append("reason=" + json.dumps(reason, ensure_ascii=False))
+            lines.append("- " + " ".join(fields))
         return "\n".join(lines)
 
     def sync_workspace(
@@ -1882,6 +1947,13 @@ class AttachmentInboxService:
             or str(item.get("attachment_id") or "").strip()
             or "未命名附件"
         )
+
+    def _activity_display_name(self, item: dict[str, Any]) -> str:
+        title = str(item.get("summary_title") or "").strip()
+        if not title:
+            origin = str(item.get("origin_name") or "").strip().replace("\\", "/")
+            title = origin.rsplit("/", 1)[-1]
+        return self._safe_prompt_label(title)
 
     def _item_summary(self, item: dict[str, Any]) -> str:
         detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}

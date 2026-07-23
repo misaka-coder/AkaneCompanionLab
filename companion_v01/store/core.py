@@ -2719,7 +2719,7 @@ class MemoryStore:
         session_id: str,
         statuses: list[str] | tuple[str, ...] | set[str] | None = None,
         kind: str | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> list[dict[str, Any]]:
         normalized_statuses = self._normalize_attachment_status_list(statuses)
         query = [
@@ -2744,10 +2744,11 @@ class MemoryStore:
                 CASE WHEN last_used_at > 0 THEN last_used_at ELSE updated_at END DESC,
                 updated_at DESC,
                 created_at DESC
-            LIMIT ?
             """
         )
-        params.append(max(1, int(limit or 20)))
+        if limit is not None:
+            query.append("LIMIT ?")
+            params.append(max(1, int(limit or 20)))
         with self._connect() as conn:
             rows = conn.execute("\n".join(query), tuple(params)).fetchall()
         return [self._row_to_attachment_inbox_item(dict(row)) for row in rows]

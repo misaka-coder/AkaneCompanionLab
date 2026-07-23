@@ -19,6 +19,70 @@ from companion_v01.tool_runtime import (
 
 
 class AttachmentInboxTests(unittest.TestCase):
+    def test_activity_prompt_is_complete_short_index_without_material_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = AttachmentInboxService(store=store)
+            for index in range(65):
+                item = service.create_pending(
+                    profile_user_id="user",
+                    session_id="session",
+                    source="qq",
+                    kind="image" if index == 0 else "document",
+                    origin_name=f"folder\\material-{index}.txt",
+                    storage_relpath=f"private/session/material-{index}.txt",
+                    timestamp=100 + index,
+                )
+                service.mark_ready(
+                    profile_user_id="user",
+                    session_id="session",
+                    attachment_id=item["attachment_id"],
+                    summary_title="早餐菜单图" if index == 0 else "",
+                    short_hint=f"PRIVATE SHORT HINT {index}",
+                    detail={
+                        "summary": f"PRIVATE DETAIL {index}",
+                        "text_preview": f"PRIVATE PREVIEW {index}",
+                        "media_info": {"format_name": "secret-format"},
+                    },
+                    timestamp=200 + index,
+                )
+
+            failed = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="audio",
+                origin_name="failed.wav",
+                timestamp=500,
+            )
+            store.update_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=failed["attachment_id"],
+                status="failed",
+                error_message="vision provider unavailable at C:\\private\\model",
+                updated_at=501,
+            )
+
+            prompt = service.build_activity_prompt_context(
+                profile_user_id="user",
+                session_id="session",
+            )
+
+            self.assertIn("attachment.workspace", prompt)
+            self.assertIn("handle=img_001 kind=image status=ready", prompt)
+            self.assertIn('name="早餐菜单图"', prompt)
+            self.assertIn("handle=file_064", prompt)
+            self.assertIn("handle=audio_001 kind=audio status=failed", prompt)
+            self.assertIn("图片已接收，但视觉模型暂时不可用", prompt)
+            self.assertNotIn("PRIVATE SHORT HINT", prompt)
+            self.assertNotIn("PRIVATE DETAIL", prompt)
+            self.assertNotIn("PRIVATE PREVIEW", prompt)
+            self.assertNotIn("secret-format", prompt)
+            self.assertNotIn("private/session", prompt)
+            self.assertNotIn("C:\\private", prompt)
+            self.assertNotIn("folder\\", prompt)
+
     def test_build_native_image_inputs_reads_only_managed_session_images(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

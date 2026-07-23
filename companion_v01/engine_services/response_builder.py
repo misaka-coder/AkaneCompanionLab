@@ -177,7 +177,7 @@ def prepare_context(
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
     attachment_focus_context = (
-        attachment_service.build_prompt_context(
+        attachment_service.build_activity_prompt_context(
             profile_user_id=profile_user_id,
             session_id=session_id,
         )
