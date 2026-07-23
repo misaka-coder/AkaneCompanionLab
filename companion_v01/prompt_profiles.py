@@ -120,13 +120,13 @@ class PromptProfileRegistry:
                     "\n当前模式：desktop_pet。\n"
                     "字段固定为 emotion, speech, speech_segments, tool_call, status, choices, persona, activity, memory_metadata, state_request，禁止输出 thought、character、scene。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0},"state_request":null}\n'
+                    '{"emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：desktop_pet。\n"
                     "字段固定为 thought, emotion, speech, speech_segments, tool_call, status, choices, persona, activity, memory_metadata, state_request，且必须把 tool_call 放在 speech_segments 后面；禁止输出 character、scene。\n"
                     "输出格式示例如下：\n"
-                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0},"state_request":null}\n'
+                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                 ),
             ),
             ClientMode.QQ_TEXT: PromptProfile(
@@ -149,7 +149,7 @@ class PromptProfileRegistry:
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0},"state_request":null}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text。\n"
@@ -157,7 +157,7 @@ class PromptProfileRegistry:
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech 和 speech_segments，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"importance":0.0,"confidence":0.0},"state_request":null}\n'
+                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","speech_segments":[],"tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                 ),
             ),
         }

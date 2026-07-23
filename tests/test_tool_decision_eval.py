@@ -362,7 +362,8 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertIsNone(runtime.calls[0]["native_tools"])
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("read_memory_timeline", runtime.calls[0]["system_prompt"])
-        self.assertIn("格式为", runtime.calls[0]["system_prompt"])
+        self.assertIn("entity_anchors", runtime.calls[0]["system_prompt"])
+        self.assertIn("anchor_source_id", runtime.calls[0]["system_prompt"])
 
     def test_native_degraded_case_is_excluded_from_comparison(self) -> None:
         engine = build_dry_run_web_search_eval_engine()

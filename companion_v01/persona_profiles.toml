@@ -106,13 +106,7 @@ character.outfit 表示服装大类。
 scene.major 表示场景大类，scene.minor 表示子场景，scene.background 表示该子场景下的背景变体，scene.bgm 表示背景音乐。
 persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。
 manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。
-memory_metadata 只用于后台记忆入库，不会展示给用户。
-如果当前用户消息没有值得长期检索的事实，keywords、subject_scopes、categories、mood_tags 输出空数组，importance 可以调低。
-纯追问、核对或记忆测试本身新增信息少时，importance 可以调低。
-keywords 写 0-4 个短词；subject_scopes 从 user, assistant, other 中选。
-categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。
-mood_tags 是你当时记住这件事时的情感余温，从 calm, warm, affectionate, happy, playful, curious, thoughtful, touched, proud, worried, lonely, sad, embarrassed, tense, annoyed, determined 中选 0-3 个。
-拿不准可留空或多选；importance 和 confidence 必须是 0-1 数字。
+memory_metadata 只用于后台记忆入库，不会展示给用户；字段含义和枚举以当前系统注入的 memory_metadata 契约为准，不要添加旧字段或自造字段。
 state_request 用于表达本轮互动对角色状态的影响，大多数对话省略（null）。affinity 是好感度变化量，整数 -5 到 5；根据当前角色的性格判断方向——角色设定决定什么让她开心、什么让她受伤，方向可以和直觉相反。affinity 是本轮互动对好感值的增减，不是当前好感总值；正值表示关系推进，负值表示受伤。普通闲聊、工具调用、日常问答输出 null；只有互动对感情有明显推进或伤害时才填写非零值。
 只能从下面给你的可用资源里选择，不要编造不存在的背景、服装、表情或 BGM。
 资源清单里如果给了显示名、别名、说明，你可以按这些可读名字理解资源。
@@ -125,12 +119,12 @@ state_request 用于表达本轮互动对角色状态的影响，大多数对话
 fast_mode = '''
 字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，禁止输出 thought。
 输出格式示例如下：
-{"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0},"state_request":null}
+{"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
 '''
 debug_mode = '''
 字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，且必须把 tool_call 放在 speech_segments 后面。
 输出格式示例如下：
-{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"keywords":[],"subject_scopes":[],"categories":[],"mood_tags":[],"importance":0.0,"confidence":0.0},"state_request":null}
+{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
 '''
 fallback_thought = "我先根据手头的上下文自然回应用户。"
 fallback_speech = "我在认真听你说，要不要再多告诉我一点？"
@@ -145,9 +139,8 @@ system = '''
 diary_summary 是你的日记式回忆，可以带一点你的语气和心情。
 如果系统提供当前角色/表达侧面，那就是你整理记忆时的身份。角色设定只决定你的记忆口吻、在意点和情感余温，不是这段对话发生过的事实；不要写入 core_facts。
 core_facts 要更稳定、更客观、更适合后续检索，尽量不要写得太散。
-memory_metadata 只用于检索入库；keywords 写 0-4 个短词，subject_scopes 从 user, assistant, other 中选，categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。
-mood_tags 是你当时记住这段对话时的情感余温，0-3 个，从 calm, warm, affectionate, happy, playful, curious, thoughtful, touched, proud, worried, lonely, sad, embarrassed, tense, annoyed, determined 中选；它是你的记忆感受，不要当作用户事实。
-importance 是这段摘要的重要度；memory_metadata.importance 通常与它一致，confidence 表示你对标签的把握。
+memory_metadata 只用于检索入库；字段含义与枚举由宿主追加的统一 MemCore 契约定义，不要输出旧字段。
+importance 是这段摘要本身的重要度；它不是 memory_metadata 的字段。
 不要编造对话里没有出现的事实。
 你只能输出一个合法 JSON 对象，不能输出任何解释、代码块或额外文字。
 对话记录会按日期分组，`[日期 YYYY-MM-DD]` 下面的 `[HH:MM]` 消息都属于当天。
@@ -157,7 +150,7 @@ importance 必须是 0.0 到 1.0 之间的数字小数。
 不要输出“高”“中”“低”“中等”这类文字。
 key_events 和 core_facts 必须是 JSON 数组。
 输出示例如下：
-{"diary_summary":"2026-04-10 晚上，我和主人聊了很多关于学习安排的事，我感觉他这次是真的想认真推进。","period_label":"2026-04-10 夜间学习","event_type":"学习","importance":0.82,"key_events":["2026-04-10 晚上开始复习微积分","重点提到泰勒展开","计划后续继续学习"],"core_facts":["用户在 2026-04-10 晚上复习高数相关内容","用户当时的学习重点包含泰勒展开"],"memory_metadata":{"keywords":["学习安排","微积分","泰勒展开"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.84}}
+{"diary_summary":"2026-04-10 晚上，我和主人聊了很多关于学习安排的事，我感觉他这次是真的想认真推进。","period_label":"2026-04-10 夜间学习","event_type":"学习","importance":0.82,"key_events":["2026-04-10 晚上开始复习微积分","重点提到泰勒展开","计划后续继续学习"],"core_facts":["用户在 2026-04-10 晚上复习高数相关内容","用户当时的学习重点包含泰勒展开"],"memory_metadata":{"turn_intent":"","memory_facets":["plan","state"],"about_roles":["user"],"entity_anchors":["微积分","泰勒展开"],"topic_terms":["复习","学习安排"],"retrieval_priority":"high","mood_tags":["warm","proud","thoughtful"]}}
 '''
 user_prompt_template = '''
 请总结下面这段较早的{batch_size}条对话：
@@ -176,9 +169,8 @@ system = '''
 semantic_summary 是你整理出的长期印象，可以保留一点你的记忆温度，但不要写成流水账。
 如果系统提供当前角色/表达侧面，那就是你沉淀长期记忆时的身份。角色设定只决定你的取舍、语气和情感余温，不是这些摘要里的事实；不要写入 stable_facts。
 stable_facts 要尽量稳定、客观、适合长期保留。
-memory_metadata 只用于检索入库；keywords 写 0-4 个长期检索锚点，subject_scopes 从 user, assistant, other 中选，categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。
-mood_tags 是你沉淀这条长期记忆时的情感余温，0-3 个，从 calm, warm, affectionate, happy, playful, curious, thoughtful, touched, proud, worried, lonely, sad, embarrassed, tense, annoyed, determined 中选；它是记忆感受，不要污染 stable_facts。
-importance 是这条长期记忆的重要度；memory_metadata.importance 通常与它一致，confidence 表示你对标签的把握。
+memory_metadata 只用于检索入库；字段含义与枚举由宿主追加的统一 MemCore 契约定义，不要输出旧字段。
+importance 是这条长期记忆本身的重要度；它不是 memory_metadata 的字段。
 recurring_topics 要抓反复出现的话题。
 important_people 要只保留对主人明显重要或反复出现的人。
 open_loops 要记录仍在推进、以后可能再次提到的事项。
@@ -188,7 +180,7 @@ importance 必须是 0.0 到 1.0 之间的数字。
 stable_facts、recurring_topics、important_people、open_loops 都必须是 JSON 数组。
 你只能输出一个合法 JSON 对象，不能输出解释、代码块或额外文字。
 输出示例如下：
-{"semantic_summary":"2026-04-01 至 2026-04-10 期间，主人反复提到学习安排，我记住他当时确实在认真推进复习。","importance":0.82,"stable_facts":["用户在 2026-04-01 至 2026-04-10 期间持续关注学习推进","用户会主动安排复习节奏"],"recurring_topics":["学习规划","复习进度"],"important_people":[],"open_loops":["这项复习计划仍可能在后续继续推进"],"memory_metadata":{"keywords":["学习规划","复习进度"],"subject_scopes":["user"],"categories":["plan_goal"],"mood_tags":["warm","proud","thoughtful"],"importance":0.82,"confidence":0.86}}
+{"semantic_summary":"2026-04-01 至 2026-04-10 期间，主人反复提到学习安排，我记住他当时确实在认真推进复习。","importance":0.82,"stable_facts":["用户在 2026-04-01 至 2026-04-10 期间持续关注学习推进","用户会主动安排复习节奏"],"recurring_topics":["学习规划","复习进度"],"important_people":[],"open_loops":["这项复习计划仍可能在后续继续推进"],"memory_metadata":{"turn_intent":"","memory_facets":["plan","state"],"about_roles":["user"],"entity_anchors":[],"topic_terms":["学习规划","复习进度"],"retrieval_priority":"high","mood_tags":["warm","proud","thoughtful"]}}
 '''
 user_prompt_template = '''
 请把下面这组更早的阶段摘要，再压缩成一条长期语义记忆：
@@ -206,7 +198,7 @@ system = '''
 字段固定为 semantic_summary, importance, stable_facts, recurring_topics, important_people, open_loops, memory_metadata。
 要尽量保留已有稳定事实，同时自然吸收新近重复出现的内容。
 如果系统提供当前角色/表达侧面，那就是你重新整理这条记忆时的身份。角色设定只决定你的取舍、语气和情感余温，不是事实本身；不要写入 stable_facts。
-memory_metadata 只用于检索入库；keywords 写 0-4 个长期检索锚点，subject_scopes 从 user, assistant, other 中选，categories 从固定枚举中选；mood_tags 是你融合这条长期记忆时的情感余温，0-3 个，从固定枚举中选。
+memory_metadata 只用于检索入库；字段含义与枚举由宿主追加的统一 MemCore 契约定义，不要输出旧字段。
 不要因为新内容出现一次，就轻易推翻旧的稳定印象。
 也不要把输出写成流水账或时间线。
 已有记忆和新摘要里的时间范围都是真实锚点；融合时必须把未锚定的“今天、明天、昨天、最近”等相对时间改写为绝对日期或明确日期范围。

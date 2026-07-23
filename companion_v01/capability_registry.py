@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Protocol
 
 from capcore import CapabilityToolSpec
+from memcore import build_native_memory_tool_specs
 
 from .client_protocol import ClientMode
 from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
@@ -54,6 +55,34 @@ DOCUMENT_ATTACHMENT_FORMATS = {
 DOCUMENT_GENERATED_FORMATS = {"txt", "md", "docx", "xlsx", "pdf", "json", "csv", "html"}
 MEDIA_FORMATS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "mov", "mkv", "webm", "avi"}
 IMAGE_GENERATED_FORMATS = {"png", "jpg", "jpeg", "webp", "gif"}
+
+
+def _memcore_tool_contract(package_name: str, product_name: str) -> tuple[str, dict[str, Any]]:
+    """Project the package-owned memory schema into an Akane capability name."""
+
+    specs = build_native_memory_tool_specs(tool_format="plain", include_material_tool=False)
+    spec = next(item for item in specs if str(item.get("name") or "") == package_name)
+
+    def _rename(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): _rename(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_rename(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(package_name, product_name)
+        return value
+
+    return str(_rename(spec.get("description")) or ""), dict(_rename(spec.get("parameters")) or {})
+
+
+_RETRIEVE_MEMORY_DESCRIPTION, _RETRIEVE_MEMORY_SCHEMA = _memcore_tool_contract(
+    "retrieve_for_turn",
+    "retrieve_memory",
+)
+_READ_MEMORY_TIMELINE_DESCRIPTION, _READ_MEMORY_TIMELINE_SCHEMA = _memcore_tool_contract(
+    "read_timeline",
+    "read_memory_timeline",
+)
 
 COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 WEB_SCENE_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D)
@@ -259,111 +288,14 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
 RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
     capability_id="retrieve_memory",
     display_name="Retrieve memory",
-    description=(
-        "Search Akane's long-term memory before guessing when visible context is not enough "
-        "to answer anything that depends on shared history, identity, relationships, preferences, "
-        "agreements, plans, projects, or past events."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Concrete memory search phrase with names, topics, places, events, or preferences.",
-                "minLength": 1,
-                "maxLength": 200,
-            },
-            "keywords": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 8,
-                "description": "Optional short keywords that should help recall matching memories.",
-            },
-            "time_hint": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "date_label": {"type": "string", "description": "Optional YYYY-MM-DD date hint."},
-                    "time_of_day": {
-                        "type": "string",
-                        "enum": ["morning", "afternoon", "night", "midnight"],
-                        "description": "Optional coarse time-of-day hint.",
-                    },
-                    "relative_time": {"type": "string", "description": "Optional natural-language relative time hint."},
-                    "start_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp lower bound."},
-                    "end_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp upper bound."},
-                },
-            },
-            "source_layers": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["raw", "summary", "semantic_summary"]},
-                "maxItems": 3,
-                "description": "Optional memory layers to search. Omit when unsure.",
-            },
-            "subject_scopes": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["user", "assistant", "other"]},
-                "maxItems": 3,
-                "description": "Optional subject scopes. Multiple values are OR matches.",
-            },
-            "categories": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": [
-                        "casual",
-                        "preference",
-                        "personal_profile",
-                        "plan_goal",
-                        "project_work",
-                        "relationship",
-                        "emotion_state",
-                        "life_event",
-                        "memory_query",
-                        "system_meta",
-                    ],
-                },
-                "maxItems": 4,
-                "description": "Optional memory categories. Multiple values are OR matches.",
-            },
-            "importance_min": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1,
-                "description": "Optional minimum importance score.",
-            },
-            "include_explicit": {
-                "type": "boolean",
-                "description": (
-                    "Set true only when the answer needs explicit tool, event, skill, or material records; "
-                    "kind_patterns is then required."
-                ),
-            },
-            "kind_patterns": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 8,
-                "description": (
-                    "Exact kinds or trailing-wildcard prefixes such as event.finance.*, tool.web_search.*, "
-                    "skill.*, or material.*. Host policy may reject unsupported prefixes."
-                ),
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 12,
-                "description": "Optional maximum number of memory snippets.",
-            },
-        },
-        "required": ["query"],
-    },
+    description=_RETRIEVE_MEMORY_DESCRIPTION,
+    input_schema=_RETRIEVE_MEMORY_SCHEMA,
     risk="low",
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="1.1.0",
-    schema_version=1,
+    spec_version="2.0.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=16384,
@@ -372,37 +304,14 @@ RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
 READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="read_memory_timeline",
     display_name="Read memory timeline",
-    description=(
-        "Read raw conversation records for an explicit date, date range, or time period. "
-        "Use this only when the user asks to inspect or recall the original timeline."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "date_from": {
-                "type": "string",
-                "description": "Start date in YYYY-MM-DD format. For a single day, use the same value as date_to.",
-            },
-            "date_to": {
-                "type": "string",
-                "description": "End date in YYYY-MM-DD format. For a single day, use the same value as date_from.",
-            },
-            "time_periods": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
-                "maxItems": 4,
-                "description": "Optional coarse periods within the selected dates. Omit for full-day reads.",
-            },
-        },
-        "required": ["date_from", "date_to"],
-    },
+    description=_READ_MEMORY_TIMELINE_DESCRIPTION,
+    input_schema=_READ_MEMORY_TIMELINE_SCHEMA,
     risk="low",
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="2.0.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=16384,

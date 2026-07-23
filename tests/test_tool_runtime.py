@@ -31,36 +31,38 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
 
         instruction = handler.build_prompt_instruction()
 
-        self.assertIn("自己的深层记忆空间", instruction)
-        self.assertIn("我的生日是哪天", instruction)
-        self.assertIn("我们之前约定了什么", instruction)
-        self.assertIn("稳定常识", instruction)
+        self.assertIn("entity_anchors", instruction)
+        self.assertIn("topic_terms", instruction)
+        self.assertIn("memory_facets/about_roles", instruction)
+        self.assertIn("raw 结果", instruction)
+        self.assertIn("source_id", instruction)
 
-    def test_normalize_call_accepts_precision_filters_and_preserves_zero_importance(self) -> None:
+    def test_normalize_call_accepts_canonical_raw_first_filters_without_hidden_limits(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
 
         call = handler.normalize_call(
             {
                 "type": "retrieve_memory",
                 "query": "我喜欢喝什么饮料",
-                "keywords": "喜欢，可乐 饮料",
-                "source_layers": ["raw", "semantic", "bad_layer"],
-                "subject_scopes": ["用户", "other", "bad_scope"],
-                "categories": "偏好,项目,bad_category",
-                "importance_min": 0,
-                "limit": 99,
+                "entity_anchors": "可乐，无糖可乐",
+                "topic_terms": ["喜欢", "饮料", "喜欢"],
+                "source_layers": ["raw", "semantic_summary"],
+                "memory_facets": ["preference", "decision"],
+                "about_roles": ["user", "external"],
             }
         )
 
         self.assertIsNotNone(call)
         assert call is not None
+        self.assertEqual(call["entity_anchors"], ["可乐", "无糖可乐"])
+        self.assertEqual(call["topic_terms"], ["喜欢", "饮料"])
         self.assertEqual(call["source_layers"], ["raw", "semantic_summary"])
-        self.assertEqual(call["subject_scopes"], ["user", "other"])
-        self.assertEqual(call["categories"], ["preference", "project_work"])
-        self.assertEqual(call["importance_min"], 0.0)
-        self.assertEqual(call["limit"], 12)
+        self.assertEqual(call["memory_facets"], ["preference", "decision"])
+        self.assertEqual(call["about_roles"], ["user", "external"])
+        self.assertNotIn("limit", call)
+        self.assertNotIn("importance_min", call)
 
-    def test_normalize_call_preserves_bounded_explicit_kind_request(self) -> None:
+    def test_normalize_call_preserves_explicit_kind_request_for_host_authorization(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
 
         call = handler.normalize_call(
@@ -75,7 +77,7 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertIsNotNone(call)
         assert call is not None
         self.assertTrue(call["include_explicit"])
-        self.assertEqual(call["kind_patterns"], ["event.finance.*", "message.*"])
+        self.assertEqual(call["kind_patterns"], ["event.finance.*", "message.*", "bad pattern"])
 
 
 class AdapterCapabilityToolHandlerTests(unittest.TestCase):

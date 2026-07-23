@@ -121,14 +121,27 @@ class MemoryTimelineService:
         self,
         *,
         profile_user_id: str,
+        session_id: str = "",
         character_pack_id: str = "",
-        date_from: str,
-        date_to: str,
+        date_from: str = "",
+        date_to: str = "",
         time_periods: Iterable[str] | None = None,
+        anchor_source_id: str = "",
+        before_turns: int = 0,
+        after_turns: int = 0,
         exclude_source_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
+        _ = (session_id, before_turns, after_turns)
+        if str(anchor_source_id or "").strip():
+            return {
+                "status": "unavailable",
+                "reason": "raw_anchor_requires_memcore",
+                "anchor_source_id": str(anchor_source_id or "").strip(),
+                "messages": [],
+                "message_count": 0,
+            }
         start = self._parse_date(date_from)
-        end = self._parse_date(date_to)
+        end = self._parse_date(date_to or date_from)
         if start is None or end is None:
             return {
                 "status": "invalid_range",

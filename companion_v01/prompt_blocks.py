@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+import config
+from memcore import build_memory_metadata_instruction
 from promptpack_core import PromptBlock
 from promptpack_core import PromptBlockRegistry as CorePromptBlockRegistry
 
@@ -94,12 +96,11 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="memory_metadata",
                     text=(
-                        "memory_metadata 只用于后台记忆入库，不会展示给用户。\n"
-                        "如果当前用户消息没有值得长期检索的事实，keywords/subject_scopes/categories/mood_tags 输出空数组，importance 可以调低。\n"
-                        "纯追问、核对或记忆测试本身新增信息少时，importance 可以调低。\n"
-                        "keywords 写 0-4 个短词；subject_scopes 从 user, assistant, other 中选；categories 从 casual, preference, personal_profile, plan_goal, project_work, relationship, emotion_state, life_event, memory_query, system_meta 中选。\n"
-                        "mood_tags 是你当时记住这件事时的情感余温，从 calm, warm, affectionate, happy, playful, curious, thoughtful, touched, proud, worried, lonely, sad, embarrassed, tense, annoyed, determined 中选 0-3 个。\n"
-                        "拿不准可留空或多选；importance 和 confidence 必须是 0-1 数字。"
+                        "memory_metadata 只用于后台记忆入库，不展示给用户；在聊天输出中标注当前用户消息和本轮形成的可记忆事实。\n"
+                        + build_memory_metadata_instruction(
+                            enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
+                            require_disabled_mood_field=True,
+                        )
                     ),
                 ),
                 PromptBlock(

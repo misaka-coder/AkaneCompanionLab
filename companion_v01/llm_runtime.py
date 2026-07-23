@@ -23,6 +23,7 @@ from capcore_provider_openai import (
     parse_openai_chat_stream_tool_calls,
     parse_openai_chat_tool_calls,
 )
+from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from .runtime_settings import BotSettingsView, normalize_reasoning_effort
@@ -227,17 +228,7 @@ def _memory_metadata_truth(
 
 
 def _memory_metadata_has_signal(metadata: dict[str, Any]) -> bool:
-    for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
-        value = metadata.get(key)
-        if isinstance(value, (list, tuple, set)) and any(str(item or "").strip() for item in value):
-            return True
-    for key in ("importance", "confidence"):
-        try:
-            if float(metadata.get(key) or 0.0) > 0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return memcore_metadata_has_signal(metadata)
 
 
 def _responses_error_summary(value: Any) -> str:

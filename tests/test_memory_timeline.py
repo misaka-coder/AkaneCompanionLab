@@ -302,7 +302,7 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
             call = handler.normalize_call(
                 {
                     "type": "read_memory_timeline",
-                    "date": "2026-06-13",
+                    "date_from": "2026-06-13",
                     "time_periods": ["上午"],
                     "profile_user_id": "someone_else",
                     "character_pack_id": "marisa",
@@ -338,9 +338,10 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
                 timeline_service=service
             ).build_prompt_instruction()
 
-            self.assertIn("不做向量搜索", instruction)
-            self.assertIn("不读取阶段摘要或长期记忆", instruction)
-            self.assertIn("仍使用 retrieve_memory", instruction)
+            self.assertIn("date_from/date_to", instruction)
+            self.assertIn("anchor_source_id", instruction)
+            self.assertIn("附近完整 turn", instruction)
+            self.assertIn("不能混用", instruction)
 
 
 if __name__ == "__main__":

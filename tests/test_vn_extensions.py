@@ -337,12 +337,13 @@ class EngineExtensionTests(unittest.TestCase):
                 "code_snippet": "",
                 "memory_tags": "旧词,可乐",
                 "memory_metadata": {
-                    "keywords": ["可乐", "饮料", "可乐"],
-                    "subject_scopes": ["用户", "relationship", "topic", "unknown"],
-                    "categories": ["偏好", "project_work", "unknown"],
-                    "mood_tags": ["开心", "warm", "未知", "吐槽"],
-                    "importance": 1.2,
-                    "confidence": "0.75",
+                    "turn_intent": "memory_query",
+                    "memory_facets": ["preference", "decision", "unknown", "preference"],
+                    "about_roles": ["user", "assistant", "unknown"],
+                    "entity_anchors": ["可乐", "无糖可乐", "可乐"],
+                    "topic_terms": ["饮料", "口味", "饮料"],
+                    "retrieval_priority": "high",
+                    "mood_tags": ["happy", "warm", "unknown", "playful"],
                 },
                 "status": "final",
                 "score": 0.0,
@@ -362,15 +363,16 @@ class EngineExtensionTests(unittest.TestCase):
             debug_enabled=False,
         )
 
-        self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "旧词"])
-        self.assertEqual(normalized["memory_metadata"]["subject_scopes"], ["user", "assistant", "other"])
-        self.assertEqual(normalized["memory_metadata"]["categories"], ["preference", "project_work"])
+        self.assertEqual(normalized["memory_metadata"]["turn_intent"], "memory_query")
+        self.assertEqual(normalized["memory_metadata"]["memory_facets"], ["preference", "decision"])
+        self.assertEqual(normalized["memory_metadata"]["about_roles"], ["user", "assistant"])
+        self.assertEqual(normalized["memory_metadata"]["entity_anchors"], ["可乐", "无糖可乐"])
+        self.assertEqual(normalized["memory_metadata"]["topic_terms"], ["饮料", "口味"])
+        self.assertEqual(normalized["memory_metadata"]["retrieval_priority"], "high")
         self.assertEqual(normalized["memory_metadata"]["mood_tags"], ["happy", "warm", "playful"])
-        self.assertEqual(normalized["memory_metadata"]["importance"], 1.0)
-        self.assertEqual(normalized["memory_metadata"]["confidence"], 0.75)
         self.assertNotIn("memory_tags", normalized)
 
-    def test_normalize_final_output_migrates_legacy_memory_tags(self) -> None:
+    def test_normalize_final_output_does_not_keep_legacy_memory_tags(self) -> None:
         normalized = self.engine._normalize_final_output(
             result={
                 "emotion": "normal",
@@ -397,12 +399,18 @@ class EngineExtensionTests(unittest.TestCase):
             debug_enabled=False,
         )
 
-        self.assertEqual(normalized["memory_metadata"]["keywords"], ["可乐", "饮料", "喜欢"])
-        self.assertEqual(normalized["memory_metadata"]["subject_scopes"], [])
-        self.assertEqual(normalized["memory_metadata"]["categories"], [])
-        self.assertEqual(normalized["memory_metadata"]["mood_tags"], [])
-        self.assertEqual(normalized["memory_metadata"]["importance"], 0.0)
-        self.assertEqual(normalized["memory_metadata"]["confidence"], 0.0)
+        self.assertEqual(
+            normalized["memory_metadata"],
+            {
+                "turn_intent": "",
+                "memory_facets": [],
+                "about_roles": [],
+                "entity_anchors": [],
+                "topic_terms": [],
+                "retrieval_priority": "normal",
+                "mood_tags": [],
+            },
+        )
         self.assertNotIn("memory_tags", normalized)
 
     def test_normalize_final_output_wraps_plain_speech_as_single_segment(self) -> None:

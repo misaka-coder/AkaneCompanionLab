@@ -5,6 +5,9 @@ import json
 from datetime import datetime
 from typing import Any, Callable
 
+import config
+from memcore import build_memory_metadata_instruction, coerce_memory_metadata
+
 from .persona_config import PersonaConfig
 from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER
 
@@ -41,6 +44,13 @@ TOOL_CONTEXT_STABLE_RULES = """
 - provider 原生工具通道允许同一轮调用多个互不依赖的工具，以便并行取得互补证据；如果后一步依赖前一步结果，就分到下一轮。
 - 兼容用的 JSON `tool_call` 字段每轮仍只容纳一个 legacy 工具；不要把这个限制误解成原生工具也只能调用一个。
 """.strip()
+
+
+def _memory_metadata_contract_prompt() -> str:
+    return build_memory_metadata_instruction(
+        enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
+        require_disabled_mood_field=True,
+    )
 
 
 class PromptBuilder:
@@ -203,14 +213,7 @@ class PromptBuilder:
             "persona": {
                 "active": str(persona_active_id or ""),
             },
-            "memory_metadata": {
-                "keywords": [],
-                "subject_scopes": [],
-                "categories": [],
-                "mood_tags": [],
-                "importance": 0.0,
-                "confidence": 0.0,
-            },
+            "memory_metadata": coerce_memory_metadata({}).to_dict(),
             "state_request": None,
         }
         if debug_enabled:
@@ -468,7 +471,9 @@ class PromptBuilder:
                 f"{reference_summary_text}\n"
             )
         return (
-            self._append_memory_time_anchor_rules(system_prompt),
+            self._append_memory_time_anchor_rules(
+                f"{system_prompt.rstrip()}\n\n{_memory_metadata_contract_prompt()}"
+            ),
             user_prompt,
         )
 
@@ -485,7 +490,9 @@ class PromptBuilder:
             persona_reference_context=persona_reference_context,
         )
         return (
-            self._append_memory_time_anchor_rules(system_prompt),
+            self._append_memory_time_anchor_rules(
+                f"{system_prompt.rstrip()}\n\n{_memory_metadata_contract_prompt()}"
+            ),
             self.persona.semantic_summary_user_prompt_template.format(source_text=source_text),
         )
 
@@ -503,7 +510,9 @@ class PromptBuilder:
             persona_reference_context=persona_reference_context,
         )
         return (
-            self._append_memory_time_anchor_rules(system_prompt),
+            self._append_memory_time_anchor_rules(
+                f"{system_prompt.rstrip()}\n\n{_memory_metadata_contract_prompt()}"
+            ),
             self.persona.semantic_reinforcement_user_prompt_template.format(
                 existing_text=existing_text,
                 incoming_text=incoming_text,

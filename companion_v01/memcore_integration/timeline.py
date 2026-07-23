@@ -67,37 +67,47 @@ class MemcoreTimelineToolService:
         self,
         *,
         profile_user_id: str,
+        session_id: str = "",
         character_pack_id: str = "",
-        date_from: str,
-        date_to: str,
+        date_from: str = "",
+        date_to: str = "",
         time_periods: Iterable[str] | None = None,
+        anchor_source_id: str = "",
+        before_turns: int = 0,
+        after_turns: int = 0,
         exclude_source_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         manager = self.memcore_manager
+        anchor_id = str(anchor_source_id or "").strip()
         if _memory_backend() == "memcore":
             if manager is not None and getattr(manager, "enabled", False) and getattr(manager, "available", False):
                 try:
                     result = manager.read_memory_timeline(
                         profile_user_id=profile_user_id,
-                        # Akane's legacy timeline is profile + character scoped, not session scoped.
-                        # Use profile_user_id as the memcore system key and ask memcore to read cross-conversation.
-                        session_id=profile_user_id,
+                        # Date lookup is profile-wide. Raw anchors are deliberately
+                        # constrained to the current conversation by MemCore.
+                        session_id=str(session_id or profile_user_id) if anchor_id else profile_user_id,
                         character_pack_id=character_pack_id,
                         date_from=date_from,
                         date_to=date_to,
                         time_periods=list(time_periods or []),
+                        anchor_source_id=anchor_id,
+                        before_turns=before_turns,
+                        after_turns=after_turns,
                         exclude_source_ids=[str(item) for item in (exclude_source_ids or [])],
-                        cross_conversation=True,
+                        cross_conversation=not bool(anchor_id),
                     )
                 except Exception as exc:
                     logger.warning("memcore timeline adapter failed: %s", str(exc) or exc.__class__.__name__)
                 else:
-                    if isinstance(result, dict) and result.get("ok"):
+                    if isinstance(result, dict):
+                        if not result.get("ok"):
+                            logger.warning(
+                                "memcore timeline adapter returned %s: %s",
+                                str(result.get("status") or "failed"),
+                                str(result.get("reason") or "unknown"),
+                            )
                         return result
-                    logger.warning(
-                        "memcore timeline adapter unavailable: %s",
-                        str((result or {}).get("reason") or (result or {}).get("status") or "unknown"),
-                    )
             else:
                 logger.warning("memcore timeline adapter unavailable: manager_not_available")
             return {
@@ -107,6 +117,9 @@ class MemcoreTimelineToolService:
                 "date_from": str(date_from or ""),
                 "date_to": str(date_to or ""),
                 "time_periods": list(time_periods or []),
+                "anchor_source_id": anchor_id,
+                "before_turns": int(before_turns or 0),
+                "after_turns": int(after_turns or 0),
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
@@ -122,6 +135,23 @@ class MemcoreTimelineToolService:
                 "date_from": str(date_from or ""),
                 "date_to": str(date_to or ""),
                 "time_periods": list(time_periods or []),
+                "anchor_source_id": anchor_id,
+                "before_turns": int(before_turns or 0),
+                "after_turns": int(after_turns or 0),
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+                "backend": "legacy",
+            }
+        if anchor_id:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "raw_anchor_requires_memcore",
+                "anchor_source_id": anchor_id,
+                "before_turns": int(before_turns or 0),
+                "after_turns": int(after_turns or 0),
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
@@ -144,13 +174,37 @@ class MemcoreTimelineToolService:
                 return legacy_service.render_tool_context(result)
             return "原始对话时间线读取失败：当前记忆时间线服务不可用。"
         status = str(result.get("status") or "")
+        reason = str(result.get("reason") or "")
+        anchor_source_id = str(result.get("anchor_source_id") or "")
+        if status in {"invalid_filter", "invalid_range"}:
+            labels = {
+                "timeline_modes_are_mutually_exclusive": "日期模式和 raw 锚点模式不能同时使用。",
+                "timeline_selector_required": "需要给出日期或 raw 检索结果的 source_id。",
+                "raw_anchor_required": "这个 source_id 不是 raw 原始记录，不能用来扩展附近对话。",
+                "raw_anchor_requires_current_conversation": "raw 锚点只能在当前会话中读取。",
+                "date_must_be_YYYY-MM-DD": "日期必须使用 YYYY-MM-DD。",
+                "date_from_after_date_to": "date_from 不能晚于 date_to。",
+            }
+            return f"原始对话时间线读取失败：{labels.get(reason, reason or '参数无效')}"
+        if status in {"failed", "unavailable"}:
+            return f"原始对话时间线暂时不可用：{reason or 'memory_timeline_unavailable'}"
+        if anchor_source_id:
+            text = str(result.get("text") or "").strip()
+            if status == "empty" or not text:
+                return "这个 raw 记忆锚点附近没有可读取的原始对话。"
+            return "\n".join(
+                [
+                    "【raw 记忆锚点附近的完整对话 turn】",
+                    "下面是由 MemCore 按 raw source_id 读取的前后完整 turn；工具并行调用不会被截成半轮。",
+                    text,
+                    "请综合这些原始记录回答；缺失的细节不要猜。",
+                ]
+            )
         date_from = str(result.get("date_from") or "")
         date_to = str(result.get("date_to") or "")
         periods = list(result.get("time_periods") or [])
         range_label = date_from if date_from == date_to else f"{date_from} 至 {date_to}"
         period_label = "、".join(TIME_PERIOD_LABELS.get(str(item), str(item)) for item in periods) or "全天"
-        if status == "invalid_range":
-            return "原始对话时间线读取失败：日期范围无效。日期必须使用 YYYY-MM-DD，且 date_from 不能晚于 date_to。"
         if status == "empty":
             return f"原始对话时间线：{range_label}（{period_label}）没有留下对话记录。"
         text = str(result.get("text") or "").strip()

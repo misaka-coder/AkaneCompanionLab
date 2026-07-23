@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator
 
 import config
+from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 
 from .artifact_system import ArtifactContainerService
 from .artifact_broker import ArtifactBroker
@@ -1005,19 +1006,7 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _memory_metadata_has_signal(metadata: Any) -> bool:
-        if not isinstance(metadata, dict):
-            return False
-        for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
-            value = metadata.get(key)
-            if isinstance(value, (list, tuple, set)) and any(str(item or "").strip() for item in value):
-                return True
-        for key in ("importance", "confidence"):
-            try:
-                if float(metadata.get(key) or 0.0) > 0:
-                    return True
-            except (TypeError, ValueError):
-                continue
-        return False
+        return memcore_metadata_has_signal(metadata)
 
     def _attach_memory_annotation_truth(
         self,
@@ -2684,14 +2673,8 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _external_event_memory_metadata(event: dict[str, Any]) -> dict[str, Any]:
-        event_type = str(event.get("event_type") or "external").strip() or "external"
-        return {
-            "categories": ["event_trace"],
-            "keywords": [event_type],
-            "subject_scopes": ["other"],
-            "importance": 0.4,
-            "confidence": 1.0,
-        }
+        _ = event
+        return {}
 
     def _build_transient_user_record(
         self,
@@ -3368,13 +3351,12 @@ class AkaneMemoryEngine:
         )
         provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
         memory_annotation_status = self._pop_memory_annotation_status(final_output)
-        memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
+        memory_tags = final_output_engine.extract_memory_search_terms(final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
             memory_metadata = final_output_engine.normalize_memory_metadata(self, None)
         else:
             memory_metadata = dict(memory_metadata)
-        memory_metadata["keywords"] = memory_tags
         final_output["memory_metadata"] = memory_metadata
         final_output.pop("memory_tags", None)
         if not transient_user_turn and not external_event_turn:
@@ -3933,13 +3915,12 @@ class AkaneMemoryEngine:
         )
         provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
         memory_annotation_status = self._pop_memory_annotation_status(final_output)
-        memory_tags = final_output_engine.extract_memory_keywords(self, final_output)
+        memory_tags = final_output_engine.extract_memory_search_terms(final_output)
         memory_metadata = final_output.get("memory_metadata")
         if not isinstance(memory_metadata, dict):
             memory_metadata = final_output_engine.normalize_memory_metadata(self, None)
         else:
             memory_metadata = dict(memory_metadata)
-        memory_metadata["keywords"] = memory_tags
         final_output["memory_metadata"] = memory_metadata
         final_output.pop("memory_tags", None)
         if not transient_user_turn and not external_event_turn:
@@ -5878,9 +5859,6 @@ class AkaneMemoryEngine:
                     "source_id_prefix": (
                         "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
                     ),
-                    "keywords": [tool_type],
-                    "importance": 0.25,
-                    "confidence": 0.9 if result_status == "success" else 0.5,
                     "result_status": result_status,
                 }
             )

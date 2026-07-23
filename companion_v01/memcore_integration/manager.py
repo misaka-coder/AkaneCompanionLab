@@ -629,13 +629,7 @@ class MemcoreManager:
                 timestamp=int(timestamp or time.time()),
                 payload={"items": safe_items},
                 trace_metadata={"status": "ready", "media_count": len(safe_items)},
-                memory_metadata={
-                    "categories": ["material_trace"],
-                    "keywords": labels[:4],
-                    "subject_scopes": ["assistant"],
-                    "importance": 0.2,
-                    "confidence": 1.0,
-                },
+                memory_metadata={},
                 annotation_status=memcore.AnnotationStatus.UNANNOTATED,
                 retrieval_policy=memcore.RetrievalPolicy.EXPLICIT,
                 retrieval_visibility=memcore.RetrievalVisibility.EXPLICIT,
@@ -1620,11 +1614,14 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
-        date_from: str,
+        date_from: str = "",
         date_to: str = "",
         time_periods: list[str] | None = None,
+        anchor_source_id: str = "",
+        before_turns: int = 0,
+        after_turns: int = 0,
         exclude_source_ids: list[str] | None = None,
-        cross_conversation: bool = True,
+        cross_conversation: bool = False,
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
             operation="read_memory_timeline",
@@ -1638,6 +1635,9 @@ class MemcoreManager:
                 "date_from": str(date_from or ""),
                 "date_to": str(date_to or ""),
                 "time_periods": [],
+                "anchor_source_id": str(anchor_source_id or ""),
+                "before_turns": int(before_turns or 0),
+                "after_turns": int(after_turns or 0),
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
@@ -1650,6 +1650,9 @@ class MemcoreManager:
                 date_from=str(date_from or ""),
                 date_to=str(date_to or ""),
                 time_periods=list(time_periods or []),
+                anchor_source_id=str(anchor_source_id or ""),
+                before_turns=before_turns,
+                after_turns=after_turns,
                 cross_conversation=bool(cross_conversation),
             )
             return self._project_timeline_result(
@@ -1667,6 +1670,9 @@ class MemcoreManager:
                 "date_from": str(date_from or ""),
                 "date_to": str(date_to or ""),
                 "time_periods": [],
+                "anchor_source_id": str(anchor_source_id or ""),
+                "before_turns": int(before_turns or 0),
+                "after_turns": int(after_turns or 0),
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
@@ -1682,13 +1688,12 @@ class MemcoreManager:
         character_pack_id: str = "",
         current_user_record: dict[str, Any] | None = None,
         query: str,
-        keywords: list[str] | None = None,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
         time_hint: dict[str, Any] | None = None,
         source_layers: list[str] | None = None,
-        subject_scopes: list[str] | None = None,
-        categories: list[str] | None = None,
-        importance_min: float | int | str | None = None,
-        limit: int | None = None,
+        memory_facets: list[str] | None = None,
+        about_roles: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
         include_explicit: bool = False,
         kind_patterns: list[str] | None = None,
@@ -1703,13 +1708,12 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
             current_user_record=current_user_record,
             query=query,
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
@@ -1728,13 +1732,12 @@ class MemcoreManager:
         character_pack_id: str = "",
         current_user_record: dict[str, Any] | None = None,
         query: str,
-        keywords: list[str] | None = None,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
         time_hint: dict[str, Any] | None = None,
         source_layers: list[str] | None = None,
-        subject_scopes: list[str] | None = None,
-        categories: list[str] | None = None,
-        importance_min: float | int | str | None = None,
-        limit: int | None = None,
+        memory_facets: list[str] | None = None,
+        about_roles: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
         include_explicit: bool = False,
         kind_patterns: list[str] | None = None,
@@ -1746,13 +1749,12 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
             current_user_record=current_user_record,
             query=query,
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
@@ -1768,13 +1770,12 @@ class MemcoreManager:
         character_pack_id: str,
         current_user_record: dict[str, Any] | None,
         query: str,
-        keywords: list[str] | None,
+        entity_anchors: list[str] | None,
+        topic_terms: list[str] | None,
         time_hint: dict[str, Any] | None,
         source_layers: list[str] | None,
-        subject_scopes: list[str] | None,
-        categories: list[str] | None,
-        importance_min: float | int | str | None,
-        limit: int | None,
+        memory_facets: list[str] | None,
+        about_roles: list[str] | None,
         exclude_source_ids: list[str] | None,
         include_explicit: bool,
         kind_patterns: list[str] | None,
@@ -1816,17 +1817,16 @@ class MemcoreManager:
             retrieval = system.retrieve_for_turn_structured(
                 current=current,
                 query=str(query or ""),
-                keywords=[str(item).strip() for item in (keywords or []) if str(item).strip()],
+                entity_anchors=[str(item).strip() for item in (entity_anchors or []) if str(item).strip()],
+                topic_terms=[str(item).strip() for item in (topic_terms or []) if str(item).strip()],
                 time_hint=time_hint if isinstance(time_hint, dict) else None,
                 source_layers=[str(item).strip() for item in (source_layers or []) if str(item).strip()],
-                subject_scopes=[str(item).strip() for item in (subject_scopes or []) if str(item).strip()],
-                categories=[str(item).strip() for item in (categories or []) if str(item).strip()],
-                importance_min=self._coerce_optional_unit_float(importance_min),
+                memory_facets=[str(item).strip() for item in (memory_facets or []) if str(item).strip()],
+                about_roles=[str(item).strip() for item in (about_roles or []) if str(item).strip()],
                 exclude_source_ids=[str(item).strip() for item in (exclude_source_ids or []) if str(item).strip()],
                 include_explicit=bool(include_explicit),
                 kind_patterns=explicit_patterns,
                 cross_conversation=True,
-                max_matches=max(0, int(limit or 0)),
             )
             retrieval_status = str(getattr(retrieval, "status", "failed") or "failed")
             if retrieval_status not in {"found", "empty"}:
@@ -1842,17 +1842,33 @@ class MemcoreManager:
                     **({"snippets": []} if include_snippets else {}),
                 }
             snippets = list(getattr(retrieval, "rendered_texts", ()) or ())
-            snippets = self._apply_limit(snippets, limit)
+            structured = retrieval.to_dict() if hasattr(retrieval, "to_dict") else {}
             payload = {
                 **self._status(operation, True, "ok"),
                 "retrieval_status": retrieval_status,
                 "snippet_count": len(snippets),
                 "snippet_hashes": snippet_hashes(snippets),
+                "effective_filters": dict(structured.get("effective_filters") or {}),
+                "candidate_counts": dict(structured.get("candidate_counts") or {}),
+                "entity_filter_relaxed": bool(structured.get("entity_filter_relaxed")),
+                "relaxation_steps": list(structured.get("relaxation_steps") or []),
+                "truncated": bool(structured.get("truncated")),
+                "omitted_match_count": int(structured.get("omitted_match_count") or 0),
                 "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
             }
             if include_snippets:
                 payload["snippets"] = snippets
+                payload["matches"] = list(structured.get("matches") or [])
             return payload
+        except ValueError as exc:
+            reason = str(exc) or "invalid_filter"
+            return {
+                **self._status(operation, False, "invalid_filter", reason=reason),
+                "snippet_count": 0,
+                "snippet_hashes": [],
+                "latency_ms": max(0, int((time.perf_counter() - start) * 1000)),
+                **({"snippets": []} if include_snippets else {}),
+            }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore %s failed: %s", operation, reason)
@@ -1886,8 +1902,6 @@ class MemcoreManager:
                 return [], ("forbidden", "kind_pattern_not_authorized")
             if pattern not in normalized:
                 normalized.append(pattern)
-            if len(normalized) >= 8:
-                break
         return normalized, None
 
     def _bootstrap(self) -> None:
@@ -1934,7 +1948,6 @@ class MemcoreManager:
         return memcore
 
     def _build_memory_config(self, memcore: Any) -> Any:
-        base_categories = tuple(getattr(memcore, "DEFAULT_CATEGORIES", ()))
         return memcore.MemoryConfig(
             raw_token_trigger=max(
                 1000,
@@ -1966,7 +1979,7 @@ class MemcoreManager:
             semantic_visible_limit=max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 5) or 5)),
             retrieval_result_token_budget=max(
                 0,
-                int(getattr(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 2000) or 0),
+                int(getattr(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 0) or 0),
             ),
             semantic_reinforcement_lookback=max(
                 1,
@@ -1978,7 +1991,6 @@ class MemcoreManager:
             ),
             visible_memory_scope=self.visible_scope,
             enable_flavor=self.enable_flavor,
-            categories=base_categories,
         )
 
     def _append_standalone_turn(
@@ -2044,7 +2056,9 @@ class MemcoreManager:
         source_id = str(raw.get("source_id") or "").strip()
         timestamp = int(raw.get("timestamp") or time.time())
         metadata = raw.get("memory_metadata")
-        if not isinstance(metadata, dict):
+        if legacy_import:
+            metadata = memcore.migrate_legacy_memory_metadata(metadata)
+        elif not isinstance(metadata, dict):
             metadata = {}
         index_in_vector = bool(raw.get("index_in_vector", True))
         is_standalone = turn_role is None
@@ -2136,23 +2150,9 @@ class MemcoreManager:
         tool_input = exchange.get("tool_input")
         result = exchange.get("result")
         source = str(exchange.get("source") or "").strip()
-        metadata = {
-            "categories": ["tool_trace"],
-            "keywords": [
-                item
-                for item in [
-                    tool,
-                    *[str(value).strip() for value in list(exchange.get("keywords") or [])],
-                ]
-                if item
-            ][:4],
-            "subject_scopes": ["assistant"],
-            "importance": max(0.0, min(1.0, float(exchange.get("importance", 0.2)))),
-            "confidence": max(0.0, min(1.0, float(exchange.get("confidence", 1.0)))),
-        }
         common = {
             "correlation_id": correlation_id,
-            "memory_metadata": metadata,
+            "memory_metadata": {},
             "retrieval_policy": memcore.RetrievalPolicy.EXPLICIT,
             "retrieval_visibility": memcore.RetrievalVisibility.EXPLICIT,
             "semanticize": True,
@@ -2204,21 +2204,14 @@ class MemcoreManager:
 
     @classmethod
     def _external_event_metadata(cls, event: dict[str, Any]) -> dict[str, Any]:
-        event_type = cls._kind_suffix(event.get("event_type"), fallback="external")
-        return {
-            "categories": ["event_trace"],
-            "keywords": [event_type],
-            "subject_scopes": ["other"],
-            "importance": 0.4,
-            "confidence": 1.0,
-        }
+        _ = event
+        return {}
 
     @staticmethod
     def _has_memory_annotation(metadata: dict[str, Any]) -> bool:
-        sequence_fields = ("keywords", "subject_scopes", "categories", "mood_tags")
-        if any(isinstance(metadata.get(key), (list, tuple)) and bool(metadata.get(key)) for key in sequence_fields):
-            return True
-        return any(metadata.get(key) not in (None, "", 0, 0.0) for key in ("importance", "confidence"))
+        from memcore import memory_metadata_has_signal
+
+        return memory_metadata_has_signal(metadata)
 
     def _record_material_event(
         self,
@@ -2265,7 +2258,6 @@ class MemcoreManager:
             file_key = self._kind_segment(file_id, fallback="file")
             filename = self._attachment_filename(item)
             derived_status = self._attachment_derived_status(item)
-            keywords = self._attachment_keywords(item)
             if event_type == "cleanup":
                 semantic_text = memcore.render_material_cleanup_text(
                     file_id=file_id,
@@ -2278,7 +2270,6 @@ class MemcoreManager:
                 origin = memcore.EntryOrigin.ENVIRONMENT
                 actor = None
                 compatibility_role = f"system.material_cleanup {kind_label} {file_key}"
-                subject_scopes = ["other"]
             else:
                 actor_stable_id, actor_display_name = self._attachment_actor_identity(item)
                 semantic_text = memcore.render_material_reference_text(
@@ -2292,7 +2283,6 @@ class MemcoreManager:
                 origin = memcore.EntryOrigin.USER
                 actor = self._build_actor(actor_stable_id, actor_display_name)
                 compatibility_role = f"user.attachment {kind_label} {file_key}"
-                subject_scopes = ["user"]
             entry = memcore.TimelineEntryInput(
                 source_id=source_id,
                 kind=f"material.{event_type}",
@@ -2310,13 +2300,7 @@ class MemcoreManager:
                     **({"reason": str(reason or "")} if event_type == "cleanup" else {}),
                 },
                 actor=actor,
-                memory_metadata={
-                    "categories": ["material_trace"],
-                    "keywords": keywords,
-                    "subject_scopes": subject_scopes,
-                    "importance": 0.25 if event_type != "cleanup" else 0.2,
-                    "confidence": 1.0,
-                },
+                memory_metadata={},
                 annotation_status=memcore.AnnotationStatus.UNANNOTATED,
                 retrieval_policy=memcore.RetrievalPolicy.EXPLICIT,
                 retrieval_visibility=memcore.RetrievalVisibility.EXPLICIT,
@@ -2363,29 +2347,6 @@ class MemcoreManager:
         stable_id = raw_id if raw_id.startswith("qq:") else f"qq:{raw_id}"
         display_name = str(detail.get("qq_sender_label") or "").strip()
         return stable_id, display_name
-
-    @classmethod
-    def _attachment_keywords(cls, item: dict[str, Any]) -> list[str]:
-        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
-        candidates = [
-            item.get("attachment_handle"),
-            item.get("origin_name"),
-            item.get("summary_title"),
-            item.get("kind"),
-            item.get("source"),
-            detail.get("qq_sender_label"),
-        ]
-        out: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            text = str(candidate or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            out.append(text[:80])
-            if len(out) >= 4:
-                break
-        return out
 
     @staticmethod
     def _attachment_file_status(
@@ -2664,16 +2625,6 @@ class MemcoreManager:
         }
 
     @staticmethod
-    def _coerce_optional_unit_float(value: Any) -> float | None:
-        if value in (None, ""):
-            return None
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-        return max(0.0, min(1.0, number))
-
-    @staticmethod
     def _coerce_positive_int_or_none(value: Any) -> int | None:
         if value in (None, ""):
             return None
@@ -2694,20 +2645,9 @@ class MemcoreManager:
 
     @staticmethod
     def _legacy_import_metadata(memory_metadata: Any) -> dict[str, Any]:
-        metadata = dict(memory_metadata) if isinstance(memory_metadata, dict) else {}
-        metadata.setdefault("source_system", "akane_legacy")
-        metadata.setdefault("legacy_import", True)
-        return metadata
+        from memcore import migrate_legacy_memory_metadata
 
-    @staticmethod
-    def _apply_limit(snippets: list[str], limit: Any) -> list[str]:
-        try:
-            value = int(limit)
-        except (TypeError, ValueError):
-            return list(snippets)
-        if value <= 0:
-            return list(snippets)
-        return list(snippets)[:value]
+        return migrate_legacy_memory_metadata(memory_metadata)
 
     @staticmethod
     def _project_timeline_result(
@@ -2721,10 +2661,9 @@ class MemcoreManager:
         from memcore.rendering import render_timeline
 
         payload = dict(result if isinstance(result, dict) else {})
-        raw_status = str(payload.get("status") or "")
-        status = "invalid_range" if raw_status == "invalid_filter" else raw_status
+        status = str(payload.get("status") or "")
         reason = str(payload.get("reason") or "")
-        if raw_status == "invalid_filter" and not reason:
+        if status == "invalid_filter" and not reason:
             reason = "invalid_filter"
         messages = list(payload.get("messages") or [])
         excluded = {str(item or "").strip() for item in (exclude_source_ids or []) if str(item or "").strip()}
@@ -2739,12 +2678,15 @@ class MemcoreManager:
         text = render_timeline(messages, tz=str(getattr(system, "timezone", "") or "Asia/Shanghai")) if messages else ""
         return {
             "operation": "read_memory_timeline",
-            "ok": status not in {"failed", "unavailable"},
+            "ok": status in {"ok", "empty"},
             "status": status,
             "reason": reason,
             "date_from": str(payload.get("date_from") or date_from or ""),
             "date_to": str(payload.get("date_to") or date_to or date_from or ""),
             "time_periods": list(payload.get("time_periods") or []),
+            "anchor_source_id": str(payload.get("anchor_source_id") or ""),
+            "before_turns": int(payload.get("before_turns") or 0),
+            "after_turns": int(payload.get("after_turns") or 0),
             "active_dates": active_dates,
             "message_count": len(messages),
             "messages": messages,

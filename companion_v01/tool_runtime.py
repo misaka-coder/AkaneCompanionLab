@@ -125,118 +125,6 @@ class ToolMetadata:
         return str(self.operation or "").strip().lower() == "read"
 
 
-RETRIEVE_MEMORY_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Search Akane's long-term memory before guessing when visible context is not enough "
-        "to answer anything that depends on shared history, identity, relationships, preferences, "
-        "agreements, plans, projects, or past events."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Concrete memory search phrase with names, topics, places, events, or preferences.",
-            "minLength": 1,
-            "maxLength": 200,
-        },
-        "keywords": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 8,
-            "description": "Optional short keywords that should help recall matching memories.",
-        },
-        "time_hint": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "date_label": {"type": "string", "description": "Optional YYYY-MM-DD date hint."},
-                "time_of_day": {
-                    "type": "string",
-                    "enum": ["morning", "afternoon", "night", "midnight"],
-                    "description": "Optional coarse time-of-day hint.",
-                },
-                "relative_time": {"type": "string", "description": "Optional natural-language relative time hint."},
-                "start_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp lower bound."},
-                "end_ts": {"type": "integer", "description": "Optional inclusive Unix timestamp upper bound."},
-            },
-        },
-        "source_layers": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["raw", "summary", "semantic_summary"]},
-            "maxItems": 3,
-            "description": "Optional memory layers to search. Omit when unsure.",
-        },
-        "subject_scopes": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["user", "assistant", "other"]},
-            "maxItems": 3,
-            "description": "Optional subject scopes. Multiple values are OR matches.",
-        },
-        "categories": {
-            "type": "array",
-            "items": {
-                "type": "string",
-                "enum": [
-                    "casual",
-                    "preference",
-                    "personal_profile",
-                    "plan_goal",
-                    "project_work",
-                    "relationship",
-                    "emotion_state",
-                    "life_event",
-                    "memory_query",
-                    "system_meta",
-                ],
-            },
-            "maxItems": 4,
-            "description": "Optional memory categories. Multiple values are OR matches.",
-        },
-        "importance_min": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "description": "Optional minimum importance score.",
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 12,
-            "description": "Optional maximum number of memory snippets.",
-        },
-    },
-    "required": ["query"],
-}
-
-
-READ_MEMORY_TIMELINE_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Read raw conversation records for an explicit date, date range, or time period. "
-        "Use this only when the user asks to inspect or recall the original timeline."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "date_from": {
-            "type": "string",
-            "description": "Start date in YYYY-MM-DD format. For a single day, use the same value as date_to.",
-        },
-        "date_to": {
-            "type": "string",
-            "description": "End date in YYYY-MM-DD format. For a single day, use the same value as date_from.",
-        },
-        "time_periods": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
-            "maxItems": 4,
-            "description": "Optional coarse periods within the selected dates. Omit for full-day reads.",
-        },
-    },
-    "required": ["date_from", "date_to"],
-}
-
-
 LIST_REMINDERS_INPUT_SCHEMA: dict[str, Any] = {
     "description": ("List the user's reminders. Use it when the user asks what reminders they currently have."),
     "type": "object",
@@ -628,14 +516,14 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="read",
         risk="low",
         default_round_budget=3,
-        input_schema=RETRIEVE_MEMORY_INPUT_SCHEMA,
+        input_schema=RETRIEVE_MEMORY_TOOL_SPEC.input_schema,
     ),
     "read_memory_timeline": ToolMetadata(
         family="memory",
         operation="read",
         risk="low",
         default_round_budget=3,
-        input_schema=READ_MEMORY_TIMELINE_INPUT_SCHEMA,
+        input_schema=READ_MEMORY_TIMELINE_TOOL_SPEC.input_schema,
     ),
     "load_character_context": ToolMetadata(
         family="character_context",
@@ -1383,18 +1271,12 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- retrieve_memory：当前上下文没有可靠答案，且问题依赖旧事实、共同经历、偏好、称呼、约定、计划、项目或过去材料时使用。"
-            "这是自己的深层记忆空间，不要先在 speech 里宣布。"
-            '格式为 {"type":"retrieve_memory","query":"简短搜索短句","keywords":["关键词"],'
-            '"time_hint":{"date_label":"YYYY-MM-DD","time_of_day":"morning|afternoon|night|midnight"},'
-            '"source_layers":["raw","summary","semantic_summary"],"subject_scopes":["user","assistant","other"],'
-            '"categories":["preference","plan_goal","project_work"],"importance_min":0.0,"limit":4}。'
-            "只有确实需要工具、事件、skill 或材料记录时才设置 include_explicit=true，并同时给出精确的 kind_patterns；"
-            "普通记忆检索不要打开。"
-            "query 要写具体实体、地点、人物、事件或偏好，不要写“帮我回忆一下”这类空泛句。"
-            "例：我的生日是哪天、我喜欢什么、我们之前约定了什么、那张图是谁发的 -> retrieve_memory。"
-            "如果用户明确要求查看某一天、某段日期或某个时段的原始逐句对话，不要用本工具，改用 read_memory_timeline。"
-            "普通闲聊、创作、稳定常识或当前可见记忆已经足够时无需调用。"
+            f"- retrieve_memory：{RETRIEVE_MEMORY_TOOL_SPEC.description} "
+            "query 始终保留用户真正想找的历史内容；entity_anchors 只放准确名称，topic_terms 放动作或主题短词。"
+            "memory_facets/about_roles 不确定就省略，不能拿当前问句的 memory_query 代替目标历史内容。"
+            "普通对话不打开 include_explicit；确实要找工具、事件、skill 或材料轨迹时，才同时给出精确 kind_patterns。"
+            "raw 结果若只够定位但上下文不足，可把它的 source_id 交给 read_memory_timeline 做附近完整 turn 扩窗。"
+            "这是内部记忆读取，不要先在 speech 里宣布。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1405,36 +1287,15 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         if call_type != self.tool_type:
             return None
 
-        query = str(value.get("query") or value.get("rewritten_query") or value.get("prompt") or "").strip()
+        query = str(value.get("query") or "").strip()
         query = normalize_text(query)
         if not query:
             return None
 
-        raw_keywords = value.get("keywords")
-        keyword_candidates: list[str] = []
-        if isinstance(raw_keywords, list):
-            keyword_candidates = [str(item or "") for item in raw_keywords]
-        elif isinstance(raw_keywords, str):
-            keyword_candidates = [part for part in re.split(r"[,，;；|、\s]+", raw_keywords) if part]
-
-        keywords: list[str] = []
-        seen: set[str] = set()
-        for item in keyword_candidates:
-            keyword = normalize_text(item).strip("[](){}\"' ")
-            if not keyword or len(keyword) > 32:
-                continue
-            dedupe_key = keyword.lower()
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            keywords.append(keyword)
-            if len(keywords) >= 8:
-                break
-
         time_hint: dict[str, Any] = {}
         raw_time_hint = value.get("time_hint")
         if isinstance(raw_time_hint, dict):
-            for key in ("date_label", "time_of_day", "relative_time", "start_ts", "end_ts"):
+            for key in ("date_label", "time_of_day", "start_ts", "end_ts"):
                 if key not in raw_time_hint:
                     continue
                 item = raw_time_hint.get(key)
@@ -1450,86 +1311,23 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
                     if text:
                         time_hint[key] = text
 
-        source_layers = self._normalize_enum_list(
-            value.get("source_layers") or value.get("layers") or value.get("source_layer"),
-            allowed={"raw", "summary", "semantic_summary"},
-            aliases={"semantic": "semantic_summary", "long_term": "semantic_summary", "longterm": "semantic_summary"},
-            limit=3,
-        )
-        subject_scopes = self._normalize_enum_list(
-            value.get("subject_scopes") or value.get("subjects") or value.get("scope"),
-            allowed={"user", "assistant", "other"},
-            aliases={
-                "用户": "user",
-                "玩家": "user",
-                "主人": "user",
-                "角色": "assistant",
-                "助手": "assistant",
-                "akane": "assistant",
-                "别人": "other",
-                "他人": "other",
-                "topic": "other",
-                "project": "other",
-            },
-            limit=3,
-        )
-        categories = self._normalize_enum_list(
-            value.get("categories") or value.get("category"),
-            allowed={
-                "casual",
-                "preference",
-                "personal_profile",
-                "plan_goal",
-                "project_work",
-                "relationship",
-                "emotion_state",
-                "life_event",
-                "memory_query",
-                "system_meta",
-            },
-            aliases={
-                "偏好": "preference",
-                "喜好": "preference",
-                "计划": "plan_goal",
-                "目标": "plan_goal",
-                "项目": "project_work",
-                "情绪": "emotion_state",
-                "状态": "emotion_state",
-                "系统": "system_meta",
-            },
-            limit=4,
-        )
-        raw_importance_min = value.get("importance_min") if "importance_min" in value else value.get("min_importance")
-        importance_min = self._coerce_optional_float(raw_importance_min)
-        limit = self._coerce_optional_int(value.get("limit"))
+        entity_anchors = self._normalize_string_list(value.get("entity_anchors"))
+        topic_terms = self._normalize_string_list(value.get("topic_terms"))
+        source_layers = self._normalize_string_list(value.get("source_layers"), lowercase=True)
+        memory_facets = self._normalize_string_list(value.get("memory_facets"), lowercase=True)
+        about_roles = self._normalize_string_list(value.get("about_roles"), lowercase=True)
         include_explicit = value.get("include_explicit") is True
-        kind_patterns: list[str] = []
-        raw_kind_patterns = value.get("kind_patterns")
-        if isinstance(raw_kind_patterns, str):
-            raw_kind_patterns = [raw_kind_patterns]
-        if isinstance(raw_kind_patterns, list):
-            seen_patterns: set[str] = set()
-            for item in raw_kind_patterns:
-                pattern = normalize_text(item).strip().lower()
-                if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?", pattern):
-                    continue
-                if pattern in seen_patterns:
-                    continue
-                seen_patterns.add(pattern)
-                kind_patterns.append(pattern)
-                if len(kind_patterns) >= 8:
-                    break
+        kind_patterns = self._normalize_string_list(value.get("kind_patterns"), lowercase=True)
 
         return {
             "type": self.tool_type,
-            "query": query[:200],
-            "keywords": keywords,
+            "query": query,
+            "entity_anchors": entity_anchors,
+            "topic_terms": topic_terms,
             "time_hint": time_hint,
             "source_layers": source_layers,
-            "subject_scopes": subject_scopes,
-            "categories": categories,
-            "importance_min": importance_min,
-            "limit": limit,
+            "memory_facets": memory_facets,
+            "about_roles": about_roles,
             "include_explicit": include_explicit,
             "kind_patterns": kind_patterns,
         }
@@ -1537,53 +1335,25 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         return self.retrieve_fn(call=call, context=context)
 
-    def _normalize_enum_list(
-        self,
-        value: Any,
-        *,
-        allowed: set[str],
-        aliases: dict[str, str] | None = None,
-        limit: int,
-    ) -> list[str]:
+    def _normalize_string_list(self, value: Any, *, lowercase: bool = False) -> list[str]:
         if isinstance(value, str):
             raw_items = [part for part in re.split(r"[,，;；|、\s]+", value) if part]
-        elif isinstance(value, list):
-            raw_items = []
-            for item in value:
-                raw_items.extend(part for part in re.split(r"[,，;；|、\s]+", str(item or "")) if part)
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = [str(item or "") for item in value]
         else:
             raw_items = []
-        aliases = aliases or {}
         normalized: list[str] = []
         seen: set[str] = set()
         for item in raw_items:
-            key = normalize_text(item).strip("[](){}\"' ").lower().replace("-", "_")
-            mapped = aliases.get(key) or key
-            if mapped not in allowed or mapped in seen:
+            text = normalize_text(item).strip("[](){}\"' ")
+            if lowercase:
+                text = text.lower()
+            key = text.casefold()
+            if not text or key in seen:
                 continue
-            seen.add(mapped)
-            normalized.append(mapped)
-            if len(normalized) >= limit:
-                break
+            seen.add(key)
+            normalized.append(text)
         return normalized
-
-    def _coerce_optional_float(self, value: Any) -> float | None:
-        if value in (None, ""):
-            return None
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-        return float(max(0.0, min(1.0, number)))
-
-    def _coerce_optional_int(self, value: Any) -> int | None:
-        if value in (None, ""):
-            return None
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            return None
-        return max(1, min(12, number))
 
 
 class ReadMemoryTimelineToolHandler(BaseToolHandler):
@@ -1597,15 +1367,11 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- read_memory_timeline：只在用户明确提到某一天、连续日期范围或上午/下午/夜晚/凌晨，"
-            "并希望查看、核对或回想当时的原始逐句对话时使用。"
-            "它按数据库时间精确读取原始聊天，不做向量搜索，也不读取阶段摘要或长期记忆。"
-            '格式为 {"type":"read_memory_timeline","date_from":"YYYY-MM-DD",'
-            '"date_to":"YYYY-MM-DD","time_periods":["morning|afternoon|night|midnight"]}。'
-            "查单日时 date_from 与 date_to 填同一天；全天可省略 time_periods。"
-            "普通的“你记得某人/某件事吗”“我们聊过什么”仍使用 retrieve_memory，"
-            "不要为了找语义事实先大范围翻时间线。"
-            "这也是你在心里翻共同记录，不要先在 speech 里宣布要调用工具。"
+            f"- read_memory_timeline：{READ_MEMORY_TIMELINE_TOOL_SPEC.description} "
+            "已知日期时使用 date_from/date_to；retrieve_memory 已命中 raw 但一条内容不完整时，"
+            "使用 anchor_source_id 和 before_turns/after_turns 读取附近完整 turn。"
+            "日期与 anchor 两种模式不能混用，summary/semantic_summary 的 source_id 不能作为 anchor。"
+            "这是内部时间线读取，不要先在 speech 里宣布。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1614,10 +1380,14 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
 
-        single_date = str(value.get("date") or value.get("date_label") or "").strip()
-        date_from = str(value.get("date_from") or single_date).strip()
-        date_to = str(value.get("date_to") or single_date or date_from).strip()
-        if self._parse_date(date_from) is None or self._parse_date(date_to) is None:
+        date_from = str(value.get("date_from") or "").strip()
+        date_to = str(value.get("date_to") or "").strip()
+        anchor_source_id = str(value.get("anchor_source_id") or "").strip()
+        if not anchor_source_id and not date_from:
+            return None
+        if date_from and self._parse_date(date_from) is None:
+            return None
+        if date_to and self._parse_date(date_to) is None:
             return None
 
         raw_periods = value.get("time_periods")
@@ -1630,20 +1400,31 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         else:
             period_values = []
         periods = self.timeline_service.normalize_time_periods(period_values)
+        before_turns = self._coerce_nonnegative_int(value.get("before_turns"))
+        after_turns = self._coerce_nonnegative_int(value.get("after_turns"))
+        if before_turns is None or after_turns is None:
+            return None
         return {
             "type": self.tool_type,
             "date_from": date_from,
             "date_to": date_to,
             "time_periods": periods,
+            "anchor_source_id": anchor_source_id,
+            "before_turns": before_turns,
+            "after_turns": after_turns,
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         result = self.timeline_service.read(
             profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
             character_pack_id=context.character_pack_id,
             date_from=str(call.get("date_from") or ""),
             date_to=str(call.get("date_to") or ""),
             time_periods=list(call.get("time_periods") or []),
+            anchor_source_id=str(call.get("anchor_source_id") or ""),
+            before_turns=int(call.get("before_turns") or 0),
+            after_turns=int(call.get("after_turns") or 0),
             exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
         )
         return ToolExecutionResult(
@@ -1657,6 +1438,9 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
                     "date_from": str(result.get("date_from") or ""),
                     "date_to": str(result.get("date_to") or ""),
                     "time_periods": list(result.get("time_periods") or []),
+                    "anchor_source_id": str(result.get("anchor_source_id") or ""),
+                    "before_turns": int(result.get("before_turns") or 0),
+                    "after_turns": int(result.get("after_turns") or 0),
                     "active_dates": list(result.get("active_dates") or []),
                     "message_count": int(result.get("message_count") or 0),
                 }
@@ -1669,6 +1453,16 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
             return date.fromisoformat(str(value or "").strip())
         except ValueError:
             return None
+
+    @staticmethod
+    def _coerce_nonnegative_int(value: Any) -> int | None:
+        if value in (None, ""):
+            return 0
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None
 
 
 class LoadCharacterContextToolHandler(BaseToolHandler):

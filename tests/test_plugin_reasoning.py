@@ -385,9 +385,7 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
             next(engine.process_turn_stream(payload))
 
         self.assertEqual([call["role"] for call in store.calls], ["event.finance", "event.finance"])
-        self.assertTrue(
-            all(call["memory_metadata"]["categories"] == ["event_trace"] for call in store.calls)
-        )
+        self.assertTrue(all(call["memory_metadata"] == {} for call in store.calls))
         self.assertTrue(all(call["content"] == message for call in store.calls))
         self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
 

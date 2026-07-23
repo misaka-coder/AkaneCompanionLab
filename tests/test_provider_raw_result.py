@@ -170,7 +170,11 @@ class ProviderRawResultTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         output = {
             "speech": "记住了。",
-            "memory_metadata": {"keywords": ["无糖可乐"]},
+            "memory_metadata": {
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "entity_anchors": ["无糖可乐"],
+            },
         }
 
         engine._attach_memory_annotation_truth(

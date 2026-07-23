@@ -200,13 +200,12 @@ def execute_retrieve_memory_tool(
     context: Any,
 ) -> ToolExecutionResult:
     query = normalize_text(str(call.get("query") or "")).strip()
-    keywords = [str(item).strip() for item in list(call.get("keywords") or []) if str(item).strip()]
+    entity_anchors = [str(item).strip() for item in list(call.get("entity_anchors") or []) if str(item).strip()]
+    topic_terms = [str(item).strip() for item in list(call.get("topic_terms") or []) if str(item).strip()]
     time_hint = call.get("time_hint") if isinstance(call.get("time_hint"), dict) else None
     source_layers = [str(item).strip() for item in list(call.get("source_layers") or []) if str(item).strip()]
-    subject_scopes = [str(item).strip() for item in list(call.get("subject_scopes") or []) if str(item).strip()]
-    categories = [str(item).strip() for item in list(call.get("categories") or []) if str(item).strip()]
-    importance_min = call.get("importance_min")
-    limit = call.get("limit")
+    memory_facets = [str(item).strip() for item in list(call.get("memory_facets") or []) if str(item).strip()]
+    about_roles = [str(item).strip() for item in list(call.get("about_roles") or []) if str(item).strip()]
     include_explicit = call.get("include_explicit") is True
     kind_patterns = [str(item).strip() for item in list(call.get("kind_patterns") or []) if str(item).strip()]
     current_user_record = (
@@ -234,13 +233,12 @@ def execute_retrieve_memory_tool(
             context=context,
             current_user_record=current_user_record,
             query=query,
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
@@ -249,21 +247,19 @@ def execute_retrieve_memory_tool(
             snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
             return _build_retrieve_memory_tool_result(
                 query=query,
-                keywords=keywords,
+                entity_anchors=entity_anchors,
+                topic_terms=topic_terms,
                 time_hint=time_hint,
                 source_layers=source_layers,
-                subject_scopes=subject_scopes,
-                categories=categories,
-                importance_min=importance_min,
-                limit=limit,
+                memory_facets=memory_facets,
+                about_roles=about_roles,
                 snippets=snippets,
                 retrieval_result=_build_memcore_retrieval_result(
                     snippets=snippets,
                     time_hint=time_hint,
                     source_layers=source_layers,
-                    subject_scopes=subject_scopes,
-                    categories=categories,
-                    importance_min=importance_min,
+                    memory_facets=memory_facets,
+                    about_roles=about_roles,
                     memcore_payload=memcore_read_payload,
                 ),
                 verifier_output=_build_memcore_verifier_output(snippets),
@@ -273,21 +269,19 @@ def execute_retrieve_memory_tool(
             )
         return _build_retrieve_memory_tool_result(
             query=query,
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             snippets=[],
             retrieval_result=_build_memcore_retrieval_result(
                 snippets=[],
                 time_hint=time_hint,
                 source_layers=source_layers,
-                subject_scopes=subject_scopes,
-                categories=categories,
-                importance_min=importance_min,
+                memory_facets=memory_facets,
+                about_roles=about_roles,
                 memcore_payload=memcore_read_payload,
             ),
             verifier_output=_build_memcore_verifier_output([]),
@@ -295,6 +289,29 @@ def execute_retrieve_memory_tool(
             retrieval_backend="memcore",
             memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
         )
+    # Legacy/dual migration adapter. The model-facing contract remains the
+    # MemCore schema; old retrieval receives only a conservative projection.
+    keywords = list(dict.fromkeys([*entity_anchors, *topic_terms]))
+    subject_scopes = list(
+        dict.fromkeys(
+            "other" if role in {"third_party", "external"} else role
+            for role in about_roles
+            if role in {"user", "assistant", "third_party", "external"}
+        )
+    )
+    facet_to_legacy_category = {
+        "profile": "personal_profile",
+        "preference": "preference",
+        "relationship": "relationship",
+        "event": "life_event",
+        "state": "emotion_state",
+        "plan": "plan_goal",
+    }
+    categories = list(
+        dict.fromkeys(facet_to_legacy_category[facet] for facet in memory_facets if facet in facet_to_legacy_category)
+    )
+    importance_min = None
+    limit = None
     episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
     semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
     recent_raw = engine.store.get_unsummarized_messages(
@@ -341,13 +358,12 @@ def execute_retrieve_memory_tool(
     snippets = [str(item).strip() for item in pipeline.confirmed_snippets if str(item).strip()]
     result = _build_retrieve_memory_tool_result(
         query=query,
-        keywords=keywords,
+        entity_anchors=entity_anchors,
+        topic_terms=topic_terms,
         time_hint=time_hint,
         source_layers=source_layers,
-        subject_scopes=subject_scopes,
-        categories=categories,
-        importance_min=importance_min,
-        limit=limit,
+        memory_facets=memory_facets,
+        about_roles=about_roles,
         snippets=snippets,
         retrieval_result=pipeline.retrieval_result,
         verifier_output=pipeline.verifier_output,
@@ -362,13 +378,12 @@ def execute_retrieve_memory_tool(
         context=context,
         current_user_record=current_user_record,
         query=query,
-        keywords=keywords,
+        entity_anchors=entity_anchors,
+        topic_terms=topic_terms,
         time_hint=time_hint,
         source_layers=source_layers,
-        subject_scopes=subject_scopes,
-        categories=categories,
-        importance_min=importance_min,
-        limit=limit,
+        memory_facets=memory_facets,
+        about_roles=about_roles,
         exclude_source_ids=exclude_source_ids,
         legacy_snippets=snippets,
     )
@@ -380,13 +395,12 @@ def execute_retrieve_memory_tool(
 def _build_retrieve_memory_tool_result(
     *,
     query: str,
-    keywords: list[str],
+    entity_anchors: list[str],
+    topic_terms: list[str],
     time_hint: dict[str, Any] | None,
     source_layers: list[str],
-    subject_scopes: list[str],
-    categories: list[str],
-    importance_min: Any,
-    limit: Any,
+    memory_facets: list[str],
+    about_roles: list[str],
     snippets: list[str],
     retrieval_result: dict[str, Any],
     verifier_output: dict[str, Any],
@@ -394,11 +408,24 @@ def _build_retrieve_memory_tool_result(
     retrieval_backend: str,
     memcore_read: dict[str, Any] | None = None,
 ) -> ToolExecutionResult:
+    raw_anchor_ids = [
+        str(match.get("source_id") or "").strip()
+        for match in list((memcore_read or {}).get("matches") or [])
+        if isinstance(match, dict)
+        and str(match.get("layer") or "") == "raw"
+        and str(match.get("source_id") or "").strip()
+    ]
     if snippets:
         followup_context = (
             "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
             + "\n\n".join(snippets)
-            + "\n\n请基于这些参考记忆自然回应；不要声称系统绝对证明了这些记忆。"
+            + (
+                "\n\n可用于 read_memory_timeline 附近完整 turn 扩窗的 raw source_id：\n"
+                + "\n".join(f"- {source_id}" for source_id in raw_anchor_ids)
+                if raw_anchor_ids
+                else ""
+            )
+            + "\n\n内容够用就直接自然回答；只有 raw 结果缺少前后语境时才扩窗，不要声称系统绝对证明了这些记忆。"
         )
     else:
         followup_context = (
@@ -408,13 +435,12 @@ def _build_retrieve_memory_tool_result(
     memory_retrieval_state = {
         "tool_call": {
             "query": query,
-            "keywords": keywords,
+            "entity_anchors": entity_anchors,
+            "topic_terms": topic_terms,
             "time_hint": time_hint or {},
             "source_layers": source_layers,
-            "subject_scopes": subject_scopes,
-            "categories": categories,
-            "importance_min": importance_min,
-            "limit": limit,
+            "memory_facets": memory_facets,
+            "about_roles": about_roles,
         },
         "retrieval_result": retrieval_result,
         "retrieval_backend": retrieval_backend,
@@ -444,13 +470,12 @@ def execute_memcore_retrieve_memory(
     context: Any,
     current_user_record: dict[str, Any] | None,
     query: str,
-    keywords: list[str],
+    entity_anchors: list[str],
+    topic_terms: list[str],
     time_hint: dict[str, Any] | None,
     source_layers: list[str],
-    subject_scopes: list[str],
-    categories: list[str],
-    importance_min: Any,
-    limit: Any,
+    memory_facets: list[str],
+    about_roles: list[str],
     exclude_source_ids: list[str],
     include_explicit: bool = False,
     kind_patterns: list[str] | None = None,
@@ -484,13 +509,12 @@ def execute_memcore_retrieve_memory(
             character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
             current_user_record=current_user_record,
             query=query,
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=list(kind_patterns or []),
@@ -520,9 +544,8 @@ def _build_memcore_retrieval_result(
     snippets: list[str],
     time_hint: dict[str, Any] | None,
     source_layers: list[str],
-    subject_scopes: list[str],
-    categories: list[str],
-    importance_min: Any,
+    memory_facets: list[str],
+    about_roles: list[str],
     memcore_payload: dict[str, Any],
 ) -> dict[str, Any]:
     hint = time_hint if isinstance(time_hint, dict) else {}
@@ -537,11 +560,13 @@ def _build_memcore_retrieval_result(
         },
         "precision_filters": {
             "source_layers": list(source_layers),
-            "subject_scopes": list(subject_scopes),
-            "categories": list(categories),
-            "importance_min": importance_min,
+            "memory_facets": list(memory_facets),
+            "about_roles": list(about_roles),
+            "effective_filters": dict(memcore_payload.get("effective_filters") or {}),
+            "candidate_counts": dict(memcore_payload.get("candidate_counts") or {}),
+            "entity_filter_relaxed": bool(memcore_payload.get("entity_filter_relaxed")),
         },
-        "fused_hits": [],
+        "fused_hits": list(memcore_payload.get("matches") or []),
         "memory_snippets": list(snippets),
     }
 
@@ -566,13 +591,12 @@ def execute_memcore_shadow_retrieve(
     context: Any,
     current_user_record: dict[str, Any] | None,
     query: str,
-    keywords: list[str],
+    entity_anchors: list[str],
+    topic_terms: list[str],
     time_hint: dict[str, Any] | None,
     source_layers: list[str],
-    subject_scopes: list[str],
-    categories: list[str],
-    importance_min: Any,
-    limit: Any,
+    memory_facets: list[str],
+    about_roles: list[str],
     exclude_source_ids: list[str],
     legacy_snippets: list[str],
 ) -> dict[str, Any] | None:
@@ -611,13 +635,12 @@ def execute_memcore_shadow_retrieve(
             character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
             current_user_record=current_user_record,
             query=query or str(call.get("query") or ""),
-            keywords=keywords,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
             time_hint=time_hint,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
-            categories=categories,
-            importance_min=importance_min,
-            limit=limit,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
             exclude_source_ids=exclude_source_ids,
         )
     except Exception as exc:

@@ -80,6 +80,7 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
         event = {
             "source_id": "event-1",
             "role": "event.finance",
+            "kind": "event.finance",
             "content": (
                 "source: 东方财富\n"
                 "published_at: 2026-07-20T08:52:00+08:00\n"
@@ -88,7 +89,7 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
                 "url: https://finance.eastmoney.com/example.html"
             ),
             "timestamp": 1_784_512_320,
-            "memory_metadata": {"categories": ["event_trace"]},
+            "memory_metadata": {},
         }
 
         history, current = AkaneMemoryEngine._split_history_records(

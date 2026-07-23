@@ -650,19 +650,8 @@ class MemoryCompactionService:
         fallback_importance: float,
         fallback_confidence: float = 0.6,
     ) -> dict[str, Any]:
-        raw = value if isinstance(value, dict) else {}
-        metadata = final_output_engine.normalize_memory_metadata(
-            self,
-            raw,
-            legacy_memory_tags=fallback_keywords,
-        )
-        if not metadata.get("keywords"):
-            metadata["keywords"] = self._normalize_string_list(fallback_keywords, limit=4, max_length=16)
-        if "importance" not in raw:
-            metadata["importance"] = self._coerce_importance(fallback_importance)
-        if "confidence" not in raw:
-            metadata["confidence"] = float(max(0.0, min(1.0, fallback_confidence)))
-        return metadata
+        _ = (fallback_keywords, fallback_importance, fallback_confidence)
+        return final_output_engine.normalize_memory_metadata(self, value)
 
     def _merge_unique_strings(
         self,

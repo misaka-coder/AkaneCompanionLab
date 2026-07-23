@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from memcore import build_native_memory_tool_specs
+
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
@@ -67,12 +69,39 @@ class NativeToolSchemaTests(unittest.TestCase):
         function = specs[0]["function"]
         self.assertEqual(function["name"], "retrieve_memory")
         self.assertNotIn("tool_call", function["description"])
-        self.assertIn("long-term memory", function["description"])
+        self.assertIn("Fuzzy memory search", function["description"])
         self.assertEqual(function["parameters"]["additionalProperties"], False)
         self.assertIn("query", function["parameters"]["required"])
         self.assertIn("include_explicit", function["parameters"]["properties"])
         self.assertIn("kind_patterns", function["parameters"]["properties"])
+        self.assertIn("entity_anchors", function["parameters"]["properties"])
+        self.assertIn("topic_terms", function["parameters"]["properties"])
+        self.assertIn("memory_facets", function["parameters"]["properties"])
+        self.assertIn("about_roles", function["parameters"]["properties"])
+        self.assertNotIn("keywords", function["parameters"]["properties"])
+        self.assertNotIn("categories", function["parameters"]["properties"])
+        self.assertNotIn("importance_min", function["parameters"]["properties"])
+        self.assertNotIn("limit", function["parameters"]["properties"])
         self.assertNotIn("description", function["parameters"])
+
+    def test_memory_capability_properties_are_package_owned(self) -> None:
+        package_spec = next(
+            item
+            for item in build_native_memory_tool_specs(
+                tool_format="plain",
+                include_material_tool=False,
+            )
+            if item["name"] == "retrieve_for_turn"
+        )
+
+        self.assertEqual(
+            RETRIEVE_MEMORY_TOOL_SPEC.input_schema["properties"],
+            package_spec["parameters"]["properties"],
+        )
+        self.assertEqual(
+            RETRIEVE_MEMORY_TOOL_SPEC.input_schema["required"],
+            package_spec["parameters"]["required"],
+        )
 
     def test_adapter_capability_native_schema_uses_capcore_projection(self) -> None:
         descriptor = CapabilityDescriptor(

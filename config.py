@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     # 触发后计划压缩的旧 raw token 比例；实际切点对齐完整 turn/component
     MEMCORE_RAW_TOKEN_BATCH_RATIO: float = 0.67
     # 单次结构化检索结果可回填给模型的 token 预算；0 表示不设预算
-    MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET: int = 2000
+    MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET: int = 0
     # 后台压缩全局 worker 数；与用户聊天/工具并行度无关
     MEMCORE_COMPACTION_WORKERS: int = 1
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数

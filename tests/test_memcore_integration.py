@@ -344,6 +344,9 @@ class _TimelineLegacyService:
             "date_from": str(kwargs.get("date_from") or ""),
             "date_to": str(kwargs.get("date_to") or ""),
             "time_periods": list(kwargs.get("time_periods") or []),
+            "anchor_source_id": str(kwargs.get("anchor_source_id") or ""),
+            "before_turns": int(kwargs.get("before_turns") or 0),
+            "after_turns": int(kwargs.get("after_turns") or 0),
             "active_dates": ["2026-06-13"],
             "message_count": 1,
             "messages": [{"content": "LEGACY TIMELINE"}],
@@ -373,6 +376,9 @@ class _TimelineMemcoreManager:
             "date_from": str(kwargs.get("date_from") or ""),
             "date_to": str(kwargs.get("date_to") or ""),
             "time_periods": list(kwargs.get("time_periods") or []),
+            "anchor_source_id": str(kwargs.get("anchor_source_id") or ""),
+            "before_turns": int(kwargs.get("before_turns") or 0),
+            "after_turns": int(kwargs.get("after_turns") or 0),
             "active_dates": ["2026-06-13"],
             "message_count": 1,
             "messages": [{"source_id": "m1", "content": "MEMCORE TIMELINE"}],
@@ -791,7 +797,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 completed = manager.complete_input_turn(
                     turn_id=str(opened["turn_id"]),
                     assistant_record={"source_id": "wire-final-1", "content": "第一答", "timestamp": 101},
-                    memory_metadata={"keywords": ["第一问"]},
+                    memory_metadata={"topic_terms": ["第一问"]},
                     provider_output_raw='{"speech":"第一答","memory_metadata":{}}',
                     provider_profile="responses",
                     provider_projection={
@@ -976,7 +982,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 completed = manager.complete_input_turn(
                     turn_id=str(opened["turn_id"]),
                     assistant_record={"source_id": "legacy-final-1", "content": "北京今天晴。", "timestamp": 102},
-                    memory_metadata={"keywords": ["北京天气"]},
+                    memory_metadata={"entity_anchors": ["北京"], "topic_terms": ["天气"]},
                     provider_output_raw='{"speech":"北京今天晴。","memory_metadata":{}}',
                     provider_profile="responses",
                     provider_projection={
@@ -1026,7 +1032,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             final_output=final_output,
             turn_id="turn-final-failure",
             assistant_record={"source_id": "assistant-1", "content": final_output["speech"]},
-            memory_metadata={"keywords": []},
+            memory_metadata={},
             provider_output_raw='{"speech":"这是模型已经生成的真实回复。"}',
             chat_model_override="",
             annotation_status="accepted_model",
@@ -1292,7 +1298,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "content": "北京天气晴朗，也有一条公开新闻。",
                         "timestamp": 102,
                     },
-                    memory_metadata={"keywords": ["北京", "天气", "新闻"]},
+                    memory_metadata={
+                        "memory_facets": ["knowledge"],
+                        "about_roles": ["external"],
+                        "entity_anchors": ["北京"],
+                        "topic_terms": ["天气", "新闻"],
+                    },
                     provider_output_raw='{"speech":"北京天气晴朗，也有一条公开新闻。","memory_metadata":{}}',
                     provider_profile="responses",
                     provider_projection={
@@ -2821,8 +2832,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(summary["timestamp"], _ts(2026, 6, 20, 21, 0))
             self.assertEqual(summary["is_semanticized"], 1)
             self.assertEqual(summary["semantic_id"], "semantic::anime-plan")
-            self.assertEqual(summary["memory_metadata"]["source_system"], "akane_legacy")
-            self.assertTrue(summary["memory_metadata"]["legacy_import"])
+            self.assertEqual(summary["memory_metadata"]["memory_facets"], ["preference"])
+            self.assertEqual(summary["memory_metadata"]["topic_terms"], ["新番", "动漫"])
+            self.assertNotIn("source_system", summary["memory_metadata"])
             self.assertIn("七月一起看新番", semantic["semantic_summary"])
             manager.close()
 
@@ -2909,12 +2921,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char-1",
             )
             metadata = {
-                "keywords": ["可乐", "饮料"],
-                "subject_scopes": ["user"],
-                "categories": ["preference"],
+                "turn_intent": "",
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "entity_anchors": ["可乐"],
+                "topic_terms": ["饮料"],
+                "retrieval_priority": "high",
                 "mood_tags": ["happy"],
-                "importance": 0.8,
-                "confidence": 0.9,
             }
             updated = manager.stage_turn_metadata(
                 "user-turn-1",
@@ -2959,10 +2972,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertIn("assistant-turn-1", source_ids)
 
             stored_user = manager._store.get_record_by_source_id("user-turn-1")
-            self.assertEqual(stored_user["memory_metadata"]["keywords"], ["可乐", "饮料"])
-            self.assertEqual(stored_user["memory_metadata"]["categories"], ["preference"])
+            self.assertEqual(stored_user["memory_metadata"]["entity_anchors"], ["可乐"])
+            self.assertEqual(stored_user["memory_metadata"]["topic_terms"], ["饮料"])
+            self.assertEqual(stored_user["memory_metadata"]["memory_facets"], ["preference"])
             self.assertEqual(stored_user["memory_metadata"]["mood_tags"], ["happy"])
-            self.assertEqual(stored_user["memory_metadata"]["importance"], 0.8)
             manager.close()
 
     def test_v2_turn_keeps_parallel_tools_correlated_and_completes_atomically(self) -> None:
@@ -3028,11 +3041,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 metadata = {
-                    "keywords": ["北京", "天气", "新闻"],
-                    "categories": ["event"],
-                    "subject_scopes": ["other"],
-                    "importance": 0.6,
-                    "confidence": 0.9,
+                    "memory_facets": ["knowledge"],
+                    "about_roles": ["external"],
+                    "entity_anchors": ["北京"],
+                    "topic_terms": ["天气", "新闻"],
+                    "retrieval_priority": "normal",
                 }
                 staged = manager.stage_turn_metadata(
                     "stimulus-1",
@@ -3096,6 +3109,21 @@ class MemcoreIntegrationTests(unittest.TestCase):
         trace_entries = [entry for entry in entries if str(entry.turn_role or "") in {"action", "observation"}]
         self.assertTrue(all(str(entry.retrieval_visibility) == "explicit" for entry in trace_entries))
         self.assertTrue(all(entry.index_status == "indexed" for entry in trace_entries))
+        self.assertTrue(
+            all(
+                not any(
+                    entry.memory_metadata.get(key)
+                    for key in (
+                        "memory_facets",
+                        "about_roles",
+                        "entity_anchors",
+                        "topic_terms",
+                        "mood_tags",
+                    )
+                )
+                for entry in trace_entries
+            )
+        )
         openai_payloads = [message.payload for message in projection.messages]
         tool_call_messages = [payload for payload in openai_payloads if payload.get("tool_calls")]
         self.assertEqual(len(tool_call_messages), 1)
@@ -3159,11 +3187,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 staged = manager.stage_turn_metadata(
                     "finance-event-1",
                     {
-                        "keywords": ["政策"],
-                        "categories": ["event"],
-                        "subject_scopes": ["other"],
-                        "importance": 0.5,
-                        "confidence": 0.8,
+                        "memory_facets": ["event"],
+                        "about_roles": ["external"],
+                        "topic_terms": ["政策"],
                     },
                     profile_user_id="u1",
                     session_id="s1",
@@ -3177,11 +3203,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "timestamp": 201,
                     },
                     memory_metadata={
-                        "keywords": ["政策"],
-                        "categories": ["event"],
-                        "subject_scopes": ["other"],
-                        "importance": 0.5,
-                        "confidence": 0.8,
+                        "memory_facets": ["event"],
+                        "about_roles": ["external"],
+                        "topic_terms": ["政策"],
                     },
                     profile_user_id="u1",
                     session_id="s1",
@@ -3201,11 +3225,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_three_finance_events_keep_one_strict_projection_prefix_and_group_isolation(self) -> None:
         metadata = {
-            "keywords": ["财经"],
-            "categories": ["event"],
-            "subject_scopes": ["other"],
-            "importance": 0.5,
-            "confidence": 0.8,
+            "memory_facets": ["event"],
+            "about_roles": ["external"],
+            "topic_terms": ["财经"],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -3299,13 +3321,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "content": "可以，我们按普通群聊继续。",
                         "timestamp": 1_784_513_001,
                     },
-                    memory_metadata={
-                        "keywords": [],
-                        "categories": [],
-                        "subject_scopes": [],
-                        "importance": 0.0,
-                        "confidence": 0.0,
-                    },
+                    memory_metadata={},
                     provider_output_raw='{"speech":"可以，我们按普通群聊继续。"}',
                     profile_user_id="finance-user",
                     session_id="group:9988",
@@ -3366,11 +3382,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
             updated = manager.stage_turn_metadata(
                 "qq-group-turn-1",
                 {
-                    "keywords": ["稳健型基金", "基金偏好"],
-                    "subject_scopes": ["user"],
-                    "categories": ["preference"],
-                    "importance": 0.8,
-                    "confidence": 0.9,
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["稳健型基金"],
+                    "topic_terms": ["基金偏好"],
+                    "retrieval_priority": "high",
                 },
                 profile_user_id="qq-group-1",
                 session_id="qq-group-1",
@@ -3384,7 +3400,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             stored = manager._store.get_record_by_source_id("qq-group-turn-1")
             self.assertEqual(stored["actor_id"], "qq:10001")
             self.assertEqual(stored["actor_display_name"], "张三")
-            self.assertEqual(stored["memory_metadata"]["keywords"], ["稳健型基金", "基金偏好"])
+            self.assertEqual(stored["memory_metadata"]["entity_anchors"], ["稳健型基金"])
+            self.assertEqual(stored["memory_metadata"]["topic_terms"], ["基金偏好"])
             manager.close()
 
     def test_manager_does_not_expose_standalone_external_event_adapter(self) -> None:
@@ -3419,7 +3436,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "content": "历史分析结果。",
                     "timestamp": 100,
                     "memory_metadata": {
-                        "categories": ["finance_event"],
+                        "keywords": ["金融分析"],
+                        "categories": ["life_event"],
                         "importance": 0.8,
                     },
                 },
@@ -3433,6 +3451,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             stored = manager._store.get_record_by_source_id("legacy-assistant-1")
             self.assertEqual(stored["role"], "assistant")
             self.assertEqual(stored["annotation_status"], "accepted_legacy")
+            self.assertEqual(stored["memory_metadata"]["memory_facets"], ["event"])
+            self.assertEqual(stored["memory_metadata"]["topic_terms"], ["金融分析"])
             self.assertEqual(stored["relation_status"], "standalone")
             manager.close()
 
@@ -3452,7 +3472,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         updated = engine._stage_memcore_turn_metadata(
             source_id="qq-turn-1",
-            memory_metadata={"keywords": ["黄金"]},
+            memory_metadata={"entity_anchors": ["黄金"]},
             profile_user_id="qq-group-1",
             session_id="qq-group-1",
             character_pack_id="char-1",
@@ -3574,7 +3594,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "source_id": "old-morning",
                     "content": "上午讨论了角色提示词。",
                     "timestamp": _ts(2026, 6, 13, 9, 0),
-                    "memory_metadata": {"keywords": ["提示词"], "categories": ["project_work"], "importance": 0.8},
+                    "memory_metadata": {
+                        "memory_facets": ["procedure"],
+                        "about_roles": ["external"],
+                        "topic_terms": ["角色提示词"],
+                        "retrieval_priority": "high",
+                    },
                 },
                 role="user",
                 profile_user_id="u1",
@@ -3631,7 +3656,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
             crossed = manager.stage_turn_metadata(
                 "shared-source",
-                {"keywords": ["leak"], "categories": ["preference"], "importance": 0.9},
+                {
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["leak"],
+                    "retrieval_priority": "high",
+                },
                 profile_user_id="u2",
                 session_id="s1",
                 character_pack_id="char",
@@ -3641,7 +3671,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertFalse(crossed["ok"])
             self.assertEqual(crossed["status"], "forbidden")
             stored_user = manager._store.get_record_by_source_id("shared-source")
-            self.assertEqual(stored_user["memory_metadata"].get("keywords", []), [])
+            self.assertEqual(stored_user["memory_metadata"].get("entity_anchors", []), [])
             manager.close()
 
     def test_dual_write_keeps_raw_user_turns_when_vector_index_is_disabled(self) -> None:
@@ -3695,7 +3725,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "source_id": "old-like",
                     "content": "我以前说过我喜欢冰可乐。",
                     "timestamp": 1_777_700_000,
-                    "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.9},
+                    "memory_metadata": {
+                        "memory_facets": ["preference"],
+                        "about_roles": ["user"],
+                        "entity_anchors": ["可乐"],
+                        "topic_terms": ["饮料"],
+                        "retrieval_priority": "high",
+                    },
                 },
                 role="user",
                 profile_user_id="u1",
@@ -3723,9 +3759,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                     current_user_record=current,
                     query="可乐",
-                    keywords=["可乐"],
-                    categories=["preference"],
-                    importance_min=0.5,
+                    entity_anchors=["可乐"],
+                    topic_terms=["饮料"],
+                    memory_facets=["preference"],
+                    about_roles=["user"],
                 )
 
             self.assertTrue(result["ok"])
@@ -3736,7 +3773,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertNotIn("冰可乐", repr(result))
             manager.close()
 
-    def test_retrieve_memory_returns_snippets_and_honors_limit(self) -> None:
+    def test_retrieve_memory_returns_all_normal_memcore_matches_without_model_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="dual",
@@ -3754,10 +3791,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "content": f"我以前说过我喜欢{drink}。",
                         "timestamp": 1_777_700_000 + index,
                         "memory_metadata": {
-                            "keywords": ["可乐", "饮料"],
-                            "categories": ["preference"],
-                            "subject_scopes": ["user"],
-                            "importance": 0.9,
+                            "memory_facets": ["preference"],
+                            "about_roles": ["user"],
+                            "entity_anchors": ["可乐"],
+                            "topic_terms": ["饮料"],
+                            "retrieval_priority": "high",
                         },
                     },
                     role="user",
@@ -3785,18 +3823,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char",
                 current_user_record=current,
                 query="可乐",
-                keywords=["可乐"],
+                entity_anchors=["可乐"],
+                topic_terms=["饮料"],
                 source_layers=["raw"],
-                categories=["preference"],
-                importance_min=0.5,
-                limit=1,
+                memory_facets=["preference"],
+                about_roles=["user"],
             )
 
             self.assertTrue(result["ok"], result)
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["snippet_count"], 1)
-            self.assertEqual(len(result["snippets"]), 1)
-            self.assertIn("可乐", result["snippets"][0])
+            self.assertEqual(result["snippet_count"], 2)
+            self.assertEqual(len(result["snippets"]), 2)
+            self.assertTrue(all("可乐" in snippet for snippet in result["snippets"]))
             manager.close()
 
     def test_explicit_event_retrieval_is_host_authorized_and_message_kind_is_rejected(self) -> None:
@@ -3825,11 +3863,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 manager.stage_turn_metadata(
                     "finance-explicit-1",
                     {
-                        "keywords": ["消费", "政策"],
-                        "categories": ["event"],
-                        "subject_scopes": ["other"],
-                        "importance": 0.6,
-                        "confidence": 0.8,
+                        "memory_facets": ["event"],
+                        "about_roles": ["external"],
+                        "entity_anchors": ["消费政策"],
+                        "topic_terms": ["政策方向"],
+                        "retrieval_priority": "high",
                     },
                     profile_user_id="u1",
                     session_id="private:archive",
@@ -3843,11 +3881,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "timestamp": 1_777_700_001,
                     },
                     memory_metadata={
-                        "keywords": ["消费", "政策"],
-                        "categories": ["event"],
-                        "subject_scopes": ["other"],
-                        "importance": 0.6,
-                        "confidence": 0.8,
+                        "memory_facets": ["event"],
+                        "about_roles": ["external"],
+                        "entity_anchors": ["消费政策"],
+                        "topic_terms": ["政策方向"],
+                        "retrieval_priority": "high",
                     },
                     profile_user_id="u1",
                     session_id="private:archive",
@@ -3864,7 +3902,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "timestamp": 1_777_800_000,
                     },
                     query="消费政策方向更新",
-                    keywords=["消费", "政策"],
+                    entity_anchors=["消费政策"],
+                    topic_terms=["政策方向"],
                     include_explicit=True,
                     kind_patterns=["event.finance.*"],
                 )
@@ -3997,11 +4036,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 engine,
                 call={
                     "query": "可乐",
-                    "keywords": ["可乐"],
-                    "categories": ["preference"],
+                    "entity_anchors": ["可乐"],
+                    "topic_terms": ["饮料"],
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
                     "include_explicit": True,
                     "kind_patterns": ["event.finance.*"],
-                    "limit": 3,
                 },
                 context=_tool_context(),
             )
@@ -4011,7 +4051,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(memcore_manager.calls), 1)
         call = memcore_manager.calls[0]
         self.assertEqual(call["query"], "可乐")
-        self.assertEqual(call["limit"], 3)
+        self.assertEqual(call["entity_anchors"], ["可乐"])
+        self.assertEqual(call["topic_terms"], ["饮料"])
+        self.assertEqual(call["memory_facets"], ["preference"])
+        self.assertEqual(call["about_roles"], ["user"])
+        self.assertNotIn("limit", call)
         self.assertTrue(call["include_explicit"])
         self.assertEqual(call["kind_patterns"], ["event.finance.*"])
         self.assertEqual(call["exclude_source_ids"], ["current", "extra-visible"])
@@ -4759,7 +4803,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         call = handler.normalize_call(
             {
                 "type": "read_memory_timeline",
-                "date": "2026-06-13",
+                "date_from": "2026-06-13",
                 "time_periods": ["上午"],
             }
         )
@@ -4791,6 +4835,80 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "ok")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
 
+    def test_read_memory_timeline_raw_anchor_stays_in_current_conversation(self) -> None:
+        memcore_manager = _TimelineMemcoreManager()
+        service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=memcore_manager)
+        handler = ReadMemoryTimelineToolHandler(timeline_service=service)
+        call = handler.normalize_call(
+            {
+                "type": "read_memory_timeline",
+                "anchor_source_id": "raw-hit-1",
+                "before_turns": 3,
+                "after_turns": 5,
+            }
+        )
+        self.assertIsNotNone(call)
+        assert call is not None
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = handler.execute(
+                call=call,
+                context=ToolExecutionContext(
+                    profile_user_id="u1",
+                    session_id="group:42",
+                    character_pack_id="char",
+                    now_ts=_ts(2026, 6, 13, 12, 0),
+                    visual_payload={},
+                    current_user_source_id="current-query",
+                ),
+            )
+
+        forwarded = memcore_manager.calls[0]
+        self.assertEqual(forwarded["session_id"], "group:42")
+        self.assertEqual(forwarded["anchor_source_id"], "raw-hit-1")
+        self.assertEqual(forwarded["before_turns"], 3)
+        self.assertEqual(forwarded["after_turns"], 5)
+        self.assertFalse(forwarded["cross_conversation"])
+        self.assertIn("完整对话 turn", result.followup_context)
+
+    def test_read_memory_timeline_keeps_structured_invalid_mode_error(self) -> None:
+        manager = SimpleNamespace(
+            enabled=True,
+            available=True,
+            read_memory_timeline=lambda **_kwargs: {
+                "operation": "read_memory_timeline",
+                "ok": False,
+                "status": "invalid_filter",
+                "reason": "timeline_modes_are_mutually_exclusive",
+                "backend": "memcore",
+                "date_from": "2026-06-13",
+                "date_to": "",
+                "time_periods": [],
+                "anchor_source_id": "raw-hit-1",
+                "before_turns": 0,
+                "after_turns": 0,
+                "active_dates": [],
+                "message_count": 0,
+                "messages": [],
+                "text": "",
+            },
+        )
+        service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = service.read(
+                profile_user_id="u1",
+                session_id="group:42",
+                character_pack_id="char",
+                date_from="2026-06-13",
+                anchor_source_id="raw-hit-1",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "invalid_filter")
+        self.assertEqual(result["reason"], "timeline_modes_are_mutually_exclusive")
+        self.assertIn("不能同时使用", service.render_tool_context(result))
+
     def test_read_memory_timeline_adapter_does_not_need_legacy_service_in_memcore_mode(self) -> None:
         memcore_manager = _TimelineMemcoreManager()
         service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=memcore_manager)
@@ -4819,7 +4937,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         memcore_manager.available = False
         service = MemcoreTimelineToolService(legacy_service=legacy, memcore_manager=memcore_manager)
         handler = ReadMemoryTimelineToolHandler(timeline_service=service)
-        call = handler.normalize_call({"type": "read_memory_timeline", "date": "2026-06-13"})
+        call = handler.normalize_call({"type": "read_memory_timeline", "date_from": "2026-06-13"})
         self.assertIsNotNone(call)
         assert call is not None
 
