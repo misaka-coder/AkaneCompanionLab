@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0/1 已在本地实现并通过回归，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~2 已在本地实现并通过回归，尚未部署
 
 日期：2026-07-23
 
@@ -579,3 +579,16 @@ Slice 1 稳定后，再按 QQ 占位、附件、任务、Persona 的顺序逐层
 - prompt token 估算与安全审计均计入 ephemeral 内容，但审计只保留长度/hash，不记录正文、图片 base64、路径或密钥。
 
 本地验证覆盖普通/主动事件一致布局、检索与演出仍可见、当前图片位置、legacy/native/并行工具、工具加载图片、Responses wire、observer retry/rejection，以及下一轮 provider projection 不含 ephemeral 状态。此记录只代表本地代码；真实缓存、QQ 投递和视觉/TTS 表现仍需后续部署切片验收。
+
+## 13. Slice 2 本地实现记录
+
+QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.reply_delivery: auto|text|voice|both`。发送者 QQ、群号、客户端类型、临时模型名、语音写法、提前投递和媒体委派规则不再随每条消息重复传输：
+
+- 发送者与群成员归属继续由当前消息的 `【昵称】`、Actor 元数据、时间戳和引用一体化结构表达；
+- 戳一戳等有实质意义的本轮事件仍保留明确事件归属，不依赖被删除的通用 QQ 号快照；
+- reply delivery、语音友好写法、提前投递和条件式 `delegate_task` 使用规则进入唯一的稳定 QQ system block；
+- 临时模型 override 仍由宿主真实路由执行，但不再告诉模型“自己正在使用哪个模型”；
+- QQ profile 未启用 current visual 时直接返回空，不再发送纯占位句；
+- QQ 角色资源块只描述真实的 emotion 清单状态，不再重复“不渲染立绘”的固定规则。
+
+这一切片不改变消息准入、群聊唤醒、引用正文、识图开关、reply mode 后端强制、模型切换命令、TTS 或文件交付实现。真实 QQ/TTS 表现仍待部署验收。

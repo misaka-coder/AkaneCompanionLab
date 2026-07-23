@@ -2125,39 +2125,8 @@ class NapCatQQGateway:
         chat_model_override: str = "",
         session_id: str = "",
     ) -> str:
-        sender_label = str(sender_label or self.resolve_sender_label(event=event, user_id=user_id)).strip()
-        lines = [
-            "【QQ 客户端上下文】",
-            f"本轮来自：{'QQ群聊' if is_group else 'QQ私聊'}",
-            f"发送者 QQ：{user_id or 'unknown'}",
-        ]
-        if sender_label:
-            lines.append(f"发送者标识：{sender_label}")
-        if is_group:
-            lines.append(f"群号：{group_id or 'unknown'}")
-            lines.append("群聊消息会带有【昵称】标记；这是说话人标记，不是用户正文。")
-        lines.append("这是纯文字客户端；不需要切换场景、BGM 或立绘。")
         active_reply_mode = _safe_reply_mode(reply_mode, default=self.default_reply_mode)
-        lines.append(
-            "当前 QQ 回复投递模式："
-            f"{self._format_reply_mode_label(active_reply_mode)}。"
-            "只有自动模式会参考 reply_medium；文字/语音/双发模式由后端强制执行。"
-        )
-        if active_reply_mode in {"voice", "both"}:
-            lines.append(
-                "当前是语音/双发模式：speech 要自然口语化，避免列表和 Markdown，控制在 150 字以内；"
-                "语音合成会读出标点，注意断句自然。"
-            )
-        active_chat_model_override = _safe_chat_model_id(chat_model_override)
-        if active_chat_model_override:
-            lines.append(f"当前 QQ 会话临时聊天模型：{active_chat_model_override}。")
-        lines.append(
-            "QQ 会尽早发送 speech 中已经成句的内容；为了响应更快，优先把正文写进 speech，并用自然标点或换行分隔。"
-        )
-        lines.append(
-            "QQ 里音视频转码、分离人声伴奏、降噪、转写、切片打包这类可能耗时的媒体处理，优先用 delegate_task 交给后台工坊；前台只简短说已经开始，完成后系统会主动通知并交付。"
-        )
-        return "\n".join(lines)
+        return f"qq.reply_delivery: {active_reply_mode}"
 
     def render_reply_text(self, frame: dict[str, Any]) -> str:
         return "\n".join(self.render_reply_messages(frame)).strip()

@@ -456,9 +456,9 @@ def prepare_context(
             logger.warning("current visual defaults failed: %s", exc)
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         resource_context = (
-            "QQ 端不渲染立绘；emotion 的可选值已由当前角色包表情图片清单约束。"
+            "emotion 的可选值已由当前角色包表情图片清单约束。"
             if resource_manifest
-            else "QQ 端不渲染立绘，当前角色包没有可用的表情图片清单。"
+            else "当前角色包没有可用的表情图片清单。"
         )
     else:
         resource_context = (
@@ -488,10 +488,12 @@ def prepare_context(
             resource_manifest=resource_manifest,
         )
         if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
-        else "(当前客户端模式不需要完整演出状态。)"
+        else ""
     )
     if visual_observation_sections:
-        current_visual_context = "\n\n".join([current_visual_context, *visual_observation_sections])
+        current_visual_context = "\n\n".join(
+            part for part in [current_visual_context, *visual_observation_sections] if part
+        )
     mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
     if not care_enabled and not mode_prompt_override:
         mode_prompt_override = strip_care_prompt_contract(

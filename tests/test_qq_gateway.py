@@ -403,7 +403,9 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["actor_platform"], "qq")
         self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
-        self.assertIn("【昵称】", payload["extra_context"])
+        self.assertEqual(payload["extra_context"], "qq.reply_delivery: auto")
+        self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
+        self.assertNotIn(str(QQ_GROUP_FIXTURE_ID), payload["extra_context"])
 
     def test_private_poke_notice_to_bot_becomes_normal_turn_payload(self) -> None:
         gateway = NapCatQQGateway()
@@ -1206,7 +1208,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.reply_mode, "voice")
         self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
         self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
-        self.assertIn("当前 QQ 回复投递模式：语音模式", next_context.extra_context)
+        self.assertEqual(next_context.extra_context, "qq.reply_delivery: voice")
 
     def test_chat_model_command_switches_current_qq_session_for_master(self) -> None:
         gateway = NapCatQQGateway()
@@ -1248,7 +1250,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.chat_model_override, "deepseek-v4-flash")
         self.assertEqual(next_context.to_turn_payload()["chat_model_override"], "deepseek-v4-flash")
         self.assertEqual(next_context.to_delivery_context()["chat_model_override"], "deepseek-v4-flash")
-        self.assertIn("当前 QQ 会话临时聊天模型：deepseek-v4-flash", next_context.extra_context)
+        self.assertNotIn("deepseek-v4-flash", next_context.extra_context)
 
     def test_chat_model_command_lists_current_provider_models(self) -> None:
         gateway = NapCatQQGateway()
