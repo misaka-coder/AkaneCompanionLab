@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成；Slice 0~6a 与稳定规则去重已在本地实现并通过回归，最新去重切片尚未部署
+状态：代码探查与真实链路审计完成；Slice 0~6a 与稳定规则去重已部署，等待真实对话与缓存验收
 
 日期：2026-07-23
 
@@ -704,3 +704,5 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - MemCore 为开放的 `event.*` 与 `material.*` 增加通用稳定 renderer。结构化 `semantic_text` 与 payload 表达同一字段时只输出一次，不再同时发送可读文本和重复 `data` JSON；payload 无法表达的自由文本仍以 `content` 保留，不以缩短 token 为由丢失语义；`event.finance` 专用字段顺序和给用户看的财经快讯格式均未改变。对应包提交为 `7b32d5d`。
 
 本地验收：Akane 本轮相关 363 项测试通过；MemCore 322 项通过（4 skipped），Ruff、format check、sdist/wheel build 与 `git diff --check` 通过；charpack-core 30 项、Ruff、format check、sdist/wheel build 与 `git diff --check` 通过。Akane 全套 1705 项中 1702 项通过，剩余 3 项位于本轮未修改的 capability selection/settings catalog 漂移测试，不能作为本切片行为通过或失败的替代证据。缓存命中仍必须部署后通过真实 personal 私聊/群聊、图片、附件、工具和 finance 事件交织请求验收，不能从本地 prompt 长度直接宣称达到 95%。
+
+不可变 Akane release `64b8d56` 已部署，共享 venv 安装 MemCore `7b32d5d` 与 charpack-core `cea3eb1` 构建的 wheel；安装后的关键源码哈希与本地提交逐字一致。新 release 只从旧 `12f817e` 复制云端既有且本轮未修改的 `capcore`、`channelcore_onebot`、`promptpack_core` 三个抽包依赖目录，没有复制旧 MemCore/charpack 实现。第一次切换时验收脚本因 Bot JSON 临时文件路径引号错误产生假阴性，按预案恢复 `12f817e`；日志确认新 release 当时其实已正常返回 health 和双 Bot catalog。修正验收后再次切换成功：Host `NRestarts=0`，`/health` root binding 有效，personal/finance 均为 `online / active`，两条 QQ self-check 均为 `connected`。`/etc/akane/host.env` 哈希与切换前一致，未修改 Bot 账号、NapCat/OneBot、模型密钥、插件选择或两份 MemCore 数据根。真实回复质量、图片/附件/工具表现和 cache usage 仍以用户随后从 QQ 发出的请求为准。
