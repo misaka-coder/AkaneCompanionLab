@@ -192,14 +192,16 @@ class _CapturePromptBuilder:
             kwargs.get("current_message_in_raw")
             and not str(kwargs.get("memory_text") or "").strip()
         )
-        dynamic_parts = [
-            str(kwargs.get("current_message_text") or "").strip(),
+        ephemeral_parts = [
+            str(kwargs.get("memory_text") or "").strip(),
             str(kwargs.get("volatile_extra_context") or "").strip(),
             str(kwargs.get("current_visual_context") or "").strip(),
         ]
+        ephemeral_text = "\n\n".join(part for part in ephemeral_parts if part)
         return {
             "system_prompt": "system",
-            "user_prompt": "\n\n".join(part for part in dynamic_parts if part),
+            "user_prompt": str(kwargs.get("current_message_text") or "").strip(),
+            "ephemeral_turns": [{"role": "user", "content": ephemeral_text}] if ephemeral_text else [],
             "fallback": {"speech": "", "tool_call": None},
             "visual_defaults": dict(kwargs.get("visual_defaults") or {}),
             "debug_enabled": bool(kwargs.get("debug_enabled")),
@@ -775,7 +777,16 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
-                actual_user = {"role": "user", "content": "[100] message.user\ncontent:\n第一问\n\n本轮状态"}
+                actual_user = {"role": "user", "content": "[100] message.user\ncontent:\n第一问"}
+                ephemeral = {"role": "user", "content": "本轮状态"}
+                missing_slot = observer(
+                    {
+                        "protocol": "responses",
+                        "history_messages": [actual_user, ephemeral],
+                        "audit_history_messages": [actual_user, ephemeral],
+                    }
+                )
+                self.assertEqual(missing_slot["reason"], "persistent_turn_messages_missing")
                 observed = observer(
                     {
                         "protocol": "responses",
@@ -785,10 +796,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "history_messages": [
                             {"role": "user", "content": "stable context"},
                             actual_user,
+                            ephemeral,
                         ],
+                        "persistent_turn_messages": [actual_user],
                         "audit_history_messages": [
                             {"role": "user", "content": "stable context"},
                             actual_user,
+                            ephemeral,
                         ],
                     }
                 )
@@ -827,6 +841,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         payloads = list(next_projection["payloads"])
         self.assertEqual(payloads[0], actual_user)
         self.assertEqual(payloads[1], {"role": "assistant", "content": '{"speech":"第一答","memory_metadata":{}}'})
+        self.assertNotIn("本轮状态", repr(payloads))
         self.assertEqual(generation_context["memcore_request_projection"]["status"], "recorded")
 
     def test_legacy_json_tool_round_freezes_the_real_linear_provider_history(self) -> None:
@@ -877,7 +892,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 actual_user = {
                     "role": "user",
-                    "content": "[100] message.user\ncontent:\n查一下北京天气\n\n本轮状态",
+                    "content": "[100] message.user\ncontent:\n查一下北京天气",
                 }
                 first = first_observer(
                     {
@@ -886,6 +901,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "system_prefix": "stable system",
                         "tool_schema": [],
                         "history_messages": [actual_user],
+                        "persistent_turn_messages": [actual_user],
                         "audit_history_messages": [actual_user],
                     }
                 )
@@ -974,6 +990,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "system_prefix": "stable system",
                         "tool_schema": [],
                         "history_messages": actual_second_history,
+                        "persistent_turn_messages": actual_second_history,
                         "audit_history_messages": actual_second_history,
                     }
                 )
@@ -1204,7 +1221,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 actual_user = {
                     "role": "user",
-                    "content": "[100] message.user\ncontent:\n同时查天气和新闻\n\n本轮状态",
+                    "content": "[100] message.user\ncontent:\n同时查天气和新闻",
                 }
                 first_chat_payload = {
                     "model": "gpt-test",
@@ -1218,6 +1235,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     bundle=bundle,
                     payload=first_chat_payload,
                     observer=observer,
+                    persistent_turn_messages=[actual_user],
                 )
 
                 batch = manager.record_tool_batch(
@@ -1289,6 +1307,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     bundle=bundle,
                     payload=second_chat_payload,
                     observer=second_observer,
+                    persistent_turn_messages=current_wire_messages,
                 )
 
                 completed = manager.complete_input_turn(
@@ -1391,7 +1410,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 actual_user = {
                     "role": "user",
-                    "content": "[100] message.user\ncontent:\n看看工具找到的图\n\n本轮状态",
+                    "content": "[100] message.user\ncontent:\n看看工具找到的图",
                 }
                 first_context = {
                     "memcore_projection_read": {
@@ -1417,6 +1436,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "tools": [],
                     },
                     observer=first_observer,
+                    persistent_turn_messages=[actual_user],
                 )
 
                 batch = manager.record_tool_batch(
@@ -1528,6 +1548,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     bundle=bundle,
                     payload=second_chat_payload,
                     observer=second_observer,
+                    persistent_turn_messages=[actual_user, *native_history],
                 )
                 frozen = manager.build_context_projection(
                     provider_profile="responses",
@@ -1578,6 +1599,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "system_prefix": "stable system",
                         "tool_schema": [],
                         "history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
+                        "persistent_turn_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                         "audit_history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                     }
                 )
@@ -1669,6 +1691,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "system_prefix": kwargs["system_prompt"],
                         "tool_schema": [],
                         "history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
+                        "persistent_turn_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                         "audit_history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                     }
                 )
@@ -1756,6 +1779,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "system_prefix": "stable system",
                     "tool_schema": [],
                     "history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
+                    "persistent_turn_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                     "audit_history_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
                 }
 
@@ -1864,8 +1888,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
             {**base, "history_turns": [{"role": "user", "content": "历史" * 200}]},
             [],
         )
+        with_ephemeral = response_builder._estimate_generation_context_tokens(
+            {**base, "history_turns": [], "ephemeral_turns": [{"role": "user", "content": "证据" * 200}]},
+            [],
+        )
 
         self.assertGreater(with_history, without_history + 150)
+        self.assertGreater(with_ephemeral, without_history + 150)
 
     def test_prompt_raw_trim_preserves_current_and_halves_large_oldest_record(self) -> None:
         records = [

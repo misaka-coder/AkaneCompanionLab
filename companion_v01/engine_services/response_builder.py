@@ -986,6 +986,13 @@ def _estimate_generation_context_tokens(
             default=str,
         ),
         json.dumps(
+            generation_context.get("ephemeral_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        json.dumps(
             generation_context.get("post_user_turns") or [],
             ensure_ascii=False,
             sort_keys=True,

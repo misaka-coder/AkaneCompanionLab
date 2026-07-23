@@ -330,37 +330,27 @@ class PromptBuilder:
         if memory_context_text:
             structured_history_turns.append({"role": "user", "content": memory_context_text})
         structured_history_turns.extend(dict(turn) for turn in list(history_turns or []) if isinstance(turn, dict))
-        if linear_timeline_turn:
-            # Per-turn transport hints and visual state are still available to
-            # the model, but must follow the append-only MemCore timeline.
-            # Putting either block before raw history makes every small state
-            # change invalidate the whole conversation prefix for providers
-            # using prefix caches (notably the Responses wire protocol).
-            dynamic_tail_parts = [
-                str(current_message_text or "").strip(),
-                str(volatile_extra_context or "").strip(),
-                (
-                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
-                    if str(current_visual_context or "").strip()
-                    else ""
-                ),
-            ]
-            user_prompt = "\n\n".join(part for part in dynamic_tail_parts if part)
-        else:
-            dynamic_tail_parts = [
-                f"当前时间线消息：\n{current_message_text}",
-                f"可用回忆片段：\n{memory_text}" if str(memory_text or "").strip() else "",
-                str(volatile_extra_context or "").strip(),
-                (
-                    f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
-                    if str(current_visual_context or "").strip()
-                    else ""
-                ),
-            ]
-            if not current_message_in_raw:
-                dynamic_tail_parts.append(f"当前时间：{current_time_text}")
-            dynamic_tail = "\n\n".join(part for part in dynamic_tail_parts if part)
-            user_prompt = f"{dynamic_tail}\n"
+        # The current message is the only persistent message in this request.
+        # Retrieval evidence and live host state remain visible immediately
+        # after it, but are request-scoped and must never be frozen into the
+        # MemCore provider projection for later turns.
+        user_prompt = str(current_message_text or "").strip()
+        ephemeral_context_parts = [
+            f"可用回忆片段：\n{memory_text}" if str(memory_text or "").strip() else "",
+            str(volatile_extra_context or "").strip(),
+            (
+                f"当前演出状态（本轮基准参考，不是硬锁定）：\n{current_visual_context}"
+                if str(current_visual_context or "").strip()
+                else ""
+            ),
+            f"当前时间：{current_time_text}" if not current_message_in_raw else "",
+        ]
+        ephemeral_context_text = "\n\n".join(part for part in ephemeral_context_parts if part)
+        ephemeral_turns = (
+            [{"role": "user", "content": ephemeral_context_text}]
+            if ephemeral_context_text
+            else []
+        )
         extra_context_subsections: list[dict[str, str]] = []
         for section in extra_context_audit_sections or []:
             if not isinstance(section, dict):
@@ -375,6 +365,7 @@ class PromptBuilder:
         prompt_audit_sections.extend(
             [
                 {"name": "user.full", "text": user_prompt},
+                {"name": "user.ephemeral_context", "text": ephemeral_context_text},
                 {"name": "user.instruction_suffix", "text": self.persona.final_user_prompt_suffix},
                 {"name": "user.stable_context", "text": stable_user_context},
                 {"name": "user.tool_context", "text": tool_context_text},
@@ -423,6 +414,7 @@ class PromptBuilder:
             "linear_timeline_turn": linear_timeline_turn,
             "history_turns": structured_history_turns,
             "user_prompt": user_prompt,
+            "ephemeral_turns": ephemeral_turns,
             "prompt_audit_sections": prompt_audit_sections,
         }
 

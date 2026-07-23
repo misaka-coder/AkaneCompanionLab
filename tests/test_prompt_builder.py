@@ -22,13 +22,24 @@ def _history_text(result: dict) -> str:
     )
 
 
+def _ephemeral_text(result: dict) -> str:
+    return "\n".join(
+        str(turn.get("content") or "") for turn in result.get("ephemeral_turns") or [] if isinstance(turn, dict)
+    )
+
+
 def _provider_text(result: dict) -> str:
-    return "\n".join(part for part in [_history_text(result), str(result.get("user_prompt") or "")] if part)
+    return "\n".join(
+        part
+        for part in [_history_text(result), str(result.get("user_prompt") or ""), _ephemeral_text(result)]
+        if part
+    )
 
 
 def _provider_turns(result: dict) -> list[dict]:
     turns = [dict(turn) for turn in result.get("history_turns") or [] if isinstance(turn, dict)]
     turns.append({"role": "user", "content": str(result.get("user_prompt") or "")})
+    turns.extend(dict(turn) for turn in result.get("ephemeral_turns") or [] if isinstance(turn, dict))
     return turns
 
 
@@ -355,6 +366,7 @@ system = "semantic reinforcement system"
             self.assertIn("user.semantic_memory", audit_names)
             self.assertIn("user.episodic_summary", audit_names)
             self.assertIn("user.memory_context", audit_names)
+            self.assertIn("user.ephemeral_context", audit_names)
             self.assertIn("user.raw_recent_timeline", audit_names)
             self.assertIn("user.retrieval_snippets", audit_names)
             self.assertIn("user.current_visual_context", audit_names)
@@ -405,7 +417,7 @@ system = "semantic reinforcement system"
         self.assertNotEqual(latent["history_turns"], ready["history_turns"])
         self.assertNotIn("上传音频后启用媒体处理", latent["system_prompt"])
         self.assertIn("【本轮系统能力与工具上下文】", _history_text(latent))
-        self.assertIn("当前时间线消息", latent["user_prompt"])
+        self.assertEqual(latent["user_prompt"], "User: 请处理这个文件")
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
     def test_runtime_context_precedes_append_only_history_without_entering_current_tail(self) -> None:
@@ -460,8 +472,9 @@ system = "semantic reinforcement system"
         self.assertNotIn("persona state A", first["user_prompt"])
         self.assertNotIn("dynamic extra", first["user_prompt"])
         self.assertNotIn("dynamic reference", first["user_prompt"])
-        self.assertIn("dynamic visual", first["user_prompt"])
-        self.assertIn("User: current A", first["user_prompt"])
+        self.assertEqual(first["user_prompt"], "User: current A")
+        self.assertIn("dynamic retrieval", _ephemeral_text(first))
+        self.assertIn("dynamic visual", _ephemeral_text(first))
         self.assertLess(first_history.index("dynamic extra"), first_history.index("User: first event"))
         self.assertLess(first_history.index("persona state A"), first_history.index("User: first event"))
         first_event_end = first_history.index("User: first event") + len("User: first event")
@@ -521,8 +534,9 @@ system = "semantic reinforcement system"
         self.assertNotIn("turn context A", _history_text(first))
         self.assertNotIn("visual A", _history_text(first))
         self.assertNotIn("stable runtime context", first["user_prompt"])
-        self.assertIn("turn context A", first["user_prompt"])
-        self.assertIn("visual A", first["user_prompt"])
+        self.assertEqual(first["user_prompt"], "User: current A")
+        self.assertIn("turn context A", _ephemeral_text(first))
+        self.assertIn("visual A", _ephemeral_text(first))
         audit = {section["name"]: section["text"] for section in first["prompt_audit_sections"]}
         self.assertEqual(audit["user.stable_extra_context"], "stable runtime context")
         self.assertEqual(audit["user.volatile_extra_context"], "turn context A")
@@ -614,7 +628,7 @@ system = "semantic reinforcement system"
         self.assertIn("automatic retrieval evidence", prompt)
         self.assertIn("Assistant: earlier analysis", prompt)
         self.assertEqual(prompt.count("real finance event"), 1)
-        self.assertIn("当前时间线消息：\n", prompt)
+        self.assertEqual(result["user_prompt"], "User: real finance event")
         self.assertNotIn("当前时间：", prompt)
         self.assertNotIn("debug_enabled=", prompt)
         self.assertNotIn("debug_enabled=", result["system_prompt"])
@@ -628,7 +642,7 @@ system = "semantic reinforcement system"
         self.assertLess(prompt.index("dynamic plugin instruction"), prompt.index("bounded proactive visual state"))
         self.assertNotIn("stable plugin runtime", result["user_prompt"])
         self.assertIn("stable plugin runtime", _history_text(result))
-        self.assertIn("dynamic plugin instruction", result["user_prompt"])
+        self.assertIn("dynamic plugin instruction", _ephemeral_text(result))
         self.assertTrue(result["stable_system_context_hash"])
 
     def test_plugin_proactive_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:
@@ -659,7 +673,7 @@ system = "semantic reinforcement system"
         )
 
         self.assertEqual(result["user_prompt"].count("current finance event"), 1)
-        self.assertIn("当前时间线消息", result["user_prompt"])
+        self.assertIn("当前时间：", _ephemeral_text(result))
 
     def test_plugin_proactive_scope_uses_exact_memcore_current_turn_when_no_retrieval_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())
@@ -691,12 +705,13 @@ system = "semantic reinforcement system"
         )
 
         self.assertTrue(result["linear_timeline_turn"])
-        self.assertTrue(result["user_prompt"].startswith("User: exact finance event"))
-        self.assertIn("stable delivery limit", result["user_prompt"])
-        self.assertIn("stable proactive visual", result["user_prompt"])
+        self.assertEqual(result["user_prompt"], "User: exact finance event")
+        ephemeral = _ephemeral_text(result)
+        self.assertIn("stable delivery limit", ephemeral)
+        self.assertIn("stable proactive visual", ephemeral)
         self.assertLess(
-            result["user_prompt"].index("User: exact finance event"),
-            result["user_prompt"].index("stable delivery limit"),
+            _provider_text(result).index("User: exact finance event"),
+            _provider_text(result).index("stable delivery limit"),
         )
         history = _history_text(result)
         self.assertIn("stable proactive runtime", history)
@@ -758,9 +773,9 @@ system = "semantic reinforcement system"
                 prompt_scope=prompt_scope,
             )
             self.assertTrue(result["linear_timeline_turn"])
-            self.assertTrue(result["user_prompt"].startswith(current_message))
-            self.assertIn("stable delivery context", result["user_prompt"])
-            self.assertIn("stable qq visual state", result["user_prompt"])
+            self.assertEqual(result["user_prompt"], current_message)
+            self.assertIn("stable delivery context", _ephemeral_text(result))
+            self.assertIn("stable qq visual state", _ephemeral_text(result))
             self.assertNotIn("stable delivery context", _history_text(result))
             self.assertNotIn("stable qq visual state", _history_text(result))
             expected_raw_histories.append(list(history))

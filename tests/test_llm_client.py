@@ -317,6 +317,7 @@ class LLMClientConfigTests(unittest.TestCase):
             bundle=bundle,
             payload=payload,
             observer=lambda request: seen.append(request) or {"ok": True},
+            persistent_turn_messages=[{"role": "user", "content": "current"}],
         )
 
         self.assertEqual(
@@ -326,6 +327,45 @@ class LLMClientConfigTests(unittest.TestCase):
                 {"role": "user", "content": "current"},
             ],
         )
+        self.assertEqual(
+            seen[0]["persistent_turn_messages"],
+            [{"role": "user", "content": "current"}],
+        )
+
+    def test_completion_payload_keeps_persistent_ephemeral_and_tool_turns_in_order(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="vision-chat",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            history_turns=[{"role": "assistant", "content": "history"}],
+            user_prompt="current",
+            user_images=[{"data_url": "data:image/jpeg;base64,abc"}],
+            ephemeral_turns=[{"role": "user", "content": "request evidence"}],
+            post_user_turns=[
+                {"role": "assistant", "content": "tool request"},
+                {"role": "user", "content": "tool result"},
+            ],
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=[{"role": "assistant", "content": "history"}],
+            ephemeral_turns=[{"role": "user", "content": "request evidence"}],
+            post_user_turns=[
+                {"role": "assistant", "content": "tool request"},
+                {"role": "user", "content": "tool result"},
+            ],
+        )
+
+        self.assertEqual([message["role"] for message in payload["messages"]], ["system", "assistant", "user", "user", "assistant", "user"])
+        self.assertEqual(payload["messages"][3]["content"], "request evidence")
+        self.assertEqual(persistent, [payload["messages"][2], payload["messages"][4], payload["messages"][5]])
 
     def test_request_observer_rejection_stops_nonstream_before_provider_transport(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -680,6 +720,7 @@ class LLMClientConfigTests(unittest.TestCase):
                             {"role": "user", "content": "history private turn"},
                             {"role": "assistant", "content": "assistant private turn"},
                         ],
+                        ephemeral_turns=[{"role": "user", "content": "ephemeral private evidence"}],
                         prompt_audit_sections=[
                             {"name": "user.current_message", "text": "current private message"},
                             {"name": "user.raw_recent_timeline", "text": "raw private timeline"},
@@ -709,6 +750,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(record["model"], "deepseek-v4-pro")
         self.assertTrue(record["stream"])
         self.assertEqual(record["history_turn_count"], 2)
+        self.assertEqual(record["ephemeral_turn_count"], 1)
         source_by_name = {section["name"]: section for section in record["source_sections"]}
         self.assertEqual(source_by_name["user.current_message"]["chars"], len("current private message"))
         self.assertIn("sha256_16", source_by_name["user.raw_recent_timeline"])
@@ -716,6 +758,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("current private message", serialized)
         self.assertNotIn("raw private timeline", serialized)
         self.assertNotIn("history private turn", serialized)
+        self.assertNotIn("ephemeral private evidence", serialized)
         self.assertNotIn("semantic private block", serialized)
         self.assertNotIn("system private prompt", serialized)
         self.assertNotIn("private tool description", serialized)
@@ -727,7 +770,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertIn("tools", record["request_field_order"])
         self.assertEqual(
             [item["role"] for item in record["message_fingerprints"]],
-            ["system", "user", "assistant", "user"],
+            ["system", "user", "assistant", "user", "user"],
         )
         self.assertTrue(all(item["sha256_16"] for item in record["message_fingerprints"]))
         field_names = {item["name"] for item in record["request_field_fingerprints"]}

@@ -774,6 +774,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
@@ -790,6 +791,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            ephemeral_turns=ephemeral_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             chat_model_override=chat_model_override,
@@ -809,6 +811,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
@@ -827,6 +830,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            ephemeral_turns=ephemeral_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
@@ -886,6 +890,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         chat_model_override: str = "",
@@ -905,6 +910,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            ephemeral_turns=ephemeral_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
@@ -924,6 +930,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
@@ -940,6 +947,7 @@ class LLMRuntime:
             native_tool_choice=native_tool_choice,
             system_extra_blocks=system_extra_blocks,
             history_turns=history_turns,
+            ephemeral_turns=ephemeral_turns,
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
@@ -959,6 +967,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
@@ -978,6 +987,7 @@ class LLMRuntime:
                 native_tool_choice=native_tool_choice,
                 system_extra_blocks=system_extra_blocks,
                 history_turns=history_turns,
+                ephemeral_turns=ephemeral_turns,
                 post_user_turns=post_user_turns,
                 prompt_audit_sections=prompt_audit_sections,
             )
@@ -985,6 +995,13 @@ class LLMRuntime:
                 bundle=bundle,
                 payload=request_payload,
                 observer=request_observer,
+                persistent_turn_messages=self._persistent_turn_messages_from_payload(
+                    payload=request_payload,
+                    bundle=bundle,
+                    history_turns=history_turns,
+                    ephemeral_turns=ephemeral_turns,
+                    post_user_turns=post_user_turns,
+                ),
             )
             response = self._create_completion(bundle=bundle, payload=request_payload)
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
@@ -1175,6 +1192,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
@@ -1205,6 +1223,7 @@ class LLMRuntime:
                 native_tool_choice=native_tool_choice,
                 system_extra_blocks=system_extra_blocks,
                 history_turns=history_turns,
+                ephemeral_turns=ephemeral_turns,
                 post_user_turns=post_user_turns,
                 prompt_audit_sections=prompt_audit_sections,
             )
@@ -1212,6 +1231,13 @@ class LLMRuntime:
                 bundle=bundle,
                 payload=request_payload,
                 observer=request_observer,
+                persistent_turn_messages=self._persistent_turn_messages_from_payload(
+                    payload=request_payload,
+                    bundle=bundle,
+                    history_turns=history_turns,
+                    ephemeral_turns=ephemeral_turns,
+                    post_user_turns=post_user_turns,
+                ),
             )
             response = self._create_completion(bundle=bundle, payload=request_payload)
             for chunk in response:
@@ -1468,6 +1494,7 @@ class LLMRuntime:
         native_tool_choice: Any = "",
         system_extra_blocks: list[str] | None = None,
         history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -1486,6 +1513,7 @@ class LLMRuntime:
         messages: list[dict[str, Any]] = [{"role": "system", "content": effective_system_prompt}]
         messages.extend(self._normalize_history_turns_for_payload(history_turns, bundle=bundle))
         messages.append({"role": "user", "content": user_content})
+        messages.extend(self._normalize_history_turns_for_payload(ephemeral_turns, bundle=bundle))
         for turn in post_user_turns or []:
             normalized_turn = self._normalize_post_user_turn_for_payload(turn, bundle=bundle)
             if normalized_turn is not None:
@@ -1539,6 +1567,7 @@ class LLMRuntime:
             messages=messages,
             system_extra_blocks=filtered_system_extra_blocks if self._is_anthropic_protocol(bundle) else [],
             history_turns=history_turns,
+            ephemeral_turns=ephemeral_turns,
             post_user_turns=post_user_turns,
             user_prompt=user_prompt,
             user_image_count=len(image_items),
@@ -1684,6 +1713,7 @@ class LLMRuntime:
         messages: list[dict[str, Any]],
         system_extra_blocks: list[str],
         history_turns: list[dict[str, Any]] | None,
+        ephemeral_turns: list[dict[str, Any]] | None,
         post_user_turns: list[dict[str, Any]] | None,
         user_prompt: str,
         user_image_count: int,
@@ -1699,6 +1729,7 @@ class LLMRuntime:
                 messages=messages,
                 system_extra_blocks=system_extra_blocks,
                 history_turns=history_turns,
+                ephemeral_turns=ephemeral_turns,
                 post_user_turns=post_user_turns,
                 user_prompt=user_prompt,
             )
@@ -1718,6 +1749,7 @@ class LLMRuntime:
                 "json_mode": bool(json_mode),
                 "message_count": len(messages),
                 "history_turn_count": len(history_turns or []),
+                "ephemeral_turn_count": len(ephemeral_turns or []),
                 "post_user_turn_count": len(post_user_turns or []),
                 "user_image_count": max(0, int(user_image_count or 0)),
                 "native_tool_count": len(native_tools),
@@ -1795,6 +1827,7 @@ class LLMRuntime:
         messages: list[dict[str, Any]],
         system_extra_blocks: list[str],
         history_turns: list[dict[str, Any]] | None,
+        ephemeral_turns: list[dict[str, Any]] | None,
         post_user_turns: list[dict[str, Any]] | None,
         user_prompt: str,
     ) -> list[dict[str, Any]]:
@@ -1812,6 +1845,13 @@ class LLMRuntime:
         )
         sections.append(self._audit_text_section("payload.history_turns", history_text))
         sections.append(self._audit_text_section("payload.user_prompt", user_prompt))
+        ephemeral_text = "\n".join(
+            f"{str(turn.get('role') or '').strip().lower()}:{self._flatten_message_content(turn.get('content'))}"
+            for turn in ephemeral_turns or []
+            if str(turn.get("content") or "").strip()
+        )
+        if ephemeral_text:
+            sections.append(self._audit_text_section("payload.ephemeral_turns", ephemeral_text))
         post_user_text = "\n".join(
             f"{str(turn.get('role') or '').strip().lower()}:{self._flatten_message_content(turn.get('content'))}"
             for turn in post_user_turns or []
@@ -2486,12 +2526,52 @@ class LLMRuntime:
                     return bundle.client.chat.completions.create(**stripped)
             raise
 
+    def _persistent_turn_messages_from_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        bundle: ModelBundle,
+        history_turns: list[dict[str, Any]] | None,
+        ephemeral_turns: list[dict[str, Any]] | None,
+        post_user_turns: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Return the exact provider-shaped persistent messages for this turn.
+
+        The runtime owns message assembly, so it can identify this slot before
+        request-scoped evidence is appended, then include any explicit tool
+        continuations after that evidence. Hosts must not infer these messages
+        from a contiguous suffix of the finished request.
+        """
+
+        messages = [
+            dict(message)
+            for message in list(payload.get("messages") or [])
+            if isinstance(message, dict)
+        ]
+        history_count = len(self._normalize_history_turns_for_payload(history_turns, bundle=bundle))
+        system_offset = int(
+            bool(messages and str(messages[0].get("role") or "").strip().lower() == "system")
+        )
+        current_index = system_offset + history_count
+        if current_index >= len(messages):
+            return []
+        current = dict(messages[current_index])
+        if str(current.get("role") or "").strip().lower() != "user":
+            return []
+        ephemeral_count = len(self._normalize_history_turns_for_payload(ephemeral_turns, bundle=bundle))
+        post_user_count = len(self._normalize_history_turns_for_payload(post_user_turns, bundle=bundle))
+        post_user_start = current_index + 1 + ephemeral_count
+        if post_user_start + post_user_count > len(messages):
+            return []
+        return [current, *[dict(message) for message in messages[post_user_start : post_user_start + post_user_count]]]
+
     def _observe_completion_request(
         self,
         *,
         bundle: ModelBundle,
         payload: dict[str, Any],
         observer: Callable[[dict[str, Any]], Any] | None,
+        persistent_turn_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         """Expose the final provider request shape immediately before transport.
 
@@ -2530,6 +2610,11 @@ class LLMRuntime:
                 "model_route": {"protocol": protocol, "model": str(payload.get("model") or "")},
                 "system_prefix": system_prefix,
                 "tool_schema": tool_schema,
+                "persistent_turn_messages": [
+                    dict(message)
+                    for message in list(persistent_turn_messages or [])
+                    if isinstance(message, dict)
+                ],
                 "history_messages": [dict(message) for message in chat_history],
                 "audit_history_messages": audit_history,
             }

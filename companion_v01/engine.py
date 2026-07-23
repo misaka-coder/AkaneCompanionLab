@@ -4244,6 +4244,7 @@ class AkaneMemoryEngine:
                 "user_images": user_images,
                 "system_extra_blocks": generation_context.get("system_extra_blocks"),
                 "history_turns": generation_context.get("history_turns"),
+                "ephemeral_turns": generation_context.get("ephemeral_turns"),
                 "post_user_turns": generation_context.get("post_user_turns"),
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "native_tools": generation_context.get("native_tools"),
@@ -4453,6 +4454,7 @@ class AkaneMemoryEngine:
                 "native_tool_choice": generation_context.get("native_tool_choice", ""),
                 "system_extra_blocks": generation_context.get("system_extra_blocks"),
                 "history_turns": generation_context.get("history_turns"),
+                "ephemeral_turns": generation_context.get("ephemeral_turns"),
                 "post_user_turns": generation_context.get("post_user_turns"),
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "chat_model_override": chat_model_override,
@@ -4783,16 +4785,17 @@ class AkaneMemoryEngine:
             if not isinstance(request, dict):
                 return {"ok": False, "status": "failed", "reason": "request_observation_invalid"}
             if not frozen_turn_messages:
-                history = [
+                persistent_messages = [
                     dict(message)
-                    for message in list(request.get("history_messages") or [])
+                    for message in list(request.get("persistent_turn_messages") or [])
                     if isinstance(message, dict)
                 ]
-                if len(history) < len(current_messages):
-                    return {"ok": False, "status": "failed", "reason": "current_turn_suffix_missing"}
-                actual_tail = history[-len(current_messages) :]
+                if not persistent_messages:
+                    return {"ok": False, "status": "failed", "reason": "persistent_turn_messages_missing"}
+                if len(persistent_messages) != len(current_messages):
+                    return {"ok": False, "status": "failed", "reason": "persistent_turn_count_mismatch"}
                 prepared: list[dict[str, Any]] = []
-                for metadata, actual in zip(current_messages, actual_tail):
+                for metadata, actual in zip(current_messages, persistent_messages):
                     actual_role = str(actual.get("role") or "").strip().lower()
                     if actual_role not in {"user", "assistant", "tool"}:
                         return {"ok": False, "status": "failed", "reason": "current_turn_role_invalid"}

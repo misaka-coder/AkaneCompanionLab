@@ -1,6 +1,6 @@
 # Akane 主聊天提示词生命周期审查与无损收敛方案
 
-状态：代码探查与真实链路审计完成，尚未修改运行时代码，尚未部署
+状态：代码探查与真实链路审计完成；Slice 0/1 已在本地实现并通过回归，尚未部署
 
 日期：2026-07-23
 
@@ -565,3 +565,17 @@ active_task: task:abc (running)
 先实施 Slice 0 + Slice 1，不先动附件、任务、Persona 具体内容。第一刀只把“模型本轮能看到的完整请求”和“以后应永久留在 MemCore 的消息”分开，理论上不减少任何信息，却能阻止新冗余继续冻结增长。
 
 Slice 1 稳定后，再按 QQ 占位、附件、任务、Persona 的顺序逐层缩短。这样每一步都能用真实对话体验验证，不需要一次大改，也不会把问题归咎于 MemCore 或 provider。
+
+## 12. Slice 0/1 本地实现记录
+
+2026-07-23 已完成第一条运行时边界：
+
+- `PromptBuilder.user_prompt` 只保留当前 user/event 的结构化文本；当前上传图片仍附在这条消息上；
+- retrieval snippets、volatile host context、current visual state 和必要的 fallback current time 进入独立 `ephemeral_turns`；
+- provider 顺序固定为 `system -> history -> current user/images -> ephemeral -> tool continuations`；
+- `LLMRuntime` 显式提供 `persistent_turn_messages`，内容是当前 user 加本轮已形成的 tool continuation，不再让 Engine 从完整请求尾部猜测；
+- MemCore `history_messages` 只接收上述持久消息，`audit_history_messages` 继续接收完整真实 Chat/Responses wire；
+- observer 缺失显式持久槽、数量不一致、role 非法或 source id 缺失时结构化拒绝，不回退到旧 suffix 推断；
+- prompt token 估算与安全审计均计入 ephemeral 内容，但审计只保留长度/hash，不记录正文、图片 base64、路径或密钥。
+
+本地验证覆盖普通/主动事件一致布局、检索与演出仍可见、当前图片位置、legacy/native/并行工具、工具加载图片、Responses wire、observer retry/rejection，以及下一轮 provider projection 不含 ephemeral 状态。此记录只代表本地代码；真实缓存、QQ 投递和视觉/TTS 表现仍需后续部署切片验收。
