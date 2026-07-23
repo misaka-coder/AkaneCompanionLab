@@ -160,6 +160,33 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(updated.chat_api_protocol, "responses")
         self.assertEqual(updated.llm_chat_reasoning_effort, "")
 
+    def test_model_service_preserves_an_explicit_aux_provider(self) -> None:
+        base = BotSettingsView(
+            aux_api_key="aux-key",
+            aux_base_url="https://api.deepseek.com/v1",
+            aux_model_name="deepseek-v4-pro",
+            aux_api_protocol="openai",
+        )
+
+        updated = base.with_model_service(
+            SimpleNamespace(
+                api_key="chat-key",
+                base_url="https://api.pinaic.com/v1",
+                chat_model="gpt-5.6-luna",
+                protocol="responses",
+                use_for_vision=True,
+                vision_model="gpt-5.6-luna",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(updated.chat_model_name, "gpt-5.6-luna")
+        self.assertEqual(updated.chat_api_protocol, "responses")
+        self.assertEqual(updated.aux_model_name, "deepseek-v4-pro")
+        self.assertEqual(updated.aux_base_url, "https://api.deepseek.com/v1")
+        self.assertEqual(updated.aux_api_protocol, "openai")
+        self.assertEqual(updated.aux_api_key, "aux-key")
+
     def test_model_service_reasoning_override_is_isolated_per_bot(self) -> None:
         personal = BotSettingsView(llm_chat_reasoning_effort="high")
         finance = personal.with_model_service(

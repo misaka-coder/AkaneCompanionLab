@@ -651,3 +651,9 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 最终输出仍经过 manifest normalize，QQ mface、桌宠立绘、TTS 和普通文字交付没有新增第二实现。
 
 `charpack-core` 对应提交为 `cac9211` 与 `c6484b9`。包级 30 项测试、Ruff、最小示例与 sdist/wheel 构建均通过。Akane 本地集成验证覆盖角色资源、资料库、persona 合并、ephemeral 位置与宿主额外服装透传；尚未部署，因此真实换装后的 provider cache、QQ 表情图片和桌宠立绘仍属于统一部署验收项。
+
+## 18. 部署前 AUX 路由修复
+
+保存过的 Bot 模型服务配置原先会无条件同时覆盖 Chat、TEXT 与 AUX。这样 finance 即使在 Host 显式配置了 DeepSeek 摘要路由，也仍会被自身的 PinAI Luna 主模型覆盖；若直接改模型服务配置，又会把主回复一并降级成 DeepSeek。
+
+现在模型服务仍负责主聊天、TEXT 与可选视觉；仅当启动配置没有一条完整可用的 AUX 路由时，AUX 才继承主模型。显式 AUX 配置保持独立，因此可以让 finance 继续用 Luna 聊天，同时让 MemCore 压缩等辅助请求使用 DeepSeek Pro。该规则按配置完整性判断，不识别 Bot id，也不为金融实例复制实现。

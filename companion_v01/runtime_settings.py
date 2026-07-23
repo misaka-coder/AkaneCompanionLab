@@ -272,6 +272,16 @@ class BotSettingsView:
         base_url = _text(getattr(model_settings, "base_url", ""))
         model = _text(getattr(model_settings, "chat_model", ""))
         protocol = _text(getattr(model_settings, "protocol", "auto")) or "auto"
+        # A saved model-service profile owns the primary chat route, but an
+        # explicitly configured AUX route is an intentional advanced split
+        # (for example: PinAI chat + DeepSeek compaction).  Only inherit the
+        # primary provider when AUX has no usable provider of its own.
+        preserve_explicit_aux = _configured(
+            self.aux_api_key,
+            self.aux_base_url,
+            self.aux_model_name,
+            self.aux_api_protocol,
+        )
         use_for_vision = bool(getattr(model_settings, "use_for_vision", True))
         vision_model = _text(getattr(model_settings, "vision_model", "")) or model
         chat_reasoning_effort = normalize_reasoning_effort(
@@ -283,10 +293,10 @@ class BotSettingsView:
             text_base_url=base_url,
             text_model_name=model,
             text_api_protocol=protocol,
-            aux_api_key=api_key,
-            aux_base_url=base_url,
-            aux_model_name=model,
-            aux_api_protocol=protocol,
+            aux_api_key=self.aux_api_key if preserve_explicit_aux else api_key,
+            aux_base_url=self.aux_base_url if preserve_explicit_aux else base_url,
+            aux_model_name=self.aux_model_name if preserve_explicit_aux else model,
+            aux_api_protocol=self.aux_api_protocol if preserve_explicit_aux else protocol,
             chat_api_key=api_key,
             chat_base_url=base_url,
             chat_model_name=model,
