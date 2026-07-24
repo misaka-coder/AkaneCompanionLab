@@ -1461,46 +1461,12 @@ def separate_audio_stems(
         separation_executor = getattr(service, "audio_separation_executor", None)
         separation_status = service.audio_separation_status() if hasattr(service, "audio_separation_status") else {}
         if separation_executor is not None and str(separation_status.get("provider") or "") == "local_media_executor":
+            # Keep ordinary audio compressed while it crosses the reverse
+            # tunnel. The PC-side RVC/UVR provider already accepts these
+            # formats and performs any required decode locally. Expanding a
+            # small MP3/FLAC/M4A into PCM WAV on the cloud host can multiply
+            # transfer size without improving the separation input.
             remote_input = prepared_input
-            if prepared_input.suffix.lower() != ".wav":
-                if not ffmpeg_path:
-                    return {
-                        "ok": False,
-                        "generated_files": [],
-                        "error": "ffmpeg_not_found",
-                        "followup_context": "音频分离前需要把来源规范化为 WAV，但当前没有找到 FFmpeg。",
-                    }
-                remote_input = work_dir / "local_executor_source.wav"
-                decode_result = subprocess.run(
-                    [
-                        str(ffmpeg_path),
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-y",
-                        "-i",
-                        str(prepared_input),
-                        "-vn",
-                        "-ar",
-                        "44100",
-                        "-ac",
-                        "2",
-                        "-c:a",
-                        "pcm_s16le",
-                        str(remote_input),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    check=False,
-                )
-                if decode_result.returncode != 0 or not remote_input.exists():
-                    return {
-                        "ok": False,
-                        "generated_files": [],
-                        "error": "audio_decode_failed",
-                        "followup_context": "音频分离前无法把来源转换为普通 WAV，暂时没有生成结果。",
-                    }
             try:
                 vocals_bytes, instrumental_bytes = separation_executor.separate_rvc_vocals(
                     source_path=remote_input,
