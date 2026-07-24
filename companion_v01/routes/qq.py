@@ -1145,12 +1145,15 @@ def _process_qq_turn_streaming(
         if (
             event_type == "assistant_stage_decision"
             and pending_stage_messages
-            and (
-                _streaming_allows_tool_preface(active_reply_mode, delivery_hint)
-                if bool(stream_event.get("has_tool_call"))
-                else _streaming_allows_text(active_reply_mode, delivery_hint)
-            )
         ):
+            if bool(stream_event.get("has_tool_call")):
+                # A tool preface is generated before transport truth exists.
+                # Hold it out of QQ so phrases such as "已经发你了" cannot
+                # become a visible false success when the later upload fails.
+                pending_stage_messages = []
+                continue
+            if not _streaming_allows_text(active_reply_mode, delivery_hint):
+                continue
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,
                 context=context,
@@ -1211,7 +1214,33 @@ def _process_qq_turn_streaming(
     if merged_file_events:
         frame["tool_events"] = [*retained_frame_events, *merged_file_events]
 
-    final_reply_messages = qq_gateway.render_reply_messages(frame)
+    delivery_events, artifact_resolution_failures = _hydrate_plugin_managed_artifact_events(
+        engine=engine,
+        context=context,
+        tool_events=list(frame.get("tool_events") or []),
+    )
+    file_send_result = qq_gateway.send_generated_files(
+        context,
+        delivery_events,
+    )
+    if artifact_resolution_failures:
+        delivery_results = [
+            *list(file_send_result.get("results") or []),
+            *artifact_resolution_failures,
+        ]
+        any_sent = any(bool(item.get("ok")) for item in delivery_results)
+        file_send_result = {
+            "ok": False,
+            "status": "partial" if any_sent else "failed",
+            "count": len(delivery_results),
+            "results": delivery_results,
+        }
+
+    file_delivery_attempted = int(file_send_result.get("count") or 0) > 0
+    file_delivery_failed = file_delivery_attempted and not bool(file_send_result.get("ok"))
+    # Deliver the artifact before any model-authored completion claim. On
+    # failure, only the deterministic transport feedback below is allowed out.
+    final_reply_messages = [] if file_delivery_failed else qq_gateway.render_reply_messages(frame)
     reply_messages = final_reply_messages
     if streamed_messages and bool(frame.get("_transient_final_failure")):
         # A complete speech field may already have reached QQ before a malformed
@@ -1273,27 +1302,6 @@ def _process_qq_turn_streaming(
             "reason": "main_delivery_failed",
         }
 
-    delivery_events, artifact_resolution_failures = _hydrate_plugin_managed_artifact_events(
-        engine=engine,
-        context=context,
-        tool_events=list(frame.get("tool_events") or []),
-    )
-    file_send_result = qq_gateway.send_generated_files(
-        context,
-        delivery_events,
-    )
-    if artifact_resolution_failures:
-        delivery_results = [
-            *list(file_send_result.get("results") or []),
-            *artifact_resolution_failures,
-        ]
-        any_sent = any(bool(item.get("ok")) for item in delivery_results)
-        file_send_result = {
-            "ok": False,
-            "status": "partial" if any_sent else "failed",
-            "count": len(delivery_results),
-            "results": delivery_results,
-        }
     final_reply_fallback_result = {"ok": True, "status": "skipped", "reason": "final_reply_present"}
     if not final_reply_messages and int(file_send_result.get("count") or 0) > 0:
         if bool(file_send_result.get("ok")):

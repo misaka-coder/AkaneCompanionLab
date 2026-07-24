@@ -94,6 +94,7 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
     re.compile(r"^character[:：\s]+(.+)$", re.IGNORECASE),
 )
 QQ_INLINE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+QQ_INLINE_FILE_MAX_BYTES = 4 * 1024 * 1024
 QQ_OUTFIT_LIST_COMMANDS = {
     "服装列表",
     "可用服装",
@@ -3148,23 +3149,107 @@ class NapCatQQGateway:
                 return self._outbound_plan_failure(exc)
             last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
             if last_result.ok:
-                return last_result.as_dict()
-        return (last_result or self._onebot_transport.call("unknown", {})).as_dict()
+                result = last_result.as_dict()
+                result["transport"] = "local_path"
+                return result
+
+        staged = self._onebot_transport.stage_file(
+            path_obj,
+            filename=name or path_obj.name,
+        )
+        if staged.ok:
+            try:
+                plan = build_message_action(
+                    self._outbound_target(context),
+                    [voice_segment(staged.file_ref, summary=name or path_obj.name)],
+                    reply_to=reply_to,
+                )
+            except ValueError as exc:
+                return self._outbound_plan_failure(exc)
+            streamed_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
+            if streamed_result.ok:
+                result = streamed_result.as_dict()
+                result["transport"] = "stream_upload"
+                return result
+            last_result = streamed_result
+
+        try:
+            if path_obj.stat().st_size <= QQ_INLINE_FILE_MAX_BYTES:
+                inline_ref = "base64://" + base64.b64encode(path_obj.read_bytes()).decode("ascii")
+                plan = build_message_action(
+                    self._outbound_target(context),
+                    [voice_segment(inline_ref, summary=name or path_obj.name)],
+                    reply_to=reply_to,
+                )
+                inline_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
+                if inline_result.ok:
+                    result = inline_result.as_dict()
+                    result["transport"] = "base64"
+                    return result
+                last_result = inline_result
+        except (OSError, ValueError):
+            pass
+        result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
+        if not staged.ok:
+            result["staging_reason"] = staged.code
+        return result
 
     def send_file(self, context: QQMessageContext, *, file_path: str, name: str = "") -> dict[str, Any]:
         clean_path = str(file_path or "").strip()
         if not context.target_id or not clean_path:
             return {"ok": False, "reason": "empty_target_or_file"}
 
+        path_obj = Path(clean_path)
+        if not path_obj.exists():
+            return {"ok": False, "reason": "file_not_found"}
+        safe_name = name or path_obj.name
         try:
             plan = build_upload_file_action(
                 self._outbound_target(context),
                 file_ref=clean_path,
-                name=name or Path(clean_path).name,
+                name=safe_name,
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
-        return self._send_outbound_plan(plan, timeout=20)
+        direct_result = self._send_outbound_plan(plan, timeout=20)
+        if direct_result.get("ok"):
+            direct_result["transport"] = "local_path"
+            return direct_result
+
+        staged = self._onebot_transport.stage_file(path_obj, filename=safe_name)
+        if staged.ok:
+            try:
+                staged_plan = build_upload_file_action(
+                    self._outbound_target(context),
+                    file_ref=staged.file_ref,
+                    name=safe_name,
+                )
+            except ValueError as exc:
+                return self._outbound_plan_failure(exc)
+            staged_result = self._send_outbound_plan(staged_plan, timeout=30)
+            if staged_result.get("ok"):
+                staged_result["transport"] = "stream_upload"
+                return staged_result
+            direct_result = staged_result
+
+        try:
+            if path_obj.stat().st_size <= QQ_INLINE_FILE_MAX_BYTES:
+                inline_ref = "base64://" + base64.b64encode(path_obj.read_bytes()).decode("ascii")
+                inline_plan = build_upload_file_action(
+                    self._outbound_target(context),
+                    file_ref=inline_ref,
+                    name=safe_name,
+                )
+                inline_result = self._send_outbound_plan(inline_plan, timeout=30)
+                if inline_result.get("ok"):
+                    inline_result["transport"] = "base64"
+                    return inline_result
+                direct_result = inline_result
+        except (OSError, ValueError):
+            pass
+        if not staged.ok:
+            direct_result["staging_reason"] = staged.code
+        return direct_result
 
     @staticmethod
     def _outbound_target(context: QQMessageContext) -> OutboundTarget:

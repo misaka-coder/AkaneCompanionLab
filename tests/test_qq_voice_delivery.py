@@ -130,7 +130,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual([segment["type"] for segment in messages[1]], ["text"])
         self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
 
-    def test_auto_mode_sends_native_tool_preface_without_waiting_for_delivery_hint(self) -> None:
+    def test_auto_mode_holds_native_tool_preface_until_transport_truth_exists(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
                 yield {"type": "speech_segment", "text": "我先看看这张图。"}
@@ -165,7 +165,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(gateway.text_sends, [["我先看看这张图。"], ["图片好了。"]])
+        self.assertEqual(gateway.text_sends, [["图片好了。"]])
 
     def test_streamed_generated_file_event_survives_empty_final_model_reply(self) -> None:
         class DeliveryGateway(FakeQQGateway):
@@ -270,7 +270,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         self.assertEqual(gateway.tool_events, [{"type": "state_update", "value": "ready"}])
 
-    def test_native_tool_preface_is_sent_but_system_working_status_is_not(self) -> None:
+    def test_native_tool_preface_and_system_working_status_are_not_sent(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
                 yield {"type": "speech_segment", "text": "我先看看这张图。"}
@@ -310,7 +310,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(gateway.text_sends, [["我先看看这张图。"], ["看好了，画面里是一只猫。"]])
+        self.assertEqual(gateway.text_sends, [["看好了，画面里是一只猫。"]])
         self.assertNotIn("系统正在处理图片。", repr(gateway.text_sends))
 
     def test_streamed_segments_are_not_resent_as_one_final_bubble(self) -> None:
@@ -579,6 +579,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         self.assertEqual(result["file_delivery_feedback_result"]["status"], "failure_notice_sent")
         self.assertTrue(any("文件这次发送失败" in message for batch in gateway.text_sends for message in batch))
+        self.assertNotIn("我先准备一下", repr(gateway.text_sends))
         self.assertTrue(any("文件发送失败" in note for note in gateway.delivery_notes))
 
 

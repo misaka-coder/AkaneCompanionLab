@@ -2006,24 +2006,27 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
-        ) as mocked_post:
-            result = gateway.send_generated_files(
-                context,
-                [
-                    {
-                        "type": "generated_file_ready",
-                        "send_to_user": True,
-                        "generated_file": {
-                            "generated_id": "generated::1",
-                            "absolute_path": "C:/tmp/akane.md",
-                            "output_title": "Akane整理",
-                            "file_ext": "md",
-                        },
-                    }
-                ],
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "akane.md"
+            output_path.write_text("akane", encoding="utf-8")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
+                result = gateway.send_generated_files(
+                    context,
+                    [
+                        {
+                            "type": "generated_file_ready",
+                            "send_to_user": True,
+                            "generated_file": {
+                                "generated_id": "generated::1",
+                                "absolute_path": str(output_path),
+                                "output_title": "Akane整理",
+                                "file_ext": "md",
+                            },
+                        }
+                    ],
+                )
 
         self.assertTrue(result["ok"])
         mocked_post.assert_called_once()
@@ -2031,7 +2034,7 @@ class QQGatewayTests(unittest.TestCase):
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_private_file"))
         self.assertEqual(payload["user_id"], QQ_MASTER_FIXTURE_ID)
-        self.assertEqual(payload["file"], "C:/tmp/akane.md")
+        self.assertEqual(payload["file"], str(output_path))
         self.assertEqual(payload["name"], "Akane整理.md")
 
     def test_send_generated_image_uses_onebot_image_message(self) -> None:
@@ -2195,24 +2198,27 @@ class QQGatewayTests(unittest.TestCase):
             def json(self):
                 return {"status": "ok"}
 
-        with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
-        ) as mocked_post:
-            result = gateway.send_generated_files(
-                context,
-                [
-                    {
-                        "type": "file_ready",
-                        "send_to_user": True,
-                        "file": {
-                            "source_type": "attachment",
-                            "source_id": "attachment::1",
-                            "absolute_path": "C:/tmp/video.mp4",
-                            "name": "video.mp4",
-                        },
-                    }
-                ],
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "video.mp4"
+            output_path.write_bytes(b"video")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
+                result = gateway.send_generated_files(
+                    context,
+                    [
+                        {
+                            "type": "file_ready",
+                            "send_to_user": True,
+                            "file": {
+                                "source_type": "attachment",
+                                "source_id": "attachment::1",
+                                "absolute_path": str(output_path),
+                                "name": "video.mp4",
+                            },
+                        }
+                    ],
+                )
 
         self.assertTrue(result["ok"])
         mocked_post.assert_called_once()
@@ -2220,8 +2226,76 @@ class QQGatewayTests(unittest.TestCase):
         payload = mocked_post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/upload_group_file"))
         self.assertEqual(payload["group_id"], QQ_FILE_GROUP_FIXTURE_ID)
-        self.assertEqual(payload["file"], "C:/tmp/video.mp4")
+        self.assertEqual(payload["file"], str(output_path))
         self.assertEqual(payload["name"], "video.mp4")
+
+    def test_send_file_streams_to_remote_napcat_after_local_path_rejection(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_FILE_GROUP_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "file-stream-1",
+                "raw_message": "发我文件",
+            }
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def json(self):
+                return self.body
+
+        responses = [
+            FakeResponse({"status": "failed", "retcode": 1200, "data": {}}),
+            FakeResponse(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "type": "stream",
+                        "status": "chunk_received",
+                        "received_chunks": 1,
+                        "total_chunks": 1,
+                    },
+                }
+            ),
+            FakeResponse(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "type": "response",
+                        "status": "file_complete",
+                        "file_path": "C:/NapCat/temp/capability.txt",
+                    },
+                }
+            ),
+            FakeResponse({"status": "ok", "retcode": 0, "data": {"file_id": "remote-file-1"}}),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "capability.txt"
+            output_path.write_text("capability release", encoding="utf-8")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=responses,
+            ) as request:
+                result = gateway.send_file(context, file_path=str(output_path), name=output_path.name)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transport"], "stream_upload")
+        self.assertEqual(
+            [call.args[1].rsplit("/", 1)[-1] for call in request.call_args_list],
+            ["upload_group_file", "upload_file_stream", "upload_file_stream", "upload_group_file"],
+        )
+        final_payload = request.call_args_list[-1].kwargs["json"]
+        self.assertEqual(final_payload["file"], "C:/NapCat/temp/capability.txt")
 
     def test_send_generated_files_ignores_desktop_client_file_events(self) -> None:
         gateway = NapCatQQGateway()
