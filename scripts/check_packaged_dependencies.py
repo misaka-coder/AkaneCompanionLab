@@ -21,21 +21,46 @@ EXPECTED_VERSION = "0.1.0"
 class PackageSpec:
     distribution: str
     import_name: str
+    required_attributes: tuple[str, ...] = ()
 
 
 PACKAGES: tuple[PackageSpec, ...] = (
-    PackageSpec("capcore", "capcore"),
-    PackageSpec("capcore-adapter-mcp", "capcore_adapter_mcp"),
-    PackageSpec("capcore-adapter-python", "capcore_adapter_python"),
-    PackageSpec("capcore-adapter-speech", "capcore_adapter_speech"),
-    PackageSpec("capcore-adapter-comfyui", "capcore_adapter_comfyui"),
+    PackageSpec("capcore", "capcore", ("CapabilityToolSpec", "CapabilityResult", "InvocationContext")),
+    PackageSpec("capcore-adapter-mcp", "capcore_adapter_mcp", ("McpStdioCapabilityAdapter",)),
+    PackageSpec(
+        "capcore-adapter-python",
+        "capcore_adapter_python",
+        ("PythonCapabilityAdapter", "PythonCapabilitySpec"),
+    ),
+    PackageSpec(
+        "capcore-adapter-speech",
+        "capcore_adapter_speech",
+        ("EdgeTTSClient", "OpenAICompatASRAdapter", "SynthesizedAudio"),
+    ),
+    PackageSpec("capcore-adapter-comfyui", "capcore_adapter_comfyui", ("ComfyUiCapabilityAdapter",)),
     PackageSpec("charpack-core", "charpack_core"),
-    PackageSpec("channelcore-onebot", "channelcore_onebot"),
-    PackageSpec("promptpack-core", "promptpack_core"),
-    PackageSpec("capcore-provider-native-tools", "capcore_provider_native_tools"),
-    PackageSpec("capcore-provider-openai", "capcore_provider_openai"),
-    PackageSpec("capcore-provider-anthropic", "capcore_provider_anthropic"),
-    PackageSpec("memcore", "memcore"),
+    PackageSpec(
+        "channelcore-onebot",
+        "channelcore_onebot",
+        ("normalize_action_response", "validate_onebot_identity"),
+    ),
+    PackageSpec("promptpack-core", "promptpack_core", ("PromptBlock", "PromptBlockRegistry")),
+    PackageSpec(
+        "capcore-provider-native-tools",
+        "capcore_provider_native_tools",
+        ("run_native_tool_invocation",),
+    ),
+    PackageSpec("capcore-provider-openai", "capcore_provider_openai", ("build_openai_chat_tool_set",)),
+    PackageSpec(
+        "capcore-provider-anthropic",
+        "capcore_provider_anthropic",
+        ("build_anthropic_messages_tool_set",),
+    ),
+    PackageSpec(
+        "memcore",
+        "memcore",
+        ("build_native_memory_tool_specs", "coerce_memory_metadata", "memory_metadata_has_signal"),
+    ),
 )
 
 
@@ -62,6 +87,13 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
         except Exception as exc:  # pragma: no cover - exercised by bootstrap failures
             errors.append(f"{spec.distribution}:import_failed:{exc.__class__.__name__}")
             continue
+        missing_attributes = tuple(
+            attribute for attribute in spec.required_attributes if not hasattr(module, attribute)
+        )
+        if missing_attributes:
+            errors.append(
+                f"{spec.distribution}:runtime_contract_missing:{','.join(missing_attributes)}"
+            )
 
         installed.append(
             {

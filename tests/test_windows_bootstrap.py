@@ -41,6 +41,10 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertIn("runtime_dependency_closure_missing", source)
         self.assertIn("akane_package_artifacts_unavailable", source)
         self.assertIn("packaged_dependency_validation_failed", source)
+        dependency_checker = (ROOT / "scripts" / "check_packaged_dependencies.py").read_text(encoding="utf-8")
+        self.assertIn("runtime_contract_missing", dependency_checker)
+        self.assertIn("memory_metadata_has_signal", dependency_checker)
+        self.assertIn("validate_onebot_identity", dependency_checker)
         self.assertIn("import capcore", source)
         self.assertIn(
             "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core",

@@ -161,7 +161,7 @@ async def _run_smoke() -> dict[str, Any]:
             store=store,
             index=index,
             embedding=embedding,
-            config=MemoryConfig(raw_trigger_count=4, summary_batch_size=2, enable_verifier=False),
+            config=MemoryConfig(enable_verifier=False),
         )
 
         adapter = PythonCapabilityAdapter(
@@ -186,7 +186,6 @@ async def _run_smoke() -> dict[str, Any]:
             cur = mem.record_user_turn(user_text, timestamp=_ts(2026, 7, 2, 13, 0))
             visible_memory = mem.render_prompt_context(mem.build_prompt_context(current=cur))
             output_contract = build_chat_output_contract_prompt(
-                categories=mem.config.categories,
                 enable_flavor=mem.config.enable_flavor,
                 enable_sentence_segments=True,
             )
@@ -258,13 +257,12 @@ async def _run_smoke() -> dict[str, Any]:
             parsed = parse_chat_output(
                 final_model_output,
                 mode="memcore_json",
-                categories=mem.config.categories,
                 enable_flavor=mem.config.enable_flavor,
             )
             assert parsed.ok, parsed.reason
             metadata_update = mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
             assert metadata_update["ok"], metadata_update
-            mem.record_assistant_turn(parsed.speech, in_reply_to=cur, timestamp=_ts(2026, 7, 2, 13, 1))
+            mem.record_assistant_turn(parsed.speech, timestamp=_ts(2026, 7, 2, 13, 1))
             compact_future = mem.compact_due_background()
             compact_stats = compact_future.result(timeout=10)
             normalized_visual = manifest.normalize_visual_output({"emotion": "happy"})

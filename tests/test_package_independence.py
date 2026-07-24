@@ -4,6 +4,10 @@ import json
 import tomllib
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from scripts import check_packaged_dependencies
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +41,36 @@ PETDESK_PACKAGES = (
 
 
 class PackageIndependenceContractTests(unittest.TestCase):
+    def test_packaged_dependency_audit_rejects_missing_runtime_contract(self) -> None:
+        spec = check_packaged_dependencies.PackageSpec(
+            "memcore",
+            "memcore",
+            ("memory_metadata_has_signal",),
+        )
+        artifact = SimpleNamespace(version=VERSION, ok=True, reason="")
+        with (
+            mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
+            mock.patch.object(
+                check_packaged_dependencies.importlib.metadata,
+                "distribution",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                check_packaged_dependencies,
+                "audit_distribution_artifact",
+                return_value=artifact,
+            ),
+            mock.patch.object(
+                check_packaged_dependencies.importlib,
+                "import_module",
+                return_value=SimpleNamespace(),
+            ),
+        ):
+            installed, errors = check_packaged_dependencies.audit_installed_packages()
+
+        self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
+        self.assertEqual(errors, ["memcore:runtime_contract_missing:memory_metadata_has_signal"])
+
     def test_python_package_manifests_have_no_sibling_source_overrides(self) -> None:
         for name in PYTHON_PACKAGES:
             root = AKANE_PARENT / name
