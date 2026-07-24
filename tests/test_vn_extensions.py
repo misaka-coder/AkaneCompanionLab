@@ -616,8 +616,9 @@ class EngineExtensionTests(unittest.TestCase):
             stop_reason="tool_budget_exhausted",
         )
 
-        self.assertIn("可以继续使用本轮实际提供的工具通道", allow_context)
-        self.assertIn("provider schema 中的工具走原生调用", allow_context)
+        self.assertIn("可以继续使用本轮实际提供的工具入口", allow_context)
+        self.assertIn("请求中直接附带的工具直接调用", allow_context)
+        self.assertIn("证据缺失的部分要明确说明", allow_context)
         self.assertIn("不要为了确认而停下询问", allow_context)
         self.assertIn("工具预算已经用完", block_context)
         self.assertIn("本轮不要再调用工具", block_context)

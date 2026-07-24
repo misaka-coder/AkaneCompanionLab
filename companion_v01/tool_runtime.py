@@ -5348,6 +5348,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             '"mode":"vocals_instrumental","output_format":"wav|flac|mp3",'
             '"output_title":"输出标题","send_to_user":false}。'
             "当前只支持 vocals_instrumental，也就是分离出人声（vocals）和伴奏（instrumental）两份结果。"
+            "用户没有指定格式时默认用 mp3，适合聊天交付；只有明确要无损或后续处理需要时才选 wav/flac。"
             "这个工具负责拆轨，不负责后续精修；如果还要转码、裁剪、统一采样率、去头尾静音或调音量，请对分离后的结果再调用 convert_media_file。"
             "如果来源是普通视频文件，系统会先尝试抽取音轨再分离。不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
         )
@@ -5366,7 +5367,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             "type": self.tool_type,
             "source_id": source_id[:120],
             "mode": self._normalize_mode(value.get("mode") or value.get("separation_mode") or "vocals_instrumental"),
-            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "wav"),
+            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "mp3"),
             "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
             "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
         }
@@ -5377,7 +5378,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             session_id=context.session_id,
             source_target=str(call.get("source_id") or ""),
             mode=str(call.get("mode") or "vocals_instrumental"),
-            output_format=str(call.get("output_format") or "wav"),
+            output_format=str(call.get("output_format") or "mp3"),
             output_title=str(call.get("output_title") or ""),
             send_to_user=bool(call.get("send_to_user")),
             timestamp=context.now_ts,
@@ -5415,7 +5416,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
         return aliases.get(text, "vocals_instrumental")
 
     def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "wav").strip().lower().lstrip(".")
+        text = str(value or "mp3").strip().lower().lstrip(".")
         aliases = {
             "wave": "wav",
             "waveform": "wav",

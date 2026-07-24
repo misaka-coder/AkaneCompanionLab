@@ -959,27 +959,79 @@ COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="compose_file",
     display_name="Compose file",
     description=(
-        "Create a new document, spreadsheet, subtitle, or text file from scratch or from conversation context. "
-        "Use for explicit file-creation requests; do not use for in-chat text responses."
+        "把当前对话中已经整理好的内容，或 source_ids 指向的现有材料，生成一个新的文档、表格、"
+        "字幕或文本文件。普通聊天回复不要调用。若只是忠实转换现有材料，可不填 content_markdown；"
+        "若需要改写、总结或排版，先在 content_markdown/table_rows 中给出要写入的最终内容。"
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "title": {"type": "string", "maxLength": 120, "description": "Output file title."},
-            "format": {"type": "string", "enum": ["md", "txt", "docx", "xlsx", "csv", "json", "html", "srt", "lrc", "vtt", "pdf"], "description": "Output file format."},
-            "content": {"type": "string", "maxLength": 100000, "description": "Full file content to write."},
-            "sources": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Optional source handles (file_*, gen_*) to include in composition."},
-            "instructions": {"type": "string", "maxLength": 2000, "description": "Additional composition instructions."},
+            "source_ids": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 120},
+                "maxItems": 20,
+                "description": "可选的现有材料句柄，如 file_*、img_*、audio_*、gen_*。",
+            },
+            "task": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "要整理、转换或导出的目标；不要只写“处理一下”。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["md", "txt", "docx", "xlsx", "pdf", "json", "csv", "html", "srt", "lrc", "vtt"],
+                "description": "目标文件格式。",
+            },
+            "output_title": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选文件标题；未指定时系统会生成安全标题。",
+            },
+            "structure": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选结构提示，如 summary、table、report、notes。",
+            },
+            "style": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选整体风格提示，如 clean、formal、casual。",
+            },
+            "fidelity": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选保真要求；忠实转换现有材料时可说明 preserve。",
+            },
+            "content_markdown": {
+                "type": "string",
+                "maxLength": 80000,
+                "description": "要写入文档/文本的完整正文或 Markdown。忠实转换 source_ids 时可留空。",
+            },
+            "table_rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 500},
+                    "maxItems": 50,
+                },
+                "maxItems": 1000,
+                "description": "生成表格时使用；第一行通常是表头。",
+            },
+            "formatting": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "可选白名单样式规则，如 header、columns、rows、row_rules、highlights、auto_width。",
+            },
         },
-        "required": ["title", "format"],
+        "required": ["output_format"],
     },
     risk="medium",
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -988,23 +1040,59 @@ COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
 REVISE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="revise_generated_file",
     display_name="Revise generated file",
-    description="Edit or revise a previously generated file based on the user's feedback or new instructions.",
+    description=(
+        "修改一个已经生成的 gen_* 文件并创建新版本，不覆盖旧文件。"
+        "instruction 说明修改目标；需要重写正文或表格时，同时提供 content_markdown 或 table_rows。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
-            "instructions": {"type": "string", "maxLength": 2000, "description": "Revision instructions."},
-            "content": {"type": "string", "maxLength": 100000, "description": "Full revised content, if replacing entirely."},
+            "target": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "要修改的 gen_* 句柄或 latest。",
+            },
+            "instruction": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "用户要求怎样修改。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["md", "txt", "docx", "xlsx", "pdf", "json", "csv", "html"],
+                "description": "可选的新版本格式；省略时沿用合适格式。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选的新版本标题。"},
+            "content_markdown": {
+                "type": "string",
+                "maxLength": 80000,
+                "description": "修改后的完整正文或 Markdown；仅描述小改动时可留空。",
+            },
+            "table_rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 500},
+                    "maxItems": 50,
+                },
+                "maxItems": 1000,
+                "description": "修改后的完整表格行。",
+            },
+            "formatting": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "可选白名单样式规则。",
+            },
         },
-        "required": ["target", "instructions"],
+        "required": ["target"],
     },
     risk="medium",
     confirm="first_time",
     effects=("file_revise",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1012,23 +1100,44 @@ REVISE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
 APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="apply_style_to_existing_file",
     display_name="Apply style to existing file",
-    description="Apply a formatting or style transformation to an existing generated file without changing its core content.",
+    description=(
+        "只给现有 docx/xlsx 材料或生成文件套用样式，不重写正文。"
+        "用户要增删改内容时改用 revise_generated_file；从材料整理新文件时用 compose_file。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
-            "style": {"type": "string", "maxLength": 200, "description": "Style or format transformation to apply."},
-            "output_format": {"type": "string", "enum": ["md", "txt", "docx", "pdf", "html"], "description": "Optional output format override."},
+            "target": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "file_*、gen_* 句柄或 latest。",
+            },
+            "target_type": {
+                "type": "string",
+                "enum": ["attachment", "generated"],
+                "description": "可选来源类型；句柄已经明确时可省略。",
+            },
+            "instruction": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "用户的样式要求，如“姓名列标红、低于60分整行标红”。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选的样式版标题。"},
+            "formatting": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "可选白名单样式规则，如 header、columns、rows、row_rules、highlights。",
+            },
         },
-        "required": ["target", "style"],
+        "required": ["target"],
     },
     risk="medium",
     confirm="first_time",
     effects=("file_style",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1126,8 +1235,8 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_file",
     display_name="Send file",
     description=(
-        "Send an existing workspace material or generated file to the user. "
-        "Handles file_*, img_*, audio_*, and gen_* references."
+        "把已经存在的工作台材料或生成文件真正交付给用户。支持 file_*、img_*、audio_*、gen_*。"
+        "它不会生成、修改或转码文件；只有工具成功结果才能证明文件已经发出。"
     ),
     input_schema={
         "type": "object",
@@ -1135,6 +1244,11 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "target": {"type": "string", "maxLength": 120, "description": "Single file handle or 'latest'."},
             "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Multiple file handles."},
+            "delivery_action": {
+                "type": "string",
+                "enum": ["open", "reveal", "save_desktop", "copy_path"],
+                "description": "仅桌宠模式按用户明确要求打开、定位、保存到桌面或复制路径；QQ 发送时省略。",
+            },
         },
         "required": [],
     },
@@ -1142,8 +1256,8 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     confirm="first_time",
     effects=("file_delivery",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,
@@ -1222,15 +1336,30 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
 SEPARATE_AUDIO_STEMS_TOOL_SPEC = CapabilityToolSpec(
     capability_id="separate_audio_stems",
     display_name="Separate audio stems",
-    description="Separate a music file into vocal and instrumental stems using Demucs. Produces separate audio files.",
+    description=(
+        "把一个现有音频或带音轨视频拆成人声、伴奏两个独立文件。当前只支持人声/伴奏两轨，"
+        "一次成功结果应明确返回两个 gen_* 句柄。它只生成结果；用户要收到文件时，等结果返回后再用 send_file。"
+        "普通聊天交付默认 mp3；只有用户明确要无损或后续处理需要时才选 wav/flac。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio/video handle (audio_*, file_*, gen_*)."},
-            "model": {"type": "string", "description": "Optional Demucs model name. Default: configured default."},
-            "stems": {"type": "array", "items": {"type": "string"}, "description": "Stems to extract: vocals, drums, bass, other. Default: vocals + no_vocals."},
-            "output_format": {"type": "string", "enum": ["wav", "mp3", "flac"], "description": "Output format. Default wav."},
+            "source_id": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "来源音频/视频句柄，如 audio_*、file_*、gen_*。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["mp3", "wav", "flac"],
+                "description": "两个结果的格式；默认 mp3，wav/flac 体积会明显更大。",
+            },
+            "output_title": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "可选基础标题，系统会分别加上人声/伴奏。",
+            },
         },
         "required": ["source_id"],
     },
@@ -1238,8 +1367,8 @@ SEPARATE_AUDIO_STEMS_TOOL_SPEC = CapabilityToolSpec(
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1247,14 +1376,40 @@ SEPARATE_AUDIO_STEMS_TOOL_SPEC = CapabilityToolSpec(
 CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
     capability_id="clean_voice_track",
     display_name="Clean voice track",
-    description="Remove background noise from a voice recording using DeepFilterNet or FFmpeg. Produces a cleaned audio file.",
+    description=(
+        "净化现有语音或人声轨，可做降噪、去混响、去回声或人声聚焦。"
+        "它不负责普通转码、裁剪和音量调整；这些任务使用 convert_media_file。"
+        "成功后返回一个新的 gen_* 句柄，需要交付时再调用 send_file。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio handle (audio_*, file_*, gen_*)."},
-            "mode": {"type": "string", "enum": ["auto", "ai", "ffmpeg"], "description": "Cleaning mode. Default auto."},
-            "output_format": {"type": "string", "enum": ["wav", "mp3", "flac"], "description": "Output format. Default wav."},
+            "source_id": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "来源语音/人声句柄，如 audio_*、file_*、gen_*。",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["denoise", "dereverb", "deecho", "voice_focus"],
+                "description": "处理意图；默认 denoise。",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["auto", "ai", "basic"],
+                "description": "auto 优先 AI、不可用时基础降级；ai 只接受 AI；basic 直接基础净化。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["wav", "flac", "mp3"],
+                "description": "输出格式；默认 wav 便于后续处理，直接聊天交付可选 mp3。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
+            "post_filter": {
+                "type": "boolean",
+                "description": "仅 AI 净化时的额外后处理；用户未提出且证据不足时不要硬填。",
+            },
         },
         "required": ["source_id"],
     },
@@ -1262,8 +1417,8 @@ CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1272,24 +1427,52 @@ CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
 TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(
     capability_id="transcribe_media",
     display_name="Transcribe media",
-    description="Transcribe speech from an audio or video file to text using faster-whisper. Produces a transcript file.",
+    description=(
+        "把一个或多个现有音频/视频转写成文字稿或字幕文件。它只负责转写，不替代后续总结；"
+        "需要总结时先取得真实转写结果，再基于结果继续处理。成功后返回一个或多个 gen_* 句柄。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Source media handle (audio_*, file_*, gen_*)."},
-            "language": {"type": "string", "maxLength": 10, "description": "Optional language code, e.g. zh, en, ja. Default: auto-detect."},
-            "output_format": {"type": "string", "enum": ["txt", "srt", "vtt", "lrc", "json"], "description": "Transcript format. Default txt."},
-            "model": {"type": "string", "description": "Optional Whisper model size: tiny, base, small, medium, large-v2, large-v3."},
+            "source_ids": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 120},
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "来源句柄列表，如 audio_*、file_*、gen_*；单个来源也放入列表。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["md", "txt", "srt", "vtt", "json"],
+                "description": "文字稿默认 md；字幕选 srt/vtt。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
+            "language": {
+                "type": "string",
+                "enum": ["zh", "en", "ja", "ko", "auto"],
+                "description": "语音语言；不确定时用 auto。",
+            },
+            "with_timestamps": {"type": "boolean", "description": "是否保留时间戳；默认 true。"},
+            "merge_outputs": {
+                "type": "boolean",
+                "description": "多个来源是否合并成一份转写稿；默认 true。",
+            },
+            "model_size": {
+                "type": "string",
+                "enum": ["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+                "description": "可选识别模型；未明确要求时用默认 small。",
+            },
+            "vad_filter": {"type": "boolean", "description": "是否过滤静音段；默认 true。"},
         },
-        "required": ["source_id"],
+        "required": ["source_ids"],
     },
     risk="medium",
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1297,25 +1480,65 @@ TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(
 PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
     capability_id="prepare_voice_dataset",
     display_name="Prepare voice dataset",
-    description="Slice, label, and package audio clips into a voice training dataset for RVC or similar tools.",
+    description=(
+        "把一个或多个人声/语音来源切片、检查并打包为 GPT-SoVITS、RVC 或归档训练素材。"
+        "它会生成 manifest 和 zip，不负责训练模型。用户没指定细节时只选合适 profile，"
+        "不要凭空填写一整套切片参数。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Source audio handle (audio_*, file_*, gen_*)."},
-            "speaker_name": {"type": "string", "maxLength": 80, "description": "Speaker name for dataset labeling."},
-            "min_duration": {"type": "number", "minimum": 0.5, "maximum": 30.0, "description": "Minimum clip duration in seconds."},
-            "max_duration": {"type": "number", "minimum": 1.0, "maximum": 60.0, "description": "Maximum clip duration in seconds."},
-            "output_format": {"type": "string", "enum": ["wav", "flac"], "description": "Output audio format. Default wav."},
+            "source_ids": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 120},
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "来源人声/语音句柄列表。",
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["gpt_sovits", "rvc", "archive"],
+                "description": "目标素材预设；默认 gpt_sovits。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选训练集标题。"},
+            "target_sr": {
+                "type": "integer",
+                "minimum": 8000,
+                "maximum": 192000,
+                "description": "可选目标采样率；用户没指定时省略。",
+            },
+            "mono": {"type": "boolean", "description": "是否转单声道；默认 true。"},
+            "min_clip_seconds": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 30.0,
+                "description": "可选最短切片秒数。",
+            },
+            "max_clip_seconds": {
+                "type": "number",
+                "minimum": 1.0,
+                "maximum": 60.0,
+                "description": "可选最长切片秒数。",
+            },
+            "silence_threshold_db": {"type": "number", "description": "可选静音阈值 dB。"},
+            "min_silence_ms": {"type": "integer", "minimum": 0, "description": "可选最短静音间隔。"},
+            "max_silence_kept_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "可选切片中保留的最大静音时长。",
+            },
+            "clean_first": {"type": "boolean", "description": "是否先做轻量净化；默认 false。"},
+            "normalize_volume": {"type": "boolean", "description": "是否做音量标准化；默认 false。"},
         },
-        "required": ["source_id"],
+        "required": ["source_ids"],
     },
     risk="medium",
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=8192,
@@ -1324,16 +1547,36 @@ PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
 CONVERT_MEDIA_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="convert_media_file",
     display_name="Convert media file",
-    description="Convert or re-encode a media file to a different format or codec using FFmpeg.",
+    description=(
+        "转换或重新编码一个现有音频/视频，也可截取片段、调整音量、去头尾静音、淡入淡出或调速。"
+        "它不做人声分离、语音净化或转写。成功后返回一个新的 gen_* 句柄，需要交付时再调用 send_file。"
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Source media handle (audio_*, file_*, gen_*)."},
-            "output_format": {"type": "string", "enum": ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "mp4", "webm", "mkv"], "description": "Target output format."},
-            "bitrate": {"type": "string", "maxLength": 20, "description": "Optional output bitrate, e.g. 192k."},
-            "sample_rate": {"type": "integer", "description": "Optional output sample rate in Hz, e.g. 44100."},
-            "channels": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional output channel count."},
+            "source_id": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "来源媒体句柄，如 audio_*、file_*、gen_*。",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"],
+                "description": "目标音频格式；从视频提取音轨时也使用这里。",
+            },
+            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
+            "start_time": {"type": "string", "maxLength": 40, "description": "可选开始时间，如 00:00:35。"},
+            "end_time": {"type": "string", "maxLength": 40, "description": "可选结束时间，如 00:01:20。"},
+            "normalize_volume": {"type": "boolean", "description": "是否做响度标准化。"},
+            "volume_gain_db": {"type": "number", "minimum": -30, "maximum": 30, "description": "整体音量增减 dB。"},
+            "trim_silence": {"type": "boolean", "description": "是否去掉头尾静音。"},
+            "fade_in_seconds": {"type": "number", "minimum": 0, "maximum": 30},
+            "fade_out_seconds": {"type": "number", "minimum": 0, "maximum": 30},
+            "speed_ratio": {"type": "number", "minimum": 0.25, "maximum": 4.0},
+            "bitrate": {"type": "string", "maxLength": 20, "description": "可选输出码率，如 192k。"},
+            "sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000},
+            "channels": {"type": "integer", "minimum": 1, "maximum": 8},
         },
         "required": ["source_id", "output_format"],
     },
@@ -1341,8 +1584,8 @@ CONVERT_MEDIA_FILE_TOOL_SPEC = CapabilityToolSpec(
     confirm="first_time",
     effects=("file_create",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=8192,

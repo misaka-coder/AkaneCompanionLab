@@ -598,7 +598,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             include_capability_status=False,
         )
 
-        self.assertIn("provider native tool schema", prompt)
+        self.assertIn("请求中实际附带的工具定义", prompt)
         self.assertNotIn("探针正在检查", prompt)
         self.assertNotIn("联网搜索暂不可用", prompt)
         self.assertNotIn("联网搜索当前可用", prompt)
@@ -639,7 +639,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             )
             self.assertEqual(context["native_tool_choice"], "auto")
             self.assertNotIn("retrieve_memory", context["system_prompt"])
-            self.assertIn("retrieve_memory", context["tool_prompt_context"])
+            self.assertIn("【本轮直接工具入口】", context["tool_prompt_context"])
+            self.assertNotIn("retrieve_memory", context["tool_prompt_context"])
             self.assertNotIn("web_search", context["system_prompt"])
             self.assertIn("send_file", context["tool_prompt_context"])
             self.assertIn("【当前可调用工具（兼容 JSON 通道）】", context["tool_prompt_context"])
@@ -768,10 +769,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             [build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)]
         )
 
-        self.assertIn("web_search", instruction)
-        self.assertIn("provider tool_calls", instruction)
+        self.assertNotIn("web_search", instruction)
+        self.assertIn("真实工具调用", instruction)
         self.assertIn("最终 JSON 的 tool_call 保持 null", instruction)
-        self.assertIn("legacy 工具", instruction)
+        self.assertIn("真实工具结果", instruction)
         self.assertNotIn("同一轮发出多个 native tool calls", instruction)
 
     def test_verified_profile_completion_payload_sends_native_tools(self) -> None:
@@ -957,7 +958,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertIsNone(final_output["tool_call"])
         self.assertEqual(len(rejections), 1)
         self.assertIn("没有执行这次歧义调用", rejections[0])
-        self.assertIn("provider 原生工具调用", rejections[0])
+        self.assertIn("直接工具入口调用", rejections[0])
 
     def test_engine_still_accepts_legacy_json_for_non_native_tool(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

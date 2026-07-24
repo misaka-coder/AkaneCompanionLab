@@ -8,7 +8,20 @@ from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIO
 from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusions
-from companion_v01.tool_runtime import AdapterCapabilityToolHandler, TOOL_METADATA_BY_TYPE
+from companion_v01.tool_runtime import (
+    AdapterCapabilityToolHandler,
+    ApplyStyleToExistingFileToolHandler,
+    CleanVoiceTrackToolHandler,
+    ComposeFileToolHandler,
+    ConvertMediaFileToolHandler,
+    PrepareVoiceDatasetToolHandler,
+    ReviseGeneratedFileToolHandler,
+    SendFileToolHandler,
+    SeparateAudioStemsToolHandler,
+    TOOL_METADATA_BY_TYPE,
+    TOOL_SPEC_BY_TYPE,
+    TranscribeMediaToolHandler,
+)
 
 
 class NativeToolSchemaTests(unittest.TestCase):
@@ -190,6 +203,255 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(specs[0][NATIVE_TOOL_CAPABILITY_ID_FIELD], "mcp.demo.echo")
         self.assertEqual(function["parameters"]["required"], ["text"])
         self.assertEqual(native_legacy_prompt_exclusions(specs), {"mcp.demo.echo"})
+
+    def test_file_native_specs_match_the_arguments_handlers_actually_consume(self) -> None:
+        compose = ComposeFileToolHandler(generated_file_service=None)
+        revised = ReviseGeneratedFileToolHandler(generated_file_service=None)
+        styled = ApplyStyleToExistingFileToolHandler(generated_file_service=None)
+        send = SendFileToolHandler(generated_file_service=None)
+
+        compose_call = compose.normalize_call(
+            {
+                "type": "compose_file",
+                "source_ids": ["file_001"],
+                "task": "整理报告",
+                "output_format": "docx",
+                "output_title": "报告",
+                "structure": "report",
+                "style": "formal",
+                "fidelity": "preserve",
+                "content_markdown": "# 报告",
+                "table_rows": [["列", "值"], ["A", "1"]],
+                "formatting": {"header": {"bold": True}},
+            }
+        )
+        self.assertEqual(compose_call["task"], "整理报告")
+        self.assertEqual(compose_call["output_format"], "docx")
+        self.assertEqual(compose_call["content_markdown"], "# 报告")
+        self.assertEqual(compose_call["formatting"], {"header": {"bold": True}})
+
+        revise_call = revised.normalize_call(
+            {
+                "type": "revise_generated_file",
+                "target": "gen_001",
+                "instruction": "补一段总结",
+                "output_format": "pdf",
+                "output_title": "报告修订版",
+                "content_markdown": "# 修订版",
+                "table_rows": [["列", "值"]],
+                "formatting": {"header": {"bold": True}},
+            }
+        )
+        self.assertEqual(revise_call["instruction"], "补一段总结")
+        self.assertEqual(revise_call["output_format"], "pdf")
+        self.assertEqual(revise_call["content_markdown"], "# 修订版")
+
+        style_call = styled.normalize_call(
+            {
+                "type": "apply_style_to_existing_file",
+                "target": "file_001",
+                "target_type": "attachment",
+                "instruction": "姓名列标红",
+                "output_title": "样式版",
+                "formatting": {"columns": [{"match_header": "姓名", "font_color": "red"}]},
+            }
+        )
+        self.assertEqual(style_call["target_type"], "attachment")
+        self.assertEqual(style_call["instruction"], "姓名列标红")
+        self.assertEqual(style_call["formatting"]["columns"][0]["font_color"], "red")
+
+        send_call = send.normalize_call(
+            {
+                "type": "send_file",
+                "targets": ["file_001", "gen_001"],
+                "delivery_action": "reveal",
+            }
+        )
+        self.assertEqual(send_call["targets"], ["file_001", "gen_001"])
+        self.assertEqual(send_call["delivery_action"], "reveal")
+
+        for tool_name, handler in (
+            ("compose_file", compose),
+            ("revise_generated_file", revised),
+            ("apply_style_to_existing_file", styled),
+            ("send_file", send),
+        ):
+            native = build_openai_native_tool_specs({tool_name: handler})[0]["function"]
+            self.assertEqual(
+                native["parameters"]["properties"],
+                TOOL_SPEC_BY_TYPE[tool_name].input_schema["properties"],
+            )
+            self.assertNotIn("格式为", native["description"])
+            self.assertNotIn("tool_call", native["description"])
+
+    def test_media_native_specs_match_handlers_and_do_not_silently_drop_primary_options(self) -> None:
+        separate = SeparateAudioStemsToolHandler(generated_file_service=None)
+        clean = CleanVoiceTrackToolHandler(generated_file_service=None)
+        transcribe = TranscribeMediaToolHandler(generated_file_service=None)
+        dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
+        convert = ConvertMediaFileToolHandler(generated_file_service=None)
+
+        default_separation = separate.normalize_call(
+            {"type": "separate_audio_stems", "source_id": "audio_001"}
+        )
+        self.assertEqual(default_separation["output_format"], "mp3")
+        separation_call = separate.normalize_call(
+            {
+                "type": "separate_audio_stems",
+                "source_id": "audio_001",
+                "output_format": "flac",
+                "output_title": "幻听",
+            }
+        )
+        self.assertEqual(separation_call["output_format"], "flac")
+        self.assertEqual(separation_call["output_title"], "幻听")
+
+        clean_call = clean.normalize_call(
+            {
+                "type": "clean_voice_track",
+                "source_id": "gen_001",
+                "mode": "dereverb",
+                "quality": "ai",
+                "output_format": "wav",
+                "output_title": "净化人声",
+                "post_filter": True,
+            }
+        )
+        self.assertEqual(clean_call["mode"], "dereverb")
+        self.assertEqual(clean_call["quality"], "ai")
+        self.assertTrue(clean_call["post_filter"])
+
+        transcribe_call = transcribe.normalize_call(
+            {
+                "type": "transcribe_media",
+                "source_ids": ["audio_001", "file_002"],
+                "output_format": "srt",
+                "output_title": "字幕",
+                "language": "auto",
+                "with_timestamps": True,
+                "merge_outputs": False,
+                "model_size": "medium",
+                "vad_filter": True,
+            }
+        )
+        self.assertEqual(transcribe_call["source_ids"], ["audio_001", "file_002"])
+        self.assertEqual(transcribe_call["output_format"], "srt")
+        self.assertFalse(transcribe_call["merge_outputs"])
+        self.assertEqual(transcribe_call["model_size"], "medium")
+
+        dataset_call = dataset.normalize_call(
+            {
+                "type": "prepare_voice_dataset",
+                "source_ids": ["gen_001"],
+                "profile": "gpt_sovits",
+                "output_title": "训练集",
+                "target_sr": 44100,
+                "mono": True,
+                "min_clip_seconds": 3,
+                "max_clip_seconds": 12,
+                "silence_threshold_db": -40,
+                "min_silence_ms": 300,
+                "max_silence_kept_ms": 300,
+                "clean_first": True,
+                "normalize_volume": True,
+            }
+        )
+        self.assertEqual(dataset_call["source_ids"], ["gen_001"])
+        self.assertEqual(dataset_call["profile"], "gpt_sovits")
+        self.assertEqual(dataset_call["target_sr"], 44100)
+        self.assertTrue(dataset_call["clean_first"])
+
+        convert_call = convert.normalize_call(
+            {
+                "type": "convert_media_file",
+                "source_id": "file_001",
+                "output_format": "mp3",
+                "output_title": "片段",
+                "start_time": "00:00:35",
+                "end_time": "00:01:20",
+                "normalize_volume": True,
+                "volume_gain_db": 3,
+                "trim_silence": True,
+                "fade_in_seconds": 1,
+                "fade_out_seconds": 2,
+                "speed_ratio": 1.25,
+                "bitrate": "192k",
+                "sample_rate": 44100,
+                "channels": 2,
+            }
+        )
+        self.assertEqual(convert_call["output_title"], "片段")
+        self.assertEqual(convert_call["start_time"], "00:00:35")
+        self.assertEqual(convert_call["end_time"], "00:01:20")
+        self.assertTrue(convert_call["normalize_volume"])
+        self.assertTrue(convert_call["trim_silence"])
+        self.assertEqual(convert_call["speed_ratio"], 1.25)
+
+        expected_properties = {
+            "separate_audio_stems": {"source_id", "output_format", "output_title"},
+            "clean_voice_track": {
+                "source_id",
+                "mode",
+                "quality",
+                "output_format",
+                "output_title",
+                "post_filter",
+            },
+            "transcribe_media": {
+                "source_ids",
+                "output_format",
+                "output_title",
+                "language",
+                "with_timestamps",
+                "merge_outputs",
+                "model_size",
+                "vad_filter",
+            },
+            "prepare_voice_dataset": {
+                "source_ids",
+                "profile",
+                "output_title",
+                "target_sr",
+                "mono",
+                "min_clip_seconds",
+                "max_clip_seconds",
+                "silence_threshold_db",
+                "min_silence_ms",
+                "max_silence_kept_ms",
+                "clean_first",
+                "normalize_volume",
+            },
+            "convert_media_file": {
+                "source_id",
+                "output_format",
+                "output_title",
+                "start_time",
+                "end_time",
+                "normalize_volume",
+                "volume_gain_db",
+                "trim_silence",
+                "fade_in_seconds",
+                "fade_out_seconds",
+                "speed_ratio",
+                "bitrate",
+                "sample_rate",
+                "channels",
+            },
+        }
+        handlers = {
+            "separate_audio_stems": separate,
+            "clean_voice_track": clean,
+            "transcribe_media": transcribe,
+            "prepare_voice_dataset": dataset,
+            "convert_media_file": convert,
+        }
+        for tool_name, expected in expected_properties.items():
+            spec = TOOL_SPEC_BY_TYPE[tool_name]
+            self.assertEqual(set(spec.input_schema["properties"]), expected, tool_name)
+            native = build_openai_native_tool_specs({tool_name: handlers[tool_name]})[0]["function"]
+            self.assertEqual(set(native["parameters"]["properties"]), expected, tool_name)
+            self.assertNotIn("model", native["parameters"]["properties"], tool_name)
+            self.assertNotIn("stems", native["parameters"]["properties"], tool_name)
 
 
 if __name__ == "__main__":

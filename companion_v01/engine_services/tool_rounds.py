@@ -102,20 +102,12 @@ def should_stop_after_tool_events(
 
 
 def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | None) -> str:
-    native_tool_names = sorted(
-        {
-            str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
-            for tool in native_tools or []
-            if str(((tool.get("function") or {}).get("name") if isinstance(tool, dict) else "") or "").strip()
-        }
-    )
-    name_text = "、".join(native_tool_names) if native_tool_names else "已提供的 native 工具"
+    del native_tools
     return (
-        "【本轮 provider native 工具】\n"
-        f"{name_text}\n"
-        "需要这些能力时直接通过 provider tool_calls 调用；最终 JSON 的 tool_call 保持 null。"
-        "只有未通过 native schema 提供、且本轮上下文明确列出调用格式的 legacy 工具，才使用兼容字段。"
-        "不要只在 speech 里宣称已经调用；等待系统返回真实工具结果后再说明结果。"
+        "【本轮直接工具入口】\n"
+        "需要请求中已附带的工具时，直接发出真实工具调用；最终 JSON 的 tool_call 保持 null。"
+        "直接工具可以同轮调用多个互不依赖的能力；有依赖时等前一步真实结果返回后再继续。"
+        "不要只在 speech 里宣称调用或完成；只根据真实工具结果说明状态、数据与产物。"
     )
 
 

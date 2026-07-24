@@ -5327,9 +5327,9 @@ class AkaneMemoryEngine:
             if not native_carrier_present and raw_tool_name in native_schema_names:
                 final_output["tool_call"] = None
                 rejections.append(
-                    f"工具 {raw_tool_name} 本轮已通过 provider 原生工具 schema 提供，"
+                    f"工具 {raw_tool_name} 本轮已在请求的直接工具入口中提供，"
                     "但上一次输出把它写进了兼容 JSON tool_call；系统没有执行这次歧义调用。"
-                    "如果仍需执行，请直接使用本轮 provider 原生工具调用；"
+                    "如果仍需执行，请通过直接工具入口调用；"
                     "如果不再需要，请基于当前证据自然回答。"
                 )
                 continue
@@ -6841,8 +6841,8 @@ class AkaneMemoryEngine:
         if not handlers:
             if not include_capability_status and excluded:
                 return (
-                    "本轮具体工具能力与参数以 provider native tool schema 为准；"
-                    "不要在最终表现 JSON 的 legacy tool_call 字段里手写 native 工具。"
+                    "本轮可直接调用的工具及参数以请求中实际附带的工具定义为准；"
+                    "不要把这些工具手写进最终 JSON 的兼容 tool_call 字段。"
                 )
             if not disclosures and not capability_hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
@@ -6872,7 +6872,7 @@ class AkaneMemoryEngine:
         lines.extend(
             [
                 "【当前可调用工具（兼容 JSON 通道）】",
-                "以下工具没有通过本轮 provider tool schema 提供；需要时按各自格式写入最终 JSON 的 "
+                "以下工具没有出现在本轮直接工具入口中；需要时按各自格式写入最终 JSON 的 "
                 "tool_call，一次一个。工具结果返回后再判断是否继续。",
             ]
         )

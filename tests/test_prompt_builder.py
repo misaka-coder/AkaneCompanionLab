@@ -80,11 +80,12 @@ def _build_minimal_final(
 class PersonaConfigTomlTests(unittest.TestCase):
     def test_stable_tool_rules_distinguish_parallel_native_from_single_legacy_field(self) -> None:
         self.assertIn("多个互不依赖的工具", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("JSON `tool_call` 只是兼容入口", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("一次一个", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("兼容 JSON `tool_call`", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("一次只放一个", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("普通回合不一定重复展开完整清单", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("在结果出现前不要在 speech 里声称已经调用", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("在真实结果出现前，不要在 speech 里声称已经调用", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("证据不足时", TOOL_CONTEXT_STABLE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """
@@ -977,7 +978,7 @@ system = "semantic reinforcement system"
         )
         prompt = build_scene_static_system_prompt()
         self.assertIn("tool_call 是兼容字段，必须放在 speech_segments 之后", prompt)
-        self.assertIn("先直接发出原生工具调用，不要同时伪造最终 JSON", prompt)
+        self.assertIn("先发出真实工具调用，不要同时伪造最终 JSON", prompt)
 
         result = builder.build_final_generation_context(
             now_ts=1712400000,

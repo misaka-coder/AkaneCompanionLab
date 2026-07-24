@@ -81,7 +81,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     text=(
                         "[SYSTEM FORMAT REQUIREMENTS - STRICTLY FOLLOW; DO NOT EMBODY]\n"
                         "输出最终答复时，你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。\n"
-                        "如果本轮需要调用 provider 原生工具，先直接发出原生工具调用，不要同时伪造最终 JSON；"
+                        "如果本轮需要使用请求中直接附带的工具，先发出真实工具调用，不要同时伪造最终 JSON；"
                         "等系统返回真实工具结果后，再继续调用或输出最终 JSON。"
                     ),
                 ),
@@ -118,9 +118,9 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     id="tool_call",
                     text=(
                         "tool_call 是兼容字段，必须放在 speech_segments 之后。\n"
-                        "本轮通过 provider tool schema 提供的工具要直接走原生调用，此字段保持 null；"
-                        "只有本轮上下文明确列出 legacy 工具及格式时，才在这里一次调用一个。\n"
-                        "不需要工具、没有 legacy 清单或正在等待原生工具结果时都输出 null。"
+                        "请求中直接附带的工具要走真实工具调用，此字段保持 null；"
+                        "只有“兼容 JSON 工具”清单明确给出工具及格式时，才在这里一次调用一个。\n"
+                        "不需要兼容工具、没有兼容清单或正在等待真实工具结果时都输出 null。"
                     ),
                 ),
                 PromptBlock(
@@ -144,8 +144,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     text=(
                         "用户说出「生成/转换/发送/处理/导出/提取/分析文件」，或说「开始/继续/直接做」——这是工具调用的触发信号，直接调用对应工具，不要用语言说「我来做」再等确认。\n"
                         "任务工作区只是记录进度，不能替代真正执行。\n"
-                        "当系统把工具结果交还给你时，如果任务还需要下一步处理，继续使用该工具本轮实际提供的调用通道；"
-                        "结果已经足够时停止调用并自然回复。"
+                        "当系统把工具结果交还给你时，只把结果明确给出的状态、数据和产物当作事实；"
+                        "任务还需要下一步处理时继续使用本轮实际提供的工具，结果已经足够时停止调用并自然回复。"
                     ),
                 ),
                 PromptBlock(

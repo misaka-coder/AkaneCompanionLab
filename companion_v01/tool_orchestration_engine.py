@@ -326,10 +326,11 @@ def build_multi_tool_followup_context(
         lines.append("(暂时没有可用的工具结果。)")
     if allow_more:
         lines.append(
-            "如果任务还没完成，可以继续使用本轮实际提供的工具通道：provider schema 中的工具走原生调用，"
-            "只有本轮明确列出格式的兼容工具才写入 JSON tool_call；"
+            "如果任务还没完成，可以继续使用本轮实际提供的工具入口：请求中直接附带的工具直接调用，"
+            "只有“兼容 JSON 工具”清单里的工具才写入 JSON tool_call；"
             "如果用户已经明确交代了下一步，且下一步仍在安全边界和授权范围内，不要为了确认而停下询问；"
-            "如果结果已经足够、下一步不明确、或遇到真实阻塞，请停止调用、保持 tool_call 为 null，并自然回复主人。"
+            "每条结果只证明其中明确给出的状态、数据和产物。结果已经足够、下一步不明确、或遇到真实阻塞时，"
+            "停止调用、保持 tool_call 为 null，并自然回复主人；证据缺失的部分要明确说明，不要补猜。"
         )
     else:
         if str(stop_reason or "").strip() == "tool_budget_exhausted":
