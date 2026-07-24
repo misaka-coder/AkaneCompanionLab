@@ -262,6 +262,72 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertNotIn("secret-key", str(raised.exception))
         self.assertNotIn("must-not-leak", str(raised.exception))
 
+    def test_pinai_retries_transient_account_pool_and_recovers_readiness(self) -> None:
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        session = FakeSession(
+            [
+                FakeResponse(
+                    {"error": {"type": "api_error", "message": "No available compatible accounts"}},
+                    status_code=503,
+                ),
+                FakeResponse({"data": [{"b64_json": encoded}]}),
+            ]
+        )
+        sleeps: list[float] = []
+        provider = PinAIImageProvider(
+            base_url="https://api.pinaic.com/v1",
+            api_key="secret-key",
+            session=session,
+            retry_sleep=sleeps.append,
+        )
+
+        outputs = provider.generate(
+            prompt="测试",
+            size="1024x1024",
+            quality="low",
+            background="auto",
+            output_format="png",
+            compression=90,
+            n=1,
+        )
+
+        self.assertEqual(outputs[0].data, PNG_BYTES)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sleeps, [1.0])
+        self.assertEqual(provider.capability_status()["status"], "ready")
+
+    def test_pinai_final_account_pool_failure_updates_readiness(self) -> None:
+        response = FakeResponse(
+            {"error": {"type": "api_error", "message": "No available compatible accounts"}},
+            status_code=503,
+        )
+        session = FakeSession([response, response, response])
+        provider = PinAIImageProvider(
+            base_url="https://api.pinaic.com/v1",
+            api_key="secret-key",
+            session=session,
+            retry_sleep=lambda _seconds: None,
+        )
+
+        with self.assertRaises(ImageGenerationError) as raised:
+            provider.generate(
+                prompt="测试",
+                size="1024x1024",
+                quality="low",
+                background="auto",
+                output_format="png",
+                compression=90,
+                n=1,
+            )
+
+        self.assertEqual(raised.exception.code, "provider_no_compatible_accounts")
+        self.assertTrue(raised.exception.retryable)
+        self.assertEqual(len(session.calls), 3)
+        status = provider.capability_status()
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "unavailable")
+        self.assertEqual(status["reason"], "provider_no_compatible_accounts")
+
     def test_pinai_images_api_unsupported_is_specific_and_non_retryable(self) -> None:
         session = FakeSession(
             [

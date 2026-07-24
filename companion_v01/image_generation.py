@@ -54,6 +54,8 @@ class PinAIImageProvider:
         readiness_failure_ttl_seconds: float = 5 * 60,
         readiness_probe_in_background: bool = True,
         readiness_clock=time.monotonic,
+        transient_retry_count: int = 2,
+        retry_sleep=time.sleep,
     ) -> None:
         self.base_url = self._normalize_base_url(base_url)
         self.api_key = str(api_key or "").strip()
@@ -65,6 +67,8 @@ class PinAIImageProvider:
         self._readiness_failure_ttl_seconds = max(30.0, float(readiness_failure_ttl_seconds))
         self._readiness_probe_in_background = bool(readiness_probe_in_background)
         self._readiness_clock = readiness_clock
+        self._transient_retry_count = max(0, min(3, int(transient_retry_count or 0)))
+        self._retry_sleep = retry_sleep
         self._readiness_cache: tuple[float, dict[str, Any]] | None = None
         self._readiness_probe_inflight = False
         self._readiness_lock = threading.RLock()
@@ -203,9 +207,18 @@ class PinAIImageProvider:
             input_fidelity=input_fidelity,
         )
         reference_items = list(references or [])
-        if reference_items or mask is not None:
-            return self._edit(request_fields=request_fields, references=reference_items, mask=mask, n=n)
-        return self._generation(request_fields=request_fields, n=n)
+        try:
+            if reference_items or mask is not None:
+                outputs = self._edit(request_fields=request_fields, references=reference_items, mask=mask, n=n)
+            else:
+                outputs = self._generation(request_fields=request_fields, n=n)
+        except ImageGenerationError as exc:
+            failure_status = self._capability_status_for_generation_error(exc)
+            if failure_status is not None:
+                self._remember_capability_status(failure_status)
+            raise
+        self._remember_capability_status({"enabled": True, "status": "ready", "reason": ""})
+        return outputs
 
     def _generation(self, *, request_fields: dict[str, Any], n: int) -> list[GeneratedImageBytes]:
         response = self._post(
@@ -305,21 +318,33 @@ class PinAIImageProvider:
         files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
     ) -> Any:
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        try:
-            response = self.session.post(
-                url,
-                headers=headers,
-                json=json_body,
-                data=form_body,
-                files=files,
-                stream=True,
-                timeout=(10.0, self.timeout_seconds),
-            )
-        except (requests.Timeout, TimeoutError) as exc:
-            raise ImageGenerationError("provider_timeout", retryable=True) from exc
-        except requests.RequestException as exc:
-            raise ImageGenerationError("provider_transport_error", retryable=True) from exc
-        status_code = int(getattr(response, "status_code", 0) or 0)
+        response = None
+        status_code = 0
+        for attempt in range(self._transient_retry_count + 1):
+            try:
+                response = self.session.post(
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    data=form_body,
+                    files=files,
+                    stream=True,
+                    timeout=(10.0, self.timeout_seconds),
+                )
+            except (requests.Timeout, TimeoutError) as exc:
+                raise ImageGenerationError("provider_timeout", retryable=True) from exc
+            except requests.RequestException as exc:
+                raise ImageGenerationError("provider_transport_error", retryable=True) from exc
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            if status_code not in {502, 503, 504} or attempt >= self._transient_retry_count:
+                break
+            try:
+                response.close()
+            except Exception:
+                pass
+            self._retry_sleep(float(attempt + 1))
+        if response is None:
+            raise ImageGenerationError("provider_transport_error", retryable=True)
         if status_code >= 400:
             error_text = self._response_error_text(response)
             raise ImageGenerationError(
@@ -331,12 +356,34 @@ class PinAIImageProvider:
                 if status_code in {401, 403}
                 else "provider_rate_limited"
                 if status_code == 429
+                else "provider_no_compatible_accounts"
+                if status_code == 503 and "no available compatible accounts" in error_text
                 else "provider_unavailable"
                 if status_code >= 500
                 else "provider_rejected_request",
                 retryable=status_code == 429 or status_code >= 500,
             )
         return response
+
+    @staticmethod
+    def _capability_status_for_generation_error(exc: ImageGenerationError) -> dict[str, Any] | None:
+        code = str(exc.code or "")
+        if code == "provider_images_api_unsupported":
+            return {"enabled": False, "status": "unsupported", "reason": code}
+        if code == "provider_auth_or_network_forbidden":
+            return {"enabled": False, "status": "permission_denied", "reason": code}
+        if code == "provider_rate_limited":
+            return {"enabled": False, "status": "rate_limited", "reason": code}
+        if code in {
+            "provider_no_compatible_accounts",
+            "provider_unavailable",
+            "provider_timeout",
+            "provider_transport_error",
+            "provider_returned_no_image",
+            "provider_stream_unreadable",
+        }:
+            return {"enabled": False, "status": "unavailable", "reason": code}
+        return None
 
     @staticmethod
     def _response_error_text(response: Any) -> str:
