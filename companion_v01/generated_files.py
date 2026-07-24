@@ -78,6 +78,8 @@ class GeneratedFileService:
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
         asr_executor: Any = None,
+        audio_separation_executor: Any = None,
+        audio_separation_model: str = "HP5_only_main_vocal",
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +95,29 @@ class GeneratedFileService:
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
         self.asr_executor = asr_executor
+        self.audio_separation_executor = audio_separation_executor
+        self.audio_separation_model = (
+            str(audio_separation_model or "HP5_only_main_vocal").strip() or "HP5_only_main_vocal"
+        )
+
+    def audio_separation_status(self) -> dict[str, Any]:
+        executor = self.audio_separation_executor
+        if executor is not None:
+            try:
+                status = dict(executor.capability_status() or {})
+                rvc = status.get("rvc") if isinstance(status.get("rvc"), dict) else {}
+                if bool(rvc.get("ready")):
+                    return {"enabled": True, "status": "ready", "reason": "", "provider": "local_media_executor"}
+            except Exception:
+                pass
+        if importlib.util.find_spec("demucs") is not None or self._resolve_demucs_command() is not None:
+            return {"enabled": True, "status": "ready", "reason": "", "provider": "demucs"}
+        return {
+            "enabled": False,
+            "status": "missing_executor",
+            "reason": "audio_separation_executor_unavailable",
+            "provider": "",
+        }
 
     def compose_file(
         self,

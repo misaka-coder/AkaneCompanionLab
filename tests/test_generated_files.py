@@ -903,6 +903,80 @@ class GeneratedFileTests(unittest.TestCase):
             )
             self.assertIn("人声 / 伴奏分离", result["followup_context"])
 
+    def test_separate_audio_stems_uses_local_media_executor_and_returns_two_handles(self) -> None:
+        class FakeLocalMediaExecutor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            @staticmethod
+            def capability_status():
+                return {"rvc": {"ready": True, "modelCount": 1}}
+
+            def separate_rvc_vocals(self, *, source_path, separation_model):
+                self.calls.append((Path(source_path).name, separation_model))
+                return b"local vocals", b"local instrumental"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            stored = attachment_root / "master" / "song.wav"
+            stored.parent.mkdir(parents=True, exist_ok=True)
+            stored.write_bytes(b"fake wav payload")
+            store = MemoryStore(root / "db")
+            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            executor = FakeLocalMediaExecutor()
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                work_dir=root / "work",
+                store=store,
+                attachment_service=attachment_service,
+                audio_separation_executor=executor,
+                audio_separation_model="HP5_only_main_vocal",
+            )
+            attachment = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="audio",
+                origin_name="song.wav",
+                storage_relpath="master/song.wav",
+                timestamp=100,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=attachment["attachment_id"],
+                summary_title="song.wav",
+                short_hint="一首普通音频。",
+                detail={"file_kind": "wav"},
+                timestamp=101,
+            )
+
+            result = generated_service.separate_audio_stems(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                output_format="wav",
+                output_title="本机分轨",
+                send_to_user=False,
+                timestamp=120,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(executor.calls, [("song.wav", "HP5_only_main_vocal")])
+            self.assertEqual(
+                [item["generated_handle"] for item in result["generated_files"]],
+                ["gen_001", "gen_002"],
+            )
+            self.assertFalse(result["send_to_user"])
+            self.assertEqual(generated_service.audio_separation_status()["provider"], "local_media_executor")
+            self.assertEqual(
+                SeparateAudioStemsToolHandler(
+                    generated_file_service=generated_service
+                ).capability_status()["status"],
+                "ready",
+            )
+
     def test_separate_audio_stems_tool_handler_emits_two_generated_events(self) -> None:
         class FakeGeneratedService:
             def separate_audio_stems(self, **kwargs):

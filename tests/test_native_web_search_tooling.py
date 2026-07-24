@@ -1434,6 +1434,33 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertIn("handle=gen_009", exchange["result"])
         self.assertIn("直接调用 send_file", exchange["result"])
 
+    def test_generated_artifact_batch_exposes_all_handles_for_send_file(self) -> None:
+        result = tool_orchestration_engine.append_structured_artifact_receipts(
+            "分轨完成。",
+            stream_events=[
+                {
+                    "type": "generated_file_ready",
+                    "generated_file": {
+                        "generated_handle": "gen_031",
+                        "output_title": "歌曲_人声",
+                        "output_format": "wav",
+                    },
+                },
+                {
+                    "type": "generated_file_ready",
+                    "generated_file": {
+                        "generated_handle": "gen_032",
+                        "output_title": "歌曲_伴奏",
+                        "output_format": "wav",
+                    },
+                },
+            ],
+        )
+
+        self.assertIn("handle=gen_031", result)
+        self.assertIn("handle=gen_032", result)
+        self.assertIn("直接调用 send_file", result)
+
     def test_final_output_preserves_internal_native_tool_batch(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.resource_manifest = None

@@ -154,6 +154,25 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertEqual(normalized, {"type": "web_search", "query": "天气", "limit": 2})
         self.assertEqual(handler.normalized_inputs, [{"type": "web_search", "query": "天气", "ignored": ""}])
 
+    def test_generated_artifact_tools_defer_delivery_to_send_file_round(self) -> None:
+        separated = tool_orchestration_engine.defer_generated_artifact_delivery(
+            {
+                "type": "separate_audio_stems",
+                "source_id": "audio_001",
+                "send_to_user": True,
+            }
+        )
+        cover = tool_orchestration_engine.defer_generated_artifact_delivery(
+            {"type": "cover_song", "source_id": "audio_001", "delivery": "both"}
+        )
+        delivery = tool_orchestration_engine.defer_generated_artifact_delivery(
+            {"type": "send_file", "targets": ["gen_001", "gen_002"]}
+        )
+
+        self.assertFalse(separated["send_to_user"])
+        self.assertEqual(cover["delivery"], "none")
+        self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
+
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:
         handler = RecordingHandler()
         engine = FakeEngine(handler)

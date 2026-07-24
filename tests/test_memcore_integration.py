@@ -1573,6 +1573,250 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("MUST_NOT_BE_STORED", persisted)
         self.assertTrue(second_context["memcore_request_projection"]["media_omitted"])
 
+    def test_native_tool_history_rebuilds_complete_open_turn_across_two_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "media-user-1", "content": "分离后把两个文件发给我", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                engine.llm = SimpleNamespace(
+                    supports_request_observer=True,
+                    chat_provider_protocol=lambda **_kwargs: "responses",
+                )
+                engine.memcore_manager = manager
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                bundle = SimpleNamespace(
+                    client=SimpleNamespace(_akane_protocol="responses", protocol="responses"),
+                    model="gpt-test",
+                )
+                actual_user = {
+                    "role": "user",
+                    "content": "[100] message.user\ncontent:\n分离后把两个文件发给我",
+                }
+
+                initial = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                first_context = {
+                    "memcore_projection_read": {
+                        "current_turn_id": opened["turn_id"],
+                        "current_turn_messages": [
+                            dict(message)
+                            for message in initial["messages"]
+                            if message.get("turn_id") == opened["turn_id"]
+                        ],
+                    }
+                }
+                runtime._observe_completion_request(
+                    bundle=bundle,
+                    payload={
+                        "model": "gpt-test",
+                        "messages": [{"role": "system", "content": "stable system"}, actual_user],
+                        "tools": [],
+                    },
+                    observer=engine._build_memcore_request_observer(
+                        generation_context=first_context,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    ),
+                    persistent_turn_messages=[actual_user],
+                )
+
+                intermediate = manager.append_turn_intermediate(
+                    {"source_id": "media-preface-1", "content": "我先把人声和伴奏拆出来。", "timestamp": 101},
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(intermediate["ok"], intermediate)
+                first_batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "separate_audio_stems",
+                            "tool_call_id": "call-separate",
+                            "tool_input": {"file_id": "att_audio"},
+                            "result": "已生成 gen_vocals 和 gen_instrumental。",
+                            "source": "local_media_executor",
+                            "timestamp": 102,
+                            "source_id_prefix": "separate",
+                            "result_status": "success",
+                        }
+                    ],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                first_trace_ids = [
+                    source_id
+                    for exchange in first_batch["exchanges"]
+                    for source_id in (exchange["tool_use_source_id"], exchange["tool_result_source_id"])
+                ]
+                native_history: list[dict] = []
+                first_projected = engine._append_tool_history_batch(
+                    tool_history_turns=native_history,
+                    items=[
+                        (
+                            {
+                                "type": "separate_audio_stems",
+                                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                            },
+                            ToolExecutionResult(
+                                tool_type="separate_audio_stems",
+                                followup_context="已生成 gen_vocals 和 gen_instrumental。",
+                            ),
+                            "已生成 gen_vocals 和 gen_instrumental。",
+                            "",
+                        )
+                    ],
+                    trace_source_ids=first_trace_ids,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(first_projected["ok"], first_projected)
+                self.assertEqual(native_history[0]["content"], "我先把人声和伴奏拆出来。")
+
+                after_first = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                first_turn_messages = [
+                    dict(message)
+                    for message in after_first["messages"]
+                    if message.get("turn_id") == opened["turn_id"]
+                ]
+                second_context = {
+                    "memcore_projection_read": {
+                        "current_turn_id": opened["turn_id"],
+                        "current_turn_messages": first_turn_messages,
+                    }
+                }
+                runtime._observe_completion_request(
+                    bundle=bundle,
+                    payload={
+                        "model": "gpt-test",
+                        "messages": [
+                            {"role": "system", "content": "stable system"},
+                            actual_user,
+                            *native_history,
+                        ],
+                        "tools": [],
+                    },
+                    observer=engine._build_memcore_request_observer(
+                        generation_context=second_context,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    ),
+                    persistent_turn_messages=[actual_user, *native_history],
+                )
+
+                second_batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "send_file",
+                            "tool_call_id": "call-send",
+                            "tool_input": {"targets": ["gen_vocals", "gen_instrumental"]},
+                            "result": "两个文件已发送。",
+                            "source": "qq",
+                            "timestamp": 103,
+                            "source_id_prefix": "send-files",
+                            "result_status": "success",
+                        }
+                    ],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                second_trace_ids = [
+                    source_id
+                    for exchange in second_batch["exchanges"]
+                    for source_id in (exchange["tool_use_source_id"], exchange["tool_result_source_id"])
+                ]
+                second_projected = engine._append_tool_history_batch(
+                    tool_history_turns=native_history,
+                    items=[
+                        (
+                            {"type": "send_file", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
+                            ToolExecutionResult(
+                                tool_type="send_file",
+                                followup_context="两个文件已发送。",
+                            ),
+                            "两个文件已发送。",
+                            "",
+                        )
+                    ],
+                    trace_source_ids=second_trace_ids,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(second_projected["ok"], second_projected)
+
+                after_second = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                complete_turn_messages = [
+                    dict(message)
+                    for message in after_second["messages"]
+                    if message.get("turn_id") == opened["turn_id"]
+                ]
+                self.assertEqual(len(native_history), len(complete_turn_messages) - 1)
+                third_context = {
+                    "memcore_projection_read": {
+                        "current_turn_id": opened["turn_id"],
+                        "current_turn_messages": complete_turn_messages,
+                    }
+                }
+                third_observer = engine._build_memcore_request_observer(
+                    generation_context=third_context,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                runtime._observe_completion_request(
+                    bundle=bundle,
+                    payload={
+                        "model": "gpt-test",
+                        "messages": [
+                            {"role": "system", "content": "stable system"},
+                            actual_user,
+                            *native_history,
+                        ],
+                        "tools": [],
+                    },
+                    observer=third_observer,
+                    persistent_turn_messages=[actual_user, *native_history],
+                )
+                self.assertEqual(third_context["memcore_request_projection"]["status"], "recorded")
+            finally:
+                manager.close()
+
     def test_proactive_request_projection_failure_returns_memcore_error_not_persona_fallback(self) -> None:
         class RejectingManager:
             def __init__(self) -> None:

@@ -40,6 +40,35 @@ class NativeToolDecisionPlan:
         return bool(self.tools)
 
 
+_EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
+    {
+        "compose_file",
+        "revise_generated_file",
+        "apply_style_to_existing_file",
+        "convert_media_file",
+        "separate_audio_stems",
+        "cover_song",
+        "clean_voice_track",
+        "transcribe_media",
+        "prepare_voice_dataset",
+    }
+)
+
+
+def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
+    """Keep artifact creation and user delivery as two observable native tool rounds."""
+
+    normalized = dict(call)
+    tool_type = str(normalized.get("type") or "").strip()
+    if tool_type not in _EXPLICIT_DELIVERY_TOOL_TYPES:
+        return normalized
+    if "send_to_user" in normalized:
+        normalized["send_to_user"] = False
+    if tool_type == "cover_song":
+        normalized["delivery"] = "none"
+    return normalized
+
+
 def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 16) -> int:
     try:
         value = int(raw_value)
@@ -374,25 +403,13 @@ def normalize_tool_invocation(
         domain_profile_id=domain_profile_id,
         capability_selection=frozen_selection,
     )
-    delegated_media_call = _maybe_delegate_qq_media_tool(
-        value,
-        tool_type=tool_type,
-        handlers=handlers,
-        client_context=client_context,
-    )
-    if delegated_media_call is not None:
-        return legacy_tool_call_to_invocation(
-            delegated_media_call,
-            source=source,
-            invocation_id=invocation_id,
-            capability_selection=frozen_selection,
-        )
     handler = handlers.get(tool_type)
     if handler is None:
         return None
     normalized = handler.normalize_call(value)
     if normalized is None:
         return None
+    normalized = defer_generated_artifact_delivery(normalized)
     receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
     if isinstance(receipt, dict):
         normalized[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
@@ -662,25 +679,6 @@ def validate_legacy_tool_call(
         domain_profile_id=domain_profile_id,
         capability_selection=value.get(TOOL_CAPABILITY_SELECTION_FIELD),
     )
-    delegated_media_call = _maybe_delegate_qq_media_tool(
-        value,
-        tool_type=tool_type,
-        handlers=handlers,
-        client_context=client_context,
-    )
-    if delegated_media_call is not None:
-        return validate_tool_invocation(
-            engine,
-            legacy_tool_call_to_invocation(
-                delegated_media_call,
-                capability_selection=value.get(TOOL_CAPABILITY_SELECTION_FIELD),
-            ),
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            raw_tool_call=delegated_media_call,
-            domain_profile_id=domain_profile_id,
-        )
     return validate_tool_invocation(
         engine,
         legacy_tool_call_to_invocation(value),
@@ -724,58 +722,6 @@ def classify_tool_call_rejection(
     if validation.ok:
         return ""
     return validation.message
-
-
-def _maybe_delegate_qq_media_tool(
-    value: dict[str, Any],
-    *,
-    tool_type: str,
-    handlers: dict[str, Any],
-    client_context: ClientProtocolContext | None,
-) -> dict[str, Any] | None:
-    if not bool(getattr(config, "QQ_DELEGATE_MEDIA_TO_BACKGROUND", True)):
-        return None
-    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
-        return None
-    if tool_type not in {
-        "convert_media_file",
-        "separate_audio_stems",
-        "clean_voice_track",
-        "transcribe_media",
-        "prepare_voice_dataset",
-    }:
-        return None
-    delegate_handler = handlers.get("delegate_task")
-    if delegate_handler is None:
-        return None
-    source_values = []
-    for key in ("source_id", "source_ids", "source_target", "source_targets", "target", "targets"):
-        raw = value.get(key)
-        if isinstance(raw, list):
-            source_values.extend(str(item or "").strip() for item in raw)
-        elif str(raw or "").strip():
-            source_values.append(str(raw or "").strip())
-    output_bits = []
-    for key in ("output_format", "output_title", "mode", "language", "profile"):
-        raw = str(value.get(key) or "").strip()
-        if raw:
-            output_bits.append(f"{key}={raw}")
-    brief = (
-        "在 QQ 后台工坊执行媒体处理工具 "
-        f"{tool_type}，参数为 {describe_tool_call_for_prompt(value)}。"
-        "完成后把产物登记为可交付结果，由前台/系统通知用户并发送。"
-    )
-    delegated = {
-        "type": "delegate_task",
-        "agent": "media_agent",
-        "brief": brief,
-        "goal": f"后台完成 QQ 媒体处理：{tool_type}",
-        "raw_request": brief,
-        "inputs": [item for item in source_values if item][:12],
-        "expected_outputs": output_bits or [f"{tool_type} 生成的结果文件"],
-        "success_criteria": ["生成用户请求的媒体结果文件", "结果可由 QQ 发回用户"],
-    }
-    return delegate_handler.normalize_call(delegated)
 
 
 def promote_narrated_tool_call(

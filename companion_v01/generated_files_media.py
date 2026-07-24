@@ -1458,7 +1458,73 @@ def separate_audio_stems(
             extracted_input_path = prepared_input
 
         separation_output_dir = work_dir / "demucs_output"
-        if importlib.util.find_spec("demucs") is not None:
+        separation_executor = getattr(service, "audio_separation_executor", None)
+        separation_status = service.audio_separation_status() if hasattr(service, "audio_separation_status") else {}
+        if separation_executor is not None and str(separation_status.get("provider") or "") == "local_media_executor":
+            remote_input = prepared_input
+            if prepared_input.suffix.lower() != ".wav":
+                if not ffmpeg_path:
+                    return {
+                        "ok": False,
+                        "generated_files": [],
+                        "error": "ffmpeg_not_found",
+                        "followup_context": "音频分离前需要把来源规范化为 WAV，但当前没有找到 FFmpeg。",
+                    }
+                remote_input = work_dir / "local_executor_source.wav"
+                decode_result = subprocess.run(
+                    [
+                        str(ffmpeg_path),
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        str(prepared_input),
+                        "-vn",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "pcm_s16le",
+                        str(remote_input),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    check=False,
+                )
+                if decode_result.returncode != 0 or not remote_input.exists():
+                    return {
+                        "ok": False,
+                        "generated_files": [],
+                        "error": "audio_decode_failed",
+                        "followup_context": "音频分离前无法把来源转换为普通 WAV，暂时没有生成结果。",
+                    }
+            try:
+                vocals_bytes, instrumental_bytes = separation_executor.separate_rvc_vocals(
+                    source_path=remote_input,
+                    separation_model=str(
+                        getattr(service, "audio_separation_model", "HP5_only_main_vocal")
+                        or "HP5_only_main_vocal"
+                    ),
+                )
+            except Exception as exc:
+                reason = str(getattr(exc, "reason", "") or "local_audio_separation_failed")
+                return {
+                    "ok": False,
+                    "generated_files": [],
+                    "error": reason,
+                    "followup_context": f"本机音频分离没有成功（{reason}），来源文件仍然保留。",
+                }
+            local_stems_dir = work_dir / "local_executor_stems"
+            local_stems_dir.mkdir(parents=True, exist_ok=True)
+            vocals_path = local_stems_dir / "vocals.wav"
+            instrumental_path = local_stems_dir / "instrumental.wav"
+            vocals_path.write_bytes(vocals_bytes)
+            instrumental_path.write_bytes(instrumental_bytes)
+            stems = {"vocals": vocals_path, "instrumental": instrumental_path}
+        elif importlib.util.find_spec("demucs") is not None:
             try:
                 stems = service._separate_audio_with_demucs_module(
                     source_path=prepared_input,

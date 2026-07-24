@@ -5262,6 +5262,16 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
 
+    def capability_status(self) -> dict[str, Any]:
+        getter = getattr(self.generated_file_service, "audio_separation_status", None)
+        if not callable(getter):
+            return {
+                "enabled": False,
+                "status": "missing_executor",
+                "reason": "audio_separation_executor_unavailable",
+            }
+        return dict(getter() or {})
+
     def build_prompt_instruction(self) -> str:
         return (
             "- separate_audio_stems：当用户想把一首歌、录音或带音轨视频拆成人声和伴奏两轨时使用。"

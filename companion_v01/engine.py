@@ -187,7 +187,7 @@ MEDIA_PRESET_ROUTING = [
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
-    "生成与交付是两件事：媒体处理工具的 send_to_user 默认必须为 false。只有当前用户明确要求收到文件时才设为 true；否则先生成，等用户确认后再用 send_file 精确交付。",
+    "生成与交付是两件事：生成或媒体处理工具只负责产出句柄，不直接发送；拿到 gen_ 等结果后，根据用户要求调用 send_file 精确交付，多个结果可一次批量发送。",
     "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先 inspect_media_info 查当前规格，再决定 convert_media_file 参数。",
     "人声处理组合：需要人声/伴奏分离时先 separate_audio_stems；需要更干净人声时，再对 vocals 结果调用 clean_voice_track。",
     "完整翻唱不要手工串联分轨和转码；优先直接调用 cover_song，让后端统一处理缓存、RVC 推理、混音与交付。",
@@ -1806,6 +1806,11 @@ class AkaneMemoryEngine:
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self._get_local_media_executor(),
+            audio_separation_executor=self._get_local_media_executor(),
+            audio_separation_model=str(
+                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
+                or "HP5_only_main_vocal"
+            ),
         )
         self.generated_file_service = service
         return service
@@ -5744,20 +5749,48 @@ class AkaneMemoryEngine:
         )
         if not isinstance(projection, dict) or not projection.get("ok"):
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_build_failed"}
-        selected_messages = [
+        projection_messages = [
             message
             for message in list(projection.get("messages") or [])
             if isinstance(message, dict)
-            and selected_ids.intersection(
+        ]
+        selected_messages = [
+            message
+            for message in projection_messages
+            if selected_ids.intersection(
                 str(source_id or "").strip() for source_id in message.get("source_ids") or []
             )
         ]
+        selected_turn_ids = {
+            str(message.get("turn_id") or "").strip()
+            for message in selected_messages
+            if str(message.get("turn_id") or "").strip()
+        }
+        if len(selected_turn_ids) > 1:
+            return {"ok": False, "status": "failed", "reason": "tool_projection_crosses_turns"}
+        current_turn_messages = selected_messages
+        if selected_turn_ids:
+            current_turn_id = next(iter(selected_turn_ids))
+            current_turn_messages = [
+                message
+                for message in projection_messages
+                if str(message.get("turn_id") or "").strip() == current_turn_id
+            ]
+            if not current_turn_messages:
+                return {"ok": False, "status": "failed", "reason": "tool_turn_projection_missing"}
+            # The runtime already inserts the current user stimulus before
+            # ``post_user_turns``. Rebuild the entire remainder of the open
+            # MemCore turn on every tool round instead of appending only this
+            # batch. That preserves intermediate/tool/result ordering and
+            # prevents a second tool batch from drifting away from MemCore's
+            # authoritative current-turn projection.
+            current_turn_messages = current_turn_messages[1:]
         projected_messages: list[dict[str, Any]] = []
         media_attached = False
         legacy_assistant_written = False
         legacy_action_ids = set(trace_source_ids[0::2]) if has_legacy_calls else set()
         legacy_result_ids = set(trace_source_ids[1::2]) if has_legacy_calls else set()
-        for message in selected_messages:
+        for message in current_turn_messages:
             payload = dict(message.get("payload") or {})
             message_source_ids = {
                 str(source_id or "").strip()
@@ -5796,7 +5829,7 @@ class AkaneMemoryEngine:
             return {"ok": False, "status": "failed", "reason": "media_projection_incomplete"}
         if has_legacy_calls and not legacy_assistant_written:
             return {"ok": False, "status": "failed", "reason": "legacy_assistant_projection_missing"}
-        tool_history_turns.extend(projected_messages)
+        tool_history_turns[:] = projected_messages
         return {
             "ok": True,
             "status": "projected",
