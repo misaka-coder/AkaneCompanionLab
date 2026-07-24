@@ -979,6 +979,9 @@ system = "semantic reinforcement system"
         prompt = build_scene_static_system_prompt()
         self.assertIn("tool_call 是兼容字段，必须放在 speech_segments 之后", prompt)
         self.assertIn("先发出真实工具调用，不要同时伪造最终 JSON", prompt)
+        self.assertIn("同一条真实工具调用消息里先说一句符合当前人设的简短过程说明", prompt)
+        self.assertIn("快速查询、记忆读取或无需等待的动作可以静默调用", prompt)
+        self.assertIn("不能提前声称已经完成、成功、失败或已发送", prompt)
 
         result = builder.build_final_generation_context(
             now_ts=1712400000,

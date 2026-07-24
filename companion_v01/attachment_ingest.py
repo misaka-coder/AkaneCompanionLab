@@ -113,6 +113,7 @@ IMAGE_SUFFIXES = {
 REMOTE_MEDIA_DEFAULT_TIMEOUT = 180.0
 REMOTE_MEDIA_DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 REMOTE_MEDIA_DEFAULT_MAX_URLS = 8
+QQ_ATTACHMENT_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 REMOTE_MEDIA_DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
@@ -1405,7 +1406,7 @@ class AttachmentIngestService:
             data = action_result.data
             encoded_file = data.get("base64")
             if isinstance(encoded_file, str) and encoded_file:
-                max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 0)
+                max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", QQ_ATTACHMENT_DEFAULT_MAX_BYTES) or 0)
                 max_encoded_bytes = ((max_bytes + 2) // 3) * 4 if max_bytes > 0 else 0
                 if max_encoded_bytes <= 0 or len(encoded_file) <= max_encoded_bytes:
                     try:
@@ -1471,7 +1472,7 @@ class AttachmentIngestService:
         target_path: Path,
         enforce_max_bytes: bool = True,
     ) -> None:
-        max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 0)
+        max_bytes = int(getattr(config, "QQ_ATTACHMENT_MAX_BYTES", QQ_ATTACHMENT_DEFAULT_MAX_BYTES) or 0)
         try:
             file_size = source.stat().st_size
         except OSError as exc:
@@ -1514,7 +1515,10 @@ class AttachmentIngestService:
         max_bytes_value = int(
             max_bytes
             if max_bytes is not None
-            else (getattr(config, "QQ_ATTACHMENT_MAX_BYTES", 20 * 1024 * 1024) or 20 * 1024 * 1024)
+            else (
+                getattr(config, "QQ_ATTACHMENT_MAX_BYTES", QQ_ATTACHMENT_DEFAULT_MAX_BYTES)
+                or QQ_ATTACHMENT_DEFAULT_MAX_BYTES
+            )
         )
         request_headers = dict(
             headers
@@ -2037,6 +2041,21 @@ class AttachmentIngestService:
     def _mark_failed(self, item: dict[str, Any], error: str, *, timestamp: int) -> None:
         error_code = self._material_failure_code(error)
         readable_error = self._humanize_failure(error_code, kind=str(item.get("kind") or ""))
+        failure: dict[str, Any] = {
+            "code": error_code,
+            "reason": readable_error,
+            "failed_at": timestamp,
+        }
+        if error_code == "attachment_too_large":
+            observed_bytes = self._safe_int(item.get("file_size"))
+            limit_bytes = int(
+                getattr(config, "QQ_ATTACHMENT_MAX_BYTES", QQ_ATTACHMENT_DEFAULT_MAX_BYTES)
+                or QQ_ATTACHMENT_DEFAULT_MAX_BYTES
+            )
+            if observed_bytes > 0:
+                failure["observed_bytes"] = observed_bytes
+            if limit_bytes > 0:
+                failure["limit_bytes"] = limit_bytes
         updated = self.store.update_attachment_inbox_item(
             profile_user_id=str(item.get("profile_user_id") or ""),
             session_id=str(item.get("session_id") or ""),
@@ -2046,13 +2065,7 @@ class AttachmentIngestService:
             short_hint=readable_error,
             detail=self._merge_item_detail(
                 item,
-                {
-                    "failure": {
-                        "code": error_code,
-                        "reason": readable_error,
-                        "failed_at": timestamp,
-                    }
-                },
+                {"failure": failure},
             ),
             updated_at=timestamp,
         )

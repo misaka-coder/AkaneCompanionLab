@@ -2392,6 +2392,7 @@ class MemcoreManager:
             file_key = self._kind_segment(file_id, fallback="file")
             filename = self._attachment_filename(item)
             derived_status = self._attachment_derived_status(item)
+            failure = self._attachment_failure(item)
             if event_type == "cleanup":
                 semantic_text = memcore.render_material_cleanup_text(
                     file_id=file_id,
@@ -2414,6 +2415,21 @@ class MemcoreManager:
                     file_status=status_part,
                     derived_status=derived_status,
                 )
+                if failure:
+                    semantic_text = "\n".join(
+                        [
+                            semantic_text,
+                            "failure:",
+                            f"  code: {failure['code']}",
+                            f"  reason: {failure['reason']}",
+                            *(
+                                [f"  observed_bytes: {failure['observed_bytes']}"]
+                                if failure.get("observed_bytes")
+                                else []
+                            ),
+                            *([f"  limit_bytes: {failure['limit_bytes']}"] if failure.get("limit_bytes") else []),
+                        ]
+                    )
                 origin = memcore.EntryOrigin.USER
                 actor = self._build_actor(actor_stable_id, actor_display_name)
                 compatibility_role = f"user.attachment {kind_label} {file_key}"
@@ -2431,6 +2447,7 @@ class MemcoreManager:
                     "mime_type": str(item.get("mime_type") or ""),
                     "file_status": status_part,
                     "derived_status": derived_status,
+                    **({"failure": failure} if failure else {}),
                     **({"reason": str(reason or "")} if event_type == "cleanup" else {}),
                 },
                 actor=actor,
@@ -2511,6 +2528,27 @@ class MemcoreManager:
         if status == "ready":
             return "ready"
         return "unknown"
+
+    @staticmethod
+    def _attachment_failure(item: dict[str, Any]) -> dict[str, Any]:
+        if str(item.get("status") or "").strip().lower() != "failed":
+            return {}
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        raw_failure = detail.get("failure") if isinstance(detail.get("failure"), dict) else {}
+        code = str(raw_failure.get("code") or item.get("error_message") or "attachment_failed").strip()
+        reason = " ".join(str(raw_failure.get("reason") or item.get("short_hint") or "附件处理失败。").split()).strip()
+        failure: dict[str, Any] = {
+            "code": code[:120],
+            "reason": reason[:500],
+        }
+        for field in ("observed_bytes", "limit_bytes"):
+            try:
+                value = max(0, int(raw_failure.get(field) or 0))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                failure[field] = value
+        return failure
 
     def _get_system_or_none(
         self,

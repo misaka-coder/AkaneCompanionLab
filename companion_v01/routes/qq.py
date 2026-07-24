@@ -1183,17 +1183,16 @@ def _process_qq_turn_streaming(
                 continue
             pending_stage_messages.append(text)
             continue
-        if (
-            event_type == "assistant_stage_decision"
-            and pending_stage_messages
-        ):
-            if bool(stream_event.get("has_tool_call")):
-                # A tool preface is generated before transport truth exists.
-                # Hold it out of QQ so phrases such as "已经发你了" cannot
-                # become a visible false success when the later upload fails.
-                pending_stage_messages = []
-                continue
-            if not _streaming_allows_text(active_reply_mode, delivery_hint):
+        if event_type == "assistant_stage_decision" and pending_stage_messages:
+            has_tool_call = bool(stream_event.get("has_tool_call"))
+            text_allowed = (
+                _streaming_allows_tool_preface(active_reply_mode, delivery_hint)
+                if has_tool_call
+                else _streaming_allows_text(active_reply_mode, delivery_hint)
+            )
+            if not text_allowed:
+                if has_tool_call:
+                    pending_stage_messages = []
                 continue
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,

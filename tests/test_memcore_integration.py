@@ -3901,6 +3901,62 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("data:", projected_text)
         self.assertNotIn("mime_type:", projected_text)
 
+    def test_failed_material_trace_preserves_structured_failure_evidence(self) -> None:
+        item = {
+            "attachment_id": "attachment::failed",
+            "attachment_handle": "file_033",
+            "profile_user_id": "master",
+            "session_id": "qq_group_1",
+            "kind": "file",
+            "origin_name": "彩虹.flac",
+            "mime_type": "audio/flac",
+            "status": "failed",
+            "error_message": "attachment_too_large",
+            "short_hint": "文件超过当前大小限制。",
+            "storage_relpath": "",
+            "detail": {
+                "character_pack_id": "akane_v1",
+                "failure": {
+                    "code": "attachment_too_large",
+                    "reason": "文件超过当前大小限制。",
+                    "observed_bytes": 27_461_517,
+                    "limit_bytes": 20_971_520,
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                reference = manager.record_material_reference(item=item, timestamp=100)
+                stored = manager._store.get_record_by_source_id(reference["source_id"])
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(reference["ok"])
+        self.assertEqual(stored["payload"]["file_status"], "failed")
+        self.assertEqual(stored["payload"]["failure"]["code"], "attachment_too_large")
+        self.assertEqual(stored["payload"]["failure"]["observed_bytes"], 27_461_517)
+        projected_text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
+        self.assertIn("failure:\n  code: attachment_too_large", projected_text)
+        self.assertIn("reason: 文件超过当前大小限制。", projected_text)
+        self.assertIn("observed_bytes: 27461517", projected_text)
+        self.assertIn("limit_bytes: 20971520", projected_text)
+
     def test_task_event_bridge_records_safe_explicit_timeline_event(self) -> None:
         task = {
             "task_id": "task::abc",

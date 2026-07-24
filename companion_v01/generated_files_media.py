@@ -15,6 +15,26 @@ from pathlib import Path
 from typing import Any
 
 
+def _media_source_unavailable_feedback(
+    source: dict[str, Any],
+    *,
+    action: str,
+    default_message: str,
+) -> tuple[str, str]:
+    status = str(source.get("status") or "").strip().lower()
+    failure = source.get("failure") if isinstance(source.get("failure"), dict) else {}
+    failure_code = str(failure.get("code") or "").strip()
+    failure_reason = " ".join(str(failure.get("reason") or "").split()).strip()
+    if status == "failed" or failure_code:
+        code = failure_code or "attachment_failed"
+        reason = failure_reason or "这个附件在接收或处理阶段失败了。"
+        return (
+            code,
+            f"你刚刚想{action}，但来源附件此前已经失败：{reason} 请依据这个真实原因自然告诉用户，不要改说成本地文件不存在。",
+        )
+    return "source_file_missing", default_message
+
+
 def resolve_media_source(
     service: Any,
     *,
@@ -1138,11 +1158,16 @@ def convert_media_file(
 
     source_path = Path(source.get("absolute_path") or "")
     if not source_path.exists() or not source_path.is_file():
+        error, followup_context = _media_source_unavailable_feedback(
+            source,
+            action="转换媒体文件",
+            default_message="你刚刚想转换媒体文件，但本地来源文件不存在。请自然告诉用户这个文件暂时无法转换。",
+        )
         return {
             "ok": False,
             "generated": None,
-            "error": "source_file_missing",
-            "followup_context": "你刚刚想转换媒体文件，但本地来源文件不存在。请自然告诉用户这个文件暂时无法转换。",
+            "error": error,
+            "followup_context": followup_context,
         }
 
     input_ext = source_path.suffix.lower().lstrip(".")
@@ -1385,11 +1410,16 @@ def separate_audio_stems(
 
     source_path = Path(source.get("absolute_path") or "")
     if not source_path.exists() or not source_path.is_file():
+        error, followup_context = _media_source_unavailable_feedback(
+            source,
+            action="做人声伴奏分离",
+            default_message="你刚刚想做人声伴奏分离，但本地来源文件不存在。请自然告诉用户这个文件暂时无法处理。",
+        )
         return {
             "ok": False,
             "generated_files": [],
-            "error": "source_file_missing",
-            "followup_context": "你刚刚想做人声伴奏分离，但本地来源文件不存在。请自然告诉用户这个文件暂时无法处理。",
+            "error": error,
+            "followup_context": followup_context,
         }
 
     input_ext = source_path.suffix.lower().lstrip(".")
@@ -1712,11 +1742,16 @@ def clean_voice_track(
 
     source_path = Path(source.get("absolute_path") or "")
     if not source_path.exists() or not source_path.is_file():
+        error, followup_context = _media_source_unavailable_feedback(
+            source,
+            action="净化人声",
+            default_message="你刚刚想净化一段人声，但本地来源文件不存在。请自然告诉用户这个文件暂时无法处理。",
+        )
         return {
             "ok": False,
             "generated": None,
-            "error": "source_file_missing",
-            "followup_context": "你刚刚想净化一段人声，但本地来源文件不存在。请自然告诉用户这个文件暂时无法处理。",
+            "error": error,
+            "followup_context": followup_context,
         }
 
     input_ext = source_path.suffix.lower().lstrip(".")
@@ -2590,12 +2625,17 @@ def inspect_media_info(
 
     source_path = Path(source.get("absolute_path") or "")
     if not source_path.exists() or not source_path.is_file():
+        error, followup_context = _media_source_unavailable_feedback(
+            source,
+            action="查看媒体文件信息",
+            default_message="你刚刚想查看媒体文件信息，但本地来源文件不存在。请自然告诉用户这个文件暂时无法读取。",
+        )
         return {
             "ok": False,
             "source": source,
             "media_info": None,
-            "error": "source_file_missing",
-            "followup_context": "你刚刚想查看媒体文件信息，但本地来源文件不存在。请自然告诉用户这个文件暂时无法读取。",
+            "error": error,
+            "followup_context": followup_context,
         }
 
     ffprobe_path = shutil.which("ffprobe")

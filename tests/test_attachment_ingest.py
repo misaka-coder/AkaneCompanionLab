@@ -120,6 +120,42 @@ class FakeHttpSession:
 
 
 class AttachmentIngestTests(unittest.TestCase):
+    def test_too_large_failure_records_observed_and_configured_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+            item = inbox.create_pending(
+                profile_user_id="master",
+                session_id="qq_group_1",
+                source="qq",
+                kind="file",
+                origin_name="彩虹.flac",
+                file_size=27_461_517,
+                timestamp=100,
+            )
+
+            with patch("companion_v01.attachment_ingest.config.QQ_ATTACHMENT_MAX_BYTES", 20_971_520):
+                service._mark_failed(item, "attachment_too_large", timestamp=101)
+
+            stored = store.get_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_group_1",
+                attachment_id=item["attachment_id"],
+            )
+
+        self.assertIsNotNone(stored)
+        failure = stored["detail"]["failure"]
+        self.assertEqual(failure["code"], "attachment_too_large")
+        self.assertEqual(failure["observed_bytes"], 27_461_517)
+        self.assertEqual(failure["limit_bytes"], 20_971_520)
+
     def test_local_text_file_is_registered_and_parsed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

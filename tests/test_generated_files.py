@@ -58,6 +58,70 @@ def _write_test_wav(path: Path, *, sample_rate: int = 1000) -> None:
 
 
 class GeneratedFileTests(unittest.TestCase):
+    def test_media_tools_preserve_failed_attachment_root_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            attachment_service = AttachmentInboxService(store=store)
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+            )
+            failed = store.add_attachment_inbox_item(
+                profile_user_id="user",
+                session_id="session",
+                kind="file",
+                status="failed",
+                origin_name="彩虹.flac",
+                mime_type="audio/flac",
+                file_ext=".flac",
+                file_size=27_461_517,
+                error_message="attachment_too_large",
+                short_hint="文件超过当前大小限制。",
+                detail={
+                    "failure": {
+                        "code": "attachment_too_large",
+                        "reason": "文件超过当前大小限制。",
+                        "observed_bytes": 27_461_517,
+                        "limit_bytes": 20_971_520,
+                    }
+                },
+                timestamp=100,
+            )
+            handle = failed["attachment_handle"]
+
+            results = [
+                generated_service.convert_media_file(
+                    profile_user_id="user",
+                    session_id="session",
+                    source_target=handle,
+                    output_format="mp3",
+                ),
+                generated_service.separate_audio_stems(
+                    profile_user_id="user",
+                    session_id="session",
+                    source_target=handle,
+                ),
+                generated_service.clean_voice_track(
+                    profile_user_id="user",
+                    session_id="session",
+                    source_target=handle,
+                ),
+                generated_service.inspect_media_info(
+                    profile_user_id="user",
+                    session_id="session",
+                    source_target=handle,
+                ),
+            ]
+
+        for result in results:
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "attachment_too_large")
+            self.assertIn("来源附件此前已经失败", result["followup_context"])
+            self.assertIn("文件超过当前大小限制", result["followup_context"])
+            self.assertNotIn("本地来源文件不存在", result["followup_context"])
+
     def test_store_generated_file_roundtrip_and_handles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

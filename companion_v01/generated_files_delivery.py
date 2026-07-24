@@ -1334,6 +1334,25 @@ def resolve_attachment_style_source(
         except Exception:
             source_path = None
     detail = attachment.get("detail") if isinstance(attachment.get("detail"), dict) else {}
+    attachment_status = str(attachment.get("status") or "").strip()
+    raw_failure = detail.get("failure") if isinstance(detail.get("failure"), dict) else {}
+    failure_code = str(raw_failure.get("code") or attachment.get("error_message") or "").strip()
+    failure_reason = " ".join(str(raw_failure.get("reason") or attachment.get("short_hint") or "").split()).strip()
+    failure = (
+        {
+            "code": failure_code[:120],
+            "reason": failure_reason[:500],
+        }
+        if attachment_status.lower() == "failed" or failure_code or raw_failure
+        else {}
+    )
+    for field in ("observed_bytes", "limit_bytes"):
+        try:
+            value = max(0, int(raw_failure.get(field) or 0))
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            failure[field] = value
     media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
     title = (
         str(attachment.get("summary_title") or "").strip()
@@ -1358,6 +1377,8 @@ def resolve_attachment_style_source(
         "extra_source_ids": [],
         "version_no": 0,
         "media_info": media_info,
+        "status": attachment_status,
+        "failure": failure,
     }
 
 

@@ -187,7 +187,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual([segment["type"] for segment in messages[1]], ["text"])
         self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
 
-    def test_auto_mode_holds_native_tool_preface_until_transport_truth_exists(self) -> None:
+    def test_auto_mode_sends_native_tool_preface_before_final_reply(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
                 yield {"type": "speech_segment", "text": "我先看看这张图。"}
@@ -222,7 +222,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(gateway.text_sends, [["图片好了。"]])
+        self.assertEqual(gateway.text_sends, [["我先看看这张图。"], ["图片好了。"]])
 
     def test_streamed_generated_file_event_survives_empty_final_model_reply(self) -> None:
         class DeliveryGateway(FakeQQGateway):
@@ -327,7 +327,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         self.assertEqual(gateway.tool_events, [{"type": "state_update", "value": "ready"}])
 
-    def test_native_tool_preface_and_system_working_status_are_not_sent(self) -> None:
+    def test_native_tool_preface_is_sent_but_system_working_status_is_not(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
                 yield {"type": "speech_segment", "text": "我先看看这张图。"}
@@ -367,7 +367,10 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(gateway.text_sends, [["看好了，画面里是一只猫。"]])
+        self.assertEqual(
+            gateway.text_sends,
+            [["我先看看这张图。"], ["看好了，画面里是一只猫。"]],
+        )
         self.assertNotIn("系统正在处理图片。", repr(gateway.text_sends))
 
     def test_streamed_segments_are_not_resent_as_one_final_bubble(self) -> None:

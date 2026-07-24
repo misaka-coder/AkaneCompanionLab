@@ -343,7 +343,7 @@ class Settings(BaseSettings):
     # 附件下载超时（秒）
     QQ_ATTACHMENT_DOWNLOAD_TIMEOUT: float = 20.0
     # 附件下载最大字节数
-    QQ_ATTACHMENT_MAX_BYTES: int = 20 * 1024 * 1024
+    QQ_ATTACHMENT_MAX_BYTES: int = 64 * 1024 * 1024
     # QQ 文本消息附件最大读取字节数
     QQ_TEXT_ATTACHMENT_MAX_READ_BYTES: int = 256 * 1024
 
