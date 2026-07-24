@@ -4146,11 +4146,36 @@ class WebSearchToolHandler(BaseToolHandler):
                 status = {"enabled": False, "status": "unavailable", "reason": "anysearch_probe_error"}
             else:
                 status = {"enabled": True, "status": "ready", "reason": "", "cache_ttl_seconds": 5.0}
+        except McpStdioDiscoveryError as exc:
+            return self._probe_rest_fallback(
+                cache_key=cache_key,
+                mcp_reason=self._safe_mcp_failure_reason(exc),
+            )
         except Exception as exc:
             status = {
                 "enabled": False,
                 "status": "unavailable",
                 "reason": f"anysearch_probe_failed:{type(exc).__name__}",
+            }
+        self._remember_readiness(cache_key, status)
+        return status
+
+    def _probe_rest_fallback(self, *, cache_key: tuple[str, str], mcp_reason: str) -> dict[str, Any]:
+        endpoint = str(getattr(self.anysearch_rest_client, "endpoint", "anysearch-rest") or "anysearch-rest")
+        rest_cache_key = (cache_key[0], "rest:" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest())
+        rest_status = self._probe_rest_readiness(cache_key=rest_cache_key)
+        if bool(rest_status.get("enabled")):
+            status = {
+                **rest_status,
+                "fallback_from": "mcp",
+                "mcp_reason": str(mcp_reason or "mcp_call_failed")[:120],
+            }
+        else:
+            status = {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": str(mcp_reason or "mcp_call_failed")[:120],
+                "fallback_reason": str(rest_status.get("reason") or "anysearch_rest_failed")[:120],
             }
         self._remember_readiness(cache_key, status)
         return status
@@ -4244,6 +4269,10 @@ class WebSearchToolHandler(BaseToolHandler):
         action = str(call.get("action") or "search").strip()
         arguments = self._build_mcp_arguments(call)
         use_mcp = bool(server and str(server.get("command") or "").strip())
+        if use_mcp and server:
+            cached_status = self._cached_server_readiness(runtime_profile_user_id, server)
+            if bool(cached_status and cached_status.get("enabled")) and cached_status.get("transport") == "rest":
+                use_mcp = False
         redaction_terms = self._redaction_terms_for_server(server) if server else []
         try:
             if use_mcp:
@@ -4253,9 +4282,24 @@ class WebSearchToolHandler(BaseToolHandler):
         except AnySearchRestError as exc:
             return self._failure(exc.reason, "AnySearch 官方 HTTPS 搜索调用失败。")
         except McpStdioDiscoveryError as exc:
+            mcp_reason = self._safe_mcp_failure_reason(exc)
             if use_mcp and server:
-                self._remember_server_failure(runtime_profile_user_id, server, reason=str(exc) or "mcp_call_failed")
-            return self._failure(str(exc) or "mcp_call_failed", "AnySearch MCP 调用失败或超时。")
+                self._remember_server_failure(runtime_profile_user_id, server, reason=mcp_reason)
+            if action not in {"search", "batch_search"}:
+                return self._failure(mcp_reason, "AnySearch MCP 调用失败或超时。")
+            try:
+                result = self.anysearch_rest_client.call(action=action, arguments=arguments)
+            except AnySearchRestError as rest_exc:
+                return self._failure(rest_exc.reason, "AnySearch MCP 与官方 HTTPS 搜索均不可用。")
+            except Exception:
+                return self._failure("anysearch_rest_failed", "AnySearch MCP 与官方 HTTPS 搜索均不可用。")
+            use_mcp = False
+            if server:
+                self._remember_server_rest_fallback(
+                    runtime_profile_user_id,
+                    server,
+                    mcp_reason=mcp_reason,
+                )
         except Exception:
             if use_mcp and server:
                 self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_call_failed")
@@ -4343,6 +4387,11 @@ class WebSearchToolHandler(BaseToolHandler):
         return isinstance(result, Mapping) and bool(result.get("isError") or result.get("is_error"))
 
     @staticmethod
+    def _safe_mcp_failure_reason(value: Any) -> str:
+        reason = str(value or "").partition(":")[0].strip().lower()
+        return reason if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason) else "mcp_call_failed"
+
+    @staticmethod
     def _server_readiness_fingerprint(server: Mapping[str, Any]) -> str:
         stable = {
             "enabled": bool(server.get("enabled")),
@@ -4367,10 +4416,42 @@ class WebSearchToolHandler(BaseToolHandler):
             {"enabled": True, "status": "ready", "reason": "", "cache_ttl_seconds": 5.0},
         )
 
+    def _cached_server_readiness(
+        self,
+        profile_user_id: str,
+        server: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        cache_key = (profile_user_id, self._server_readiness_fingerprint(server))
+        now = float(self._readiness_clock())
+        with self._readiness_lock:
+            cached = self._readiness_cache.get(cache_key)
+            if cached is None or cached[0] <= now:
+                return None
+            return dict(cached[1])
+
     def _remember_server_failure(self, profile_user_id: str, server: Mapping[str, Any], *, reason: str) -> None:
         self._remember_readiness(
             (profile_user_id, self._server_readiness_fingerprint(server)),
             {"enabled": False, "status": "unavailable", "reason": str(reason or "mcp_call_failed")[:120]},
+        )
+
+    def _remember_server_rest_fallback(
+        self,
+        profile_user_id: str,
+        server: Mapping[str, Any],
+        *,
+        mcp_reason: str,
+    ) -> None:
+        self._remember_readiness(
+            (profile_user_id, self._server_readiness_fingerprint(server)),
+            {
+                "enabled": True,
+                "status": "ready",
+                "reason": "",
+                "transport": "rest",
+                "fallback_from": "mcp",
+                "mcp_reason": str(mcp_reason or "mcp_call_failed")[:120],
+            },
         )
 
     def _build_mcp_arguments(self, call: Mapping[str, Any]) -> dict[str, Any]:

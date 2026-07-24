@@ -23,6 +23,7 @@ from companion_v01.tool_runtime import (
     WebSearchToolHandler,
 )
 from companion_v01.anysearch_rest_client import AnySearchRestError
+from companion_v01.mcp_stdio_discoverer import McpStdioDiscoveryError
 
 
 class RetrieveMemoryToolHandlerTests(unittest.TestCase):
@@ -438,6 +439,54 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(second["status"], "ready")
             self.assertEqual(caller.calls, [("search", {"query": "OpenAI", "max_results": 1})])
 
+    def test_capability_status_falls_back_to_rest_when_mcp_process_fails(self) -> None:
+        class FailingCaller:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                self.calls += 1
+                raise McpStdioDiscoveryError("mcp_stdout_closed")
+
+        class FakeRestClient:
+            endpoint = "https://api.anysearch.test/v1/search"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def call(self, *, action: str, arguments: dict) -> dict:
+                self.calls.append((action, arguments))
+                return {"results": []}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "broken-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            rest = FakeRestClient()
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=FailingCaller(),
+                anysearch_rest_client=rest,
+                readiness_probe_in_background=False,
+            )
+
+            status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+
+            self.assertTrue(status["enabled"])
+            self.assertEqual(status["status"], "ready")
+            self.assertEqual(status["transport"], "rest")
+            self.assertEqual(status["fallback_from"], "mcp")
+            self.assertEqual(rest.calls, [("search", {"query": "OpenAI", "max_results": 1})])
+
     def test_default_capability_probe_stays_hidden_while_background_check_runs(self) -> None:
         completed = threading.Event()
 
@@ -718,6 +767,75 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(rest.calls, [("search", {"query": "国内财经新闻", "max_results": 3})])
             self.assertEqual(result.state_updates["web_search_status"], "ok")
             self.assertIn("国内公开搜索结果", result.followup_context)
+
+    def test_execute_search_falls_back_to_rest_when_mcp_process_fails(self) -> None:
+        class FailingCaller:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
+                self.calls += 1
+                raise McpStdioDiscoveryError("mcp_stdout_closed")
+
+        class FakeRestClient:
+            endpoint = "https://api.anysearch.test/v1/search"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def call(self, *, action: str, arguments: dict) -> dict:
+                self.calls.append((action, arguments))
+                return {
+                    "results": [
+                        {
+                            "title": "REST 降级结果",
+                            "url": "https://example.com/fallback",
+                            "snippet": "MCP 进程失败后仍可完成只读搜索。",
+                        }
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "broken-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            rest = FakeRestClient()
+            caller = FailingCaller()
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=caller,
+                anysearch_rest_client=rest,
+                readiness_probe_in_background=False,
+            )
+            call = handler.normalize_call({"type": "web_search", "query": "今天新闻", "max_results": 2})
+            assert call is not None
+
+            readiness = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+            result = handler.execute(call=call, context=self._context())
+            status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+
+            self.assertEqual(readiness["transport"], "rest")
+            self.assertEqual(result.state_updates["web_search_status"], "ok")
+            self.assertIn("REST 降级结果", result.followup_context)
+            self.assertEqual(caller.calls, 1)
+            self.assertEqual(
+                rest.calls,
+                [
+                    ("search", {"query": "OpenAI", "max_results": 1}),
+                    ("search", {"query": "今天新闻", "max_results": 2}),
+                ],
+            )
+            self.assertEqual(status["transport"], "rest")
+            self.assertEqual(status["fallback_from"], "mcp")
 
     def test_qq_search_uses_owner_capability_profile_by_default(self) -> None:
         class FakeCaller:

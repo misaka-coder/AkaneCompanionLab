@@ -2038,6 +2038,9 @@ class CapabilityRegistry:
 
             ready_module_tools: list[str] = []
             for tool_name in module_tools:
+                if tool_name not in seen_schema_tools:
+                    seen_schema_tools.add(tool_name)
+                    schema_tools.append(tool_name)
                 if tool_name in seen_tools:
                     ready_module_tools.append(tool_name)
                     continue
@@ -2067,9 +2070,6 @@ class CapabilityRegistry:
                             )
                         )
                         continue
-                if tool_name not in seen_schema_tools:
-                    seen_schema_tools.add(tool_name)
-                    schema_tools.append(tool_name)
                 seen_tools.add(tool_name)
                 tools.append(tool_name)
                 ready_module_tools.append(tool_name)
