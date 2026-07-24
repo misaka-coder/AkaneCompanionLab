@@ -2,6 +2,8 @@ param(
     [string]$SshHost = "akane-vps",
     [int]$LocalPort = 11001,
     [int]$RemotePort = 10001,
+    [int]$GptSoVitsLocalPort = 9880,
+    [int]$GptSoVitsRemotePort = 19880,
     [string]$InstanceId = "personal",
     [string]$DataRoot = "",
     [switch]$NoBuild,
@@ -111,6 +113,39 @@ function Start-AkaneSshTunnel {
         -PassThru
 }
 
+function Start-AkaneGptSoVitsReverseTunnel {
+    param(
+        [string]$Target,
+        [int]$LocalProviderPort,
+        [int]$RemoteProviderPort,
+        [string]$LogDirectory
+    )
+    $ssh = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        throw "ssh_not_found"
+    }
+    New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+    $stdoutLog = Join-Path $LogDirectory "gpt_sovits_reverse_tunnel.log"
+    $stderrLog = Join-Path $LogDirectory "gpt_sovits_reverse_tunnel.err.log"
+    $reverseForward = "127.0.0.1:{0}:127.0.0.1:{1}" -f $RemoteProviderPort, $LocalProviderPort
+    return Start-Process `
+        -FilePath $ssh.Source `
+        -ArgumentList @(
+            "-N",
+            "-T",
+            "-o", "BatchMode=yes",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-R", $reverseForward,
+            $Target
+        ) `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutLog `
+        -RedirectStandardError $stderrLog `
+        -PassThru
+}
+
 function Wait-AkaneCloudHealth {
     param(
         [string]$BaseUrl,
@@ -165,7 +200,12 @@ if (-not (Test-Path -LiteralPath $mainLauncher -PathType Leaf)) {
 if (-not (Test-AkaneSafeInstanceId -Value $InstanceId)) {
     throw "invalid_instance_id"
 }
-if ($LocalPort -lt 1 -or $LocalPort -gt 65535 -or $RemotePort -lt 1 -or $RemotePort -gt 65535) {
+if (
+    $LocalPort -lt 1 -or $LocalPort -gt 65535 -or
+    $RemotePort -lt 1 -or $RemotePort -gt 65535 -or
+    $GptSoVitsLocalPort -lt 1 -or $GptSoVitsLocalPort -gt 65535 -or
+    $GptSoVitsRemotePort -lt 1 -or $GptSoVitsRemotePort -gt 65535
+) {
     throw "invalid_tunnel_port"
 }
 
@@ -181,6 +221,42 @@ $resolvedDataRoot = if ($DataRoot.Trim()) {
 $logDirectory = Join-Path $resolvedDataRoot "logs"
 $runDirectory = Join-Path $resolvedDataRoot "run"
 New-Item -ItemType Directory -Force -Path $logDirectory, $runDirectory | Out-Null
+
+$gptSoVitsTunnelPidPath = Join-Path $runDirectory "gpt_sovits_reverse_tunnel.pid"
+if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $GptSoVitsLocalPort) {
+    $expectedReverseForward = "127.0.0.1:{0}:127.0.0.1:{1}" -f $GptSoVitsRemotePort, $GptSoVitsLocalPort
+    if (Test-Path -LiteralPath $gptSoVitsTunnelPidPath -PathType Leaf) {
+        $storedProcessId = 0
+        if ([int]::TryParse(
+            [System.IO.File]::ReadAllText($gptSoVitsTunnelPidPath).Trim(),
+            [ref]$storedProcessId
+        )) {
+            $storedProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$storedProcessId" -ErrorAction SilentlyContinue
+            $isTrackedReverseTunnel = (
+                $null -ne $storedProcess -and
+                [System.IO.Path]::GetFileNameWithoutExtension([string]$storedProcess.ExecutablePath) -eq "ssh" -and
+                [string]$storedProcess.CommandLine -like "*-R*$expectedReverseForward*"
+            )
+            if ($isTrackedReverseTunnel) {
+                Stop-Process -Id $storedProcessId -Force
+                Start-Sleep -Milliseconds 200
+            }
+        }
+    }
+    Write-Host "[INFO] Publishing local GPT-SoVITS to the cloud over SSH loopback..."
+    $gptSoVitsTunnelProcess = Start-AkaneGptSoVitsReverseTunnel `
+        -Target $SshHost `
+        -LocalProviderPort $GptSoVitsLocalPort `
+        -RemoteProviderPort $GptSoVitsRemotePort `
+        -LogDirectory $logDirectory
+    Start-Sleep -Milliseconds 400
+    if ($gptSoVitsTunnelProcess.HasExited) {
+        throw "gpt_sovits_reverse_tunnel_failed: see $logDirectory"
+    }
+    [System.IO.File]::WriteAllText($gptSoVitsTunnelPidPath, [string]$gptSoVitsTunnelProcess.Id)
+} else {
+    Write-Host "[INFO] GPT-SoVITS is not listening on 127.0.0.1:$GptSoVitsLocalPort; provider tunnel not started."
+}
 
 $tokenSource = Import-AkanePersonalSatelliteToken -ExpectedInstanceId $InstanceId
 $backendUrl = "http://127.0.0.1:$LocalPort"
