@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -126,6 +128,45 @@ class EnginePluginReasoningPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.reason, "incomplete_reasoning_result")
         self.assertEqual(result.text, "")
+
+    async def test_timeout_retry_joins_same_idempotent_engine_turn(self) -> None:
+        class SlowEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def process_turn(self, _payload: dict[str, Any]) -> dict[str, Any]:
+                self.calls += 1
+                self.started.set()
+                self.release.wait(timeout=2.0)
+                return {"speech": "同一轮完成", "tool_events": []}
+
+        engine = SlowEngine()
+        port = EnginePluginReasoningPort(engine)
+        port._timeout_seconds = 0.02
+        request = PluginReasoningRequest(
+            trace_id="finance:retry",
+            profile_user_id="qq-user",
+            session_id="qq-session",
+            message="event",
+            memory_idempotency_key="delivery:stable-event",
+        )
+
+        first = await port.analyze(request)
+        self.assertTrue(engine.started.is_set())
+        self.assertFalse(first.ok)
+        self.assertEqual(first.status, "timeout")
+
+        port._timeout_seconds = 1.0
+        retry_task = asyncio.create_task(port.analyze(request))
+        await asyncio.sleep(0)
+        engine.release.set()
+        second = await retry_task
+
+        self.assertTrue(second.ok)
+        self.assertEqual(second.text, "同一轮完成")
+        self.assertEqual(engine.calls, 1)
 
     async def test_invalid_request_fails_without_calling_engine(self) -> None:
         engine = FakeEngine()

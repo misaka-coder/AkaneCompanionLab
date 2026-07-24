@@ -370,15 +370,17 @@ class MemcoreManager:
                 opened_at=int((record or {}).get("timestamp") or time.time()),
             )
             stored = handle.stimuli[0]
+            writable = str(handle.status) == "open"
             return {
                 **self._status(
                     operation,
                     True,
-                    "opened" if str(handle.status) == "open" else str(handle.status),
+                    "opened" if writable else str(handle.status),
                     source_id=stored.source_id,
                     index_status=stored.index_status,
                 ),
                 "turn_id": str(handle.turn_id),
+                "writable": writable,
             }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__

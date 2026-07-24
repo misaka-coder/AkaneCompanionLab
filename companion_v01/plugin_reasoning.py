@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -21,6 +22,8 @@ MAX_REASONING_EVENT_FIELDS = 16
 MAX_REASONING_EVENT_FIELD_CHARS = 4_000
 MAX_REASONING_EVENT_TOTAL_CHARS = 12_000
 DEFAULT_REASONING_TIMEOUT_SECONDS = 120.0
+REASONING_RESULT_REUSE_SECONDS = 600.0
+MAX_REASONING_RESULT_TASKS = 256
 _PROACTIVE_MESSAGE_HEADER = "【当前待处理的插件主动事件（不是用户发言）】"
 _PROACTIVE_RESPONSE_DIRECTIVE = "请按系统约定的 JSON 最终答复格式完成本次处理。"
 _EVENT_TYPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -64,6 +67,8 @@ class EnginePluginReasoningPort:
             raise TypeError("invalid_reasoning_engine")
         self._engine = engine
         self._timeout_seconds = max(1.0, min(300.0, float(timeout_seconds)))
+        self._task_lock = asyncio.Lock()
+        self._idempotent_tasks: dict[str, tuple[asyncio.Task[Any], float]] = {}
 
     async def analyze(self, request: PluginReasoningRequest) -> PluginReasoningResult:
         error = _validate_request(request)
@@ -103,9 +108,13 @@ class EnginePluginReasoningPort:
             payload["plugin_external_event"] = external_event_payload
         if request.character_pack_id.strip():
             payload["character_pack_id"] = request.character_pack_id.strip()
+        task = await self._reasoning_task(request, payload)
         try:
+            # Cancelling ``to_thread`` only cancels the waiter, not the engine
+            # thread. Keep the real task alive so an idempotent retry joins the
+            # same work instead of opening a second MemCore/tool turn.
             frame = await asyncio.wait_for(
-                asyncio.to_thread(self._engine.process_turn, payload),
+                asyncio.shield(task),
                 timeout=self._timeout_seconds,
             )
         except (asyncio.TimeoutError, TimeoutError):
@@ -127,6 +136,72 @@ class EnginePluginReasoningPort:
             text=text[:MAX_REASONING_OUTPUT_CHARS],
             evidence_events=_project_evidence_events(frame.get("tool_events")),
         )
+
+    async def _reasoning_task(
+        self,
+        request: PluginReasoningRequest,
+        payload: dict[str, Any],
+    ) -> asyncio.Task[Any]:
+        key = self._reasoning_task_key(request)
+        if not key:
+            task = asyncio.create_task(asyncio.to_thread(self._engine.process_turn, payload))
+            task.add_done_callback(self._consume_task_exception)
+            return task
+        async with self._task_lock:
+            self._prune_reasoning_tasks_locked()
+            existing = self._idempotent_tasks.get(key)
+            if existing is not None:
+                return existing[0]
+            task = asyncio.create_task(asyncio.to_thread(self._engine.process_turn, payload))
+            task.add_done_callback(self._consume_task_exception)
+            if len(self._idempotent_tasks) >= MAX_REASONING_RESULT_TASKS:
+                return task
+            self._idempotent_tasks[key] = (task, time.monotonic())
+            self._prune_reasoning_tasks_locked()
+            return task
+
+    @staticmethod
+    def _reasoning_task_key(request: PluginReasoningRequest) -> str:
+        idempotency_key = str(request.memory_idempotency_key or "").strip()
+        if not idempotency_key:
+            return ""
+        scope = "\x00".join(
+            (
+                str(request.profile_user_id or ""),
+                str(request.session_id or ""),
+                str(request.character_pack_id or ""),
+                idempotency_key,
+            )
+        )
+        return hashlib.sha256(scope.encode("utf-8", errors="ignore")).hexdigest()
+
+    def _prune_reasoning_tasks_locked(self) -> None:
+        now = time.monotonic()
+        removable = [
+            key
+            for key, (task, created_at) in self._idempotent_tasks.items()
+            if task.done() and now - created_at >= REASONING_RESULT_REUSE_SECONDS
+        ]
+        for key in removable:
+            self._idempotent_tasks.pop(key, None)
+        overflow = max(0, len(self._idempotent_tasks) - MAX_REASONING_RESULT_TASKS)
+        if overflow <= 0:
+            return
+        for key, (task, _created_at) in list(self._idempotent_tasks.items()):
+            if overflow <= 0:
+                break
+            if task.done():
+                self._idempotent_tasks.pop(key, None)
+                overflow -= 1
+
+    @staticmethod
+    def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except Exception:
+            return
 
 
 class PluginScopedReasoningPort:

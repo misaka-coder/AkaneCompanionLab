@@ -21,7 +21,7 @@ from .tool_invocation import ToolResultEnvelope
 from .tool_invocation import ValidationResult
 from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
-from .native_tool_schema import build_openai_native_tool_specs
+from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult
 from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 from .desktop_satellite_specs import desktop_satellite_spec
@@ -326,9 +326,10 @@ def build_multi_tool_followup_context(
         lines.append("(暂时没有可用的工具结果。)")
     if allow_more:
         lines.append(
-            "如果任务还没完成，可以继续在 tool_call 字段调用下一步必要工具；"
+            "如果任务还没完成，可以继续使用本轮实际提供的工具通道：provider schema 中的工具走原生调用，"
+            "只有本轮明确列出格式的兼容工具才写入 JSON tool_call；"
             "如果用户已经明确交代了下一步，且下一步仍在安全边界和授权范围内，不要为了确认而停下询问；"
-            "如果结果已经足够、下一步不明确、或遇到真实阻塞，请将 tool_call 设为 null，并自然回复主人。"
+            "如果结果已经足够、下一步不明确、或遇到真实阻塞，请停止调用、保持 tool_call 为 null，并自然回复主人。"
         )
     else:
         if str(stop_reason or "").strip() == "tool_budget_exhausted":
@@ -347,7 +348,7 @@ def build_multi_tool_followup_context(
                 "给出当前最可靠的完整答复，并明确证据缺口和置信度。"
             )
         lines.append(
-            "本轮不要再调用工具，请将 tool_call 设为 null，并立即输出完整、可交付的最终回复。"
+            "本轮不要再调用工具（无论原生或兼容），请将 tool_call 设为 null，并立即输出完整、可交付的最终回复。"
             "不得只回复“仍在处理”“还没完成”“需要继续查询”或类似占位语；即使证据不足，也要给出当前可支持的结论、"
             "限制与下一步建议。"
         )
@@ -633,9 +634,10 @@ def native_legacy_prompt_exclusions(native_tools: list[dict[str, Any]] | None) -
         function = raw.get("function")
         if not isinstance(function, dict):
             continue
-        name = str(function.get("name") or "").strip()
-        if name:
-            exclusions.add(name)
+        model_name = str(function.get("name") or "").strip()
+        capability_id = str(raw.get(NATIVE_TOOL_CAPABILITY_ID_FIELD) or "").strip() or model_name
+        if capability_id:
+            exclusions.add(capability_id)
     return exclusions
 
 
@@ -754,7 +756,8 @@ def validate_tool_invocation(
             (
                 f"你刚才请求的工具「{tool_type}」在本轮不可用，已被系统忽略。"
                 f"本轮真正可用的工具是：{available_text}。"
-                "请改用其中一个工具，或把 tool_call 设为 null 并直接回复主人，不要再调用不存在的工具。"
+                "请按本轮为该工具实际提供的通道改用其中一个工具；如果不再需要工具，"
+                "保持兼容 tool_call 为 null 并直接回复主人。不要再调用不存在的工具。"
             ),
         )
 
@@ -768,7 +771,8 @@ def validate_tool_invocation(
             (
                 f"你对工具「{tool_type}」的调用参数不完整或格式不对，系统无法执行，已被忽略"
                 f"（你提交的是：{describe_tool_call_for_prompt(candidate_call)}）。"
-                "请对照该工具所需字段修正后重试，或把 tool_call 设为 null 并直接回复主人。"
+                "请对照本轮 schema 修正参数，并通过该工具本轮实际提供的通道重试；"
+                "如果不再需要工具，保持兼容 tool_call 为 null 并直接回复主人。"
             ),
         )
     return ValidationResult.success()

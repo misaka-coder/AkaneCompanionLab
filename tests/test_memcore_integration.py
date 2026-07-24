@@ -1894,7 +1894,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(manager.calls), 1)
         self.assertTrue(result["_transient_final_failure"])
         self.assertEqual(result["_memcore_failure"]["reason"], "request_projection_record_failed")
-        self.assertIn("会话记忆暂时读取失败", result["speech"])
+        self.assertIn("上下文没有完整衔接成功", result["speech"])
         self.assertNotIn("认真听你说", result["speech"])
 
     def test_memcore_final_retry_reuses_identical_user_payload(self) -> None:
@@ -3770,6 +3770,67 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(manager.user_calls[1]["actor_display_name"], "李四")
         self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
+
+    def test_engine_never_reuses_terminal_memcore_turn_as_writable(self) -> None:
+        class TerminalTurnManager:
+            enabled = True
+            available = True
+
+            @staticmethod
+            def begin_input_turn(_record, **_kwargs):
+                return {
+                    "ok": True,
+                    "status": "aborted",
+                    "turn_id": "old-terminal-turn",
+                    "writable": False,
+                }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = TerminalTurnManager()
+
+        opened = engine._begin_memcore_input_turn(
+            user_record={"source_id": "same-event", "content": "retry", "timestamp": 100},
+            external_event=None,
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+            actor_stable_id="",
+            actor_display_name="",
+        )
+
+        self.assertTrue(opened["ok"])
+        self.assertEqual(opened["status"], "aborted")
+        self.assertFalse(opened["writable"])
+        self.assertEqual(opened["turn_id"], "")
+        self.assertEqual(
+            engine._memcore_input_turn_failure(opened),
+            {
+                "status": "aborted",
+                "reason": "input_turn_not_writable",
+                "detail": "aborted",
+                "delivery_status": "model_reply_preserved",
+            },
+        )
+
+    def test_nonfatal_memcore_write_failure_never_replaces_real_reply(self) -> None:
+        output = {
+            "speech": "工具已经真实返回了文件 gen_009。",
+            "speech_segments": ["工具已经真实返回了文件 gen_009。"],
+        }
+
+        AkaneMemoryEngine._attach_nonfatal_memcore_failure(
+            output,
+            {
+                "status": "failed",
+                "reason": "tool_trace_record_failed",
+                "detail": "turn_not_open",
+            },
+        )
+
+        self.assertEqual(output["speech"], "工具已经真实返回了文件 gen_009。")
+        self.assertNotIn("_transient_final_failure", output)
+        self.assertEqual(output["_memcore_failure"]["detail"], "turn_not_open")
+        self.assertEqual(output["_memcore_failure"]["delivery_status"], "model_reply_preserved")
 
     def test_material_trace_bridge_records_safe_attachment_anchor(self) -> None:
         item = {

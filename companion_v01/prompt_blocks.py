@@ -80,7 +80,9 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     id="json_object_only",
                     text=(
                         "[SYSTEM FORMAT REQUIREMENTS - STRICTLY FOLLOW; DO NOT EMBODY]\n"
-                        "你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。"
+                        "输出最终答复时，你必须只输出一个合法 JSON 对象，不能输出任何额外解释、前后缀、代码块或 markdown。\n"
+                        "如果本轮需要调用 provider 原生工具，先直接发出原生工具调用，不要同时伪造最终 JSON；"
+                        "等系统返回真实工具结果后，再继续调用或输出最终 JSON。"
                     ),
                 ),
                 PromptBlock(
@@ -90,7 +92,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="field_order",
                     text=(
-                        "请先完整输出 emotion，再输出 speech 和 speech_segments，紧接着输出 tool_call，再继续输出后面的字段。"
+                        "输出最终 JSON 时，请先完整输出 emotion，再输出 speech 和 speech_segments，"
+                        "紧接着输出 tool_call，再继续输出后面的字段。"
                     ),
                 ),
                 PromptBlock(
@@ -114,9 +117,10 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="tool_call",
                     text=(
-                        "tool_call：当用户的意图只靠语言能力无法完成时，从后面的工具清单里选一个工具调用。\n"
-                        "tool_call 必须放在 speech_segments 字段之后；不需要工具时输出 null。\n"
-                        "当前 JSON tool_call 字段一次只调用一个 legacy 工具；provider 原生工具可按系统规则同轮调用多个互不依赖的工具。"
+                        "tool_call 是兼容字段，必须放在 speech_segments 之后。\n"
+                        "本轮通过 provider tool schema 提供的工具要直接走原生调用，此字段保持 null；"
+                        "只有本轮上下文明确列出 legacy 工具及格式时，才在这里一次调用一个。\n"
+                        "不需要工具、没有 legacy 清单或正在等待原生工具结果时都输出 null。"
                     ),
                 ),
                 PromptBlock(
@@ -140,7 +144,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     text=(
                         "用户说出「生成/转换/发送/处理/导出/提取/分析文件」，或说「开始/继续/直接做」——这是工具调用的触发信号，直接调用对应工具，不要用语言说「我来做」再等确认。\n"
                         "任务工作区只是记录进度，不能替代真正执行。\n"
-                        "当系统把工具结果交还给你时，如果任务还需要下一步处理，继续在 tool_call 调用下一步工具；结果已经足够时，把 tool_call 设为 null 并自然回复。"
+                        "当系统把工具结果交还给你时，如果任务还需要下一步处理，继续使用该工具本轮实际提供的调用通道；"
+                        "结果已经足够时停止调用并自然回复。"
                     ),
                 ),
                 PromptBlock(

@@ -7,6 +7,7 @@ from memcore import build_native_memory_tool_specs
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
+from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusions
 from companion_v01.tool_runtime import AdapterCapabilityToolHandler, TOOL_METADATA_BY_TYPE
 
 
@@ -188,6 +189,7 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertRegex(function["name"], r"^mcp_demo_echo_[0-9a-f]{10}$")
         self.assertEqual(specs[0][NATIVE_TOOL_CAPABILITY_ID_FIELD], "mcp.demo.echo")
         self.assertEqual(function["parameters"]["required"], ["text"])
+        self.assertEqual(native_legacy_prompt_exclusions(specs), {"mcp.demo.echo"})
 
 
 if __name__ == "__main__":

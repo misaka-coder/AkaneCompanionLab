@@ -1739,6 +1739,7 @@ class CapabilitySelection:
     tool_names: tuple[str, ...]
     module_names: tuple[str, ...]
     schema_tool_names: tuple[str, ...] = ()
+    native_tool_names: tuple[str, ...] = ()
     layer_names: tuple[str, ...] = ()
     disclosures: tuple[CapabilityDisclosure, ...] = ()
     tool_specs: tuple[CapabilityToolSpec, ...] = ()

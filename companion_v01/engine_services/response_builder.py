@@ -1,6 +1,7 @@
 """Final response context builder extracted from engine.py."""
 
 from __future__ import annotations
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -507,6 +508,22 @@ def prepare_context(
         if native_plan.enabled:
             native_tools = native_plan.tools
             native_legacy_exclusions = native_plan.legacy_prompt_exclusions
+            if capability_selection is not None:
+                resolved_native_names = tuple(
+                    name for name in schema_tool_names if name in native_legacy_exclusions
+                )
+                try:
+                    capability_selection = replace(
+                        capability_selection,
+                        native_tool_names=resolved_native_names,
+                    )
+                except TypeError:
+                    # Lightweight host/test projections may expose the same
+                    # attribute contract without being dataclasses.
+                    try:
+                        setattr(capability_selection, "native_tool_names", resolved_native_names)
+                    except (AttributeError, TypeError):
+                        pass
         elif native_plan.status == "unsupported":
             engine.llm.record_metric("native_tool_provider_unsupported")
     tool_prompt_context = engine._build_tool_prompt_context(

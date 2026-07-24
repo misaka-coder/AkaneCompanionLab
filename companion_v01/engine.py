@@ -838,10 +838,104 @@ class AkaneMemoryEngine:
                 external_event=external_event,
             )
             self._warn_memcore_write_result("input turn open", result)
-            return result
+            if not isinstance(result, dict):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": "invalid_input_turn_open_result",
+                    "turn_id": "",
+                    "writable": False,
+                }
+            normalized = dict(result)
+            status = str(normalized.get("status") or "").strip().lower()
+            turn_id = str(normalized.get("turn_id") or "").strip()
+            writable = bool(
+                normalized.get("ok")
+                and turn_id
+                and status in {"open", "opened"}
+                and normalized.get("writable", True)
+            )
+            normalized["writable"] = writable
+            if not writable:
+                # ``begin_turn`` is idempotent and may return the old handle for
+                # an already completed/aborted stimulus.  Such a handle is
+                # useful evidence, but it is not a writable current turn.
+                # Never pass its id to tool/metadata writers.
+                normalized["turn_id"] = ""
+                if turn_id and status:
+                    logger.warning(
+                        "memcore input turn is not writable status=%s",
+                        status[:80],
+                    )
+            return normalized
         except Exception as exc:
-            logger.warning("memcore input turn open failed: %s", exc)
-            return {"ok": False, "status": "failed", "reason": str(exc)}
+            exception_code = f"exception_{type(exc).__name__}"
+            logger.warning("memcore input turn open failed reason=%s", type(exc).__name__)
+            return {
+                "ok": False,
+                "status": "failed",
+                "reason": exception_code,
+                "turn_id": "",
+                "writable": False,
+            }
+
+    @staticmethod
+    def _memcore_input_turn_failure(result: Any) -> dict[str, Any] | None:
+        if not isinstance(result, dict) or not result:
+            return None
+        status = str(result.get("status") or "failed").strip().lower()
+        writable = bool(
+            result.get("writable")
+            or (
+                result.get("ok")
+                and str(result.get("turn_id") or "").strip()
+                and status in {"open", "opened"}
+            )
+        )
+        if writable:
+            return None
+        detail = AkaneMemoryEngine._safe_memcore_failure_code(
+            result.get("reason") or status,
+            fallback="input_turn_unavailable",
+        )
+        return {
+            "status": AkaneMemoryEngine._safe_memcore_failure_code(status, fallback="failed"),
+            "reason": "input_turn_not_writable",
+            "detail": detail,
+            "delivery_status": "model_reply_preserved",
+        }
+
+    @staticmethod
+    def _safe_memcore_failure_code(value: Any, *, fallback: str) -> str:
+        text = str(value or "").strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{0,119}", text):
+            return text
+        return str(fallback or "memcore_failure")[:120]
+
+    @staticmethod
+    def _attach_nonfatal_memcore_failure(
+        final_output: dict[str, Any],
+        failure: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(failure, dict) or not failure:
+            return
+        if isinstance(final_output.get("_memcore_failure"), dict):
+            return
+        final_output["_memcore_failure"] = {
+            "status": AkaneMemoryEngine._safe_memcore_failure_code(
+                failure.get("status"),
+                fallback="failed",
+            ),
+            "reason": AkaneMemoryEngine._safe_memcore_failure_code(
+                failure.get("reason"),
+                fallback="memcore_write_failed",
+            ),
+            "detail": AkaneMemoryEngine._safe_memcore_failure_code(
+                failure.get("detail"),
+                fallback="unavailable",
+            ),
+            "delivery_status": "model_reply_preserved",
+        }
 
     def _stage_memcore_turn_metadata(
         self,
@@ -3180,6 +3274,7 @@ class AkaneMemoryEngine:
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
         memcore_turn_id = ""
+        turn_memcore_failure: dict[str, Any] | None = None
         if not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
@@ -3196,6 +3291,7 @@ class AkaneMemoryEngine:
                 actor_display_name=actor_display_name,
             )
             memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
+            turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
 
         prompt_exclude_source_ids: list[str] = []
         final_output = self._build_final_response(
@@ -3388,8 +3484,7 @@ class AkaneMemoryEngine:
             tool_result = batch_results[-1] if batch_results else None
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
-                final_output = self._memcore_projection_failure_output(batch_memcore_failure)
-                break
+                turn_memcore_failure = batch_memcore_failure
 
             stop_after_tool = self._should_stop_after_tool_events(
                 _current_events,
@@ -3441,6 +3536,7 @@ class AkaneMemoryEngine:
             source_id=str(user_record.get("source_id") or ""),
             tool_result=tool_result,
         )
+        self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
         final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
         final_output["dialogue_turns"] = self._build_dialogue_turns(
@@ -3720,6 +3816,7 @@ class AkaneMemoryEngine:
         confirmed_snippets = retrieval_pipeline.confirmed_snippets
         verifier_timing = retrieval_pipeline.verifier_timing
         memcore_turn_id = ""
+        turn_memcore_failure: dict[str, Any] | None = None
         if not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
@@ -3736,6 +3833,7 @@ class AkaneMemoryEngine:
                 actor_display_name=actor_display_name,
             )
             memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
+            turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
 
         prompt_exclude_source_ids: list[str] = []
         final_output = yield from self._stream_final_response(
@@ -3952,8 +4050,7 @@ class AkaneMemoryEngine:
                 yield stream_event
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
-                final_output = self._memcore_projection_failure_output(batch_memcore_failure)
-                break
+                turn_memcore_failure = batch_memcore_failure
 
             stop_after_tool = self._should_stop_after_tool_events(
                 current_events,
@@ -4005,6 +4102,7 @@ class AkaneMemoryEngine:
             source_id=str(user_record.get("source_id") or ""),
             tool_result=tool_result,
         )
+        self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
         final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
         final_output["dialogue_turns"] = self._build_dialogue_turns(
@@ -4867,14 +4965,20 @@ class AkaneMemoryEngine:
     def _memcore_projection_failure_output(failure: dict[str, Any]) -> dict[str, Any]:
         return {
             "emotion": "concerned",
-            "speech": "这次会话记忆暂时读取失败，我先不在缺少上下文的情况下继续回答。请稍后再试。",
-            "speech_segments": ["这次会话记忆暂时读取失败，我先不在缺少上下文的情况下继续回答。请稍后再试。"],
+            "speech": "这次上下文没有完整衔接成功，我先不在证据有缺口的情况下乱答。请稍后再试。",
+            "speech_segments": ["这次上下文没有完整衔接成功，我先不在证据有缺口的情况下乱答。请稍后再试。"],
             "tool_call": None,
             "memory_metadata": {},
             "_transient_final_failure": True,
             "_memcore_failure": {
-                "status": str(failure.get("status") or "failed")[:40],
-                "reason": str(failure.get("reason") or "projection_unavailable")[:120],
+                "status": AkaneMemoryEngine._safe_memcore_failure_code(
+                    failure.get("status"),
+                    fallback="failed",
+                )[:40],
+                "reason": AkaneMemoryEngine._safe_memcore_failure_code(
+                    failure.get("reason"),
+                    fallback="projection_unavailable",
+                ),
             },
         }
 
@@ -5187,6 +5291,10 @@ class AkaneMemoryEngine:
         frozen_capability_selection = final_output.pop(TOOL_CAPABILITY_SELECTION_FIELD, None)
         native_tool_calls = final_output.pop(NATIVE_TOOL_CALLS_FIELD, None)
         native_tool_call = final_output.pop(NATIVE_TOOL_CALL_FIELD, None)
+        native_carrier_present = bool(
+            (isinstance(native_tool_calls, list) and any(isinstance(call, dict) and call for call in native_tool_calls))
+            or (isinstance(native_tool_call, dict) and native_tool_call)
+        )
         raw_tool_calls = (
             [dict(call) for call in native_tool_calls if isinstance(call, dict) and call]
             if isinstance(native_tool_calls, list)
@@ -5209,9 +5317,24 @@ class AkaneMemoryEngine:
             final_output["tool_call"] = None
         tool_calls: list[dict[str, Any]] = []
         rejections: list[str] = []
+        native_schema_names = {
+            str(name or "").strip()
+            for name in getattr(frozen_capability_selection, "native_tool_names", ())
+            if str(name or "").strip()
+        }
         for raw_tool_call in raw_tool_calls:
+            raw_tool_name = str(raw_tool_call.get("type") or "").strip()
+            if not native_carrier_present and raw_tool_name in native_schema_names:
+                final_output["tool_call"] = None
+                rejections.append(
+                    f"工具 {raw_tool_name} 本轮已通过 provider 原生工具 schema 提供，"
+                    "但上一次输出把它写进了兼容 JSON tool_call；系统没有执行这次歧义调用。"
+                    "如果仍需执行，请直接使用本轮 provider 原生工具调用；"
+                    "如果不再需要，请基于当前证据自然回答。"
+                )
+                continue
             receipt = (
-                execution_receipts.get(str(raw_tool_call.get("type") or "").strip())
+                execution_receipts.get(raw_tool_name)
                 if isinstance(execution_receipts, dict)
                 else None
             )
@@ -5527,7 +5650,7 @@ class AkaneMemoryEngine:
             )
             batch_events.extend(current_events)
             history_items.append((call, result, shaped_followup, workspace_followup))
-        trace_source_ids = self._record_memcore_tool_batch(
+        trace_source_ids, trace_record_failure = self._record_memcore_tool_batch(
             items=history_items,
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -5572,12 +5695,29 @@ class AkaneMemoryEngine:
             and getattr(manager, "enabled", False)
         )
         memcore_failure: dict[str, Any] | None = None
-        if memcore_required and len(trace_source_ids) != 2 * len(history_items):
-            memcore_failure = {"status": "failed", "reason": "tool_trace_record_failed"}
+        if memcore_required and trace_record_failure is not None:
+            memcore_failure = dict(trace_record_failure)
+        elif memcore_required and len(trace_source_ids) != 2 * len(history_items):
+            memcore_failure = {
+                "status": "failed",
+                "reason": "tool_trace_record_failed",
+                "detail": "tool_trace_incomplete",
+            }
         elif memcore_required and batch_model_images and not media_source_ids:
-            memcore_failure = {"status": "failed", "reason": "tool_media_record_failed"}
+            memcore_failure = {
+                "status": "failed",
+                "reason": "tool_media_record_failed",
+                "detail": "tool_media_unavailable",
+            }
         elif memcore_required and not tool_projection.get("ok"):
-            memcore_failure = {"status": "failed", "reason": "tool_projection_build_failed"}
+            memcore_failure = {
+                "status": "failed",
+                "reason": "tool_projection_build_failed",
+                "detail": self._safe_memcore_failure_code(
+                    tool_projection.get("reason"),
+                    fallback="tool_projection_unavailable",
+                ),
+            }
         if memcore_failure is not None:
             for result in completed:
                 result.state_updates["_memcore_failure"] = dict(memcore_failure)
@@ -5596,7 +5736,10 @@ class AkaneMemoryEngine:
                 )
                 if feedback:
                     tool_followups.append(
-                        f"工具（{result.tool_type}）结果因原生 history 投影不可用而降级为文本：\n{feedback}"
+                        "【本轮真实工具结果】\n"
+                        f"工具：{result.tool_type}\n"
+                        f"{feedback}\n"
+                        "以上是本轮已经返回的真实结果；请据此继续，不要把上下文存储状态误认为工具执行失败。"
                     )
         return completed, batch_events
 
@@ -5988,11 +6131,12 @@ class AkaneMemoryEngine:
         current_user_source_id: str,
         memcore_turn_id: str,
         recorded_tool_call_ids: set[str] | None,
-    ) -> list[str]:
+    ) -> tuple[list[str], dict[str, Any] | None]:
         manager = getattr(self, "memcore_manager", None)
         if manager is None or not getattr(manager, "enabled", False) or not str(memcore_turn_id or "").strip():
-            return []
+            return [], None
         exchanges: list[dict[str, Any]] = []
+        trace_keys: list[str] = []
         for tool_call, tool_result, shaped_followup, workspace_followup in items:
             tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
             call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
@@ -6004,7 +6148,7 @@ class AkaneMemoryEngine:
             if recorded_tool_call_ids is not None:
                 if trace_key in recorded_tool_call_ids:
                     continue
-                recorded_tool_call_ids.add(trace_key)
+            trace_keys.append(trace_key)
             feedback = "\n\n".join(
                 part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
             )
@@ -6025,7 +6169,7 @@ class AkaneMemoryEngine:
                 }
             )
         if not exchanges:
-            return []
+            return [], None
         try:
             recorded = manager.record_tool_batch(
                 exchanges=exchanges,
@@ -6035,7 +6179,20 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
             )
             self._warn_memcore_write_result("tool batch record", recorded)
-            return [
+            if not isinstance(recorded, dict) or not bool(recorded.get("ok")):
+                detail = self._safe_memcore_failure_code(
+                    (recorded or {}).get("reason") or (recorded or {}).get("status"),
+                    fallback="tool_trace_store_rejected",
+                )
+                return [], {
+                    "status": self._safe_memcore_failure_code(
+                        (recorded or {}).get("status"),
+                        fallback="failed",
+                    ),
+                    "reason": "tool_trace_record_failed",
+                    "detail": detail,
+                }
+            source_ids = [
                 source_id
                 for exchange in list((recorded or {}).get("exchanges") or [])
                 if isinstance(exchange, dict)
@@ -6045,9 +6202,25 @@ class AkaneMemoryEngine:
                 )
                 if source_id
             ]
+            if len(source_ids) != 2 * len(exchanges):
+                return source_ids, {
+                    "status": "failed",
+                    "reason": "tool_trace_record_failed",
+                    "detail": "tool_trace_incomplete",
+                }
+            if recorded_tool_call_ids is not None:
+                recorded_tool_call_ids.update(trace_keys)
+            return source_ids, None
         except Exception as exc:
             logger.warning("memcore tool batch record failed reason=%s", type(exc).__name__)
-            return []
+            return [], {
+                "status": "failed",
+                "reason": "tool_trace_record_failed",
+                "detail": self._safe_memcore_failure_code(
+                    f"exception_{type(exc).__name__}",
+                    fallback="tool_trace_store_exception",
+                ),
+            }
 
     def _sanitize_tool_trace_value(self, value: Any) -> Any:
         if isinstance(value, dict):
@@ -6696,7 +6869,13 @@ class AkaneMemoryEngine:
                 ]
             )
         lines.extend(media_routing)
-        lines.append("【当前可调用工具】")
+        lines.extend(
+            [
+                "【当前可调用工具（兼容 JSON 通道）】",
+                "以下工具没有通过本轮 provider tool schema 提供；需要时按各自格式写入最终 JSON 的 "
+                "tool_call，一次一个。工具结果返回后再判断是否继续。",
+            ]
+        )
         for handler in handlers.values():
             instruction = str(handler.build_prompt_instruction() or "").strip()
             if instruction:

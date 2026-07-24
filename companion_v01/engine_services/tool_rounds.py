@@ -113,8 +113,9 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
     return (
         "【本轮 provider native 工具】\n"
         f"{name_text}\n"
-        "需要这些能力时直接通过 provider tool_calls 调用，不要把它们写进最终 JSON 的 legacy tool_call；"
-        "只有未通过 native schema 提供、且仍在本轮清单中的 legacy 工具才使用该字段。"
+        "需要这些能力时直接通过 provider tool_calls 调用；最终 JSON 的 tool_call 保持 null。"
+        "只有未通过 native schema 提供、且本轮上下文明确列出调用格式的 legacy 工具，才使用兼容字段。"
+        "不要只在 speech 里宣称已经调用；等待系统返回真实工具结果后再说明结果。"
     )
 
 
