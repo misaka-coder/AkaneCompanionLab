@@ -4,8 +4,10 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -730,6 +732,35 @@ def _normalize_reply_medium(value: Any) -> str:
     return aliases.get(text, "")
 
 
+class QQSessionTurnCoordinator:
+    """Serialize full QQ turns that share one memory/session timeline."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, tuple[asyncio.Lock, int]] = {}
+        self._registry_lock = threading.Lock()
+
+    @asynccontextmanager
+    async def hold(self, profile_user_id: Any, session_id: Any):
+        key = f"{str(profile_user_id or '').strip()}\0{str(session_id or '').strip()}"
+        with self._registry_lock:
+            entry = self._entries.get(key)
+            lock = entry[0] if entry is not None else asyncio.Lock()
+            users = (entry[1] if entry is not None else 0) + 1
+            self._entries[key] = (lock, users)
+        try:
+            async with lock:
+                yield
+        finally:
+            with self._registry_lock:
+                current = self._entries.get(key)
+                if current is not None and current[0] is lock:
+                    remaining = current[1] - 1
+                    if remaining <= 0:
+                        self._entries.pop(key, None)
+                    else:
+                        self._entries[key] = (lock, remaining)
+
+
 def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
     mode = _normalize_reply_medium(reply_mode) or "auto"
     hint = _normalize_reply_medium(delivery_hint)
@@ -1442,6 +1473,7 @@ def build_qq_router(
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
+    turn_coordinator = QQSessionTurnCoordinator()
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1491,7 +1523,7 @@ def build_qq_router(
             )
         return turn_payload
 
-    async def _run_qq_turn_delivery(
+    async def _run_qq_turn_delivery_unlocked(
         *,
         context: Any,
         event: dict[str, Any],
@@ -1559,6 +1591,19 @@ def build_qq_router(
                 timestamp=int(time.time()),
             )
         return turn_result
+
+    async def _run_qq_turn_delivery(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        turn_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        async with turn_coordinator.hold(context.profile_user_id, context.session_id):
+            return await _run_qq_turn_delivery_unlocked(
+                context=context,
+                event=event,
+                turn_payload=turn_payload,
+            )
 
     async def _run_qq_image_vision_followup(
         *,

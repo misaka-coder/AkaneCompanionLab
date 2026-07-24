@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import (
+    QQSessionTurnCoordinator,
     _filter_unsent_reply_messages,
     _process_qq_turn_streaming,
     _synthesize_qq_voice_file,
@@ -66,6 +68,60 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_session_turn_coordinator_serializes_the_same_timeline(self) -> None:
+        async def exercise() -> list[str]:
+            coordinator = QQSessionTurnCoordinator()
+            entered: list[str] = []
+            first_entered = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def worker(name: str) -> None:
+                async with coordinator.hold("qq_group_shared_1", "qq_group_1"):
+                    entered.append(name)
+                    if name == "first":
+                        first_entered.set()
+                        await release_first.wait()
+
+            first = asyncio.create_task(worker("first"))
+            await first_entered.wait()
+            second = asyncio.create_task(worker("second"))
+            await asyncio.sleep(0)
+            self.assertEqual(entered, ["first"])
+            release_first.set()
+            await asyncio.gather(first, second)
+            return entered
+
+        self.assertEqual(asyncio.run(exercise()), ["first", "second"])
+
+    def test_session_turn_coordinator_keeps_different_timelines_concurrent(self) -> None:
+        async def exercise() -> int:
+            coordinator = QQSessionTurnCoordinator()
+            active = 0
+            maximum = 0
+            both_entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def worker(session_id: str) -> None:
+                nonlocal active, maximum
+                async with coordinator.hold("qq_group_shared", session_id):
+                    active += 1
+                    maximum = max(maximum, active)
+                    if active == 2:
+                        both_entered.set()
+                    await release.wait()
+                    active -= 1
+
+            tasks = [
+                asyncio.create_task(worker("qq_group_1")),
+                asyncio.create_task(worker("qq_group_2")),
+            ]
+            await asyncio.wait_for(both_entered.wait(), timeout=1)
+            release.set()
+            await asyncio.gather(*tasks)
+            return maximum
+
+        self.assertEqual(asyncio.run(exercise()), 2)
+
     def test_streamed_segments_use_only_one_onebot_reply_frame(self) -> None:
         class FakeEngine:
             desktop_pet_character_resources = None
