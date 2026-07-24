@@ -888,7 +888,7 @@ def _synthesize_qq_voice_file(
         return {"ok": False, "reason": "empty_voice_text"}
 
     data_dir = Path(str(getattr(config_module, "DATA_DIR", "users_data") or "users_data"))
-    base_dir = data_dir
+    base_dir = Path(getattr(engine, "capability_config_base_dir", None) or data_dir)
     tts_profile_user_id = _resolve_qq_tts_profile_user_id(
         config_module=config_module,
         context=context,
@@ -911,6 +911,16 @@ def _synthesize_qq_voice_file(
     )
 
     active_provider = str(resolution.get("activeProviderId") or "")
+    requested_provider = str(resolution.get("requestedProviderId") or "")
+    if requested_provider == GPT_SOVITS_PROVIDER_ID and active_provider != GPT_SOVITS_PROVIDER_ID:
+        return {
+            "ok": False,
+            "reason": str(resolution.get("reason") or "requested_tts_provider_unavailable"),
+            "provider": active_provider,
+            "requested_provider": requested_provider,
+            "resolution_status": str(resolution.get("status") or ""),
+            "tts_profile_user_id": tts_profile_user_id,
+        }
     if active_provider == GPT_SOVITS_PROVIDER_ID:
         synthesize_kwargs: dict[str, Any] = {
             "voice_profile_id": str(resolution.get("voiceProfileId") or ""),

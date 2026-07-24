@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import (
     QQSessionTurnCoordinator,
@@ -427,15 +428,18 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
     def test_group_voice_uses_owner_tts_profile_scope(self) -> None:
         captured_payload: dict = {}
+        captured_base_dir: list[Path] = []
 
         def fake_resolver(**kwargs):
             captured_payload.update(dict(kwargs["payload"]))
+            captured_base_dir.append(Path(kwargs["base_dir"]))
             return {"activeProviderId": "provider.tts.edge", "status": "ready"}
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            capability_dir = Path(temp_dir) / "users_data"
             with patch("companion_v01.routes.qq._resolve_tts_runtime_provider", side_effect=fake_resolver):
                 result = _synthesize_qq_voice_file(
-                    engine=object(),
+                    engine=SimpleNamespace(capability_config_base_dir=capability_dir),
                     config_module=SimpleNamespace(DATA_DIR=temp_dir, WEB_OWNER_PROFILE_USER_ID="master"),
                     tts_client=FakeTTSClient(),
                     text="群聊语音测试",
@@ -450,6 +454,95 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(captured_payload["profile_user_id"], "master")
         self.assertEqual(captured_payload["character_pack_id"], "reimu")
         self.assertEqual(result["tts_profile_user_id"], "master")
+        self.assertEqual(captured_base_dir, [capability_dir])
+
+    def test_group_voice_reads_the_current_bot_capability_directory(self) -> None:
+        class FakeGptSovitsClient:
+            async def synthesize(self, text: str, **kwargs):
+                self.text = text
+                self.kwargs = kwargs
+                return SimpleNamespace(audio=b"gpt-sovits-audio", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bot_data_dir = Path(temp_dir) / "bot"
+            capability_dir = bot_data_dir / "users_data"
+            self.assertTrue(
+                save_provider_config(
+                    base_dir=capability_dir,
+                    profile_user_id="master",
+                    provider_id="provider.tts.gpt_sovits.local",
+                    payload={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+                )["ok"]
+            )
+            self.assertTrue(
+                save_voice_profile_config(
+                    base_dir=capability_dir,
+                    profile_user_id="master",
+                    voice_profile_id="dania",
+                    payload={
+                        "enabled": True,
+                        "providerId": "provider.tts.gpt_sovits.local",
+                        "refAudioPath": str(Path(temp_dir) / "reference.wav"),
+                        "promptText": "参考文本",
+                        "promptLang": "zh",
+                    },
+                )["ok"]
+            )
+            client = FakeGptSovitsClient()
+            engine = SimpleNamespace(
+                capability_config_base_dir=capability_dir,
+                desktop_pet_character_resources=SimpleNamespace(
+                    build_character_voice_preference=lambda _pack_id: {
+                        "provider": "gpt_sovits",
+                        "profileId": "dania",
+                    }
+                ),
+            )
+            result = _synthesize_qq_voice_file(
+                engine=engine,
+                config_module=SimpleNamespace(DATA_DIR=bot_data_dir, WEB_OWNER_PROFILE_USER_ID="master"),
+                tts_client=FakeTTSClient(),
+                text="真实 QQ GPT-SoVITS 测试",
+                context=SimpleNamespace(
+                    profile_user_id="qq_group_shared_123456",
+                    character_pack_id="reimu",
+                ),
+                gpt_sovits_client_factory=lambda _endpoint: client,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "provider.tts.gpt_sovits.local")
+        self.assertEqual(result["media_type"], "audio/wav")
+        self.assertEqual(client.kwargs["voice_profile_id"], "dania")
+        self.assertEqual(client.kwargs["profile"]["promptText"], "参考文本")
+
+    def test_group_voice_does_not_silently_replace_gpt_sovits_with_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch(
+                "companion_v01.routes.qq._resolve_tts_runtime_provider",
+                return_value={
+                    "status": "degraded",
+                    "reason": "provider_endpoint_missing",
+                    "requestedProviderId": "provider.tts.gpt_sovits.local",
+                    "activeProviderId": "provider.tts.edge",
+                    "fallbackProviderId": "provider.tts.edge",
+                },
+            ):
+                result = _synthesize_qq_voice_file(
+                    engine=SimpleNamespace(capability_config_base_dir=Path(temp_dir) / "users_data"),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, WEB_OWNER_PROFILE_USER_ID="master"),
+                    tts_client=FakeTTSClient(),
+                    text="不要换成微软声线",
+                    context=SimpleNamespace(
+                        profile_user_id="qq_group_shared_123456",
+                        character_pack_id="reimu",
+                    ),
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "provider_endpoint_missing")
+        self.assertEqual(result["requested_provider"], "provider.tts.gpt_sovits.local")
+        self.assertEqual(result["provider"], "provider.tts.edge")
 
     def test_auto_voice_hint_sends_record_without_streaming_text(self) -> None:
         class FakeEngine:
