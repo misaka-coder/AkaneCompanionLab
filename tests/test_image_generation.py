@@ -159,6 +159,9 @@ class ImageGenerationTests(unittest.TestCase):
         engine.settings = SimpleNamespace(
             chat_api_key="bot-scoped-secret",
             image_generation_enabled=True,
+            image_generation_api_key="",
+            image_generation_base_url="https://images.example/v1",
+            image_generation_model="gpt-image-2",
         )
         engine._get_image_material_resolver = lambda: object()
         engine._get_generated_file_service = lambda: object()
@@ -170,6 +173,7 @@ class ImageGenerationTests(unittest.TestCase):
 
         self.assertIs(result, service)
         self.assertEqual(provider_type.call_args.kwargs["api_key"], "bot-scoped-secret")
+        self.assertEqual(provider_type.call_args.kwargs["base_url"], "https://images.example/v1")
         self.assertIs(engine.image_generation_service, service)
 
     def test_pinai_text_to_image_uses_stream_request_and_decodes_json(self) -> None:

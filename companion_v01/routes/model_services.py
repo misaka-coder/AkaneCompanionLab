@@ -67,10 +67,18 @@ def build_model_services_router(
         existing = existing_settings.api_key if same_provider else ""
         if "useForImageGeneration" not in payload and "use_for_image_generation" not in payload:
             payload["useForImageGeneration"] = (
-                existing_settings.use_for_image_generation if same_provider else False
+                existing_settings.use_for_image_generation
             )
+        if "imageGenerationBaseUrl" not in payload and "image_generation_base_url" not in payload:
+            payload["imageGenerationBaseUrl"] = existing_settings.image_generation_base_url
+        if "imageGenerationModel" not in payload and "image_generation_model" not in payload:
+            payload["imageGenerationModel"] = existing_settings.image_generation_model
         try:
-            settings = settings_from_mapping(payload, existing_api_key=existing)
+            settings = settings_from_mapping(
+                payload,
+                existing_api_key=existing,
+                existing_image_generation_api_key=existing_settings.image_generation_api_key,
+            )
             store.save(settings)
             reload_result = (
                 reload_model_services(settings) if reload_model_services is not None else engine.reload_model_services()

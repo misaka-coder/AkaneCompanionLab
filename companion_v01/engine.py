@@ -1831,13 +1831,13 @@ class AkaneMemoryEngine:
         generated_file_service = self._get_generated_file_service()
         if resolver is None or generated_file_service is None:
             return None
-        image_api_key = str(getattr(config, "IMAGE_GENERATION_API_KEY", "") or "").strip()
+        image_api_key = str(getattr(self.settings, "image_generation_api_key", "") or "").strip()
         if not image_api_key:
             image_api_key = str(getattr(self.settings, "chat_api_key", "") or "").strip()
         provider = PinAIImageProvider(
-            base_url=str(getattr(config, "IMAGE_GENERATION_BASE_URL", "") or ""),
+            base_url=str(getattr(self.settings, "image_generation_base_url", "") or ""),
             api_key=image_api_key,
-            model=str(getattr(config, "IMAGE_GENERATION_MODEL", "gpt-image-2") or "gpt-image-2"),
+            model=str(getattr(self.settings, "image_generation_model", "gpt-image-2") or "gpt-image-2"),
             timeout_seconds=float(getattr(config, "IMAGE_GENERATION_TIMEOUT_SECONDS", 300.0) or 300.0),
             max_output_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_BYTES", 25 * 1024 * 1024) or 0),
         )

@@ -77,6 +77,8 @@ class ModelServiceConfigTests(unittest.TestCase):
                     "apiKey": "sk-private",
                     "chatModel": "deepseek-chat",
                     "useForImageGeneration": True,
+                    "imageGenerationApiKey": "image-private",
+                    "imageGenerationModel": "gpt-image-2",
                 }
             )
             store.save(settings)
@@ -86,7 +88,9 @@ class ModelServiceConfigTests(unittest.TestCase):
             public = public_model_service_snapshot(loaded, source="local_file")
             self.assertTrue(public["hasApiKey"])
             self.assertTrue(public["useForImageGeneration"])
+            self.assertTrue(public["hasImageGenerationApiKey"])
             self.assertNotIn("sk-private", json.dumps(public, ensure_ascii=False))
+            self.assertNotIn("image-private", json.dumps(public, ensure_ascii=False))
             self.assertNotIn("apiKey", public)
             self.assertEqual(public["chatReasoningEffort"], "")
 
@@ -258,6 +262,9 @@ class ModelServiceConfigTests(unittest.TestCase):
                     "chatModel": "qwen2.5:7b",
                     "useForVision": True,
                     "useForImageGeneration": True,
+                    "imageGenerationApiKey": "image-private",
+                    "imageGenerationBaseUrl": "https://images.example.com/v1",
+                    "imageGenerationModel": "gpt-image-2",
                 },
             )
             self.assertEqual(saved.json()["status"], "configured")
@@ -265,7 +272,9 @@ class ModelServiceConfigTests(unittest.TestCase):
             self.assertEqual(config.CHAT_API_PROTOCOL, "openai")
             self.assertEqual(engine.last_settings.protocol, "ollama")
             self.assertTrue(engine.last_settings.use_for_image_generation)
+            self.assertEqual(engine.last_settings.image_generation_api_key, "image-private")
             self.assertNotIn("env-secret", saved.text)
+            self.assertNotIn("image-private", saved.text)
 
             preserved = client.post(
                 "/control-center/model-service",
@@ -276,7 +285,9 @@ class ModelServiceConfigTests(unittest.TestCase):
                 },
             )
             self.assertTrue(preserved.json()["useForImageGeneration"])
+            self.assertTrue(preserved.json()["hasImageGenerationApiKey"])
             self.assertTrue(engine.last_settings.use_for_image_generation)
+            self.assertEqual(engine.last_settings.image_generation_api_key, "image-private")
 
 
 if __name__ == "__main__":

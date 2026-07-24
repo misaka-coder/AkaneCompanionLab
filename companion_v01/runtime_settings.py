@@ -53,6 +53,9 @@ class BotSettingsView:
     vision_auto_outfit_observe: bool = True
     vision_max_image_bytes: int = 8 * 1024 * 1024
     image_generation_enabled: bool = False
+    image_generation_api_key: str = field(default="", repr=False)
+    image_generation_base_url: str = ""
+    image_generation_model: str = "gpt-image-2"
     prompt_cache_hints_enabled: bool = True
     prompt_cache_hints_force: bool = False
     prompt_cache_namespace: str = "akane"
@@ -127,6 +130,10 @@ class BotSettingsView:
                 int(getattr(config_module, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
             ),
             image_generation_enabled=bool(getattr(config_module, "IMAGE_GENERATION_ENABLED", False)),
+            image_generation_api_key=_text(getattr(config_module, "IMAGE_GENERATION_API_KEY", "")),
+            image_generation_base_url=_text(getattr(config_module, "IMAGE_GENERATION_BASE_URL", "")),
+            image_generation_model=_text(getattr(config_module, "IMAGE_GENERATION_MODEL", "gpt-image-2"))
+            or "gpt-image-2",
             prompt_cache_hints_enabled=bool(getattr(config_module, "PROMPT_CACHE_HINTS_ENABLED", True)),
             prompt_cache_hints_force=bool(getattr(config_module, "PROMPT_CACHE_HINTS_FORCE", False)),
             prompt_cache_namespace=_text(getattr(config_module, "PROMPT_CACHE_NAMESPACE", "akane")) or "akane",
@@ -227,6 +234,9 @@ class BotSettingsView:
             "vision_auto_outfit_observe",
             "vision_max_image_bytes",
             "image_generation_enabled",
+            "image_generation_api_key",
+            "image_generation_base_url",
+            "image_generation_model",
             "prompt_cache_hints_enabled",
             "prompt_cache_hints_force",
             "prompt_cache_namespace",
@@ -287,6 +297,9 @@ class BotSettingsView:
         )
         use_for_vision = bool(getattr(model_settings, "use_for_vision", True))
         use_for_image_generation = bool(getattr(model_settings, "use_for_image_generation", False))
+        image_generation_api_key = _text(getattr(model_settings, "image_generation_api_key", ""))
+        image_generation_base_url = _text(getattr(model_settings, "image_generation_base_url", ""))
+        image_generation_model = _text(getattr(model_settings, "image_generation_model", "")) or "gpt-image-2"
         vision_model = _text(getattr(model_settings, "vision_model", "")) or model
         chat_reasoning_effort = normalize_reasoning_effort(
             getattr(model_settings, "chat_reasoning_effort", "")
@@ -310,6 +323,9 @@ class BotSettingsView:
             vision_model_name=vision_model if use_for_vision else "",
             vision_api_protocol=protocol,
             image_generation_enabled=use_for_image_generation,
+            image_generation_api_key=image_generation_api_key,
+            image_generation_base_url=image_generation_base_url,
+            image_generation_model=image_generation_model,
             llm_chat_reasoning_effort=chat_reasoning_effort,
         )
 
@@ -363,6 +379,14 @@ class BotSettingsView:
             },
             "image_generation": {
                 "enabled": self.image_generation_enabled,
+                "base_url": self.image_generation_base_url,
+                "model": self.image_generation_model,
+                "configured": bool(
+                    self.image_generation_enabled
+                    and self.image_generation_base_url
+                    and self.image_generation_model
+                    and (self.image_generation_api_key or self.chat_api_key)
+                ),
             },
             "prompt_cache": {
                 "hints_enabled": self.prompt_cache_hints_enabled,

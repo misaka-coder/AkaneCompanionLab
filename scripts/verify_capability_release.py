@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -97,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--requirements", type=Path, default=DEFAULT_REQUIREMENTS_PATH)
     parser.add_argument("--require", action="append", default=[], dest="extra_required")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--wait-seconds", type=float, default=30.0)
+    parser.add_argument("--poll-interval", type=float, default=1.0)
     return parser
 
 
@@ -105,12 +108,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         required = load_required_capabilities(args.requirements, bot_id=args.bot_id)
         required = sorted(set(required).union(str(item or "").strip() for item in args.extra_required if str(item or "").strip()))
-        catalog = fetch_catalog(base_url=args.base_url, bot_id=args.bot_id, timeout_seconds=args.timeout)
-        failures = validate_capability_catalog(catalog, required_ids=required)
+        deadline = time.monotonic() + max(0.0, args.wait_seconds)
+        attempts = 0
+        while True:
+            attempts += 1
+            catalog = fetch_catalog(base_url=args.base_url, bot_id=args.bot_id, timeout_seconds=args.timeout)
+            failures = validate_capability_catalog(catalog, required_ids=required)
+            if not failures or time.monotonic() >= deadline:
+                break
+            time.sleep(max(0.1, min(5.0, args.poll_interval)))
         output = {
             "ok": not failures,
             "bot_id": args.bot_id,
             "checked": len(required),
+            "attempts": attempts,
             "required": required,
             "failures": failures,
         }

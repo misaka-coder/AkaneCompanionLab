@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -97,6 +97,9 @@ class ModelServiceSettings:
     chat_model: str
     use_for_vision: bool = True
     use_for_image_generation: bool = False
+    image_generation_api_key: str = field(default="", repr=False)
+    image_generation_base_url: str = ""
+    image_generation_model: str = "gpt-image-2"
     vision_model: str = ""
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     chat_reasoning_effort: str = ""
@@ -154,6 +157,7 @@ def settings_from_mapping(
     raw: dict[str, Any],
     *,
     existing_api_key: str = "",
+    existing_image_generation_api_key: str = "",
     require_model: bool = True,
 ) -> ModelServiceSettings:
     provider_id = str(raw.get("providerId") or raw.get("provider_id") or "openai_compatible").strip()
@@ -178,6 +182,26 @@ def settings_from_mapping(
         raw.get("useForImageGeneration", raw.get("use_for_image_generation")),
         False,
     )
+    image_generation_api_key = str(
+        raw.get("imageGenerationApiKey") or raw.get("image_generation_api_key") or ""
+    ).strip()
+    if not image_generation_api_key and not bool(
+        raw.get("clearImageGenerationApiKey") or raw.get("clear_image_generation_api_key")
+    ):
+        image_generation_api_key = str(existing_image_generation_api_key or "").strip()
+    image_generation_base_url = _normalize_configured_base_url(
+        str(
+            raw.get("imageGenerationBaseUrl")
+            or raw.get("image_generation_base_url")
+            or base_url
+        ),
+        protocol="openai",
+    )
+    image_generation_model = str(
+        raw.get("imageGenerationModel")
+        or raw.get("image_generation_model")
+        or "gpt-image-2"
+    ).strip() or "gpt-image-2"
     vision_model = str(raw.get("visionModel") or raw.get("vision_model") or "").strip()
     timeout_seconds = _bounded_int(
         raw.get("timeoutSeconds", raw.get("timeout_seconds")),
@@ -199,6 +223,9 @@ def settings_from_mapping(
         chat_model=chat_model,
         use_for_vision=use_for_vision,
         use_for_image_generation=use_for_image_generation,
+        image_generation_api_key=image_generation_api_key,
+        image_generation_base_url=image_generation_base_url,
+        image_generation_model=image_generation_model,
         vision_model=vision_model,
         timeout_seconds=timeout_seconds,
         chat_reasoning_effort=chat_reasoning_effort,
@@ -223,6 +250,11 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
         chat_model=str(getattr(config_module, "CHAT_MODEL_NAME", "") or "").strip(),
         use_for_vision=bool(vision_model),
         use_for_image_generation=bool(getattr(config_module, "IMAGE_GENERATION_ENABLED", False)),
+        image_generation_api_key=str(getattr(config_module, "IMAGE_GENERATION_API_KEY", "") or "").strip(),
+        image_generation_base_url=str(getattr(config_module, "IMAGE_GENERATION_BASE_URL", "") or "").strip(),
+        image_generation_model=str(
+            getattr(config_module, "IMAGE_GENERATION_MODEL", "gpt-image-2") or "gpt-image-2"
+        ).strip(),
         vision_model=vision_model,
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         chat_reasoning_effort=normalize_reasoning_effort(
@@ -251,6 +283,11 @@ def effective_settings_from_runtime_settings(settings: Any) -> ModelServiceSetti
             and vision_model
         ),
         use_for_image_generation=bool(getattr(settings, "image_generation_enabled", False)),
+        image_generation_api_key=str(getattr(settings, "image_generation_api_key", "") or "").strip(),
+        image_generation_base_url=str(getattr(settings, "image_generation_base_url", "") or "").strip(),
+        image_generation_model=str(
+            getattr(settings, "image_generation_model", "gpt-image-2") or "gpt-image-2"
+        ).strip(),
         vision_model=vision_model,
         timeout_seconds=int(
             getattr(settings, "vision_request_timeout", DEFAULT_TIMEOUT_SECONDS) or DEFAULT_TIMEOUT_SECONDS
@@ -296,6 +333,9 @@ def public_model_service_snapshot(
         "chatModel": settings.chat_model,
         "useForVision": settings.use_for_vision,
         "useForImageGeneration": settings.use_for_image_generation,
+        "hasImageGenerationApiKey": bool(settings.image_generation_api_key),
+        "imageGenerationBaseUrl": settings.image_generation_base_url,
+        "imageGenerationModel": settings.image_generation_model,
         "visionModel": settings.vision_model,
         "timeoutSeconds": settings.timeout_seconds,
         "chatReasoningEffort": settings.chat_reasoning_effort,
@@ -310,6 +350,10 @@ def apply_model_service_settings(config_module: Any, settings: ModelServiceSetti
         setattr(config_module, f"{prefix}_MODEL_NAME", settings.chat_model)
         setattr(config_module, f"{prefix}_API_PROTOCOL", settings.protocol)
     setattr(config_module, "LLM_CHAT_REASONING_EFFORT", settings.chat_reasoning_effort)
+    setattr(config_module, "IMAGE_GENERATION_ENABLED", settings.use_for_image_generation)
+    setattr(config_module, "IMAGE_GENERATION_API_KEY", settings.image_generation_api_key)
+    setattr(config_module, "IMAGE_GENERATION_BASE_URL", settings.image_generation_base_url)
+    setattr(config_module, "IMAGE_GENERATION_MODEL", settings.image_generation_model)
 
     if settings.use_for_vision:
         setattr(config_module, "VISION_API_KEY", settings.api_key)

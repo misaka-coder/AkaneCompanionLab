@@ -72,6 +72,9 @@ class BotSettingsViewTests(unittest.TestCase):
             VISION_AUTO_OUTFIT_OBSERVE=False,
             VISION_MAX_IMAGE_BYTES=1024 * 1024,
             IMAGE_GENERATION_ENABLED=True,
+            IMAGE_GENERATION_API_KEY="image-secret",
+            IMAGE_GENERATION_BASE_URL="https://images.example/v1",
+            IMAGE_GENERATION_MODEL="gpt-image-2",
             PROMPT_CACHE_HINTS_ENABLED=True,
             PROMPT_CACHE_HINTS_FORCE=True,
             PROMPT_CACHE_NAMESPACE="bot-a",
@@ -92,6 +95,8 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertFalse(view.vision_auto_scene_observe)
         self.assertTrue(view.image_generation_enabled)
         self.assertTrue(public["image_generation"]["enabled"])
+        self.assertTrue(public["image_generation"]["configured"])
+        self.assertNotIn("image-secret", repr(view))
         self.assertEqual(view.prompt_cache_namespace, "bot-a")
         self.assertEqual(view.llm_context_window, 12000)
         self.assertEqual(view.llm_chat_reasoning_effort, "high")
