@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from memcore import build_native_memory_tool_specs
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
+from companion_v01.generated_files import GeneratedFileService
+from companion_v01.generated_files_media import separate_audio_stems as separate_audio_stems_service
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusions
 from companion_v01.tool_runtime import (
@@ -295,6 +298,14 @@ class NativeToolSchemaTests(unittest.TestCase):
             {"type": "separate_audio_stems", "source_id": "audio_001"}
         )
         self.assertEqual(default_separation["output_format"], "mp3")
+        self.assertEqual(
+            inspect.signature(GeneratedFileService.separate_audio_stems).parameters["output_format"].default,
+            "mp3",
+        )
+        self.assertEqual(
+            inspect.signature(separate_audio_stems_service).parameters["output_format"].default,
+            "mp3",
+        )
         separation_call = separate.normalize_call(
             {
                 "type": "separate_audio_stems",

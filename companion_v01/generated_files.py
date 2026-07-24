@@ -341,7 +341,7 @@ class GeneratedFileService:
         session_id: str,
         source_target: str,
         mode: str = "vocals_instrumental",
-        output_format: str = "wav",
+        output_format: str = "mp3",
         output_title: str = "",
         send_to_user: bool = True,
         timestamp: int | None = None,
