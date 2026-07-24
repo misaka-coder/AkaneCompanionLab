@@ -211,6 +211,7 @@ def build_desktop_pet_router(
             raise HTTPException(status_code=400, detail="Payload must be an object")
 
         session_id, profile_user_id = resolve_identity_from_payload(payload)
+        character_pack_id = resolve_character_pack_id_from_payload(payload)
         action = str(payload.get("action") or "").strip()
         item_type = str(payload.get("item_type") or payload.get("type") or "").strip()
         target = str(payload.get("target") or payload.get("id") or payload.get("handle") or "").strip()
@@ -219,6 +220,7 @@ def build_desktop_pet_router(
                 engine.manage_desktop_pet_workspace_panel,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                character_pack_id=character_pack_id,
                 action=action,
                 item_type=item_type,
                 target=target,

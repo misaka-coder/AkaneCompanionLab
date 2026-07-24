@@ -834,7 +834,11 @@ class AttachmentInboxService:
                 kind=kind,
                 timestamp=effective_ts,
             )
-        purged_files = self._delete_cleared_storage_files(cleared) if delete_storage else []
+        purged_files: list[str] = []
+        purge_failures: list[dict[str, str]] = []
+        already_absent_files: list[str] = []
+        if delete_storage:
+            purged_files, purge_failures, already_absent_files = self._delete_cleared_storage_files(cleared)
         for item in cleared:
             self.record_material_status(
                 item,
@@ -849,6 +853,8 @@ class AttachmentInboxService:
                 "ok": False,
                 "cleared": [],
                 "purged_files": [],
+                "purge_failures": [],
+                "already_absent_files": [],
                 "unresolved": unresolved,
                 "ambiguous_targets": ambiguous_targets,
                 "followup_context": (
@@ -872,6 +878,8 @@ class AttachmentInboxService:
             "ok": True,
             "cleared": cleared,
             "purged_files": purged_files,
+            "purge_failures": purge_failures,
+            "already_absent_files": already_absent_files,
             "unresolved": unresolved,
             "ambiguous_targets": ambiguous_targets,
             "followup_context": (
@@ -884,30 +892,93 @@ class AttachmentInboxService:
                 )
                 + f"{suffix}这些材料不会继续注入上下文，也不会作为礼物、角色资源或长期记忆保存。"
                 + (f"已同时删除 {len(purged_files)} 个附件原始文件。" if purged_files else "")
+                + (
+                    f"另有 {len(already_absent_files)} 个附件本来就没有可删除的本地副本。"
+                    if already_absent_files
+                    else ""
+                )
+                + (
+                    f"有 {len(purge_failures)} 个来源文件未能删除；请明确告诉用户只是退出了工作台，"
+                    "不要声称这些文件已经从磁盘删除。"
+                    if purge_failures
+                    else ""
+                )
                 + "请自然继续回应，不要重复调用工具。"
             ),
         }
 
-    def _delete_cleared_storage_files(self, items: list[dict[str, Any]]) -> list[str]:
+    def _delete_cleared_storage_files(
+        self,
+        items: list[dict[str, Any]],
+    ) -> tuple[list[str], list[dict[str, str]], list[str]]:
         purged: list[str] = []
+        failures: list[dict[str, str]] = []
+        already_absent: list[str] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
+            target = str(
+                item.get("attachment_handle")
+                or item.get("attachment_id")
+                or item.get("summary_title")
+                or item.get("origin_name")
+                or "attachment"
+            ).strip()[:120]
             relpath = str(item.get("storage_relpath") or "").strip()
-            if not relpath or relpath.lower().startswith("workspace:"):
+            if not relpath:
+                already_absent.append(target)
+                continue
+            if relpath.lower().startswith("workspace:"):
+                failures.append(
+                    {
+                        "target": target,
+                        "code": "external_source_retained",
+                        "reason": "这个材料来自外部工作区；已移出当前工作台，但没有删除外部源文件。",
+                    }
+                )
                 continue
             path = self._resolve_storage_path(item)
             if path is None:
+                failures.append(
+                    {
+                        "target": target,
+                        "code": "storage_unavailable",
+                        "reason": "无法可靠定位这个附件的托管副本；已移出工作台，但没有声称删除文件。",
+                    }
+                )
                 continue
             if not self._is_managed_storage_path(path):
+                failures.append(
+                    {
+                        "target": target,
+                        "code": "unmanaged_storage",
+                        "reason": "这个文件不在 Akane 管理的附件目录内；已移出工作台，但保留了源文件。",
+                    }
+                )
                 continue
             try:
-                if path.is_file():
+                if not path.exists():
+                    already_absent.append(target)
+                elif not path.is_file():
+                    failures.append(
+                        {
+                            "target": target,
+                            "code": "storage_not_file",
+                            "reason": "托管位置不是普通文件，系统没有执行删除。",
+                        }
+                    )
+                else:
                     path.unlink()
-                    purged.append(str(item.get("attachment_handle") or item.get("summary_title") or path.name))
+                    purged.append(target)
             except OSError:
-                continue
-        return purged
+                failures.append(
+                    {
+                        "target": target,
+                        "code": "delete_failed",
+                        "reason": "删除附件托管副本时发生文件系统错误；材料已退出工作台，但文件可能仍在。",
+                    }
+                )
+        return purged, failures, already_absent
 
     def _is_managed_storage_path(self, path: Path) -> bool:
         try:

@@ -29,6 +29,7 @@ from .voice import (
     _resolve_tts_runtime_provider,
 )
 from ..runtime_settings import runtime_setting
+from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
     build_qq_resource_manifest_builder as _build_qq_resource_manifest_builder,
@@ -458,30 +459,49 @@ def _format_qq_workspace_item(item: dict[str, Any]) -> str:
     return f"{kind_label}：{title}{suffix}"
 
 
-def _build_qq_workspace_list_reply(service: Any, *, profile_user_id: str, session_id: str) -> str:
-    store = getattr(service, "store", None)
-    if store is None or not hasattr(store, "list_attachment_inbox_items"):
-        return "当前工作台服务不可用。"
-    items = store.list_attachment_inbox_items(
+def _format_qq_generated_item(item: dict[str, Any]) -> str:
+    handle = str(item.get("generated_handle") or item.get("generated_id") or "").strip()
+    title = str(item.get("output_title") or handle or "未命名生成结果").strip()[:48]
+    output_format = str(item.get("output_format") or item.get("file_ext") or "file").strip().lower()
+    suffix_parts = [part for part in (handle, output_format, _qq_item_time_label(item)) if part]
+    suffix = f"（{'，'.join(suffix_parts)}）" if suffix_parts else ""
+    return f"{title}{suffix}"
+
+
+def _build_qq_workspace_list_reply(engine: Any, *, profile_user_id: str, session_id: str) -> str:
+    result = list_workspace_files(
+        engine,
         profile_user_id=profile_user_id,
         session_id=session_id,
-        statuses=["ready", "pending_observation", "failed"],
         limit=30,
     )
+    if str(result.get("status") or "") == "unavailable":
+        return "当前工作台服务不可用。"
+    attachments = [item for item in list(result.get("attachments") or []) if isinstance(item, dict)]
+    generated_files = [item for item in list(result.get("generated_files") or []) if isinstance(item, dict)]
     lines = ["当前工作台"]
-    if not items:
-        lines.append("空。现在没有材料会继续进入 Akane 的上下文。")
+    if not attachments and not generated_files:
+        lines.append("空。现在没有收到的材料或生成结果挂在工作台里。")
     else:
-        lines.append(f"共有 {len(items)} 个材料：")
-        for index, item in enumerate(items[:20], start=1):
-            if isinstance(item, dict):
+        if attachments:
+            lines.append(f"收到的材料（{len(attachments)}）：")
+            for index, item in enumerate(attachments[:15], start=1):
                 lines.append(f"{index}. {_format_qq_workspace_item(item)}")
-        if len(items) > 20:
-            lines.append(f"还有 {len(items) - 20} 个未显示。")
+            if len(attachments) > 15:
+                lines.append(f"还有 {len(attachments) - 15} 个收到的材料未显示。")
+        if generated_files:
+            lines.append(f"生成结果（{len(generated_files)}）：")
+            for index, item in enumerate(generated_files[:15], start=1):
+                lines.append(f"{index}. {_format_qq_generated_item(item)}")
+            if len(generated_files) > 15:
+                lines.append(f"还有 {len(generated_files) - 15} 个生成结果未显示。")
+    failures = [item for item in list(result.get("failures") or []) if isinstance(item, dict)]
+    if failures:
+        lines.append(f"另有 {len(failures)} 个工作台区域暂时无法读取。")
     lines.append("")
-    lines.append("清理工作台：移出上下文")
-    lines.append("清理最新材料：只移出最近一个")
-    lines.append("彻底清理工作台：同时删除附件文件")
+    lines.append("清理工作台：收起收到的材料和生成结果")
+    lines.append("清理最新材料：只收起最近收到的一个材料")
+    lines.append("彻底清理工作台：删除 Akane 托管的文件并清空生成结果内容")
     return "\n".join(lines)
 
 
@@ -489,32 +509,64 @@ def _build_qq_workspace_help_reply() -> str:
     return "\n".join(
         [
             "工作台指令",
-            "工作台 / 查看工作台：列出当前材料",
-            "清理工作台：让所有当前材料退出上下文",
-            "清理最新材料：只清最近一个材料",
-            "清理工作台 file_001：清指定材料",
-            "彻底清理工作台：同时删除附件原始文件",
+            "工作台 / 查看工作台：列出收到的材料和生成结果",
+            "清理工作台：收起全部收到的材料和生成结果，不删除托管文件",
+            "清理最新材料：只收起最近收到的一个材料",
+            "清理工作台 file_001 / gen_001：收起指定材料或生成结果",
+            "彻底清理工作台：删除 Akane 托管的附件和生成文件，并清空生成结果内容",
+            "外部工作区中的源文件不会被越权删除；系统会明确报告保留结果。",
         ]
     )
 
 
 def _build_qq_workspace_clear_reply(result: dict[str, Any], *, delete_storage: bool) -> str:
-    cleared = [item for item in list(result.get("cleared") or []) if isinstance(item, dict)]
-    purged = [str(item or "").strip() for item in list(result.get("purged_files") or []) if str(item or "").strip()]
+    attachment_result = result.get("attachments") if isinstance(result.get("attachments"), dict) else {}
+    generated_result = result.get("generated_files") if isinstance(result.get("generated_files"), dict) else {}
+    cleared = [item for item in list(attachment_result.get("cleared") or []) if isinstance(item, dict)]
+    managed_generated = [item for item in list(generated_result.get("managed") or []) if isinstance(item, dict)]
+    purged = [
+        str(item or "").strip()
+        for item in list(attachment_result.get("purged_files") or [])
+        if str(item or "").strip()
+    ]
+    already_absent = [
+        str(item or "").strip()
+        for item in list(attachment_result.get("already_absent_files") or [])
+        if str(item or "").strip()
+    ]
     unresolved = [str(item or "").strip() for item in list(result.get("unresolved") or []) if str(item or "").strip()]
+    failures = [item for item in list(result.get("failures") or []) if isinstance(item, dict)]
+    cleaned_tasks = [item for item in list(result.get("cleaned_tasks") or []) if isinstance(item, dict)]
     lines = ["工作台清理结果"]
-    if cleared:
-        lines.append(f"已移出上下文：{len(cleared)} 个。")
-        lines.append("现在这些材料不会继续进入 Akane 的上下文。")
-        for index, item in enumerate(cleared[:12], start=1):
-            lines.append(f"{index}. {_format_qq_workspace_item(item)}")
-        if len(cleared) > 12:
-            lines.append(f"还有 {len(cleared) - 12} 个未显示。")
+    if cleared or managed_generated:
+        if cleared:
+            lines.append(f"已收起收到的材料：{len(cleared)} 个。")
+            for index, item in enumerate(cleared[:12], start=1):
+                lines.append(f"{index}. {_format_qq_workspace_item(item)}")
+            if len(cleared) > 12:
+                lines.append(f"还有 {len(cleared) - 12} 个收到的材料未显示。")
+        if managed_generated:
+            action_label = "已彻底清理生成结果" if delete_storage else "已收起生成结果"
+            lines.append(f"{action_label}：{len(managed_generated)} 个。")
+            for index, item in enumerate(managed_generated[:12], start=1):
+                lines.append(f"{index}. {_format_qq_generated_item(item)}")
+            if len(managed_generated) > 12:
+                lines.append(f"还有 {len(managed_generated) - 12} 个生成结果未显示。")
+        lines.append("这些项目不会继续显示在当前文件工作台里。")
     else:
-        lines.append("当前工作台已经是空的。")
-        lines.append("没有材料会继续进入 Akane 的上下文。")
+        lines.append("当前文件工作台已经是空的。")
     if delete_storage:
-        lines.append(f"已删除原始附件文件：{len(purged)} 个。")
+        lines.append(f"已删除附件托管副本：{len(purged)} 个。")
+        if already_absent:
+            lines.append(f"本来就没有本地副本：{len(already_absent)} 个。")
+    if cleaned_tasks:
+        lines.append(f"同时关闭关联的未收尾任务白板：{len(cleaned_tasks)} 个。")
+    if failures:
+        lines.append(f"未完全完成：{len(failures)} 项。")
+        for failure in failures[:8]:
+            target = str(failure.get("target") or failure.get("domain") or "工作台项目").strip()
+            reason = str(failure.get("reason") or "操作失败。").strip()
+            lines.append(f"- {target}：{reason}")
     if unresolved:
         lines.append("未找到：" + "、".join(unresolved[:8]))
     lines.append("发送“工作台”可再次查看。")
@@ -1937,34 +1989,35 @@ def build_qq_router(
 
             workspace_command = _parse_qq_workspace_command(qq_gateway, context.clean_message)
             if isinstance(workspace_command, dict):
-                service_factory = getattr(engine, "_get_attachment_inbox_service", None)
-                attachment_service = service_factory() if callable(service_factory) else None
                 action = str(workspace_command.get("action") or "").strip()
                 command_status = "ok"
                 command_ok = True
                 if action == "help":
                     reply = _build_qq_workspace_help_reply()
-                elif attachment_service is None:
-                    command_status = "service_unavailable"
-                    command_ok = False
-                    reply = "当前工作台服务不可用。"
                 elif action == "list":
                     reply = _build_qq_workspace_list_reply(
-                        attachment_service,
+                        engine,
                         profile_user_id=context.profile_user_id,
                         session_id=context.session_id,
                     )
                 elif action == "clear":
-                    clear_result = attachment_service.clear_focus(
+                    clear_result = clear_workspace_files(
+                        engine,
                         profile_user_id=context.profile_user_id,
                         session_id=context.session_id,
+                        character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
                         target=str(workspace_command.get("target") or "current"),
                         kind=str(workspace_command.get("kind") or "any"),
+                        reason="用户通过 QQ 工作台指令清理当前文件工作台。",
                         delete_storage=bool(workspace_command.get("delete_storage")),
                         timestamp=int(event.get("time") or time.time()),
                     )
                     command_ok = bool(clear_result.get("ok")) if isinstance(clear_result, dict) else False
-                    command_status = "cleared" if command_ok else "not_found"
+                    command_status = (
+                        str(clear_result.get("status") or "failed")
+                        if isinstance(clear_result, dict)
+                        else "failed"
+                    )
                     reply = _build_qq_workspace_clear_reply(
                         clear_result if isinstance(clear_result, dict) else {},
                         delete_storage=bool(workspace_command.get("delete_storage")),

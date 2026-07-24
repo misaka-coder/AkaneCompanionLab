@@ -3901,6 +3901,73 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("data:", projected_text)
         self.assertNotIn("mime_type:", projected_text)
 
+    def test_generated_workspace_cleanup_records_safe_linear_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                result = manager.record_generated_workspace_cleanup(
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    action="purge",
+                    status="partial",
+                    managed=[
+                        {
+                            "generated_id": "generated::abc",
+                            "generated_handle": "gen_001",
+                            "output_title": r"C:\Private\幻听.mp3",
+                            "storage_relpath": r"C:\Private\幻听.mp3",
+                        }
+                    ],
+                    failures=[
+                        {
+                            "target": "gen_002",
+                            "code": "delete_failed",
+                            "reason": r"token=private-value; C:\Private\other.mp3 删除失败",
+                        }
+                    ],
+                    unresolved=["gen_003"],
+                    reason="用户通过工作台彻底清理。",
+                    timestamp=130,
+                )
+                stored = manager._store.get_record_by_source_id(result["source_id"])
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(stored["kind"], "event.workspace.generated_cleanup")
+        self.assertEqual(stored["payload"]["source"], "workspace_management")
+        self.assertEqual(stored["payload"]["action"], "purge")
+        self.assertEqual(stored["payload"]["status"], "partial")
+        self.assertEqual(stored["payload"]["managed_count"], "1")
+        self.assertEqual(stored["payload"]["failure_count"], "1")
+        self.assertEqual(stored["payload"]["unresolved_count"], "1")
+        self.assertIn("gen_001", stored["payload"]["files"])
+        self.assertIn("gen_002", stored["payload"]["failures"])
+        self.assertEqual(stored["retrieval_policy"], "explicit")
+        self.assertEqual(stored["retrieval_visibility"], "explicit")
+        self.assertNotIn("storage_relpath", str(stored))
+        self.assertNotIn("private-value", str(stored))
+        self.assertNotIn(r"C:\Private", str(stored))
+        projected_text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
+        self.assertIn("event.workspace.generated_cleanup", projected_text)
+        self.assertEqual(projected_text.count("source: workspace_management"), 1)
+        self.assertIn("action: purge", projected_text)
+
     def test_failed_material_trace_preserves_structured_failure_evidence(self) -> None:
         item = {
             "attachment_id": "attachment::failed",

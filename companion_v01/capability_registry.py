@@ -807,8 +807,10 @@ CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC = CapabilityToolSpec(
     capability_id="clear_attachment_focus",
     display_name="Clear attachment focus",
     description=(
-        "Remove materials from the current workspace context when finished. "
-        "Only deletes storage when the user explicitly asks."
+        "Remove user-provided materials from the current workbench context when finished. "
+        "Only deletes managed attachment bytes when the user explicitly asks. "
+        "This tool never manages gen_* results; when the user asks to clear the whole workbench, "
+        "also call manage_generated_file for generated results in the same tool round."
     ),
     input_schema={
         "type": "object",
@@ -1173,23 +1175,43 @@ INSPECT_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
 MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_generated_file",
     display_name="Manage generated file",
-    description="Manage a previously generated file: archive, delete, rename, or change its delivery status.",
+    description=(
+        "Manage files Akane generated in the current workbench. "
+        "archive only hides results; delete removes managed file bytes and hides results; "
+        "purge also clears the stored content card. This tool never manages user attachments. "
+        "When the user asks to clear the whole workbench, call this for generated results and "
+        "clear_attachment_focus for user materials in the same tool round."
+    ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "action": {"type": "string", "enum": ["archive", "delete", "rename", "inspect_status", "list"], "description": "Management action."},
-            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle or 'latest'."},
-            "new_title": {"type": "string", "maxLength": 120, "description": "New title for rename action."},
+            "action": {
+                "type": "string",
+                "enum": ["archive", "delete", "purge"],
+                "description": "archive hides; delete removes managed bytes; purge also clears stored content.",
+            },
+            "target": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "One generated handle/title, or latest/all. Prefer targets for multiple items.",
+            },
+            "targets": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 120},
+                "maxItems": 50,
+                "description": "Multiple generated handles/titles; use ['all'] for the whole generated shelf.",
+            },
+            "reason": {"type": "string", "maxLength": 200, "description": "Optional user-facing cleanup reason."},
         },
         "required": ["action"],
     },
     risk="medium",
-    confirm="first_time",
+    confirm="never",
     effects=("file_manage",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,

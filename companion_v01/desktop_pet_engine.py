@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .attachment_ingest import AUDIO_MEDIA_SUFFIXES, DOCUMENT_SUFFIXES, MEDIA_SUFFIXES, TEXT_SUFFIXES
+from .workspace_management import clear_workspace_files
 
 
 DESKTOP_PET_AUDIO_EXTENSIONS = {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "webm"}
@@ -544,6 +545,7 @@ def manage_desktop_pet_workspace_panel(
     *,
     profile_user_id: str,
     session_id: str,
+    character_pack_id: str = "",
     action: str,
     item_type: str = "",
     target: str = "",
@@ -561,6 +563,7 @@ def manage_desktop_pet_workspace_panel(
             engine,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             timestamp=now_ts,
         )
 
@@ -575,15 +578,27 @@ def manage_desktop_pet_workspace_panel(
     if normalized_type in {"attachment", "file", "source"}:
         if not normalized_target:
             return {"ok": False, "error": "missing_target", "managed": []}
-        cleared = engine.store.clear_attachment_inbox_items(
+        result = clear_workspace_files(
+            engine,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             target=normalized_target,
+            delete_storage=False,
+            reason="用户从桌宠手边物品面板收起。",
             timestamp=now_ts,
         )
+        attachment_result = result.get("attachments") if isinstance(result.get("attachments"), dict) else {}
         return {
-            "ok": bool(cleared),
-            "managed": [desktop_workspace_attachment_card(item) for item in cleared],
+            "ok": bool(result.get("ok")) and bool(attachment_result.get("cleared")),
+            "status": str(result.get("status") or ""),
+            "managed": [
+                desktop_workspace_attachment_card(item)
+                for item in list(attachment_result.get("cleared") or [])
+                if isinstance(item, dict)
+            ],
+            "unresolved": list(result.get("unresolved") or []),
+            "failures": list(result.get("failures") or []),
             "action": "clear",
             "item_type": "attachment",
         }
@@ -591,21 +606,27 @@ def manage_desktop_pet_workspace_panel(
     if normalized_type in {"generated", "output"}:
         if not normalized_target:
             return {"ok": False, "error": "missing_target", "managed": []}
-        service = engine._get_generated_file_service()
-        if service is None:
-            return {"ok": False, "error": "generated_service_unavailable", "managed": []}
-        result = service.manage_generated_files(
+        result = clear_workspace_files(
+            engine,
             profile_user_id=profile_user_id,
             session_id=session_id,
-            action="archive",
-            targets=[normalized_target],
+            character_pack_id=character_pack_id,
+            target=normalized_target,
+            delete_storage=False,
             reason="用户从桌宠手边物品面板收起。",
             timestamp=now_ts,
         )
+        generated_result = result.get("generated_files") if isinstance(result.get("generated_files"), dict) else {}
         return {
-            "ok": bool(result.get("ok")),
-            "managed": [desktop_workspace_generated_card(item) for item in list(result.get("managed") or [])],
+            "ok": bool(result.get("ok")) and bool(generated_result.get("managed")),
+            "status": str(result.get("status") or ""),
+            "managed": [
+                desktop_workspace_generated_card(item)
+                for item in list(generated_result.get("managed") or [])
+                if isinstance(item, dict)
+            ],
             "unresolved": list(result.get("unresolved") or []),
+            "failures": list(result.get("failures") or []),
             "action": "archive",
             "item_type": "generated",
         }
@@ -660,37 +681,40 @@ def clear_desktop_workspace_files(
     *,
     profile_user_id: str,
     session_id: str,
+    character_pack_id: str = "",
     timestamp: int,
 ) -> dict[str, Any]:
-    managed: list[dict[str, Any]] = []
-    cleared_attachments = engine.store.clear_attachment_inbox_items(
+    result = clear_workspace_files(
+        engine,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        character_pack_id=character_pack_id,
         target="all",
+        delete_storage=False,
+        reason="用户从桌宠手边物品面板一键清理工作台文件。",
         timestamp=timestamp,
     )
-    managed.extend(desktop_workspace_attachment_card(item) for item in cleared_attachments)
-
-    generated_service = engine._get_generated_file_service()
-    generated_result: dict[str, Any] = {}
-    if generated_service is not None:
-        generated_result = generated_service.manage_generated_files(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            action="archive",
-            targets=["all"],
-            reason="用户从桌宠手边物品面板一键清理工作台文件。",
-            timestamp=timestamp,
-        )
-        managed.extend(
+    attachment_result = result.get("attachments") if isinstance(result.get("attachments"), dict) else {}
+    generated_result = result.get("generated_files") if isinstance(result.get("generated_files"), dict) else {}
+    managed = [
+        *[
+            desktop_workspace_attachment_card(item)
+            for item in list(attachment_result.get("cleared") or [])
+            if isinstance(item, dict)
+        ],
+        *[
             desktop_workspace_generated_card(item)
             for item in list(generated_result.get("managed") or [])
-        )
+            if isinstance(item, dict)
+        ],
+    ]
 
     return {
-        "ok": True,
+        "ok": bool(result.get("ok")),
+        "status": str(result.get("status") or ""),
         "managed": managed,
-        "unresolved": list(generated_result.get("unresolved") or []) if generated_result else [],
+        "unresolved": list(result.get("unresolved") or []),
+        "failures": list(result.get("failures") or []),
         "action": "clear_files",
         "item_type": "workspace_files",
     }

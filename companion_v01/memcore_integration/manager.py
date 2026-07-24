@@ -700,6 +700,125 @@ class MemcoreManager:
             delete_storage=delete_storage,
         )
 
+    def record_generated_workspace_cleanup(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        action: str,
+        status: str,
+        managed: list[dict[str, Any]] | None = None,
+        failures: list[dict[str, Any]] | None = None,
+        unresolved: list[str] | None = None,
+        reason: str = "",
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Append one safe fact for a channel/UI initiated generated-file cleanup.
+
+        Native model tool calls already persist their tool result in the open
+        turn and must not call this adapter.  This method exists for direct QQ
+        commands and desktop panel actions that otherwise mutate the generated
+        file store without leaving any newer evidence in the model timeline.
+        """
+
+        operation = "record_generated_workspace_cleanup"
+        profile = str(profile_user_id or "").strip()
+        session = str(session_id or "").strip()
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile,
+            session_id=session,
+            character_pack_id=str(character_pack_id or "").strip(),
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+
+        normalized_action = self._kind_segment(action, fallback="archive")
+        normalized_status = self._kind_segment(status, fallback="unknown")
+        managed_items = [item for item in list(managed or []) if isinstance(item, dict)]
+        failure_items = [item for item in list(failures or []) if isinstance(item, dict)]
+        unresolved_items = [str(item or "").strip() for item in list(unresolved or []) if str(item or "").strip()]
+        safe_files: list[str] = []
+        for item in managed_items[:30]:
+            handle = self._safe_task_event_text(
+                item.get("generated_handle") or item.get("generated_id"),
+                limit=120,
+            )
+            title = self._safe_task_event_text(item.get("output_title"), limit=180)
+            if handle and title and title != handle:
+                safe_files.append(f"{handle} ({title})")
+            elif handle or title:
+                safe_files.append(handle or title)
+
+        safe_failures: list[str] = []
+        for item in failure_items[:20]:
+            target = self._safe_task_event_text(
+                item.get("target") or item.get("generated_handle") or item.get("generated_id"),
+                limit=120,
+            )
+            code = self._safe_task_event_text(item.get("code") or item.get("error"), limit=80)
+            failure_reason = self._safe_task_event_text(item.get("reason"), limit=240)
+            label = ": ".join(part for part in (target, code) if part)
+            if failure_reason:
+                label = f"{label} - {failure_reason}" if label else failure_reason
+            if label:
+                safe_failures.append(label)
+
+        safe_unresolved = [
+            text
+            for item in unresolved_items[:20]
+            if (text := self._safe_task_event_text(item, limit=120))
+        ]
+        safe_reason = self._safe_task_event_text(reason, limit=320)
+        fields = {
+            "action": normalized_action,
+            "status": normalized_status,
+            "managed_count": str(len(managed_items)),
+            "failure_count": str(len(failure_items)),
+            "unresolved_count": str(len(unresolved_items)),
+            **({"files": "; ".join(safe_files)} if safe_files else {}),
+            **({"failures": "; ".join(safe_failures)} if safe_failures else {}),
+            **({"unresolved": ", ".join(safe_unresolved)} if safe_unresolved else {}),
+            **({"reason": safe_reason} if safe_reason else {}),
+        }
+        effective_ts = int(timestamp or time.time())
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "profile_user_id": profile,
+                    "session_id": session,
+                    "character_pack_id": str(character_pack_id or "").strip(),
+                    "timestamp": effective_ts,
+                    "fields": fields,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8", errors="ignore")
+        ).hexdigest()[:24]
+        source_id = f"workspace:generated_cleanup:{effective_ts}:{fingerprint}"
+        try:
+            stored = system.record_external_event(
+                event_type="workspace.generated_cleanup",
+                fields=fields,
+                source="workspace_management",
+                timestamp=effective_ts,
+                source_id=source_id,
+                topic_terms=["工作台", "生成文件", "清理"],
+            )
+            return self._status(
+                operation,
+                True,
+                "recorded",
+                source_id=str(stored.get("source_id") or source_id),
+                index_status=str(stored.get("index_status") or ""),
+            )
+        except Exception as exc:
+            failed_reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, failed_reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=failed_reason)
+
     def record_task_event(
         self,
         *,

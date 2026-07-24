@@ -1183,7 +1183,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         process_calls: list[dict[str, Any]] = []
+        passive_record_calls: list[dict[str, Any]] = []
         clear_calls: list[dict[str, Any]] = []
+        generated_calls: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeAttachmentStore:
@@ -1234,15 +1236,58 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "unresolved": [],
                 }
 
+        class FakeGeneratedStore:
+            def list_generated_files(self, **_kwargs):
+                return [
+                    {
+                        "generated_id": "generated-1",
+                        "generated_handle": "gen_001",
+                        "status": "ready",
+                        "output_title": "整理结果",
+                        "output_format": "md",
+                    }
+                ]
+
+        class FakeGeneratedService:
+            store = FakeGeneratedStore()
+
+            def manage_generated_files(self, **kwargs):
+                generated_calls.append(kwargs)
+                action = str(kwargs.get("action") or "")
+                return {
+                    "ok": True,
+                    "status": "completed",
+                    "action": action,
+                    "managed": [
+                        {
+                            "generated_id": "generated-1",
+                            "generated_handle": "gen_001",
+                            "status": "removed",
+                            "output_title": "整理结果",
+                            "output_format": "md",
+                            "file_deleted": action == "purge",
+                        }
+                    ],
+                    "failures": [],
+                    "unresolved": [],
+                }
+
         class FakeEngine:
             desktop_pet_character_resources = None
 
             def _get_attachment_inbox_service(self):
                 return FakeAttachmentService()
 
+            def _get_generated_file_service(self):
+                return FakeGeneratedService()
+
             def process_turn_stream(self, payload: dict):
                 process_calls.append(payload)
                 yield {"type": "final_ui", "payload": {"speech": "不该走到这里"}}
+
+            def record_passive_qq_message(self, payload: dict):
+                passive_record_calls.append(payload)
+                return {"ok": True, "status": "recorded"}
 
         class FakeResponse:
             def raise_for_status(self) -> None:
@@ -1292,9 +1337,10 @@ class BackendRouteModuleTests(unittest.TestCase):
                 "/api/qq/napcat/event",
                 json={
                     "post_type": "message",
-                    "message_type": "private",
+                    "message_type": "group",
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
                     "message_id": "workspace-soft-delete-1",
                     "message": "Akane 删除工作台",
                 },
@@ -1307,13 +1353,23 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(clear_response.json()["reason"], "qq_workspace_command")
         self.assertEqual(soft_delete_response.json()["reason"], "qq_workspace_command")
         self.assertEqual(process_calls, [])
+        self.assertEqual(passive_record_calls, [])
         self.assertEqual(clear_calls[0]["target"], "current")
         self.assertTrue(clear_calls[0]["delete_storage"])
         self.assertEqual(clear_calls[1]["target"], "current")
         self.assertFalse(clear_calls[1]["delete_storage"])
+        self.assertEqual(generated_calls[0]["action"], "purge")
+        self.assertEqual(generated_calls[0]["targets"], ["all"])
+        self.assertEqual(generated_calls[1]["action"], "archive")
         sent_messages = [_onebot_message_text(call.kwargs["json"]) for call in mocked_post.call_args_list]
-        self.assertTrue(any("当前工作台" in message and "file_001" in message for message in sent_messages))
-        self.assertTrue(any("已删除原始附件文件：2 个" in message for message in sent_messages))
+        self.assertTrue(
+            any(
+                "当前工作台" in message and "file_001" in message and "gen_001" in message
+                for message in sent_messages
+            )
+        )
+        self.assertTrue(any("已删除附件托管副本：2 个" in message for message in sent_messages))
+        self.assertTrue(any("已彻底清理生成结果：1 个" in message for message in sent_messages))
         self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
 
     def test_qq_router_workspace_natural_question_does_not_trigger_keyword_state_injection(self) -> None:

@@ -1231,6 +1231,52 @@ class AkaneMemoryEngine:
             logger.warning("memcore attachment material trace failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _record_generated_workspace_cleanup(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        action: str,
+        status: str,
+        managed: list[dict[str, Any]],
+        failures: list[dict[str, Any]],
+        unresolved: list[str],
+        reason: str,
+        timestamp: int,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {"ok": True, "status": "skipped", "reason": "memcore_disabled"}
+        resolved_character_pack_id = str(character_pack_id or "").strip()
+        if not resolved_character_pack_id:
+            store = getattr(self, "store", None)
+            session = (
+                store.get_session(profile_user_id, session_id)
+                if store is not None and hasattr(store, "get_session")
+                else None
+            )
+            if isinstance(session, dict):
+                resolved_character_pack_id = str(session.get("character_pack_id") or "").strip()
+        try:
+            result = manager.record_generated_workspace_cleanup(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=resolved_character_pack_id,
+                action=action,
+                status=status,
+                managed=managed,
+                failures=failures,
+                unresolved=unresolved,
+                reason=reason,
+                timestamp=timestamp,
+            )
+            self._warn_memcore_write_result("generated workspace cleanup", result)
+            return result
+        except Exception as exc:
+            logger.warning("memcore generated workspace cleanup failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
     def _record_task_workspace_trace(
         self,
         *,
@@ -2664,6 +2710,7 @@ class AkaneMemoryEngine:
         *,
         profile_user_id: str,
         session_id: str,
+        character_pack_id: str = "",
         action: str,
         item_type: str = "",
         target: str = "",
@@ -2672,6 +2719,7 @@ class AkaneMemoryEngine:
             self,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            character_pack_id=character_pack_id,
             action=action,
             item_type=item_type,
             target=target,
@@ -6619,7 +6667,8 @@ class AkaneMemoryEngine:
                 sticker_service=self.sticker_assets,
             ),
             "manage_generated_file": ManageGeneratedFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
+                generated_file_service=self._get_generated_file_service(),
+                task_workspace_service=self._get_task_workspace_service(),
             ),
             "manage_gift": ManageGiftToolHandler(
                 gift_service=self.gift_service,

@@ -6600,8 +6600,9 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
 class ManageGeneratedFileToolHandler(BaseToolHandler):
     tool_type = "manage_generated_file"
 
-    def __init__(self, *, generated_file_service) -> None:
+    def __init__(self, *, generated_file_service, task_workspace_service=None) -> None:
         self.generated_file_service = generated_file_service
+        self.task_workspace_service = task_workspace_service
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -6610,6 +6611,8 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
             '"targets":["gen_001","gen_002"],"reason":"清理原因"}。'
             "archive 只从生成文件工作台隐藏；delete 会同时删除本地生成文件；purge 会删除本地文件并清空生成物内容卡片。"
             "不要用它清理用户发来的 file_001/img_001，工作台材料应使用 clear_attachment_focus。"
+            "用户笼统要求清理整个工作台时，应在同一轮同时调用 clear_attachment_focus(target=all) "
+            "和 manage_generated_file(targets=[all])；普通清理用 archive，明确要求彻底删除才用 purge。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -6647,19 +6650,58 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
             timestamp=context.now_ts,
         )
         events = []
-        if bool(result.get("ok")):
+        managed = [dict(item) for item in list(result.get("managed") or []) if isinstance(item, dict)]
+        failures = [dict(item) for item in list(result.get("failures") or []) if isinstance(item, dict)]
+        cleaned_tasks: list[dict[str, Any]] = []
+        if managed:
             events.append(
                 {
                     "type": "generated_files_managed",
                     "action": str(result.get("action") or ""),
-                    "managed": list(result.get("managed") or []),
+                    "managed": managed,
                     "unresolved": list(result.get("unresolved") or []),
                 }
+            )
+            if self.task_workspace_service is not None:
+                artifact_ids = {
+                    str(value or "").strip()
+                    for item in managed
+                    for value in (item.get("generated_id"), item.get("generated_handle"))
+                    if str(value or "").strip()
+                }
+                cleaned_tasks = self.task_workspace_service.cleanup_tasks_for_artifacts(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    artifact_ids=artifact_ids,
+                    reason=str(call.get("reason") or "").strip() or "关联生成文件已退出当前工作台。",
+                    timestamp=context.now_ts,
+                )
+                if cleaned_tasks:
+                    events.append(
+                        {
+                            "type": "task_workspaces_cleaned",
+                            "task_ids": [str(task.get("task_id") or "") for task in cleaned_tasks],
+                            "reason": "generated_file_cleared",
+                        }
+                    )
+        if failures:
+            events.append(
+                {
+                    "type": "generated_files_manage_failed",
+                    "action": str(result.get("action") or ""),
+                    "failures": failures,
+                }
+            )
+        followup_context = str(result.get("followup_context") or "") if isinstance(result, dict) else ""
+        if cleaned_tasks:
+            followup_context += (
+                f"\n系统同时关闭了 {len(cleaned_tasks)} 个依赖这些生成文件的未收尾任务白板；"
+                "这些旧任务不再是当前待办，不要主动继续汇报或追问。"
             )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            followup_context=followup_context,
         )
 
     def _normalize_action(self, value: Any) -> str:

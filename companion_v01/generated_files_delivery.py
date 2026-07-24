@@ -430,7 +430,9 @@ def manage_generated_files(
         missing = f"未找到：{', '.join(unresolved[:5])}。" if unresolved else ""
         return {
             "ok": False,
+            "status": "empty",
             "managed": [],
+            "failures": [],
             "unresolved": unresolved,
             "action": normalized_action,
             "followup_context": (
@@ -440,6 +442,7 @@ def manage_generated_files(
         }
 
     managed: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
     for item in resolved:
         item_id = str(item.get("generated_id") or "").strip()
         if not item_id:
@@ -448,6 +451,21 @@ def manage_generated_files(
         delete_error = ""
         if normalized_action in {"delete", "purge"}:
             deleted_file, delete_error = service._delete_generated_file_on_disk(item)
+            if delete_error not in {"", "missing"}:
+                failures.append(
+                    {
+                        "generated_id": item_id,
+                        "generated_handle": str(item.get("generated_handle") or "").strip(),
+                        "target": str(item.get("generated_handle") or item_id).strip(),
+                        "code": delete_error,
+                        "reason": {
+                            "unsafe_path": "生成文件不在 Akane 管理的目录内，系统没有删除或隐藏它。",
+                            "not_file": "生成文件对应的位置不是普通文件，系统没有删除或隐藏它。",
+                            "delete_failed": "删除生成文件时发生文件系统错误，系统保留了工作台记录以便重试。",
+                        }.get(delete_error, "生成文件未能安全删除，系统保留了工作台记录以便重试。"),
+                    }
+                )
+                continue
 
         update_kwargs: dict[str, Any] = {
             "profile_user_id": profile_user_id,
@@ -473,7 +491,9 @@ def manage_generated_files(
             )
         updated = service.store.update_generated_file(**update_kwargs) or dict(item, status="removed")
         updated["file_deleted"] = deleted_file
-        if delete_error:
+        if delete_error == "missing":
+            updated["file_already_absent"] = True
+        elif delete_error:
             updated["delete_error"] = delete_error
         managed.append(updated)
 
@@ -487,16 +507,39 @@ def manage_generated_files(
         "delete": "删除本地文件并归档",
         "purge": "彻底清理内容并归档",
     }.get(normalized_action, normalized_action)
+    if managed and failures:
+        status = "partial"
+    elif managed:
+        status = "completed"
+    elif failures:
+        status = "failed"
+    else:
+        status = "empty"
+    managed_text = (
+        f"你刚刚已经对 {len(managed)} 个生成文件执行了「{action_label}」"
+        f"（{names}）。{missing}{reason_text}"
+        "这些生成物不会继续显示在生成文件工作台里；用户原始附件不会被删除。"
+        if managed
+        else ""
+    )
+    failure_text = (
+        f"另有 {len(failures)} 个生成文件未能安全完成操作，系统保留了它们的工作台记录和路径以便重试；"
+        "请依据返回的失败原因如实告诉用户，不要声称已经删除。"
+        if failures
+        else ""
+    )
     return {
         "ok": bool(managed),
+        "status": status,
         "managed": managed,
+        "failures": failures,
         "unresolved": unresolved,
         "action": normalized_action,
         "followup_context": (
-            f"你刚刚已经对 {len(managed)} 个生成文件执行了「{action_label}」"
-            f"（{names}）。{missing}{reason_text}"
-            "这些生成物不会继续显示在生成文件工作台里；用户原始附件不会被删除。"
-            "请基于这个既成事实自然回应，不要重复调用 manage_generated_file。"
+            managed_text
+            + failure_text
+            + (missing if not managed and missing else "")
+            + "请基于这个既成事实自然回应，不要重复调用 manage_generated_file。"
         ),
     }
 
@@ -694,8 +737,8 @@ def delete_generated_file_on_disk(service: Any, item: dict[str, Any]) -> tuple[b
     try:
         path.unlink()
         return True, ""
-    except Exception as exc:
-        return False, str(exc)[:180]
+    except OSError:
+        return False, "delete_failed"
 
 
 def resolve_sendable_file(

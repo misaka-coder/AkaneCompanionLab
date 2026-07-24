@@ -712,6 +712,7 @@ async function postWorkspaceAction(payload) {
       user_id: sessionId,
       session_id: sessionId,
       real_user_id: state?.profileUserId || PROFILE_USER_ID,
+      character_pack_id: String(state?.characterPackId || "").trim(),
       ...payload
     }),
     connectTimeout: 10000
