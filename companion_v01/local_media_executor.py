@@ -313,6 +313,7 @@ class LocalRvcExecutorProvider:
         separation_model: str = "HP5_only_main_vocal",
     ) -> None:
         self.client = client
+        self.timeout_seconds = client.timeout_seconds
         self.default_model = str(default_model or "").strip()
         self.separation_model = str(separation_model or "HP5_only_main_vocal").strip()
         with self._locks_guard:

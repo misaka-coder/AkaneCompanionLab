@@ -133,6 +133,7 @@ class LocalMediaExecutorTests(unittest.TestCase):
         )
         client = LocalMediaExecutorClient(base_url="http://127.0.0.1:19879", session=session)
         provider = LocalRvcExecutorProvider(client=client, default_model="Akie-test.pth")
+        self.assertEqual(provider.timeout_seconds, client.timeout_seconds)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
