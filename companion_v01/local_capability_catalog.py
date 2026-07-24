@@ -147,14 +147,15 @@ def build_local_capability_catalog(
     character_voice: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = []
-    entries.extend(_build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {}))
+    backend_tool_entries = _build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {})
+    entries.extend(backend_tool_entries)
     entries.extend(_build_python_adapter_entries())
     entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client, settings=settings))
     configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
     entries.extend(configurable_provider_entries)
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
     entries.extend(_build_mcp_entries(mcp_server_configs or {}))
-    entries.extend(_build_prompt_module_entries())
+    entries.extend(_build_prompt_module_entries(backend_tool_entries))
     entries = [apply_approval_policy_to_entry(entry, approval_policy) for entry in entries]
     entries = sorted(entries, key=lambda item: (str(item.get("kind") or ""), str(item.get("id") or "")))
     resolutions = _build_voice_provider_resolutions(entries, character_voice=character_voice)
@@ -712,30 +713,55 @@ def _build_mcp_entries(mcp_server_configs: Mapping[str, Any]) -> list[dict[str, 
     return entries
 
 
-def _build_prompt_module_entries() -> list[dict[str, Any]]:
+def _build_prompt_module_entries(backend_tool_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entries = []
+    tool_entries = {
+        str(entry.get("toolType") or "").strip(): entry
+        for entry in backend_tool_entries
+        if str(entry.get("toolType") or "").strip()
+    }
     registry = CapabilityRegistry()
     for module in registry.modules:
+        required_tools = tuple(str(tool_name or "").strip() for tool_name in module.tools if str(tool_name or "").strip())
+        missing_tools = [tool_name for tool_name in required_tools if tool_name not in tool_entries]
+        unavailable_tools = [
+            tool_name
+            for tool_name in required_tools
+            if tool_name in tool_entries
+            and (
+                not bool(tool_entries[tool_name].get("enabled"))
+                or str(tool_entries[tool_name].get("status") or "").strip() != "ready"
+            )
+        ]
+        enabled = not missing_tools and not unavailable_tools
+        reason = ""
+        if missing_tools:
+            reason = f"tool_not_registered:{','.join(missing_tools)}"
+        elif unavailable_tools:
+            reason = f"tool_not_ready:{','.join(unavailable_tools)}"
+        entry = {
+            "id": f"prompt_module.{module.name}",
+            "kind": "prompt_module",
+            "type": "tool",
+            "source": "builtin",
+            "adapter": "prompt_capability_registry",
+            "executionMode": "internal",
+            "name": module.name,
+            "description": module.light_hint,
+            "group": module.layer,
+            "enabled": enabled,
+            "status": "ready" if enabled else "unavailable",
+            "risk": "low",
+            "requiresConfirmation": False,
+            "usedBy": ["agent_prompt"],
+            "toolTypes": list(required_tools),
+            "clientModes": [mode.value for mode in module.modes],
+        }
+        if reason:
+            entry["reason"] = reason
         entries.append(
             _project_catalog_entry(
-                {
-                    "id": f"prompt_module.{module.name}",
-                    "kind": "prompt_module",
-                    "type": "tool",
-                    "source": "builtin",
-                    "adapter": "prompt_capability_registry",
-                    "executionMode": "internal",
-                    "name": module.name,
-                    "description": module.light_hint,
-                    "group": module.layer,
-                    "enabled": True,
-                    "status": "ready",
-                    "risk": "low",
-                    "requiresConfirmation": False,
-                    "usedBy": ["agent_prompt"],
-                    "toolTypes": list(module.tools),
-                    "clientModes": [mode.value for mode in module.modes],
-                },
+                entry,
                 default_risk="low",
             )
         )

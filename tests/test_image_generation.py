@@ -4,8 +4,11 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.image_generation import ImageGenerationError, ImageGenerationService, PinAIImageProvider
 from companion_v01.image_materials import SessionImageMaterialResolver
@@ -143,6 +146,29 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertFalse(by_name["generate_image"]["additionalProperties"])
         self.assertEqual(by_name["generate_image"]["required"], ["prompt"])
         self.assertEqual(by_name["generate_image"]["properties"]["reference_images"]["maxItems"], 5)
+
+    @patch("companion_v01.engine.ImageGenerationService")
+    @patch("companion_v01.engine.PinAIImageProvider")
+    @patch("companion_v01.engine.config.IMAGE_GENERATION_API_KEY", "")
+    @patch("companion_v01.engine.config.IMAGE_GENERATION_ENABLED", True)
+    def test_image_generation_reuses_current_bot_key_when_dedicated_key_is_absent(
+        self,
+        provider_type,
+        service_type,
+    ) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.settings = SimpleNamespace(chat_api_key="bot-scoped-secret")
+        engine._get_image_material_resolver = lambda: object()
+        engine._get_generated_file_service = lambda: object()
+        provider_type.return_value.configured = True
+        service = object()
+        service_type.return_value = service
+
+        result = engine._get_image_generation_service()
+
+        self.assertIs(result, service)
+        self.assertEqual(provider_type.call_args.kwargs["api_key"], "bot-scoped-secret")
+        self.assertIs(engine.image_generation_service, service)
 
     def test_pinai_text_to_image_uses_stream_request_and_decodes_json(self) -> None:
         encoded = base64.b64encode(PNG_BYTES).decode("ascii")

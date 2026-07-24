@@ -1832,6 +1832,8 @@ class AkaneMemoryEngine:
         if resolver is None or generated_file_service is None:
             return None
         image_api_key = str(getattr(config, "IMAGE_GENERATION_API_KEY", "") or "").strip()
+        if not image_api_key:
+            image_api_key = str(getattr(self.settings, "chat_api_key", "") or "").strip()
         provider = PinAIImageProvider(
             base_url=str(getattr(config, "IMAGE_GENERATION_BASE_URL", "") or ""),
             api_key=image_api_key,
