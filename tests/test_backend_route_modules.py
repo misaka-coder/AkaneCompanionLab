@@ -1502,6 +1502,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         ingest_calls: list[dict[str, Any]] = []
         prepare_calls: list[dict[str, Any]] = []
         process_calls: list[dict[str, Any]] = []
+        passive_record_calls: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
 
         class FakeEngine:
@@ -1514,6 +1515,10 @@ class BackendRouteModuleTests(unittest.TestCase):
             def prepare_qq_native_image_inputs(self, **kwargs):
                 prepare_calls.append(kwargs)
                 return {"ok": True, "status": "ready", "images": [], "skipped": []}
+
+            def record_passive_qq_message(self, payload: dict):
+                passive_record_calls.append(payload)
+                return {"ok": True, "status": "recorded"}
 
             def prefetch_remote_media_links_for_message(self, **_kwargs):
                 return {}
@@ -1538,7 +1543,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 engine=FakeEngine(),
                 config_module=SimpleNamespace(
                     QQ_BRIDGE_ENABLED=True,
-                    QQ_GROUP_PASSIVE_MEMORY_MODE="off",
+                    QQ_GROUP_PASSIVE_MEMORY_MODE="all",
                 ),
                 qq_gateway=gateway,
                 runtime_metrics=runtime,
@@ -1562,6 +1567,28 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "message": [
                         {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
                         {"type": "text", "data": {"text": "/识图关"}},
+                    ],
+                },
+            )
+            passive_image_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID + 1,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-passive-image-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "member", "nickname": "群成员"},
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "passive-disabled.png",
+                                "url": "http://127.0.0.1:3001/passive-disabled.png",
+                            },
+                        },
                     ],
                 },
             )
@@ -1594,6 +1621,10 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(command_response.json()["reason"], "qq_group_vision_command")
         self.assertEqual(command_response.json()["command_status"], "disabled")
         self.assertFalse(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+        self.assertEqual(passive_image_response.status_code, 200)
+        self.assertEqual(passive_image_response.json()["status"], "ignored")
+        self.assertEqual(passive_image_response.json()["reason"], "group_vision_disabled")
+        self.assertEqual(passive_record_calls, [])
         self.assertEqual(image_response.status_code, 200)
         self.assertEqual(image_response.json()["reason"], "group_mention", image_response.json())
         self.assertEqual(ingest_calls, [])

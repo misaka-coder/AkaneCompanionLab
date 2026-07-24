@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
@@ -565,6 +566,19 @@ def prepare_context(
                         "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
                     }
                 ]
+        if normalized_prompt_scope == "plugin_proactive":
+            event_history: list[dict[str, Any]] = []
+            keep_event_turn = False
+            for turn in history_turns:
+                role = str(turn.get("role") or "").strip().lower()
+                if role == "user":
+                    content = str(turn.get("content") or "")
+                    keep_event_turn = bool(
+                        re.search(r"(?:^|\]\s|\n)event\.[a-z0-9]", content, flags=re.IGNORECASE)
+                    )
+                if keep_event_turn:
+                    event_history.append(dict(turn))
+            history_turns = event_history
         generation_context = prompt_builder.build_final_generation_context(
             now_ts=now_ts,
             raw_text="" if projection_authoritative else raw_text,
@@ -699,14 +713,22 @@ def prepare_context(
         "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
     )
     generation_context["post_user_turns"] = effective_post_user_turns
-    generation_context["memcore_projection_shadow"] = _compare_memcore_projection_shadow(
-        engine,
-        generation_context=generation_context,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        character_pack_id=character_pack_id,
-        current_source_id=current_source_id,
-        chat_model_override=chat_model_override,
+    generation_context["memcore_projection_shadow"] = (
+        {
+            "ok": True,
+            "status": "skipped",
+            "reason": "plugin_proactive_event_history_filtered",
+        }
+        if normalized_prompt_scope == "plugin_proactive"
+        else _compare_memcore_projection_shadow(
+            engine,
+            generation_context=generation_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            current_source_id=current_source_id,
+            chat_model_override=chat_model_override,
+        )
     )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()

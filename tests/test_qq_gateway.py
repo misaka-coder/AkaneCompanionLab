@@ -346,6 +346,69 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(other_user_image.should_record)
         self.assertEqual(other_user_image.reason, "group_passive_observed")
 
+    def test_group_vision_disabled_does_not_record_passive_image_message(self) -> None:
+        gateway = NapCatQQGateway()
+        self.assertTrue(gateway.set_group_vision_enabled(QQ_GROUP_FIXTURE_ID, False))
+        base_event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_OTHER_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "group-vision-disabled-passive-image",
+        }
+        image_segment = {
+            "type": "image",
+            "data": {
+                "file": "blocked.jpg",
+                "url": "http://127.0.0.1/blocked.jpg",
+            },
+        }
+
+        image_only = gateway.build_message_context(
+            {
+                **base_event,
+                "message": [image_segment],
+            }
+        )
+        image_with_text = gateway.build_message_context(
+            {
+                **base_event,
+                "message_id": "group-vision-disabled-passive-image-text",
+                "message": [
+                    {"type": "text", "data": {"text": "顺便看看"}},
+                    image_segment,
+                ],
+            }
+        )
+
+        for context in (image_only, image_with_text):
+            self.assertFalse(context.should_respond)
+            self.assertFalse(context.should_record)
+            self.assertEqual(context.reason, "group_vision_disabled")
+
+    def test_group_vision_toggle_does_not_change_text_turn_payload(self) -> None:
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "group-vision-cache-stable-text",
+            "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": " 分析一下券商板块"}},
+            ],
+        }
+        enabled_gateway = NapCatQQGateway()
+        disabled_gateway = NapCatQQGateway()
+        self.assertTrue(disabled_gateway.set_group_vision_enabled(QQ_GROUP_FIXTURE_ID, False))
+
+        enabled_payload = enabled_gateway.build_message_context(event).to_turn_payload()
+        disabled_payload = disabled_gateway.build_message_context(event).to_turn_payload()
+
+        self.assertEqual(disabled_payload, enabled_payload)
+
     def test_group_members_share_group_scoped_memory(self) -> None:
         gateway = NapCatQQGateway()
         first_event = {

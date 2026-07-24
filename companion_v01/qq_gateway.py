@@ -712,6 +712,14 @@ class NapCatQQGateway:
         raw_message = inbound.raw_text
         clean_message = inbound.text
         attachments = self._legacy_attachments(inbound.attachments)
+        group_vision_enabled = not is_group or self.is_group_vision_enabled(group_id)
+        has_group_image = bool(
+            is_group
+            and any(
+                isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
+                for item in attachments
+            )
+        )
         unsupported_attachment_labels = {
             "video": "[视频]",
             "sticker": "[表情]",
@@ -741,7 +749,7 @@ class NapCatQQGateway:
                 mentioned_bot=mentions_bot,
                 mentioned_wake_word=mentions_wake_word,
                 has_attachments=bool(attachments),
-                allow_attachment_follow=self.is_group_vision_enabled(group_id),
+                allow_attachment_follow=group_vision_enabled,
                 ttl_seconds=getattr(
                     config,
                     "QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS",
@@ -749,10 +757,11 @@ class NapCatQQGateway:
                 ),
             )
             if not trigger.should_respond:
+                suppress_passive_image = bool(has_group_image and not group_vision_enabled)
                 return QQMessageContext(
                     should_respond=False,
-                    reason=trigger.reason,
-                    should_record=True,
+                    reason="group_vision_disabled" if suppress_passive_image else trigger.reason,
+                    should_record=not suppress_passive_image,
                     is_group=True,
                     target_id=group_id,
                     user_id=user_id,

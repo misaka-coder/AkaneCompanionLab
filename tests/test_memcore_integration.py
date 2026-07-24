@@ -4709,7 +4709,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(engine.prompt_builder.calls, [])
         self.assertNotIn("LEGACY", repr(result))
 
-    def test_plugin_proactive_prompt_context_uses_memcore_provider_projection(self) -> None:
+    def test_plugin_proactive_prompt_context_isolates_conversation_history(self) -> None:
         previous_event = (
             "[2026-07-20 周一 08:50 | 上午] event.finance\n"
             "source: 东方财富\n"
@@ -4730,6 +4730,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "status": "ok",
                 "provider_profile": "openai_chat",
                 "messages": [
+                    {
+                        "payload": {"role": "user", "content": "【蓬壶人】发来了一张图片。"},
+                        "source_ids": ["group-image-placeholder"],
+                    },
+                    {
+                        "payload": {"role": "assistant", "content": "上一条群聊回复。"},
+                        "source_ids": ["group-chat-final"],
+                    },
                     {
                         "payload": {"role": "user", "content": previous_event},
                         "source_ids": ["event-previous"],
@@ -4787,8 +4795,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["prompt_scope"], "plugin_proactive")
         self.assertEqual(result["prompt_scope"], "plugin_proactive")
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
-        self.assertEqual(result["memcore_projection_shadow"]["status"], "match")
-        self.assertEqual(memcore_manager.compare_calls[0]["exclude_source_ids"], ["current"])
+        self.assertEqual(result["memcore_projection_shadow"]["status"], "skipped")
+        self.assertEqual(result["memcore_projection_shadow"]["reason"], "plugin_proactive_event_history_filtered")
+        self.assertEqual(memcore_manager.compare_calls, [])
         self.assertFalse(hasattr(memcore_manager, "build_prompt_context"))
         self.assertEqual((repr(captured["history_turns"]) + result["user_prompt"]).count("真实插件事件"), 1)
         self.assertNotIn("插件", previous_event)
