@@ -76,6 +76,7 @@ class ModelServiceConfigTests(unittest.TestCase):
                     "providerId": "deepseek",
                     "apiKey": "sk-private",
                     "chatModel": "deepseek-chat",
+                    "useForImageGeneration": True,
                 }
             )
             store.save(settings)
@@ -84,6 +85,7 @@ class ModelServiceConfigTests(unittest.TestCase):
             self.assertEqual(loaded.api_key, "sk-private")
             public = public_model_service_snapshot(loaded, source="local_file")
             self.assertTrue(public["hasApiKey"])
+            self.assertTrue(public["useForImageGeneration"])
             self.assertNotIn("sk-private", json.dumps(public, ensure_ascii=False))
             self.assertNotIn("apiKey", public)
             self.assertEqual(public["chatReasoningEffort"], "")
@@ -255,13 +257,26 @@ class ModelServiceConfigTests(unittest.TestCase):
                     "providerId": "ollama",
                     "chatModel": "qwen2.5:7b",
                     "useForVision": True,
+                    "useForImageGeneration": True,
                 },
             )
             self.assertEqual(saved.json()["status"], "configured")
             self.assertEqual(engine.reload_count, 1)
             self.assertEqual(config.CHAT_API_PROTOCOL, "openai")
             self.assertEqual(engine.last_settings.protocol, "ollama")
+            self.assertTrue(engine.last_settings.use_for_image_generation)
             self.assertNotIn("env-secret", saved.text)
+
+            preserved = client.post(
+                "/control-center/model-service",
+                json={
+                    "providerId": "ollama",
+                    "chatModel": "qwen2.5:7b",
+                    "useForVision": True,
+                },
+            )
+            self.assertTrue(preserved.json()["useForImageGeneration"])
+            self.assertTrue(engine.last_settings.use_for_image_generation)
 
 
 if __name__ == "__main__":

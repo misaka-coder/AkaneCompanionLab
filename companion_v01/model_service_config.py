@@ -96,6 +96,7 @@ class ModelServiceSettings:
     api_key: str
     chat_model: str
     use_for_vision: bool = True
+    use_for_image_generation: bool = False
     vision_model: str = ""
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     chat_reasoning_effort: str = ""
@@ -173,6 +174,10 @@ def settings_from_mapping(
         raw.get("useForVision", raw.get("use_for_vision")),
         True,
     )
+    use_for_image_generation = _bool_value(
+        raw.get("useForImageGeneration", raw.get("use_for_image_generation")),
+        False,
+    )
     vision_model = str(raw.get("visionModel") or raw.get("vision_model") or "").strip()
     timeout_seconds = _bounded_int(
         raw.get("timeoutSeconds", raw.get("timeout_seconds")),
@@ -193,6 +198,7 @@ def settings_from_mapping(
         api_key=api_key,
         chat_model=chat_model,
         use_for_vision=use_for_vision,
+        use_for_image_generation=use_for_image_generation,
         vision_model=vision_model,
         timeout_seconds=timeout_seconds,
         chat_reasoning_effort=chat_reasoning_effort,
@@ -216,6 +222,7 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
         api_key=str(getattr(config_module, "CHAT_API_KEY", "") or "").strip(),
         chat_model=str(getattr(config_module, "CHAT_MODEL_NAME", "") or "").strip(),
         use_for_vision=bool(vision_model),
+        use_for_image_generation=bool(getattr(config_module, "IMAGE_GENERATION_ENABLED", False)),
         vision_model=vision_model,
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         chat_reasoning_effort=normalize_reasoning_effort(
@@ -243,6 +250,7 @@ def effective_settings_from_runtime_settings(settings: Any) -> ModelServiceSetti
             and getattr(settings, "vision_base_url", "")
             and vision_model
         ),
+        use_for_image_generation=bool(getattr(settings, "image_generation_enabled", False)),
         vision_model=vision_model,
         timeout_seconds=int(
             getattr(settings, "vision_request_timeout", DEFAULT_TIMEOUT_SECONDS) or DEFAULT_TIMEOUT_SECONDS
@@ -287,6 +295,7 @@ def public_model_service_snapshot(
         "hasApiKey": bool(settings.api_key),
         "chatModel": settings.chat_model,
         "useForVision": settings.use_for_vision,
+        "useForImageGeneration": settings.use_for_image_generation,
         "visionModel": settings.vision_model,
         "timeoutSeconds": settings.timeout_seconds,
         "chatReasoningEffort": settings.chat_reasoning_effort,

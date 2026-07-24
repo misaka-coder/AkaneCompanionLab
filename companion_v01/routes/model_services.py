@@ -59,7 +59,16 @@ def build_model_services_router(
                 authorization.status_code,
             )
         payload = await _request_mapping(request)
-        existing = _load_existing_secret(store, config_module, payload)
+        existing_settings = _load_existing_settings(store, config_module)
+        requested_provider_id = str(
+            payload.get("providerId") or payload.get("provider_id") or existing_settings.provider_id
+        ).strip()
+        same_provider = requested_provider_id == existing_settings.provider_id
+        existing = existing_settings.api_key if same_provider else ""
+        if "useForImageGeneration" not in payload and "use_for_image_generation" not in payload:
+            payload["useForImageGeneration"] = (
+                existing_settings.use_for_image_generation if same_provider else False
+            )
         try:
             settings = settings_from_mapping(payload, existing_api_key=existing)
             store.save(settings)
@@ -201,20 +210,27 @@ def _load_effective_settings(
     return effective_settings_from_config(config_module), "environment", "ok"
 
 
+def _load_existing_settings(
+    store: ModelServiceConfigStore,
+    config_module: Any,
+) -> ModelServiceSettings:
+    try:
+        saved = store.load()
+    except Exception:
+        saved = None
+    return saved or effective_settings_from_config(config_module)
+
+
 def _load_existing_secret(
     store: ModelServiceConfigStore,
     config_module: Any,
     payload: dict[str, Any],
 ) -> str:
-    try:
-        saved = store.load()
-    except Exception:
-        saved = None
-    existing = saved or effective_settings_from_config(config_module)
-    requested_provider_id = str(payload.get("providerId") or payload.get("provider_id") or existing.provider_id).strip()
-    if requested_provider_id != existing.provider_id:
-        return ""
-    return existing.api_key
+    existing = _load_existing_settings(store, config_module)
+    requested_provider_id = str(
+        payload.get("providerId") or payload.get("provider_id") or existing.provider_id
+    ).strip()
+    return existing.api_key if requested_provider_id == existing.provider_id else ""
 
 
 async def _request_mapping(request: Request) -> dict[str, Any]:

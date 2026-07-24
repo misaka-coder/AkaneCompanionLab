@@ -286,6 +286,7 @@ class BotSettingsView:
             self.aux_api_protocol,
         )
         use_for_vision = bool(getattr(model_settings, "use_for_vision", True))
+        use_for_image_generation = bool(getattr(model_settings, "use_for_image_generation", False))
         vision_model = _text(getattr(model_settings, "vision_model", "")) or model
         chat_reasoning_effort = normalize_reasoning_effort(
             getattr(model_settings, "chat_reasoning_effort", "")
@@ -308,6 +309,7 @@ class BotSettingsView:
             vision_base_url=base_url if use_for_vision else "",
             vision_model_name=vision_model if use_for_vision else "",
             vision_api_protocol=protocol,
+            image_generation_enabled=use_for_image_generation,
             llm_chat_reasoning_effort=chat_reasoning_effort,
         )
 
