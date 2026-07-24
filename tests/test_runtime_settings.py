@@ -71,6 +71,7 @@ class BotSettingsViewTests(unittest.TestCase):
             VISION_AUTO_GIFT_OBSERVE=True,
             VISION_AUTO_OUTFIT_OBSERVE=False,
             VISION_MAX_IMAGE_BYTES=1024 * 1024,
+            IMAGE_GENERATION_ENABLED=True,
             PROMPT_CACHE_HINTS_ENABLED=True,
             PROMPT_CACHE_HINTS_FORCE=True,
             PROMPT_CACHE_NAMESPACE="bot-a",
@@ -89,6 +90,8 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(view.aux_api_protocol, "responses")
         self.assertEqual(view.vision_model_name, "vision-model")
         self.assertFalse(view.vision_auto_scene_observe)
+        self.assertTrue(view.image_generation_enabled)
+        self.assertTrue(public["image_generation"]["enabled"])
         self.assertEqual(view.prompt_cache_namespace, "bot-a")
         self.assertEqual(view.llm_context_window, 12000)
         self.assertEqual(view.llm_chat_reasoning_effort, "high")
@@ -121,12 +124,14 @@ class BotSettingsViewTests(unittest.TestCase):
         vision_override = base.overlay(
             {
                 "vision_enabled": False,
+                "image_generation_enabled": True,
                 "prompt_cache_namespace": "bot-b",
                 "llm_context_window": 4096,
                 "llm_chat_reasoning_effort": "medium",
             }
         )
         self.assertFalse(vision_override.vision_enabled)
+        self.assertTrue(vision_override.image_generation_enabled)
         self.assertEqual(vision_override.prompt_cache_namespace, "bot-b")
         self.assertEqual(vision_override.llm_context_window, 4096)
         self.assertEqual(vision_override.llm_chat_reasoning_effort, "medium")

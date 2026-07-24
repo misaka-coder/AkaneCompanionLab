@@ -150,14 +150,16 @@ class ImageGenerationTests(unittest.TestCase):
     @patch("companion_v01.engine.ImageGenerationService")
     @patch("companion_v01.engine.PinAIImageProvider")
     @patch("companion_v01.engine.config.IMAGE_GENERATION_API_KEY", "")
-    @patch("companion_v01.engine.config.IMAGE_GENERATION_ENABLED", True)
     def test_image_generation_reuses_current_bot_key_when_dedicated_key_is_absent(
         self,
         provider_type,
         service_type,
     ) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        engine.settings = SimpleNamespace(chat_api_key="bot-scoped-secret")
+        engine.settings = SimpleNamespace(
+            chat_api_key="bot-scoped-secret",
+            image_generation_enabled=True,
+        )
         engine._get_image_material_resolver = lambda: object()
         engine._get_generated_file_service = lambda: object()
         provider_type.return_value.configured = True

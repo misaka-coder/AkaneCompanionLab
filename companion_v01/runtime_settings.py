@@ -52,6 +52,7 @@ class BotSettingsView:
     vision_auto_gift_observe: bool = True
     vision_auto_outfit_observe: bool = True
     vision_max_image_bytes: int = 8 * 1024 * 1024
+    image_generation_enabled: bool = False
     prompt_cache_hints_enabled: bool = True
     prompt_cache_hints_force: bool = False
     prompt_cache_namespace: str = "akane"
@@ -125,6 +126,7 @@ class BotSettingsView:
                 128 * 1024,
                 int(getattr(config_module, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
             ),
+            image_generation_enabled=bool(getattr(config_module, "IMAGE_GENERATION_ENABLED", False)),
             prompt_cache_hints_enabled=bool(getattr(config_module, "PROMPT_CACHE_HINTS_ENABLED", True)),
             prompt_cache_hints_force=bool(getattr(config_module, "PROMPT_CACHE_HINTS_FORCE", False)),
             prompt_cache_namespace=_text(getattr(config_module, "PROMPT_CACHE_NAMESPACE", "akane")) or "akane",
@@ -224,6 +226,7 @@ class BotSettingsView:
             "vision_auto_gift_observe",
             "vision_auto_outfit_observe",
             "vision_max_image_bytes",
+            "image_generation_enabled",
             "prompt_cache_hints_enabled",
             "prompt_cache_hints_force",
             "prompt_cache_namespace",
@@ -356,6 +359,9 @@ class BotSettingsView:
                     self.vision_api_protocol,
                 ),
             },
+            "image_generation": {
+                "enabled": self.image_generation_enabled,
+            },
             "prompt_cache": {
                 "hints_enabled": self.prompt_cache_hints_enabled,
                 "hints_force": self.prompt_cache_hints_force,
@@ -415,6 +421,7 @@ def _overlay_value(key: str, value: Any) -> Any:
         "vision_auto_scene_observe",
         "vision_auto_gift_observe",
         "vision_auto_outfit_observe",
+        "image_generation_enabled",
         "prompt_cache_hints_enabled",
         "prompt_cache_hints_force",
         "streaming_tts_enabled",

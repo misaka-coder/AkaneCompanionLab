@@ -1825,7 +1825,7 @@ class AkaneMemoryEngine:
         service = getattr(self, "image_generation_service", None)
         if service is not None:
             return service
-        if not bool(getattr(config, "IMAGE_GENERATION_ENABLED", False)):
+        if not bool(getattr(self.settings, "image_generation_enabled", False)):
             return None
         resolver = self._get_image_material_resolver()
         generated_file_service = self._get_generated_file_service()
