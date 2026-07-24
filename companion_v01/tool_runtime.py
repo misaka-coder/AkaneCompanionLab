@@ -5391,7 +5391,7 @@ class CoverSongToolHandler(BaseToolHandler):
             "没有明确音域证据时 pitch_shift 保持 0，不要只根据男女声标签强制升降八度。"
             "delivery=auto 在 QQ 中会优先作为语音发送，其他客户端保留普通生成文件交付；完整高质量结果始终进入生成区。"
             "如果没有 source_id，只有在用户明确点播此前已翻唱歌曲时才用 song_title 查缓存；缓存不存在时应告诉用户需要歌曲材料。"
-            "整首歌可能耗时较长，允许直接调用，也可以由 delegate_task 交给 media_agent 后台处理。"
+            "整首歌即使耗时较长也直接调用本工具；拿到生成结果句柄后，再按用户要求调用 send_file 交付。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

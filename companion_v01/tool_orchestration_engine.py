@@ -23,7 +23,7 @@ from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult
-from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
+from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC, is_media_attachment
 from .desktop_satellite_specs import desktop_satellite_spec
 
 
@@ -54,6 +54,28 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
     }
 )
 
+_DIRECT_MEDIA_TOOL_TYPES = frozenset(
+    {
+        "convert_media_file",
+        "separate_audio_stems",
+        "cover_song",
+        "clean_voice_track",
+        "transcribe_media",
+        "prepare_voice_dataset",
+    }
+)
+
+_AUDIO_SEPARATION_MARKERS = (
+    "人声分离",
+    "分离人声",
+    "分离伴奏",
+    "提取人声",
+    "提取伴奏",
+    "拆分人声",
+    "拆分伴奏",
+    "去人声",
+)
+
 
 def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
     """Keep artifact creation and user delivery as two observable native tool rounds."""
@@ -67,6 +89,25 @@ def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
     if tool_type == "cover_song":
         normalized["delivery"] = "none"
     return normalized
+
+
+def _qq_media_delegation_is_blocked(
+    value: Mapping[str, Any],
+    *,
+    client_context: ClientProtocolContext | None,
+) -> bool:
+    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
+        return False
+    if str(value.get("type") or "").strip() != "delegate_task":
+        return False
+    agent = str(value.get("agent") or "").strip().lower()
+    if agent == "media_agent":
+        return True
+    text = " ".join(
+        str(value.get(key) or "").strip().lower()
+        for key in ("brief", "goal", "raw_request")
+    )
+    return any(tool_name in text for tool_name in _DIRECT_MEDIA_TOOL_TYPES)
 
 
 def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 16) -> int:
@@ -373,6 +414,8 @@ def normalize_tool_invocation(
     tool_type = str(value.get("type") or "").strip()
     if not tool_type:
         return None
+    if _qq_media_delegation_is_blocked(value, client_context=client_context):
+        return None
     source = _normalize_invocation_source(value.get(TOOL_SOURCE_FIELD))
     invocation_id = str(value.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
     frozen_selection = capability_selection or value.get(TOOL_CAPABILITY_SELECTION_FIELD)
@@ -597,13 +640,22 @@ def validate_tool_invocation(
     tool_type = str(invocation.name or "").strip()
     if not tool_type:
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
+    candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
+    if _qq_media_delegation_is_blocked(candidate_call, client_context=client_context):
+        return ValidationResult.fail(
+            "media_delegation_disallowed",
+            (
+                "QQ 媒体处理不能委派给后台工坊。请直接调用当前可用的媒体工具"
+                "（例如 separate_audio_stems、cover_song、transcribe_media 或 convert_media_file）；"
+                "工具返回 gen_ 成果句柄后，再调用 send_file 交付。不要声称后台正在运行。"
+            ),
+        )
 
     satellite_spec = desktop_satellite_spec(tool_type)
     if satellite_spec is not None:
         handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
             return ValidationResult.fail("unknown_tool", "当前桌面执行器没有提供这项能力。")
-        candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
         if handler.normalize_call(candidate_call) is None:
             return ValidationResult.fail("bad_args", "本地能力的参数不符合当前执行器契约。")
         if not invocation.execution_receipt:
@@ -614,7 +666,6 @@ def validate_tool_invocation(
         handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
             return ValidationResult.fail("unknown_tool", "当前没有可用的桌面网页打开工具。")
-        candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
         if handler.normalize_call(candidate_call) is None:
             return ValidationResult.fail("bad_args", "打开网页的 URL 或参数不符合公开网页安全约束。")
         if not invocation.execution_receipt:
@@ -644,7 +695,6 @@ def validate_tool_invocation(
             ),
         )
 
-    candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
     if handler.normalize_call(candidate_call) is None:
         return ValidationResult.fail(
             "bad_args",
@@ -751,6 +801,18 @@ def promote_narrated_tool_call(
     speech = "\n".join(part for part in speech_parts if part).strip()
     if not speech:
         return final_output
+    separation_call = _promote_narrated_audio_separation(
+        engine,
+        user_message=user_message,
+        speech=speech,
+        client_context=client_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+    )
+    if separation_call is not None:
+        repaired = dict(final_output)
+        repaired["tool_call"] = separation_call
+        return repaired
     narrated_tool = "fetch_media_from_url" in speech or (
         "工具调用" in speech and ("链接" in speech or "url" in speech.lower())
     )
@@ -775,6 +837,71 @@ def promote_narrated_tool_call(
         "urls": urls,
     }
     return repaired
+
+
+def _promote_narrated_audio_separation(
+    engine: Any,
+    *,
+    user_message: str,
+    speech: str,
+    client_context: ClientProtocolContext | None,
+    profile_user_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
+        return None
+    user_text = str(user_message or "").strip()
+    speech_text = str(speech or "").strip()
+    combined = f"{user_text}\n{speech_text}"
+    if not any(marker in combined for marker in _AUDIO_SEPARATION_MARKERS):
+        return None
+    explicit_request = (
+        any(marker in user_text for marker in _AUDIO_SEPARATION_MARKERS)
+        and (
+            not any(marker in user_text for marker in ("是什么", "怎么做", "如何做", "支持吗", "可以吗", "能吗"))
+            or any(marker in user_text for marker in ("帮我", "给我", "请", "直接", "开始"))
+        )
+    )
+    continuation_request = any(
+        marker in user_text
+        for marker in ("开始吧", "开始了没", "开始", "继续", "那就做", "直接做")
+    ) and any(marker in speech_text for marker in _AUDIO_SEPARATION_MARKERS)
+    if not explicit_request and not continuation_request:
+        return None
+    store = getattr(engine, "store", None)
+    list_items = getattr(store, "list_attachment_inbox_items", None)
+    if not callable(list_items):
+        return None
+    try:
+        items = list_items(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            statuses=["ready"],
+            limit=80,
+        )
+    except Exception:
+        return None
+    media_items = [item for item in list(items or []) if isinstance(item, dict) and is_media_attachment(item)]
+    if not media_items:
+        return None
+    latest = max(
+        media_items,
+        key=lambda item: (
+            int(item.get("focus_rank") or 0) > 0,
+            int(item.get("updated_at") or item.get("created_at") or 0),
+            int(item.get("sequence_no") or 0),
+        ),
+    )
+    handle = str(latest.get("attachment_handle") or latest.get("attachment_id") or "").strip()
+    if not handle:
+        return None
+    return {
+        "type": "separate_audio_stems",
+        "source_id": handle,
+        "mode": "vocals_instrumental",
+        "output_format": "wav",
+        "send_to_user": False,
+    }
 
 
 def execute_tool_call(

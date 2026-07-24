@@ -12,7 +12,7 @@ import config
 from companion_v01.embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
-from companion_v01.client_protocol import ClientMode
+from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.memory_compaction_service import MemoryCompactionService
 from companion_v01.memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from companion_v01.mode_profiles import ModeProfileRegistry
@@ -738,6 +738,84 @@ class EngineExtensionTests(unittest.TestCase):
         repaired = self.engine._promote_narrated_tool_call(
             final_output,
             user_message="你这个工具需要传什么参数？",
+        )
+
+        self.assertIsNone(repaired["tool_call"])
+
+    def test_promote_narrated_audio_separation_uses_latest_media_handle(self) -> None:
+        self.engine.store = type(
+            "Store",
+            (),
+            {
+                "list_attachment_inbox_items": staticmethod(
+                    lambda **_kwargs: [
+                        {
+                            "attachment_id": "attachment::song",
+                            "attachment_handle": "file_031",
+                            "kind": "document",
+                            "mime_type": "audio/mpeg",
+                            "file_ext": ".mp3",
+                            "status": "ready",
+                            "updated_at": 200,
+                            "focus_rank": 1,
+                        }
+                    ]
+                )
+            },
+        )()
+        repaired = self.engine._promote_narrated_tool_call(
+            {
+                "speech": "好，幻听.mp3 人声分离，现在开始。",
+                "tool_call": None,
+            },
+            user_message="【misaka】人声分离",
+            client_context=ClientProtocolContext(
+                requested_mode=ClientMode.QQ_TEXT,
+                effective_mode=ClientMode.QQ_TEXT,
+            ),
+            profile_user_id="qq_group",
+            session_id="qq_group",
+        )
+
+        self.assertEqual(
+            repaired["tool_call"],
+            {
+                "type": "separate_audio_stems",
+                "source_id": "file_031",
+                "mode": "vocals_instrumental",
+                "output_format": "wav",
+                "send_to_user": False,
+            },
+        )
+
+    def test_promote_narrated_audio_separation_does_not_execute_explanation_question(self) -> None:
+        self.engine.store = type(
+            "Store",
+            (),
+            {
+                "list_attachment_inbox_items": staticmethod(
+                    lambda **_kwargs: [
+                        {
+                            "attachment_handle": "file_031",
+                            "kind": "audio",
+                            "status": "ready",
+                        }
+                    ]
+                )
+            },
+        )()
+        repaired = self.engine._promote_narrated_tool_call(
+            {
+                "speech": "人声分离会把歌曲拆成人声和伴奏。",
+                "tool_call": None,
+            },
+            user_message="人声分离是什么？",
+            client_context=ClientProtocolContext(
+                requested_mode=ClientMode.QQ_TEXT,
+                effective_mode=ClientMode.QQ_TEXT,
+            ),
+            profile_user_id="qq_group",
+            session_id="qq_group",
         )
 
         self.assertIsNone(repaired["tool_call"])

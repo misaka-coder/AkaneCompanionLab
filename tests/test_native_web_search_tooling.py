@@ -339,8 +339,59 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "read_workspace",
                 "inspect_generated_file",
                 "generate_image",
+                "compose_file",
+                "revise_generated_file",
+                "apply_style_to_existing_file",
+                "separate_audio_stems",
+                "clean_voice_track",
+                "transcribe_media",
+                "prepare_voice_dataset",
+                "convert_media_file",
+                "cover_song",
+                "send_file",
             },
         )
+
+    def test_native_media_processing_and_delivery_share_one_tool_channel(self) -> None:
+        original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
+        try:
+            config.ENABLE_NATIVE_TOOL_DECISION = True
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = (
+                "inspect_media_info,separate_audio_stems,cover_song,send_file"
+            )
+            plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                {
+                    name: FakeNativeHandler(name)
+                    for name in (
+                        "inspect_media_info",
+                        "separate_audio_stems",
+                        "cover_song",
+                        "send_file",
+                    )
+                },
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+                allowed_tool_names=(
+                    "inspect_media_info",
+                    "separate_audio_stems",
+                    "cover_song",
+                    "send_file",
+                ),
+            )
+
+            self.assertTrue(plan.enabled)
+            names = [tool["function"]["name"] for tool in plan.tools]
+            self.assertEqual(
+                names,
+                ["inspect_media_info", "separate_audio_stems", "cover_song", "send_file"],
+            )
+            self.assertEqual(plan.legacy_prompt_exclusions, set(names))
+            for tool in plan.tools:
+                self.assertIs(tool["function"]["parameters"]["additionalProperties"], False)
+        finally:
+            config.ENABLE_NATIVE_TOOL_DECISION = original_enabled
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
     def test_read_tier_handlers_emit_precise_native_schemas(self) -> None:
         # 6b: each migrated read tool carries a precise input_schema (enum/limit

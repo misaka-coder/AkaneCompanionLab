@@ -252,21 +252,26 @@ class Settings(BaseSettings):
     # 能力档案已验证的工具走 provider native schema；未知/未验证 provider 会结构化
     # 回退 legacy JSON tool_call。需要保守兼容时可经 env 显式关闭。
     ENABLE_NATIVE_TOOL_DECISION: bool = True
-    # native tool 允许列表，逗号分隔。低风险只读工具（静态 schema、无写、参数无绝对路径）：
+    # native tool 允许列表，逗号分隔。除低风险只读工具外，受管生成、媒体处理和文件交付
+    # 也走同一 provider-native 工具环；它们只接受会话 handle，不接受本机绝对路径。
     # web_search（3d live gate）、retrieve_memory / read_memory_timeline（5d live gate）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
     # native 链路已由 memory 5d 证明，未单独跑 live smoke）。
     # load_character_context / inspect_attachment / load_material / read_attachment_section /
     # list_workspace / read_workspace / inspect_generated_file（7b：read-only、
     # 静态 schema、generic builder 已验证，未单独跑 live smoke）。
-    # generate_image（会话内受管图片输入 + PinAI 受管输出）。安装插件的 native 能力由
+    # generate_image（会话内受管图片输入 + PinAI 受管输出）。生成/处理工具只产出
+    # gen_ handle，send_file 负责显式交付。安装插件的 native 能力由
     # PluginHost contribution policy 单独审核，不在宿主静态工具 allowlist 中重复登记。
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
         "web_search,retrieve_memory,read_memory_timeline,list_reminders,check_inventory,inspect_media_info,"
         "load_character_context,inspect_attachment,load_material,read_attachment_section,"
-        "list_workspace,read_workspace,inspect_generated_file,generate_image"
+        "list_workspace,read_workspace,inspect_generated_file,generate_image,"
+        "compose_file,revise_generated_file,apply_style_to_existing_file,"
+        "separate_audio_stems,clean_voice_track,transcribe_media,prepare_voice_dataset,"
+        "convert_media_file,cover_song,send_file"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。

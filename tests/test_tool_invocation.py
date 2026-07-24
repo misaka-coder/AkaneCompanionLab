@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from companion_v01 import tool_orchestration_engine
+from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import (
     LEGACY_JSON,
     NATIVE_OPENAI,
@@ -172,6 +173,37 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertFalse(separated["send_to_user"])
         self.assertEqual(cover["delivery"], "none")
         self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
+
+    def test_qq_media_agent_delegation_is_rejected_in_favor_of_direct_tools(self) -> None:
+        engine = FakeEngine(RecordingHandler())
+        context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+        call = {
+            "type": "delegate_task",
+            "agent": "media_agent",
+            "brief": "后台做人声分离",
+        }
+
+        self.assertIsNone(
+            tool_orchestration_engine.normalize_tool_call(
+                engine,
+                call,
+                client_context=context,
+                profile_user_id="alice",
+                session_id="s1",
+            )
+        )
+        rejection = tool_orchestration_engine.classify_tool_call_rejection(
+            engine,
+            call,
+            client_context=context,
+            profile_user_id="alice",
+            session_id="s1",
+        )
+        self.assertIn("不能委派给后台工坊", rejection)
+        self.assertIn("separate_audio_stems", rejection)
 
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:
         handler = RecordingHandler()

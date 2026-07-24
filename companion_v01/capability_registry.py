@@ -2343,7 +2343,7 @@ class CapabilityRegistry:
                 layer="shared_media",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
-                light_hint="你可以处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等。在 QQ 里这些媒体任务容易耗时，优先委派后台工坊；完成后再通知和交付。",
+                light_hint="你可以直接处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等；处理工具返回成果句柄后，再按用户要求调用 send_file 交付。",
                 trigger=_has_media_context,
                 latent_reason="当前会话和可见工作区里还没有可处理的音频或视频，因此没有展开媒体处理工具。",
                 activation_hint="用户上传音频/视频、提供可下载的公开媒体链接，或在桌宠的 Akane 工作区放入媒体文件后会自动开放；工作区文件可先登记为 handle。",
@@ -2358,7 +2358,7 @@ class CapabilityRegistry:
                 light_hint=(
                     "你可以用本地角色音色翻唱用户提供的歌曲，并把转换后的人声与原伴奏重新混合成完整音频；"
                     "没有歌曲材料时请自然请用户发送，已完成的歌曲可以按歌名从缓存再次交付。"
-                    "短任务直接调用工具完成；预计较久时可以委派后台工坊，不要否认已有能力。"
+                    "直接调用 cover_song 完成；拿到成果句柄后再按用户要求调用 send_file。"
                 ),
                 trigger=_has_cover_song_context,
                 latent_reason="当前还没有歌曲音频、视频或可复用的媒体结果，因此暂不展开翻唱工具。",
