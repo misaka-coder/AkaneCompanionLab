@@ -94,11 +94,29 @@ git diff --check
 - `system_media_snapshot` 真实事件为 `capability_execution_result / succeeded`。
 - 没有自动执行 `system_media_control`，避免在验收时改变用户正在播放的媒体；其参数、协议和 Tauri executor 由自动化测试覆盖。
 
-## 6. 尚未完成，不能对外宣称可用
+## 6. personal 一键启动
+
+Windows 本机使用根目录入口：
+
+```text
+start_akane_cloud_personal.bat
+```
+
+该入口只启动桌面端与 Desktop Satellite，不启动第二个 Akane 后端。它会：
+
+1. 优先读取用户环境中的 `AKANE_DESKTOP_SATELLITE_TOKEN_PERSONAL`；
+2. 建立或复用 `akane-vps` 到云端 personal 后端的加密 SSH 隧道；
+3. 精确核对 `/health` 的 `personal / ok / valid`；
+4. 以 `-CloudSatellite` 调用正式桌宠启动器；
+5. 等待 `open_browser`、`desktop_context_snapshot`、`system_media_snapshot`、`system_media_control` 四项能力在云端目录中变为 `ready`。
+
+token 不写进仓库、命令行、prompt 或普通日志。隧道 PID 和无敏感信息的 SSH 日志位于本机 personal Satellite 数据根的 `run/`、`logs/` 下。已验证但并非该入口创建的 loopback 隧道也可以安全复用。
+
+## 7. 尚未完成，不能对外宣称可用
 
 下面仍属于 M66-E 后续真实切片：
 
-- SSH tunnel 当前是运行中的用户会话进程；系统重启后仍需由启动流程或用户重新建立。尚未把服务器地址/SSH 运维细节硬编码进产品 launcher。
+- SSH tunnel 由 personal 一键入口自动建立，但当前仍依赖本机 SSH 配置中的 `akane-vps`；尚未做独立设备注册 UI 或系统登录自启动。
 - 托管可见浏览器 `browser_page` 在用户电脑执行；当前云端 runner 不能冒充用户电脑浏览器。
 - 本地视觉模型/图片识别。现有 `/desktop-pet/vision/clip` 是截图上传后由后端视觉模型识别，不是本地视觉 executor；云端缺少 vision provider 配置时它仍不可用。
 - 本地 Whisper/ASR、GPT-SoVITS、RVC。

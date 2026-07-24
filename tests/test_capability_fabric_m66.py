@@ -438,6 +438,84 @@ class CapabilityFabricM66Tests(unittest.TestCase):
             source.index("& npm run tauri -- build", build_guard),
         )
 
+    def test_personal_cloud_launcher_owns_tunnel_and_offer_verification(self) -> None:
+        source = (ROOT / "start_akane_cloud_personal.ps1").read_text(encoding="utf-8")
+        batch = (ROOT / "start_akane_cloud_personal.bat").read_text(encoding="utf-8")
+
+        self.assertIn('"-N"', source)
+        self.assertIn('"ExitOnForwardFailure=yes"', source)
+        self.assertIn('"ServerAliveInterval=30"', source)
+        self.assertIn("Import-AkanePersonalSatelliteToken", source)
+        self.assertIn("AKANE_DESKTOP_SATELLITE_TOKEN_$suffix", source)
+        self.assertIn("Test-AkaneCloudHealth", source)
+        self.assertIn("CloudSatellite = $true", source)
+        self.assertIn("tool.open_browser", source)
+        self.assertIn("tool.desktop_context_snapshot", source)
+        self.assertIn("tool.system_media_snapshot", source)
+        self.assertIn("tool.system_media_control", source)
+        self.assertNotIn("AKANE_ADMIN_TOKEN", source)
+        self.assertNotRegex(source, r"AKANE_DESKTOP_SATELLITE_TOKEN\s*=\s*[\"'][^\"']{16,}")
+        self.assertIn("start_akane_cloud_personal.ps1", batch)
+
+    def test_personal_cloud_launcher_reuses_verified_loopback_tunnel(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            self.skipTest("PowerShell is unavailable")
+
+        class HealthHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                if self.path != "/health":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = b'{"status":"ok","instance_id":"personal","root_binding":"valid"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                return
+
+        health_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+        health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+        health_thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                env = dict(os.environ)
+                env["AKANE_DESKTOP_SATELLITE_TOKEN_PERSONAL"] = "test-personal-device-token"
+                result = subprocess.run(
+                    [
+                        powershell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(ROOT / "start_akane_cloud_personal.ps1"),
+                        "-LocalPort",
+                        str(health_server.server_port),
+                        "-DataRoot",
+                        temp_dir,
+                        "-SkipDesktop",
+                        "-SkipOfferCheck",
+                    ],
+                    cwd=ROOT,
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Reusing the verified cloud tunnel", result.stdout)
+                self.assertIn("Cloud instance verified: personal", result.stdout)
+                self.assertIn("Akane cloud personal startup completed", result.stdout)
+        finally:
+            health_server.shutdown()
+            health_server.server_close()
+            health_thread.join(timeout=3)
+
     def test_cloud_launcher_real_smoke_verifies_remote_without_touching_local_port(self) -> None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if not powershell:
