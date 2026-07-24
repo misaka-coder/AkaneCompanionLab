@@ -1019,6 +1019,57 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[1]["generated_file"]["generated_handle"], "gen_002")
         self.assertEqual(result.followup_context, "分离完成。")
 
+    def test_failed_audio_separation_emits_only_failure_terminal_event(self) -> None:
+        class FakeGeneratedService:
+            def separate_audio_stems(self, **kwargs):
+                return {
+                    "ok": False,
+                    "error": "executor_offline",
+                    # Stale/partial fields must never become success events.
+                    "generated_files": [
+                        {"generated_id": "generated::stale", "generated_handle": "gen_stale"},
+                    ],
+                    "followup_context": "本地媒体执行器当前离线。",
+                }
+
+        handler = SeparateAudioStemsToolHandler(generated_file_service=FakeGeneratedService())
+        result = handler.execute(
+            call={
+                "type": "separate_audio_stems",
+                "source_id": "file_031",
+                "mode": "vocals_instrumental",
+                "output_format": "wav",
+                "send_to_user": False,
+            },
+            context=ToolExecutionContext(
+                profile_user_id="user",
+                session_id="session",
+                now_ts=100,
+                visual_payload={},
+            ),
+        )
+
+        self.assertEqual(
+            result.stream_events,
+            [
+                {
+                    "type": "tool_execution_failed",
+                    "tool_type": "separate_audio_stems",
+                    "status": "failed",
+                    "reason": "executor_offline",
+                }
+            ],
+        )
+        self.assertIn("<tool_use_error>", result.followup_context)
+        self.assertNotIn("gen_stale", result.followup_context)
+        self.assertEqual(
+            result.state_updates["operation_failure"],
+            {
+                "tool_type": "separate_audio_stems",
+                "reason": "executor_offline",
+            },
+        )
+
     def test_clean_voice_track_creates_generated_audio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

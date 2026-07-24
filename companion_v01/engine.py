@@ -367,6 +367,11 @@ class AkaneMemoryEngine:
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self.local_media_executor,
+            audio_separation_executor=self.local_media_executor,
+            audio_separation_model=str(
+                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
+                or "HP5_only_main_vocal"
+            ),
         )
         self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
@@ -4385,6 +4390,8 @@ class AkaneMemoryEngine:
                 allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 user_message=user_message,
+                domain_profile_id=domain_profile_id,
+                capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
@@ -4578,6 +4585,9 @@ class AkaneMemoryEngine:
                             profile_user_id=profile_user_id,
                             session_id=session_id,
                             domain_profile_id=domain_profile_id,
+                            capability_selection=generation_context.get(
+                                TOOL_CAPABILITY_SELECTION_FIELD
+                            ),
                         )
                         is not None
                     )
@@ -4633,6 +4643,8 @@ class AkaneMemoryEngine:
                 user_message=user_message,
                 allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                 debug_enabled=bool(generation_context["debug_enabled"]),
+                domain_profile_id=domain_profile_id,
+                capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
             self._attach_memory_annotation_truth(
                 normalized,
@@ -4691,6 +4703,8 @@ class AkaneMemoryEngine:
                     user_message=user_message,
                     allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                     debug_enabled=bool(generation_context["debug_enabled"]),
+                    domain_profile_id=domain_profile_id,
+                    capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
                 )
                 self._attach_memory_annotation_truth(
                     normalized,
@@ -4741,6 +4755,8 @@ class AkaneMemoryEngine:
                         user_message=user_message,
                         allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
                         debug_enabled=bool(generation_context["debug_enabled"]),
+                        domain_profile_id=domain_profile_id,
+                        capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
                     )
                     self._attach_memory_annotation_truth(
                         normalized,
@@ -5002,6 +5018,8 @@ class AkaneMemoryEngine:
         client_context: ClientProtocolContext | None = None,
         resource_manifest: ResourceManifest | None = None,
         user_message: str = "",
+        domain_profile_id: str = "",
+        capability_selection: Any = None,
     ) -> dict[str, Any]:
         return final_output_engine.normalize_final_output(
             self,
@@ -5014,6 +5032,8 @@ class AkaneMemoryEngine:
             client_context=client_context,
             resource_manifest=resource_manifest,
             user_message=user_message,
+            domain_profile_id=domain_profile_id,
+            capability_selection=capability_selection,
         )
 
     def _normalize_speech_payload(

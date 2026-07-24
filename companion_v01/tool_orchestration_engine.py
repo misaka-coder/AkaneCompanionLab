@@ -23,7 +23,7 @@ from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult
-from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC, is_media_attachment
+from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 from .desktop_satellite_specs import desktop_satellite_spec
 
 
@@ -64,18 +64,6 @@ _DIRECT_MEDIA_TOOL_TYPES = frozenset(
         "prepare_voice_dataset",
     }
 )
-
-_AUDIO_SEPARATION_MARKERS = (
-    "人声分离",
-    "分离人声",
-    "分离伴奏",
-    "提取人声",
-    "提取伴奏",
-    "拆分人声",
-    "拆分伴奏",
-    "去人声",
-)
-
 
 def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
     """Keep artifact creation and user delivery as two observable native tool rounds."""
@@ -424,9 +412,17 @@ def normalize_tool_invocation(
         handler = _resolved_handler_for_round(engine, tool_type, frozen_selection)
         if handler is None:
             return None
-        normalized = handler.normalize_call(value)
+        try:
+            normalized = handler.normalize_call(value)
+        except Exception:
+            normalized = None
         if normalized is None:
-            return None
+            return legacy_tool_call_to_invocation(
+                value,
+                source=source,
+                invocation_id=invocation_id,
+                capability_selection=frozen_selection,
+            )
         receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
         if isinstance(receipt, dict):
             normalized[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
@@ -437,21 +433,40 @@ def normalize_tool_invocation(
             capability_selection=frozen_selection,
         )
 
-    # M66-C frozen round: when capability_selection is carried from prepare_context,
-    # pass it through to avoid a redundant handler re-resolution for this round.
-    handlers = engine._resolve_tool_handlers(
-        client_context=client_context,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        domain_profile_id=domain_profile_id,
-        capability_selection=frozen_selection,
+    # A frozen selection contains both the tools that were executable when the
+    # turn started and the stable schema tools shown to the provider. Normalize
+    # against that exact schema snapshot. Validation below still checks whether
+    # the tool was executable, so an advertised-but-temporarily-unavailable
+    # capability becomes a structured tool error instead of disappearing.
+    handler = (
+        _resolved_handler_for_round(engine, tool_type, frozen_selection)
+        if frozen_selection is not None
+        else None
     )
-    handler = handlers.get(tool_type)
+    if handler is None and frozen_selection is None:
+        handlers = engine._resolve_tool_handlers(
+            client_context=client_context,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            domain_profile_id=domain_profile_id,
+        )
+        handler = handlers.get(tool_type)
     if handler is None:
         return None
-    normalized = handler.normalize_call(value)
+    try:
+        normalized = handler.normalize_call(value)
+    except Exception:
+        normalized = None
     if normalized is None:
-        return None
+        # This is still a genuine attempt to call a known tool. Preserve the
+        # raw arguments so validation can produce an observable bad_args
+        # terminal result instead of dropping the call during normalization.
+        return legacy_tool_call_to_invocation(
+            value,
+            source=source,
+            invocation_id=invocation_id,
+            capability_selection=frozen_selection,
+        )
     normalized = defer_generated_artifact_delivery(normalized)
     receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
     if isinstance(receipt, dict):
@@ -656,7 +671,11 @@ def validate_tool_invocation(
         handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
             return ValidationResult.fail("unknown_tool", "当前桌面执行器没有提供这项能力。")
-        if handler.normalize_call(candidate_call) is None:
+        try:
+            normalized_candidate = handler.normalize_call(candidate_call)
+        except Exception:
+            normalized_candidate = None
+        if normalized_candidate is None:
             return ValidationResult.fail("bad_args", "本地能力的参数不符合当前执行器契约。")
         if not invocation.execution_receipt:
             return ValidationResult.fail("missing_execution_receipt", "这次本地能力没有有效的执行凭据，不能执行。")
@@ -666,7 +685,11 @@ def validate_tool_invocation(
         handler = _resolved_handler_for_round(engine, tool_type, invocation.capability_selection)
         if handler is None:
             return ValidationResult.fail("unknown_tool", "当前没有可用的桌面网页打开工具。")
-        if handler.normalize_call(candidate_call) is None:
+        try:
+            normalized_candidate = handler.normalize_call(candidate_call)
+        except Exception:
+            normalized_candidate = None
+        if normalized_candidate is None:
             return ValidationResult.fail("bad_args", "打开网页的 URL 或参数不符合公开网页安全约束。")
         if not invocation.execution_receipt:
             return ValidationResult.fail(
@@ -674,6 +697,46 @@ def validate_tool_invocation(
                 "这次桌面动作没有本轮实例签发的执行凭据，不能执行。",
             )
         return ValidationResult.success()
+
+    frozen_selection = invocation.capability_selection
+    if frozen_selection is not None:
+        schema_names = {
+            str(name or "").strip()
+            for name in getattr(frozen_selection, "schema_tool_names", ()) or ()
+            if str(name or "").strip()
+        }
+        executable_names = {
+            str(name or "").strip()
+            for name in getattr(frozen_selection, "tool_names", ()) or ()
+            if str(name or "").strip()
+        }
+        if tool_type in schema_names and tool_type not in executable_names:
+            reason = ""
+            recovery = ""
+            for disclosure in getattr(frozen_selection, "disclosures", ()) or ():
+                if tool_type not in {
+                    str(name or "").strip()
+                    for name in getattr(disclosure, "tool_names", ()) or ()
+                }:
+                    continue
+                if str(getattr(disclosure, "state", "") or "").strip().lower() != "unavailable":
+                    continue
+                reason = str(getattr(disclosure, "reason", "") or "").strip()
+                recovery = str(
+                    getattr(disclosure, "activation", "")
+                    or getattr(disclosure, "recovery_hint", "")
+                    or ""
+                ).strip()
+                break
+            details = reason or "这项能力依赖的执行器或外部服务当前没有通过可用性检查。"
+            recovery_text = f"恢复方式：{recovery}" if recovery else "可以稍后重试，或改用当前可用能力。"
+            return ValidationResult.fail(
+                "not_available",
+                (
+                    f"工具「{tool_type}」的调用格式有效，但本轮执行器不可用：{details}"
+                    f"{recovery_text} 这次没有完成，请如实告诉用户，不要假装已经执行。"
+                ),
+            )
 
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
@@ -695,7 +758,11 @@ def validate_tool_invocation(
             ),
         )
 
-    if handler.normalize_call(candidate_call) is None:
+    try:
+        normalized_candidate = handler.normalize_call(candidate_call)
+    except Exception:
+        normalized_candidate = None
+    if normalized_candidate is None:
         return ValidationResult.fail(
             "bad_args",
             (
@@ -801,18 +868,6 @@ def promote_narrated_tool_call(
     speech = "\n".join(part for part in speech_parts if part).strip()
     if not speech:
         return final_output
-    separation_call = _promote_narrated_audio_separation(
-        engine,
-        user_message=user_message,
-        speech=speech,
-        client_context=client_context,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-    )
-    if separation_call is not None:
-        repaired = dict(final_output)
-        repaired["tool_call"] = separation_call
-        return repaired
     narrated_tool = "fetch_media_from_url" in speech or (
         "工具调用" in speech and ("链接" in speech or "url" in speech.lower())
     )
@@ -837,71 +892,6 @@ def promote_narrated_tool_call(
         "urls": urls,
     }
     return repaired
-
-
-def _promote_narrated_audio_separation(
-    engine: Any,
-    *,
-    user_message: str,
-    speech: str,
-    client_context: ClientProtocolContext | None,
-    profile_user_id: str,
-    session_id: str,
-) -> dict[str, Any] | None:
-    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
-        return None
-    user_text = str(user_message or "").strip()
-    speech_text = str(speech or "").strip()
-    combined = f"{user_text}\n{speech_text}"
-    if not any(marker in combined for marker in _AUDIO_SEPARATION_MARKERS):
-        return None
-    explicit_request = (
-        any(marker in user_text for marker in _AUDIO_SEPARATION_MARKERS)
-        and (
-            not any(marker in user_text for marker in ("是什么", "怎么做", "如何做", "支持吗", "可以吗", "能吗"))
-            or any(marker in user_text for marker in ("帮我", "给我", "请", "直接", "开始"))
-        )
-    )
-    continuation_request = any(
-        marker in user_text
-        for marker in ("开始吧", "开始了没", "开始", "继续", "那就做", "直接做")
-    ) and any(marker in speech_text for marker in _AUDIO_SEPARATION_MARKERS)
-    if not explicit_request and not continuation_request:
-        return None
-    store = getattr(engine, "store", None)
-    list_items = getattr(store, "list_attachment_inbox_items", None)
-    if not callable(list_items):
-        return None
-    try:
-        items = list_items(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            statuses=["ready"],
-            limit=80,
-        )
-    except Exception:
-        return None
-    media_items = [item for item in list(items or []) if isinstance(item, dict) and is_media_attachment(item)]
-    if not media_items:
-        return None
-    latest = max(
-        media_items,
-        key=lambda item: (
-            int(item.get("focus_rank") or 0) > 0,
-            int(item.get("updated_at") or item.get("created_at") or 0),
-            int(item.get("sequence_no") or 0),
-        ),
-    )
-    handle = str(latest.get("attachment_handle") or latest.get("attachment_id") or "").strip()
-    if not handle:
-        return None
-    return {
-        "type": "separate_audio_stems",
-        "source_id": handle,
-        "mode": "vocals_instrumental",
-        "output_format": "wav",
-        "send_to_user": False,
-    }
 
 
 def execute_tool_call(
@@ -970,7 +960,35 @@ def execute_tool_invocation(
         domain_profile_id=domain_profile_id,
     )
     if not validation.ok:
-        return None, validation_result_to_envelope(invocation=invocation, validation=validation)
+        envelope = validation_result_to_envelope(invocation=invocation, validation=validation)
+        status = "unavailable" if validation.code in {"not_available", "unknown_tool"} else "rejected"
+        event = {
+            "type": "capability_execution_result",
+            "tool_type": invocation.name,
+            "status": status,
+            "reason": str(validation.code or "validation_failed"),
+        }
+        return (
+            ToolExecutionResult(
+                tool_type=invocation.name,
+                stream_events=[event],
+                followup_context=envelope.model_feedback,
+                state_updates={
+                    "capability_execution": {
+                        "tool_type": invocation.name,
+                        "status": status,
+                        "reason": str(validation.code or "validation_failed"),
+                    }
+                },
+            ),
+            ToolResultEnvelope(
+                invocation_id=envelope.invocation_id,
+                status=envelope.status,
+                model_feedback=envelope.model_feedback,
+                data=dict(envelope.data or {}),
+                events=[event],
+            ),
+        )
 
     normalized_call = invocation_to_legacy_tool_call(invocation)
     if invocation.name == OPEN_BROWSER_TOOL_SPEC.capability_id:

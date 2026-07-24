@@ -109,6 +109,75 @@ class ToolExecutionResult:
     model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
 
 
+def operation_tool_result(
+    *,
+    tool_type: str,
+    operation_result: Any,
+    success_events: list[dict[str, Any]] | None = None,
+    state_updates: dict[str, Any] | None = None,
+) -> ToolExecutionResult:
+    """Map a service operation into one honest model-facing tool result.
+
+    Generated-file and media services return dictionaries with ``ok`` plus a
+    human-readable ``followup_context``.  Older handlers copied only the text,
+    so ``ok=false`` with no stream event looked successful to the orchestration
+    loop.  Keep successful payloads unchanged, but make every explicit failure
+    observable and safe to append to the current MemCore turn.
+    """
+
+    payload = dict(operation_result) if isinstance(operation_result, Mapping) else {}
+    followup = str(payload.get("followup_context") or "").strip()
+    explicit_failure = not isinstance(operation_result, Mapping) or payload.get("ok") is False
+    if not explicit_failure:
+        return ToolExecutionResult(
+            tool_type=tool_type,
+            stream_events=[
+                dict(event)
+                for event in list(success_events or [])
+                if isinstance(event, Mapping)
+            ],
+            followup_context=followup,
+            state_updates=dict(state_updates or {}),
+        )
+
+    raw_reason = str(
+        payload.get("error")
+        or payload.get("reason")
+        or payload.get("status")
+        or "operation_failed"
+    ).strip()
+    reason = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw_reason)[:120] or "operation_failed"
+    failure_event = {
+        "type": "tool_execution_failed",
+        "tool_type": str(tool_type or "unknown"),
+        "status": "failed",
+        "reason": reason,
+    }
+    if not followup:
+        followup = f"工具 {tool_type} 没有完成（{reason}）。"
+    if "<tool_use_error>" not in followup:
+        followup = (
+            f"<tool_use_error>{followup} "
+            "请基于这个真实失败结果自然告诉用户；不要声称已经完成，也不要虚构产物句柄。"
+            "</tool_use_error>"
+        )
+    return ToolExecutionResult(
+        tool_type=tool_type,
+        # A failed service response may still contain partial/stale artifact
+        # fields. Never project success events from those fields alongside the
+        # failure terminal state.
+        stream_events=[failure_event],
+        followup_context=followup,
+        state_updates={
+            **dict(state_updates or {}),
+            "operation_failure": {
+                "tool_type": str(tool_type or "unknown"),
+                "reason": reason,
+            },
+        },
+    )
+
+
 @dataclass(frozen=True)
 class ToolMetadata:
     family: str = "general"
@@ -2097,10 +2166,10 @@ class InspectAttachmentToolHandler(BaseToolHandler):
                     "attachment": item,
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_kind(self, value: Any) -> str:
@@ -2434,10 +2503,10 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
                     "section": str(call.get("section") or ""),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_kind(self, value: Any) -> str:
@@ -2503,10 +2572,10 @@ class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
                     "items": focused,
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_targets(self, value: Any) -> list[str]:
@@ -3073,10 +3142,10 @@ class RetryAttachmentToolHandler(BaseToolHandler):
                     "item": item,
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_kind(self, value: Any) -> str:
@@ -3154,10 +3223,10 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
                         "item": item,
                     }
                 )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_urls(self, value: Any) -> list[str]:
@@ -5006,10 +5075,10 @@ class ComposeFileToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_sources(self, value: Any) -> list[str]:
@@ -5206,10 +5275,10 @@ class ConvertMediaFileToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_output_format(self, value: Any) -> str:
@@ -5326,10 +5395,10 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
                         "send_to_user": bool(result.get("send_to_user")),
                     }
                 )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_mode(self, value: Any) -> str:
@@ -5461,10 +5530,10 @@ class CoverSongToolHandler(BaseToolHandler):
                     "client_mode": str(context.client_mode or ""),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_output_format(self, value: Any) -> str:
@@ -5566,10 +5635,10 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_mode(self, value: Any) -> str:
@@ -5719,10 +5788,10 @@ class TranscribeMediaToolHandler(BaseToolHandler):
                             "send_to_user": bool(result.get("send_to_user")),
                         }
                     )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_source_ids(self, value: Any) -> list[str]:
@@ -5890,10 +5959,10 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_source_ids(self, value: Any) -> list[str]:
@@ -6005,10 +6074,10 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
                     "media_info": media_info,
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
 
@@ -6088,10 +6157,10 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_output_format(self, value: Any) -> str:
@@ -6196,10 +6265,10 @@ class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
                     "send_to_user": bool(result.get("send_to_user")),
                 }
             )
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_target_type(self, value: Any) -> str:
@@ -6298,10 +6367,10 @@ class SendFileToolHandler(BaseToolHandler):
                         "handle": str(file_ref.get("handle") or ""),
                     }
                 events.append(event)
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
     def _normalize_delivery_action(self, value: Any) -> str:
@@ -6360,10 +6429,10 @@ class SendGeneratedFileToolHandler(SendFileToolHandler):
                         "handle": str(generated.get("generated_handle") or ""),
                     }
                 events.append(event)
-        return ToolExecutionResult(
+        return operation_tool_result(
             tool_type=self.tool_type,
-            stream_events=events,
-            followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+            operation_result=result,
+            success_events=events,
         )
 
 

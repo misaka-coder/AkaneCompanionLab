@@ -7,7 +7,11 @@ from memcore import coerce_memory_metadata
 
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
-from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
+from .tool_invocation import (
+    NATIVE_TOOL_CALL_FIELD,
+    NATIVE_TOOL_CALLS_FIELD,
+    TOOL_CAPABILITY_SELECTION_FIELD,
+)
 
 _MUSIC_FALLBACK_ACTIONS = (
     (["暂停", "停一下", "先停", "停一停"], "pause"),
@@ -53,6 +57,8 @@ def normalize_final_output(
     client_context: ClientProtocolContext | None = None,
     resource_manifest: Any = None,
     user_message: str = "",
+    domain_profile_id: str = "",
+    capability_selection: Any = None,
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     manifest_service = (
@@ -96,11 +102,19 @@ def normalize_final_output(
             client_context=client_context,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            domain_profile_id=domain_profile_id,
+            capability_selection=capability_selection,
         )
         if allow_tool_call
         else None
     )
     normalized["tool_call"] = _strip_internal_tool_metadata(normalized_tool_call)
+    if capability_selection is not None and (
+        normalized.get("tool_call")
+        or normalized.get(NATIVE_TOOL_CALL_FIELD)
+        or normalized.get(NATIVE_TOOL_CALLS_FIELD)
+    ):
+        normalized[TOOL_CAPABILITY_SELECTION_FIELD] = capability_selection
     if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(
         ClientCapability.AUDIO_PLAYBACK
     ):

@@ -742,7 +742,7 @@ class EngineExtensionTests(unittest.TestCase):
 
         self.assertIsNone(repaired["tool_call"])
 
-    def test_promote_narrated_audio_separation_uses_latest_media_handle(self) -> None:
+    def test_promote_narrated_audio_separation_does_not_invent_tool_call(self) -> None:
         self.engine.store = type(
             "Store",
             (),
@@ -777,16 +777,7 @@ class EngineExtensionTests(unittest.TestCase):
             session_id="qq_group",
         )
 
-        self.assertEqual(
-            repaired["tool_call"],
-            {
-                "type": "separate_audio_stems",
-                "source_id": "file_031",
-                "mode": "vocals_instrumental",
-                "output_format": "wav",
-                "send_to_user": False,
-            },
-        )
+        self.assertIsNone(repaired["tool_call"])
 
     def test_promote_narrated_audio_separation_does_not_execute_explanation_question(self) -> None:
         self.engine.store = type(

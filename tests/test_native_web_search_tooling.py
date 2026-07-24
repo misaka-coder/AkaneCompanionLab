@@ -4,12 +4,16 @@ import json
 import threading
 import time
 import unittest
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
 import config
 from companion_v01 import tool_orchestration_engine
-from companion_v01.capability_registry import CapabilityDisclosure, WEB_SEARCH_TOOL_SPEC
+from companion_v01.capability_registry import (
+    CapabilityDisclosure,
+    CapabilitySelection,
+    WEB_SEARCH_TOOL_SPEC,
+)
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.final_output_engine import normalize_final_output
 from companion_v01.llm_runtime import LLMRuntime, ModelBundle
@@ -21,10 +25,15 @@ from companion_v01.tool_invocation import (
     NATIVE_TOOL_CALL_FIELD,
     NATIVE_TOOL_CALLS_FIELD,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_CAPABILITY_SELECTION_FIELD,
     TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
 )
-from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult
+from companion_v01.tool_runtime import (
+    TOOL_METADATA_BY_TYPE,
+    ToolExecutionResult,
+    operation_tool_result,
+)
 
 
 class _NativeToolProjectionManager:
@@ -1413,6 +1422,79 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertNotIn("top-secret", exchange["result"])
         self.assertIn("[redacted]", exchange["result"])
 
+    def test_failed_operation_is_recorded_as_memcore_tool_result(self) -> None:
+        class FakeMemcoreManager:
+            enabled = True
+
+            def __init__(self):
+                self.calls = []
+
+            def record_tool_batch(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "exchanges": [
+                        {
+                            "tool_use_source_id": "trace-use-failed",
+                            "tool_result_source_id": "trace-result-failed",
+                        }
+                    ],
+                }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        manager = FakeMemcoreManager()
+        engine.memcore_manager = manager
+        engine._execute_tool_call = lambda **_kwargs: operation_tool_result(
+            tool_type="separate_audio_stems",
+            operation_result={
+                "ok": False,
+                "error": "executor_offline",
+                "followup_context": "本地媒体执行器当前离线。",
+            },
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        tool_followups: list[str] = []
+        results, events = engine._execute_and_record_tool_batch(
+            tool_calls=[
+                {
+                    "type": "separate_audio_stems",
+                    "source_id": "file_031",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call_failed_media",
+                }
+            ],
+            final_output={"speech": "我来处理。", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=tool_followups,
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="reimu",
+            now_ts=100,
+            current_user_source_id="user:failed",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={},
+            tool_history_turns=[],
+            memcore_turn_id="turn-failed-media",
+        )
+
+        self.assertEqual(events[0]["type"], "tool_execution_failed")
+        self.assertIn("<tool_use_error>", results[0].followup_context)
+        self.assertEqual(len(manager.calls), 1)
+        exchange = manager.calls[0]["exchanges"][0]
+        self.assertEqual(exchange["result_status"], "error")
+        self.assertIn("本地媒体执行器当前离线", exchange["result"])
+        self.assertIn("不要声称已经完成", exchange["result"])
+
     def test_generated_artifact_handle_is_recorded_in_memcore_tool_result(self) -> None:
         class FakeMemcoreManager:
             enabled = True
@@ -1544,6 +1626,236 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertEqual(len(normalized[NATIVE_TOOL_CALLS_FIELD]), 2)
         self.assertEqual(normalized["speech"], "")
+
+    def test_final_output_carries_frozen_capability_selection_for_json_tool_call(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.resource_manifest = None
+        engine._resolve_client_protocol_context = lambda _payload: ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=("separate_audio_stems",),
+            module_names=("media_tools",),
+            schema_tool_names=("separate_audio_stems",),
+        )
+        captured: dict[str, object] = {}
+
+        def normalize(value, **kwargs):
+            captured.update(kwargs)
+            return {
+                **dict(value or {}),
+                TOOL_CAPABILITY_SELECTION_FIELD: kwargs.get("capability_selection"),
+            }
+
+        engine._normalize_tool_call = normalize
+        normalized = normalize_final_output(
+            engine,
+            result={
+                "speech": "我来分离。",
+                "tool_call": {
+                    "type": "separate_audio_stems",
+                    "source_id": "file_031",
+                },
+            },
+            visual_defaults={
+                "emotion": "normal",
+                "outfit": "default",
+                "major": "default",
+                "minor": "default",
+                "background": "default",
+                "bgm": "none",
+            },
+            allow_tool_call=True,
+            debug_enabled=False,
+            capability_selection=selection,
+        )
+
+        self.assertIs(captured["capability_selection"], selection)
+        self.assertIs(normalized[TOOL_CAPABILITY_SELECTION_FIELD], selection)
+        self.assertNotIn(TOOL_CAPABILITY_SELECTION_FIELD, normalized["tool_call"])
+
+    def test_frozen_capability_selection_executes_json_tool_call_without_reresolution(self) -> None:
+        class FrozenHandler:
+            tool_type = "separate_audio_stems"
+
+            def __init__(self) -> None:
+                self.executions: list[dict] = []
+
+            def normalize_call(self, value):
+                if str(value.get("type") or "") != self.tool_type:
+                    return None
+                source_id = str(value.get("source_id") or "").strip()
+                if not source_id:
+                    return None
+                return {"type": self.tool_type, "source_id": source_id}
+
+            def execute(self, *, call, context):
+                del context
+                self.executions.append(dict(call))
+                return ToolExecutionResult(
+                    tool_type=self.tool_type,
+                    stream_events=[{"type": "audio_stems_ready", "status": "ok"}],
+                    followup_context="人声和伴奏已经分离完成。",
+                )
+
+        handler = FrozenHandler()
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(handler.tool_type,),
+            module_names=("media_tools",),
+            schema_tool_names=(handler.tool_type,),
+            resolved_handlers=MappingProxyType({handler.tool_type: handler}),
+        )
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.tool_handlers = {}
+        engine._resolve_tool_handlers = lambda **kwargs: {
+            name: selection.resolved_handlers[name]
+            for name in selection.tool_names
+            if name in selection.resolved_handlers
+        }
+
+        normalized = tool_orchestration_engine.normalize_tool_call(
+            engine,
+            {
+                "type": handler.tool_type,
+                "source_id": "file_031",
+            },
+            profile_user_id="u",
+            session_id="s",
+            capability_selection=selection,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertIs(normalized[TOOL_CAPABILITY_SELECTION_FIELD], selection)
+        result = tool_orchestration_engine.execute_tool_call(
+            engine,
+            profile_user_id="u",
+            session_id="s",
+            tool_call=normalized,
+            visual_payload={},
+            now_ts=100,
+        )
+
+        self.assertIsInstance(result, ToolExecutionResult)
+        self.assertEqual(handler.executions, [{"type": handler.tool_type, "source_id": "file_031"}])
+        self.assertIn("分离完成", result.followup_context)
+
+    def test_advertised_but_unavailable_tool_returns_structured_terminal_result(self) -> None:
+        class UnavailableHandler:
+            tool_type = "separate_audio_stems"
+
+            def normalize_call(self, value):
+                source_id = str(value.get("source_id") or "").strip()
+                if not source_id:
+                    return None
+                return {"type": self.tool_type, "source_id": source_id}
+
+            def execute(self, **_kwargs):
+                raise AssertionError("unavailable tool must not dispatch")
+
+        handler = UnavailableHandler()
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(),
+            module_names=(),
+            schema_tool_names=(handler.tool_type,),
+            disclosures=(
+                CapabilityDisclosure(
+                    capability_id="media_tools",
+                    state="unavailable",
+                    summary="媒体处理暂不可用。",
+                    reason="本地执行器离线。",
+                    activation="电脑恢复连接后重试。",
+                    tool_names=(handler.tool_type,),
+                ),
+            ),
+            resolved_handlers=MappingProxyType({handler.tool_type: handler}),
+        )
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.tool_handlers = {}
+        engine._resolve_tool_handlers = lambda **_kwargs: {}
+
+        normalized = tool_orchestration_engine.normalize_tool_call(
+            engine,
+            {
+                "type": handler.tool_type,
+                "source_id": "file_031",
+            },
+            profile_user_id="u",
+            session_id="s",
+            capability_selection=selection,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        result = tool_orchestration_engine.execute_tool_call(
+            engine,
+            profile_user_id="u",
+            session_id="s",
+            tool_call=normalized,
+            visual_payload={},
+            now_ts=100,
+        )
+
+        self.assertIsInstance(result, ToolExecutionResult)
+        assert result is not None
+        self.assertEqual(result.stream_events[0]["status"], "unavailable")
+        self.assertEqual(result.stream_events[0]["reason"], "not_available")
+        self.assertIn("本地执行器离线", result.followup_context)
+        self.assertIn("不要假装已经执行", result.followup_context)
+
+    def test_known_tool_with_bad_args_returns_structured_rejected_result(self) -> None:
+        class Handler:
+            tool_type = "separate_audio_stems"
+
+            def normalize_call(self, value):
+                source_id = str(value.get("source_id") or "").strip()
+                if not source_id:
+                    return None
+                return {"type": self.tool_type, "source_id": source_id}
+
+            def execute(self, **_kwargs):
+                raise AssertionError("invalid tool call must not dispatch")
+
+        handler = Handler()
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(handler.tool_type,),
+            module_names=("media_tools",),
+            schema_tool_names=(handler.tool_type,),
+            resolved_handlers=MappingProxyType({handler.tool_type: handler}),
+        )
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.tool_handlers = {}
+        engine._resolve_tool_handlers = lambda **_kwargs: {handler.tool_type: handler}
+
+        normalized = tool_orchestration_engine.normalize_tool_call(
+            engine,
+            {"type": handler.tool_type},
+            profile_user_id="u",
+            session_id="s",
+            capability_selection=selection,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        result = tool_orchestration_engine.execute_tool_call(
+            engine,
+            profile_user_id="u",
+            session_id="s",
+            tool_call=normalized,
+            visual_payload={},
+            now_ts=100,
+        )
+
+        self.assertIsInstance(result, ToolExecutionResult)
+        assert result is not None
+        self.assertEqual(result.stream_events[0]["status"], "rejected")
+        self.assertEqual(result.stream_events[0]["reason"], "bad_args")
+        self.assertIn("参数不完整或格式不对", result.followup_context)
 
     def test_engine_native_tool_trace_preserves_error_and_cancelled_statuses(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
