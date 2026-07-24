@@ -150,7 +150,14 @@ def build_local_capability_catalog(
     backend_tool_entries = _build_backend_tool_entries(getattr(engine, "tool_handlers", {}) or {})
     entries.extend(backend_tool_entries)
     entries.extend(_build_python_adapter_entries())
-    entries.extend(_build_provider_entries(config_module=config_module, tts_client=tts_client, settings=settings))
+    entries.extend(
+        _build_provider_entries(
+            config_module=config_module,
+            tts_client=tts_client,
+            settings=settings,
+            local_media_executor=getattr(engine, "local_media_executor", None),
+        )
+    )
     configurable_provider_entries = _build_configurable_provider_entries(provider_configs or {})
     entries.extend(configurable_provider_entries)
     entries.extend(_build_workflow_entries(configurable_provider_entries, workflow_configs or {}))
@@ -294,10 +301,23 @@ def _build_provider_entries(
     config_module: Any = None,
     tts_client: Any = None,
     settings: Any = None,
+    local_media_executor: Any = None,
 ) -> list[dict[str, Any]]:
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
     faster_whisper_available = importlib.util.find_spec("faster_whisper") is not None
+    local_media_status: dict[str, Any] = {}
+    if local_media_executor is not None:
+        try:
+            local_media_status = dict(local_media_executor.capability_status() or {})
+        except Exception:
+            local_media_status = {}
+    local_asr_status = (
+        local_media_status.get("asr") if isinstance(local_media_status.get("asr"), Mapping) else {}
+    )
+    local_rvc_status = (
+        local_media_status.get("rvc") if isinstance(local_media_status.get("rvc"), Mapping) else {}
+    )
 
     tts_status = "ready" if tts_client is not None else "disabled"
     tts_reason = "" if tts_client is not None else "tts_client_unavailable"
@@ -421,6 +441,26 @@ def _build_provider_entries(
             "usedBy": ["workspace", "media"],
         },
         {
+            "id": "provider.asr.local_media_executor",
+            "kind": "provider",
+            "type": "asr_provider",
+            "source": "external_executor",
+            "adapter": "local_media_executor",
+            "executionMode": "external",
+            "name": "本机 Whisper 转写",
+            "enabled": bool(local_asr_status.get("ready")),
+            "status": "ready" if bool(local_asr_status.get("ready")) else "missing_executor",
+            "reason": (
+                ""
+                if bool(local_asr_status.get("ready"))
+                else str(local_asr_status.get("reason") or "local_media_executor_unavailable")
+            ),
+            "risk": "medium",
+            "requiresConfirmation": False,
+            "usedBy": ["voice", "workspace", "desktop_pet", "qq_text"],
+            "config": {"model": str(local_asr_status.get("model") or "")},
+        },
+        {
             "id": "provider.asr.faster_whisper",
             "kind": "provider",
             "type": "asr_provider",
@@ -462,6 +502,26 @@ def _build_provider_entries(
             "fallbackOnly": True,
             "summary": "语音输入不可用时继续使用文本输入",
         },
+        {
+            "id": "provider.voice_conversion.rvc.local_executor",
+            "kind": "provider",
+            "type": "voice_conversion_provider",
+            "source": "external_executor",
+            "adapter": "local_media_executor",
+            "executionMode": "external",
+            "name": "本机 RVC",
+            "enabled": bool(local_rvc_status.get("ready")),
+            "status": "ready" if bool(local_rvc_status.get("ready")) else "missing_executor",
+            "reason": (
+                ""
+                if bool(local_rvc_status.get("ready"))
+                else str(local_rvc_status.get("reason") or "local_media_executor_unavailable")
+            ),
+            "risk": "medium",
+            "requiresConfirmation": False,
+            "usedBy": ["workspace", "qq_text", "desktop_pet"],
+            "config": {"modelCount": max(0, int(local_rvc_status.get("modelCount") or 0))},
+        },
     ]
     return [_project_catalog_entry(entry) for entry in entries]
 
@@ -486,20 +546,28 @@ def _build_voice_provider_resolutions(
         extra_reason=_voice_request_blocker(requested_tts, voice_profile_id),
         voice_profile_id=voice_profile_id,
     )
+    local_executor_asr_id = "provider.asr.local_media_executor"
+    requested_asr = local_executor_asr_id if _is_provider_ready(by_id.get(local_executor_asr_id)) else ""
     configured_asr_id = "provider.asr.openai_compat.local"
     configured_asr_entry = by_id.get(configured_asr_id)
     configured_asr_status = str((configured_asr_entry or {}).get("status") or "").strip()
-    requested_asr = (
-        configured_asr_id
-        if isinstance(configured_asr_entry, Mapping)
-        and configured_asr_entry.get("enabled") is not False
-        and configured_asr_status in {"configured", "ready", "available", "ok"}
-        else "provider.asr.faster_whisper"
-    )
+    if not requested_asr:
+        requested_asr = (
+            configured_asr_id
+            if isinstance(configured_asr_entry, Mapping)
+            and configured_asr_entry.get("enabled") is not False
+            and configured_asr_status in {"configured", "ready", "available", "ok"}
+            else "provider.asr.faster_whisper"
+        )
     asr_resolution = _resolve_first_ready_provider(
         capability_id="voice.input.asr",
         requested_provider_id=requested_asr,
-        candidates=[requested_asr, "provider.asr.faster_whisper", "provider.asr.text_input"],
+        candidates=[
+            requested_asr,
+            local_executor_asr_id,
+            "provider.asr.faster_whisper",
+            "provider.asr.text_input",
+        ],
         entries_by_id=by_id,
         request_source="default",
         accepted_statuses={"configured", "ready", "available", "ok"},

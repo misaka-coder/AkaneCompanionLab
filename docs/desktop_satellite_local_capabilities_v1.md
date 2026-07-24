@@ -1,6 +1,6 @@
 # Desktop Satellite 本地能力 V1
 
-状态：**第一批真实短任务能力已部署到云端 personal，并通过真实模型 → broker → 本机执行器 smoke；finance 未配置或复用 personal Satellite。**
+状态：**第一批真实短任务能力与本地媒体能力已部署到云端 personal。短任务走 Satellite broker；ASR/RVC 音频字节走独立的 loopback-only 本地媒体宿主和 SSH reverse tunnel。finance 未单独配置。**
 
 本文记录“云端 Akane 在用户电脑开着时调用本机能力”的当前真实边界，避免后续上下文压缩或接手时把协议、云端能力和本机执行器混为一谈。
 
@@ -119,10 +119,28 @@ token 不写进仓库、命令行、prompt 或普通日志。隧道 PID 和无�
 - SSH tunnel 由 personal 一键入口自动建立，但当前仍依赖本机 SSH 配置中的 `akane-vps`；尚未做独立设备注册 UI 或系统登录自启动。
 - 托管可见浏览器 `browser_page` 在用户电脑执行；当前云端 runner 不能冒充用户电脑浏览器。
 - 本地视觉模型/图片识别。现有 `/desktop-pet/vision/clip` 是截图上传后由后端视觉模型识别，不是本地视觉 executor；云端缺少 vision provider 配置时它仍不可用。
-- 本地 Whisper/ASR、GPT-SoVITS、RVC。
+- 本地 Whisper/ASR 与 RVC 已改走 `akane_local_capability_host`；它们不冒充短任务 Satellite offer。
+- GPT-SoVITS 继续使用独立的本地 provider reverse tunnel。
 - FFmpeg、Demucs、DeepFilterNet、ComfyUI 和其他长任务。
 - 通过 ArtifactBroker/ticket 传输这些任务的输入输出字节。
 - 长任务 progress/cancel、断线中止、重连 reconcile 和“产物已产生但回执丢失”的恢复。
 - finance 的独立 Satellite enrollment；除非明确需要，不复用 personal 设备凭据。
 
 这些能力必须逐个用真实 dependency readiness、真实执行结果、真实失败状态和断线测试验收。协议占位、空 executor、假成功或仅模型可见提示都不算完成。
+
+## 8. 本地媒体能力补充
+
+`start_akane_cloud_personal.ps1` 现在会复用或启动：
+
+1. 本机 RVC WebUI；
+2. loopback-only `akane_local_capability_host`；
+3. 本地能力宿主到云端 loopback 的 SSH reverse tunnel；
+4. 原有 GPT-SoVITS tunnel 与 Desktop Satellite。
+
+ASR 上传原始音频字节并返回带时间段的转写结果。RVC 上传云端工作台音频，分别返回
+vocals/instrumental 和转换后 WAV；云端 `CoverSongService` 仍是缓存、混音、
+GeneratedFileStore 与 QQ 交付的唯一权威实现。云端与本机不共享绝对路径。
+
+Windows 用户入口为根目录 `start_akane_local_capabilities.bat`。桌面入口只需指向该文件，
+不需要用户填写 provider、端口或配置域。服务离线时能力目录明确显示
+`missing_executor`，不会把“工具已注册”当作执行成功。

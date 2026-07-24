@@ -2268,7 +2268,9 @@ def transcribe_media(
             "followup_context": "你刚刚想生成转写稿，但当前只支持 md、txt、srt、vtt 或 json。",
         }
 
-    if importlib.util.find_spec("faster_whisper") is None:
+    asr_executor = getattr(service, "asr_executor", None)
+    use_remote_executor = asr_executor is not None
+    if not use_remote_executor and importlib.util.find_spec("faster_whisper") is None:
         return {
             "ok": False,
             "generated": None,
@@ -2311,8 +2313,8 @@ def transcribe_media(
             ),
         }
 
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
+    ffmpeg_path = shutil.which("ffmpeg") if not use_remote_executor else None
+    if not use_remote_executor and not ffmpeg_path:
         return {
             "ok": False,
             "generated": None,
@@ -2335,13 +2337,55 @@ def transcribe_media(
     transcripts: list[dict[str, Any]] = []
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
-        model = service._load_faster_whisper_model(
-            model_size=normalized_model_size,
-            device=normalized_device,
-            compute_type=normalized_compute_type,
+        model = (
+            service._load_faster_whisper_model(
+                model_size=normalized_model_size,
+                device=normalized_device,
+                compute_type=normalized_compute_type,
+            )
+            if not use_remote_executor
+            else None
         )
         for index, source in enumerate(sources, start=1):
             source_path = Path(source.get("absolute_path") or "")
+            if use_remote_executor:
+                try:
+                    remote_result = asr_executor.transcribe_file(
+                        source_path,
+                        language=normalized_language,
+                        model=normalized_model_size,
+                        vad_filter=bool(vad_filter),
+                    )
+                    remote_segments = [
+                        dict(item)
+                        for item in list(remote_result.get("segments") or [])
+                        if isinstance(item, dict) and str(item.get("text") or "").strip()
+                    ]
+                    transcripts.append(
+                        {
+                            "source_index": index,
+                            "source": service._transcript_source_card(source),
+                            "status": "ready",
+                            "language": str(remote_result.get("language") or normalized_language),
+                            "duration_seconds": remote_result.get("duration_seconds"),
+                            "segment_count": len(remote_segments),
+                            "segments": remote_segments,
+                            "text": str(remote_result.get("text") or "").strip(),
+                            "provider": str(remote_result.get("provider") or "local_media_executor"),
+                        }
+                    )
+                except Exception as exc:
+                    transcripts.append(
+                        {
+                            "source_index": index,
+                            "source": service._transcript_source_card(source),
+                            "status": "failed",
+                            "error": str(getattr(exc, "reason", "") or exc)[:240],
+                            "segments": [],
+                            "text": "",
+                        }
+                    )
+                continue
             prepared_path = work_dir / f"source_{index:02d}_transcribe.wav"
             prepared = service._prepare_transcription_input(
                 ffmpeg_path=str(ffmpeg_path),

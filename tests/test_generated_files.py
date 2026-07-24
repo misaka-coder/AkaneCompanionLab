@@ -1272,6 +1272,79 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(card.get("type"), "media_transcript")
             self.assertIn("转写稿", result["followup_context"])
 
+    def test_transcribe_media_uses_remote_executor_without_cloud_whisper_or_ffmpeg(self) -> None:
+        class FakeAsrExecutor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def transcribe_file(self, path, **kwargs):
+                self.calls.append((Path(path), dict(kwargs)))
+                return {
+                    "ok": True,
+                    "text": "本机执行器转写成功。",
+                    "language": "zh",
+                    "duration_seconds": 1.5,
+                    "segments": [
+                        {
+                            "index": 1,
+                            "start": 0.0,
+                            "end": 1.5,
+                            "text": "本机执行器转写成功。",
+                        }
+                    ],
+                    "provider": "local_media_executor",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            stored = attachment_root / "master" / "speech.ogg"
+            stored.parent.mkdir(parents=True, exist_ok=True)
+            stored.write_bytes(b"remote executor audio")
+            store = MemoryStore(root / "db")
+            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            executor = FakeAsrExecutor()
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+                asr_executor=executor,
+            )
+            attachment = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="audio",
+                origin_name="speech.ogg",
+                storage_relpath="master/speech.ogg",
+                timestamp=100,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=attachment["attachment_id"],
+                summary_title="speech.ogg",
+                short_hint="一段 QQ 语音。",
+                timestamp=101,
+            )
+
+            with (
+                patch("companion_v01.generated_files_media.importlib.util.find_spec", return_value=None),
+                patch("companion_v01.generated_files_media.shutil.which", return_value=None),
+            ):
+                result = generated_service.transcribe_media(
+                    profile_user_id="user",
+                    session_id="session",
+                    source_targets=["audio_001"],
+                    output_format="txt",
+                    timestamp=110,
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(executor.calls), 1)
+            output_text = Path(result["generated"]["absolute_path"]).read_text(encoding="utf-8")
+            self.assertIn("本机执行器转写成功", output_text)
+
     def test_transcribe_media_tool_handler_emits_multiple_generated_events(self) -> None:
         class FakeGeneratedService:
             def transcribe_media(self, **kwargs):

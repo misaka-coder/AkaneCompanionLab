@@ -815,6 +815,43 @@ def run_asr_transcription(
     language: str,
     content_type: str,
 ) -> dict[str, object]:
+    local_executor = getattr(engine, "local_media_executor", None)
+    if local_executor is not None:
+        try:
+            result = local_executor.transcribe_bytes(
+                audio_bytes,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+                model=str(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "asr_whisper_model_size",
+                        "ASR_WHISPER_MODEL_SIZE",
+                        getattr(config_module, "WHISPER_MODEL_SIZE", "small")
+                        if config_module is not None
+                        else "small",
+                    )
+                ),
+                vad_filter=bool(
+                    runtime_setting(settings, config_module, "asr_vad_filter", "ASR_VAD_FILTER", True)
+                ),
+            )
+            return {
+                "ok": True,
+                "text": str(result.get("text") or ""),
+                "language": str(result.get("language") or language or ""),
+                "duration_seconds": result.get("duration_seconds"),
+                "provider": str(result.get("provider") or "local_media_executor"),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(getattr(exc, "reason", "") or "local_asr_failed"),
+                "message": str(getattr(exc, "public_message", "") or "本地语音识别失败。")[:160],
+                "_status_code": 503,
+            }
     if importlib.util.find_spec("faster_whisper") is None:
         return {
             "ok": False,

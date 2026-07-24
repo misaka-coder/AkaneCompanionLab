@@ -4,13 +4,16 @@ param(
     [int]$RemotePort = 10001,
     [int]$GptSoVitsLocalPort = 9880,
     [int]$GptSoVitsRemotePort = 19880,
+    [int]$LocalMediaPort = 9879,
+    [int]$LocalMediaRemotePort = 19879,
     [string]$InstanceId = "personal",
     [string]$DataRoot = "",
     [switch]$NoBuild,
     [switch]$Rebuild,
     [switch]$OpenSettings,
     [switch]$SkipDesktop,
-    [switch]$SkipOfferCheck
+    [switch]$SkipOfferCheck,
+    [switch]$SkipLocalMedia
 )
 
 $ErrorActionPreference = "Stop"
@@ -165,6 +168,7 @@ function Wait-AkaneCloudHealth {
 function Wait-AkaneSatelliteOffers {
     param(
         [string]$BaseUrl,
+        [bool]$IncludeLocalMedia = $true,
         [int]$Attempts = 40
     )
     $expected = @(
@@ -173,6 +177,13 @@ function Wait-AkaneSatelliteOffers {
         "tool.system_media_snapshot",
         "tool.system_media_control"
     )
+    if ($IncludeLocalMedia) {
+        $expected += @(
+            "provider.asr.local_media_executor",
+            "provider.voice_conversion.rvc.local_executor",
+            "prompt_module.cover_song"
+        )
+    }
     for ($attempt = 0; $attempt -lt $Attempts; $attempt += 1) {
         try {
             $catalog = Invoke-RestMethod -Uri ($BaseUrl.TrimEnd("/") + "/capabilities") -TimeoutSec 3
@@ -204,7 +215,9 @@ if (
     $LocalPort -lt 1 -or $LocalPort -gt 65535 -or
     $RemotePort -lt 1 -or $RemotePort -gt 65535 -or
     $GptSoVitsLocalPort -lt 1 -or $GptSoVitsLocalPort -gt 65535 -or
-    $GptSoVitsRemotePort -lt 1 -or $GptSoVitsRemotePort -gt 65535
+    $GptSoVitsRemotePort -lt 1 -or $GptSoVitsRemotePort -gt 65535 -or
+    $LocalMediaPort -lt 1 -or $LocalMediaPort -gt 65535 -or
+    $LocalMediaRemotePort -lt 1 -or $LocalMediaRemotePort -gt 65535
 ) {
     throw "invalid_tunnel_port"
 }
@@ -221,6 +234,18 @@ $resolvedDataRoot = if ($DataRoot.Trim()) {
 $logDirectory = Join-Path $resolvedDataRoot "logs"
 $runDirectory = Join-Path $resolvedDataRoot "run"
 New-Item -ItemType Directory -Force -Path $logDirectory, $runDirectory | Out-Null
+
+if (-not $SkipLocalMedia) {
+    $localMediaLauncher = Join-Path $projectRoot "scripts\start_akane_local_media.ps1"
+    if (-not (Test-Path -LiteralPath $localMediaLauncher -PathType Leaf)) {
+        throw "local_media_launcher_missing"
+    }
+    & $localMediaLauncher `
+        -SshHost $SshHost `
+        -LocalCapabilityPort $LocalMediaPort `
+        -RemoteCapabilityPort $LocalMediaRemotePort `
+        -DataRoot (Join-Path $resolvedDataRoot "local-media")
+}
 
 $gptSoVitsTunnelPidPath = Join-Path $runDirectory "gpt_sovits_reverse_tunnel.pid"
 if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $GptSoVitsLocalPort) {
@@ -306,10 +331,10 @@ if ($SkipDesktop) { $launchArgs.SkipDesktop = $true }
 
 if (-not $SkipDesktop -and -not $SkipOfferCheck) {
     Write-Host "[INFO] Waiting for the Desktop Satellite to publish four local offers..."
-    if (-not (Wait-AkaneSatelliteOffers -BaseUrl $backendUrl)) {
-        throw "cloud_satellite_offer_verification_failed: desktop opened but four offers did not become ready"
+    if (-not (Wait-AkaneSatelliteOffers -BaseUrl $backendUrl -IncludeLocalMedia (-not $SkipLocalMedia))) {
+        throw "cloud_satellite_offer_verification_failed: reviewed local capabilities did not become ready"
     }
-    Write-Host "[OK] Cloud Akane is connected to all four reviewed local capabilities."
+    Write-Host "[OK] Cloud Akane is connected to all reviewed local capabilities."
 }
 
 Write-Host "[OK] Akane cloud personal startup completed."

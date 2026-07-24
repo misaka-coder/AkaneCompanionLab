@@ -36,6 +36,7 @@ from . import desktop_pet_engine
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
 from .cover_song import CoverSongService, RvcWebUiProvider
+from .local_media_executor import LocalMediaExecutorClient, LocalRvcExecutorProvider
 from .image_generation import ImageGenerationService, PinAIImageProvider
 from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
@@ -357,6 +358,7 @@ class AkaneMemoryEngine:
             store=self.store,
             timeline_event_recorder=self._record_task_workspace_trace,
         )
+        self.local_media_executor = self._create_local_media_executor()
         self.generated_file_service = GeneratedFileService(
             base_dir=generated_workspace_dir,
             store=self.store,
@@ -364,6 +366,7 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
+            asr_executor=self.local_media_executor,
         )
         self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
@@ -1802,8 +1805,31 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
+            asr_executor=self._get_local_media_executor(),
         )
         self.generated_file_service = service
+        return service
+
+    def _create_local_media_executor(self) -> LocalMediaExecutorClient | None:
+        base_url = str(getattr(config, "LOCAL_MEDIA_EXECUTOR_BASE_URL", "") or "").strip()
+        if not base_url:
+            return None
+        try:
+            return LocalMediaExecutorClient(
+                base_url=base_url,
+                timeout_seconds=float(
+                    getattr(config, "LOCAL_MEDIA_EXECUTOR_TIMEOUT_SECONDS", 1800.0) or 1800.0
+                ),
+            )
+        except ValueError as exc:
+            logger.warning("local media executor disabled: %s", exc)
+            return None
+
+    def _get_local_media_executor(self) -> LocalMediaExecutorClient | None:
+        if hasattr(self, "local_media_executor"):
+            return getattr(self, "local_media_executor", None)
+        service = self._create_local_media_executor()
+        self.local_media_executor = service
         return service
 
     def _get_image_material_resolver(self) -> SessionImageMaterialResolver | None:
@@ -1865,13 +1891,26 @@ class AkaneMemoryEngine:
         if generated_file_service is None:
             return None
         try:
-            provider = RvcWebUiProvider(
-                base_url=str(getattr(config, "RVC_WEBUI_BASE_URL", "http://127.0.0.1:7899") or ""),
-                root_dir=str(getattr(config, "RVC_ROOT_DIR", "") or ""),
-                timeout_seconds=float(getattr(config, "COVER_SONG_TIMEOUT_SECONDS", 1800.0) or 1800.0),
-                separation_model=str(
-                    getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
-                ),
+            local_executor = self._get_local_media_executor()
+            provider = (
+                LocalRvcExecutorProvider(
+                    client=local_executor,
+                    default_model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
+                    separation_model=str(
+                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
+                        or "HP5_only_main_vocal"
+                    ),
+                )
+                if local_executor is not None
+                else RvcWebUiProvider(
+                    base_url=str(getattr(config, "RVC_WEBUI_BASE_URL", "http://127.0.0.1:7899") or ""),
+                    root_dir=str(getattr(config, "RVC_ROOT_DIR", "") or ""),
+                    timeout_seconds=float(getattr(config, "COVER_SONG_TIMEOUT_SECONDS", 1800.0) or 1800.0),
+                    separation_model=str(
+                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
+                        or "HP5_only_main_vocal"
+                    ),
+                )
             )
         except ValueError as exc:
             logger.warning("cover song provider disabled: %s", exc)

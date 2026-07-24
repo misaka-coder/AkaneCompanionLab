@@ -94,6 +94,11 @@ V1 实现：
 - `RvcWebUiProvider.convert_voice()`：使用 RVC v2 + RMVPE。
 - `CoverSongService._mix_tracks()`：FFmpeg `amix normalize=0` + limiter。
 
+云端 Bot 使用 `LOCAL_MEDIA_EXECUTOR_BASE_URL` 时，Provider 切换为
+`LocalRvcExecutorProvider`：输入音频通过受限 multipart 上传到本机 loopback 媒体宿主，
+分轨和转换结果以 ZIP/WAV 字节返回。`CoverSongService`、缓存、混音、生成文件记录和 QQ
+交付仍在云端，不传递或假定两端共享绝对路径。
+
 当前 RVC 的单次 `infer_convert` 已在内部处理长音频切段：超过窗口阈值后，它会在约 60 秒目标点附近寻找局部最低能量位置，在该位置切段推理并按顺序拼回。宿主不要再把每个静音段拆成多次 `infer_convert` 请求；当前 RVC 会在每次请求中重新读取 FAISS index，外层重复切段会放大 index I/O、请求开销和音轨累计对齐误差。若未来要升级为严格的静音区间切点，应在 RVC 单次推理内部完成，并保持 padding、总时长和顺序拼接语义。
 
 本机 RVC 运行时带有两项热路径优化：

@@ -28,6 +28,15 @@ class StatusHandler:
         }
 
 
+class ReadyLocalMediaExecutor:
+    def capability_status(self) -> dict[str, object]:
+        return {
+            "status": "ready",
+            "asr": {"ready": True, "reason": "", "model": "small"},
+            "rvc": {"ready": True, "reason": "", "modelCount": 3},
+        }
+
+
 class LocalCapabilityCatalogTests(unittest.TestCase):
     def test_backend_tool_catalog_projects_handler_risk_through_capcore(self) -> None:
         catalog = build_local_capability_catalog(
@@ -66,6 +75,23 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         self.assertEqual(text_only["confirm"], "never")
         self.assertFalse(text_only["requiresConfirmation"])
         self.assertEqual(text_only["approvalMode"], "trusted_auto_allow")
+
+    def test_local_media_executor_becomes_authoritative_asr_and_rvc_provider(self) -> None:
+        catalog = build_local_capability_catalog(
+            engine=SimpleNamespace(
+                tool_handlers={},
+                local_media_executor=ReadyLocalMediaExecutor(),
+            ),
+            config_module=SimpleNamespace(),
+        )
+
+        by_id = {item["id"]: item for item in catalog["capabilities"]}
+        self.assertEqual(by_id["provider.asr.local_media_executor"]["status"], "ready")
+        self.assertEqual(by_id["provider.voice_conversion.rvc.local_executor"]["status"], "ready")
+        self.assertEqual(
+            catalog["resolutions"]["voice.input.asr"]["activeProviderId"],
+            "provider.asr.local_media_executor",
+        )
 
     def test_python_adapter_capabilities_are_cataloged_as_internal_python_tools(self) -> None:
         catalog = build_local_capability_catalog(

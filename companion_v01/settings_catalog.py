@@ -231,6 +231,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("COVER_SONG_TIMEOUT_SECONDS", _TTS, SCOPE_RESTART_CLIENT, "翻唱任务总超时（秒）"),
     _s("COVER_SONG_MAX_DURATION_SECONDS", _TTS, SCOPE_RESTART_CLIENT, "单首翻唱最大时长（秒）"),
     _s("COVER_SONG_MAX_INPUT_BYTES", _TTS, SCOPE_RESTART_CLIENT, "单首翻唱输入字节上限"),
+    _s("LOCAL_MEDIA_EXECUTOR_BASE_URL", _TTS, SCOPE_RESTART_CLIENT, "本地媒体能力宿主地址"),
+    _s("LOCAL_MEDIA_EXECUTOR_TIMEOUT_SECONDS", _TTS, SCOPE_RESTART_CLIENT, "本地媒体能力任务超时（秒）"),
     # 语音 (TTS)（多数已由能力域 voice profile 管理）
     _s("TTS_VOICE", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 语音角色", managed_in=MANAGED_CAPABILITIES),
     _s("TTS_RATE", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 语速"),

@@ -77,6 +77,7 @@ class GeneratedFileService:
         legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
+        asr_executor: Any = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +92,7 @@ class GeneratedFileService:
         self.store = store
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
+        self.asr_executor = asr_executor
 
     def compose_file(
         self,
