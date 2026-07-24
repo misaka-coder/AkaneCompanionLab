@@ -1,0 +1,32 @@
+schema_version = "akane.character.v0.2"
+
+[identity]
+id = "miku"
+name = "Miku"
+app_name = "Miku"
+self_reference = "我"
+user_title = "你"
+
+[appearance]
+default_outfit = "default"
+default_emotion = "normal"
+music_emotion = "normal"
+required_emotions = ["normal"]
+recommended_emotions = []
+
+[dialogue]
+input_placeholder = "和 Miku 说点什么……"
+session_display_title = "Miku 对话"
+tts_test_text = "你好，我叫 Miku"
+local_click_lines = [{ text = "怎么了", emotion = "normal" }]
+
+[voice]
+provider = ""
+profile_id = ""
+notes = "首版仅测试原版人设，暂未绑定专用声线"
+
+[assets]
+runtime_source = "pending character artwork"
+asset_root = "assets"
+bundled_outfit = "default"
+portrait_glob = "assets/characters/<outfit>/<emotion>.png"
