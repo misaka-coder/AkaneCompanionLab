@@ -17,8 +17,8 @@
 - **✅ 允许且更优**：把"动作决策（工具）"与"角色表现"**解耦成两层协议**——工具走独立通道（native 或内部 ToolInvocation），表现 JSON 留在工具结果回来后的最终回复轮产出。"工具拿出去，表达留下"。**这不违反 INV-1，反而能同时提升工具稳定性和表现质量。** 设计与迁移见 `docs/tool_system_decoupling_v1.md`。
 - 注意区分两个命题：①"别弄丢表达层"=真不变量；②"工具必须永远当 JSON 里的一个字段"≠不变量（那只是当前实现，正在按解耦方案改）。
 
-### INV-2 工具调用走"提出→校验→权限→执行→喂回"统一管线，一轮一个，多步靠多轮
-- **约束**：一轮最多一个工具；多步靠多轮循环，预算 `MAX_TOOL_ROUNDS`（默认 3，clamp 1–5；web_research 8、browser 10，见 `config.py`）。
+### INV-2 工具调用走"提出→校验→权限→执行→喂回"统一管线，独立项可并行，依赖项按轮推进
+- **约束**：同一决策可并行执行互不依赖的工具；有依赖的步骤等待真实结果后再进入下一轮。`MAX_TOOL_ROUNDS`（默认 3，clamp 1–5；web_research 8、browser 10，见 `config.py`）限制的是实际执行批次，不得在最后一个真实结果返回前预先把 `tool_choice` 从 `auto` 改成 `none`。正常结果轮由模型自行决定继续调用还是回答；只有模型确实超出预算、连续重复或持续给出无效调用时才进入硬收尾。
 - **当前实现**：legacy provider/model 仍可用最终 JSON 的 `tool_call` 字段提出工具调用；已验证 native `web_search` 则走内部 `_native_tool_call` 载体，engine 消费后移除，公开 payload 不泄漏 `_tool_*` metadata。`tool_call` 仍是过渡兼容入口，正按 `docs/tool_system_decoupling_v1.md` 解耦为独立工具通道。
 - **不变的是管线契约**：无论工具调用来自旧 JSON 还是 native，都要归一成内部 `ToolInvocation` → schema 校验 → 能力/权限检查 → `execute` → `ToolResult` 喂回模型。**改这条管线改共享辅助，别只改一条循环。**
 - **入口**：`engine.py::process_turn`（非流式）与 `process_turn_stream`（流式）。两者的回合体已抽成共享辅助：`_prepare_tool_round_decision`（promote→normalize→分类拒绝）、`_record_tool_call_rejection`、工具执行。**改回合逻辑时改共享辅助，不要只改一条循环**（历史上这两条是复制粘贴，极易改出分歧）。

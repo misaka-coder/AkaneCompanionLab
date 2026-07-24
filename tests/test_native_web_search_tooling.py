@@ -688,6 +688,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 },
                 {"role": "tool", "tool_call_id": "call_1", "content": "structured result"},
             ]
+            continuation_context = engine._prepare_final_response_context(
+                **common,
+                allow_tool_call=True,
+                post_user_turns=native_history,
+            )
             context = engine._prepare_final_response_context(
                 **common,
                 allow_tool_call=False,
@@ -699,6 +704,13 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 ["retrieve_memory"],
             )
             self.assertEqual(open_context["native_tool_choice"], "auto")
+            self.assertEqual(
+                [tool["function"]["name"] for tool in continuation_context["native_tools"]],
+                ["retrieve_memory"],
+            )
+            self.assertEqual(continuation_context["native_tool_choice"], "auto")
+            self.assertTrue(continuation_context["allow_tool_call"])
+            self.assertEqual(continuation_context["post_user_turns"], native_history)
             self.assertEqual(open_context["tool_prompt_context"], context["tool_prompt_context"])
             self.assertEqual([tool["function"]["name"] for tool in context["native_tools"]], ["retrieve_memory"])
             self.assertEqual(context["native_tool_choice"], "none")
@@ -706,6 +718,18 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             self.assertEqual(context["post_user_turns"], native_history)
             self.assertEqual(context["post_user_turns"][-1]["role"], "tool")
             self.assertEqual(len(native_history), 2)
+            continuation_payload = LLMRuntime()._build_completion_kwargs(
+                bundle=ModelBundle(
+                    client=FakeClient("openai", base_url="https://api.deepseek.com/v1"),
+                    model="deepseek-v4-flash",
+                ),
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.0,
+                native_tools=continuation_context["native_tools"],
+                native_tool_choice=continuation_context["native_tool_choice"],
+            )
+            self.assertEqual(continuation_payload["tool_choice"], "auto")
             payload = LLMRuntime()._build_completion_kwargs(
                 bundle=ModelBundle(
                     client=FakeClient("openai", base_url="https://api.deepseek.com/v1"),

@@ -3382,7 +3382,14 @@ class AkaneMemoryEngine:
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        while tool_round_index < max_tool_rounds:
+        # Keep the provider request shape stable while the model is making
+        # normal progress.  ``max_tool_rounds`` limits executed tool batches;
+        # it must not pre-emptively turn the preceding result round into
+        # ``tool_choice=none``.  The extra loop pass lets the model consume the
+        # final real result under the same ``auto`` policy and answer normally.
+        # Only an actual request beyond the execution budget takes the hard
+        # close path below.
+        while tool_round_index <= max_tool_rounds:
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
@@ -3392,6 +3399,60 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
+            for tool_call in tool_calls:
+                max_tool_rounds = self._resolve_tool_round_budget(
+                    current_budget=max_tool_rounds,
+                    tool_call=tool_call,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
+                )
+            if tool_calls and tool_round_index >= max_tool_rounds:
+                blocked_calls = "；".join(
+                    self._describe_tool_call_for_prompt(tool_call)
+                    for tool_call in tool_calls
+                )
+                tool_followups.append(
+                    f"模型在本轮已经执行 {max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
+                    "这些额外调用没有执行；请基于已有真实结果完成答复。"
+                )
+                logger.warning(
+                    "tool_round_budget_exhausted session=%s rounds=%s blocked=%s",
+                    session_id,
+                    max_tool_rounds,
+                    len(tool_calls),
+                )
+                final_output = self._build_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=False,
+                        stop_reason="tool_budget_exhausted",
+                    ),
+                    client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
+                    user_images=turn_user_images,
+                    allow_tool_call=False,
+                    final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
+                    post_user_turns=tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
+                    domain_profile_id=turn_domain_profile_id,
+                    prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
+                )
+                break
             if not tool_calls:
                 if not rejections:
                     break
@@ -3439,14 +3500,6 @@ class AkaneMemoryEngine:
                 tool_followups.extend(rejections)
             executable_calls: list[dict[str, Any]] = []
             for tool_call in tool_calls:
-                max_tool_rounds = self._resolve_tool_round_budget(
-                    current_budget=max_tool_rounds,
-                    tool_call=tool_call,
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    domain_profile_id=turn_domain_profile_id,
-                )
                 tool_signature = self._tool_call_signature(tool_call)
                 if tool_signature in seen_tool_calls:
                     tool_followups.append(
@@ -3457,6 +3510,8 @@ class AkaneMemoryEngine:
                 seen_tool_calls.add(tool_signature)
                 executable_calls.append(tool_call)
             if not executable_calls:
+                tool_round_index += 1
+                allow_retry = tool_round_index < max_tool_rounds
                 final_output = self._build_final_response(
                     session_id=session_id,
                     profile_user_id=profile_user_id,
@@ -3470,13 +3525,14 @@ class AkaneMemoryEngine:
                     extra_user_context=self._build_tool_round_extra_context(
                         turn_extra_user_context=turn_extra_user_context,
                         tool_followups=tool_followups,
-                        allow_more=False,
+                        allow_more=allow_retry,
+                        stop_reason="" if allow_retry else "tool_budget_exhausted",
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
                     user_images=turn_user_images,
-                    allow_tool_call=False,
+                    allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=tool_history_turns,
@@ -3485,6 +3541,8 @@ class AkaneMemoryEngine:
                     prompt_scope=prompt_scope,
                     stable_system_context=plugin_stable_system_context,
                 )
+                if allow_retry:
+                    continue
                 break
 
             preface_source_id = self._record_assistant_preface_for_tool_call(
@@ -3534,11 +3592,6 @@ class AkaneMemoryEngine:
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
 
-            stop_after_tool = self._should_stop_after_tool_events(
-                _current_events,
-                domain_profile_id=turn_domain_profile_id,
-            )
-            allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = self._build_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -3552,20 +3605,13 @@ class AkaneMemoryEngine:
                 extra_user_context=self._build_tool_round_extra_context(
                     turn_extra_user_context=turn_extra_user_context,
                     tool_followups=tool_followups,
-                    allow_more=allow_more_tools,
-                    stop_reason=(
-                        "tool_unavailable"
-                        if stop_after_tool
-                        else "tool_budget_exhausted"
-                        if not allow_more_tools
-                        else ""
-                    ),
+                    allow_more=True,
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
                 character_pack_id=turn_character_pack_id,
                 user_images=turn_user_images,
-                allow_tool_call=allow_more_tools,
+                allow_tool_call=True,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=tool_history_turns,
@@ -3924,7 +3970,11 @@ class AkaneMemoryEngine:
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        while tool_round_index < max_tool_rounds:
+        # See the synchronous path above: the normal post-result request stays
+        # on ``tool_choice=auto``.  The extra pass observes whether the model
+        # actually asks for another tool before the host applies the emergency
+        # hard close.
+        while tool_round_index <= max_tool_rounds:
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
@@ -3934,6 +3984,60 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
+            for tool_call in tool_calls:
+                max_tool_rounds = self._resolve_tool_round_budget(
+                    current_budget=max_tool_rounds,
+                    tool_call=tool_call,
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=turn_domain_profile_id,
+                )
+            if tool_calls and tool_round_index >= max_tool_rounds:
+                blocked_calls = "；".join(
+                    self._describe_tool_call_for_prompt(tool_call)
+                    for tool_call in tool_calls
+                )
+                tool_followups.append(
+                    f"模型在本轮已经执行 {max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
+                    "这些额外调用没有执行；请基于已有真实结果完成答复。"
+                )
+                logger.warning(
+                    "tool_round_budget_exhausted session=%s rounds=%s blocked=%s",
+                    session_id,
+                    max_tool_rounds,
+                    len(tool_calls),
+                )
+                final_output = yield from self._stream_final_response(
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    user_message=user_message,
+                    recent_raw=recent_raw_for_turn,
+                    recent_episodic_summaries=recent_episodic_summaries,
+                    recent_semantic_summaries=recent_semantic_summaries,
+                    confirmed_snippets=confirmed_snippets,
+                    now_ts=now_ts,
+                    current_visual_payload=payload.get("current_visual"),
+                    extra_user_context=self._build_tool_round_extra_context(
+                        turn_extra_user_context=turn_extra_user_context,
+                        tool_followups=tool_followups,
+                        allow_more=False,
+                        stop_reason="tool_budget_exhausted",
+                    ),
+                    client_context=client_context,
+                    resource_manifest=turn_resource_manifest,
+                    character_pack_id=turn_character_pack_id,
+                    user_images=turn_user_images,
+                    allow_tool_call=False,
+                    final_debug_enabled=final_debug_enabled,
+                    chat_model_override=chat_model_override,
+                    post_user_turns=tool_history_turns,
+                    prompt_exclude_source_ids=prompt_exclude_source_ids,
+                    domain_profile_id=turn_domain_profile_id,
+                    prompt_scope=prompt_scope,
+                    stable_system_context=plugin_stable_system_context,
+                )
+                break
             native_preface_text = str(final_output.pop("_native_preface_text", "") or "").strip()
             if native_preface_text and tool_calls and self._tool_call_allows_assistant_preface(tool_calls[0]):
                 yield {"type": "speech_segment", "index": 0, "text": native_preface_text}
@@ -3992,14 +4096,6 @@ class AkaneMemoryEngine:
                 tool_followups.extend(rejections)
             executable_calls: list[dict[str, Any]] = []
             for tool_call in tool_calls:
-                max_tool_rounds = self._resolve_tool_round_budget(
-                    current_budget=max_tool_rounds,
-                    tool_call=tool_call,
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    domain_profile_id=turn_domain_profile_id,
-                )
                 tool_signature = self._tool_call_signature(tool_call)
                 if tool_signature in seen_tool_calls:
                     tool_followups.append(
@@ -4010,6 +4106,8 @@ class AkaneMemoryEngine:
                 seen_tool_calls.add(tool_signature)
                 executable_calls.append(tool_call)
             if not executable_calls:
+                tool_round_index += 1
+                allow_retry = tool_round_index < max_tool_rounds
                 final_output = yield from self._stream_final_response(
                     session_id=session_id,
                     profile_user_id=profile_user_id,
@@ -4023,13 +4121,14 @@ class AkaneMemoryEngine:
                     extra_user_context=self._build_tool_round_extra_context(
                         turn_extra_user_context=turn_extra_user_context,
                         tool_followups=tool_followups,
-                        allow_more=False,
+                        allow_more=allow_retry,
+                        stop_reason="" if allow_retry else "tool_budget_exhausted",
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
                     user_images=turn_user_images,
-                    allow_tool_call=False,
+                    allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     post_user_turns=tool_history_turns,
@@ -4038,6 +4137,8 @@ class AkaneMemoryEngine:
                     prompt_scope=prompt_scope,
                     stable_system_context=plugin_stable_system_context,
                 )
+                if allow_retry:
+                    continue
                 break
 
             preface_source_id = self._record_assistant_preface_for_tool_call(
@@ -4100,11 +4201,6 @@ class AkaneMemoryEngine:
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
 
-            stop_after_tool = self._should_stop_after_tool_events(
-                current_events,
-                domain_profile_id=turn_domain_profile_id,
-            )
-            allow_more_tools = (tool_round_index < max_tool_rounds - 1) and not stop_after_tool
             final_output = yield from self._stream_final_response(
                 session_id=session_id,
                 profile_user_id=profile_user_id,
@@ -4118,20 +4214,13 @@ class AkaneMemoryEngine:
                 extra_user_context=self._build_tool_round_extra_context(
                     turn_extra_user_context=turn_extra_user_context,
                     tool_followups=tool_followups,
-                    allow_more=allow_more_tools,
-                    stop_reason=(
-                        "tool_unavailable"
-                        if stop_after_tool
-                        else "tool_budget_exhausted"
-                        if not allow_more_tools
-                        else ""
-                    ),
+                    allow_more=True,
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
                 character_pack_id=turn_character_pack_id,
                 user_images=turn_user_images,
-                allow_tool_call=allow_more_tools,
+                allow_tool_call=True,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 post_user_turns=tool_history_turns,
