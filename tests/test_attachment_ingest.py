@@ -1592,19 +1592,14 @@ class AttachmentIngestTests(unittest.TestCase):
             with patch.object(
                 service,
                 "_request_pinned_redirect",
-                side_effect=[
-                    (302, "https://www.bilibili.com/video/BV1Tdgh6aESA"),
-                    (200, ""),
-                ],
+                return_value=(302, "https://www.bilibili.com/video/BV1Tdgh6aESA"),
             ) as request_redirect:
                 resolved = service._resolve_bilibili_page_url("https://b23.tv/example")
 
             self.assertEqual(resolved, "https://www.bilibili.com/video/BV1Tdgh6aESA")
-            self.assertEqual(request_redirect.call_count, 2)
+            self.assertEqual(request_redirect.call_count, 1)
             first_target = request_redirect.call_args_list[0].kwargs["target"]
-            second_target = request_redirect.call_args_list[1].kwargs["target"]
             self.assertEqual(first_target.hostname, "b23.tv")
-            self.assertEqual(second_target.hostname, "www.bilibili.com")
 
     def test_ytdlp_common_options_reject_browser_cookie_import(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

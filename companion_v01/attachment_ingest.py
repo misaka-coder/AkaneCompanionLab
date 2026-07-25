@@ -1072,6 +1072,8 @@ class AttachmentIngestService:
             next_target = self._validate_public_remote_url(urljoin(current_target.url, location))
             if urlparse(current_target.url).scheme == "https" and urlparse(next_target.url).scheme == "http":
                 raise AttachmentMaterializationError("remote_url_https_downgrade")
+            if self._parse_bilibili_video_identity(next_target.url):
+                return next_target.url
             current_target = next_target
         raise AttachmentMaterializationError("remote_url_redirect_limit")
 
