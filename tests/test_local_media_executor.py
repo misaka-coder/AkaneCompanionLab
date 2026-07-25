@@ -91,8 +91,8 @@ class LocalMediaExecutorTests(unittest.TestCase):
     def test_demucs_separation_transfers_stems_without_local_paths(self) -> None:
         archive_buffer = io.BytesIO()
         with zipfile.ZipFile(archive_buffer, "w") as archive:
-            archive.writestr("vocals.wav", b"demucs vocals")
-            archive.writestr("instrumental.wav", b"demucs instrumental")
+            archive.writestr("vocals.mp3", b"demucs vocals")
+            archive.writestr("instrumental.mp3", b"demucs instrumental")
         session = _Session()
         session.post_responses.append(_Response(content=archive_buffer.getvalue()))
         client = LocalMediaExecutorClient(base_url="http://127.0.0.1:19879", session=session)
@@ -103,12 +103,14 @@ class LocalMediaExecutorTests(unittest.TestCase):
             vocals, instrumental = client.separate_audio_stems(
                 source_path=source,
                 model="htdemucs",
+                output_format="mp3",
             )
 
         self.assertEqual(vocals, b"demucs vocals")
         self.assertEqual(instrumental, b"demucs instrumental")
         self.assertEqual(session.posts[0]["url"], "http://127.0.0.1:19879/v1/audio/separate")
         self.assertEqual(session.posts[0]["data"]["model"], "htdemucs")
+        self.assertEqual(session.posts[0]["data"]["output_format"], "mp3")
         self.assertEqual(session.posts[0]["files"]["file"][0], "song.flac")
 
     def test_rvc_provider_transfers_stems_and_converted_audio_without_paths(self) -> None:

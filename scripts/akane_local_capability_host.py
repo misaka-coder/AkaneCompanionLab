@@ -316,6 +316,7 @@ def create_app(
     async def separate_audio(
         file: UploadFile = File(...),
         model: str = Form("htdemucs"),
+        output_format: str = Form("wav"),
     ) -> Response:
         if not demucs_runtime.ready:
             raise HTTPException(
@@ -328,6 +329,15 @@ def create_app(
                 status_code=400,
                 detail={"reason": "demucs_model_not_allowed", "message": "请求的分轨模型不在允许范围内。"},
             )
+        normalized_format = str(output_format or "wav").strip().lower().lstrip(".")
+        if normalized_format not in {"wav", "flac", "mp3"}:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "demucs_output_format_not_allowed",
+                    "message": "请求的分轨输出格式不受支持。",
+                },
+            )
         source_path = await _store_upload(file)
         try:
             with demucs_lock:
@@ -338,17 +348,35 @@ def create_app(
                         output_root=Path(tmp) / "stems",
                         model=normalized_model,
                     )
+                    separation_seconds = time.perf_counter() - separation_started
                     vocals = stems.get("vocals")
                     instrumental = stems.get("instrumental")
                     if not vocals or not instrumental:
                         raise RuntimeError("demucs_outputs_missing")
+                    encode_started = time.perf_counter()
+                    transfer_vocals = _render_stem_for_transfer(
+                        source_path=vocals,
+                        output_dir=Path(tmp) / "transfer",
+                        stem_name="vocals",
+                        output_format=normalized_format,
+                        ffmpeg_path=ffmpeg_path,
+                    )
+                    transfer_instrumental = _render_stem_for_transfer(
+                        source_path=instrumental,
+                        output_dir=Path(tmp) / "transfer",
+                        stem_name="instrumental",
+                        output_format=normalized_format,
+                        ffmpeg_path=ffmpeg_path,
+                    )
                     archive_buffer = io.BytesIO()
                     with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-                        archive.writestr("vocals.wav", vocals.read_bytes())
-                        archive.writestr("instrumental.wav", instrumental.read_bytes())
+                        archive.write(transfer_vocals, arcname=transfer_vocals.name)
+                        archive.write(transfer_instrumental, arcname=transfer_instrumental.name)
                     timings = {
-                        "separation": round(time.perf_counter() - separation_started, 3),
+                        "separation": round(separation_seconds, 3),
                         "device": str(stems.get("device_used") or ""),
+                        "encode": round(time.perf_counter() - encode_started, 3),
+                        "output_format": normalized_format,
                         "archive_bytes": len(archive_buffer.getvalue()),
                     }
                     return Response(
@@ -534,6 +562,47 @@ def _optional_float(value: Any) -> float | None:
     if number != number or number in {float("inf"), float("-inf")}:
         return None
     return round(number, 6)
+
+
+def _render_stem_for_transfer(
+    *,
+    source_path: Path,
+    output_dir: Path,
+    stem_name: str,
+    output_format: str,
+    ffmpeg_path: Path,
+) -> Path:
+    normalized_format = str(output_format or "wav").strip().lower().lstrip(".")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{stem_name}.{normalized_format}"
+    if normalized_format == "wav":
+        shutil.copy2(source_path, output_path)
+        return output_path
+    codec_args = (
+        ["-c:a", "libmp3lame", "-b:a", "320k"]
+        if normalized_format == "mp3"
+        else ["-c:a", "flac"]
+    )
+    completed = subprocess.run(
+        [
+            str(ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source_path),
+            *codec_args,
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+        raise RuntimeError("demucs_output_encode_failed")
+    return output_path
 
 
 def _last_json_object(value: str) -> dict[str, Any]:

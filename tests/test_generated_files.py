@@ -1054,8 +1054,8 @@ class GeneratedFileTests(unittest.TestCase):
                     "rvc": {"ready": True, "modelCount": 1},
                 }
 
-            def separate_audio_stems(self, *, source_path, model):
-                self.demucs_calls.append((Path(source_path).name, model))
+            def separate_audio_stems(self, *, source_path, model, output_format):
+                self.demucs_calls.append((Path(source_path).name, model, output_format))
                 return b"demucs vocals", b"demucs instrumental"
 
             def separate_rvc_vocals(self, *, source_path, separation_model):
@@ -1107,7 +1107,7 @@ class GeneratedFileTests(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(executor.demucs_calls, [("song.mp3", "htdemucs")])
+            self.assertEqual(executor.demucs_calls, [("song.mp3", "htdemucs", "wav")])
             self.assertEqual(executor.rvc_calls, [])
             self.assertEqual(generated_service.audio_separation_status()["backend"], "demucs")
 

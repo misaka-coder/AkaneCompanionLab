@@ -213,7 +213,14 @@ class LocalMediaExecutorClient:
         *,
         source_path: Path,
         model: str = "htdemucs",
+        output_format: str = "wav",
     ) -> tuple[bytes, bytes]:
+        normalized_format = str(output_format or "wav").strip().lower().lstrip(".")
+        if normalized_format not in {"wav", "flac", "mp3"}:
+            raise LocalMediaExecutorError(
+                "local_audio_separation_format_invalid",
+                "本地高质量分轨不支持这个输出格式。",
+            )
         try:
             with source_path.open("rb") as source_file:
                 response = self.session.post(
@@ -225,7 +232,10 @@ class LocalMediaExecutorClient:
                             _audio_content_type(source_path.suffix),
                         )
                     },
-                    data={"model": str(model or "htdemucs")},
+                    data={
+                        "model": str(model or "htdemucs"),
+                        "output_format": normalized_format,
+                    },
                     timeout=self.timeout_seconds,
                 )
         except Exception as exc:
@@ -238,7 +248,7 @@ class LocalMediaExecutorClient:
                 _response_reason(response, "local_audio_separation_failed"),
                 _response_message(response, "本地高质量分轨没有成功。"),
             )
-        return _read_stem_archive(response.content)
+        return _read_stem_archive(response.content, output_format=normalized_format)
 
     def separate_rvc_vocals(
         self,
@@ -479,13 +489,26 @@ class LocalRvcExecutorProvider:
 def _read_stem_archive(
     payload: bytes,
     *,
+    output_format: str = "wav",
     invalid_reason: str = "local_audio_separation_response_invalid",
     missing_reason: str = "local_audio_separation_output_missing",
 ) -> tuple[bytes, bytes]:
+    normalized_format = str(output_format or "wav").strip().lower().lstrip(".")
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
-            vocals = archive.read("vocals.wav")
-            instrumental = archive.read("instrumental.wav")
+            names = set(archive.namelist())
+            vocals_name = (
+                f"vocals.{normalized_format}"
+                if f"vocals.{normalized_format}" in names
+                else "vocals.wav"
+            )
+            instrumental_name = (
+                f"instrumental.{normalized_format}"
+                if f"instrumental.{normalized_format}" in names
+                else "instrumental.wav"
+            )
+            vocals = archive.read(vocals_name)
+            instrumental = archive.read(instrumental_name)
     except Exception as exc:
         raise LocalMediaExecutorError(
             invalid_reason,

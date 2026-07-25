@@ -1599,13 +1599,16 @@ def separate_audio_stems(
             # small MP3/FLAC/M4A into PCM WAV on the cloud host can multiply
             # transfer size without improving the separation input.
             remote_input = prepared_input
+            remote_stem_format = "wav"
             try:
                 separate_audio = getattr(separation_executor, "separate_audio_stems", None)
                 if callable(separate_audio) and str(separation_status.get("backend") or "") == "demucs":
                     vocals_bytes, instrumental_bytes = separate_audio(
                         source_path=remote_input,
                         model=str(separation_status.get("model") or "htdemucs"),
+                        output_format=normalized_format,
                     )
+                    remote_stem_format = normalized_format
                 else:
                     vocals_bytes, instrumental_bytes = separation_executor.separate_rvc_vocals(
                         source_path=remote_input,
@@ -1624,8 +1627,8 @@ def separate_audio_stems(
                 }
             local_stems_dir = work_dir / "local_executor_stems"
             local_stems_dir.mkdir(parents=True, exist_ok=True)
-            vocals_path = local_stems_dir / "vocals.wav"
-            instrumental_path = local_stems_dir / "instrumental.wav"
+            vocals_path = local_stems_dir / f"vocals.{remote_stem_format}"
+            instrumental_path = local_stems_dir / f"instrumental.{remote_stem_format}"
             vocals_path.write_bytes(vocals_bytes)
             instrumental_path.write_bytes(instrumental_bytes)
             stems = {"vocals": vocals_path, "instrumental": instrumental_path}

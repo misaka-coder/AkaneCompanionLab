@@ -2499,7 +2499,7 @@ class GeneratedFileService:
         output_format: str,
         ffmpeg_path: str = "",
     ) -> None:
-        if output_format == "wav":
+        if stem_source_path.suffix.lower() == f".{output_format}":
             shutil.copy2(stem_source_path, output_path)
             return
         if not ffmpeg_path:
