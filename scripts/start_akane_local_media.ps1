@@ -209,6 +209,7 @@ New-Item -ItemType Directory -Force -Path $logDirectory, $runDirectory | Out-Nul
 $rvcPython = Join-Path $resolvedRvcRoot "runtime\python.exe"
 $rvcEntry = Join-Path $resolvedRvcRoot "infer-web.py"
 $ffmpegPath = Join-Path $resolvedRvcRoot "ffmpeg.exe"
+$demucsPackageRoot = Join-Path $resolvedDataRoot "demucs-runtime"
 foreach ($requiredPath in @($rvcPython, $rvcEntry, $ffmpegPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "local_media_dependency_missing"
@@ -244,7 +245,8 @@ if (
         [string]$health.asr.model -ne $resolvedWhisperModel -or
         [string]$health.asr.device -ne $resolvedAsrDevice -or
         [string]$health.asr.compute_type -ne $resolvedAsrComputeType -or
-        -not [bool]$health.separation.ready
+        -not [bool]$health.separation.ready -or
+        [string]$health.separation.executor -notlike "isolated_*"
     )
 ) {
     Write-Host "[INFO] Restarting local media host to apply capability configuration."
@@ -269,6 +271,8 @@ if (-not (Test-AkaneLocalMediaHealth -Health $health)) {
     $env:AKANE_LOCAL_WHISPER_MODEL = $resolvedWhisperModel
     $env:AKANE_LOCAL_ASR_DEVICE = $resolvedAsrDevice
     $env:AKANE_LOCAL_ASR_COMPUTE_TYPE = $resolvedAsrComputeType
+    $env:AKANE_LOCAL_DEMUCS_PYTHON = $rvcPython
+    $env:AKANE_LOCAL_DEMUCS_PACKAGE_ROOT = $demucsPackageRoot
     if ($resolvedAsrDevice -eq "cuda") {
         $cudaRuntimeDirectory = Join-Path $resolvedRvcRoot "runtime\Lib\site-packages\torch\lib"
         $cublasPath = Join-Path $cudaRuntimeDirectory "cublas64_12.dll"

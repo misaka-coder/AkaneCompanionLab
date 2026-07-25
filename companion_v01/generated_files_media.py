@@ -20,7 +20,7 @@ def separate_audio_with_demucs(
     source_path: Path,
     output_root: Path,
     model_name: str = "htdemucs",
-) -> dict[str, Path]:
+) -> dict[str, Any]:
     import torch
     from demucs.apply import apply_model
     from demucs.audio import AudioFile
@@ -53,12 +53,14 @@ def separate_audio_with_demucs(
         return separated[0].detach().cpu(), source_names, samplerate
 
     preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_used = preferred_device
     try:
         separated, source_names, samplerate = run_for_device(preferred_device)
     except RuntimeError as exc:
         lowered = str(exc).lower()
         if preferred_device == "cuda" and any(token in lowered for token in ("out of memory", "cuda", "cudnn")):
             torch.cuda.empty_cache()
+            device_used = "cpu"
             separated, source_names, samplerate = run_for_device("cpu")
         else:
             raise
@@ -82,6 +84,7 @@ def separate_audio_with_demucs(
     return {
         "vocals": vocals_path,
         "instrumental": instrumental_path,
+        "device_used": device_used,
     }
 
 

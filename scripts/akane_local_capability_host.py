@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,137 @@ from companion_v01.local_media_executor import safe_model_fingerprint, safe_uplo
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 9879
+
+
+class LocalDemucsRuntime:
+    def __init__(
+        self,
+        *,
+        python_path: Path | None,
+        package_root: Path | None,
+    ) -> None:
+        self.python_path = Path(python_path).resolve() if python_path else None
+        self.package_root = Path(package_root).resolve() if package_root else None
+        self.worker_path = (PROJECT_ROOT / "scripts" / "akane_demucs_worker.py").resolve()
+        self._external_status = self._probe_external()
+        self._in_process_ready = importlib.util.find_spec("demucs") is not None
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._external_status.get("ok")) or self._in_process_ready
+
+    def public_status(self) -> dict[str, Any]:
+        if bool(self._external_status.get("ok")):
+            cuda_ready = bool(self._external_status.get("cuda_available"))
+            return {
+                "ready": True,
+                "reason": "",
+                "provider": "demucs",
+                "model": "htdemucs",
+                "executor": "isolated_cuda" if cuda_ready else "isolated_cpu",
+                "device": "cuda" if cuda_ready else "cpu",
+                "device_name": str(self._external_status.get("device") or ""),
+            }
+        if self._in_process_ready:
+            return {
+                "ready": True,
+                "reason": "",
+                "provider": "demucs",
+                "model": "htdemucs",
+                "executor": "in_process",
+                "device": "cuda" if _in_process_cuda_available() else "cpu",
+                "device_name": "",
+            }
+        return {
+            "ready": False,
+            "reason": str(self._external_status.get("reason") or "demucs_not_found"),
+            "provider": "",
+            "model": "",
+            "executor": "",
+            "device": "",
+            "device_name": "",
+        }
+
+    def separate(
+        self,
+        *,
+        source_path: Path,
+        output_root: Path,
+        model: str,
+        timeout_seconds: float = 1800.0,
+    ) -> dict[str, Any]:
+        if bool(self._external_status.get("ok")):
+            assert self.python_path is not None
+            assert self.package_root is not None
+            started = time.perf_counter()
+            completed = subprocess.run(
+                [
+                    str(self.python_path),
+                    str(self.worker_path),
+                    "--package-root",
+                    str(self.package_root),
+                    "--source",
+                    str(source_path),
+                    "--output-root",
+                    str(output_root),
+                    "--model",
+                    model,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(30.0, min(3600.0, float(timeout_seconds))),
+                check=False,
+            )
+            payload = _last_json_object(completed.stdout)
+            if completed.returncode != 0 or not bool(payload.get("ok")):
+                raise RuntimeError(str(payload.get("reason") or "demucs_cuda_worker_failed"))
+            vocals = output_root / "vocals.wav"
+            instrumental = output_root / "instrumental.wav"
+            if not vocals.is_file() or not instrumental.is_file():
+                raise RuntimeError("demucs_outputs_missing")
+            return {
+                "vocals": vocals,
+                "instrumental": instrumental,
+                "device_used": str(payload.get("device") or ""),
+                "seconds": round(time.perf_counter() - started, 3),
+            }
+        if not self._in_process_ready:
+            raise RuntimeError("demucs_not_found")
+        return separate_audio_with_demucs(
+            source_path=source_path,
+            output_root=output_root,
+            model_name=model,
+        )
+
+    def _probe_external(self) -> dict[str, Any]:
+        if (
+            self.python_path is None
+            or self.package_root is None
+            or not self.python_path.is_file()
+            or not self.package_root.is_dir()
+            or not self.worker_path.is_file()
+        ):
+            return {"ok": False, "reason": "demucs_cuda_runtime_not_configured"}
+        try:
+            completed = subprocess.run(
+                [
+                    str(self.python_path),
+                    str(self.worker_path),
+                    "--package-root",
+                    str(self.package_root),
+                    "--probe",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except Exception:
+            return {"ok": False, "reason": "demucs_cuda_probe_failed"}
+        payload = _last_json_object(completed.stdout)
+        if completed.returncode != 0 or not bool(payload.get("ok")):
+            return {"ok": False, "reason": str(payload.get("reason") or "demucs_cuda_probe_failed")}
+        return payload
 
 
 class LocalAsrRuntime:
@@ -129,6 +261,8 @@ def create_app(
     rvc_base_url: str,
     rvc_root_dir: Path | None,
     separation_model: str,
+    demucs_python_path: Path | None = None,
+    demucs_package_root: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Akane Local Capability Host", docs_url=None, redoc_url=None)
     asr_runtime = LocalAsrRuntime(
@@ -142,7 +276,10 @@ def create_app(
         timeout_seconds=float(os.environ.get("AKANE_LOCAL_RVC_TIMEOUT_SECONDS", "1800") or 1800),
         separation_model=separation_model,
     )
-    demucs_ready = importlib.util.find_spec("demucs") is not None
+    demucs_runtime = LocalDemucsRuntime(
+        python_path=demucs_python_path,
+        package_root=demucs_package_root,
+    )
     demucs_lock = threading.RLock()
 
     @app.get("/health")
@@ -156,8 +293,8 @@ def create_app(
             except Exception:
                 rvc_ready = False
         return {
-            "ok": bool(asr_runtime.ready or demucs_ready or rvc_ready),
-            "status": "ready" if asr_runtime.ready and demucs_ready and rvc_ready else "degraded",
+            "ok": bool(asr_runtime.ready or demucs_runtime.ready or rvc_ready),
+            "status": "ready" if asr_runtime.ready and demucs_runtime.ready and rvc_ready else "degraded",
             "service": "akane_local_media_capabilities",
             "protocol_version": 1,
             "asr": {
@@ -167,12 +304,7 @@ def create_app(
                 "device": asr_runtime.device,
                 "compute_type": asr_runtime.compute_type,
             },
-            "separation": {
-                "ready": demucs_ready,
-                "reason": "" if demucs_ready else "demucs_not_found",
-                "provider": "demucs" if demucs_ready else "",
-                "model": "htdemucs" if demucs_ready else "",
-            },
+            "separation": demucs_runtime.public_status(),
             "rvc": {
                 "ready": rvc_ready,
                 "reason": "" if rvc_ready else str(rvc_status.get("reason") or "local_rvc_unavailable"),
@@ -185,7 +317,7 @@ def create_app(
         file: UploadFile = File(...),
         model: str = Form("htdemucs"),
     ) -> Response:
-        if not demucs_ready:
+        if not demucs_runtime.ready:
             raise HTTPException(
                 status_code=503,
                 detail={"reason": "demucs_not_found", "message": "本地高质量分轨环境暂时不可用。"},
@@ -200,10 +332,11 @@ def create_app(
         try:
             with demucs_lock:
                 with tempfile.TemporaryDirectory(prefix="akane_local_demucs_") as tmp:
-                    stems = separate_audio_with_demucs(
+                    separation_started = time.perf_counter()
+                    stems = demucs_runtime.separate(
                         source_path=source_path,
                         output_root=Path(tmp) / "stems",
-                        model_name=normalized_model,
+                        model=normalized_model,
                     )
                     vocals = stems.get("vocals")
                     instrumental = stems.get("instrumental")
@@ -213,7 +346,18 @@ def create_app(
                     with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
                         archive.writestr("vocals.wav", vocals.read_bytes())
                         archive.writestr("instrumental.wav", instrumental.read_bytes())
-                    return Response(content=archive_buffer.getvalue(), media_type="application/zip")
+                    timings = {
+                        "separation": round(time.perf_counter() - separation_started, 3),
+                        "device": str(stems.get("device_used") or ""),
+                        "archive_bytes": len(archive_buffer.getvalue()),
+                    }
+                    return Response(
+                        content=archive_buffer.getvalue(),
+                        media_type="application/zip",
+                        headers={
+                            "X-Akane-Media-Timings": json.dumps(timings, ensure_ascii=True),
+                        },
+                    )
         except HTTPException:
             raise
         except Exception as exc:
@@ -392,6 +536,26 @@ def _optional_float(value: Any) -> float | None:
     return round(number, 6)
 
 
+def _last_json_object(value: str) -> dict[str, Any]:
+    for line in reversed(str(value or "").splitlines()):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _in_process_cuda_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 def _unlink_quietly(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -421,6 +585,8 @@ def main() -> None:
         fallback=fallback_ffmpeg,
     )
     cache_raw = os.environ.get("AKANE_LOCAL_WHISPER_CACHE_DIR", "").strip()
+    demucs_python_raw = os.environ.get("AKANE_LOCAL_DEMUCS_PYTHON", "").strip()
+    demucs_package_raw = os.environ.get("AKANE_LOCAL_DEMUCS_PACKAGE_ROOT", "").strip()
     app = create_app(
         ffmpeg_path=ffmpeg_path,
         whisper_cache_dir=Path(cache_raw).resolve() if cache_raw else None,
@@ -428,6 +594,8 @@ def main() -> None:
         rvc_base_url=os.environ.get("AKANE_LOCAL_RVC_BASE_URL", "http://127.0.0.1:7899"),
         rvc_root_dir=rvc_root,
         separation_model=os.environ.get("AKANE_LOCAL_RVC_SEPARATION_MODEL", "HP5_only_main_vocal"),
+        demucs_python_path=Path(demucs_python_raw).resolve() if demucs_python_raw else None,
+        demucs_package_root=Path(demucs_package_raw).resolve() if demucs_package_raw else None,
     )
     import uvicorn
 
