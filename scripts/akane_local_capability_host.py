@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import io
 import json
 import os
@@ -28,6 +29,7 @@ from companion_v01.generated_files_media import (
     normalize_whisper_device,
     normalize_whisper_model_size,
     prepare_transcription_input,
+    separate_audio_with_demucs,
 )
 from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
 
@@ -42,6 +44,10 @@ class LocalAsrRuntime:
         self.ffmpeg_path = Path(ffmpeg_path)
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.default_model = normalize_whisper_model_size(default_model)
+        self.device = normalize_whisper_device(os.environ.get("AKANE_LOCAL_ASR_DEVICE", "cpu"))
+        self.compute_type = normalize_whisper_compute_type(
+            os.environ.get("AKANE_LOCAL_ASR_COMPUTE_TYPE", "int8")
+        )
         self._whisper_model_cache: dict[tuple[str, str, str, str], Any] = {}
         self._lock = threading.RLock()
 
@@ -65,8 +71,6 @@ class LocalAsrRuntime:
             raise RuntimeError("local_asr_dependencies_missing")
         normalized_model = normalize_whisper_model_size(model_size or self.default_model)
         normalized_language = normalize_transcript_language(language)
-        device = normalize_whisper_device(os.environ.get("AKANE_LOCAL_ASR_DEVICE", "cpu"))
-        compute_type = normalize_whisper_compute_type(os.environ.get("AKANE_LOCAL_ASR_COMPUTE_TYPE", "int8"))
         with tempfile.TemporaryDirectory(prefix="akane_local_asr_") as tmp:
             prepared_path = Path(tmp) / "prepared.wav"
             prepared = prepare_transcription_input(
@@ -81,8 +85,8 @@ class LocalAsrRuntime:
                 model = load_faster_whisper_model(
                     self,
                     model_size=normalized_model,
-                    device=device,
-                    compute_type=compute_type,
+                    device=self.device,
+                    compute_type=self.compute_type,
                     download_root=str(self.cache_dir) if self.cache_dir else None,
                 )
                 kwargs: dict[str, Any] = {"beam_size": 5, "vad_filter": bool(vad_filter)}
@@ -138,6 +142,8 @@ def create_app(
         timeout_seconds=float(os.environ.get("AKANE_LOCAL_RVC_TIMEOUT_SECONDS", "1800") or 1800),
         separation_model=separation_model,
     )
+    demucs_ready = importlib.util.find_spec("demucs") is not None
+    demucs_lock = threading.RLock()
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -150,14 +156,22 @@ def create_app(
             except Exception:
                 rvc_ready = False
         return {
-            "ok": bool(asr_runtime.ready or rvc_ready),
-            "status": "ready" if asr_runtime.ready and rvc_ready else "degraded",
+            "ok": bool(asr_runtime.ready or demucs_ready or rvc_ready),
+            "status": "ready" if asr_runtime.ready and demucs_ready and rvc_ready else "degraded",
             "service": "akane_local_media_capabilities",
             "protocol_version": 1,
             "asr": {
                 "ready": asr_runtime.ready,
                 "reason": "" if asr_runtime.ready else "local_asr_dependencies_missing",
                 "model": asr_runtime.default_model,
+                "device": asr_runtime.device,
+                "compute_type": asr_runtime.compute_type,
+            },
+            "separation": {
+                "ready": demucs_ready,
+                "reason": "" if demucs_ready else "demucs_not_found",
+                "provider": "demucs" if demucs_ready else "",
+                "model": "htdemucs" if demucs_ready else "",
             },
             "rvc": {
                 "ready": rvc_ready,
@@ -166,10 +180,51 @@ def create_app(
             },
         }
 
+    @app.post("/v1/audio/separate")
+    async def separate_audio(
+        file: UploadFile = File(...),
+        model: str = Form("htdemucs"),
+    ) -> Response:
+        if not demucs_ready:
+            raise HTTPException(
+                status_code=503,
+                detail={"reason": "demucs_not_found", "message": "本地高质量分轨环境暂时不可用。"},
+            )
+        normalized_model = str(model or "htdemucs").strip()
+        if normalized_model not in {"htdemucs", "htdemucs_ft"}:
+            raise HTTPException(
+                status_code=400,
+                detail={"reason": "demucs_model_not_allowed", "message": "请求的分轨模型不在允许范围内。"},
+            )
+        source_path = await _store_upload(file)
+        try:
+            with demucs_lock:
+                with tempfile.TemporaryDirectory(prefix="akane_local_demucs_") as tmp:
+                    stems = separate_audio_with_demucs(
+                        source_path=source_path,
+                        output_root=Path(tmp) / "stems",
+                        model_name=normalized_model,
+                    )
+                    vocals = stems.get("vocals")
+                    instrumental = stems.get("instrumental")
+                    if not vocals or not instrumental:
+                        raise RuntimeError("demucs_outputs_missing")
+                    archive_buffer = io.BytesIO()
+                    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+                        archive.writestr("vocals.wav", vocals.read_bytes())
+                        archive.writestr("instrumental.wav", instrumental.read_bytes())
+                    return Response(content=archive_buffer.getvalue(), media_type="application/zip")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _http_error("local_audio_separation_failed", "本地高质量分轨失败。", exc) from exc
+        finally:
+            _unlink_quietly(source_path)
+
     @app.post("/v1/audio/transcriptions")
     async def transcribe_audio(
         file: UploadFile = File(...),
-        model: str = Form("small"),
+        model: str = Form(""),
         language: str = Form("zh"),
         response_format: str = Form("verbose_json"),
         vad_filter: str = Form("true"),

@@ -1461,7 +1461,7 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertIn("Mozilla/5.0", headers["User-Agent"])
             self.assertEqual(headers["Referer"], "https://www.bilibili.com/")
 
-    def test_remote_media_412_error_suggests_cookiefile_fallback(self) -> None:
+    def test_remote_media_412_error_stays_a_server_side_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store = MemoryStore(root / "db")
@@ -1478,7 +1478,104 @@ class AttachmentIngestTests(unittest.TestCase):
             )
 
             self.assertIn("平台风控", message)
-            self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
+            self.assertNotIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
+            self.assertNotIn("cookies.txt", message)
+
+    def test_bilibili_public_api_fallback_recovers_from_ytdlp_412(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+            view_payload = {
+                "code": 0,
+                "data": {
+                    "bvid": "BV1Tdgh6aESA",
+                    "aid": 123,
+                    "cid": 456,
+                    "title": "测试公开片段",
+                    "duration": 42,
+                    "desc": "公开视频简介",
+                    "pic": "https://i0.hdslb.com/test.jpg",
+                    "owner": {"name": "测试发布者", "mid": 789},
+                },
+            }
+            play_payload = {
+                "code": 0,
+                "data": {
+                    "format": "mp4720",
+                    "durl": [
+                        {
+                            "url": "https://media.example/video.mp4",
+                            "size": 1024,
+                        }
+                    ],
+                },
+            }
+            with (
+                patch.object(
+                    service,
+                    "_extract_remote_media_with_yt_dlp",
+                    side_effect=AttachmentMaterializationError("remote_media_precondition_failed"),
+                ),
+                patch.object(
+                    service,
+                    "_resolve_bilibili_page_url",
+                    return_value="https://www.bilibili.com/video/BV1Tdgh6aESA",
+                ),
+                patch.object(service, "_fetch_public_json", side_effect=[view_payload, play_payload]),
+            ):
+                descriptor = service._fetch_remote_media_descriptor(
+                    url="https://b23.tv/example",
+                )
+
+            self.assertEqual(descriptor.download_mode, "bilibili_api")
+            self.assertEqual(descriptor.title, "测试公开片段")
+            self.assertEqual(descriptor.ext, "mp4")
+            self.assertEqual(descriptor.file_size_hint, 1024)
+            self.assertEqual(descriptor.media_urls, ("https://media.example/video.mp4",))
+
+    def test_bilibili_public_api_download_uses_resolved_stream_not_page_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+            )
+            target = root / "video.mp4"
+            descriptor = RemoteMediaDescriptor(
+                source_url="https://b23.tv/example",
+                webpage_url="https://www.bilibili.com/video/BV1Tdgh6aESA",
+                title="测试公开片段",
+                ext="mp4",
+                mime_type="video/mp4",
+                kind="file",
+                download_mode="bilibili_api",
+                media_urls=("https://media.example/video.mp4",),
+            )
+            with patch.object(service, "_download_to_path") as download:
+                service._download_bilibili_media(
+                    descriptor=descriptor,
+                    target_path=target,
+                    timeout=30,
+                    max_bytes=1024 * 1024,
+                )
+
+            self.assertEqual(download.call_args.kwargs["url"], "https://media.example/video.mp4")
+            self.assertEqual(
+                download.call_args.kwargs["headers"]["Referer"],
+                "https://www.bilibili.com/video/BV1Tdgh6aESA",
+            )
 
     def test_ytdlp_common_options_reject_browser_cookie_import(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1537,7 +1634,7 @@ class AttachmentIngestTests(unittest.TestCase):
                 ):
                     service._yt_dlp_common_options(timeout=12.0)
 
-    def test_remote_media_browser_cookie_copy_error_is_actionable(self) -> None:
+    def test_remote_media_browser_cookie_copy_error_is_not_delegated_to_user(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store = MemoryStore(root / "db")
@@ -1554,8 +1651,9 @@ class AttachmentIngestTests(unittest.TestCase):
                 "https://github.com/yt-dlp/yt-dlp/issues/7271 for more info"
             )
 
-            self.assertIn("浏览器仍在运行", message)
-            self.assertIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
+            self.assertIn("服务端配置问题", message)
+            self.assertNotIn("REMOTE_MEDIA_YTDLP_COOKIEFILE", message)
+            self.assertNotIn("cookies.txt", message)
 
     def _wait_for_status(
         self,

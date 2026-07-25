@@ -13,7 +13,7 @@ import time
 import re
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urlencode, urljoin, urlparse
 
 import requests
 
@@ -154,6 +154,7 @@ class RemoteMediaDescriptor:
     thumbnail_url: str = field(default="", repr=False)
     description: str = ""
     file_size_hint: int = 0
+    media_urls: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
     @property
     def origin_name(self) -> str:
@@ -709,10 +710,25 @@ class AttachmentIngestService:
         descriptor: RemoteMediaDescriptor,
         timestamp: int,
     ) -> dict[str, Any] | None:
-        source_path = self._download_remote_media(
-            item=item,
-            descriptor=descriptor,
-        )
+        try:
+            source_path = self._download_remote_media(
+                item=item,
+                descriptor=descriptor,
+            )
+        except AttachmentMaterializationError:
+            if descriptor.download_mode != "yt_dlp":
+                raise
+            fallback_descriptor = self._extract_remote_media_with_bilibili_api(
+                url=descriptor.source_url,
+                preferred_title=descriptor.title,
+            )
+            if fallback_descriptor is None:
+                raise
+            descriptor = fallback_descriptor
+            source_path = self._download_remote_media(
+                item=item,
+                descriptor=descriptor,
+            )
         relpath = self._storage_relpath(source_path)
         mime_type = str(descriptor.mime_type or mimetypes.guess_type(str(source_path))[0] or "").strip()
         file_ext = source_path.suffix.lower()
@@ -793,7 +809,22 @@ class AttachmentIngestService:
 
         if not self._is_ytdlp_provider_allowed(url):
             raise AttachmentMaterializationError("remote_media_provider_not_allowed")
-        descriptor = self._extract_remote_media_with_yt_dlp(
+        try:
+            descriptor = self._extract_remote_media_with_yt_dlp(
+                url=url,
+                preferred_title=preferred_title,
+            )
+        except AttachmentMaterializationError:
+            descriptor = self._extract_remote_media_with_bilibili_api(
+                url=url,
+                preferred_title=preferred_title,
+            )
+            if descriptor is None:
+                raise
+        if descriptor is not None:
+            return descriptor
+
+        descriptor = self._extract_remote_media_with_bilibili_api(
             url=url,
             preferred_title=preferred_title,
         )
@@ -906,6 +937,306 @@ class AttachmentIngestService:
             file_size_hint=self._safe_int(info.get("filesize") or info.get("filesize_approx")),
         )
 
+    def _extract_remote_media_with_bilibili_api(
+        self,
+        *,
+        url: str,
+        preferred_title: str = "",
+    ) -> RemoteMediaDescriptor | None:
+        if not self._is_bilibili_public_url(url):
+            return None
+
+        page_url = self._resolve_bilibili_page_url(url)
+        identity = self._parse_bilibili_video_identity(page_url)
+        if not identity:
+            raise AttachmentMaterializationError("remote_media_bilibili_identity_missing")
+
+        view_query = urlencode(identity)
+        view_payload = self._fetch_public_json(
+            url=f"https://api.bilibili.com/x/web-interface/view?{view_query}",
+            headers=self._bilibili_request_headers(referer=page_url),
+        )
+        if self._safe_int(view_payload.get("code")) != 0:
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+        view_data = view_payload.get("data") if isinstance(view_payload.get("data"), dict) else {}
+        cid = self._safe_int(view_data.get("cid"))
+        if not cid:
+            pages = view_data.get("pages") if isinstance(view_data.get("pages"), list) else []
+            first_page = pages[0] if pages and isinstance(pages[0], dict) else {}
+            cid = self._safe_int(first_page.get("cid"))
+        if not cid:
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+
+        play_identity = dict(identity)
+        play_identity.update({"cid": str(cid), "qn": "64", "fnval": "0", "fnver": "0", "fourk": "1"})
+        play_payload = self._fetch_public_json(
+            url=f"https://api.bilibili.com/x/player/playurl?{urlencode(play_identity)}",
+            headers=self._bilibili_request_headers(referer=page_url),
+        )
+        if self._safe_int(play_payload.get("code")) != 0:
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+        play_data = play_payload.get("data") if isinstance(play_payload.get("data"), dict) else {}
+        durl = play_data.get("durl") if isinstance(play_data.get("durl"), list) else []
+        media_urls: list[str] = []
+        total_size = 0
+        for item in durl:
+            if not isinstance(item, dict):
+                continue
+            media_url = str(item.get("url") or "").strip()
+            if not media_url:
+                continue
+            self._validate_public_remote_url(media_url)
+            media_urls.append(media_url)
+            total_size += self._safe_int(item.get("size"))
+        if not media_urls:
+            raise AttachmentMaterializationError("remote_media_bilibili_stream_missing")
+
+        bvid = str(view_data.get("bvid") or identity.get("bvid") or "").strip()
+        aid = self._safe_int(view_data.get("aid") or identity.get("aid"))
+        canonical_page_url = (
+            f"https://www.bilibili.com/video/{bvid}" if bvid else f"https://www.bilibili.com/video/av{aid}"
+        )
+        owner = view_data.get("owner") if isinstance(view_data.get("owner"), dict) else {}
+        play_format = str(play_data.get("format") or "").strip().lower()
+        ext = "mp4" if "mp4" in play_format else "flv"
+        return RemoteMediaDescriptor(
+            source_url=url,
+            webpage_url=canonical_page_url,
+            title=str(preferred_title or view_data.get("title") or "bilibili_video").strip(),
+            ext=ext,
+            mime_type="video/mp4" if ext == "mp4" else "video/x-flv",
+            kind="file",
+            download_mode="bilibili_api",
+            extractor="BiliBili public API",
+            extractor_key="BiliBiliPublicApi",
+            uploader=str(owner.get("name") or "").strip(),
+            channel=str(owner.get("mid") or "").strip(),
+            duration_seconds=self._safe_float(view_data.get("duration")),
+            thumbnail_url=str(view_data.get("pic") or "").strip(),
+            description=str(view_data.get("desc") or "").strip()[:1000],
+            file_size_hint=total_size,
+            media_urls=tuple(media_urls),
+        )
+
+    def _is_bilibili_public_url(self, url: str) -> bool:
+        host = str(urlparse(str(url or "").strip()).hostname or "").strip().lower().rstrip(".")
+        return host == "b23.tv" or host == "bilibili.com" or host.endswith(".bilibili.com")
+
+    def _parse_bilibili_video_identity(self, url: str) -> dict[str, str]:
+        text = unquote(str(url or "").strip())
+        bvid_match = re.search(r"(?i)(BV[0-9A-Za-z]{10})", text)
+        if bvid_match:
+            return {"bvid": bvid_match.group(1)}
+        aid_match = re.search(r"(?i)(?:/video/)?av(\d+)", text)
+        if aid_match:
+            return {"aid": aid_match.group(1)}
+        return {}
+
+    def _resolve_bilibili_page_url(self, url: str) -> str:
+        target = self._validate_public_remote_url(url)
+        if self._parse_bilibili_video_identity(target.url):
+            return target.url
+        if str(urlparse(target.url).hostname or "").strip().lower() != "b23.tv":
+            return target.url
+        return self._resolve_public_redirect_url(
+            url=target.url,
+            headers=self._bilibili_request_headers(referer="https://www.bilibili.com/"),
+        )
+
+    def _resolve_public_redirect_url(self, *, url: str, headers: dict[str, str]) -> str:
+        current_target = self._validate_public_remote_url(url)
+        timeout = min(
+            30.0,
+            float(
+                getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT)
+                or REMOTE_MEDIA_DEFAULT_TIMEOUT
+            ),
+        )
+        with requests.Session() as session:
+            session.trust_env = False
+            for redirect_count in range(REMOTE_DOWNLOAD_MAX_REDIRECTS + 1):
+                session.cookies.clear()
+                try:
+                    response = session.get(
+                        current_target.url,
+                        stream=True,
+                        timeout=timeout,
+                        headers=headers,
+                        allow_redirects=False,
+                    )
+                except requests.Timeout as exc:
+                    raise AttachmentMaterializationError("attachment_download_timeout") from exc
+                except requests.RequestException as exc:
+                    raise AttachmentMaterializationError("remote_media_extract_failed") from exc
+                try:
+                    validate_response_peer(response, current_target)
+                    status_code = int(response.status_code or 0)
+                    if status_code not in REMOTE_DOWNLOAD_REDIRECT_STATUSES:
+                        if status_code < 200 or status_code >= 300:
+                            raise AttachmentMaterializationError("remote_media_extract_failed")
+                        return current_target.url
+                    location = str(response.headers.get("Location") or "").strip()
+                    if not location:
+                        raise AttachmentMaterializationError("remote_url_redirect_missing")
+                    if redirect_count >= REMOTE_DOWNLOAD_MAX_REDIRECTS:
+                        raise AttachmentMaterializationError("remote_url_redirect_limit")
+                    next_target = self._validate_public_remote_url(urljoin(current_target.url, location))
+                    if urlparse(current_target.url).scheme == "https" and urlparse(next_target.url).scheme == "http":
+                        raise AttachmentMaterializationError("remote_url_https_downgrade")
+                    current_target = next_target
+                finally:
+                    response.close()
+        raise AttachmentMaterializationError("remote_url_redirect_limit")
+
+    def _fetch_public_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        max_bytes: int = 2 * 1024 * 1024,
+    ) -> dict[str, Any]:
+        target = self._validate_public_remote_url(url)
+        timeout = min(
+            30.0,
+            float(
+                getattr(config, "REMOTE_MEDIA_DOWNLOAD_TIMEOUT", REMOTE_MEDIA_DEFAULT_TIMEOUT)
+                or REMOTE_MEDIA_DEFAULT_TIMEOUT
+            ),
+        )
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                session.cookies.clear()
+                response = session.get(
+                    target.url,
+                    stream=True,
+                    timeout=timeout,
+                    headers=headers,
+                    allow_redirects=False,
+                )
+                try:
+                    validate_response_peer(response, target)
+                    if int(response.status_code or 0) < 200 or int(response.status_code or 0) >= 300:
+                        raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+                    content_length = self._safe_int(response.headers.get("Content-Length"))
+                    if content_length > max_bytes:
+                        raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+                        chunks.append(chunk)
+                finally:
+                    response.close()
+        except PublicUrlPolicyError as exc:
+            raise AttachmentMaterializationError(exc.code) from exc
+        except requests.Timeout as exc:
+            raise AttachmentMaterializationError("attachment_download_timeout") from exc
+        except requests.RequestException as exc:
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed") from exc
+        try:
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
+        except Exception as exc:
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed") from exc
+        if not isinstance(payload, dict):
+            raise AttachmentMaterializationError("remote_media_bilibili_api_failed")
+        return payload
+
+    def _bilibili_request_headers(self, *, referer: str) -> dict[str, str]:
+        return {
+            "User-Agent": (
+                str(getattr(config, "REMOTE_MEDIA_YTDLP_USER_AGENT", "") or "").strip()
+                or REMOTE_MEDIA_DEFAULT_USER_AGENT
+            ),
+            "Referer": str(referer or "https://www.bilibili.com/").strip(),
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+
+    def _download_bilibili_media(
+        self,
+        *,
+        descriptor: RemoteMediaDescriptor,
+        target_path: Path,
+        timeout: float,
+        max_bytes: int,
+    ) -> None:
+        media_urls = tuple(url for url in descriptor.media_urls if str(url or "").strip())
+        if not media_urls:
+            raise AttachmentMaterializationError("remote_media_bilibili_stream_missing")
+        if max_bytes > 0 and descriptor.file_size_hint > max_bytes:
+            raise AttachmentMaterializationError("attachment_too_large")
+        headers = self._bilibili_request_headers(referer=descriptor.webpage_url)
+        if len(media_urls) == 1:
+            self._download_to_path(
+                url=media_urls[0],
+                target_path=target_path,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                headers=headers,
+            )
+            return
+
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            raise AttachmentMaterializationError("remote_media_multi_segment_unsupported")
+        segment_paths: list[Path] = []
+        concat_path = target_path.with_name(f".{target_path.stem}.segments.txt")
+        building_path = target_path.with_name(f".{target_path.stem}.building{target_path.suffix}")
+        try:
+            total_size = 0
+            for index, media_url in enumerate(media_urls, start=1):
+                segment_path = target_path.with_name(
+                    f".{target_path.stem}.segment-{index:03d}{target_path.suffix}"
+                )
+                self._download_to_path(
+                    url=media_url,
+                    target_path=segment_path,
+                    timeout=timeout,
+                    max_bytes=max_bytes,
+                    headers=headers,
+                )
+                segment_paths.append(segment_path)
+                total_size += segment_path.stat().st_size
+                if max_bytes > 0 and total_size > max_bytes:
+                    raise AttachmentMaterializationError("attachment_too_large")
+            concat_lines = [
+                "file '" + str(path.resolve()).replace("\\", "/").replace("'", "'\\''") + "'"
+                for path in segment_paths
+            ]
+            concat_path.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_path),
+                    "-c",
+                    "copy",
+                    str(building_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(60.0, timeout),
+                check=False,
+            )
+            if completed.returncode != 0 or not building_path.is_file() or building_path.stat().st_size <= 0:
+                raise AttachmentMaterializationError("remote_media_download_failed")
+            building_path.replace(target_path)
+        finally:
+            concat_path.unlink(missing_ok=True)
+            building_path.unlink(missing_ok=True)
+            for path in segment_paths:
+                path.unlink(missing_ok=True)
+
     def _download_remote_media(
         self,
         *,
@@ -923,7 +1254,7 @@ class AttachmentIngestService:
             getattr(config, "REMOTE_MEDIA_MAX_BYTES", REMOTE_MEDIA_DEFAULT_MAX_BYTES) or REMOTE_MEDIA_DEFAULT_MAX_BYTES
         )
 
-        if descriptor.download_mode == "direct":
+        if descriptor.download_mode in {"direct", "bilibili_api"}:
             suffix = f".{descriptor.ext.lstrip('.')}" if descriptor.ext else ".bin"
             target_path = self._available_attachment_path(
                 target_dir=target_dir,
@@ -931,16 +1262,24 @@ class AttachmentIngestService:
                 origin_name=descriptor.origin_name,
                 suffix=suffix,
             )
-            self._download_to_path(
-                url=descriptor.source_url,
-                target_path=target_path,
-                timeout=timeout,
-                max_bytes=max_bytes,
-                headers={
-                    "User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0",
-                    "Accept": "*/*",
-                },
-            )
+            if descriptor.download_mode == "bilibili_api":
+                self._download_bilibili_media(
+                    descriptor=descriptor,
+                    target_path=target_path,
+                    timeout=timeout,
+                    max_bytes=max_bytes,
+                )
+            else:
+                self._download_to_path(
+                    url=descriptor.source_url,
+                    target_path=target_path,
+                    timeout=timeout,
+                    max_bytes=max_bytes,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0",
+                        "Accept": "*/*",
+                    },
+                )
             return target_path
 
         download_stem = self._available_attachment_stem(
@@ -1160,9 +1499,12 @@ class AttachmentIngestService:
             )
             install_hint = self._remote_fetch_failure_needs_ytdlp_hint(failures)
             retry_hint = (
-                "请自然告诉用户失败原因，并提醒需要安装或修复 yt-dlp 环境。"
+                "请自然告诉用户当前媒体获取服务暂时不可用；这是服务端能力问题，不要让用户配置服务器环境或提供 cookies。"
                 if install_hint
-                else "请自然告诉用户失败原因；如果像是网络、权限或平台临时问题，可以建议换公开链接或稍后重试。"
+                else (
+                    "请自然告诉用户失败原因；如果像是网络、权限或平台临时问题，可以建议换公开链接或稍后重试。"
+                    "不要让用户维护服务器 cookies。"
+                )
             )
             return (
                 "你刚刚尝试通过链接获取媒体，但这次没有成功。"
@@ -1211,20 +1553,23 @@ class AttachmentIngestService:
             "remote_url_redirect_limit": "这个链接跳转次数过多，当前已停止读取。",
             "remote_url_https_downgrade": "这个链接从 HTTPS 跳转到不安全的 HTTP，当前已停止读取。",
             "remote_media_provider_not_allowed": "这个网页平台当前不在可调用的媒体下载范围内；请提供受支持平台链接或公开媒体直链。",
-            "remote_media_ytdlp_unavailable": "当前环境没有可用的 yt-dlp 媒体下载器，请先安装或修复 yt-dlp。",
+            "remote_media_ytdlp_unavailable": "当前媒体获取服务暂时不可用；链接本身不一定有问题。",
+            "remote_media_bilibili_identity_missing": "这个 B 站链接里没有解析出明确的单个视频编号。",
+            "remote_media_bilibili_api_failed": "B 站公开媒体接口暂时没有返回可用信息，请稍后重试。",
+            "remote_media_bilibili_stream_missing": "B 站公开媒体接口没有返回可下载的视频流。",
+            "remote_media_multi_segment_unsupported": "这个视频由多个分段组成，而当前环境暂时无法安全合并这些分段。",
             "remote_media_playlist_not_supported": "这个链接更像播放列表/合集，当前只支持单个视频或音频链接。",
             "remote_media_cookie_database_locked": (
-                "yt-dlp 没能复制浏览器 Cookie 数据库，通常是浏览器仍在运行并锁住了 Cookie 文件；"
-                "请完全关闭对应浏览器后台进程后重试，或改用 REMOTE_MEDIA_YTDLP_COOKIEFILE 指向导出的 cookies.txt。"
+                "当前媒体获取服务没能读取已配置的站点凭据；这是服务端配置问题，不需要用户处理。"
             ),
-            "remote_media_cookie_unavailable": "配置的 yt-dlp Cookie 文件不可用，请检查 REMOTE_MEDIA_YTDLP_COOKIEFILE 路径是否正确。",
+            "remote_media_cookie_unavailable": "当前媒体获取服务的站点凭据不可用；这是服务端配置问题。",
             "remote_media_cookie_domain_forbidden": "yt-dlp Cookie 文件包含非受支持媒体平台的域，出于安全原因未加载。",
             "remote_media_browser_cookies_forbidden": (
-                "远程取材不再直接读取浏览器 Cookie；请改用只包含目标媒体平台域的导出 cookies.txt。"
+                "当前媒体获取服务拒绝直接读取浏览器凭据；这是服务端配置问题。"
             ),
             "remote_media_precondition_failed": (
                 "远端拒绝了这次媒体信息请求，像是平台风控或前置校验失败；"
-                "可以稍后重试、换原始公开链接，或在 .env 配置 REMOTE_MEDIA_YTDLP_COOKIEFILE 后再试。"
+                "可以稍后重试或换原始公开链接。"
             ),
             "remote_media_forbidden": "远端拒绝了这次下载请求，可能有权限或地区限制。",
             "remote_media_not_found": "这个链接对应的页面或媒体文件似乎不存在了。",
@@ -1239,12 +1584,9 @@ class AttachmentIngestService:
         if "playlist" in lowered or "合集" in text:
             return "这个链接更像播放列表/合集，当前只支持单个视频或音频链接。"
         if "could not copy" in lowered and "cookie database" in lowered:
-            return (
-                "yt-dlp 没能复制浏览器 Cookie 数据库，通常是浏览器仍在运行并锁住了 Cookie 文件；"
-                "请完全关闭对应浏览器后台进程后重试，或改用 REMOTE_MEDIA_YTDLP_COOKIEFILE 指向导出的 cookies.txt。"
-            )
+            return "当前媒体获取服务没能读取已配置的站点凭据；这是服务端配置问题，不需要用户处理。"
         if "yt-dlp" in lowered:
-            return "yt-dlp 媒体下载器暂时不可用，请检查安装和运行环境后重试。"
+            return "当前媒体获取服务暂时不可用；链接本身不一定有问题。"
         if "attachment handle allocation failed" in lowered or (
             "unique constraint failed" in lowered and "attachment_inbox_items" in lowered
         ):
@@ -1256,12 +1598,12 @@ class AttachmentIngestService:
         if "412" in lowered or "precondition failed" in lowered:
             return (
                 "远端拒绝了这次媒体信息请求，像是平台风控或前置校验失败；"
-                "可以稍后重试、换原始公开链接，或在 .env 配置 REMOTE_MEDIA_YTDLP_COOKIEFILE 后再试。"
+                "可以稍后重试或换原始公开链接。"
             )
         if "403" in lowered or "forbidden" in lowered:
             return "远端拒绝了这次下载请求，可能有权限或地区限制。"
         if "cookie" in lowered and ("not found" in lowered or "no such file" in lowered or "cannot" in lowered):
-            return "配置的 yt-dlp Cookie 文件不可用，请检查 REMOTE_MEDIA_YTDLP_COOKIEFILE 路径是否正确。"
+            return "当前媒体获取服务的站点凭据不可用；这是服务端配置问题。"
         if "404" in lowered or "not found" in lowered:
             return "这个链接对应的页面或媒体文件似乎不存在了。"
         if "timeout" in lowered or "timed out" in lowered:

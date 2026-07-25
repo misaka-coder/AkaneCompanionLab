@@ -5271,11 +5271,48 @@ class ComposeFileToolHandler(BaseToolHandler):
         return default
 
 
+def _generated_media_capability_status(
+    service: Any,
+    *,
+    getter_name: str,
+    missing_reason: str,
+) -> dict[str, Any]:
+    getter = getattr(service, getter_name, None)
+    if not callable(getter):
+        return {
+            "enabled": False,
+            "status": "missing_executor",
+            "reason": missing_reason,
+        }
+    try:
+        status = getter()
+    except Exception:
+        return {
+            "enabled": False,
+            "status": "unavailable",
+            "reason": f"{getter_name}_probe_failed",
+        }
+    if not isinstance(status, dict):
+        return {
+            "enabled": False,
+            "status": "unavailable",
+            "reason": f"{getter_name}_invalid",
+        }
+    return dict(status)
+
+
 class ConvertMediaFileToolHandler(BaseToolHandler):
     tool_type = "convert_media_file"
 
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
+
+    def capability_status(self) -> dict[str, Any]:
+        return _generated_media_capability_status(
+            self.generated_file_service,
+            getter_name="media_conversion_status",
+            missing_reason="media_conversion_status_missing",
+        )
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -5671,6 +5708,13 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
 
+    def capability_status(self) -> dict[str, Any]:
+        return _generated_media_capability_status(
+            self.generated_file_service,
+            getter_name="voice_cleaning_status",
+            missing_reason="voice_cleaning_status_missing",
+        )
+
     def build_prompt_instruction(self) -> str:
         return (
             "- clean_voice_track：当用户想把语音/人声再净化一下时使用，比如降噪、去混响、去回声、让说话更干净。"
@@ -5797,16 +5841,24 @@ class TranscribeMediaToolHandler(BaseToolHandler):
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
 
+    def capability_status(self) -> dict[str, Any]:
+        return _generated_media_capability_status(
+            self.generated_file_service,
+            getter_name="asr_status",
+            missing_reason="asr_status_missing",
+        )
+
     def build_prompt_instruction(self) -> str:
         return (
             "- transcribe_media：当用户要给音频/视频配文字稿、生成字幕、把录音转文字，或想总结视频/音频内容前先拿到转写稿时使用。"
             '格式为 {"type":"transcribe_media","source_ids":["audio_001","file_002","gen_003"],'
             '"output_format":"md|txt|srt|vtt|json","output_title":"转写稿标题","language":"zh|en|auto",'
-            '"with_timestamps":true,"merge_outputs":true,"model_size":"small|medium|large-v3",'
+            '"with_timestamps":true,"merge_outputs":true,"model_size":"auto|small|medium|large-v3",'
             '"vad_filter":true,"send_to_user":false}。'
             "V1 支持批量来源：merge_outputs=true 会生成一份合并转写稿；merge_outputs=false 会每个来源各生成一份。"
             "如果用户要字幕文件，优先用 srt 或 vtt；如果要后续总结、会议纪要、内容梳理，优先用 md 并保留时间戳。"
             "音频较吵、歌曲伴奏很重或人声不清时，可先调用 separate_audio_stems / clean_voice_track，再对生成的人声结果调用 transcribe_media。"
+            "用户没有明确指定模型大小时保持 model_size=auto，沿用当前执行器的质量配置。"
             "这个工具负责转写，不负责总结；转写完成后如果用户要总结内容，再基于生成的转写稿继续用 compose_file。"
             "如果用户只要原视频/原音频，不要为了回复而转写；直接发送原文件即可。"
         )
@@ -5841,7 +5893,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
                 value.get("merge_outputs") if "merge_outputs" in value else value.get("merge"),
                 default=True,
             ),
-            "model_size": self._normalize_model_size(value.get("model_size") or value.get("model") or "small"),
+            "model_size": self._normalize_model_size(value.get("model_size") or value.get("model") or "auto"),
             "device": self._normalize_device(value.get("device") or "auto"),
             "compute_type": self._normalize_compute_type(value.get("compute_type") or "auto"),
             "vad_filter": self._coerce_bool(
@@ -5861,7 +5913,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
             language=str(call.get("language") or "zh"),
             with_timestamps=bool(call.get("with_timestamps", True)),
             merge_outputs=bool(call.get("merge_outputs", True)),
-            model_size=str(call.get("model_size") or "small"),
+            model_size=str(call.get("model_size") or "auto"),
             device=str(call.get("device") or "auto"),
             compute_type=str(call.get("compute_type") or "auto"),
             vad_filter=bool(call.get("vad_filter", True)),
@@ -5930,8 +5982,10 @@ class TranscribeMediaToolHandler(BaseToolHandler):
         return normalized if normalized in {"zh", "en", "ja", "ko", "auto"} else "zh"
 
     def _normalize_model_size(self, value: Any) -> str:
-        text = str(value or "small").strip().lower().replace("_", "-")
+        text = str(value or "auto").strip().lower().replace("_", "-")
         aliases = {
+            "auto": "auto",
+            "default": "auto",
             "tiny": "tiny",
             "base": "base",
             "small": "small",
@@ -5940,7 +5994,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
             "large-v3": "large-v3",
             "large-v2": "large-v2",
         }
-        return aliases.get(text, "small")
+        return aliases.get(text, "auto")
 
     def _normalize_device(self, value: Any) -> str:
         text = str(value or "auto").strip().lower()
@@ -5968,6 +6022,13 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
 
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
+
+    def capability_status(self) -> dict[str, Any]:
+        return _generated_media_capability_status(
+            self.generated_file_service,
+            getter_name="voice_dataset_status",
+            missing_reason="voice_dataset_status_missing",
+        )
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -6125,6 +6186,13 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
 
     def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
+
+    def capability_status(self) -> dict[str, Any]:
+        return _generated_media_capability_status(
+            self.generated_file_service,
+            getter_name="media_inspection_status",
+            missing_reason="media_inspection_status_missing",
+        )
 
     def build_prompt_instruction(self) -> str:
         return (

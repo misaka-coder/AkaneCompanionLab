@@ -15,6 +15,105 @@ from pathlib import Path
 from typing import Any
 
 
+def separate_audio_with_demucs(
+    *,
+    source_path: Path,
+    output_root: Path,
+    model_name: str = "htdemucs",
+) -> dict[str, Path]:
+    import torch
+    from demucs.apply import apply_model
+    from demucs.audio import AudioFile
+    from demucs.pretrained import get_model
+
+    def run_for_device(device_name: str):
+        model = get_model(model_name)
+        model.to(device_name)
+        model.eval()
+        source_names = list(getattr(model, "sources", []) or [])
+        samplerate = int(getattr(model, "samplerate", 44100) or 44100)
+        audio_channels = int(getattr(model, "audio_channels", 2) or 2)
+        waveform = AudioFile(source_path).read(
+            streams=0,
+            samplerate=samplerate,
+            channels=audio_channels,
+        )
+        if waveform.dim() == 2:
+            waveform = waveform[None]
+        waveform = waveform.to(device_name)
+        with torch.no_grad():
+            separated = apply_model(
+                model,
+                waveform,
+                device=device_name,
+                progress=False,
+            )
+        if hasattr(model, "models") and getattr(model, "models", None):
+            source_names = list(getattr(model.models[0], "sources", source_names) or source_names)
+        return separated[0].detach().cpu(), source_names, samplerate
+
+    preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        separated, source_names, samplerate = run_for_device(preferred_device)
+    except RuntimeError as exc:
+        lowered = str(exc).lower()
+        if preferred_device == "cuda" and any(token in lowered for token in ("out of memory", "cuda", "cudnn")):
+            torch.cuda.empty_cache()
+            separated, source_names, samplerate = run_for_device("cpu")
+        else:
+            raise
+
+    vocals_index = next(
+        (index for index, name in enumerate(source_names) if str(name).strip().lower() == "vocals"),
+        -1,
+    )
+    if vocals_index < 0:
+        raise RuntimeError("Demucs 没有返回 vocals 轨道。")
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    vocals = separated[vocals_index]
+    instrumental_indices = [index for index in range(len(source_names)) if index != vocals_index]
+    instrumental = separated[instrumental_indices].sum(dim=0) if instrumental_indices else -vocals
+
+    vocals_path = output_root / "vocals.wav"
+    instrumental_path = output_root / "instrumental.wav"
+    _write_audio_tensor_to_wav(vocals, vocals_path, sample_rate=samplerate)
+    _write_audio_tensor_to_wav(instrumental, instrumental_path, sample_rate=samplerate)
+    return {
+        "vocals": vocals_path,
+        "instrumental": instrumental_path,
+    }
+
+
+def _write_audio_tensor_to_wav(
+    tensor: Any,
+    output_path: Path,
+    *,
+    sample_rate: int,
+) -> None:
+    import numpy as np
+
+    if hasattr(tensor, "detach"):
+        tensor = tensor.detach()
+    if hasattr(tensor, "cpu"):
+        tensor = tensor.cpu()
+    if hasattr(tensor, "dim") and tensor.dim() == 1:
+        tensor = tensor.unsqueeze(0)
+    if hasattr(tensor, "transpose"):
+        samples = tensor.transpose(0, 1).contiguous().numpy()
+    else:
+        samples = np.asarray(tensor)
+    samples = np.clip(samples, -1.0, 1.0)
+    pcm16 = np.round(samples * 32767.0).astype(np.int16)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(output_path), "wb") as wav:
+        channels = int(pcm16.shape[1]) if pcm16.ndim > 1 else 1
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate or 44100))
+        wav.writeframes(pcm16.tobytes())
+
+
 def _media_source_unavailable_feedback(
     source: dict[str, Any],
     *,
@@ -1498,13 +1597,20 @@ def separate_audio_stems(
             # transfer size without improving the separation input.
             remote_input = prepared_input
             try:
-                vocals_bytes, instrumental_bytes = separation_executor.separate_rvc_vocals(
-                    source_path=remote_input,
-                    separation_model=str(
-                        getattr(service, "audio_separation_model", "HP5_only_main_vocal")
-                        or "HP5_only_main_vocal"
-                    ),
-                )
+                separate_audio = getattr(separation_executor, "separate_audio_stems", None)
+                if callable(separate_audio) and str(separation_status.get("backend") or "") == "demucs":
+                    vocals_bytes, instrumental_bytes = separate_audio(
+                        source_path=remote_input,
+                        model=str(separation_status.get("model") or "htdemucs"),
+                    )
+                else:
+                    vocals_bytes, instrumental_bytes = separation_executor.separate_rvc_vocals(
+                        source_path=remote_input,
+                        separation_model=str(
+                            getattr(service, "audio_separation_model", "HP5_only_main_vocal")
+                            or "HP5_only_main_vocal"
+                        ),
+                    )
             except Exception as exc:
                 reason = str(getattr(exc, "reason", "") or "local_audio_separation_failed")
                 return {
@@ -2316,7 +2422,7 @@ def transcribe_media(
     language: str = "zh",
     with_timestamps: bool = True,
     merge_outputs: bool = True,
-    model_size: str = "small",
+    model_size: str = "auto",
     device: str = "auto",
     compute_type: str = "auto",
     vad_filter: bool = True,
@@ -2336,7 +2442,12 @@ def transcribe_media(
         }
 
     asr_executor = getattr(service, "asr_executor", None)
-    use_remote_executor = asr_executor is not None
+    asr_status = service.asr_status() if hasattr(service, "asr_status") else {}
+    use_remote_executor = (
+        asr_executor is not None
+        and bool(asr_status.get("enabled"))
+        and str(asr_status.get("provider") or "") == "local_media_executor"
+    )
     if not use_remote_executor and importlib.util.find_spec("faster_whisper") is None:
         return {
             "ok": False,
@@ -2390,7 +2501,10 @@ def transcribe_media(
             "followup_context": "你刚刚想转写音频/视频，但本机没有找到 ffmpeg。请自然提醒用户先安装 ffmpeg 或配置 PATH。",
         }
 
-    normalized_model_size = service._normalize_whisper_model_size(model_size)
+    requested_model_size = str(model_size or "auto").strip().lower().replace("_", "-")
+    normalized_model_size = service._normalize_whisper_model_size(
+        "small" if requested_model_size in {"", "auto", "default"} else requested_model_size
+    )
     normalized_device = service._normalize_whisper_device(device)
     normalized_compute_type = service._normalize_whisper_compute_type(compute_type)
     normalized_language = service._normalize_transcript_language(language)
@@ -2420,7 +2534,7 @@ def transcribe_media(
                     remote_result = asr_executor.transcribe_file(
                         source_path,
                         language=normalized_language,
-                        model=normalized_model_size,
+                        model="" if requested_model_size in {"", "auto", "default"} else normalized_model_size,
                         vad_filter=bool(vad_filter),
                     )
                     remote_segments = [

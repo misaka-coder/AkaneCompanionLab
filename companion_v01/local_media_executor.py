@@ -72,6 +72,7 @@ class LocalMediaExecutorClient:
                 "ok": False,
                 "status": "unavailable",
                 "asr": {"ready": False, "reason": "local_media_executor_unreachable"},
+                "separation": {"ready": False, "reason": "local_media_executor_unreachable"},
                 "rvc": {"ready": False, "reason": "local_media_executor_unreachable"},
             }
         with self._health_lock:
@@ -81,6 +82,7 @@ class LocalMediaExecutorClient:
     def capability_status(self) -> dict[str, Any]:
         health = self.health()
         asr = health.get("asr") if isinstance(health.get("asr"), dict) else {}
+        separation = health.get("separation") if isinstance(health.get("separation"), dict) else {}
         rvc = health.get("rvc") if isinstance(health.get("rvc"), dict) else {}
         return {
             "status": "ready" if bool(health.get("ok")) else "unavailable",
@@ -88,6 +90,14 @@ class LocalMediaExecutorClient:
                 "ready": bool(asr.get("ready")),
                 "reason": str(asr.get("reason") or ""),
                 "model": str(asr.get("model") or ""),
+                "device": str(asr.get("device") or ""),
+                "computeType": str(asr.get("compute_type") or ""),
+            },
+            "separation": {
+                "ready": bool(separation.get("ready")),
+                "reason": str(separation.get("reason") or ""),
+                "provider": str(separation.get("provider") or ""),
+                "model": str(separation.get("model") or ""),
             },
             "rvc": {
                 "ready": bool(rvc.get("ready")),
@@ -101,7 +111,7 @@ class LocalMediaExecutorClient:
         path: Path | str,
         *,
         language: str = "zh",
-        model: str = "small",
+        model: str = "",
         vad_filter: bool = True,
     ) -> dict[str, Any]:
         source = Path(path)
@@ -123,7 +133,7 @@ class LocalMediaExecutorClient:
         filename: str,
         content_type: str = "application/octet-stream",
         language: str = "zh",
-        model: str = "small",
+        model: str = "",
         vad_filter: bool = True,
     ) -> dict[str, Any]:
         if not audio:
@@ -133,7 +143,7 @@ class LocalMediaExecutorClient:
                 f"{self.base_url}/v1/audio/transcriptions",
                 files={"file": (Path(filename or "audio.wav").name, audio, content_type)},
                 data={
-                    "model": str(model or "small"),
+                    "model": str(model or ""),
                     "language": str(language or ""),
                     "response_format": "verbose_json",
                     "vad_filter": "true" if vad_filter else "false",
@@ -198,6 +208,38 @@ class LocalMediaExecutorClient:
                     )
         return output
 
+    def separate_audio_stems(
+        self,
+        *,
+        source_path: Path,
+        model: str = "htdemucs",
+    ) -> tuple[bytes, bytes]:
+        try:
+            with source_path.open("rb") as source_file:
+                response = self.session.post(
+                    f"{self.base_url}/v1/audio/separate",
+                    files={
+                        "file": (
+                            source_path.name,
+                            source_file,
+                            _audio_content_type(source_path.suffix),
+                        )
+                    },
+                    data={"model": str(model or "htdemucs")},
+                    timeout=self.timeout_seconds,
+                )
+        except Exception as exc:
+            raise LocalMediaExecutorError(
+                "local_audio_separation_unreachable",
+                "本地高质量分轨服务暂时无法连接。",
+            ) from exc
+        if not response.ok:
+            raise LocalMediaExecutorError(
+                _response_reason(response, "local_audio_separation_failed"),
+                _response_message(response, "本地高质量分轨没有成功。"),
+            )
+        return _read_stem_archive(response.content)
+
     def separate_rvc_vocals(
         self,
         *,
@@ -225,21 +267,11 @@ class LocalMediaExecutorClient:
                 _response_reason(response, "local_rvc_separation_failed"),
                 _response_message(response, "本地人声分离没有成功。"),
             )
-        try:
-            with zipfile.ZipFile(io.BytesIO(response.content), "r") as archive:
-                vocals = archive.read("vocals.wav")
-                instrumental = archive.read("instrumental.wav")
-        except Exception as exc:
-            raise LocalMediaExecutorError(
-                "local_rvc_separation_response_invalid",
-                "本地人声分离返回了不完整的结果。",
-            ) from exc
-        if not vocals or not instrumental:
-            raise LocalMediaExecutorError(
-                "local_rvc_separation_output_missing",
-                "本地人声分离没有产生完整音轨。",
-            )
-        return vocals, instrumental
+        return _read_stem_archive(
+            response.content,
+            invalid_reason="local_rvc_separation_response_invalid",
+            missing_reason="local_rvc_separation_output_missing",
+        )
 
     def convert_rvc_voice(
         self,
@@ -442,6 +474,29 @@ class LocalRvcExecutorProvider:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(audio)
         return {"index_path": "", "info": "Success", "timings": timings}
+
+
+def _read_stem_archive(
+    payload: bytes,
+    *,
+    invalid_reason: str = "local_audio_separation_response_invalid",
+    missing_reason: str = "local_audio_separation_output_missing",
+) -> tuple[bytes, bytes]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            vocals = archive.read("vocals.wav")
+            instrumental = archive.read("instrumental.wav")
+    except Exception as exc:
+        raise LocalMediaExecutorError(
+            invalid_reason,
+            "本地人声分离返回了不完整的结果。",
+        ) from exc
+    if not vocals or not instrumental:
+        raise LocalMediaExecutorError(
+            missing_reason,
+            "本地人声分离没有产生完整音轨。",
+        )
+    return vocals, instrumental
 
 
 def _normalize_segments(value: Any) -> list[dict[str, Any]]:

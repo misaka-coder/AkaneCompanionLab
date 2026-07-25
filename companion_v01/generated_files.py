@@ -105,9 +105,26 @@ class GeneratedFileService:
         if executor is not None:
             try:
                 status = dict(executor.capability_status() or {})
+                separation = status.get("separation") if isinstance(status.get("separation"), dict) else {}
+                if bool(separation.get("ready")):
+                    return {
+                        "enabled": True,
+                        "status": "ready",
+                        "reason": "",
+                        "provider": "local_media_executor",
+                        "backend": str(separation.get("provider") or "demucs"),
+                        "model": str(separation.get("model") or "htdemucs"),
+                    }
                 rvc = status.get("rvc") if isinstance(status.get("rvc"), dict) else {}
                 if bool(rvc.get("ready")):
-                    return {"enabled": True, "status": "ready", "reason": "", "provider": "local_media_executor"}
+                    return {
+                        "enabled": True,
+                        "status": "ready",
+                        "reason": "",
+                        "provider": "local_media_executor",
+                        "backend": "rvc_uvr",
+                        "model": self.audio_separation_model,
+                    }
             except Exception:
                 pass
         if importlib.util.find_spec("demucs") is not None or self._resolve_demucs_command() is not None:
@@ -117,6 +134,82 @@ class GeneratedFileService:
             "status": "missing_executor",
             "reason": "audio_separation_executor_unavailable",
             "provider": "",
+        }
+
+    def media_conversion_status(self) -> dict[str, Any]:
+        ffmpeg_path = shutil.which("ffmpeg")
+        return {
+            "enabled": bool(ffmpeg_path),
+            "status": "ready" if ffmpeg_path else "missing_executor",
+            "reason": "" if ffmpeg_path else "ffmpeg_not_found",
+            "provider": "ffmpeg" if ffmpeg_path else "",
+        }
+
+    def voice_cleaning_status(self) -> dict[str, Any]:
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            return {
+                "enabled": False,
+                "status": "missing_executor",
+                "reason": "ffmpeg_not_found",
+                "provider": "",
+                "ai_ready": False,
+            }
+        deepfilter = self._resolve_deepfilternet_runner()
+        return {
+            "enabled": True,
+            "status": "ready",
+            "reason": "",
+            "provider": "deepfilternet" if deepfilter is not None else "ffmpeg",
+            "ai_ready": deepfilter is not None,
+        }
+
+    def asr_status(self) -> dict[str, Any]:
+        executor = self.asr_executor
+        if executor is not None:
+            try:
+                status = dict(executor.capability_status() or {})
+                asr = status.get("asr") if isinstance(status.get("asr"), dict) else {}
+                if bool(asr.get("ready")):
+                    return {
+                        "enabled": True,
+                        "status": "ready",
+                        "reason": "",
+                        "provider": "local_media_executor",
+                        "model": str(asr.get("model") or ""),
+                    }
+            except Exception:
+                pass
+        ffmpeg_path = shutil.which("ffmpeg")
+        whisper_ready = importlib.util.find_spec("faster_whisper") is not None
+        if ffmpeg_path and whisper_ready:
+            return {
+                "enabled": True,
+                "status": "ready",
+                "reason": "",
+                "provider": "faster_whisper",
+                "model": "",
+            }
+        reason = "ffmpeg_not_found" if not ffmpeg_path else "faster_whisper_not_found"
+        return {
+            "enabled": False,
+            "status": "missing_executor",
+            "reason": reason,
+            "provider": "",
+            "model": "",
+        }
+
+    def voice_dataset_status(self) -> dict[str, Any]:
+        status = self.media_conversion_status()
+        return {**status, "provider": "ffmpeg" if status.get("enabled") else ""}
+
+    def media_inspection_status(self) -> dict[str, Any]:
+        ffprobe_path = shutil.which("ffprobe")
+        return {
+            "enabled": bool(ffprobe_path),
+            "status": "ready" if ffprobe_path else "missing_executor",
+            "reason": "" if ffprobe_path else "ffprobe_not_found",
+            "provider": "ffprobe" if ffprobe_path else "",
         }
 
     def compose_file(
@@ -441,7 +534,7 @@ class GeneratedFileService:
         language: str = "zh",
         with_timestamps: bool = True,
         merge_outputs: bool = True,
-        model_size: str = "small",
+        model_size: str = "auto",
         device: str = "auto",
         compute_type: str = "auto",
         vad_filter: bool = True,
@@ -2332,101 +2425,11 @@ class GeneratedFileService:
         output_root: Path,
         model_name: str = "htdemucs",
     ) -> dict[str, Path]:
-        import numpy as np
-        import torch
-        from demucs.apply import apply_model
-        from demucs.audio import AudioFile
-        from demucs.pretrained import get_model
-
-        def run_for_device(device_name: str):
-            model = get_model(model_name)
-            model.to(device_name)
-            model.eval()
-            source_names = list(getattr(model, "sources", []) or [])
-            samplerate = int(getattr(model, "samplerate", 44100) or 44100)
-            audio_channels = int(getattr(model, "audio_channels", 2) or 2)
-            waveform = AudioFile(source_path).read(
-                streams=0,
-                samplerate=samplerate,
-                channels=audio_channels,
-            )
-            if waveform.dim() == 2:
-                waveform = waveform[None]
-            waveform = waveform.to(device_name)
-            with torch.no_grad():
-                separated = apply_model(
-                    model,
-                    waveform,
-                    device=device_name,
-                    progress=False,
-                )
-            if hasattr(model, "models") and getattr(model, "models", None):
-                source_names = list(getattr(model.models[0], "sources", source_names) or source_names)
-            return separated[0].detach().cpu(), source_names, samplerate
-
-        preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
-        try:
-            separated, source_names, samplerate = run_for_device(preferred_device)
-        except RuntimeError as exc:
-            lowered = str(exc).lower()
-            if preferred_device == "cuda" and any(token in lowered for token in ("out of memory", "cuda", "cudnn")):
-                torch.cuda.empty_cache()
-                separated, source_names, samplerate = run_for_device("cpu")
-            else:
-                raise
-
-        vocals_index = next(
-            (index for index, name in enumerate(source_names) if str(name).strip().lower() == "vocals"),
-            -1,
+        return generated_files_media.separate_audio_with_demucs(
+            source_path=source_path,
+            output_root=output_root,
+            model_name=model_name,
         )
-        if vocals_index < 0:
-            raise RuntimeError("Demucs 没有返回 vocals 轨道。")
-
-        output_root.mkdir(parents=True, exist_ok=True)
-        vocals = separated[vocals_index]
-        instrumental_indices = [index for index in range(len(source_names)) if index != vocals_index]
-        if instrumental_indices:
-            instrumental = separated[instrumental_indices].sum(dim=0)
-        else:
-            instrumental = -vocals
-
-        vocals_path = output_root / "vocals.wav"
-        instrumental_path = output_root / "instrumental.wav"
-        self._write_audio_tensor_to_wav(vocals, vocals_path, sample_rate=samplerate)
-        self._write_audio_tensor_to_wav(instrumental, instrumental_path, sample_rate=samplerate)
-        return {
-            "vocals": vocals_path,
-            "instrumental": instrumental_path,
-        }
-
-    def _write_audio_tensor_to_wav(
-        self,
-        tensor: Any,
-        output_path: Path,
-        *,
-        sample_rate: int,
-    ) -> None:
-        import numpy as np
-
-        if hasattr(tensor, "detach"):
-            tensor = tensor.detach()
-        if hasattr(tensor, "cpu"):
-            tensor = tensor.cpu()
-        if hasattr(tensor, "dim") and tensor.dim() == 1:
-            tensor = tensor.unsqueeze(0)
-        if hasattr(tensor, "transpose"):
-            array = tensor.transpose(0, 1).contiguous().numpy()
-        else:
-            array = np.asarray(tensor)
-        array = np.clip(array, -1.0, 1.0)
-        pcm16 = np.round(array * 32767.0).astype(np.int16)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(output_path), "wb") as wf:
-            channels = int(pcm16.shape[1]) if pcm16.ndim > 1 else 1
-            wf.setnchannels(channels)
-            wf.setsampwidth(2)
-            wf.setframerate(int(sample_rate or 44100))
-            wf.writeframes(pcm16.tobytes())
 
     def _collect_demucs_stems(self, output_root: Path) -> dict[str, Path]:
         stems: dict[str, Path] = {}

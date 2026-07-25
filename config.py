@@ -370,6 +370,11 @@ class Settings(BaseSettings):
     # === ASR / Whisper 模型缓存目录 ===
     # 留空时使用 faster-whisper 默认缓存目录
     WHISPER_CACHE_DIR: str = ""
+    # 本地媒体宿主读取这些字段；保留在 Settings 中也可避免把合法配置误报为未知键。
+    AKANE_LOCAL_WHISPER_MODEL: str = "small"
+    AKANE_LOCAL_ASR_DEVICE: str = "cpu"
+    AKANE_LOCAL_ASR_COMPUTE_TYPE: str = "int8"
+    AKANE_LOCAL_RVC_SEPARATION_MODEL: str = "HP5_only_main_vocal"
 
     # === Web 身份模式 ===
     # owner  : 本地主创模式，所有浏览器共享同一主人 profile

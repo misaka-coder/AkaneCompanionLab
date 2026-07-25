@@ -5,6 +5,9 @@ param(
     [int]$RvcPort = 7899,
     [string]$RvcRoot = "",
     [string]$WhisperCacheDir = "",
+    [string]$WhisperModel = "",
+    [string]$AsrDevice = "",
+    [string]$AsrComputeType = "",
     [string]$DataRoot = ""
 )
 
@@ -164,6 +167,33 @@ $resolvedWhisperCache = if ($WhisperCacheDir.Trim()) {
     $configured = Get-AkaneEnvValue -Path $envPath -Name "WHISPER_CACHE_DIR"
     if ($configured.Trim()) { [System.IO.Path]::GetFullPath($configured.Trim()) } else { "" }
 }
+$resolvedWhisperModel = if ($WhisperModel.Trim()) {
+    $WhisperModel.Trim().ToLowerInvariant()
+} else {
+    $configured = Get-AkaneEnvValue -Path $envPath -Name "AKANE_LOCAL_WHISPER_MODEL"
+    if ($configured.Trim()) { $configured.Trim().ToLowerInvariant() } else { "small" }
+}
+$resolvedAsrDevice = if ($AsrDevice.Trim()) {
+    $AsrDevice.Trim().ToLowerInvariant()
+} else {
+    $configured = Get-AkaneEnvValue -Path $envPath -Name "AKANE_LOCAL_ASR_DEVICE"
+    if ($configured.Trim()) { $configured.Trim().ToLowerInvariant() } else { "cpu" }
+}
+$resolvedAsrComputeType = if ($AsrComputeType.Trim()) {
+    $AsrComputeType.Trim().ToLowerInvariant()
+} else {
+    $configured = Get-AkaneEnvValue -Path $envPath -Name "AKANE_LOCAL_ASR_COMPUTE_TYPE"
+    if ($configured.Trim()) { $configured.Trim().ToLowerInvariant() } else { "int8" }
+}
+if ($resolvedWhisperModel -notin @("tiny", "base", "small", "medium", "large-v2", "large-v3")) {
+    throw "invalid_local_whisper_model"
+}
+if ($resolvedAsrDevice -notin @("auto", "cpu", "cuda")) {
+    throw "invalid_local_asr_device"
+}
+if ($resolvedAsrComputeType -notin @("auto", "float16", "float32", "int8", "int8_float16")) {
+    throw "invalid_local_asr_compute_type"
+}
 $resolvedDataRoot = if ($DataRoot.Trim()) {
     [System.IO.Path]::GetFullPath($DataRoot.Trim())
 } else {
@@ -208,6 +238,22 @@ if (-not (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $RvcPort)) {
 }
 
 $health = Get-AkaneLocalMediaHealth -Port $LocalCapabilityPort
+if (
+    (Test-AkaneLocalMediaHealth -Health $health) -and
+    (
+        [string]$health.asr.model -ne $resolvedWhisperModel -or
+        [string]$health.asr.device -ne $resolvedAsrDevice -or
+        [string]$health.asr.compute_type -ne $resolvedAsrComputeType -or
+        -not [bool]$health.separation.ready
+    )
+) {
+    Write-Host "[INFO] Restarting local media host to apply capability configuration."
+    Stop-AkaneTrackedProcess `
+        -PidPath (Join-Path $runDirectory "local_media_host.pid") `
+        -ExpectedProcessName "python" `
+        -ExpectedCommandFragment "akane_local_capability_host.py"
+    $health = $null
+}
 if (-not (Test-AkaneLocalMediaHealth -Health $health)) {
     if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $LocalCapabilityPort) {
         throw "local_media_port_in_use_by_another_service"
@@ -220,11 +266,21 @@ if (-not (Test-AkaneLocalMediaHealth -Health $health)) {
     $env:AKANE_LOCAL_RVC_BASE_URL = "http://127.0.0.1:$RvcPort"
     $env:AKANE_LOCAL_FFMPEG_PATH = $ffmpegPath
     $env:AKANE_LOCAL_WHISPER_CACHE_DIR = $resolvedWhisperCache
-    $env:AKANE_LOCAL_WHISPER_MODEL = "small"
-    # CPU/int8 is the portable default. CUDA requires matching cuBLAS DLLs and
-    # must be an explicit user choice instead of a health check false-positive.
-    $env:AKANE_LOCAL_ASR_DEVICE = "cpu"
-    $env:AKANE_LOCAL_ASR_COMPUTE_TYPE = "int8"
+    $env:AKANE_LOCAL_WHISPER_MODEL = $resolvedWhisperModel
+    $env:AKANE_LOCAL_ASR_DEVICE = $resolvedAsrDevice
+    $env:AKANE_LOCAL_ASR_COMPUTE_TYPE = $resolvedAsrComputeType
+    if ($resolvedAsrDevice -eq "cuda") {
+        $cudaRuntimeDirectory = Join-Path $resolvedRvcRoot "runtime\Lib\site-packages\torch\lib"
+        $cublasPath = Join-Path $cudaRuntimeDirectory "cublas64_12.dll"
+        $cudnnPath = Join-Path $cudaRuntimeDirectory "cudnn64_9.dll"
+        if (
+            -not (Test-Path -LiteralPath $cublasPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $cudnnPath -PathType Leaf)
+        ) {
+            throw "local_asr_cuda_runtime_missing"
+        }
+        $env:PATH = "$cudaRuntimeDirectory;$env:PATH"
+    }
     Write-Host "[INFO] Starting Akane local media capability host..."
     $hostProcess = Start-Process `
         -FilePath $python.Source `

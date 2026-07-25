@@ -1482,8 +1482,8 @@ TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(
             },
             "model_size": {
                 "type": "string",
-                "enum": ["tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                "description": "可选识别模型；未明确要求时用默认 small。",
+                "enum": ["auto", "tiny", "base", "small", "medium", "large-v2", "large-v3"],
+                "description": "可选识别模型；未明确要求时用 auto，沿用当前执行器配置。",
             },
             "vad_filter": {"type": "boolean", "description": "是否过滤静音段；默认 true。"},
         },

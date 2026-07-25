@@ -1041,6 +1041,76 @@ class GeneratedFileTests(unittest.TestCase):
                 "ready",
             )
 
+    def test_separate_audio_stems_prefers_local_demucs_over_rvc_uvr(self) -> None:
+        class FakeLocalMediaExecutor:
+            def __init__(self) -> None:
+                self.demucs_calls = []
+                self.rvc_calls = []
+
+            @staticmethod
+            def capability_status():
+                return {
+                    "separation": {"ready": True, "provider": "demucs", "model": "htdemucs"},
+                    "rvc": {"ready": True, "modelCount": 1},
+                }
+
+            def separate_audio_stems(self, *, source_path, model):
+                self.demucs_calls.append((Path(source_path).name, model))
+                return b"demucs vocals", b"demucs instrumental"
+
+            def separate_rvc_vocals(self, *, source_path, separation_model):
+                self.rvc_calls.append((Path(source_path).name, separation_model))
+                return b"rvc vocals", b"rvc instrumental"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            stored = attachment_root / "master" / "song.mp3"
+            stored.parent.mkdir(parents=True, exist_ok=True)
+            stored.write_bytes(b"compressed song")
+            store = MemoryStore(root / "db")
+            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            executor = FakeLocalMediaExecutor()
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                work_dir=root / "work",
+                store=store,
+                attachment_service=attachment_service,
+                audio_separation_executor=executor,
+                audio_separation_model="HP5_only_main_vocal",
+            )
+            attachment = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="audio",
+                origin_name="song.mp3",
+                storage_relpath="master/song.mp3",
+                timestamp=100,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=attachment["attachment_id"],
+                summary_title="song.mp3",
+                short_hint="一首普通音频。",
+                timestamp=101,
+            )
+
+            result = generated_service.separate_audio_stems(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                output_format="wav",
+                send_to_user=False,
+                timestamp=120,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(executor.demucs_calls, [("song.mp3", "htdemucs")])
+            self.assertEqual(executor.rvc_calls, [])
+            self.assertEqual(generated_service.audio_separation_status()["backend"], "demucs")
+
     def test_separate_audio_stems_keeps_compressed_audio_for_local_executor_transfer(self) -> None:
         class FakeLocalMediaExecutor:
             def __init__(self) -> None:
@@ -1536,6 +1606,10 @@ class GeneratedFileTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = []
 
+            @staticmethod
+            def capability_status():
+                return {"asr": {"ready": True, "model": "small"}}
+
             def transcribe_file(self, path, **kwargs):
                 self.calls.append((Path(path), dict(kwargs)))
                 return {
@@ -1664,6 +1738,7 @@ class GeneratedFileTests(unittest.TestCase):
 
         self.assertIsNotNone(call)
         self.assertFalse((call or {}).get("send_to_user"))
+        self.assertEqual((call or {}).get("model_size"), "auto")
         self.assertIn('"send_to_user":false', handler.build_prompt_instruction())
 
     def test_inspect_media_info_tool_handler_emits_media_info_event(self) -> None:
@@ -1803,6 +1878,47 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertIn("speed_ratio", instruction)
         self.assertIn("只有用户要音频轨、后续人声处理、训练素材或统一媒体规格时才提音频", instruction)
         self.assertIn("如果用户只要原视频，改用 send_file 发送原文件", instruction)
+
+    def test_media_handlers_do_not_report_ready_without_real_executors(self) -> None:
+        class FakeGeneratedService:
+            @staticmethod
+            def media_conversion_status():
+                return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
+
+            @staticmethod
+            def voice_cleaning_status():
+                return {"enabled": True, "status": "ready", "reason": "", "provider": "ffmpeg"}
+
+            @staticmethod
+            def asr_status():
+                return {
+                    "enabled": False,
+                    "status": "missing_executor",
+                    "reason": "local_media_executor_unreachable",
+                }
+
+            @staticmethod
+            def voice_dataset_status():
+                return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
+
+            @staticmethod
+            def media_inspection_status():
+                return {"enabled": True, "status": "ready", "reason": "", "provider": "ffprobe"}
+
+        service = FakeGeneratedService()
+        statuses = {
+            "convert": ConvertMediaFileToolHandler(generated_file_service=service).capability_status(),
+            "clean": CleanVoiceTrackToolHandler(generated_file_service=service).capability_status(),
+            "transcribe": TranscribeMediaToolHandler(generated_file_service=service).capability_status(),
+            "dataset": PrepareVoiceDatasetToolHandler(generated_file_service=service).capability_status(),
+            "inspect": InspectMediaInfoToolHandler(generated_file_service=service).capability_status(),
+        }
+
+        self.assertEqual(statuses["convert"]["status"], "missing_executor")
+        self.assertEqual(statuses["clean"]["status"], "ready")
+        self.assertEqual(statuses["transcribe"]["reason"], "local_media_executor_unreachable")
+        self.assertEqual(statuses["dataset"]["status"], "missing_executor")
+        self.assertEqual(statuses["inspect"]["provider"], "ffprobe")
 
     def test_media_tool_instructions_explain_video_task_routing_without_fixed_pipeline(self) -> None:
         transcribe_instruction = TranscribeMediaToolHandler(generated_file_service=object()).build_prompt_instruction()
