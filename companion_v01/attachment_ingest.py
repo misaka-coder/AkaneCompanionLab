@@ -4,10 +4,13 @@ import base64
 import binascii
 import csv
 from dataclasses import dataclass, field
+import http.client
 import importlib.util
 import json
 import mimetypes
 import shutil
+import socket
+import ssl
 import subprocess
 import time
 import re
@@ -1052,41 +1055,92 @@ class AttachmentIngestService:
                 or REMOTE_MEDIA_DEFAULT_TIMEOUT
             ),
         )
-        with requests.Session() as session:
-            session.trust_env = False
-            for redirect_count in range(REMOTE_DOWNLOAD_MAX_REDIRECTS + 1):
-                session.cookies.clear()
-                try:
-                    response = session.get(
-                        current_target.url,
-                        stream=True,
-                        timeout=timeout,
-                        headers=headers,
-                        allow_redirects=False,
-                    )
-                except requests.Timeout as exc:
-                    raise AttachmentMaterializationError("attachment_download_timeout") from exc
-                except requests.RequestException as exc:
-                    raise AttachmentMaterializationError("remote_media_extract_failed") from exc
-                try:
-                    validate_response_peer(response, current_target)
-                    status_code = int(response.status_code or 0)
-                    if status_code not in REMOTE_DOWNLOAD_REDIRECT_STATUSES:
-                        if status_code < 200 or status_code >= 300:
-                            raise AttachmentMaterializationError("remote_media_extract_failed")
-                        return current_target.url
-                    location = str(response.headers.get("Location") or "").strip()
-                    if not location:
-                        raise AttachmentMaterializationError("remote_url_redirect_missing")
-                    if redirect_count >= REMOTE_DOWNLOAD_MAX_REDIRECTS:
-                        raise AttachmentMaterializationError("remote_url_redirect_limit")
-                    next_target = self._validate_public_remote_url(urljoin(current_target.url, location))
-                    if urlparse(current_target.url).scheme == "https" and urlparse(next_target.url).scheme == "http":
-                        raise AttachmentMaterializationError("remote_url_https_downgrade")
-                    current_target = next_target
-                finally:
-                    response.close()
+        for redirect_count in range(REMOTE_DOWNLOAD_MAX_REDIRECTS + 1):
+            status_code, location = self._request_pinned_redirect(
+                target=current_target,
+                headers=headers,
+                timeout=timeout,
+            )
+            if status_code not in REMOTE_DOWNLOAD_REDIRECT_STATUSES:
+                if status_code < 200 or status_code >= 300:
+                    raise AttachmentMaterializationError("remote_media_extract_failed")
+                return current_target.url
+            if not location:
+                raise AttachmentMaterializationError("remote_url_redirect_missing")
+            if redirect_count >= REMOTE_DOWNLOAD_MAX_REDIRECTS:
+                raise AttachmentMaterializationError("remote_url_redirect_limit")
+            next_target = self._validate_public_remote_url(urljoin(current_target.url, location))
+            if urlparse(current_target.url).scheme == "https" and urlparse(next_target.url).scheme == "http":
+                raise AttachmentMaterializationError("remote_url_https_downgrade")
+            current_target = next_target
         raise AttachmentMaterializationError("remote_url_redirect_limit")
+
+    def _request_pinned_redirect(
+        self,
+        *,
+        target: PublicUrlTarget,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> tuple[int, str]:
+        parsed = urlparse(target.url)
+        request_target = parsed.path or "/"
+        if parsed.params:
+            request_target += f";{parsed.params}"
+        if parsed.query:
+            request_target += f"?{parsed.query}"
+        host_header = target.hostname
+        default_port = 443 if parsed.scheme == "https" else 80
+        if target.port != default_port:
+            host_header = f"{host_header}:{target.port}"
+        safe_headers = {
+            str(key).strip(): str(value).replace("\r", " ").replace("\n", " ").strip()
+            for key, value in headers.items()
+            if str(key).strip()
+            and str(key).casefold() not in {"host", "connection", "cookie", "authorization", "proxy-authorization"}
+        }
+        request_lines = [
+            f"GET {request_target} HTTP/1.1",
+            f"Host: {host_header}",
+            "Connection: close",
+            *(f"{key}: {value}" for key, value in safe_headers.items()),
+            "",
+            "",
+        ]
+        request_bytes = "\r\n".join(request_lines).encode("iso-8859-1", errors="replace")
+        last_error: Exception | None = None
+        for address in target.addresses:
+            raw_socket: socket.socket | None = None
+            active_socket: socket.socket | ssl.SSLSocket | None = None
+            response: http.client.HTTPResponse | None = None
+            try:
+                raw_socket = socket.create_connection(
+                    (address, target.port),
+                    timeout=max(0.25, timeout),
+                )
+                raw_socket.settimeout(max(0.25, timeout))
+                if parsed.scheme == "https":
+                    active_socket = ssl.create_default_context().wrap_socket(
+                        raw_socket,
+                        server_hostname=target.hostname,
+                    )
+                else:
+                    active_socket = raw_socket
+                active_socket.sendall(request_bytes)
+                response = http.client.HTTPResponse(active_socket)
+                response.begin()
+                return int(response.status or 0), str(response.getheader("Location") or "").strip()
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                last_error = exc
+            finally:
+                if response is not None:
+                    response.close()
+                if active_socket is not None:
+                    active_socket.close()
+                elif raw_socket is not None:
+                    raw_socket.close()
+        if isinstance(last_error, (socket.timeout, TimeoutError)):
+            raise AttachmentMaterializationError("attachment_download_timeout") from last_error
+        raise AttachmentMaterializationError("remote_media_extract_failed") from last_error
 
     def _fetch_public_json(
         self,

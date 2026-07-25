@@ -1577,6 +1577,35 @@ class AttachmentIngestTests(unittest.TestCase):
                 "https://www.bilibili.com/video/BV1Tdgh6aESA",
             )
 
+    def test_bilibili_short_link_redirect_uses_pinned_public_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=None,
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+            with patch.object(
+                service,
+                "_request_pinned_redirect",
+                side_effect=[
+                    (302, "https://www.bilibili.com/video/BV1Tdgh6aESA"),
+                    (200, ""),
+                ],
+            ) as request_redirect:
+                resolved = service._resolve_bilibili_page_url("https://b23.tv/example")
+
+            self.assertEqual(resolved, "https://www.bilibili.com/video/BV1Tdgh6aESA")
+            self.assertEqual(request_redirect.call_count, 2)
+            first_target = request_redirect.call_args_list[0].kwargs["target"]
+            second_target = request_redirect.call_args_list[1].kwargs["target"]
+            self.assertEqual(first_target.hostname, "b23.tv")
+            self.assertEqual(second_target.hostname, "www.bilibili.com")
+
     def test_ytdlp_common_options_reject_browser_cookie_import(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
