@@ -35,18 +35,36 @@ def _payload() -> dict:
 
 class QQChannelProfileTests(unittest.TestCase):
     def test_profiles_are_selected_by_safe_ref_without_secret_repr_or_snapshot(self) -> None:
-        profiles = parse_qq_channel_profiles(_payload())
+        payload = _payload()
+        payload["profiles"][0]["onebot_shared_data_root"] = "/srv/akane/bots/bot-a"
+        profiles = parse_qq_channel_profiles(payload)
 
         profile_a = profiles.get("qq.bot-a")
         self.assertIsNotNone(profile_a)
         self.assertEqual(profile_a.bot_qq, "10000001")
         self.assertEqual(profile_a.onebot_http_url, "http://127.0.0.1:3001")
+        self.assertEqual(profile_a.onebot_shared_data_root, "/srv/akane/bots/bot-a")
         self.assertNotIn("webhook-a", repr(profile_a))
         self.assertNotIn("token-a", repr(profile_a))
+        self.assertNotIn("/srv/akane", repr(profile_a))
         public = profiles.public_snapshot()
         self.assertEqual(public["profile_refs"], ["qq.bot-a", "qq.bot-b"])
         self.assertNotIn("webhook", str(public))
         self.assertNotIn("token-a", str(public))
+        self.assertNotIn("/srv/akane", str(public))
+
+    def test_shared_data_root_must_be_absolute(self) -> None:
+        payload = _payload()
+        payload["profiles"][0]["onebot_shared_data_root"] = "../napcat"
+
+        with self.assertRaises(QQChannelProfileError) as raised:
+            parse_qq_channel_profiles(payload)
+
+        self.assertEqual(raised.exception.reason, "qq_shared_data_root_invalid")
+        self.assertEqual(
+            raised.exception.field_name,
+            "profiles.0.onebot_shared_data_root",
+        )
 
     def test_duplicate_bot_account_and_unknown_secret_field_are_rejected_safely(self) -> None:
         duplicate = _payload()

@@ -6,7 +6,7 @@ import json
 import re
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -15,7 +15,16 @@ QQ_CHANNEL_PROFILES_SCHEMA_VERSION = 1
 QQ_CHANNEL_PROFILES_RELATIVE_PATH = Path("secrets") / "qq_profiles.toml"
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ROOT_FIELDS = frozenset({"schema_version", "profiles"})
-_PROFILE_FIELDS = frozenset({"profile_ref", "bot_qq", "onebot_http_url", "webhook_secret", "onebot_access_token"})
+_PROFILE_FIELDS = frozenset(
+    {
+        "profile_ref",
+        "bot_qq",
+        "onebot_http_url",
+        "webhook_secret",
+        "onebot_access_token",
+        "onebot_shared_data_root",
+    }
+)
 _MAX_PROFILES = 64
 
 
@@ -40,6 +49,7 @@ class QQChannelDeploymentProfile:
     onebot_http_url: str
     webhook_secret: str = field(repr=False)
     onebot_access_token: str = field(repr=False)
+    onebot_shared_data_root: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         _safe_id(self.profile_ref, field_name="profile_ref")
@@ -47,6 +57,10 @@ class QQChannelDeploymentProfile:
         _http_url(self.onebot_http_url, field_name="onebot_http_url")
         _secret(self.webhook_secret, field_name="webhook_secret")
         _secret(self.onebot_access_token, field_name="onebot_access_token")
+        _optional_absolute_path(
+            self.onebot_shared_data_root,
+            field_name="onebot_shared_data_root",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +119,10 @@ def parse_qq_channel_profiles(payload: Any) -> QQChannelProfileSet:
             onebot_access_token=_secret(
                 raw_profile.get("onebot_access_token"),
                 field_name=f"{prefix}.onebot_access_token",
+            ),
+            onebot_shared_data_root=_optional_absolute_path(
+                raw_profile.get("onebot_shared_data_root", ""),
+                field_name=f"{prefix}.onebot_shared_data_root",
             ),
         )
         if profile.profile_ref in seen_refs:
@@ -176,6 +194,20 @@ def _secret(value: Any, *, field_name: str) -> str:
     normalized = value.strip()
     if normalized != value or not normalized or len(normalized) > 4096 or any(ord(char) < 32 for char in normalized):
         _fail("qq_channel_secret_required", field_name=field_name)
+    return normalized
+
+
+def _optional_absolute_path(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        _fail("qq_shared_data_root_invalid", field_name=field_name)
+    normalized = value.strip().rstrip("/\\")
+    if not normalized:
+        return ""
+    if normalized != value.rstrip("/\\") or "\x00" in normalized:
+        _fail("qq_shared_data_root_invalid", field_name=field_name)
+    path = PureWindowsPath(normalized) if PureWindowsPath(normalized).drive else PurePosixPath(normalized)
+    if not path.is_absolute() or ".." in path.parts:
+        _fail("qq_shared_data_root_invalid", field_name=field_name)
     return normalized
 
 

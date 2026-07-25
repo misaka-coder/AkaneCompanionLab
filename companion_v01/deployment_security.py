@@ -11,6 +11,7 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -59,6 +60,8 @@ class QQChannelRuntimeConfig:
     onebot_access_token: str = field(repr=False)
     require_webhook_auth: bool
     require_self_id: bool
+    local_data_root: str = field(default="", repr=False)
+    onebot_shared_data_root: str = field(default="", repr=False)
 
     def authorize_webhook(self, request: Any) -> AuthorizationDecision:
         if not self.require_webhook_auth:
@@ -87,6 +90,29 @@ class QQChannelRuntimeConfig:
         if not self.onebot_access_token:
             return {}
         return {"Authorization": f"Bearer {self.onebot_access_token}"}
+
+    def project_local_file(self, path: str | Path) -> str:
+        """Project one Bot-owned host file into its OneBot container path.
+
+        The projection is fail-closed: paths outside the bound Bot data root
+        remain unchanged and use the existing authenticated stream fallback.
+        """
+
+        if not self.local_data_root or not self.onebot_shared_data_root:
+            return str(path)
+        try:
+            resolved_path = Path(path).resolve(strict=True)
+            resolved_root = Path(self.local_data_root).resolve(strict=True)
+            relative_path = resolved_path.relative_to(resolved_root)
+        except (OSError, ValueError):
+            return str(path)
+        raw_target_root = self.onebot_shared_data_root
+        target_root = (
+            PureWindowsPath(raw_target_root)
+            if PureWindowsPath(raw_target_root).drive
+            else PurePosixPath(raw_target_root)
+        )
+        return str(target_root.joinpath(*relative_path.parts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,11 +192,13 @@ def resolve_instance_deployment_security(
         onebot_http_url = qq_channel_profile.onebot_http_url
         webhook_secret = qq_channel_profile.webhook_secret
         onebot_access_token = qq_channel_profile.onebot_access_token
+        onebot_shared_data_root = qq_channel_profile.onebot_shared_data_root
     elif canonical_bot_config:
         bot_id = ""
         onebot_http_url = "http://127.0.0.1:3001"
         webhook_secret = ""
         onebot_access_token = ""
+        onebot_shared_data_root = ""
     else:
         bot_id = _clean(getattr(config_module, "QQ_BOT_QQ", ""))
         onebot_http_url = (
@@ -179,6 +207,7 @@ def resolve_instance_deployment_security(
         )
         webhook_secret = _clean(getattr(config_module, "QQ_WEBHOOK_SECRET", ""))
         onebot_access_token = _clean(getattr(config_module, "QQ_ONEBOT_ACCESS_TOKEN", ""))
+        onebot_shared_data_root = ""
 
     if enabled and not compatibility and not canonical_bot_config:
         if not configured_profile_ref:
@@ -213,6 +242,12 @@ def resolve_instance_deployment_security(
             onebot_access_token=onebot_access_token,
             require_webhook_auth=enabled and (not compatibility or bool(webhook_secret)),
             require_self_id=enabled and bool(bot_id),
+            local_data_root=(
+                str(getattr(config_module, "DATA_ROOT", "") or "")
+                if compatibility
+                else ""
+            ),
+            onebot_shared_data_root=onebot_shared_data_root,
         ),
         admin=admin,
         satellite=satellite,

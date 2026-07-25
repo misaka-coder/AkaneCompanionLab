@@ -151,6 +151,7 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
             onebot_http_url="http://127.0.0.1:3101",
             webhook_secret="selected-webhook",
             onebot_access_token="selected-token",
+            onebot_shared_data_root="/srv/akane/bots/bot-a",
         )
         security = resolve_instance_deployment_security(
             context,
@@ -169,7 +170,12 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
         self.assertEqual(security.qq.onebot_http_url, "http://127.0.0.1:3101")
         self.assertEqual(security.qq.webhook_secret, "selected-webhook")
         self.assertEqual(security.qq.onebot_access_token, "selected-token")
+        self.assertEqual(
+            security.qq.onebot_shared_data_root,
+            "/srv/akane/bots/bot-a",
+        )
         self.assertNotIn("other-webhook", repr(security))
+        self.assertNotIn("/srv/akane", repr(security))
 
         mismatched = QQChannelDeploymentProfile(
             profile_ref="qq.other",

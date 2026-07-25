@@ -3094,10 +3094,16 @@ class NapCatQQGateway:
 
         resolved_path = path_obj.resolve()
         reply_to = self._claim_reply_message_id(context)
-        file_candidates = [
-            ("file_uri", resolved_path.as_uri()),
-            ("absolute_path", str(resolved_path)),
-        ]
+        onebot_path = self._onebot_file_path(resolved_path)
+        file_candidates: list[tuple[str, str]] = []
+        if onebot_path != str(resolved_path):
+            file_candidates.append(("shared_path", onebot_path))
+        file_candidates.extend(
+            [
+                ("file_uri", resolved_path.as_uri()),
+                ("absolute_path", str(resolved_path)),
+            ]
+        )
         inline_fallback_skipped = False
         try:
             if resolved_path.stat().st_size <= QQ_INLINE_IMAGE_MAX_BYTES:
@@ -3136,9 +3142,19 @@ class NapCatQQGateway:
             return {"ok": False, "reason": "audio_not_found"}
 
         reply_to = self._claim_reply_message_id(context)
-        file_candidates = [path_obj.resolve().as_uri(), str(path_obj.resolve())]
+        resolved_path = path_obj.resolve()
+        onebot_path = self._onebot_file_path(resolved_path)
+        file_candidates: list[tuple[str, str]] = []
+        if onebot_path != str(resolved_path):
+            file_candidates.append(("shared_path", onebot_path))
+        file_candidates.extend(
+            [
+                ("file_uri", resolved_path.as_uri()),
+                ("absolute_path", str(resolved_path)),
+            ]
+        )
         last_result = None
-        for file_value in file_candidates:
+        for transport, file_value in file_candidates:
             try:
                 plan = build_message_action(
                     self._outbound_target(context),
@@ -3150,7 +3166,7 @@ class NapCatQQGateway:
             last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
             if last_result.ok:
                 result = last_result.as_dict()
-                result["transport"] = "local_path"
+                result["transport"] = transport
                 return result
 
         staged = self._onebot_transport.stage_file(
@@ -3203,18 +3219,26 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "file_not_found"}
         safe_name = name or path_obj.name
-        try:
-            plan = build_upload_file_action(
-                self._outbound_target(context),
-                file_ref=clean_path,
-                name=safe_name,
-            )
-        except ValueError as exc:
-            return self._outbound_plan_failure(exc)
-        direct_result = self._send_outbound_plan(plan, timeout=20)
-        if direct_result.get("ok"):
-            direct_result["transport"] = "local_path"
-            return direct_result
+        resolved_path = path_obj.resolve()
+        onebot_path = self._onebot_file_path(resolved_path)
+        direct_candidates: list[tuple[str, str]] = []
+        if onebot_path != str(resolved_path):
+            direct_candidates.append(("shared_path", onebot_path))
+        direct_candidates.append(("local_path", str(resolved_path)))
+        direct_result: dict[str, Any] = {"ok": False, "reason": "file_delivery_not_attempted"}
+        for transport, file_ref in direct_candidates:
+            try:
+                plan = build_upload_file_action(
+                    self._outbound_target(context),
+                    file_ref=file_ref,
+                    name=safe_name,
+                )
+            except ValueError as exc:
+                return self._outbound_plan_failure(exc)
+            direct_result = self._send_outbound_plan(plan, timeout=60)
+            if direct_result.get("ok"):
+                direct_result["transport"] = transport
+                return direct_result
 
         staged = self._onebot_transport.stage_file(path_obj, filename=safe_name)
         if staged.ok:
@@ -3250,6 +3274,11 @@ class NapCatQQGateway:
         if not staged.ok:
             direct_result["staging_reason"] = staged.code
         return direct_result
+
+    def _onebot_file_path(self, path: Path) -> str:
+        if self._channel_config is None:
+            return str(path)
+        return self._channel_config.project_local_file(path)
 
     @staticmethod
     def _outbound_target(context: QQMessageContext) -> OutboundTarget:

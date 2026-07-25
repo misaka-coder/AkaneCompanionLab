@@ -6,7 +6,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -425,6 +425,14 @@ class BotRuntimeFactory:
                 runtime_config,
                 qq_channel_profile=qq_channel_profile,
             )
+            if deployment_security.qq.enabled and deployment_security.qq.onebot_shared_data_root:
+                deployment_security = replace(
+                    deployment_security,
+                    qq=replace(
+                        deployment_security.qq,
+                        local_data_root=str(runtime_layout.data_root),
+                    ),
+                )
             satellite_service = (
                 desktop_satellite_service
                 if desktop_satellite_service is not None

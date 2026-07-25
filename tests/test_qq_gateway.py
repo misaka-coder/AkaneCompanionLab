@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.qq_route_helpers import (
     apply_qq_current_outfit_visual,
@@ -2296,6 +2297,64 @@ class QQGatewayTests(unittest.TestCase):
         )
         final_payload = request.call_args_list[-1].kwargs["json"]
         self.assertEqual(final_payload["file"], "C:/NapCat/temp/capability.txt")
+
+    def test_send_file_projects_bot_owned_path_into_onebot_shared_root(self) -> None:
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"file_id": "shared-file-1"},
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bot_root = Path(temp_dir) / "bot-a"
+            output_path = bot_root / "workspace" / "Outputs" / "video.mp4"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_bytes(b"video")
+            channel = QQChannelRuntimeConfig(
+                enabled=True,
+                profile_ref="qq.bot-a",
+                bot_id=str(QQ_BOT_FIXTURE_ID),
+                onebot_http_url="http://127.0.0.1:3001",
+                webhook_secret="hook",
+                onebot_access_token="token",
+                require_webhook_auth=True,
+                require_self_id=True,
+                local_data_root=str(bot_root),
+                onebot_shared_data_root="/var/lib/akane/bot-a",
+            )
+            gateway = NapCatQQGateway(channel_config=channel)
+            context = QQMessageContext(
+                True,
+                "group_mention",
+                is_group=True,
+                target_id=QQ_FILE_GROUP_FIXTURE_ID,
+                group_id=QQ_FILE_GROUP_FIXTURE_ID,
+                user_id=QQ_MASTER_FIXTURE_ID,
+                session_id=f"qq_group_shared_{QQ_FILE_GROUP_FIXTURE_ID}",
+                profile_user_id=f"qq_group_shared_{QQ_FILE_GROUP_FIXTURE_ID}",
+            )
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=FakeResponse(),
+            ) as request:
+                result = gateway.send_file(
+                    context,
+                    file_path=str(output_path),
+                    name=output_path.name,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transport"], "shared_path")
+        self.assertEqual(request.call_count, 1)
+        payload = request.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["file"],
+            "/var/lib/akane/bot-a/workspace/Outputs/video.mp4",
+        )
 
     def test_send_generated_files_ignores_desktop_client_file_events(self) -> None:
         gateway = NapCatQQGateway()
