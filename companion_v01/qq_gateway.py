@@ -95,6 +95,10 @@ QQ_CHARACTER_SWITCH_PATTERNS = (
 )
 QQ_INLINE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 QQ_INLINE_FILE_MAX_BYTES = 4 * 1024 * 1024
+# QQ/NapCat may truncate longer group-file names by bytes rather than Unicode
+# characters.  Keep a small margin below the observed 100-byte boundary so a
+# multibyte title is never cut into invalid UTF-8 by the remote client.
+QQ_FILE_NAME_MAX_UTF8_BYTES = 96
 QQ_OUTFIT_LIST_COMMANDS = {
     "服装列表",
     "可用服装",
@@ -224,6 +228,30 @@ def _is_economy_status_query(text: str) -> bool:
     if re.fullmatch(rf"(?:我的|当前|现在|QQ)?{field}(?:当前|现在)?(?:多少|几|状态|查询)?[？?]?", compact):
         return True
     return False
+
+
+def _safe_qq_file_name(value: str, *, fallback: str) -> str:
+    clean_name = Path(str(value or fallback).replace("\\", "/")).name.strip()
+    if not clean_name:
+        clean_name = Path(str(fallback or "file").replace("\\", "/")).name.strip() or "file"
+    if len(clean_name.encode("utf-8")) <= QQ_FILE_NAME_MAX_UTF8_BYTES:
+        return clean_name
+
+    suffix = Path(clean_name).suffix
+    stem = clean_name[: -len(suffix)] if suffix else clean_name
+    marker = "…"
+    fixed_bytes = len((marker + suffix).encode("utf-8"))
+    stem_budget = max(1, QQ_FILE_NAME_MAX_UTF8_BYTES - fixed_bytes)
+    kept: list[str] = []
+    used_bytes = 0
+    for character in stem:
+        character_bytes = len(character.encode("utf-8"))
+        if used_bytes + character_bytes > stem_budget:
+            break
+        kept.append(character)
+        used_bytes += character_bytes
+    short_stem = "".join(kept).rstrip(" ._-") or "file"
+    return f"{short_stem}{marker}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -3218,7 +3246,8 @@ class NapCatQQGateway:
         path_obj = Path(clean_path)
         if not path_obj.exists():
             return {"ok": False, "reason": "file_not_found"}
-        safe_name = name or path_obj.name
+        requested_name = name or path_obj.name
+        safe_name = _safe_qq_file_name(requested_name, fallback=path_obj.name)
         resolved_path = path_obj.resolve()
         onebot_path = self._onebot_file_path(resolved_path)
         direct_candidates: list[tuple[str, str]] = []
@@ -3238,6 +3267,9 @@ class NapCatQQGateway:
             direct_result = self._send_outbound_plan(plan, timeout=60)
             if direct_result.get("ok"):
                 direct_result["transport"] = transport
+                if safe_name != requested_name:
+                    direct_result["filename_adjusted"] = True
+                    direct_result["display_name"] = safe_name
                 return direct_result
 
         staged = self._onebot_transport.stage_file(path_obj, filename=safe_name)
@@ -3253,6 +3285,9 @@ class NapCatQQGateway:
             staged_result = self._send_outbound_plan(staged_plan, timeout=30)
             if staged_result.get("ok"):
                 staged_result["transport"] = "stream_upload"
+                if safe_name != requested_name:
+                    staged_result["filename_adjusted"] = True
+                    staged_result["display_name"] = safe_name
                 return staged_result
             direct_result = staged_result
 
@@ -3267,6 +3302,9 @@ class NapCatQQGateway:
                 inline_result = self._send_outbound_plan(inline_plan, timeout=30)
                 if inline_result.get("ok"):
                     inline_result["transport"] = "base64"
+                    if safe_name != requested_name:
+                        inline_result["filename_adjusted"] = True
+                        inline_result["display_name"] = safe_name
                     return inline_result
                 direct_result = inline_result
         except (OSError, ValueError):

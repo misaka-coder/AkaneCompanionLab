@@ -2356,6 +2356,45 @@ class QQGatewayTests(unittest.TestCase):
             "/var/lib/akane/bot-a/workspace/Outputs/video.mp4",
         )
 
+    def test_send_file_shortens_multibyte_name_on_utf8_boundary(self) -> None:
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {"file_id": "short-name-file-1"},
+                }
+
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(
+            True,
+            "group_mention",
+            is_group=True,
+            target_id=QQ_FILE_GROUP_FIXTURE_ID,
+            group_id=QQ_FILE_GROUP_FIXTURE_ID,
+        )
+        long_name = f"{'袜学导论' * 12}.mp4"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "source.mp4"
+            output_path.write_bytes(b"video")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=FakeResponse(),
+            ) as request:
+                result = gateway.send_file(
+                    context,
+                    file_path=str(output_path),
+                    name=long_name,
+                )
+
+        payload = request.call_args.kwargs["json"]
+        self.assertLessEqual(len(payload["name"].encode("utf-8")), 96)
+        self.assertTrue(payload["name"].endswith("….mp4"))
+        self.assertTrue(result["filename_adjusted"])
+        self.assertEqual(result["display_name"], payload["name"])
+
     def test_send_generated_files_ignores_desktop_client_file_events(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
