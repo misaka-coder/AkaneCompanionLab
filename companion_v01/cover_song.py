@@ -21,8 +21,8 @@ from .generated_files_media import build_generated_media_info_projection
 
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 _PROTECTED_MEDIA_EXTENSIONS = {"kgm", "mflac", "mgg", "ncm", "qmc", "qmc0", "qmc3", "tkm"}
-_PIPELINE_VERSION = "rvc-cover-v1"
-_STEM_CACHE_VERSION = "rvc-cover-stems-v1"
+_PIPELINE_VERSION = "rvc-cover-v2"
+_STEM_CACHE_VERSION = "rvc-cover-stems-v2"
 
 
 class CoverSongError(RuntimeError):
@@ -665,67 +665,99 @@ class CoverSongService:
             "model_fingerprint": model_fingerprint_seconds,
         }
         rvc_timings: dict[str, float] = {}
+        conversion: dict[str, Any] = {}
         job_dir = self.generated_file_service.work_dir / "_cover_song_tmp" / uuid.uuid4().hex
         try:
             job_dir.mkdir(parents=True, exist_ok=True)
-            prepared = job_dir / "source.wav"
-            if not stems_cache_hit:
-                decode_started = time.perf_counter()
-                self._decode_source(source_path=source_path, output_path=prepared)
-                timings["decode"] = time.perf_counter() - decode_started
-            converted_vocals = job_dir / "converted_vocals.wav"
-            with self.provider.exclusive():
-                if not force_rebuild and self._valid_cached_stems(
-                    vocals=cached_vocals,
-                    instrumental=cached_instrumental,
-                    manifest=stem_manifest_path,
-                    cache_key=stem_cache_key,
-                ):
-                    vocals, instrumental = cached_vocals, cached_instrumental
-                    stems_cache_hit = True
-                else:
-                    separation_started = time.perf_counter()
-                    vocals, instrumental = self.provider.separate_vocals(source_path=prepared, work_dir=job_dir)
-                    timings["separation"] = time.perf_counter() - separation_started
-                    stem_cache_started = time.perf_counter()
-                    stems_cache_stored = self._store_stem_cache(
-                        vocals=vocals,
-                        instrumental=instrumental,
-                        cache_dir=stem_cache_dir,
-                        manifest_path=stem_manifest_path,
-                        cache_key=stem_cache_key,
-                        source_hash=source_hash,
-                        timestamp=effective_ts,
+            mixed_output = job_dir / f"cover.{normalized_format}"
+            full_renderer = getattr(self.provider, "render_full_cover", None)
+            if callable(full_renderer):
+                # The local full renderer performs Demucs and RVC in one request.
+                # It does not consume the legacy host-side stem cache.
+                stems_cache_hit = False
+                stems_cache_stored = False
+                render_started = time.perf_counter()
+                with self.provider.exclusive():
+                    conversion = full_renderer(
+                        source_path=source_path,
+                        output_path=mixed_output,
+                        model_name=model_name,
+                        output_format=normalized_format,
+                        pitch_shift=params["pitch_shift"],
+                        index_rate=params["index_rate"],
+                        filter_radius=params["filter_radius"],
+                        rms_mix_rate=params["rms_mix_rate"],
+                        protect=params["protect"],
+                        vocal_gain_db=params["vocal_gain_db"],
+                        instrumental_gain_db=params["instrumental_gain_db"],
                     )
-                    timings["stem_cache_write"] = time.perf_counter() - stem_cache_started
-                conversion_started = time.perf_counter()
-                conversion = self.provider.convert_voice(
-                    source_path=vocals,
-                    output_path=converted_vocals,
-                    model_name=model_name,
-                    pitch_shift=params["pitch_shift"],
-                    index_rate=params["index_rate"],
-                    filter_radius=params["filter_radius"],
-                    rms_mix_rate=params["rms_mix_rate"],
-                    protect=params["protect"],
-                )
-                timings["voice_conversion"] = time.perf_counter() - conversion_started
+                timings["local_full_pipeline"] = time.perf_counter() - render_started
                 rvc_timings = {
                     str(key): round(float(value), 3)
                     for key, value in dict(conversion.get("timings") or {}).items()
                     if isinstance(value, (int, float))
                 }
-            mixed_output = job_dir / f"cover.{normalized_format}"
-            mix_started = time.perf_counter()
-            self._mix_tracks(
-                converted_vocals=converted_vocals,
-                instrumental=instrumental,
-                output_path=mixed_output,
-                output_format=normalized_format,
-                vocal_gain_db=params["vocal_gain_db"],
-                instrumental_gain_db=params["instrumental_gain_db"],
-            )
-            timings["mix"] = time.perf_counter() - mix_started
+            else:
+                prepared = job_dir / "source.wav"
+                if not stems_cache_hit:
+                    decode_started = time.perf_counter()
+                    self._decode_source(source_path=source_path, output_path=prepared)
+                    timings["decode"] = time.perf_counter() - decode_started
+                converted_vocals = job_dir / "converted_vocals.wav"
+                with self.provider.exclusive():
+                    if not force_rebuild and self._valid_cached_stems(
+                        vocals=cached_vocals,
+                        instrumental=cached_instrumental,
+                        manifest=stem_manifest_path,
+                        cache_key=stem_cache_key,
+                    ):
+                        vocals, instrumental = cached_vocals, cached_instrumental
+                        stems_cache_hit = True
+                    else:
+                        separation_started = time.perf_counter()
+                        vocals, instrumental = self.provider.separate_vocals(
+                            source_path=prepared,
+                            work_dir=job_dir,
+                        )
+                        timings["separation"] = time.perf_counter() - separation_started
+                        stem_cache_started = time.perf_counter()
+                        stems_cache_stored = self._store_stem_cache(
+                            vocals=vocals,
+                            instrumental=instrumental,
+                            cache_dir=stem_cache_dir,
+                            manifest_path=stem_manifest_path,
+                            cache_key=stem_cache_key,
+                            source_hash=source_hash,
+                            timestamp=effective_ts,
+                        )
+                        timings["stem_cache_write"] = time.perf_counter() - stem_cache_started
+                    conversion_started = time.perf_counter()
+                    conversion = self.provider.convert_voice(
+                        source_path=vocals,
+                        output_path=converted_vocals,
+                        model_name=model_name,
+                        pitch_shift=params["pitch_shift"],
+                        index_rate=params["index_rate"],
+                        filter_radius=params["filter_radius"],
+                        rms_mix_rate=params["rms_mix_rate"],
+                        protect=params["protect"],
+                    )
+                    timings["voice_conversion"] = time.perf_counter() - conversion_started
+                    rvc_timings = {
+                        str(key): round(float(value), 3)
+                        for key, value in dict(conversion.get("timings") or {}).items()
+                        if isinstance(value, (int, float))
+                    }
+                mix_started = time.perf_counter()
+                self._mix_tracks(
+                    converted_vocals=converted_vocals,
+                    instrumental=instrumental,
+                    output_path=mixed_output,
+                    output_format=normalized_format,
+                    vocal_gain_db=params["vocal_gain_db"],
+                    instrumental_gain_db=params["instrumental_gain_db"],
+                )
+                timings["mix"] = time.perf_counter() - mix_started
             if not mixed_output.exists() or mixed_output.stat().st_size <= 0:
                 raise CoverSongError(
                     stage="mix",

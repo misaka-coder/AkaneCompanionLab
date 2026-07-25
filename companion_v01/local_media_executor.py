@@ -18,6 +18,7 @@ from .cover_song import CoverSongError
 
 
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
+_MEDIA_SUFFIXES = _AUDIO_SUFFIXES | {".avi", ".mkv", ".mov", ".mp4"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _MAX_ERROR_TEXT = 240
 
@@ -339,6 +340,82 @@ class LocalMediaExecutorClient:
                 timings = {}
         return bytes(response.content), timings
 
+    def render_cover_song(
+        self,
+        *,
+        source_path: Path,
+        model_name: str,
+        demucs_model: str,
+        output_format: str,
+        pitch_shift: int,
+        index_rate: float,
+        filter_radius: int,
+        rms_mix_rate: float,
+        protect: float,
+        vocal_gain_db: float,
+        instrumental_gain_db: float,
+    ) -> tuple[bytes, dict[str, Any]]:
+        normalized_format = str(output_format or "mp3").strip().lower().lstrip(".")
+        if normalized_format not in {"mp3", "flac", "wav"}:
+            raise LocalMediaExecutorError(
+                "local_cover_format_invalid",
+                "本地翻唱不支持这个输出格式。",
+            )
+        try:
+            with source_path.open("rb") as source_file:
+                response = self.session.post(
+                    f"{self.base_url}/v1/rvc/cover",
+                    files={
+                        "file": (
+                            source_path.name,
+                            source_file,
+                            _audio_content_type(source_path.suffix),
+                        )
+                    },
+                    data={
+                        "model_name": model_name,
+                        "demucs_model": str(demucs_model or "htdemucs"),
+                        "output_format": normalized_format,
+                        "pitch_shift": str(int(pitch_shift)),
+                        "index_rate": str(float(index_rate)),
+                        "filter_radius": str(int(filter_radius)),
+                        "rms_mix_rate": str(float(rms_mix_rate)),
+                        "protect": str(float(protect)),
+                        "vocal_gain_db": str(float(vocal_gain_db)),
+                        "instrumental_gain_db": str(float(instrumental_gain_db)),
+                    },
+                    timeout=self.timeout_seconds,
+                )
+        except Exception as exc:
+            raise LocalMediaExecutorError(
+                "local_cover_unreachable",
+                "本地完整翻唱服务暂时无法连接。",
+            ) from exc
+        if not response.ok:
+            raise LocalMediaExecutorError(
+                _response_reason(response, "local_cover_failed"),
+                _response_message(response, "本地完整翻唱没有成功。"),
+            )
+        if not response.content:
+            raise LocalMediaExecutorError(
+                "local_cover_output_missing",
+                "本地完整翻唱没有返回成品音频。",
+            )
+        timings: dict[str, Any] = {}
+        raw_timings = str(response.headers.get("X-Akane-Cover-Timings") or "").strip()
+        if raw_timings:
+            try:
+                decoded = json.loads(raw_timings)
+                if isinstance(decoded, dict):
+                    timings = {
+                        str(key): round(float(value), 3)
+                        for key, value in decoded.items()
+                        if isinstance(value, (int, float))
+                    }
+            except Exception:
+                timings = {}
+        return bytes(response.content), timings
+
 
 class LocalRvcExecutorProvider:
     """CoverSongService provider backed by the PC-side media host."""
@@ -357,7 +434,8 @@ class LocalRvcExecutorProvider:
         self.client = client
         self.timeout_seconds = client.timeout_seconds
         self.default_model = str(default_model or "").strip()
-        self.separation_model = str(separation_model or "HP5_only_main_vocal").strip()
+        self.rvc_separation_model = str(separation_model or "HP5_only_main_vocal").strip()
+        self.separation_model = "htdemucs"
         with self._locks_guard:
             self._operation_lock = self._locks.setdefault(client.base_url, threading.RLock())
 
@@ -365,7 +443,9 @@ class LocalRvcExecutorProvider:
         return self._operation_lock
 
     def capability_status(self) -> dict[str, Any]:
-        status = self.client.capability_status().get("rvc") or {}
+        capabilities = self.client.capability_status()
+        status = capabilities.get("rvc") or {}
+        separation = capabilities.get("separation") or {}
         if not bool(status.get("ready")):
             return {
                 "enabled": False,
@@ -374,6 +454,12 @@ class LocalRvcExecutorProvider:
             }
         if int(status.get("modelCount") or 0) <= 0:
             return {"enabled": False, "status": "missing_model", "reason": "rvc_voice_models_missing"}
+        if not bool(separation.get("ready")):
+            return {
+                "enabled": False,
+                "status": "unavailable",
+                "reason": str(separation.get("reason") or "local_demucs_unavailable"),
+            }
         return {"enabled": True, "status": "ready", "reason": ""}
 
     def list_voice_models(
@@ -437,7 +523,7 @@ class LocalRvcExecutorProvider:
         try:
             vocals, instrumental = self.client.separate_rvc_vocals(
                 source_path=source_path,
-                separation_model=self.separation_model,
+                separation_model=self.rvc_separation_model,
             )
         except LocalMediaExecutorError as exc:
             raise CoverSongError(
@@ -484,6 +570,49 @@ class LocalRvcExecutorProvider:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(audio)
         return {"index_path": "", "info": "Success", "timings": timings}
+
+    def render_full_cover(
+        self,
+        *,
+        source_path: Path,
+        output_path: Path,
+        model_name: str,
+        output_format: str,
+        pitch_shift: int,
+        index_rate: float,
+        filter_radius: int,
+        rms_mix_rate: float,
+        protect: float,
+        vocal_gain_db: float,
+        instrumental_gain_db: float,
+    ) -> dict[str, Any]:
+        try:
+            audio, timings = self.client.render_cover_song(
+                source_path=source_path,
+                model_name=model_name,
+                demucs_model=self.separation_model,
+                output_format=output_format,
+                pitch_shift=pitch_shift,
+                index_rate=index_rate,
+                filter_radius=filter_radius,
+                rms_mix_rate=rms_mix_rate,
+                protect=protect,
+                vocal_gain_db=vocal_gain_db,
+                instrumental_gain_db=instrumental_gain_db,
+            )
+        except LocalMediaExecutorError as exc:
+            raise CoverSongError(
+                stage="local_pipeline",
+                reason=exc.reason,
+                public_message=exc.public_message,
+            ) from exc
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(audio)
+        return {
+            "index_path": "",
+            "info": "Success",
+            "timings": timings,
+        }
 
 
 def _read_stem_archive(
@@ -583,6 +712,10 @@ def _audio_content_type(suffix: str) -> str:
         ".opus": "audio/opus",
         ".wav": "audio/wav",
         ".webm": "audio/webm",
+        ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska",
+        ".mov": "video/quicktime",
+        ".mp4": "video/mp4",
     }.get(str(suffix or "").lower(), "application/octet-stream")
 
 
@@ -602,7 +735,7 @@ def _safe_float(value: Any) -> float | None:
 
 def safe_uploaded_suffix(filename: str) -> str:
     suffix = Path(str(filename or "")).suffix.lower()
-    return suffix if suffix in _AUDIO_SUFFIXES else ".bin"
+    return suffix if suffix in _MEDIA_SUFFIXES else ".bin"
 
 
 def safe_model_fingerprint(path: Path, *, indices: list[Path] | None = None) -> dict[str, Any]:

@@ -281,6 +281,7 @@ def create_app(
         package_root=demucs_package_root,
     )
     demucs_lock = threading.RLock()
+    cover_lock = threading.RLock()
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -490,6 +491,105 @@ def create_app(
         finally:
             _unlink_quietly(source_path)
 
+    @app.post("/v1/rvc/cover")
+    async def render_cover(
+        file: UploadFile = File(...),
+        model_name: str = Form(...),
+        demucs_model: str = Form("htdemucs"),
+        output_format: str = Form("mp3"),
+        pitch_shift: int = Form(0),
+        index_rate: float = Form(0.6),
+        filter_radius: int = Form(3),
+        rms_mix_rate: float = Form(0.25),
+        protect: float = Form(0.33),
+        vocal_gain_db: float = Form(0.0),
+        instrumental_gain_db: float = Form(-1.0),
+    ) -> Response:
+        if not demucs_runtime.ready:
+            raise HTTPException(
+                status_code=503,
+                detail={"reason": "demucs_not_found", "message": "本地 Demucs 暂时不可用。"},
+            )
+        normalized_demucs = str(demucs_model or "htdemucs").strip()
+        if normalized_demucs not in {"htdemucs", "htdemucs_ft"}:
+            raise HTTPException(
+                status_code=400,
+                detail={"reason": "demucs_model_not_allowed", "message": "请求的 Demucs 模型不受支持。"},
+            )
+        normalized_format = str(output_format or "mp3").strip().lower().lstrip(".")
+        if normalized_format not in {"mp3", "flac", "wav"}:
+            raise HTTPException(
+                status_code=400,
+                detail={"reason": "cover_output_format_not_allowed", "message": "请求的翻唱格式不受支持。"},
+            )
+        source_path = await _store_upload(file)
+        started = time.perf_counter()
+        timings: dict[str, float | str] = {}
+        try:
+            with cover_lock:
+                with tempfile.TemporaryDirectory(prefix="akane_local_cover_") as tmp:
+                    job_dir = Path(tmp)
+                    with demucs_lock:
+                        separation_started = time.perf_counter()
+                        stems = demucs_runtime.separate(
+                            source_path=source_path,
+                            output_root=job_dir / "stems",
+                            model=normalized_demucs,
+                        )
+                        timings["separation"] = round(time.perf_counter() - separation_started, 3)
+                    vocals = stems.get("vocals")
+                    instrumental = stems.get("instrumental")
+                    if not isinstance(vocals, Path) or not isinstance(instrumental, Path):
+                        raise RuntimeError("demucs_outputs_missing")
+                    converted_vocals = job_dir / "converted_vocals.wav"
+                    conversion_started = time.perf_counter()
+                    with rvc_provider.exclusive():
+                        conversion = rvc_provider.convert_voice(
+                            source_path=vocals,
+                            output_path=converted_vocals,
+                            model_name=str(model_name or "").strip(),
+                            pitch_shift=max(-24, min(24, int(pitch_shift))),
+                            index_rate=max(0.0, min(1.0, float(index_rate))),
+                            filter_radius=max(0, min(7, int(filter_radius))),
+                            rms_mix_rate=max(0.0, min(1.0, float(rms_mix_rate))),
+                            protect=max(0.0, min(0.5, float(protect))),
+                        )
+                    timings["voice_conversion"] = round(time.perf_counter() - conversion_started, 3)
+                    for key, value in dict(conversion.get("timings") or {}).items():
+                        if isinstance(value, (int, float)):
+                            timings[f"rvc_{key}"] = round(float(value), 3)
+                    output_path = job_dir / f"cover.{normalized_format}"
+                    mix_started = time.perf_counter()
+                    _mix_local_cover(
+                        ffmpeg_path=ffmpeg_path,
+                        converted_vocals=converted_vocals,
+                        instrumental=instrumental,
+                        output_path=output_path,
+                        output_format=normalized_format,
+                        vocal_gain_db=max(-12.0, min(12.0, float(vocal_gain_db))),
+                        instrumental_gain_db=max(-12.0, min(6.0, float(instrumental_gain_db))),
+                    )
+                    timings["mix"] = round(time.perf_counter() - mix_started, 3)
+                    timings["total"] = round(time.perf_counter() - started, 3)
+                    timings["device"] = str(stems.get("device_used") or "")
+                    return Response(
+                        content=output_path.read_bytes(),
+                        media_type={
+                            "mp3": "audio/mpeg",
+                            "flac": "audio/flac",
+                            "wav": "audio/wav",
+                        }[normalized_format],
+                        headers={
+                            "X-Akane-Cover-Timings": json.dumps(timings, ensure_ascii=True),
+                        },
+                    )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _http_error("local_cover_failed", "本地完整翻唱失败。", exc) from exc
+        finally:
+            _unlink_quietly(source_path)
+
     return app
 
 
@@ -603,6 +703,57 @@ def _render_stem_for_transfer(
     if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
         raise RuntimeError("demucs_output_encode_failed")
     return output_path
+
+
+def _mix_local_cover(
+    *,
+    ffmpeg_path: Path,
+    converted_vocals: Path,
+    instrumental: Path,
+    output_path: Path,
+    output_format: str,
+    vocal_gain_db: float,
+    instrumental_gain_db: float,
+) -> None:
+    codec_args = (
+        ["-c:a", "libmp3lame", "-b:a", "320k"]
+        if output_format == "mp3"
+        else (["-c:a", "flac"] if output_format == "flac" else ["-c:a", "pcm_s24le"])
+    )
+    filter_complex = (
+        f"[0:a]volume={vocal_gain_db:.3f}dB[v];"
+        f"[1:a]volume={instrumental_gain_db:.3f}dB[i];"
+        # RVC bundles FFmpeg 4.3, whose amix lacks normalize=0. Undo its
+        # two-input averaging before the limiter so the cover is not 6 dB quiet.
+        "[v][i]amix=inputs=2:duration=longest:dropout_transition=0,"
+        "volume=2.0,"
+        "alimiter=limit=0.95:attack=5:release=50[m]"
+    )
+    completed = subprocess.run(
+        [
+            str(ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(converted_vocals),
+            "-i",
+            str(instrumental),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[m]",
+            *codec_args,
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        check=False,
+    )
+    if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+        raise RuntimeError("local_cover_mix_failed")
 
 
 def _last_json_object(value: str) -> dict[str, Any]:

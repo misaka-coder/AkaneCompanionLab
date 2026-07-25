@@ -113,6 +113,55 @@ class LocalMediaExecutorTests(unittest.TestCase):
         self.assertEqual(session.posts[0]["data"]["output_format"], "mp3")
         self.assertEqual(session.posts[0]["files"]["file"][0], "song.flac")
 
+    def test_cover_song_runs_as_one_local_request_and_returns_final_audio(self) -> None:
+        session = _Session()
+        session.post_responses.append(
+            _Response(
+                content=b"final cover mp3",
+                headers={
+                    "X-Akane-Cover-Timings": json.dumps(
+                        {
+                            "separation": 6.2,
+                            "voice_conversion": 1.4,
+                            "mix": 0.3,
+                            "total": 7.9,
+                            "device": "cuda",
+                        }
+                    )
+                },
+            )
+        )
+        client = LocalMediaExecutorClient(base_url="http://127.0.0.1:19879", session=session)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "song.mp4"
+            source.write_bytes(b"compressed source")
+            audio, timings = client.render_cover_song(
+                source_path=source,
+                model_name="Akie-test.pth",
+                demucs_model="htdemucs",
+                output_format="mp3",
+                pitch_shift=1,
+                index_rate=0.6,
+                filter_radius=3,
+                rms_mix_rate=0.25,
+                protect=0.33,
+                vocal_gain_db=0.0,
+                instrumental_gain_db=-1.0,
+            )
+
+        self.assertEqual(audio, b"final cover mp3")
+        self.assertEqual(timings["separation"], 6.2)
+        self.assertEqual(timings["total"], 7.9)
+        self.assertNotIn("device", timings)
+        request = session.posts[0]
+        self.assertEqual(request["url"], "http://127.0.0.1:19879/v1/rvc/cover")
+        self.assertEqual(request["files"]["file"][0], "song.mp4")
+        self.assertEqual(request["files"]["file"][2], "video/mp4")
+        self.assertEqual(request["data"]["demucs_model"], "htdemucs")
+        self.assertEqual(request["data"]["output_format"], "mp3")
+        self.assertEqual(request["data"]["model_name"], "Akie-test.pth")
+
     def test_rvc_provider_transfers_stems_and_converted_audio_without_paths(self) -> None:
         archive_buffer = io.BytesIO()
         with zipfile.ZipFile(archive_buffer, "w") as archive:

@@ -79,6 +79,29 @@ class _FakeRvcProvider:
         }
 
 
+class _FakeLocalPipelineProvider(_FakeRvcProvider):
+    provider_id = "fake_local_rvc"
+    separation_model = "htdemucs"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.render_calls = 0
+
+    def render_full_cover(self, *, source_path: Path, output_path: Path, **kwargs):
+        self.render_calls += 1
+        shutil.copy2(source_path, output_path)
+        return {
+            "index_path": "",
+            "info": "Success.",
+            "timings": {
+                "separation": 6.2,
+                "voice_conversion": 1.4,
+                "mix": 0.3,
+                "total": 7.9,
+            },
+        }
+
+
 class _TestCoverSongService(CoverSongService):
     def _probe_duration(self, path: Path) -> float:
         return 1.0
@@ -167,6 +190,43 @@ class CoverSongTests(unittest.TestCase):
             self.assertEqual(first["generated"]["generated_handle"], "gen_001")
             self.assertEqual(second["generated"]["generated_handle"], "gen_002")
             self.assertTrue(Path(second["generated"]["absolute_path"]).exists())
+
+    def test_local_full_pipeline_skips_old_stem_transfer_chain_and_reuses_final_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service, _old_provider, _generated = self._build_service(Path(temp_dir))
+            provider = _FakeLocalPipelineProvider()
+            service.provider = provider
+
+            first = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                song_title="测试歌曲",
+                voice_model="auto",
+                output_format="wav",
+                delivery="none",
+                timestamp=200,
+            )
+            second = service.cover_song(
+                profile_user_id="user",
+                session_id="session",
+                source_target="audio_001",
+                song_title="测试歌曲",
+                voice_model="auto",
+                output_format="wav",
+                delivery="none",
+                timestamp=300,
+            )
+
+            self.assertTrue(first["ok"])
+            self.assertFalse(first["cache_hit"])
+            self.assertTrue(second["ok"])
+            self.assertTrue(second["cache_hit"])
+            self.assertEqual(provider.render_calls, 1)
+            self.assertEqual(provider.separation_calls, 0)
+            self.assertEqual(provider.conversion_calls, 0)
+            self.assertIn("local_full_pipeline", first["processing"]["seconds"])
+            self.assertEqual(first["processing"]["rvc"]["separation"], 6.2)
 
     def test_cover_song_restores_cached_song_without_new_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

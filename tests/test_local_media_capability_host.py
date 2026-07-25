@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.akane_local_capability_host import LocalDemucsRuntime
+from scripts.akane_local_capability_host import LocalDemucsRuntime, _mix_local_cover
 
 
 class LocalMediaCapabilityHostTests(unittest.TestCase):
@@ -72,6 +72,38 @@ class LocalMediaCapabilityHostTests(unittest.TestCase):
         status = runtime.public_status()
         self.assertFalse(status["ready"])
         self.assertEqual(status["reason"], "demucs_cuda_runtime_not_configured")
+
+    def test_local_cover_mix_compensates_for_legacy_amix_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            vocals = root / "vocals.wav"
+            instrumental = root / "instrumental.wav"
+            output = root / "cover.mp3"
+            vocals.write_bytes(b"vocals")
+            instrumental.write_bytes(b"instrumental")
+            captured: dict[str, object] = {}
+
+            def fake_run(command, **_kwargs):
+                captured["command"] = command
+                output.write_bytes(b"mixed")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with patch("scripts.akane_local_capability_host.subprocess.run", side_effect=fake_run):
+                _mix_local_cover(
+                    ffmpeg_path=root / "ffmpeg.exe",
+                    converted_vocals=vocals,
+                    instrumental=instrumental,
+                    output_path=output,
+                    output_format="mp3",
+                    vocal_gain_db=0.0,
+                    instrumental_gain_db=-1.0,
+                )
+
+        command = captured["command"]
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("amix=inputs=2:duration=longest:dropout_transition=0", filter_graph)
+        self.assertIn("volume=2.0", filter_graph)
+        self.assertIn("alimiter=limit=0.95", filter_graph)
 
 
 if __name__ == "__main__":
