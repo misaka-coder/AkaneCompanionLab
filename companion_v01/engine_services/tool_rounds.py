@@ -589,7 +589,13 @@ def build_mcp_adapter_tool_handlers(
     for server_id, server_config in sorted(servers.items(), key=lambda item: str(item[0])):
         if not isinstance(server_config, dict) or not bool(server_config.get("enabled")):
             continue
-        if not str(server_config.get("command") or "").strip():
+        transport = str(server_config.get("transport") or "stdio").strip().lower().replace("-", "_")
+        configured = (
+            bool(str(server_config.get("url") or "").strip())
+            if transport in {"http", "streamablehttp", "streamable_http"}
+            else bool(str(server_config.get("command") or "").strip())
+        )
+        if not configured:
             continue
         tools = [tool for tool in server_config.get("tools") or [] if isinstance(tool, dict)]
         prompt_tools = [tool for tool in tools if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))]

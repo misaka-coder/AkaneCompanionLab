@@ -13,6 +13,7 @@ from companion_v01.local_capability_config import (
     build_provider_config_entry,
     build_workflow_config_entry,
     capability_approval_mode,
+    normalize_mcp_server_config_payload,
     normalize_mcp_tool_discovery_payload,
     project_capcore_catalog_fields,
     with_capability_approval_metadata,
@@ -20,6 +21,37 @@ from companion_v01.local_capability_config import (
 
 
 class LocalCapabilityApprovalTests(unittest.TestCase):
+    def test_streamable_http_mcp_config_accepts_placeholder_headers(self) -> None:
+        result = normalize_mcp_server_config_payload(
+            "search",
+            {
+                "enabled": True,
+                "transport": "streamable_http",
+                "url": "https://mcp.example.test/rpc",
+                "headers": {"Authorization": "Bearer ${ANYSEARCH_API_KEY}"},
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transport"], "streamable_http")
+        self.assertEqual(result["url"], "https://mcp.example.test/rpc")
+        self.assertEqual(result["headers"], {"Authorization": "Bearer ${ANYSEARCH_API_KEY}"})
+        self.assertEqual(result["command"], "")
+
+    def test_streamable_http_mcp_config_rejects_literal_header_secret(self) -> None:
+        result = normalize_mcp_server_config_payload(
+            "search",
+            {
+                "enabled": True,
+                "transport": "streamable_http",
+                "url": "https://mcp.example.test/rpc",
+                "headers": {"Authorization": "Bearer literal-secret"},
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "mcp_server_headers_invalid")
+
     def test_capability_approval_mode_preserves_legacy_public_modes(self) -> None:
         self.assertEqual(capability_approval_mode(risk="low"), APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
         self.assertEqual(capability_approval_mode(risk="high"), APPROVAL_MODE_ASK_EACH_TIME)

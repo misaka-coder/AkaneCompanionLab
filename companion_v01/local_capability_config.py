@@ -81,6 +81,8 @@ PRIVATE_MCP_SERVER_FIELDS = {
     "args",
     "cwd",
     "env",
+    "url",
+    "headers",
     "tools",
     "lowRiskAllowlist",
     "lastDiscovery",
@@ -103,6 +105,7 @@ MCP_SERVER_PATH_MAX_LENGTH = 500
 MCP_SERVER_ARG_MAX_LENGTH = 240
 MCP_SERVER_ARG_MAX_COUNT = 24
 MCP_SERVER_ENV_MAX_COUNT = 12
+MCP_SERVER_HEADER_MAX_COUNT = 12
 MCP_TOOL_NAME_MAX_LENGTH = 80
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
 MCP_TOOL_MAX_COUNT = 64
@@ -114,6 +117,7 @@ WORKFLOW_COMFYUI_SLOT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]{1,60}\.inputs\.[A-Za
 WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 MCP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+MCP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,80}$")
 MCP_SAFE_TYPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
@@ -830,11 +834,14 @@ def save_mcp_server_config(
         "args": normalized["args"],
         "cwd": normalized["cwd"],
         "env": normalized["env"],
+        "url": normalized["url"],
+        "headers": normalized["headers"],
         "updatedAt": _now_iso(),
     }
-    if existing.get("command") == normalized["command"] and isinstance(existing.get("tools"), list):
+    same_endpoint = _mcp_server_endpoint_identity(existing) == _mcp_server_endpoint_identity(next_server)
+    if same_endpoint and isinstance(existing.get("tools"), list):
         next_server["tools"] = list(existing.get("tools") or [])
-    if existing.get("command") == normalized["command"] and isinstance(existing.get("lastDiscovery"), Mapping):
+    if same_endpoint and isinstance(existing.get("lastDiscovery"), Mapping):
         next_server["lastDiscovery"] = dict(existing.get("lastDiscovery") or {})
     servers[safe_server_id] = next_server
     write_capability_config(
@@ -880,6 +887,8 @@ def get_mcp_server_runtime_config(
         "args": list(server.get("args") or []) if isinstance(server.get("args"), list) else [],
         "cwd": str(server.get("cwd") or ""),
         "env": dict(server.get("env") or {}) if isinstance(server.get("env"), Mapping) else {},
+        "url": str(server.get("url") or ""),
+        "headers": dict(server.get("headers") or {}) if isinstance(server.get("headers"), Mapping) else {},
         "tools": list(server.get("tools") or []) if isinstance(server.get("tools"), list) else [],
         "lowRiskAllowlist": list(server.get("lowRiskAllowlist") or [])
         if isinstance(server.get("lowRiskAllowlist"), list)
@@ -1655,10 +1664,11 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
     safe_id = _safe_mcp_server_id(server_id)
     enabled = bool(config.get("enabled"))
     command = str(config.get("command") or "").strip()
+    url = str(config.get("url") or "").strip()
     transport = str(config.get("transport") or "stdio").strip() or "stdio"
     tools = config.get("tools") if isinstance(config.get("tools"), list) else []
     last_discovery = config.get("lastDiscovery") if isinstance(config.get("lastDiscovery"), Mapping) else {}
-    configured = bool(command and transport == "stdio")
+    configured = bool((transport == "stdio" and command) or (transport == "streamable_http" and url))
     discovered = bool(last_discovery.get("status") == "ready")
     status = (
         "ready"
@@ -1671,7 +1681,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
     )
     reason = ""
     if status == "missing_config":
-        reason = "mcp_server_command_missing"
+        reason = "mcp_server_url_missing" if transport == "streamable_http" else "mcp_server_command_missing"
     elif status == "configured":
         reason = "mcp_tools_not_discovered"
     elif status == "disabled":
@@ -1682,7 +1692,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         "kind": "provider",
         "type": "mcp_provider",
         "source": "mcp",
-        "adapter": "mcp_stdio",
+        "adapter": "mcp_streamable_http" if transport == "streamable_http" else "mcp_stdio",
         "executionMode": "external",
         "name": str(config.get("displayName") or safe_id or "MCP Server").strip()[:80],
         "enabled": enabled,
@@ -1693,6 +1703,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         "commandName": _safe_path_basename(command),
         "argsCount": len(config.get("args") or []) if isinstance(config.get("args"), list) else 0,
         "envCount": len(config.get("env") or {}) if isinstance(config.get("env"), Mapping) else 0,
+        "headerCount": len(config.get("headers") or {}) if isinstance(config.get("headers"), Mapping) else 0,
         "toolCount": len(tools),
         "lastDiscovery": {
             "status": str(last_discovery.get("status") or "")[:80],
@@ -1845,19 +1856,27 @@ def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str
 
 def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     payload = payload if isinstance(payload, Mapping) else {}
-    transport = str(payload.get("transport") or "stdio").strip().lower()
-    if transport != "stdio":
+    transport = str(payload.get("transport") or "stdio").strip().lower().replace("-", "_")
+    if transport in {"http", "streamablehttp"}:
+        transport = "streamable_http"
+    if transport not in {"stdio", "streamable_http"}:
         return {"ok": False, "status": "unsupported_transport", "reason": "mcp_transport_not_supported"}
-    command = _safe_private_mcp_path(payload.get("command"))
-    if not command:
+    command = _safe_private_mcp_path(payload.get("command")) if transport == "stdio" else ""
+    if transport == "stdio" and not command:
         return {"ok": False, "status": "missing_config", "reason": "mcp_server_command_required"}
-    args = _safe_mcp_args(payload.get("args"))
+    args = _safe_mcp_args(payload.get("args")) if transport == "stdio" else []
     if args is None:
         return {"ok": False, "status": "invalid_config", "reason": "mcp_server_args_invalid"}
-    env = _safe_mcp_env(payload.get("env"))
+    env = _safe_mcp_env(payload.get("env")) if transport == "stdio" else {}
     if env is None:
         return {"ok": False, "status": "invalid_config", "reason": "mcp_server_env_invalid"}
-    cwd = _safe_private_mcp_path(payload.get("cwd"))
+    cwd = _safe_private_mcp_path(payload.get("cwd")) if transport == "stdio" else ""
+    url = _safe_mcp_http_url(payload.get("url") or payload.get("endpoint")) if transport == "streamable_http" else ""
+    if transport == "streamable_http" and not url:
+        return {"ok": False, "status": "missing_config", "reason": "mcp_server_url_required"}
+    headers = _safe_mcp_headers(payload.get("headers")) if transport == "streamable_http" else {}
+    if headers is None:
+        return {"ok": False, "status": "invalid_config", "reason": "mcp_server_headers_invalid"}
     return {
         "ok": True,
         "status": "valid",
@@ -1869,6 +1888,8 @@ def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, An
         "args": args,
         "cwd": cwd,
         "env": env,
+        "url": url,
+        "headers": headers,
     }
 
 
@@ -2447,6 +2468,8 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
             "args": normalized["args"],
             "cwd": normalized["cwd"],
             "env": normalized["env"],
+            "url": normalized["url"],
+            "headers": normalized["headers"],
         }
         low_risk_allowlist = _safe_mcp_tool_name_list(
             (raw_config or {}).get("lowRiskAllowlist") or (raw_config or {}).get("low_risk_allowlist")
@@ -2827,6 +2850,52 @@ def _safe_private_mcp_path(value: Any) -> str:
     if "://" in text or any(marker in lowered for marker in MCP_SECRET_MARKERS):
         return ""
     return text[:MCP_SERVER_PATH_MAX_LENGTH]
+
+
+def _safe_mcp_http_url(value: Any) -> str:
+    text = str(value or "").strip().replace("\r", "").replace("\n", "")
+    if not text or len(text) > MCP_SERVER_PATH_MAX_LENGTH or _mcp_text_has_secret_literal(text):
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.params, parsed.query, ""))
+
+
+def _safe_mcp_headers(value: Any) -> dict[str, str] | None:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        return None
+    headers: dict[str, str] = {}
+    for raw_key, raw_value in list(value.items())[:MCP_SERVER_HEADER_MAX_COUNT]:
+        key = str(raw_key or "").strip()
+        text = str(raw_value or "").strip().replace("\r", "").replace("\n", "")
+        if not key or not MCP_HEADER_NAME_RE.fullmatch(key) or not text:
+            return None
+        if _mcp_text_has_secret_literal(text):
+            return None
+        headers[key] = text[:MCP_SERVER_PATH_MAX_LENGTH]
+    return headers
+
+
+def _mcp_server_endpoint_identity(server: Mapping[str, Any]) -> tuple[Any, ...]:
+    transport = str(server.get("transport") or "stdio").strip().lower().replace("-", "_")
+    if transport in {"http", "streamablehttp"}:
+        transport = "streamable_http"
+    if transport == "streamable_http":
+        headers = server.get("headers") if isinstance(server.get("headers"), Mapping) else {}
+        return (
+            transport,
+            str(server.get("url") or ""),
+            tuple(sorted((str(key), str(value)) for key, value in headers.items())),
+        )
+    return (
+        "stdio",
+        str(server.get("command") or ""),
+        tuple(str(item) for item in server.get("args") or []),
+        str(server.get("cwd") or ""),
+    )
 
 
 def _mcp_text_has_secret_literal(value: str) -> bool:

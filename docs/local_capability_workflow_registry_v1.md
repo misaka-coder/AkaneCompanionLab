@@ -2678,8 +2678,9 @@ Implemented Phase 6 foundation:
 
 - Profile-scoped MCP server config now lives in
   `users_data/<profile_user_id>/capabilities/capabilities.yaml` under
-  `mcpServers`. V1 supports `stdio` servers with private `command`, `args`,
-  `cwd`, and safe non-secret `env` values.
+  `mcpServers`. The runtime supports `stdio` servers with private `command`,
+  `args`, `cwd`, and safe non-secret `env` values, plus Streamable HTTP servers
+  with a URL and placeholder-only headers.
 - Public MCP server responses expose only safe summaries: `serverId`,
   display name, transport, command file name, args/env counts, discovery status,
   and tool count. Full command paths, cwd, args, env values, API keys, tokens,
@@ -2693,14 +2694,10 @@ Implemented Phase 6 foundation:
   discoverer is bound, the discover route returns structured
   `not-implemented` with `reason: mcp_discoverer_not_bound`; it does not fake a
   successful connection or invent tools.
-- Production now binds a minimal `McpStdioToolDiscoverer` for stdio discovery.
-  Discovery performs only MCP `initialize` plus `tools/list`, never
-  `tools/call`, uses `create_subprocess_exec` without shell interpolation,
-  applies a bounded timeout, and discards stderr from public responses.
-- Production also has a minimal `McpStdioToolCaller` for one bounded
-  `tools/call` request. It is not exposed as a generic MCP execution surface;
-  V1 uses it only behind the built-in `web_search` handler for the configured
-  `anysearch` server.
+- Production binds a transport-neutral MCP discoverer/caller. Protocol and
+  lifecycle handling use `capcore-adapter-mcp` and the official MCP SDK.
+  Streamable HTTP may reuse one initialized session on a host-owned event loop;
+  stdio remains process-bounded. Neither path exposes credentials publicly.
 - Discovered MCP tools are sanitized and stored as summaries only. Tool IDs are
   normalized as `mcp.{serverId}.{toolName}` with duplicate tool names made
   unique. Input schemas are reduced to bounded object schemas containing safe
@@ -2709,7 +2706,7 @@ Implemented Phase 6 foundation:
 - `/capabilities` now merges configured/discovered MCP servers into the catalog:
   the server appears as a provider (`provider.mcp.{serverId}`), and discovered
   tools appear as `kind: "mcp_tool"`, `source: "mcp"`, `adapter:
-  "mcp_stdio"`, `executionMode: "external"`.
+  `"mcp_stdio"` or `"mcp_streamable_http"`, `executionMode: "external"`.
 - MCP tools are intentionally marked `exposedToPrompt: false` in this slice.
   Generic discovered MCP tools remain catalog/discovery only. The prompt-time
   execution surface is the built-in `web_search` tool, which maps to a
@@ -2727,11 +2724,10 @@ Implemented Phase 6 foundation:
   buttons. Saved private command/cwd/args/env values are intentionally not
   echoed back; modifying an existing server requires re-entering private
   command details.
-- The MCP panel offers a compact AnySearch search preset. It pre-fills the
-  stdio proxy command and uses `${ANYSEARCH_API_KEY}` as a non-secret
-  environment placeholder. Users with an AnySearch key set that variable in the
-  backend launch environment or `.env`; users without a key can remove the
-  header args and use anonymous AnySearch access with lower limits.
+- AnySearch can use its Streamable HTTP MCP endpoint with
+  `Authorization: Bearer ${ANYSEARCH_API_KEY}` stored only as a placeholder.
+  The host resolves the environment value at invocation time; the real key is
+  not written to capability config, prompt context, snapshots, or logs.
 - `CapabilityRegistry` now includes a built-in `web_search` tool in the `web`
   layer for desktop pet, QQ text, and web scene modes. The handler supports
   `search`, `batch_search`, `extract`, and `get_sub_domains`, clamps result and

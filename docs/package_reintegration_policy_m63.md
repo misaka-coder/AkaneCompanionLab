@@ -418,17 +418,18 @@ This is the desired pattern.
 
 Current Akane use:
 
-- `companion_v01/capability_adapters/mcp_stdio.py` wraps
-  `McpStdioCapabilityAdapter`.
-- Akane keeps existing MCP argv/env hydration and profile config through
-  `_AkaneMcpClient`.
+- `companion_v01/capability_adapters/mcp_stdio.py` is a compatibility wrapper
+  over the package's stdio or Streamable HTTP adapter selected by config.
+- Akane keeps argv/env/header-placeholder hydration, profile config, and the
+  synchronous host worker through `_AkaneMcpClient`.
 
 Authority:
 
-- package owns MCP tool-to-capcore descriptor conversion, capability id
+- package owns official-SDK MCP stdio/Streamable HTTP transport, optional HTTP
+  session pooling, tool-to-capcore descriptor conversion, capability id
   handling, and JSON-safe invocation arguments.
-- Akane owns server config, low-risk allowlist, approval mode, and existing
-  process-calling policy.
+- Akane owns server config, environment/header placeholder hydration,
+  low-risk allowlist, approval mode, and host event-loop lifecycle.
 
 Old implementation status:
 
@@ -444,9 +445,10 @@ LD005 cleanup:
 - Akane uses that API when building dynamic MCP handlers and no longer calls
   package-private `_descriptor_for_tool` / `_capability_id` methods.
 
-The host-owned client bridge is acceptable because it binds Akane config and
-process policy. Do not reimplement package-owned descriptor/invocation
-normalization in Akane.
+The host-owned client bridge is acceptable because it binds Akane config,
+placeholder hydration, and its synchronous runtime to the package client.
+Akane's HTTP bridge must remain a thin scheduler; protocol/session behavior
+belongs to the package.
 
 ### `capcore-adapter-speech`
 

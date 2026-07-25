@@ -495,7 +495,7 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(status["fallback_from"], "mcp")
             self.assertEqual(rest.calls, [("search", {"query": "OpenAI", "max_results": 1})])
 
-    def test_default_capability_probe_stays_hidden_while_background_check_runs(self) -> None:
+    def test_default_capability_probe_keeps_tool_exposed_while_background_check_runs(self) -> None:
         completed = threading.Event()
 
         class FakeCaller:
@@ -523,11 +523,11 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             ready = pending
             for _ in range(100):
                 ready = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
-                if ready["enabled"]:
+                if ready["status"] == "ready":
                     break
                 time.sleep(0.01)
 
-            self.assertFalse(pending["enabled"])
+            self.assertTrue(pending["enabled"])
             self.assertEqual(pending["status"], "checking")
             self.assertTrue(ready["enabled"])
 

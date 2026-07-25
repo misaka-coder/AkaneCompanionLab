@@ -54,6 +54,44 @@ def build_adapter(*, caller=None, low_risk_allowlist=None, risk="low", prompt_ex
 
 
 class McpStdioCapabilityAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streamable_http_config_uses_same_descriptor_and_caller_contract(self) -> None:
+        caller = FakeCaller({"content": [{"type": "text", "text": "http-ok"}]})
+        adapter = McpStdioCapabilityAdapter(
+            provider_id="provider.mcp.demo",
+            server_id="demo",
+            server_config={
+                "serverId": "demo",
+                "enabled": True,
+                "transport": "streamable_http",
+                "url": "https://mcp.example.test/rpc",
+                "headers": {"Authorization": "Bearer ${MCP_TEST_KEY}"},
+                "lowRiskAllowlist": ["echo"],
+            },
+            tool_configs=(
+                {
+                    "name": "echo",
+                    "description": "Echo text",
+                    "risk": "low",
+                    "confirm": "never",
+                    "promptExposed": True,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            ),
+            caller=caller,
+        )
+
+        capability = (await adapter.list_capabilities())[0]
+        result = await adapter.invoke(capability.id, {"text": "hello"}, InvocationContext())
+
+        self.assertEqual(capability.id, "mcp.demo.echo")
+        self.assertFalse(result.is_error)
+        self.assertEqual(caller.calls[0]["server"]["transport"], "streamable_http")
+        self.assertEqual(caller.calls[0]["tool_name"], "echo")
+
     async def test_list_capabilities_uses_namespaced_id_and_schema(self) -> None:
         adapter = build_adapter(low_risk_allowlist=["echo"])
         capabilities = await adapter.list_capabilities()

@@ -76,7 +76,7 @@ from .capability_registry import (
 )
 from .local_capability_config import get_mcp_server_runtime_config
 from .desktop_satellite_specs import desktop_satellite_spec
-from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpStdioToolCaller
+from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpToolCaller
 from .anysearch_rest_client import AnySearchRestClient, AnySearchRestError
 from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
@@ -4056,6 +4056,15 @@ class BrowserPageToolHandler(BaseToolHandler):
         return text[: max(0, limit - 20)].rstrip() + "\n...[truncated]"
 
 
+def _mcp_server_has_transport_config(server: Mapping[str, Any] | None) -> bool:
+    if not isinstance(server, Mapping) or not bool(server.get("enabled")):
+        return False
+    transport = str(server.get("transport") or "stdio").strip().lower().replace("-", "_")
+    if transport in {"http", "streamablehttp", "streamable_http"}:
+        return bool(str(server.get("url") or "").strip())
+    return transport == "stdio" and bool(str(server.get("command") or "").strip())
+
+
 class WebSearchToolHandler(BaseToolHandler):
     tool_type = "web_search"
 
@@ -4085,14 +4094,10 @@ class WebSearchToolHandler(BaseToolHandler):
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.server_id = str(server_id or "anysearch").strip() or "anysearch"
         mcp_timeout_seconds = float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
-        self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(
+        self.mcp_tool_caller = mcp_tool_caller or McpToolCaller(
             timeout_seconds=mcp_timeout_seconds
         )
-        self.readiness_mcp_tool_caller = readiness_mcp_tool_caller or (
-            mcp_tool_caller
-            if mcp_tool_caller is not None
-            else McpStdioToolCaller(timeout_seconds=mcp_timeout_seconds)
-        )
+        self.readiness_mcp_tool_caller = readiness_mcp_tool_caller or self.mcp_tool_caller
         self.anysearch_rest_client = anysearch_rest_client or AnySearchRestClient(
             timeout_seconds=mcp_timeout_seconds
         )
@@ -4124,7 +4129,7 @@ class WebSearchToolHandler(BaseToolHandler):
         if server and not bool(server.get("enabled")):
             return {"enabled": False, "status": "disabled", "reason": "anysearch_disabled"}
 
-        if not server or not str(server.get("command") or "").strip():
+        if not _mcp_server_has_transport_config(server):
             return self._rest_capability_status(runtime_profile_user_id)
 
         fingerprint = self._server_readiness_fingerprint(server)
@@ -4133,7 +4138,7 @@ class WebSearchToolHandler(BaseToolHandler):
         with self._readiness_lock:
             cached = self._readiness_cache.get(cache_key)
             if cached is not None and cached[0] > now:
-                return dict(cached[1])
+                return self._stable_configured_status(cached[1])
             if self._readiness_probe_in_background:
                 if cache_key not in self._readiness_probes_inflight:
                     self._readiness_probes_inflight.add(cache_key)
@@ -4144,12 +4149,12 @@ class WebSearchToolHandler(BaseToolHandler):
                         daemon=True,
                     ).start()
                 return {
-                    "enabled": False,
+                    "enabled": True,
                     "status": "checking",
                     "reason": "anysearch_probe_pending",
                     "cache_ttl_seconds": 1.0,
                 }
-        return self._probe_readiness(cache_key=cache_key, server=server)
+        return self._stable_configured_status(self._probe_readiness(cache_key=cache_key, server=server))
 
     def _rest_capability_status(self, profile_user_id: str) -> dict[str, Any]:
         endpoint = str(getattr(self.anysearch_rest_client, "endpoint", "anysearch-rest") or "anysearch-rest")
@@ -4159,7 +4164,7 @@ class WebSearchToolHandler(BaseToolHandler):
         with self._readiness_lock:
             cached = self._readiness_cache.get(cache_key)
             if cached is not None and cached[0] > now:
-                return dict(cached[1])
+                return self._stable_configured_status(cached[1])
             if self._readiness_probe_in_background:
                 if cache_key not in self._readiness_probes_inflight:
                     self._readiness_probes_inflight.add(cache_key)
@@ -4170,12 +4175,12 @@ class WebSearchToolHandler(BaseToolHandler):
                         daemon=True,
                     ).start()
                 return {
-                    "enabled": False,
+                    "enabled": True,
                     "status": "checking",
                     "reason": "anysearch_rest_probe_pending",
                     "cache_ttl_seconds": 1.0,
                 }
-        return self._probe_rest_readiness(cache_key=cache_key)
+        return self._stable_configured_status(self._probe_rest_readiness(cache_key=cache_key))
 
     def _probe_rest_readiness(self, *, cache_key: tuple[str, str]) -> dict[str, Any]:
         try:
@@ -4340,7 +4345,7 @@ class WebSearchToolHandler(BaseToolHandler):
 
         action = str(call.get("action") or "search").strip()
         arguments = self._build_mcp_arguments(call)
-        use_mcp = bool(server and str(server.get("command") or "").strip())
+        use_mcp = _mcp_server_has_transport_config(server)
         if use_mcp and server:
             cached_status = self._cached_server_readiness(runtime_profile_user_id, server)
             if bool(cached_status and cached_status.get("enabled")) and cached_status.get("transport") == "rest":
@@ -4530,12 +4535,32 @@ class WebSearchToolHandler(BaseToolHandler):
     def _server_readiness_fingerprint(server: Mapping[str, Any]) -> str:
         stable = {
             "enabled": bool(server.get("enabled")),
+            "transport": str(server.get("transport") or "stdio"),
             "command": str(server.get("command") or ""),
             "args": [str(item or "") for item in server.get("args") or []],
             "cwd": str(server.get("cwd") or ""),
+            "url": str(server.get("url") or ""),
+            "headers": {
+                str(key): str(value)
+                for key, value in sorted(
+                    (server.get("headers") or {}).items(),
+                    key=lambda item: str(item[0]),
+                )
+            }
+            if isinstance(server.get("headers"), Mapping)
+            else {},
         }
         serialized = json.dumps(stable, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _stable_configured_status(status: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(status)
+        raw_enabled = bool(result.get("enabled"))
+        result["enabled"] = True
+        if str(result.get("status") or "") != "checking":
+            result["healthy"] = raw_enabled
+        return result
 
     def _remember_readiness(self, cache_key: tuple[str, str], status: Mapping[str, Any]) -> None:
         ttl = self._readiness_ready_ttl_seconds if bool(status.get("enabled")) else self._readiness_failure_ttl_seconds

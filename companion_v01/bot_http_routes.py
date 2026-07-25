@@ -7,7 +7,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Request
 
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
-from .mcp_stdio_discoverer import McpStdioToolDiscoverer
+from .mcp_stdio_discoverer import McpToolDiscoverer
 from .routes.capabilities import build_capabilities_router
 from .routes.control_center import build_control_center_router, build_control_center_snapshot_runtime_providers
 from .routes.core import build_core_router
@@ -135,7 +135,7 @@ def build_bot_runtime_routers(
             log_event=log_event,
             resolve_identity_from_query=resolve_identity_from_query,
             background_tasks=getattr(engine, "background_tasks", None),
-            mcp_tool_discoverer=McpStdioToolDiscoverer(),
+            mcp_tool_discoverer=McpToolDiscoverer(),
             capability_config_base_dir=layout.users_data_dir,
             workflow_runner=ComfyUiWorkflowRunner(config_base_dir=layout.users_data_dir),
         ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import asyncio
 import json
 import os
@@ -7,8 +8,17 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Mapping
+
+from capcore_adapter_mcp import (
+    McpClientError,
+    McpSdkPooledStreamableHttpClient,
+    McpSdkStreamableHttpClient,
+    McpStreamableHttpServerConfig,
+    McpToolRecord,
+)
 
 
 class McpStdioDiscoveryError(RuntimeError):
@@ -280,6 +290,209 @@ class McpStdioToolCaller:
 
     async def _stop_process(self, process: asyncio.subprocess.Process) -> None:
         await _stop_stdio_process(process)
+
+
+class McpToolDiscoverer:
+    """Transport-neutral MCP discovery facade.
+
+    Stdio remains on the existing compatibility path. Streamable HTTP delegates
+    protocol and lifecycle handling to capcore-adapter-mcp's official-SDK
+    client, so Akane only owns config hydration and product-facing errors.
+    """
+
+    def __init__(self, *, timeout_seconds: float = 8.0, max_pages: int = 4, max_messages: int = 80) -> None:
+        self.timeout_seconds = max(1.0, float(timeout_seconds or 8.0))
+        self._stdio = McpStdioToolDiscoverer(
+            timeout_seconds=self.timeout_seconds,
+            max_pages=max_pages,
+            max_messages=max_messages,
+        )
+        self._streamable_http = McpSdkStreamableHttpClient()
+
+    async def __call__(self, *, server: Mapping[str, Any]) -> dict[str, Any]:
+        transport = _normalized_transport(server.get("transport"))
+        if transport == "stdio":
+            return await self._stdio(server=server)
+        if transport != "streamable_http":
+            raise McpStdioDiscoveryError("unsupported_transport")
+        config = _streamable_http_server_config(server, timeout_seconds=self.timeout_seconds)
+        try:
+            tools = await self._streamable_http.list_tools(config)
+        except McpClientError as exc:
+            raise McpStdioDiscoveryError(str(exc) or "mcp_tools_list_failed") from exc
+        return {"tools": [_tool_record_mapping(tool) for tool in tools]}
+
+
+class McpToolCaller:
+    """Transport-neutral one-call MCP facade backed by package transports."""
+
+    def __init__(self, *, timeout_seconds: float = 20.0, max_messages: int = 120) -> None:
+        self.timeout_seconds = max(2.0, float(timeout_seconds or 20.0))
+        self._stdio = McpStdioToolCaller(
+            timeout_seconds=self.timeout_seconds,
+            max_messages=max_messages,
+        )
+        self._streamable_http = McpSdkStreamableHttpClient()
+        self._streamable_http_worker = _McpStreamableHttpWorker()
+
+    async def __call__(
+        self,
+        *,
+        server: Mapping[str, Any],
+        tool_name: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        transport = _normalized_transport(server.get("transport"))
+        if transport == "stdio":
+            return await self._stdio(server=server, tool_name=tool_name, arguments=arguments)
+        if transport != "streamable_http":
+            raise McpStdioDiscoveryError("unsupported_transport")
+        config = _streamable_http_server_config(server, timeout_seconds=self.timeout_seconds)
+        try:
+            if isinstance(self._streamable_http, McpSdkStreamableHttpClient):
+                result = await self._streamable_http_worker.call_tool(
+                    config,
+                    tool_name,
+                    dict(arguments or {}),
+                )
+            else:
+                result = await self._streamable_http.call_tool(
+                    config,
+                    tool_name,
+                    dict(arguments or {}),
+                )
+        except McpClientError as exc:
+            raise McpStdioDiscoveryError(str(exc) or "mcp_tool_call_failed") from exc
+        return dict(result)
+
+    async def aclose(self) -> None:
+        await self._streamable_http_worker.aclose()
+
+
+class _McpStreamableHttpWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._client: McpSdkPooledStreamableHttpClient | None = None
+        self._thread: threading.Thread | None = None
+        self._closed = False
+        atexit.register(self.close)
+
+    async def call_tool(
+        self,
+        server: McpStreamableHttpServerConfig,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._ensure_started()
+        if self._loop is None or self._client is None:
+            raise McpClientError("mcp_http_worker_unavailable")
+        future = asyncio.run_coroutine_threadsafe(
+            self._client.call_tool(server, tool_name, arguments),
+            self._loop,
+        )
+        return await asyncio.wrap_future(future)
+
+    async def aclose(self) -> None:
+        loop = self._loop
+        client = self._client
+        if loop is None or client is None or self._closed:
+            return
+        future = asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+        await asyncio.wrap_future(future)
+        self._closed = True
+        loop.call_soon_threadsafe(loop.stop)
+
+    def close(self) -> None:
+        loop = self._loop
+        client = self._client
+        if loop is None or client is None or self._closed:
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+            future.result(timeout=2.0)
+        except Exception:
+            pass
+        self._closed = True
+        loop.call_soon_threadsafe(loop.stop)
+
+    def _ensure_started(self) -> None:
+        if self._ready.is_set():
+            return
+        with self._lock:
+            if self._ready.is_set():
+                return
+            if self._closed:
+                raise McpClientError("mcp_http_worker_closed")
+            self._thread = threading.Thread(
+                target=self._run,
+                name="akane-mcp-http",
+                daemon=True,
+            )
+            self._thread.start()
+        if not self._ready.wait(timeout=3.0):
+            raise McpClientError("mcp_http_worker_start_timeout")
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._client = McpSdkPooledStreamableHttpClient()
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+
+def _normalized_transport(value: Any) -> str:
+    text = str(value or "stdio").strip().lower().replace("-", "_")
+    if text in {"http", "streamablehttp", "streamable_http"}:
+        return "streamable_http"
+    return text or "stdio"
+
+
+def _streamable_http_server_config(
+    server: Mapping[str, Any],
+    *,
+    timeout_seconds: float,
+) -> McpStreamableHttpServerConfig:
+    url = str(server.get("url") or server.get("endpoint") or "").strip()
+    cwd = str(server.get("cwd") or "").strip() or None
+    raw_headers = server.get("headers")
+    header_values = [str(value or "") for value in raw_headers.values()] if isinstance(raw_headers, Mapping) else []
+    env = os.environ.copy()
+    _hydrate_env_placeholders(env, args=header_values, cwd=cwd)
+    headers = (
+        {
+            str(key): _ENV_PLACEHOLDER_RE.sub(lambda match: str(env.get(match.group(1)) or match.group(0)), str(value))
+            for key, value in raw_headers.items()
+        }
+        if isinstance(raw_headers, Mapping)
+        else {}
+    )
+    return McpStreamableHttpServerConfig(
+        server_id=str(server.get("serverId") or server.get("server_id") or server.get("id") or "").strip(),
+        url=url,
+        headers=headers,
+        enabled=bool(server.get("enabled", True)),
+        timeout_seconds=timeout_seconds,
+        discovery_timeout_seconds=timeout_seconds,
+    )
+
+
+def _tool_record_mapping(tool: McpToolRecord) -> dict[str, Any]:
+    raw = dict(tool.raw or {})
+    raw["name"] = tool.name
+    if tool.description:
+        raw["description"] = tool.description
+    raw["inputSchema"] = dict(tool.input_schema or {})
+    if tool.output_schema:
+        raw["outputSchema"] = dict(tool.output_schema)
+    if tool.annotations:
+        raw["annotations"] = dict(tool.annotations)
+    return raw
 
 
 def _hydrate_env_placeholders(env: dict[str, str], *, args: list[str], cwd: str | None = None) -> None:

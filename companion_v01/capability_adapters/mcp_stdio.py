@@ -14,6 +14,8 @@ from capcore_adapter_mcp import (
     McpExposurePolicy,
     McpStdioCapabilityAdapter as CoreMcpStdioCapabilityAdapter,
     McpStdioServerConfig,
+    McpStreamableHttpCapabilityAdapter as CoreMcpStreamableHttpCapabilityAdapter,
+    McpStreamableHttpServerConfig,
     McpToolOverride,
     McpToolRecord,
 )
@@ -21,8 +23,8 @@ from capcore_adapter_mcp import (
 from companion_v01.local_capability_config import capability_approval_mode
 from companion_v01.mcp_stdio_discoverer import (
     McpStdioDiscoveryError,
-    McpStdioToolCaller,
-    McpStdioToolDiscoverer,
+    McpToolCaller,
+    McpToolDiscoverer,
 )
 
 from .types import CapabilityDescriptor, CapabilityProtocolError, CapabilityResult, HealthStatus, InvocationContext
@@ -58,8 +60,8 @@ class McpStdioCapabilityAdapter:
         self.server_id = _safe_token(server_id)
         self.server_config = dict(server_config)
         self.tool_configs = tuple(dict(item) for item in tool_configs if isinstance(item, Mapping))
-        self.caller = caller or McpStdioToolCaller(timeout_seconds=20)
-        self._liveness_probe = liveness_probe or McpStdioToolDiscoverer(
+        self.caller = caller or McpToolCaller(timeout_seconds=20)
+        self._liveness_probe = liveness_probe or McpToolDiscoverer(
             timeout_seconds=3.0,
             max_pages=1,
             max_messages=40,
@@ -73,7 +75,12 @@ class McpStdioCapabilityAdapter:
             tool_configs=self.tool_configs,
             caller=self.caller,
         )
-        self._core = CoreMcpStdioCapabilityAdapter(
+        core_adapter_type = (
+            CoreMcpStreamableHttpCapabilityAdapter
+            if _normalized_transport(self.server_config.get("transport")) == "streamable_http"
+            else CoreMcpStdioCapabilityAdapter
+        )
+        self._core = core_adapter_type(
             provider_id=self.provider_id,
             server=_server_config(self.server_id, self.server_config),
             tool_overrides=_tool_overrides(self.server_config, self.tool_configs),
@@ -112,8 +119,7 @@ class McpStdioCapabilityAdapter:
         """Probe a real initialize/tools-list exchange and cache only its lease."""
         if not bool(self.server_config.get("enabled")):
             return False
-        command = str(self.server_config.get("command") or "").strip()
-        if not command:
+        if not _server_has_transport_config(self.server_config):
             return False
         now = float(self._liveness_clock())
         with self._liveness_lock:
@@ -187,13 +193,16 @@ class _AkaneMcpClient:
         self.tool_records = tuple(_tool_record(tool) for tool in tool_configs)
         self.caller = caller
 
-    async def list_tools(self, server: McpStdioServerConfig) -> tuple[McpToolRecord, ...]:
+    async def list_tools(
+        self,
+        server: McpStdioServerConfig | McpStreamableHttpServerConfig,
+    ) -> tuple[McpToolRecord, ...]:
         del server
         return self.tool_records
 
     async def call_tool(
         self,
-        server: McpStdioServerConfig,
+        server: McpStdioServerConfig | McpStreamableHttpServerConfig,
         tool_name: str,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
@@ -212,8 +221,26 @@ class _AkaneMcpClient:
             raise McpClientError("mcp_tool_call_failed") from exc
         return dict(result) if isinstance(result, Mapping) else {}
 
+    async def aclose(self) -> None:
+        aclose = getattr(self.caller, "aclose", None)
+        if callable(aclose):
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
 
-def _server_config(server_id: str, raw: Mapping[str, Any]) -> McpStdioServerConfig:
+
+def _server_config(
+    server_id: str,
+    raw: Mapping[str, Any],
+) -> McpStdioServerConfig | McpStreamableHttpServerConfig:
+    if _normalized_transport(raw.get("transport")) == "streamable_http":
+        headers = raw.get("headers") if isinstance(raw.get("headers"), Mapping) else None
+        return McpStreamableHttpServerConfig(
+            server_id=server_id,
+            url=str(raw.get("url") or "").strip(),
+            headers={str(key): str(value) for key, value in headers.items()} if headers is not None else None,
+            enabled=bool(raw.get("enabled")),
+        )
     env = raw.get("env") if isinstance(raw.get("env"), Mapping) else None
     return McpStdioServerConfig(
         server_id=server_id,
@@ -223,6 +250,18 @@ def _server_config(server_id: str, raw: Mapping[str, Any]) -> McpStdioServerConf
         cwd=str(raw.get("cwd") or "").strip() or None,
         enabled=bool(raw.get("enabled")),
     )
+
+
+def _normalized_transport(value: Any) -> str:
+    text = str(value or "stdio").strip().lower().replace("-", "_")
+    return "streamable_http" if text in {"http", "streamablehttp", "streamable_http"} else text
+
+
+def _server_has_transport_config(server: Mapping[str, Any]) -> bool:
+    transport = _normalized_transport(server.get("transport"))
+    if transport == "streamable_http":
+        return bool(str(server.get("url") or "").strip())
+    return transport == "stdio" and bool(str(server.get("command") or "").strip())
 
 
 def _tool_overrides(
