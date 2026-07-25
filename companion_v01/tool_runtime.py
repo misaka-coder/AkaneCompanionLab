@@ -4379,8 +4379,17 @@ class WebSearchToolHandler(BaseToolHandler):
             return self._failure("anysearch_rest_failed", "AnySearch 官方 HTTPS 搜索调用失败。")
         if self._mcp_result_is_error(result):
             if use_mcp and server:
-                self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_result_error")
-            return self._failure("mcp_result_error", "AnySearch MCP 返回了错误状态。")
+                # A valid MCP error result proves the transport and server are
+                # reachable.  It may only mean that one URL could not be
+                # extracted, so it must not poison readiness for the next
+                # search or another public source.
+                self._remember_server_ready(runtime_profile_user_id, server)
+            return self._mcp_tool_failure(
+                action=action,
+                result=result,
+                redaction_terms=redaction_terms,
+                profile_user_id=runtime_profile_user_id,
+            )
         if use_mcp and server:
             self._remember_server_ready(runtime_profile_user_id, server)
 
@@ -4457,6 +4466,60 @@ class WebSearchToolHandler(BaseToolHandler):
     @staticmethod
     def _mcp_result_is_error(result: Any) -> bool:
         return isinstance(result, Mapping) and bool(result.get("isError") or result.get("is_error"))
+
+    def _mcp_tool_failure(
+        self,
+        *,
+        action: str,
+        result: Mapping[str, Any],
+        redaction_terms: list[str],
+        profile_user_id: str,
+    ) -> ToolExecutionResult:
+        payload = self._extract_payload(result, redaction_terms=redaction_terms)
+        detail = self._clip(
+            self._payload_to_text(payload, redaction_terms=redaction_terms),
+            600,
+        )
+        reason = self._mcp_tool_error_reason(result=result, detail=detail)
+        detail_text = f"\n服务返回：{detail}" if detail else ""
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "web_search_completed",
+                    "provider": "anysearch",
+                    "action": action,
+                    "status": "failed",
+                    "reason": reason,
+                }
+            ],
+            followup_context=(
+                f"AnySearch MCP 连接正常，但本次 {action} 请求没有拿到结果。{detail_text}\n"
+                "这只表示当前调用或来源失败，不代表整个搜索服务不可用。"
+                "可以根据错误内容调整查询、换公开来源，或继续使用其它安全的只读检索路径；"
+                "不要编造结果。"
+            ),
+            state_updates={
+                "web_search_status": "failed",
+                "web_search_reason": reason,
+                "web_search_provider": "anysearch",
+                "web_search_profile_user_id": profile_user_id,
+            },
+        )
+
+    @staticmethod
+    def _mcp_tool_error_reason(*, result: Mapping[str, Any], detail: str) -> str:
+        candidates = [
+            result.get("code"),
+            result.get("error_code"),
+            result.get("reason"),
+            *(str(detail or "").splitlines()[:2]),
+        ]
+        for candidate in candidates:
+            reason = str(candidate or "").strip().lower()
+            if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason):
+                return reason
+        return "mcp_tool_result_error"
 
     @staticmethod
     def _safe_mcp_failure_reason(value: Any) -> str:

@@ -531,10 +531,28 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(pending["status"], "checking")
             self.assertTrue(ready["enabled"])
 
-    def test_execute_treats_mcp_error_result_as_unavailable_and_opens_circuit(self) -> None:
+    def test_execute_keeps_mcp_ready_after_one_tool_result_error(self) -> None:
         class ErrorCaller:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
             async def __call__(self, *, server: dict, tool_name: str, arguments: dict) -> dict:
-                return {"isError": True, "content": [{"type": "text", "text": "upstream unavailable"}]}
+                self.calls.append(tool_name)
+                if tool_name == "extract":
+                    return {
+                        "isError": True,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "extract_fetch_failed\n"
+                                    "fetch failed: unable to retrieve the page\n"
+                                    "Authorization: Bearer provider-secret"
+                                ),
+                            }
+                        ],
+                    }
+                return {"content": [{"type": "text", "text": "search result"}]}
 
         with tempfile.TemporaryDirectory() as temp_dir:
             save_mcp_server_config(
@@ -549,16 +567,28 @@ class WebSearchToolHandlerTests(unittest.TestCase):
                     "cwd": temp_dir,
                 },
             )
-            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=ErrorCaller())
-            call = handler.normalize_call({"type": "web_search", "query": "今天新闻"})
-            assert call is not None
+            caller = ErrorCaller()
+            handler = WebSearchToolHandler(config_base_dir=temp_dir, mcp_tool_caller=caller)
+            extract_call = handler.normalize_call(
+                {"type": "web_search", "action": "extract", "url": "https://example.com/page"}
+            )
+            search_call = handler.normalize_call({"type": "web_search", "query": "今天新闻"})
+            assert extract_call is not None
+            assert search_call is not None
 
-            result = handler.execute(call=call, context=self._context())
+            result = handler.execute(call=extract_call, context=self._context())
             status = handler.capability_status(profile_user_id="master", client_mode="desktop_pet")
+            search_result = handler.execute(call=search_call, context=self._context())
 
-            self.assertEqual(result.state_updates["web_search_status"], "unavailable")
-            self.assertEqual(result.state_updates["web_search_reason"], "mcp_result_error")
-            self.assertFalse(status["enabled"])
+            self.assertEqual(result.state_updates["web_search_status"], "failed")
+            self.assertEqual(result.state_updates["web_search_reason"], "extract_fetch_failed")
+            self.assertIn("fetch failed: unable to retrieve the page", result.followup_context)
+            self.assertIn("不代表整个搜索服务不可用", result.followup_context)
+            self.assertNotIn("provider-secret", result.followup_context)
+            self.assertIn("Authorization: Bearer [redacted]", result.followup_context)
+            self.assertTrue(status["enabled"])
+            self.assertEqual(search_result.state_updates["web_search_status"], "ok")
+            self.assertEqual(caller.calls, ["extract", "search"])
 
     def test_prompt_instruction_searches_current_public_facts_without_explicit_search_word(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
