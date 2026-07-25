@@ -4084,14 +4084,17 @@ class WebSearchToolHandler(BaseToolHandler):
     ) -> None:
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.server_id = str(server_id or "anysearch").strip() or "anysearch"
+        mcp_timeout_seconds = float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
         self.mcp_tool_caller = mcp_tool_caller or McpStdioToolCaller(
-            timeout_seconds=float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
+            timeout_seconds=mcp_timeout_seconds
         )
         self.readiness_mcp_tool_caller = readiness_mcp_tool_caller or (
-            mcp_tool_caller if mcp_tool_caller is not None else McpStdioToolCaller(timeout_seconds=5.0)
+            mcp_tool_caller
+            if mcp_tool_caller is not None
+            else McpStdioToolCaller(timeout_seconds=mcp_timeout_seconds)
         )
         self.anysearch_rest_client = anysearch_rest_client or AnySearchRestClient(
-            timeout_seconds=float(getattr(config, "WEB_SEARCH_MCP_TIMEOUT_SECONDS", 35.0) or 35.0)
+            timeout_seconds=mcp_timeout_seconds
         )
         self._readiness_ready_ttl_seconds = max(30.0, float(readiness_ready_ttl_seconds))
         self._readiness_failure_ttl_seconds = max(5.0, float(readiness_failure_ttl_seconds))

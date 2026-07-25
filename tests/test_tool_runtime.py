@@ -402,6 +402,14 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(status["status"], "ready")
             self.assertEqual(status["transport"], "rest")
 
+    def test_default_readiness_probe_uses_configured_web_search_timeout(self) -> None:
+        with patch("companion_v01.tool_runtime.config.WEB_SEARCH_MCP_TIMEOUT_SECONDS", 17.0):
+            handler = WebSearchToolHandler(config_base_dir="unused")
+
+        self.assertEqual(handler.mcp_tool_caller.timeout_seconds, 17.0)
+        self.assertEqual(handler.readiness_mcp_tool_caller.timeout_seconds, 17.0)
+        self.assertEqual(handler.anysearch_rest_client.timeout_seconds, 17.0)
+
     def test_capability_status_actively_probes_anysearch_and_caches_success(self) -> None:
         class FakeCaller:
             def __init__(self) -> None:
