@@ -114,7 +114,7 @@ class VectorStore:
             metadatas.append(clean_meta)
         if not ids:
             return
-        embeddings = self.embedding_provider.embed_texts(texts)
+        embeddings = self.embedding_provider.embed_documents(texts)
         with self._lock:
             self.collection.upsert(
                 ids=ids,
@@ -139,7 +139,7 @@ class VectorStore:
         )
         with self._lock:
             result = self.collection.query(
-                query_embeddings=self.embedding_provider.embed_texts([str(query_text or "")]),
+                query_embeddings=[self.embedding_provider.embed_query(str(query_text or ""))],
                 n_results=max(1, int(n_results)),
                 where=where,
                 include=["documents", "metadatas", "distances"],

@@ -30,6 +30,22 @@ class CountingBatchEmbeddingProvider(DummyEmbeddingProvider):
         return [DummyEmbeddingProvider.embed_text(self, text) for text in texts]
 
 
+class RoleAwareEmbeddingProvider(DummyEmbeddingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.document_batches: list[list[str]] = []
+        self.queries: list[str] = []
+
+    def embed_documents(self, texts) -> list[list[float]]:
+        items = [str(text or "") for text in texts]
+        self.document_batches.append(items)
+        return [[9.0, 8.0, 7.0] for _ in items]
+
+    def embed_query(self, text: str) -> list[float]:
+        self.queries.append(str(text or ""))
+        return [6.0, 5.0, 4.0]
+
+
 class FakeCollection:
     def __init__(self) -> None:
         self.last_upsert: dict[str, object] | None = None
@@ -226,6 +242,30 @@ class VectorStoreLogicTests(unittest.TestCase):
 
         self.assertEqual(store.embedding_provider.embed_texts_calls, 1)
         self.assertEqual(store.collection.last_upsert["ids"], ["memory-1", "memory-2"])
+
+    def test_vector_store_uses_role_aware_embedding_interfaces(self) -> None:
+        store = VectorStore.__new__(VectorStore)
+        store._lock = threading.RLock()
+        store.embedding_provider = RoleAwareEmbeddingProvider()
+        store.collection = FakeCollection()
+
+        store.upsert_entries(
+            [
+                {"source_id": "memory-1", "text": "第一条", "metadata": {"profile_user_id": "user-1"}},
+                {"source_id": "memory-2", "text": "第二条", "metadata": {"profile_user_id": "user-1"}},
+            ]
+        )
+        store.semantic_search(
+            profile_user_id="user-1",
+            query_text="查询",
+            time_hint=None,
+            n_results=4,
+        )
+
+        self.assertEqual(store.embedding_provider.document_batches, [["第一条", "第二条"]])
+        self.assertEqual(store.embedding_provider.queries, ["查询"])
+        self.assertEqual(store.collection.last_upsert["embeddings"], [[9.0, 8.0, 7.0], [9.0, 8.0, 7.0]])
+        self.assertEqual(store.collection.last_query["query_embeddings"], [[6.0, 5.0, 4.0]])
 
 
 if __name__ == "__main__":

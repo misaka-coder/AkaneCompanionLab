@@ -2890,7 +2890,12 @@ class MemcoreManager:
                 return
             raw_limit = getattr(config, "MEMCORE_REINDEX_ON_NAMESPACE_LOAD_LIMIT", None)
             limit = self._coerce_positive_int_or_none(raw_limit)
-            system.reindex_all(namespace=namespace, limit=limit, current_conversation_only=False)
+            system.reindex_all(
+                namespace=namespace,
+                limit=limit,
+                current_conversation_only=False,
+                batch_size=max(1, int(getattr(config, "EMBEDDING_REINDEX_BATCH_SIZE", 64) or 64)),
+            )
         except Exception as exc:
             with self._lock:
                 self._warmed_index_keys.discard(hard_key)

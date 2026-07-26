@@ -34,10 +34,15 @@ class Settings(BaseSettings):
     PERSONA_VARIANT: str = "default"
 
     # === Embedding / 向量记忆 ===
-    # 提供者：auto=huggingface→hashed 自动回退  huggingface  hashed
+    # 提供者：auto=huggingface→hashed 自动回退  huggingface  remote  jina  hashed
     EMBEDDING_PROVIDER: str = "auto"
-    # HuggingFace 模型名或本地模型目录（推荐 BAAI/bge-m3）
+    # 模型名或 HuggingFace 本地模型目录
     EMBEDDING_MODEL_NAME: str = DEFAULT_EMBEDDING_MODEL_NAME
+    # 远程 Embedding API；仅远程 provider 使用
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_DIMENSION: int = 1024
+    EMBEDDING_TIMEOUT_SECONDS: float = 30.0
     # 设备：空=自动  cuda  cpu
     EMBEDDING_DEVICE: str = ""
     # 只使用本地缓存/本地模型目录，避免启动时联网下载
@@ -558,6 +563,10 @@ def _apply_settings(s: Settings) -> None:
     global \
         EMBEDDING_PROVIDER, \
         EMBEDDING_MODEL_NAME, \
+        EMBEDDING_BASE_URL, \
+        EMBEDDING_API_KEY, \
+        EMBEDDING_DIMENSION, \
+        EMBEDDING_TIMEOUT_SECONDS, \
         EMBEDDING_DEVICE, \
         EMBEDDING_LOCAL_FILES_ONLY, \
         EMBEDDING_CACHE_FOLDER
@@ -791,6 +800,10 @@ def _apply_settings(s: Settings) -> None:
     EMBEDDING_MODEL_NAME = (
         str(s.EMBEDDING_MODEL_NAME or DEFAULT_EMBEDDING_MODEL_NAME).strip() or DEFAULT_EMBEDDING_MODEL_NAME
     )
+    EMBEDDING_BASE_URL = str(s.EMBEDDING_BASE_URL or "").strip()
+    EMBEDDING_API_KEY = str(s.EMBEDDING_API_KEY or "").strip()
+    EMBEDDING_DIMENSION = max(1, int(s.EMBEDDING_DIMENSION or 1024))
+    EMBEDDING_TIMEOUT_SECONDS = max(1.0, min(120.0, float(s.EMBEDDING_TIMEOUT_SECONDS or 30.0)))
     EMBEDDING_DEVICE = str(s.EMBEDDING_DEVICE or "").strip()
     EMBEDDING_LOCAL_FILES_ONLY = bool(s.EMBEDDING_LOCAL_FILES_ONLY)
     EMBEDDING_CACHE_FOLDER = str(s.EMBEDDING_CACHE_FOLDER or "").strip()

@@ -2244,6 +2244,37 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 close_thread.join(timeout=1)
                 self.assertFalse(close_thread.is_alive())
 
+    def test_index_warmup_forwards_configured_remote_batch_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            calls: list[dict[str, object]] = []
+
+            class _WarmupSystem:
+                namespace = SimpleNamespace(hard_key=lambda: ("tenant", "user", "domain"))
+
+                def reindex_all(self, **kwargs):
+                    calls.append(dict(kwargs))
+
+            try:
+                with patch.object(config, "EMBEDDING_REINDEX_BATCH_SIZE", 37):
+                    manager._run_index_warmup(
+                        _WarmupSystem(),
+                        ("tenant", "user", "domain"),
+                        "test",
+                    )
+            finally:
+                manager.close()
+
+        self.assertEqual(calls[0]["batch_size"], 37)
+
     def test_default_managers_share_process_runtime_without_mixing_namespaces(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             first = MemcoreManager(

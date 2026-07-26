@@ -179,6 +179,53 @@ class EngineExtensionTests(unittest.TestCase):
             cache_folder="models/cache",
         )
 
+    def test_build_embedding_provider_uses_jina_without_hashed_fallback(self) -> None:
+        class StubJinaProvider(BaseEmbeddingProvider):
+            provider_name = "jina"
+            version = "v-test"
+
+            def __init__(self, **kwargs) -> None:
+                super().__init__(dimension=int(kwargs["dimension"]))
+                self.kwargs = dict(kwargs)
+
+            def embed_text(self, text: str) -> list[float]:
+                return [1.0] * self.dimension
+
+            def verify_retrieval_space(self):
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "provider": "jina",
+                    "model": self.kwargs["model_name"],
+                    "dimension": self.dimension,
+                    "reason": "",
+                }
+
+        with (
+            patch.object(config, "EMBEDDING_PROVIDER", "jina"),
+            patch.object(config, "EMBEDDING_CACHE_SIZE", 0),
+            patch.object(config, "EMBEDDING_MODEL_NAME", "jina-embeddings-v3"),
+            patch.object(config, "EMBEDDING_API_KEY", "private-key"),
+            patch.object(config, "EMBEDDING_BASE_URL", "https://api.jina.ai/v1"),
+            patch.object(config, "EMBEDDING_DIMENSION", 1024),
+            patch.object(config, "EMBEDDING_TIMEOUT_SECONDS", 20.0),
+            patch("companion_v01.engine.JinaEmbeddingProvider", StubJinaProvider),
+        ):
+            provider = self.engine._build_embedding_provider()
+
+        self.assertIsInstance(provider, StubJinaProvider)
+        self.assertEqual(provider.kwargs["api_key"], "private-key")
+        self.assertEqual(self.engine._embedding_startup_status["status"], "ready")
+
+    def test_build_embedding_provider_missing_jina_key_raises(self) -> None:
+        with (
+            patch.object(config, "EMBEDDING_PROVIDER", "jina"),
+            patch.object(config, "EMBEDDING_CACHE_SIZE", 0),
+            patch.object(config, "EMBEDDING_API_KEY", ""),
+        ):
+            with self.assertRaisesRegex(ValueError, "^jina_api_key_required$"):
+                self.engine._build_embedding_provider()
+
     def test_run_embedding_reindex_batches_raw_summary_and_semantic_records(self) -> None:
         class StubStore:
             def count_vectorizable_records(self) -> int:

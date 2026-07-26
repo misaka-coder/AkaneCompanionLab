@@ -44,6 +44,34 @@ class BaseEmbeddingProvider(ABC):
     def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
         return [self.embed_text(text) for text in texts]
 
+    def embed_query(self, text: str) -> list[float]:
+        if type(self).embed_queries is not BaseEmbeddingProvider.embed_queries:
+            vectors = self.embed_queries([text])
+            if len(vectors) != 1:
+                raise RuntimeError(f"embedding provider returned {len(vectors)} query vectors for 1 input")
+            return vectors[0]
+        return self.embed_text(text)
+
+    def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+        items = [str(text or "") for text in texts]
+        if type(self).embed_query is BaseEmbeddingProvider.embed_query:
+            return self.embed_texts(items)
+        return [self.embed_query(text) for text in items]
+
+    def embed_document(self, text: str) -> list[float]:
+        if type(self).embed_documents is not BaseEmbeddingProvider.embed_documents:
+            vectors = self.embed_documents([text])
+            if len(vectors) != 1:
+                raise RuntimeError(f"embedding provider returned {len(vectors)} document vectors for 1 input")
+            return vectors[0]
+        return self.embed_text(text)
+
+    def embed_documents(self, texts: Iterable[str]) -> list[list[float]]:
+        items = [str(text or "") for text in texts]
+        if type(self).embed_document is BaseEmbeddingProvider.embed_document:
+            return self.embed_texts(items)
+        return [self.embed_document(text) for text in items]
+
 
 class HashedEmbeddingProvider(BaseEmbeddingProvider):
     provider_name = "hashed"
@@ -83,7 +111,7 @@ class CachedEmbeddingProvider(BaseEmbeddingProvider):
         self.inner = inner
         self.max_entries = max(0, int(max_entries))
         self._lock = threading.RLock()
-        self._cache: OrderedDict[str, tuple[float, ...]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, str], tuple[float, ...]] = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -101,27 +129,45 @@ class CachedEmbeddingProvider(BaseEmbeddingProvider):
         return self.inner.collection_key()
 
     def embed_text(self, text: str) -> list[float]:
+        return self._embed_one("text", text, self.inner.embed_text)
+
+    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_many("text", texts, self.inner.embed_texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_one("query", text, self.inner.embed_query)
+
+    def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_many("query", texts, self.inner.embed_queries)
+
+    def embed_document(self, text: str) -> list[float]:
+        return self._embed_one("document", text, self.inner.embed_document)
+
+    def embed_documents(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_many("document", texts, self.inner.embed_documents)
+
+    def _embed_one(self, role: str, text: str, embed) -> list[float]:
         raw_text = str(text or "")
         if self.max_entries <= 0:
-            return self.inner.embed_text(raw_text)
+            return embed(raw_text)
 
-        cached = self._cache_get(raw_text)
+        cached = self._cache_get(role, raw_text)
         if cached is not None:
             return list(cached)
 
-        vector = tuple(float(value) for value in self.inner.embed_text(raw_text))
-        self._cache_put(raw_text, vector)
+        vector = tuple(float(value) for value in embed(raw_text))
+        self._cache_put(role, raw_text, vector)
         return list(vector)
 
-    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+    def _embed_many(self, role: str, texts: Iterable[str], embed_batch) -> list[list[float]]:
         normalized_texts = [str(text or "") for text in texts]
         if self.max_entries <= 0:
-            return self.inner.embed_texts(normalized_texts)
+            return embed_batch(normalized_texts)
 
         results: list[list[float] | None] = [None] * len(normalized_texts)
         missing_positions: dict[str, list[int]] = {}
         for idx, raw_text in enumerate(normalized_texts):
-            cached = self._cache_get(raw_text)
+            cached = self._cache_get(role, raw_text)
             if cached is not None:
                 results[idx] = list(cached)
                 continue
@@ -129,26 +175,28 @@ class CachedEmbeddingProvider(BaseEmbeddingProvider):
 
         if missing_positions:
             missing_texts = list(missing_positions.keys())
-            missing_vectors = self.inner.embed_texts(missing_texts)
+            missing_vectors = embed_batch(missing_texts)
             for raw_text, vector in zip(missing_texts, missing_vectors):
                 frozen = tuple(float(value) for value in vector)
-                self._cache_put(raw_text, frozen)
+                self._cache_put(role, raw_text, frozen)
                 for idx in missing_positions.get(raw_text, []):
                     results[idx] = list(frozen)
 
         return [vector or [] for vector in results]
 
-    def _cache_get(self, text: str) -> tuple[float, ...] | None:
+    def _cache_get(self, role: str, text: str) -> tuple[float, ...] | None:
+        key = (role, text)
         with self._lock:
-            vector = self._cache.get(text)
+            vector = self._cache.get(key)
             if vector is None:
                 return None
-            self._cache.move_to_end(text)
+            self._cache.move_to_end(key)
             return vector
 
-    def _cache_put(self, text: str, vector: tuple[float, ...]) -> None:
+    def _cache_put(self, role: str, text: str, vector: tuple[float, ...]) -> None:
+        key = (role, text)
         with self._lock:
-            self._cache[text] = vector
-            self._cache.move_to_end(text)
+            self._cache[key] = vector
+            self._cache.move_to_end(key)
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)

@@ -150,6 +150,38 @@ def build_akane_embedding_provider(provider: Any) -> Any:
                 ]
             return [self.embed_text(str(text or "")) for text in texts]
 
+        def embed_query(self, text: str) -> list[float]:
+            method = getattr(self.inner, "embed_query", None)
+            if callable(method):
+                return [float(value) for value in method(str(text or ""))]
+            return self.embed_text(text)
+
+        def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+            items = [str(text or "") for text in texts]
+            method = getattr(self.inner, "embed_queries", None)
+            if callable(method):
+                return [[float(value) for value in vector] for vector in method(items)]
+            single = getattr(self.inner, "embed_query", None)
+            if callable(single):
+                return [[float(value) for value in single(text)] for text in items]
+            return self.embed_texts(items)
+
+        def embed_document(self, text: str) -> list[float]:
+            method = getattr(self.inner, "embed_document", None)
+            if callable(method):
+                return [float(value) for value in method(str(text or ""))]
+            return self.embed_text(text)
+
+        def embed_documents(self, texts: Iterable[str]) -> list[list[float]]:
+            items = [str(text or "") for text in texts]
+            method = getattr(self.inner, "embed_documents", None)
+            if callable(method):
+                return [[float(value) for value in vector] for vector in method(items)]
+            single = getattr(self.inner, "embed_document", None)
+            if callable(single):
+                return [[float(value) for value in single(text)] for text in items]
+            return self.embed_texts(items)
+
     return AkaneEmbeddingProvider(provider)
 
 

@@ -53,6 +53,16 @@ class SettingsCatalogDriftTests(unittest.TestCase):
             self.assertNotIn("default", entry)
             self.assertIn("isSet", entry)
 
+    def test_embedding_api_key_is_catalogued_as_sensitive(self) -> None:
+        catalog = sc.build_settings_catalog()
+        entries = {
+            entry["key"]: entry
+            for group in catalog["categories"]
+            for entry in group["settings"]
+        }
+        self.assertTrue(entries["EMBEDDING_API_KEY"]["sensitive"])
+        self.assertNotIn("default", entries["EMBEDDING_API_KEY"])
+
     def test_managed_entries_are_read_only_and_named(self) -> None:
         catalog = sc.build_settings_catalog()
         entries = {

@@ -45,6 +45,12 @@ from .instance_profile import InstanceContext, build_local_default_instance_cont
 from .instance_runtime import InstanceRuntimeLayout, require_instance_owned_path
 from . import media_bridge_engine
 from .huggingface_provider import HuggingFaceEmbeddingProvider
+from .jina_embedding_provider import (
+    DEFAULT_JINA_EMBEDDING_BASE_URL,
+    DEFAULT_JINA_EMBEDDING_MODEL,
+    JinaEmbeddingProvider,
+)
+from .remote_embedding_provider import RemoteEmbeddingProvider
 from .llm_runtime import LLMRuntime
 from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
@@ -1412,12 +1418,59 @@ class AkaneMemoryEngine:
 
     def snapshot_embedding_reindex_status(self) -> dict[str, Any]:
         with self._embedding_reindex_lock:
-            return dict(self._embedding_reindex_status)
+            snapshot = dict(self._embedding_reindex_status)
+        snapshot["provider_health"] = dict(getattr(self, "_embedding_startup_status", {}) or {})
+        return snapshot
 
     def _build_embedding_provider(self) -> BaseEmbeddingProvider:
         provider_mode = str(getattr(config, "EMBEDDING_PROVIDER", "auto") or "auto").strip().lower() or "auto"
+        self._embedding_startup_status = {
+            "ok": True,
+            "status": "not_checked",
+            "provider": provider_mode,
+            "model": "",
+            "dimension": 0,
+            "reason": "",
+        }
         base_provider: BaseEmbeddingProvider = HashedEmbeddingProvider()
-        if provider_mode in {"auto", "huggingface", "hf", "sentence-transformer", "sentence-transformers"}:
+        if provider_mode in {"remote", "openai-compatible", "openai_compatible"}:
+            base_provider = RemoteEmbeddingProvider(
+                api_key=str(getattr(config, "EMBEDDING_API_KEY", "") or ""),
+                base_url=str(getattr(config, "EMBEDDING_BASE_URL", "") or ""),
+                model_name=str(getattr(config, "EMBEDDING_MODEL_NAME", "") or ""),
+                dimension=int(getattr(config, "EMBEDDING_DIMENSION", 1024) or 1024),
+                timeout=float(getattr(config, "EMBEDDING_TIMEOUT_SECONDS", 30.0) or 30.0),
+            )
+            self._embedding_startup_status = base_provider.verify_retrieval_space()
+            if not self._embedding_startup_status.get("ok"):
+                logger.warning(
+                    "Remote embedding startup verification failed: %s",
+                    self._embedding_startup_status.get("reason") or "unknown",
+                )
+        elif provider_mode in {"jina", "jina-ai"}:
+            configured_model = str(getattr(config, "EMBEDDING_MODEL_NAME", "") or "").strip()
+            model_name = (
+                DEFAULT_JINA_EMBEDDING_MODEL
+                if not configured_model or configured_model == "BAAI/bge-m3"
+                else configured_model
+            )
+            base_provider = JinaEmbeddingProvider(
+                api_key=str(getattr(config, "EMBEDDING_API_KEY", "") or ""),
+                base_url=(
+                    str(getattr(config, "EMBEDDING_BASE_URL", "") or "").strip()
+                    or DEFAULT_JINA_EMBEDDING_BASE_URL
+                ),
+                model_name=model_name,
+                dimension=int(getattr(config, "EMBEDDING_DIMENSION", 1024) or 1024),
+                timeout=float(getattr(config, "EMBEDDING_TIMEOUT_SECONDS", 30.0) or 30.0),
+            )
+            self._embedding_startup_status = base_provider.verify_retrieval_space()
+            if not self._embedding_startup_status.get("ok"):
+                logger.warning(
+                    "Jina embedding startup verification failed: %s",
+                    self._embedding_startup_status.get("reason") or "unknown",
+                )
+        elif provider_mode in {"auto", "huggingface", "hf", "sentence-transformer", "sentence-transformers"}:
             try:
                 base_provider = HuggingFaceEmbeddingProvider(
                     model_name=str(getattr(config, "EMBEDDING_MODEL_NAME", "") or "BAAI/bge-m3"),
@@ -1427,6 +1480,17 @@ class AkaneMemoryEngine:
                 )
             except Exception:
                 base_provider = HashedEmbeddingProvider()
+        if self._embedding_startup_status.get("status") == "not_checked":
+            self._embedding_startup_status.update(
+                {
+                    "provider": base_provider.name,
+                    "model": str(getattr(base_provider, "model_name", "") or ""),
+                    "dimension": base_provider.dimension,
+                    "status": "degraded" if base_provider.name == "hashed" else "ready",
+                    "ok": base_provider.name != "hashed",
+                    "reason": "hashed_embedding_selected_or_fallback" if base_provider.name == "hashed" else "",
+                }
+            )
         if int(getattr(config, "EMBEDDING_CACHE_SIZE", 0) or 0) > 0:
             return CachedEmbeddingProvider(
                 base_provider,
