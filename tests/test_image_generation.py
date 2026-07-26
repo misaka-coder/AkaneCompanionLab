@@ -296,7 +296,7 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(sleeps, [1.0])
         self.assertEqual(provider.capability_status()["status"], "ready")
 
-    def test_pinai_final_account_pool_failure_updates_readiness(self) -> None:
+    def test_pinai_final_account_pool_failure_keeps_tool_degraded_and_retryable(self) -> None:
         response = FakeResponse(
             {"error": {"type": "api_error", "message": "No available compatible accounts"}},
             status_code=503,
@@ -324,8 +324,8 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertTrue(raised.exception.retryable)
         self.assertEqual(len(session.calls), 3)
         status = provider.capability_status()
-        self.assertFalse(status["enabled"])
-        self.assertEqual(status["status"], "unavailable")
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "degraded")
         self.assertEqual(status["reason"], "provider_no_compatible_accounts")
 
     def test_pinai_images_api_unsupported_is_specific_and_non_retryable(self) -> None:
@@ -394,6 +394,48 @@ class ImageGenerationTests(unittest.TestCase):
 
         self.assertTrue(status["enabled"])
         self.assertEqual(status["status"], "ready")
+
+    @patch("companion_v01.image_generation.threading.Thread")
+    def test_pinai_background_probe_keeps_configured_tool_available_while_first_check_runs(
+        self,
+        thread_type,
+    ) -> None:
+        provider = PinAIImageProvider(
+            base_url="https://images.example.com/v1",
+            api_key="secret-key",
+            session=FakeSession([]),
+        )
+
+        status = provider.capability_status()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "degraded")
+        self.assertEqual(status["reason"], "image_provider_probe_pending")
+        self.assertTrue(status["refreshing"])
+        thread_type.return_value.start.assert_called_once_with()
+
+    @patch("companion_v01.image_generation.threading.Thread")
+    def test_pinai_background_refresh_preserves_last_ready_status(
+        self,
+        thread_type,
+    ) -> None:
+        now = [0.0]
+        provider = PinAIImageProvider(
+            base_url="https://images.example.com/v1",
+            api_key="secret-key",
+            session=FakeSession([]),
+            readiness_ready_ttl_seconds=30,
+            readiness_clock=lambda: now[0],
+        )
+        provider._remember_capability_status({"enabled": True, "status": "ready", "reason": ""})
+        now[0] = 31.0
+
+        status = provider.capability_status()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "ready")
+        self.assertTrue(status["refreshing"])
+        thread_type.return_value.start.assert_called_once_with()
 
     def test_pinai_readiness_probe_hides_key_without_image_model(self) -> None:
         unsupported = FakeSession([FakeResponse({"data": [{"id": "claude-sonnet-4-5"}]})])

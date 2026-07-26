@@ -82,8 +82,11 @@ class PinAIImageProvider:
             return {"enabled": False, "status": "missing_config", "reason": "image_provider_not_configured"}
         now = float(self._readiness_clock())
         with self._readiness_lock:
-            if self._readiness_cache is not None and self._readiness_cache[0] > now:
-                return dict(self._readiness_cache[1])
+            cached_status = None
+            if self._readiness_cache is not None:
+                cached_status = dict(self._readiness_cache[1])
+                if self._readiness_cache[0] > now:
+                    return cached_status
             if self._readiness_probe_in_background:
                 if not self._readiness_probe_inflight:
                     self._readiness_probe_inflight = True
@@ -92,10 +95,16 @@ class PinAIImageProvider:
                         name="akane-image-generation-readiness",
                         daemon=True,
                     ).start()
+                if cached_status is not None:
+                    return {
+                        **cached_status,
+                        "refreshing": True,
+                    }
                 return {
-                    "enabled": False,
-                    "status": "checking",
+                    "enabled": True,
+                    "status": "degraded",
                     "reason": "image_provider_probe_pending",
+                    "refreshing": True,
                     "cache_ttl_seconds": 1.0,
                 }
         return self._probe_capability()
@@ -373,7 +382,7 @@ class PinAIImageProvider:
         if code == "provider_auth_or_network_forbidden":
             return {"enabled": False, "status": "permission_denied", "reason": code}
         if code == "provider_rate_limited":
-            return {"enabled": False, "status": "rate_limited", "reason": code}
+            return {"enabled": True, "status": "degraded", "reason": code}
         if code in {
             "provider_no_compatible_accounts",
             "provider_unavailable",
@@ -382,7 +391,7 @@ class PinAIImageProvider:
             "provider_returned_no_image",
             "provider_stream_unreadable",
         }:
-            return {"enabled": False, "status": "unavailable", "reason": code}
+            return {"enabled": True, "status": "degraded", "reason": code}
         return None
 
     @staticmethod
