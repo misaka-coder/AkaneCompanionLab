@@ -9,6 +9,7 @@ from companion_v01.voice_runtime import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
     VoiceHostPortResult,
+    VoiceProjectionOutboxLoadResult,
     VoiceResponseStreamBridge,
     VoiceTextArtifactResult,
 )
@@ -22,8 +23,15 @@ class _FakeJournal:
         self.records: list[dict[str, Any]] = []
         self.failure_reason = ""
         self.duplicate_event_ids: set[str] = set()
+        self.projection_records: dict[str, dict[str, Any]] = {}
+        self.delivered_projection_ids: set[str] = set()
+        self.acknowledgement_failure_reason = ""
 
-    def append(self, event_record: Mapping[str, Any]) -> VoiceHostPortResult:
+    def append_transition(
+        self,
+        event_record: Mapping[str, Any],
+        projection_records: tuple[Mapping[str, Any], ...],
+    ) -> VoiceHostPortResult:
         if self.failure_reason:
             return VoiceHostPortResult.failed(self.failure_reason, retryable=True)
         record = dict(event_record)
@@ -31,6 +39,34 @@ class _FakeJournal:
             return VoiceHostPortResult(status="duplicate")
         json.dumps(record)
         self.records.append(record)
+        for projection_record in projection_records:
+            projection = dict(projection_record)
+            projection_id = str(projection["projection_id"])
+            existing = self.projection_records.get(projection_id)
+            if existing is not None and existing != projection:
+                return VoiceHostPortResult.failed("fake_projection_conflict")
+            self.projection_records[projection_id] = projection
+        return VoiceHostPortResult.succeeded()
+
+    def load_pending_projections(self) -> VoiceProjectionOutboxLoadResult:
+        records = tuple(
+            record
+            for projection_id, record in self.projection_records.items()
+            if projection_id not in self.delivered_projection_ids
+        )
+        return VoiceProjectionOutboxLoadResult.succeeded(records)
+
+    def mark_projection_delivered(self, projection_id: str) -> VoiceHostPortResult:
+        if self.acknowledgement_failure_reason:
+            return VoiceHostPortResult.failed(
+                self.acknowledgement_failure_reason,
+                retryable=True,
+            )
+        if projection_id not in self.projection_records:
+            return VoiceHostPortResult.failed("fake_projection_missing")
+        if projection_id in self.delivered_projection_ids:
+            return VoiceHostPortResult(status="duplicate")
+        self.delivered_projection_ids.add(projection_id)
         return VoiceHostPortResult.succeeded()
 
 
@@ -38,13 +74,18 @@ class _FakeProjectionPort:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
         self.fail_kinds: set[str] = set()
+        self.seen_projection_ids: set[str] = set()
 
     def emit(self, projection_record: Mapping[str, Any]) -> VoiceHostPortResult:
         record = dict(projection_record)
         if str(record.get("kind") or "") in self.fail_kinds:
             return VoiceHostPortResult.failed("fake_projection_failure", retryable=True)
+        projection_id = str(record.get("projection_id") or "")
+        if projection_id in self.seen_projection_ids:
+            return VoiceHostPortResult(status="duplicate")
         json.dumps(record)
         self.records.append(record)
+        self.seen_projection_ids.add(projection_id)
         return VoiceHostPortResult.succeeded()
 
 
@@ -289,9 +330,7 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         self.assertEqual(assistant["delivery_status"], "delivered")
         self.assertEqual(assistant["memory_metadata"]["keywords"], ["voicecore", "fake_audio"])
         self.assertEqual(assistant["full_text"], "收到，fake voice 链路已经跑通。")
-        start_tts = next(
-            record for record in self.executor.command_records if record["command_kind"] == "start_tts"
-        )
+        start_tts = next(record for record in self.executor.command_records if record["command_kind"] == "start_tts")
         self.assertIn(
             start_tts["payload"]["text_artifact_ref"],
             {record["artifact_ref"] for record in self.text_artifacts.records.values()},
@@ -322,9 +361,7 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         duplicate_segment = bridge.accept_stream_event(segments[0])
         self.assertEqual(duplicate_segment.status, "duplicate")
         self.assertEqual(len(self.text_artifacts.records), len(segments))
-        self.assertFalse(
-            [record for record in self.projections.records if record["kind"] == "message.assistant.voice"]
-        )
+        self.assertFalse([record for record in self.projections.records if record["kind"] == "message.assistant.voice"])
         final = bridge.accept_stream_event(
             {
                 "type": "final",
@@ -374,9 +411,7 @@ class VoiceRuntimeHostTests(unittest.TestCase):
             [record["text"] for record in self.text_artifacts.records.values()],
             ["第一句。"],
         )
-        self.assertFalse(
-            [record for record in self.projections.records if record["kind"] == "message.assistant.voice"]
-        )
+        self.assertFalse([record for record in self.projections.records if record["kind"] == "message.assistant.voice"])
 
     def test_stream_bridge_reports_artifact_failure_without_declaring_unit(self) -> None:
         bridge = self._start_fake_response()
@@ -394,9 +429,7 @@ class VoiceRuntimeHostTests(unittest.TestCase):
     def test_stream_bridge_rejects_out_of_order_segment_without_hidden_reordering(self) -> None:
         bridge = self._start_fake_response()
 
-        result = bridge.accept_stream_event(
-            {"type": "speech_segment", "index": 1, "text": "第二句。"}
-        )
+        result = bridge.accept_stream_event({"type": "speech_segment", "index": 1, "text": "第二句。"})
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.reason, "speech_segment_out_of_order")
@@ -476,6 +509,66 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         self.assertFalse(result.projection_results[0].ok)
         self.assertEqual(self.host.snapshot.input_turns["turn-1"].state, InputTurnStatus.COMMITTED)
         self.assertTrue(self.host.snapshot.pending_commands)
+
+    def test_pending_projection_blocks_commands_until_delivery_recovers(self) -> None:
+        self.projections.fail_kinds.add("message.user.voice")
+        self._commit_fake_input()
+
+        blocked = self.host.drive_once()
+
+        self.assertEqual(blocked.status, "deferred")
+        self.assertEqual(blocked.reason, "fake_projection_failure")
+        self.assertTrue(blocked.pending_projection_ids)
+        self.assertEqual(self.executor.command_kinds, [])
+
+        self.projections.fail_kinds.clear()
+        recovered = self.host.drive_once()
+
+        self.assertEqual(recovered.status, "succeeded")
+        self.assertEqual(self.executor.command_kinds, ["start_response_generation"])
+        self.assertEqual(
+            [record["kind"] for record in self.projections.records],
+            ["message.user.voice"],
+        )
+        self.assertFalse(recovered.pending_projection_ids)
+
+    def test_projection_ack_retry_uses_stable_id_without_duplicate_sink_effect(self) -> None:
+        self.journal.acknowledgement_failure_reason = "fake_ack_unavailable"
+        self._accept(
+            "voice.input.activity_started",
+            voice_turn_id="turn-1",
+            audio_stream_id="fake-microphone-1",
+        )
+        self._accept(
+            "voice.asr.finalized",
+            voice_turn_id="turn-1",
+            turn_revision=1,
+            payload={"stable_text": "投影确认重试"},
+        )
+        result = self.host.accept_event(
+            self.factory.make(
+                "voice.turn.commit_requested",
+                voice_turn_id="turn-1",
+                turn_revision=1,
+                payload={"disposition": "message"},
+            )
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.reason, "projection_emit_failed")
+        self.assertEqual(len(self.projections.records), 1)
+        self.assertTrue(result.projection_drain_result.pending_projection_ids)
+
+        self.journal.acknowledgement_failure_reason = ""
+        recovered = self.host.drain_projection_outbox()
+
+        self.assertTrue(recovered.quiescent)
+        self.assertEqual(recovered.projection_results[0].status, "duplicate")
+        self.assertEqual(len(self.projections.records), 1)
+        self.assertEqual(
+            self.journal.delivered_projection_ids,
+            {self.projections.records[0]["projection_id"]},
+        )
 
     def test_command_executor_failure_stays_structured_and_pending(self) -> None:
         self._commit_fake_input()

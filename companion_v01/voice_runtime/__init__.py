@@ -14,6 +14,8 @@ from .host import (
     VoiceHostDispatchResult,
     VoiceHostDriveResult,
     VoiceHostPortResult,
+    VoiceProjectionDrainResult,
+    VoiceProjectionOutboxLoadResult,
     VoiceProjectionPort,
     VoiceRuntimeJournal,
 )
@@ -34,6 +36,8 @@ __all__ = [
     "VoiceHostDispatchResult",
     "VoiceHostDriveResult",
     "VoiceHostPortResult",
+    "VoiceProjectionDrainResult",
+    "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
     "VoiceRuntimeJournal",
     "VoiceJournalLoadResult",

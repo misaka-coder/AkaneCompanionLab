@@ -59,8 +59,51 @@ class VoiceCommandExecutionResult:
         return cls(status="failed", reason=reason, retryable=retryable)
 
 
+@dataclass(frozen=True)
+class VoiceProjectionOutboxLoadResult:
+    status: str
+    reason: str = ""
+    retryable: bool = False
+    records: tuple[Mapping[str, Any], ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "succeeded"
+
+    @classmethod
+    def succeeded(
+        cls,
+        records: tuple[Mapping[str, Any], ...] = (),
+    ) -> VoiceProjectionOutboxLoadResult:
+        return cls(status="succeeded", records=records)
+
+    @classmethod
+    def failed(
+        cls,
+        reason: str,
+        *,
+        retryable: bool = False,
+    ) -> VoiceProjectionOutboxLoadResult:
+        return cls(status="failed", reason=reason, retryable=retryable)
+
+
 class VoiceRuntimeJournal(Protocol):
-    def append(self, event_record: Mapping[str, Any]) -> VoiceHostPortResult: ...
+    """Durably commit accepted events and their deterministic projections.
+
+    Projection delivery is at-least-once. Implementations must store the event
+    and projection records atomically, while projection ports must deduplicate
+    the stable ``projection_id`` before reporting success.
+    """
+
+    def append_transition(
+        self,
+        event_record: Mapping[str, Any],
+        projection_records: tuple[Mapping[str, Any], ...],
+    ) -> VoiceHostPortResult: ...
+
+    def load_pending_projections(self) -> VoiceProjectionOutboxLoadResult: ...
+
+    def mark_projection_delivered(self, projection_id: str) -> VoiceHostPortResult: ...
 
 
 class VoiceProjectionPort(Protocol):
@@ -83,6 +126,7 @@ class VoiceHostDispatchResult:
     snapshot_advanced: bool
     journal_result: VoiceHostPortResult | None = None
     projection_results: tuple[VoiceHostPortResult, ...] = ()
+    projection_drain_result: VoiceProjectionDrainResult | None = None
 
     @property
     def accepted(self) -> bool:
@@ -96,10 +140,25 @@ class VoiceHostDriveResult:
     command_results: tuple[VoiceCommandExecutionResult, ...]
     dispatch_results: tuple[VoiceHostDispatchResult, ...]
     pending_command_ids: tuple[str, ...]
+    pending_projection_ids: tuple[str, ...] = ()
+    projection_drain_result: VoiceProjectionDrainResult | None = None
 
     @property
     def quiescent(self) -> bool:
-        return not self.pending_command_ids
+        return self.status == "succeeded" and not self.pending_command_ids and not self.pending_projection_ids
+
+
+@dataclass(frozen=True)
+class VoiceProjectionDrainResult:
+    status: str
+    reason: str
+    projection_results: tuple[VoiceHostPortResult, ...] = ()
+    acknowledgement_results: tuple[VoiceHostPortResult, ...] = ()
+    pending_projection_ids: tuple[str, ...] = ()
+
+    @property
+    def quiescent(self) -> bool:
+        return self.status == "succeeded" and not self.pending_projection_ids
 
 
 class AkaneVoiceRuntimeHost:
@@ -155,14 +214,15 @@ class AkaneVoiceRuntimeHost:
 
         try:
             event_record = voice_event_to_dict(event)
+            projection_records = tuple(projection_to_host_record(projection) for projection in transition.projections)
         except (TypeError, ValueError):
             return VoiceHostDispatchResult(
                 status="failed",
-                reason="event_not_serializable",
+                reason="transition_not_serializable",
                 transition=transition,
                 snapshot_advanced=False,
             )
-        journal_result = self._append_journal(event_record)
+        journal_result = self._append_transition(event_record, projection_records)
         if not journal_result.ok:
             return VoiceHostDispatchResult(
                 status="failed",
@@ -173,17 +233,16 @@ class AkaneVoiceRuntimeHost:
             )
 
         self.snapshot = transition.snapshot
-        projection_results = tuple(
-            self._emit_projection(projection_to_host_record(projection)) for projection in transition.projections
-        )
-        projection_failed = any(not result.ok for result in projection_results)
+        projection_drain = self.drain_projection_outbox()
+        projection_failed = projection_drain.status != "succeeded"
         return VoiceHostDispatchResult(
             status=TransitionStatus.ACCEPTED.value,
             reason="projection_emit_failed" if projection_failed else transition.reason,
             transition=transition,
             snapshot_advanced=True,
             journal_result=journal_result,
-            projection_results=projection_results,
+            projection_results=projection_drain.projection_results,
+            projection_drain_result=projection_drain,
         )
 
     def execute_command(self, command: VoiceCommand) -> VoiceCommandExecutionResult:
@@ -214,6 +273,17 @@ class AkaneVoiceRuntimeHost:
     def drive_once(self) -> VoiceHostDriveResult:
         command_results: list[VoiceCommandExecutionResult] = []
         dispatch_results: list[VoiceHostDispatchResult] = []
+        projection_drain = self.drain_projection_outbox()
+        if not projection_drain.quiescent:
+            return VoiceHostDriveResult(
+                status=projection_drain.status,
+                reason=projection_drain.reason or "projection_outbox_not_drained",
+                command_results=(),
+                dispatch_results=(),
+                pending_command_ids=tuple(self.snapshot.pending_commands),
+                pending_projection_ids=projection_drain.pending_projection_ids,
+                projection_drain_result=projection_drain,
+            )
         command_ids = tuple(self.snapshot.pending_commands)
 
         for command_id in command_ids:
@@ -237,11 +307,33 @@ class AkaneVoiceRuntimeHost:
         deferred = any(result.status == "deferred" for result in command_results) or any(
             result.status == TransitionStatus.DEFERRED.value for result in dispatch_results
         )
+        pending_projection_ids = tuple(
+            dict.fromkeys(
+                projection_id
+                for result in dispatch_results
+                if result.projection_drain_result is not None
+                for projection_id in result.projection_drain_result.pending_projection_ids
+            )
+        )
         projection_failed = any(result.reason == "projection_emit_failed" for result in dispatch_results)
-        status = "failed" if failed else "deferred" if deferred else "succeeded"
-        if failed:
+        projection_deferred = any(
+            result.projection_drain_result is not None and result.projection_drain_result.status == "deferred"
+            for result in dispatch_results
+        )
+        projection_hard_failed = any(
+            result.projection_drain_result is not None and result.projection_drain_result.status == "failed"
+            for result in dispatch_results
+        )
+        status = (
+            "failed"
+            if failed or projection_hard_failed
+            else "deferred"
+            if deferred or projection_deferred or pending_projection_ids
+            else "succeeded"
+        )
+        if failed or projection_hard_failed:
             reason = "voice_command_drive_failed"
-        elif deferred:
+        elif deferred or projection_deferred or pending_projection_ids:
             reason = "voice_command_drive_deferred"
         elif projection_failed:
             reason = "projection_emit_failed"
@@ -253,17 +345,104 @@ class AkaneVoiceRuntimeHost:
             command_results=tuple(command_results),
             dispatch_results=tuple(dispatch_results),
             pending_command_ids=tuple(self.snapshot.pending_commands),
+            pending_projection_ids=pending_projection_ids,
+            projection_drain_result=projection_drain,
         )
 
-    def _append_journal(self, event_record: Mapping[str, Any]) -> VoiceHostPortResult:
+    def drain_projection_outbox(self) -> VoiceProjectionDrainResult:
+        loaded = self._load_pending_projections()
+        if not loaded.ok:
+            return VoiceProjectionDrainResult(
+                status="deferred" if loaded.retryable else "failed",
+                reason=loaded.reason or "projection_outbox_load_failed",
+            )
+        records = tuple(loaded.records)
+        projection_results: list[VoiceHostPortResult] = []
+        acknowledgement_results: list[VoiceHostPortResult] = []
+        for index, projection_record in enumerate(records):
+            projection_id = str(projection_record.get("projection_id") or "")
+            if not projection_id:
+                return VoiceProjectionDrainResult(
+                    status="failed",
+                    reason="projection_outbox_record_invalid",
+                    projection_results=tuple(projection_results),
+                    acknowledgement_results=tuple(acknowledgement_results),
+                    pending_projection_ids=tuple(
+                        str(record.get("projection_id") or "")
+                        for record in records[index:]
+                        if str(record.get("projection_id") or "")
+                    ),
+                )
+            emitted = self._emit_projection(projection_record)
+            projection_results.append(emitted)
+            if not emitted.ok:
+                return VoiceProjectionDrainResult(
+                    status="deferred" if emitted.retryable else "failed",
+                    reason=emitted.reason or "projection_emit_failed",
+                    projection_results=tuple(projection_results),
+                    acknowledgement_results=tuple(acknowledgement_results),
+                    pending_projection_ids=tuple(str(record.get("projection_id") or "") for record in records[index:]),
+                )
+            acknowledged = self._mark_projection_delivered(projection_id)
+            acknowledgement_results.append(acknowledged)
+            if not acknowledged.ok:
+                return VoiceProjectionDrainResult(
+                    status="deferred" if acknowledged.retryable else "failed",
+                    reason=acknowledged.reason or "projection_acknowledgement_failed",
+                    projection_results=tuple(projection_results),
+                    acknowledgement_results=tuple(acknowledgement_results),
+                    pending_projection_ids=tuple(str(record.get("projection_id") or "") for record in records[index:]),
+                )
+        return VoiceProjectionDrainResult(
+            status="succeeded",
+            reason="",
+            projection_results=tuple(projection_results),
+            acknowledgement_results=tuple(acknowledgement_results),
+        )
+
+    def _append_transition(
+        self,
+        event_record: Mapping[str, Any],
+        projection_records: tuple[Mapping[str, Any], ...],
+    ) -> VoiceHostPortResult:
         try:
-            result = self.journal.append(event_record)
+            result = self.journal.append_transition(event_record, projection_records)
         except Exception:
             return VoiceHostPortResult.failed("journal_append_failed", retryable=True)
         if not isinstance(result, VoiceHostPortResult):
             return VoiceHostPortResult.failed("invalid_journal_result")
         if result.status not in {"succeeded", "duplicate", "failed"}:
             return VoiceHostPortResult.failed("invalid_journal_status")
+        return result
+
+    def _load_pending_projections(self) -> VoiceProjectionOutboxLoadResult:
+        try:
+            result = self.journal.load_pending_projections()
+        except Exception:
+            return VoiceProjectionOutboxLoadResult.failed(
+                "projection_outbox_load_failed",
+                retryable=True,
+            )
+        if not isinstance(result, VoiceProjectionOutboxLoadResult):
+            return VoiceProjectionOutboxLoadResult.failed("invalid_projection_outbox_load_result")
+        if result.status not in {"succeeded", "failed"}:
+            return VoiceProjectionOutboxLoadResult.failed("invalid_projection_outbox_load_status")
+        if result.status == "succeeded" and any(not isinstance(record, Mapping) for record in result.records):
+            return VoiceProjectionOutboxLoadResult.failed("invalid_projection_outbox_record")
+        return result
+
+    def _mark_projection_delivered(self, projection_id: str) -> VoiceHostPortResult:
+        try:
+            result = self.journal.mark_projection_delivered(projection_id)
+        except Exception:
+            return VoiceHostPortResult.failed(
+                "projection_acknowledgement_failed",
+                retryable=True,
+            )
+        if not isinstance(result, VoiceHostPortResult):
+            return VoiceHostPortResult.failed("invalid_projection_acknowledgement_result")
+        if result.status not in {"succeeded", "duplicate", "failed"}:
+            return VoiceHostPortResult.failed("invalid_projection_acknowledgement_status")
         return result
 
     def _emit_projection(self, projection_record: Mapping[str, Any]) -> VoiceHostPortResult:

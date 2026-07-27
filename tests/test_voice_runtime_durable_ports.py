@@ -23,9 +23,15 @@ from voicecore.testing import EventFactory
 class _RecordingProjectionPort:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
+        self.seen_projection_ids: set[str] = set()
 
     def emit(self, projection_record: Mapping[str, Any]) -> VoiceHostPortResult:
-        self.records.append(dict(projection_record))
+        record = dict(projection_record)
+        projection_id = str(record.get("projection_id") or "")
+        if projection_id in self.seen_projection_ids:
+            return VoiceHostPortResult(status="duplicate")
+        self.records.append(record)
+        self.seen_projection_ids.add(projection_id)
         return VoiceHostPortResult.succeeded()
 
 
@@ -120,6 +126,91 @@ class VoiceRuntimeDurablePortTests(unittest.TestCase):
             self.assertTrue(recovered_host.snapshot.pending_commands)
             self.assertEqual(recovery_projections.records, [])
 
+    def test_projection_outbox_recovers_ack_crash_without_duplicate_sink_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            factory = EventFactory()
+            journal = self._journal(state_dir)
+            projections = _RecordingProjectionPort()
+            host = AkaneVoiceRuntimeHost(
+                conversation_id=factory.conversation_id,
+                conversation_generation=1,
+                journal=journal,
+                projection_port=projections,
+                command_executor=_InertCommandExecutor(),
+                capability_snapshot={"playback_interrupt": True},
+            )
+            for event in (
+                factory.make(
+                    "voice.input.activity_started",
+                    voice_turn_id="turn-1",
+                    audio_stream_id="microphone-1",
+                ),
+                factory.make(
+                    "voice.asr.finalized",
+                    voice_turn_id="turn-1",
+                    turn_revision=1,
+                    payload={"stable_text": "投影 outbox 恢复"},
+                ),
+            ):
+                self.assertTrue(host.accept_event(event).accepted)
+
+            database_path = next(state_dir.rglob("journal.sqlite3"))
+            with closing(sqlite3.connect(database_path)) as connection, connection:
+                connection.executescript(
+                    """
+                    CREATE TRIGGER reject_projection_ack
+                    BEFORE UPDATE OF delivery_status ON voice_projection_outbox
+                    BEGIN
+                        SELECT RAISE(ABORT, 'private projection ack failure');
+                    END;
+                    """
+                )
+            committed = host.accept_event(
+                factory.make(
+                    "voice.turn.commit_requested",
+                    voice_turn_id="turn-1",
+                    turn_revision=1,
+                    payload={"disposition": "message"},
+                )
+            )
+
+            self.assertTrue(committed.accepted)
+            self.assertEqual(committed.reason, "projection_emit_failed")
+            self.assertEqual(len(projections.records), 1)
+            self.assertEqual(
+                committed.projection_drain_result.reason,
+                "voice_projection_acknowledgement_failed",
+            )
+            self.assertTrue(committed.projection_drain_result.pending_projection_ids)
+
+            replayed = self._journal(state_dir).replay(
+                initial_snapshot(
+                    factory.conversation_id,
+                    conversation_generation=1,
+                    capability_snapshot={"playback_interrupt": True},
+                )
+            )
+            self.assertTrue(replayed.ok, replayed)
+            with closing(sqlite3.connect(database_path)) as connection, connection:
+                connection.execute("DROP TRIGGER reject_projection_ack")
+
+            recovered_host = AkaneVoiceRuntimeHost(
+                conversation_id=factory.conversation_id,
+                conversation_generation=1,
+                journal=self._journal(state_dir),
+                projection_port=projections,
+                command_executor=_InertCommandExecutor(),
+                capability_snapshot={"playback_interrupt": True},
+                restored_snapshot=replayed.replay.snapshot,
+            )
+            recovered = recovered_host.drain_projection_outbox()
+
+            self.assertTrue(recovered.quiescent)
+            self.assertEqual(recovered.projection_results[0].status, "duplicate")
+            self.assertEqual(len(projections.records), 1)
+            self.assertFalse(self._journal(state_dir).load_pending_projections().records)
+
     def test_file_journal_is_idempotent_and_rejects_conflicting_event_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
@@ -183,9 +274,9 @@ class VoiceRuntimeDurablePortTests(unittest.TestCase):
             with closing(sqlite3.connect(database_path)) as connection, connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM voice_events").fetchone()[0], 1)
                 self.assertEqual(
-                    connection.execute(
-                        "SELECT record_count FROM voice_journal_head WHERE singleton_id = 1"
-                    ).fetchone()[0],
+                    connection.execute("SELECT record_count FROM voice_journal_head WHERE singleton_id = 1").fetchone()[
+                        0
+                    ],
                     1,
                 )
                 connection.execute("DROP TRIGGER reject_second_head_update")
@@ -222,12 +313,8 @@ class VoiceRuntimeDurablePortTests(unittest.TestCase):
             self.assertEqual(missing.events, ())
 
             with closing(sqlite3.connect(database_path)) as connection, connection:
-                connection.execute(
-                    "UPDATE voice_journal_head SET record_count = 1 WHERE singleton_id = 1"
-                )
-                connection.execute(
-                    "UPDATE voice_events SET event_json = '{broken' WHERE ordinal = 1"
-                )
+                connection.execute("UPDATE voice_journal_head SET record_count = 1 WHERE singleton_id = 1")
+                connection.execute("UPDATE voice_events SET event_json = '{broken' WHERE ordinal = 1")
             corrupt = self._journal(state_dir).load_events()
             self.assertEqual(corrupt.status, "failed")
             self.assertEqual(corrupt.reason, "voice_journal_unreadable")

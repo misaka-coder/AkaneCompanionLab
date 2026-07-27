@@ -462,15 +462,20 @@ LLMRuntime / MemCore speech_segment
 未装配的 `SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`：
 
 - 宿主传入 instance 自己的 `state_dir`，端口按会话身份哈希建立私有存储桶；
-- journal 使用单会话 SQLite 事务日志，事件行和权威 head 在同一事务提交，
-  支持幂等追加、完整性校验和 VoiceCore 确定性重放，避免高频语音事件制造
-  大量小文件；
+- journal 使用单会话 SQLite 事务日志，事件行、权威 head 和该次 transition
+  派生的 projection outbox 在同一事务提交，支持幂等追加、完整性校验和
+  VoiceCore 确定性重放，避免高频语音事件制造大量小文件；
 - 文本 artifact 不可变，只通过 `voice-text:<digest>` 引用，不把本地路径放入
   snapshot、command、日志或 prompt；
 - journal 或 artifact 损坏、缺失、内容冲突时结构化失败，不跳过损坏记录继续
   伪造完整状态；
-- 重放只重建权威 snapshot，不自动重发历史 projection。崩溃窗口内未送达的
-  projection 需要后续独立的幂等 outbox/补偿切片处理。
+- projection 按 VoiceCore 的稳定 `projection_id` 顺序投递并在成功后确认；
+  失败或崩溃时保留 pending，恢复后至少一次补偿，接收端必须按
+  `projection_id` 幂等；
+- pending projection 补齐前，Host 不执行后续模型、TTS 或播放 command，避免
+  状态已推进但 MemCore/宿主仍缺少触发事实；
+- 重放只重建权威 snapshot，不盲目重发全部历史 projection；只补偿 outbox 中
+  尚未确认的记录。若投影已送达但确认前崩溃，接收端的幂等键会消除重复副作用。
 
 这些端口目前没有在 BotRuntime 或路由中构造。它们没有接入真实 `/asr`、
 `/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式语音能力。
