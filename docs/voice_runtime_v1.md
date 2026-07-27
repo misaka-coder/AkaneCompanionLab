@@ -545,6 +545,31 @@ provider builder 仍未由 `/asr`、桌宠麦克风或 BotRuntime 调用。当�
 协议夹具和人工 revision，不代表中文、专名、噪声、回声等真实音频准确率已经
 验收；用户当前不会感受到新的实时语音输入表现。
 
+2026-07-28 的真实专属业务空间 smoke 已验证：
+
+- WebSocket 建连约 150–165ms，首个 partial 约 400ms；
+- 4.7 秒固定中文测试语逐字识别正确；
+- 持续补送静音 PCM 后，VAD 能在音频流仍打开时产生 stable checkpoint；
+- `finish-task → task-finished` 的 provider 收尾确认约需 3 秒，不能让这一段
+  纯传输生命周期阻塞所有模型准备工作。
+
+Akane 因此增加 `VoiceASRRealtimeTurnCoordinator`，但不增加第二套权威状态机：
+
+```text
+stable checkpoint
+  → VoiceASREarlyCandidate（只允许 non-playable speculative 工作）
+  → provider finalization 在独立 task 中继续等待
+  → normalized final
+  → VoiceASRSessionBridge
+  → VoiceCore final + commit
+  → 单一 message.user.voice
+```
+
+协调器不会调用模型、播放候选、写正式 assistant 记忆或自行判断候选兼容性。
+它只让宿主在等待 provider final 时拿到稳定文本和 source revision。候选采用
+仍必须经过 VoiceCore 的 revision fence 与 `voice.candidate.validation_result`；
+provider open/finalize 失败继续结构化写入同一语音轮，不能静默丢失。
+
 ### Slice C：播放和语义打断
 
 - 加入回声消除、VAD、降音量和语义脉冲；
