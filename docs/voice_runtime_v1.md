@@ -458,9 +458,22 @@ LLMRuntime / MemCore speech_segment
 全文完成前进入 TTS，同时 MemCore 的 `message.assistant.voice` 仍只投影一次完整
 正文。中断流不会把尚未闭合的残句刷新为完整语音单元。
 
-该链路当前只在 fake journal、fake artifact、fake TTS 和 fake playback 上验收。
-它没有接入真实 `/asr`、`/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式
-语音能力。
+该链路的 TTS、playback 和 projection 仍只使用 fake 端口。Akane 已提供默认
+未装配的 `SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`：
+
+- 宿主传入 instance 自己的 `state_dir`，端口按会话身份哈希建立私有存储桶；
+- journal 使用单会话 SQLite 事务日志，事件行和权威 head 在同一事务提交，
+  支持幂等追加、完整性校验和 VoiceCore 确定性重放，避免高频语音事件制造
+  大量小文件；
+- 文本 artifact 不可变，只通过 `voice-text:<digest>` 引用，不把本地路径放入
+  snapshot、command、日志或 prompt；
+- journal 或 artifact 损坏、缺失、内容冲突时结构化失败，不跳过损坏记录继续
+  伪造完整状态；
+- 重放只重建权威 snapshot，不自动重发历史 projection。崩溃窗口内未送达的
+  projection 需要后续独立的幂等 outbox/补偿切片处理。
+
+这些端口目前没有在 BotRuntime 或路由中构造。它们没有接入真实 `/asr`、
+`/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式语音能力。
 
 ### Slice B：高准确率 ASR 接入
 

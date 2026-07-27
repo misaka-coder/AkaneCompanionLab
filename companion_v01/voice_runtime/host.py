@@ -14,6 +14,7 @@ from voicecore import (
     projection_to_host_record,
     reduce_event,
     snapshot_to_dict,
+    validate_snapshot,
     voice_command_to_dict,
     voice_event_to_dict,
 )
@@ -114,16 +115,33 @@ class AkaneVoiceRuntimeHost:
         command_executor: VoiceCommandExecutor,
         policy_snapshot: dict[str, Any] | None = None,
         capability_snapshot: dict[str, Any] | None = None,
+        restored_snapshot: VoiceRuntimeSnapshot | None = None,
     ) -> None:
         self.journal = journal
         self.projection_port = projection_port
         self.command_executor = command_executor
-        self.snapshot = initial_snapshot(
-            conversation_id,
-            conversation_generation=conversation_generation,
-            policy_snapshot=policy_snapshot,
-            capability_snapshot=capability_snapshot,
-        )
+        if restored_snapshot is None:
+            self.snapshot = initial_snapshot(
+                conversation_id,
+                conversation_generation=conversation_generation,
+                policy_snapshot=policy_snapshot,
+                capability_snapshot=capability_snapshot,
+            )
+        else:
+            if not isinstance(restored_snapshot, VoiceRuntimeSnapshot):
+                raise ValueError("restored_voice_snapshot_invalid")
+            if (
+                restored_snapshot.conversation_id != conversation_id
+                or restored_snapshot.conversation_generation != conversation_generation
+            ):
+                raise ValueError("restored_voice_snapshot_identity_mismatch")
+            if policy_snapshot is not None and restored_snapshot.policy_snapshot != policy_snapshot:
+                raise ValueError("restored_voice_snapshot_policy_mismatch")
+            if capability_snapshot is not None and restored_snapshot.capability_snapshot != capability_snapshot:
+                raise ValueError("restored_voice_snapshot_capability_mismatch")
+            if validate_snapshot(restored_snapshot):
+                raise ValueError("restored_voice_snapshot_invalid")
+            self.snapshot = restored_snapshot.clone()
 
     def accept_event(self, event: VoiceEvent) -> VoiceHostDispatchResult:
         transition = reduce_event(self.snapshot, event)

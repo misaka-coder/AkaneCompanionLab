@@ -509,8 +509,11 @@ Current Akane use:
 - `companion_v01/voice_runtime/host.py` delegates event reduction, snapshot
   ownership, version fencing, command/projection records, and replay-compatible
   event serialization to `voicecore`;
-- Slice B1 only supplies Akane-owned journal, projection, and command-executor
-  ports plus a fake-audio acceptance chain;
+- Slice B1 supplies Akane-owned journal, projection, and command-executor ports
+  plus a fake-audio acceptance chain;
+- the current default-off Slice B2 adds a transactional SQLite event journal, immutable
+  opaque text artifacts, deterministic snapshot replay, and a restored-snapshot
+  Host entry without activating any product route;
 - no `/asr`, `/tts`, QQ, desktop-pet, or model prompt path is activated by this
   slice.
 

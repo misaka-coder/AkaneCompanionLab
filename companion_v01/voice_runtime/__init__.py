@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from .durable_ports import (
+    FileVoiceTextArtifactPort,
+    SqliteVoiceRuntimeJournal,
+    VoiceJournalLoadResult,
+    VoiceJournalReplayResult,
+    VoiceTextArtifactReadResult,
+)
 from .host import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
@@ -20,6 +27,8 @@ from .stream_bridge import (
 
 __all__ = [
     "AkaneVoiceRuntimeHost",
+    "FileVoiceTextArtifactPort",
+    "SqliteVoiceRuntimeJournal",
     "VoiceCommandExecutionResult",
     "VoiceCommandExecutor",
     "VoiceHostDispatchResult",
@@ -27,9 +36,12 @@ __all__ = [
     "VoiceHostPortResult",
     "VoiceProjectionPort",
     "VoiceRuntimeJournal",
+    "VoiceJournalLoadResult",
+    "VoiceJournalReplayResult",
     "VoiceResponseStreamBridge",
     "VoiceStreamBridgeResult",
     "VoiceStreamEventFactory",
     "VoiceTextArtifactPort",
+    "VoiceTextArtifactReadResult",
     "VoiceTextArtifactResult",
 ]
