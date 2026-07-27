@@ -2402,6 +2402,51 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["file"], str(output_path))
         self.assertEqual(payload["name"], "video.mp4")
 
+    def test_send_generated_files_deduplicates_same_attachment_within_one_delivery_batch(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_FILE_GROUP_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "file-ready-duplicate-1",
+                "raw_message": "发我刚才那份",
+            }
+        )
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "reference.png"
+            output_path.write_bytes(b"reference")
+            event = {
+                "type": "file_ready",
+                "send_to_user": True,
+                "file": {
+                    "source_type": "attachment",
+                    "source_id": "attachment::duplicate",
+                    "attachment_id": "attachment::duplicate",
+                    "handle": "img_001",
+                    "absolute_path": str(output_path),
+                    "name": "reference.png",
+                },
+            }
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post:
+                result = gateway.send_generated_files(context, [event, dict(event)])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 1)
+        mocked_post.assert_called_once()
+
     def test_send_file_streams_to_remote_napcat_after_local_path_rejection(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(

@@ -1258,14 +1258,29 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     display_name="Send file",
     description=(
         "把已经存在的工作台材料或生成文件真正交付给用户。支持 file_*、img_*、audio_*、gen_*。"
-        "它不会生成、修改或转码文件；只有工具成功结果才能证明文件已经发出。"
+        "工具结果或上下文已经给出句柄时，必须传入那个精确句柄，不要改用 latest；"
+        "latest 只适合确实不知道句柄、且用户笼统指向最近文件的情况。"
+        "若只知道文件类型，可用 latest_generated 或 latest_attachment，避免在生成物和用户附件之间选错。"
+        "它不会生成、修改或转码文件；只有工具成功结果才能证明文件已经进入客户端投递队列。"
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "Single file handle or 'latest'."},
-            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Multiple file handles."},
+            "target": {
+                "type": "string",
+                "maxLength": 120,
+                "description": (
+                    "Single exact file handle (preferred), or latest/latest_generated/latest_attachment "
+                    "only when no exact handle is known."
+                ),
+            },
+            "targets": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 120},
+                "maxItems": 10,
+                "description": "One or more exact file handles. Reuse handles returned by prior tools.",
+            },
             "delivery_action": {
                 "type": "string",
                 "enum": ["open", "reveal", "save_desktop", "copy_path"],
@@ -1278,8 +1293,8 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     confirm="first_time",
     effects=("file_delivery",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
+    spec_version="1.2.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,

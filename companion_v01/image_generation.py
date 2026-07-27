@@ -747,6 +747,14 @@ class ImageGenerationService:
                 f"图片生成完成，得到 {', '.join(handles)}。"
                 f"{'已请求发送给用户。' if send_to_user else '结果保存在当前生成文件工作区。'}"
                 "这些生成图可以继续作为 load_material 或 generate_image 的参考图；不要声称生成了未列出的结果。"
+                + (
+                    ""
+                    if send_to_user
+                    else (
+                        f"如果接下来要交付本次结果，请调用 send_file 并传入刚得到的精确句柄"
+                        f" {', '.join(handles)}；不要改用 latest，因为最近的用户附件可能比生成物更新。"
+                    )
+                )
             ),
         }
 

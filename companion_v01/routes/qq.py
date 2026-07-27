@@ -1290,7 +1290,7 @@ def _process_qq_turn_streaming(
         and str(event.get("type") or "").strip() not in {"generated_file_ready", "file_ready"}
     ]
     merged_file_events: list[dict[str, Any]] = []
-    seen_delivery_events: set[tuple[str, str, str]] = set()
+    seen_delivery_events: set[tuple[str, str]] = set()
     for raw_event in [*streamed_delivery_events, *frame_delivery_events]:
         if not isinstance(raw_event, dict):
             continue
@@ -1298,13 +1298,8 @@ def _process_qq_turn_streaming(
         event_type = str(event.get("type") or "").strip()
         if event_type not in {"generated_file_ready", "file_ready"}:
             continue
-        generated = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
-        identity = (
-            event_type,
-            str(generated.get("generated_id") or generated.get("generated_handle") or "").strip(),
-            str((event.get("file") if isinstance(event.get("file"), dict) else {}).get("generated_id") or "").strip(),
-        )
-        if identity[1] or identity[2]:
+        identity = _qq_file_delivery_event_identity(event)
+        if identity:
             if identity in seen_delivery_events:
                 continue
             seen_delivery_events.add(identity)
@@ -1504,6 +1499,31 @@ def _process_qq_turn_streaming(
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
     }
+
+
+def _qq_file_delivery_event_identity(event: dict[str, Any]) -> tuple[str, str] | None:
+    """Identify one physical file across streamed and final-frame event shapes."""
+
+    event_type = str(event.get("type") or "").strip()
+    if event_type == "generated_file_ready":
+        item = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
+        source_type = "generated"
+    elif event_type == "file_ready":
+        item = event.get("file") if isinstance(event.get("file"), dict) else {}
+        source_type = str(item.get("source_type") or "").strip().lower() or "file"
+    else:
+        return None
+    source_id = str(
+        item.get("generated_id")
+        or item.get("attachment_id")
+        or item.get("source_id")
+        or item.get("generated_handle")
+        or item.get("attachment_handle")
+        or item.get("handle")
+        or item.get("absolute_path")
+        or ""
+    ).strip()
+    return (source_type, source_id) if source_id else None
 
 
 def _hydrate_plugin_managed_artifact_events(

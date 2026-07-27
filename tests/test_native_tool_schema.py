@@ -101,6 +101,22 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertNotIn("limit", function["parameters"]["properties"])
         self.assertNotIn("description", function["parameters"])
 
+    def test_send_file_native_schema_prefers_exact_handle_over_latest(self) -> None:
+        specs = build_openai_native_tool_specs(
+            {"send_file": SendFileToolHandler(generated_file_service=object())},
+            allowed_tool_names={"send_file"},
+        )
+
+        self.assertEqual(len(specs), 1)
+        function = specs[0]["function"]
+        self.assertIn("必须传入那个精确句柄", function["description"])
+        self.assertIn("latest_generated", function["description"])
+        self.assertIn("latest_attachment", function["description"])
+        self.assertIn(
+            "Reuse handles returned by prior tools",
+            function["parameters"]["properties"]["targets"]["description"],
+        )
+
     def test_memory_capability_properties_are_package_owned(self) -> None:
         package_spec = next(
             item

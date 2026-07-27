@@ -22,6 +22,7 @@ def send_generated_file(
     unresolved: list[str] = []
     missing_on_disk: list[str] = []
     ambiguous_targets: list[str] = []
+    seen_generated_ids: set[str] = set()
 
     for item in resolved_targets:
         generated = service._resolve_generated_file(
@@ -47,6 +48,11 @@ def send_generated_file(
         if not absolute_path.exists() or not absolute_path.is_file():
             missing_on_disk.append(str(generated.get("generated_handle") or item).strip() or item)
             continue
+        generated_identity = str(generated.get("generated_id") or generated.get("generated_handle") or "").strip()
+        if generated_identity and generated_identity in seen_generated_ids:
+            continue
+        if generated_identity:
+            seen_generated_ids.add(generated_identity)
 
         updated = service.store.update_generated_file(
             profile_user_id=profile_user_id,
@@ -113,6 +119,7 @@ def send_file(
     unresolved: list[str] = []
     missing_on_disk: list[str] = []
     ambiguous_targets: list[str] = []
+    seen_file_ids: set[tuple[str, str]] = set()
 
     for item in resolved_targets:
         file_ref, error = service._resolve_sendable_file(
@@ -145,6 +152,20 @@ def send_file(
             else:
                 unresolved.append(item)
             continue
+        source_type = str(file_ref.get("source_type") or "").strip().lower()
+        source_id = str(
+            file_ref.get("source_id")
+            or file_ref.get("generated_id")
+            or file_ref.get("attachment_id")
+            or file_ref.get("handle")
+            or file_ref.get("absolute_path")
+            or ""
+        ).strip()
+        file_identity = (source_type, source_id)
+        if source_id and file_identity in seen_file_ids:
+            continue
+        if source_id:
+            seen_file_ids.add(file_identity)
         files.append(file_ref)
 
     if not files:
@@ -751,6 +772,31 @@ def resolve_sendable_file(
 ) -> tuple[dict[str, Any] | None, str]:
     normalized = str(target or "").strip() or "latest"
     lowered = normalized.lower()
+    if lowered in {
+        "latest_generated",
+        "latest-generated",
+        "generated_latest",
+        "最近生成物",
+        "最新生成物",
+    }:
+        return service._resolve_generated_sendable_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target="latest",
+            timestamp=timestamp,
+        )
+    if lowered in {
+        "latest_attachment",
+        "latest-attachment",
+        "attachment_latest",
+        "最近附件",
+        "最新附件",
+    }:
+        return service._resolve_attachment_sendable_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target="latest",
+        )
     if lowered in {"latest", "current", "最近", "当前"}:
         return service._resolve_latest_sendable_file(
             profile_user_id=profile_user_id,

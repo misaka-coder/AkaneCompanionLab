@@ -2306,6 +2306,74 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIn("尚无最终回执", result["followup_context"])
             self.assertNotIn(str(root), result["followup_context"])
 
+    def test_send_file_explicit_latest_kind_avoids_cross_workspace_misselection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            attachment_root = root / "attachments"
+            attachment_path = attachment_root / "master" / "reference.png"
+            attachment_path.parent.mkdir(parents=True, exist_ok=True)
+            attachment_path.write_bytes(b"reference")
+            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
+            generated_service = GeneratedFileService(
+                base_dir=root / "generated_files",
+                store=store,
+                attachment_service=attachment_service,
+            )
+            generated = generated_service.compose_file(
+                profile_user_id="user",
+                session_id="session",
+                source_targets=[],
+                task="生成结果",
+                output_format="txt",
+                output_title="准确结果",
+                content_markdown="generated",
+                send_to_user=False,
+                timestamp=100,
+            )["generated"]
+            attachment = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="reference.png",
+                storage_relpath="master/reference.png",
+                file_ext="png",
+                timestamp=200,
+            )
+            attachment_service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=attachment["attachment_id"],
+                summary_title="参考图",
+                short_hint="用户随后上传的参考图。",
+                detail={},
+                timestamp=210,
+            )
+
+            generated_result = generated_service.send_file(
+                profile_user_id="user",
+                session_id="session",
+                target="latest_generated",
+                timestamp=300,
+            )
+            attachment_result = generated_service.send_file(
+                profile_user_id="user",
+                session_id="session",
+                target="latest_attachment",
+                timestamp=301,
+            )
+            deduplicated_result = generated_service.send_file(
+                profile_user_id="user",
+                session_id="session",
+                targets=[generated["generated_handle"], generated["generated_id"]],
+                timestamp=302,
+            )
+
+            self.assertEqual(generated_result["files"][0]["handle"], generated["generated_handle"])
+            self.assertEqual(attachment_result["files"][0]["handle"], attachment["attachment_handle"])
+            self.assertEqual(len(deduplicated_result["files"]), 1)
+
     def test_send_file_requests_confirmation_for_ambiguous_generated_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

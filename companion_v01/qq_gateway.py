@@ -2389,6 +2389,7 @@ class NapCatQQGateway:
     ) -> dict[str, Any]:
         events = [event for event in tool_events or [] if isinstance(event, dict)]
         targets: list[dict[str, Any]] = []
+        seen_targets: set[tuple[str, str]] = set()
         for event in events:
             if not self._event_allows_qq_file_delivery(event):
                 continue
@@ -2402,15 +2403,29 @@ class NapCatQQGateway:
                 path = str(file_ref.get("absolute_path") or "").strip()
                 name = str(file_ref.get("name") or file_ref.get("title") or Path(path).name).strip()
                 if path:
-                    targets.append(
-                        {
-                            "generated_id": str(file_ref.get("generated_id") or "").strip(),
-                            "source_id": str(file_ref.get("source_id") or "").strip(),
-                            "source_type": str(file_ref.get("source_type") or "").strip(),
-                            "path": path,
-                            "name": name or Path(path).name,
-                        }
-                    )
+                    target = {
+                        "generated_id": str(file_ref.get("generated_id") or "").strip(),
+                        "source_id": str(
+                            file_ref.get("source_id")
+                            or file_ref.get("attachment_id")
+                            or file_ref.get("generated_id")
+                            or ""
+                        ).strip(),
+                        "source_type": str(file_ref.get("source_type") or "").strip().lower() or "file",
+                        "handle": str(
+                            file_ref.get("handle")
+                            or file_ref.get("attachment_handle")
+                            or file_ref.get("generated_handle")
+                            or ""
+                        ).strip(),
+                        "path": path,
+                        "name": name or Path(path).name,
+                    }
+                    identity = self._qq_file_delivery_target_identity(target)
+                    if identity in seen_targets:
+                        continue
+                    seen_targets.add(identity)
+                    targets.append(target)
                 continue
 
             generated = event.get("generated_file") if isinstance(event.get("generated_file"), dict) else {}
@@ -2420,21 +2435,25 @@ class NapCatQQGateway:
             ext = str(generated.get("file_ext") or generated.get("output_format") or "").strip().lstrip(".")
             mime_type = str(generated.get("mime_type") or "").strip().lower()
             if path and generated_id:
-                targets.append(
-                    {
-                        "generated_id": generated_id,
-                        "source_id": generated_id,
-                        "source_type": "generated",
-                        "path": path,
-                        "name": f"{title}.{ext}" if ext and not title.lower().endswith(f".{ext.lower()}") else title,
-                        "is_image": ext.lower() in {"png", "jpg", "jpeg", "webp", "gif"}
-                        or mime_type.startswith("image/"),
-                        "is_audio": ext.lower() in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
-                        or mime_type.startswith("audio/"),
-                        "delivery_mode": str(event.get("delivery_mode") or "file").strip().lower(),
-                        "delivery_scope": str(event.get("delivery_scope") or "").strip().lower(),
-                    }
-                )
+                target = {
+                    "generated_id": generated_id,
+                    "source_id": generated_id,
+                    "source_type": "generated",
+                    "handle": str(generated.get("generated_handle") or "").strip(),
+                    "path": path,
+                    "name": f"{title}.{ext}" if ext and not title.lower().endswith(f".{ext.lower()}") else title,
+                    "is_image": ext.lower() in {"png", "jpg", "jpeg", "webp", "gif"}
+                    or mime_type.startswith("image/"),
+                    "is_audio": ext.lower() in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
+                    or mime_type.startswith("audio/"),
+                    "delivery_mode": str(event.get("delivery_mode") or "file").strip().lower(),
+                    "delivery_scope": str(event.get("delivery_scope") or "").strip().lower(),
+                }
+                identity = self._qq_file_delivery_target_identity(target)
+                if identity in seen_targets:
+                    continue
+                seen_targets.add(identity)
+                targets.append(target)
         if not targets:
             return {"ok": True, "count": 0, "results": []}
 
@@ -2443,6 +2462,19 @@ class NapCatQQGateway:
         # exactly the files selected by the model instead of reinterpreting the
         # user's natural-language message with another intent classifier.
         return self._send_generated_file_targets(context, targets)
+
+    @staticmethod
+    def _qq_file_delivery_target_identity(target: dict[str, Any]) -> tuple[str, str]:
+        source_type = str(target.get("source_type") or "").strip().lower() or "file"
+        source_id = str(
+            target.get("source_id")
+            or target.get("generated_id")
+            or target.get("attachment_id")
+            or target.get("handle")
+            or target.get("path")
+            or ""
+        ).strip()
+        return source_type, source_id
 
     def _send_generated_file_targets(
         self,
