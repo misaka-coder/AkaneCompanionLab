@@ -7,6 +7,7 @@ from .durable_ports import (
     VoiceJournalReplayResult,
     VoiceTextArtifactReadResult,
 )
+from .asr_bridge import VoiceASRBridgeResult, VoiceASRSessionBridge
 from .host import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
@@ -42,6 +43,8 @@ __all__ = [
     "VoiceHostDispatchResult",
     "VoiceHostDriveResult",
     "VoiceHostPortResult",
+    "VoiceASRBridgeResult",
+    "VoiceASRSessionBridge",
     "VoiceProjectionDrainResult",
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",

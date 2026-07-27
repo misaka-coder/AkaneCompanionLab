@@ -499,6 +499,31 @@ LLMRuntime / MemCore speech_segment
 - partial 只产生检查点，不直接成为正式记忆；
 - final 负责正式回合提交。
 
+当前已落地的 Slice B 最小门面是：
+
+```text
+capcore-adapter-speech provider session
+  → partial / stable_checkpoint / final revision
+  → Akane VoiceASRSessionBridge
+  → voice.asr.partial / checkpoint / finalized
+  → voice.turn.commit_requested
+  → VoiceCore message.user.voice（仅一次）
+```
+
+- 语音包拥有 provider-neutral revision 规范与
+  `open_session/feed_audio/finalize/cancel` 会话；
+- 真正支持 streaming 的 client 通过 `open_streaming_session(...)` 接入；
+- 现有批量 `transcribe(...)` 明确报告 `final_only`，feed 不伪造 partial；
+- final 即使与最后 checkpoint 文本相同，也使用新的 revision；
+- provider receipt 和 VoiceCore receipt 都支持重复投递去重；
+- Akane 薄桥只做事件映射，正式 final 后提交一次用户消息，不调用模型、不保存
+  音频帧，也不另建输入状态机；
+- provider 失败会投影为结构化 `voice.turn.failed`，不会拿 partial 冒充 final。
+
+这一门面仍未在 `/asr`、桌宠麦克风或 BotRuntime 中构造。它使用人工 revision
+测试，不代表中文、专名、噪声、回声等真实音频准确率已经验收；用户当前不会
+感受到新的实时语音输入表现。
+
 ### Slice C：播放和语义打断
 
 - 加入回声消除、VAD、降音量和语义脉冲；
