@@ -33,6 +33,15 @@ from .host import (
     VoiceProjectionPort,
     VoiceRuntimeJournal,
 )
+from .realtime_transport import (
+    VOICE_REALTIME_MAX_FRAME_BYTES,
+    VOICE_REALTIME_PROTOCOL_VERSION,
+    VoiceRealtimeCoordinatorFactory,
+    VoiceRealtimeCoordinatorResolution,
+    VoiceRealtimeOpenRequest,
+    VoiceRealtimeWebSocketSession,
+    handle_voice_realtime_websocket,
+)
 from .stream_bridge import (
     VoiceResponseStreamBridge,
     VoiceStreamBridgeResult,
@@ -64,6 +73,12 @@ __all__ = [
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
     "VoiceRuntimeJournal",
+    "VOICE_REALTIME_MAX_FRAME_BYTES",
+    "VOICE_REALTIME_PROTOCOL_VERSION",
+    "VoiceRealtimeCoordinatorFactory",
+    "VoiceRealtimeCoordinatorResolution",
+    "VoiceRealtimeOpenRequest",
+    "VoiceRealtimeWebSocketSession",
     "VoiceJournalLoadResult",
     "VoiceJournalReplayResult",
     "VoiceResponseStreamBridge",
@@ -73,4 +88,5 @@ __all__ = [
     "VoiceTextArtifactReadResult",
     "VoiceTextArtifactResult",
     "build_voice_asr_provider",
+    "handle_voice_realtime_websocket",
 ]

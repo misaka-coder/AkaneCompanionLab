@@ -538,8 +538,8 @@ capcore-adapter-speech provider session
   `disabled / missing_config / invalid_config / ready`。
 
 本切片仍未激活麦克风、QQ 或桌宠生产入口，也没有使用真实用户录音做云端调用。
-下一切片必须先接入 16 kHz 单声道 PCM 捕获/重采样和可重放测试夹具，再做
-脱敏音频 A/B；不能把现有 WebM 文件上传字节直接标成 PCM 发送。
+后续仍需增加浏览器 AudioWorklet 捕获和可重放测试夹具，再做脱敏音频 A/B；
+不能把现有 WebM 文件上传字节直接标成 PCM 发送。
 
 provider builder 仍未由 `/asr`、桌宠麦克风或 BotRuntime 调用。当前测试覆盖
 协议夹具和人工 revision，不代表中文、专名、噪声、回声等真实音频准确率已经
@@ -581,7 +581,51 @@ provider open/finalize 失败继续结构化写入同一语音轮，不能静默
   输入层和 Voice Runtime 协调。
 
 因此当前桌宠的 `MediaRecorder → 整段 WebM → /asr` 行为不会被这次切片改变；
-下一切片才是让 AudioWorklet/其他捕获端逐帧接入 normalizer 和实时 ASR。
+它仍作为明确的批量降级通道。
+
+2026-07-28 增加了独立的 `/voice/realtime` WebSocket 传输契约。该入口不把
+传输协议变成第二套语音状态机，只负责把有序 PCM 帧交给
+`VoiceASRRealtimeTurnCoordinator`：
+
+```text
+client.open
+  → server.ready
+client.audio(sequence, audio_clock_ms)
+  → 下一帧 binary PCM
+  → server.partial / server.checkpoint / server.candidate_ready
+client.endpoint
+  → server.finalizing
+  → server.final
+client.cancel
+  → server.cancelled
+任一阶段失败
+  → server.failed(status/reason/retryable/terminal)
+```
+
+- `client.open` 明确携带 profile、conversation、session、输入格式、采样率和
+  声道；`voice_turn_id` / `audio_stream_id` 可由服务端生成并在 ready 返回；
+- 每个 `client.audio` JSON 帧头后只能跟一个 binary PCM 帧。音频不做 base64，
+  也不写入日志、prompt 或 MemCore；
+- endpoint 只启动后台 finalization。约 3 秒的 provider 收尾期间，WebSocket
+  仍能接收重复 endpoint、cancel 和断线；
+- partial/checkpoint 只返回明确字段，不回传 provider 原始响应。candidate
+  始终标记 `speculative=true, playable=false`；
+- 只有 normalized final 经 VoiceASRSessionBridge 成功提交后才返回
+  `server.final`；重复 endpoint 不产生第二个 final 或第二条
+  `message.user.voice`；
+- 帧缺口、同序号内容冲突、坏 PCM、provider 失败和未装配状态都会返回结构化
+  `server.failed`，不会静默，也不会用 partial 冒充结果；
+- 客户端取消或断线会取消同一 provider session，不留下 capturing 的幽灵回合；
+- 传输日志只记录耗时、帧数、字节数和 provider id，不记录转写正文、音频、
+  Key、Host 或本地路径。
+
+路由目前使用注入式 coordinator factory。真实 BotRuntime 尚未构造 durable
+Voice Host / MemCore projection / command executor，因此生产装配未完成时会
+明确返回 `voice_realtime_not_configured`，不会用内存假 Host 制造“已接通”。
+当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`；下一切片才为
+BotRuntime 装配 durable Voice Host、MemCore projection 与真实 coordinator
+factory。该装配验收后，再为 `desktop_pet_next` 增加 AudioWorklet，并在实时
+入口不可用时自动降级回 MediaRecorder `/asr`。
 
 ### Slice C：播放和语义打断
 

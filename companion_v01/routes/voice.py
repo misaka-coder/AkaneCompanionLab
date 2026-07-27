@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 from ..capability_adapters import CapabilityResult, InvocationContext, OpenAICompatASRAdapter, OpenAICompatTTSAdapter
@@ -20,6 +20,10 @@ from ..local_capability_config import (
     load_capability_config,
 )
 from ..runtime_settings import runtime_setting
+from ..voice_runtime.realtime_transport import (
+    VoiceRealtimeCoordinatorFactory,
+    handle_voice_realtime_websocket,
+)
 from services.tts_client import GptSovitsTTSClient, SynthesizedAudio
 
 
@@ -37,12 +41,22 @@ def build_voice_router(
     capability_config_base_dir: str | Path | None = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     asr_adapter_factory: Callable[[str], Any] | None = None,
+    realtime_asr_coordinator_factory: VoiceRealtimeCoordinatorFactory | None = None,
 ) -> APIRouter:
     router = APIRouter()
     provider_config_base_dir = _resolve_provider_config_base_dir(
         capability_config_base_dir=capability_config_base_dir,
         config_module=config_module,
     )
+
+    @router.websocket("/voice/realtime")
+    async def voice_realtime(websocket: WebSocket) -> None:
+        await handle_voice_realtime_websocket(
+            websocket,
+            coordinator_factory=realtime_asr_coordinator_factory,
+            runtime_metrics=runtime_metrics,
+            log_event=log_event,
+        )
 
     @router.post("/asr")
     async def asr(request: Request) -> JSONResponse:
