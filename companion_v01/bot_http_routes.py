@@ -102,6 +102,11 @@ def build_bot_runtime_routers(
             runtime_metrics=runtime_metrics,
             log_event=log_event,
             capability_config_base_dir=layout.users_data_dir,
+            realtime_asr_coordinator_factory=(
+                runtime.voice_runtime_service.create_coordinator
+                if getattr(runtime, "voice_runtime_service", None) is not None
+                else None
+            ),
         ),
         build_control_center_router(
             runtime_metrics=runtime_metrics,

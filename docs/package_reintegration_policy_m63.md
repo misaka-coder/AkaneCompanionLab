@@ -514,7 +514,15 @@ Current Akane use:
 - the current default-off durable Slice A ports add a transactional SQLite
   event journal, an atomic projection outbox, immutable opaque text artifacts,
   deterministic snapshot replay, and a restored-snapshot Host entry without
-  activating any product route;
+  activating a fake product route;
+- `BotRuntime` now owns an instance-private production voice service for
+  `/voice/realtime`; it builds the configured streaming ASR adapter, replays the
+  durable journal, drains projection recovery, and projects one committed
+  `message.user.voice` turn into MemCore;
+- provisional ASR checkpoints are durable but prompt-invisible and
+  non-retrievable; a later typed `message.assistant.voice` final completes the
+  same MemCore turn and keeps delivery/interruption state in provider-visible
+  structured history;
 - pending projections are delivered at least once by stable `projection_id`
   and fence later model/audio commands until the missing trigger facts are
   acknowledged;
@@ -522,8 +530,10 @@ Current Akane use:
   receipts; restart replays stable observation event ids, while an unknown
   in-flight effect requires executor recovery by VoiceCore's
   `idempotency_key` instead of blind re-execution;
-- no `/asr`, `/tts`, QQ, desktop-pet, or model prompt path is activated by this
-  slice.
+- old file-oriented `/asr` remains the active desktop-pet fallback; no QQ,
+  desktop-pet AudioWorklet, production Thinking Agent, `/tts`, or playback path
+  is activated by this slice. The production command executor reports
+  `voice_command_executor_not_connected` instead of fake generation success.
 
 Authority:
 

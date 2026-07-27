@@ -160,6 +160,7 @@ class _CoordinatorFactory:
         return VoiceRealtimeCoordinatorResolution.succeeded(
             coordinator,
             provider_id="provider.asr.fake_realtime",
+            voice_session_id="voice-session-server-1",
         )
 
 
@@ -170,6 +171,7 @@ def _open_payload(**overrides: Any) -> dict[str, Any]:
         "profile_user_id": "master",
         "conversation_id": "conversation-realtime-1",
         "session_id": "voice-session-realtime-1",
+        "character_pack_id": "character-realtime-1",
         "language": "zh",
         "disposition": "message",
         "input": {
@@ -219,6 +221,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                 websocket.send_json(_open_payload())
                 ready = websocket.receive_json()
                 self.assertEqual(ready["type"], "server.ready")
+                self.assertEqual(ready["voice_session_id"], "voice-session-server-1")
                 self.assertEqual(ready["normalized_output"]["sample_rate"], 16000)
 
                 websocket.send_json(
@@ -251,6 +254,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
 
         host = factory.hosts[0]
         request = factory.requests[0]
+        self.assertEqual(request.character_pack_id, "character-realtime-1")
         turn = host.snapshot.input_turns[request.voice_turn_id]
         self.assertEqual(turn.state, InputTurnStatus.COMMITTED)
         projections = [

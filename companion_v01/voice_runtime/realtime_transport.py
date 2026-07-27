@@ -25,6 +25,7 @@ class VoiceRealtimeOpenRequest:
     audio_stream_id: str
     disposition: str
     language: str
+    character_pack_id: str
     input_format: str
     sample_rate: int
     channels: int
@@ -36,6 +37,7 @@ class VoiceRealtimeCoordinatorResolution:
     reason: str = ""
     coordinator: Any | None = None
     provider_id: str = ""
+    voice_session_id: str = ""
     retryable: bool = False
     safe_public_summary: str = ""
 
@@ -49,11 +51,13 @@ class VoiceRealtimeCoordinatorResolution:
         coordinator: Any,
         *,
         provider_id: str = "",
+        voice_session_id: str = "",
     ) -> VoiceRealtimeCoordinatorResolution:
         return cls(
             status="ready",
             coordinator=coordinator,
             provider_id=str(provider_id or ""),
+            voice_session_id=str(voice_session_id or ""),
         )
 
     @classmethod
@@ -97,6 +101,7 @@ class VoiceRealtimeWebSocketSession:
         self.open_request: VoiceRealtimeOpenRequest | None = None
         self.coordinator: Any | None = None
         self.provider_id = ""
+        self.voice_session_id = ""
         self.pending_audio: tuple[int, int] | None = None
         self.finalize_task: asyncio.Task[Any] | None = None
         self.receive_task: asyncio.Task[dict[str, Any]] | None = None
@@ -227,6 +232,7 @@ class VoiceRealtimeWebSocketSession:
 
         self.coordinator = resolution.coordinator
         self.provider_id = resolution.provider_id
+        self.voice_session_id = resolution.voice_session_id
         try:
             opened = await self.coordinator.open()
         except Exception:
@@ -241,6 +247,7 @@ class VoiceRealtimeWebSocketSession:
                 "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
                 "voice_turn_id": parsed.voice_turn_id,
                 "audio_stream_id": parsed.audio_stream_id,
+                **({"voice_session_id": self.voice_session_id} if self.voice_session_id else {}),
                 "input": {
                     "format": parsed.input_format,
                     "sample_rate": parsed.sample_rate,
@@ -583,6 +590,13 @@ def _parse_open_request(
     disposition = str(payload.get("disposition") or "message").strip()
     if disposition not in {"message", "interaction"}:
         return None, "voice_asr_disposition_invalid"
+    character_pack_id = _bounded_text(
+        payload.get("character_pack_id"),
+        160,
+        allow_empty=True,
+    )
+    if character_pack_id is None:
+        return None, "voice_realtime_character_pack_invalid"
 
     voice_turn_id = _bounded_text(payload.get("voice_turn_id"), 160, allow_empty=True)
     audio_stream_id = _bounded_text(payload.get("audio_stream_id"), 160, allow_empty=True)
@@ -602,6 +616,7 @@ def _parse_open_request(
             audio_stream_id=audio_stream_id,
             disposition=disposition,
             language=language,
+            character_pack_id=character_pack_id,
             input_format=input_format,
             sample_rate=sample_rate,
             channels=channels,

@@ -42,6 +42,12 @@ from .realtime_transport import (
     VoiceRealtimeWebSocketSession,
     handle_voice_realtime_websocket,
 )
+from .production import (
+    AkaneVoiceEventFactory,
+    AkaneVoiceRuntimeService,
+    DeferredVoiceCommandExecutor,
+    MemcoreVoiceProjectionPort,
+)
 from .stream_bridge import (
     VoiceResponseStreamBridge,
     VoiceStreamBridgeResult,
@@ -73,6 +79,10 @@ __all__ = [
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
     "VoiceRuntimeJournal",
+    "AkaneVoiceEventFactory",
+    "AkaneVoiceRuntimeService",
+    "DeferredVoiceCommandExecutor",
+    "MemcoreVoiceProjectionPort",
     "VOICE_REALTIME_MAX_FRAME_BYTES",
     "VOICE_REALTIME_PROTOCOL_VERSION",
     "VoiceRealtimeCoordinatorFactory",

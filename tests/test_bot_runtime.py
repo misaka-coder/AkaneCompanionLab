@@ -292,6 +292,30 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(followups.close_count, 1)
         self.assertEqual(runtime.plugin_command_broker, None)
 
+    async def test_stop_closes_voice_runtime_before_memory_engine(self) -> None:
+        runtime, _plugin_host, engine, _followups = _runtime()
+        close_order: list[str] = []
+
+        class _VoiceRuntime:
+            def close(self) -> dict[str, Any]:
+                close_order.append("voice")
+                return {"status": "stopped"}
+
+        original_engine_close = engine.close
+
+        def close_engine() -> dict[str, str]:
+            close_order.append("engine")
+            return original_engine_close()
+
+        engine.close = close_engine  # type: ignore[method-assign]
+        runtime.voice_runtime_service = _VoiceRuntime()  # type: ignore[assignment]
+
+        result = await runtime.stop()
+
+        self.assertEqual(result["status"], "stopped")
+        self.assertEqual(result["voice_status"]["status"], "stopped")
+        self.assertEqual(close_order, ["voice", "engine"])
+
     async def test_stop_reports_structured_failure_without_skipping_engine_close(self) -> None:
         runtime, plugin_host, engine, followups = _runtime()
 
@@ -411,6 +435,21 @@ care_enabled = true
                 self.assertEqual(
                     len({runtime.engine.capability_offer_source.instance_id for runtime in runtimes}),
                     3,
+                )
+                self.assertTrue(
+                    all(runtime.voice_runtime_service is not None for runtime in runtimes)
+                )
+                self.assertEqual(
+                    len({id(runtime.voice_runtime_service) for runtime in runtimes}),
+                    3,
+                )
+                self.assertEqual(
+                    [
+                        runtime.voice_runtime_service.state_dir
+                        for runtime in runtimes
+                        if runtime.voice_runtime_service is not None
+                    ],
+                    [runtime.runtime_layout.state_dir for runtime in runtimes],
                 )
                 self.assertTrue(
                     all(

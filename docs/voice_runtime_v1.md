@@ -1,6 +1,7 @@
 # Akane Voice Runtime V1
 
-状态：方案与状态机已冻结；Slice A 正在以 fake 端口逐步验收，尚未激活生产语音入口
+状态：方案与状态机已冻结；实时 ASR → durable Voice Host → MemCore 输入投影已完成生产装配，
+Thinking Agent / TTS / 播放与桌宠采集端尚未接入
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -458,8 +459,10 @@ LLMRuntime / MemCore speech_segment
 全文完成前进入 TTS，同时 MemCore 的 `message.assistant.voice` 仍只投影一次完整
 正文。中断流不会把尚未闭合的残句刷新为完整语音单元。
 
-该链路的 TTS、playback 和 projection 仍只使用 fake 端口。Akane 已提供默认
-未装配的 `SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`：
+该链路的 TTS 和 playback 仍只使用 fake 端口。Akane 已提供
+`SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`；其中 journal 与
+MemCore projection 已用于实时 ASR 生产输入接缝，文本 artifact 要等正式
+Thinking Agent / TTS executor 接入：
 
 - 宿主传入 instance 自己的 `state_dir`，端口按会话身份哈希建立私有存储桶；
 - journal 使用单会话 SQLite 事务日志，事件行、权威 head 和该次 transition
@@ -489,8 +492,12 @@ LLMRuntime / MemCore speech_segment
   尚未提交，Host 才可释放 intent 供以后安全重试；结果不确定时必须返回
   unknown，而不能伪装成普通失败。
 
-这些端口目前没有在 BotRuntime 或路由中构造。它们没有接入真实 `/asr`、
-`/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式语音能力。
+`BotRuntime` 现在按实例拥有一个 `AkaneVoiceRuntimeService`，并在
+`/voice/realtime` 路由中注入真实 coordinator factory。服务只在 MemCore 和
+实时 ASR provider 都可用时开轮；否则返回结构化状态和安全摘要。当前
+`start_response_generation` 仍由 `DeferredVoiceCommandExecutor` 明确停在
+`voice_command_executor_not_connected`，没有伪接生产模型、TTS 或播放，也没有
+替换现有文件式 `/asr` 能力。
 
 ### Slice B：高准确率 ASR 接入
 
@@ -537,13 +544,14 @@ capcore-adapter-speech provider session
 - Akane 已有默认关闭的 `build_voice_asr_provider()` 装配门面，并结构化区分
   `disabled / missing_config / invalid_config / ready`。
 
-本切片仍未激活麦克风、QQ 或桌宠生产入口，也没有使用真实用户录音做云端调用。
+本切片仍未激活 QQ 或桌宠麦克风采集端，也没有使用真实用户录音做云端调用。
 后续仍需增加浏览器 AudioWorklet 捕获和可重放测试夹具，再做脱敏音频 A/B；
 不能把现有 WebM 文件上传字节直接标成 PCM 发送。
 
-provider builder 仍未由 `/asr`、桌宠麦克风或 BotRuntime 调用。当前测试覆盖
-协议夹具和人工 revision，不代表中文、专名、噪声、回声等真实音频准确率已经
-验收；用户当前不会感受到新的实时语音输入表现。
+provider builder 已由 `BotRuntime` 的实时语音服务调用，但旧 `/asr` 和桌宠
+麦克风仍未切换到它。当前测试覆盖协议夹具、人工 revision 和 production host
+装配，不代表中文、专名、噪声、回声等真实音频准确率已经验收；在桌宠增加
+AudioWorklet 前，用户当前仍使用旧文件式语音输入。
 
 2026-07-28 的真实专属业务空间 smoke 已验证：
 
@@ -602,8 +610,9 @@ client.cancel
   → server.failed(status/reason/retryable/terminal)
 ```
 
-- `client.open` 明确携带 profile、conversation、session、输入格式、采样率和
-  声道；`voice_turn_id` / `audio_stream_id` 可由服务端生成并在 ready 返回；
+- `client.open` 明确携带 profile、conversation、session、可选 character pack、
+  输入格式、采样率和声道；`voice_turn_id` / `audio_stream_id` 可由服务端生成，
+  `voice_session_id` 由服务端创建并在 ready 返回；
 - 每个 `client.audio` JSON 帧头后只能跟一个 binary PCM 帧。音频不做 base64，
   也不写入日志、prompt 或 MemCore；
 - endpoint 只启动后台 finalization。约 3 秒的 provider 收尾期间，WebSocket
@@ -619,13 +628,36 @@ client.cancel
 - 传输日志只记录耗时、帧数、字节数和 provider id，不记录转写正文、音频、
   Key、Host 或本地路径。
 
-路由目前使用注入式 coordinator factory。真实 BotRuntime 尚未构造 durable
-Voice Host / MemCore projection / command executor，因此生产装配未完成时会
-明确返回 `voice_realtime_not_configured`，不会用内存假 Host 制造“已接通”。
-当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`；下一切片才为
-BotRuntime 装配 durable Voice Host、MemCore projection 与真实 coordinator
-factory。该装配验收后，再为 `desktop_pet_next` 增加 AudioWorklet，并在实时
-入口不可用时自动降级回 MediaRecorder `/asr`。
+路由继续使用注入式 coordinator factory，真实 `BotRuntime` 已装配：
+
+```text
+BotRuntime
+  → AkaneVoiceRuntimeService（实例私有）
+  → SqliteVoiceRuntimeJournal replay / projection outbox 补偿
+  → VoiceASRRealtimeTurnCoordinator
+  → VoiceCore message.user.voice（一次）
+  → MemcoreManager typed V2 turn
+```
+
+- 会话存储桶只使用实例、用户、会话、角色等身份的摘要，不把原始 namespace、
+  本地路径或密钥写入 snapshot、prompt 或日志；
+- provisional `event.voice.asr_checkpoint` 会持久化，但
+  `prompt_visible=false`、不可检索，不会让相同前缀反复进入模型；
+- final `message.user.voice` 打开一个稳定派生的 MemCore turn，后续
+  `message.assistant.voice` 完成同一 turn；前端不得再把 final 转写走普通文本
+  入口重复提交；
+- typed assistant final 在 provider projection 中保留 kind、全文和交付状态；
+  普通 `message.assistant` 的既有纯文本投影不变；
+- projection outbox 重放继续依赖 VoiceCore `projection_id` 和 MemCore source id
+  双重幂等，重启不会重复写用户语音或助手语音；
+- MemCore 不可用、journal replay 失败、pending projection 无法补齐或 provider
+  不可用时，均在打开音频会话前结构化失败。
+
+当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是把
+`start_response_generation` 接到现有 Thinking Agent，并让最终输出只能沿
+VoiceCore response lifecycle 回写，不能把 final 文本重新走普通消息入口。
+该切片验收后，再为 `desktop_pet_next` 增加 AudioWorklet，并在实时入口不可用
+时自动降级回 MediaRecorder `/asr`。
 
 ### Slice C：播放和语义打断
 

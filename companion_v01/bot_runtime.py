@@ -42,6 +42,7 @@ from .settings_overrides import (
     load_and_apply_saved_overrides,
     load_saved_overrides,
 )
+from .voice_runtime import AkaneVoiceRuntimeService
 
 
 class RuntimeMetrics:
@@ -87,6 +88,11 @@ class BotRuntime:
     config_module: Any = field(repr=False)
     logger: logging.Logger = field(repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
+    voice_runtime_service: AkaneVoiceRuntimeService | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _started: bool = field(default=False, init=False, repr=False)
     _stop_status: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
@@ -166,6 +172,7 @@ class BotRuntime:
         failures: list[str] = []
         followup_status: dict[str, Any] = {"status": "not_configured"}
         plugin_status: dict[str, Any] = {"status": "not_started"}
+        voice_status: dict[str, Any] = {"status": "not_configured"}
         engine_status: dict[str, Any] = {"status": "not_started"}
 
         if self.qq_followup_tasks is not None:
@@ -186,6 +193,14 @@ class BotRuntime:
             plugin_status = {"status": "error", "reason": "plugin_host_shutdown_failed"}
 
         self.plugin_command_broker = None
+        if self.voice_runtime_service is not None:
+            try:
+                voice_status = self.voice_runtime_service.close()
+                if voice_status.get("status") != "stopped":
+                    failures.append("voice_runtime_shutdown_incomplete")
+            except Exception:
+                failures.append("voice_runtime_shutdown_failed")
+                voice_status = {"status": "error", "reason": "voice_runtime_shutdown_failed"}
         try:
             engine_status = self.engine.close()
             if engine_status.get("status") != "stopped":
@@ -201,6 +216,7 @@ class BotRuntime:
             "failures": failures,
             "followup_status": followup_status,
             "plugin_status": plugin_status,
+            "voice_status": voice_status,
             "engine_status": engine_status,
         }
         return dict(self._stop_status)
@@ -553,6 +569,14 @@ class BotRuntimeFactory:
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,
                 logger=self.logger,
+            )
+            runtime.voice_runtime_service = AkaneVoiceRuntimeService(
+                engine=engine,
+                settings=settings,
+                state_dir=runtime_layout.state_dir,
+                instance_id=instance_context.instance_id,
+                bot_id=effective_bot_config.bot_id,
+                default_character_pack_id=instance_context.character_pack_id,
             )
             runtime.install_qq_task_completion_notifications()
             return runtime
