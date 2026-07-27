@@ -16,6 +16,7 @@ VERSION = "0.1.0"
 
 PYTHON_PACKAGES = (
     "memcore",
+    "voicecore",
     "promptpack-core",
     "charpack-core",
     "channelcore-onebot",

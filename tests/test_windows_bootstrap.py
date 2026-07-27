@@ -45,9 +45,10 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertIn("runtime_contract_missing", dependency_checker)
         self.assertIn("memory_metadata_has_signal", dependency_checker)
         self.assertIn("validate_onebot_identity", dependency_checker)
+        self.assertIn("voice_event_to_dict", dependency_checker)
         self.assertIn("import capcore", source)
         self.assertIn(
-            "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core",
+            "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, voicecore",
             source,
         )
         self.assertIn("AKANE_OPEN_SETTINGS_ON_START", (ROOT / "start_akane_next.ps1").read_text(encoding="utf-8"))

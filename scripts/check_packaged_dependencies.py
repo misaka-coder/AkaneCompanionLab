@@ -61,6 +61,11 @@ PACKAGES: tuple[PackageSpec, ...] = (
         "memcore",
         ("build_native_memory_tool_specs", "coerce_memory_metadata", "memory_metadata_has_signal"),
     ),
+    PackageSpec(
+        "voicecore",
+        "voicecore",
+        ("VoiceEvent", "reduce_event", "voice_event_to_dict"),
+    ),
 )
 
 
@@ -91,9 +96,7 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
             attribute for attribute in spec.required_attributes if not hasattr(module, attribute)
         )
         if missing_attributes:
-            errors.append(
-                f"{spec.distribution}:runtime_contract_missing:{','.join(missing_attributes)}"
-            )
+            errors.append(f"{spec.distribution}:runtime_contract_missing:{','.join(missing_attributes)}")
 
         installed.append(
             {

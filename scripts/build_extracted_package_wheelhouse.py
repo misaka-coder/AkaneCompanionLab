@@ -28,6 +28,7 @@ class PackageSpec:
 PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec("capcore"),
     PackageSpec("memcore"),
+    PackageSpec("voicecore"),
     PackageSpec("promptpack-core"),
     PackageSpec("charpack-core"),
     PackageSpec("channelcore-onebot"),

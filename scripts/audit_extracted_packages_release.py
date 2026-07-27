@@ -24,6 +24,7 @@ class PackageSpec:
 
 PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec("memcore", "memcore", runtime_dependency=True),
+    PackageSpec("voicecore", "voicecore", runtime_dependency=True),
     PackageSpec("promptpack-core", "promptpack_core", runtime_dependency=True),
     PackageSpec("charpack-core", "charpack_core", runtime_dependency=True),
     PackageSpec("channelcore-onebot", "channelcore_onebot", runtime_dependency=True),

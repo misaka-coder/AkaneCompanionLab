@@ -37,6 +37,7 @@ In scope for this document:
 - `petdesk-character-host`
 - `petdesk-live2d-pixi-driver`
 - `petdesk-runtime`
+- `voicecore`
 
 Out of scope for M63:
 
@@ -500,6 +501,36 @@ thin adapter
 
 Do not grow another local workflow execution engine inside Akane when the
 package API can be extended instead.
+
+### `voicecore`
+
+Current Akane use:
+
+- `companion_v01/voice_runtime/host.py` delegates event reduction, snapshot
+  ownership, version fencing, command/projection records, and replay-compatible
+  event serialization to `voicecore`;
+- Slice B1 only supplies Akane-owned journal, projection, and command-executor
+  ports plus a fake-audio acceptance chain;
+- no `/asr`, `/tts`, QQ, desktop-pet, or model prompt path is activated by this
+  slice.
+
+Authority:
+
+- `voicecore` owns VoiceEvent/Command/Projection contracts, the Input Turn /
+  Response / Speech Unit reducers, interruption/candidate/delivery semantics,
+  snapshot invariants, and replay;
+- Akane owns product policy, durable journal choice, MemCore projection,
+  concrete ASR/TTS/playback adapters, model calls, and UI/channel delivery.
+
+Old implementation status:
+
+```text
+no legacy Voice Runtime state machine; incubating package with thin host adapter
+```
+
+Akane must not copy reducer transitions into the host adapter. Existing
+file-oriented `/asr`, `/tts`, and frontend playback code remains unchanged
+until a later, explicitly tested replacement slice connects real observations.
 
 ## Petdesk Package Audit
 
