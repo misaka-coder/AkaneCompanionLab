@@ -1,6 +1,6 @@
 # Akane Voice Runtime V1
 
-状态：方案初稿，关键决策已按本轮确认，尚未进入运行时实现
+状态：方案与状态机已冻结；Slice A 正在以 fake 端口逐步验收，尚未激活生产语音入口
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -442,6 +442,26 @@ final_commit_ms
 - 验证 candidate、generation、delivery 状态和 MemCore 渲染；
 - 不接真实麦克风。
 
+当前已落地的最小链路是：
+
+```text
+LLMRuntime / MemCore speech_segment
+  → Akane VoiceResponseStreamBridge
+  → voice.speech_unit.declared
+  → VoiceCore start_tts / enqueue_playback
+  → fake TTS / fake playback observation
+```
+
+桥不重新分句，也不把 `speech_chunk` 写入语音状态或记忆。每个完整
+`speech_segment` 只持有一个宿主文本 artifact 引用；最终 `final.payload.speech`
+才形成一次权威 `voice.response.generation_completed.full_text`。因此第一段可在
+全文完成前进入 TTS，同时 MemCore 的 `message.assistant.voice` 仍只投影一次完整
+正文。中断流不会把尚未闭合的残句刷新为完整语音单元。
+
+该链路当前只在 fake journal、fake artifact、fake TTS 和 fake playback 上验收。
+它没有接入真实 `/asr`、`/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式
+语音能力。
+
 ### Slice B：高准确率 ASR 接入
 
 - 为 ASR provider 增加流式会话门面；
@@ -499,7 +519,8 @@ final_commit_ms
 2. 完整生成原文与用户实际听到的内容需要双投影；
 3. provider 的原生实时能力只能通过适配器进入统一 `voice.*` 事件流。
 
-在这三点冻结之前，不进入运行时代码实现。
+这三点已经冻结，并由 VoiceCore reducer 与 Akane 薄 Host 开始分切片实现；
+真实音频入口仍需等待对应 Slice 的独立验收。
 
 ## 12. 状态机规格
 

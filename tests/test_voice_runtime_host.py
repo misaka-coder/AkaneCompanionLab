@@ -9,7 +9,10 @@ from companion_v01.voice_runtime import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
     VoiceHostPortResult,
+    VoiceResponseStreamBridge,
+    VoiceTextArtifactResult,
 )
+from companion_v01.llm_runtime import _TopLevelJSONStreamTap
 from voicecore import InputTurnStatus, ResponseStatus, SpeechUnitStatus
 from voicecore.testing import EventFactory
 
@@ -45,10 +48,39 @@ class _FakeProjectionPort:
         return VoiceHostPortResult.succeeded()
 
 
+class _FakeTextArtifactPort:
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, str]] = {}
+        self.failure_reason = ""
+
+    def put_text(
+        self,
+        *,
+        artifact_key: str,
+        text: str,
+        media_type: str,
+    ) -> VoiceTextArtifactResult:
+        if self.failure_reason:
+            return VoiceTextArtifactResult.failed(self.failure_reason, retryable=True)
+        existing = self.records.get(artifact_key)
+        if existing is not None:
+            if existing["text"] != text:
+                return VoiceTextArtifactResult.failed("fake_artifact_key_conflict")
+            return VoiceTextArtifactResult.duplicate(existing["artifact_ref"])
+        artifact_ref = f"text:{len(self.records) + 1}"
+        self.records[artifact_key] = {
+            "artifact_ref": artifact_ref,
+            "media_type": media_type,
+            "text": text,
+        }
+        return VoiceTextArtifactResult.succeeded(artifact_ref)
+
+
 class _FakeAudioCommandExecutor:
     def __init__(self, factory: EventFactory) -> None:
         self.factory = factory
         self.command_kinds: list[str] = []
+        self.command_records: list[dict[str, Any]] = []
         self.snapshot_records: list[dict[str, Any]] = []
         self.raise_error = False
 
@@ -65,6 +97,7 @@ class _FakeAudioCommandExecutor:
         command_kind = str(command.get("command_kind") or "")
         snapshot = dict(snapshot_record)
         self.command_kinds.append(command_kind)
+        self.command_records.append(command)
         self.snapshot_records.append(snapshot)
 
         if command_kind == "start_response_generation" and not payload.get("response_id"):
@@ -95,20 +128,6 @@ class _FakeAudioCommandExecutor:
                     "voice.response.generation_started",
                     **common,
                     payload={"command_id": command_id},
-                ),
-                self.factory.make(
-                    "voice.speech_unit.declared",
-                    **common,
-                    speech_unit_id="speech-unit-1",
-                    payload={"ordinal": 1, "text_artifact_ref": "text:reply-1"},
-                ),
-                self.factory.make(
-                    "voice.response.generation_completed",
-                    **common,
-                    payload={
-                        "full_text": "收到，fake voice 链路已经跑通。",
-                        "memory_metadata": {"keywords": ["voicecore", "fake_audio"]},
-                    },
                 ),
             )
 
@@ -170,6 +189,7 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         self.factory = EventFactory()
         self.journal = _FakeJournal()
         self.projections = _FakeProjectionPort()
+        self.text_artifacts = _FakeTextArtifactPort()
         self.executor = _FakeAudioCommandExecutor(self.factory)
         self.host = AkaneVoiceRuntimeHost(
             conversation_id=self.factory.conversation_id,
@@ -210,19 +230,45 @@ class VoiceRuntimeHostTests(unittest.TestCase):
             payload={"disposition": "message"},
         )
 
-    def test_fake_audio_chain_reaches_real_delivery_and_memory_projection(self) -> None:
+    def _start_fake_response(self) -> VoiceResponseStreamBridge:
         self._commit_fake_input()
-        seen_pending_sets: set[tuple[str, ...]] = set()
-        while self.host.snapshot.pending_commands:
-            pending = tuple(self.host.snapshot.pending_commands)
-            self.assertNotIn(pending, seen_pending_sets, "fake executor stopped making progress")
-            seen_pending_sets.add(pending)
-            driven = self.host.drive_once()
-            self.assertEqual(driven.status, "succeeded", driven)
+        self.assertEqual(self.host.drive_once().status, "succeeded")
+        self.assertEqual(self.host.drive_once().status, "succeeded")
+        self.assertEqual(self.host.snapshot.responses["response-1"].state, ResponseStatus.GENERATING)
+        return VoiceResponseStreamBridge(
+            host=self.host,
+            response_id="response-1",
+            text_artifacts=self.text_artifacts,
+            event_factory=self.factory,
+        )
+
+    def test_fake_audio_chain_reaches_real_delivery_and_memory_projection(self) -> None:
+        bridge = self._start_fake_response()
+        segment = bridge.accept_stream_event(
+            {"type": "speech_segment", "index": 0, "text": "收到，fake voice 链路已经跑通。"}
+        )
+        self.assertTrue(segment.accepted, segment)
+        events_before_playback = [record["event_kind"] for record in self.journal.records]
+        self.assertIn("voice.tts.ready", events_before_playback)
+        self.assertNotIn("voice.response.generation_completed", events_before_playback)
+        self.assertEqual(self.host.drive_once().status, "succeeded")
+        events_before_final = [record["event_kind"] for record in self.journal.records]
+        self.assertIn("voice.playback.completed", events_before_final)
+        self.assertNotIn("voice.response.generation_completed", events_before_final)
+        final = bridge.accept_stream_event(
+            {
+                "type": "final",
+                "payload": {
+                    "speech": "收到，fake voice 链路已经跑通。",
+                    "memory_metadata": {"keywords": ["voicecore", "fake_audio"]},
+                },
+            }
+        )
+        self.assertTrue(final.accepted, final)
 
         turn = self.host.snapshot.input_turns["turn-1"]
         response = self.host.snapshot.responses["response-1"]
-        unit = self.host.snapshot.speech_units["speech-unit-1"]
+        unit = next(iter(self.host.snapshot.speech_units.values()))
         self.assertEqual(turn.state, InputTurnStatus.COMMITTED)
         self.assertEqual(response.state, ResponseStatus.COMPLETED)
         self.assertEqual(unit.state, SpeechUnitStatus.DELIVERED)
@@ -242,7 +288,120 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         assistant = self.projections.records[-1]["payload"]
         self.assertEqual(assistant["delivery_status"], "delivered")
         self.assertEqual(assistant["memory_metadata"]["keywords"], ["voicecore", "fake_audio"])
+        self.assertEqual(assistant["full_text"], "收到，fake voice 链路已经跑通。")
+        start_tts = next(
+            record for record in self.executor.command_records if record["command_kind"] == "start_tts"
+        )
+        self.assertIn(
+            start_tts["payload"]["text_artifact_ref"],
+            {record["artifact_ref"] for record in self.text_artifacts.records.values()},
+        )
+        self.assertEqual(
+            len([record for record in self.projections.records if record["kind"] == "message.assistant.voice"]),
+            1,
+        )
         self.assertTrue(all(isinstance(record, dict) for record in self.journal.records))
+
+    def test_stream_bridge_preserves_many_segments_and_punctuation_without_duplicate_memory(self) -> None:
+        bridge = self._start_fake_response()
+        tap = _TopLevelJSONStreamTap()
+        speech = "哈啊？！真的吗。\n？\n第一句。第二句！第三句？第四句。第五句。"
+        stream_events = tap.feed(json.dumps({"emotion": "happy", "speech": speech}, ensure_ascii=False))
+        stream_events.extend(tap.finish())
+        segments = [event for event in stream_events if event.get("type") == "speech_segment"]
+
+        self.assertEqual(
+            [event["text"] for event in segments],
+            ["哈啊？！", "真的吗。", "？", "第一句。", "第二句！", "第三句？", "第四句。", "第五句。"],
+        )
+        for event in stream_events:
+            result = bridge.accept_stream_event(event)
+            self.assertIn(result.status, {"accepted", "ignored"}, result)
+
+        self.assertGreater(len(self.host.snapshot.speech_units), 5)
+        duplicate_segment = bridge.accept_stream_event(segments[0])
+        self.assertEqual(duplicate_segment.status, "duplicate")
+        self.assertEqual(len(self.text_artifacts.records), len(segments))
+        self.assertFalse(
+            [record for record in self.projections.records if record["kind"] == "message.assistant.voice"]
+        )
+        final = bridge.accept_stream_event(
+            {
+                "type": "final",
+                "payload": {
+                    "speech": speech,
+                    "memory_metadata": {"keywords": ["流式语音"]},
+                },
+            }
+        )
+        self.assertTrue(final.accepted, final)
+        duplicate = bridge.accept_stream_event(
+            {
+                "type": "final",
+                "payload": {
+                    "speech": speech,
+                    "memory_metadata": {"keywords": ["流式语音"]},
+                },
+            }
+        )
+        self.assertEqual(duplicate.status, "duplicate")
+
+        assistant_records = [
+            record for record in self.projections.records if record["kind"] == "message.assistant.voice"
+        ]
+        self.assertEqual(len(assistant_records), 1)
+        self.assertEqual(assistant_records[0]["payload"]["full_text"], speech)
+        self.assertEqual(
+            [record["text"] for record in self.text_artifacts.records.values()],
+            [event["text"] for event in segments],
+        )
+
+    def test_interrupted_stream_does_not_flush_incomplete_tail_into_speech_unit(self) -> None:
+        bridge = self._start_fake_response()
+        tap = _TopLevelJSONStreamTap()
+        stream_events = tap.feed('{"speech":"第一句。这个残句还没有生成完')
+        stream_events.extend(tap.finish())
+
+        self.assertEqual(
+            [event["text"] for event in stream_events if event.get("type") == "speech_segment"],
+            ["第一句。"],
+        )
+        self.assertFalse([event for event in stream_events if event.get("type") == "final"])
+        for event in stream_events:
+            result = bridge.accept_stream_event(event)
+            self.assertIn(result.status, {"accepted", "ignored"}, result)
+        self.assertEqual(
+            [record["text"] for record in self.text_artifacts.records.values()],
+            ["第一句。"],
+        )
+        self.assertFalse(
+            [record for record in self.projections.records if record["kind"] == "message.assistant.voice"]
+        )
+
+    def test_stream_bridge_reports_artifact_failure_without_declaring_unit(self) -> None:
+        bridge = self._start_fake_response()
+        self.text_artifacts.failure_reason = "fake_text_store_unavailable"
+
+        result = bridge.accept_stream_event(
+            {"type": "speech_segment", "index": 0, "text": "这一句不能假装已经进入语音链。"}
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.reason, "fake_text_store_unavailable")
+        self.assertTrue(result.artifact_result.retryable)
+        self.assertEqual(self.host.snapshot.speech_units, {})
+
+    def test_stream_bridge_rejects_out_of_order_segment_without_hidden_reordering(self) -> None:
+        bridge = self._start_fake_response()
+
+        result = bridge.accept_stream_event(
+            {"type": "speech_segment", "index": 1, "text": "第二句。"}
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.reason, "speech_segment_out_of_order")
+        self.assertEqual(self.text_artifacts.records, {})
+        self.assertEqual(self.host.snapshot.speech_units, {})
 
     def test_drive_once_advances_only_one_command_layer(self) -> None:
         self._commit_fake_input()

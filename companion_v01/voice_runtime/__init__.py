@@ -10,6 +10,13 @@ from .host import (
     VoiceProjectionPort,
     VoiceRuntimeJournal,
 )
+from .stream_bridge import (
+    VoiceResponseStreamBridge,
+    VoiceStreamBridgeResult,
+    VoiceStreamEventFactory,
+    VoiceTextArtifactPort,
+    VoiceTextArtifactResult,
+)
 
 __all__ = [
     "AkaneVoiceRuntimeHost",
@@ -20,4 +27,9 @@ __all__ = [
     "VoiceHostPortResult",
     "VoiceProjectionPort",
     "VoiceRuntimeJournal",
+    "VoiceResponseStreamBridge",
+    "VoiceStreamBridgeResult",
+    "VoiceStreamEventFactory",
+    "VoiceTextArtifactPort",
+    "VoiceTextArtifactResult",
 ]
