@@ -115,8 +115,24 @@ class BotRuntime:
         return self.engine.gift_assets.base_dir
 
     def reload_model_services(self, model_service_settings: ModelServiceSettings) -> dict[str, Any]:
+        previous_provider = (
+            str(self.settings.chat_api_protocol or "").strip().lower(),
+            str(self.settings.chat_base_url or "").strip().rstrip("/").lower(),
+            str(self.settings.chat_api_key or ""),
+        )
         self.settings = self.settings.with_model_service(model_service_settings)
-        return self.engine.reload_model_services(settings=self.settings)
+        current_provider = (
+            str(self.settings.chat_api_protocol or "").strip().lower(),
+            str(self.settings.chat_base_url or "").strip().rstrip("/").lower(),
+            str(self.settings.chat_api_key or ""),
+        )
+        result = dict(self.engine.reload_model_services(settings=self.settings))
+        if previous_provider == current_provider or self.qq_gateway is None:
+            result["chat_model_overrides_status"] = "unchanged"
+            return result
+        persisted = self.qq_gateway.clear_all_chat_model_overrides()
+        result["chat_model_overrides_status"] = "cleared" if persisted else "persist_failed"
+        return result
 
     def bind_app_state(self, app: Any) -> None:
         app.state.akane_bot_runtime = self

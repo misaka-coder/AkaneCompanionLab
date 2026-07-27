@@ -367,6 +367,54 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["messages"][3]["content"], "request evidence")
         self.assertEqual(persistent, [payload["messages"][2], payload["messages"][4], payload["messages"][5]])
 
+    def test_gemini_completion_keeps_memcore_persistent_turn_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="gemini", base_url="https://api.example.test"),
+            model="gemini-3.5-flash",
+        )
+        history = [{"role": "assistant", "content": "history"}]
+        ephemeral = [{"role": "user", "content": "request evidence"}]
+        post_user = [
+            {
+                "role": "assistant",
+                "content": "先查一下",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "retrieve_memory", "arguments": '{"query":"线索"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": '{"status":"ok"}'},
+        ]
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            history_turns=history,
+            user_prompt="current event",
+            ephemeral_turns=ephemeral,
+            post_user_turns=post_user,
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=history,
+            ephemeral_turns=ephemeral,
+            post_user_turns=post_user,
+        )
+
+        self.assertEqual(
+            [message["role"] for message in persistent],
+            ["user", "assistant", "tool"],
+        )
+        self.assertEqual(persistent[0]["content"], "current event")
+        self.assertEqual(persistent[1]["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(persistent[2]["tool_call_id"], "call-1")
+
     def test_request_observer_rejection_stops_nonstream_before_provider_transport(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         provider_calls: list[dict[str, object]] = []
@@ -554,10 +602,13 @@ class LLMClientConfigTests(unittest.TestCase):
 
         override_bundle = runtime._chat_bundle_for_override("deepseek-v4-flash")
         default_bundle = runtime._chat_bundle_for_override("")
-        invalid_bundle = runtime._chat_bundle_for_override("坏模型")
+        prefixed_bundle = runtime._chat_bundle_for_override("[ruru20]gemini-2.5-flash")
+        invalid_bundle = runtime._chat_bundle_for_override("bad model")
 
         self.assertIs(override_bundle.client, client)
         self.assertEqual(override_bundle.model, "deepseek-v4-flash")
+        self.assertIs(prefixed_bundle.client, client)
+        self.assertEqual(prefixed_bundle.model, "[ruru20]gemini-2.5-flash")
         self.assertIs(default_bundle, runtime.chat)
         self.assertIs(invalid_bundle, runtime.chat)
 
@@ -1657,6 +1708,48 @@ class LLMClientConfigTests(unittest.TestCase):
         )
         self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 1)
 
+    def test_llm_runtime_preserves_more_than_four_calls_to_the_same_tool(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=f"call_{index}",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments=json.dumps({"query": f"query-{index}"}),
+                                ),
+                            )
+                            for index in range(6)
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+        history_calls = runtime._normalize_openai_history_tool_calls(
+            [
+                {
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"query": f"query-{index}"}),
+                    },
+                }
+                for index in range(6)
+            ]
+        )
+
+        self.assertEqual(len(calls), 6)
+        self.assertEqual([call["query"] for call in calls], [f"query-{index}" for index in range(6)])
+        self.assertEqual(len(history_calls), 6)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 5)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_truncated"], 0)
+
     def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics_lock = threading.RLock()
@@ -1942,6 +2035,96 @@ class LLMClientConfigTests(unittest.TestCase):
 
         self.assertEqual(payload["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_chat_output_budget_is_provider_payload_not_prompt_content(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_chat_max_output_tokens=4096,
+            prompt_cache_hints_enabled=False,
+        )
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.example.com/v1",
+            ),
+            model="gemini-test",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertNotIn("4096", json.dumps(payload["messages"], ensure_ascii=False))
+        responses_payload = runtime._responses_payload_from_chat(payload)
+        self.assertNotIn("max_tokens", responses_payload)
+        self.assertEqual(responses_payload["max_output_tokens"], 4096)
+
+    def test_prompt_limit_counts_native_image_as_visual_budget_not_base64_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_auto_compact_token_limit=20_000,
+            llm_context_window=0,
+        )
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        image_data_url = "data:image/png;base64," + ("A" * 1_500_000)
+        payload = {
+            "messages": [
+                {"role": "system", "content": "system"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请看图"},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                },
+            ],
+            "tools": [],
+        }
+
+        estimated = runtime._estimate_prompt_payload_tokens(payload)
+
+        self.assertGreaterEqual(estimated, 8192)
+        self.assertLess(estimated, 10_000)
+        runtime._enforce_prompt_token_limits(payload)
+
+    def test_prompt_limit_still_rejects_oversized_real_text_with_native_image(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_auto_compact_token_limit=10_000,
+            llm_context_window=0,
+        )
+        metrics: list[str] = []
+        runtime._record_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+        payload = {
+            "messages": [
+                {"role": "system", "content": "x" * 12_000},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请看图"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64," + ("A" * 200_000)},
+                        },
+                    ],
+                },
+            ],
+            "tools": [],
+        }
+
+        with self.assertRaisesRegex(ValueError, "llm_prompt_token_limit_exceeded"):
+            runtime._enforce_prompt_token_limits(payload)
+
+        self.assertEqual(metrics, ["prompt_token_limit_exceeded"])
 
     def test_anthropic_system_extra_blocks_are_preserved_beyond_cache_limit(self) -> None:
         payload = _build_anthropic_payload(

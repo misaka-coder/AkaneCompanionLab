@@ -15,6 +15,28 @@ from .runtime_settings import normalize_reasoning_effort
 
 MODEL_SERVICE_SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_SECONDS = 120
+PROVIDER_MODEL_ID_MAX_LENGTH = 180
+
+
+def normalize_provider_model_id(value: Any) -> str:
+    """Keep a provider model id exact while rejecting unsafe transport text.
+
+    OpenAI-compatible gateways may prefix model ids with routing labels such
+    as ``[group]`` or use non-ASCII provider names.  Those are opaque API
+    identifiers, not local paths or shell tokens, so an ASCII-only allowlist
+    incorrectly hides valid models and rewrites user choices.  Preserve any
+    compact printable identifier and reject only empty, oversized, whitespace,
+    or control-character values.
+    """
+
+    text = str(value or "").strip()
+    text = text.strip("`'\"“”‘’")
+    text = text.rstrip("。!！?？,，;；").strip()
+    if not text or len(text) > PROVIDER_MODEL_ID_MAX_LENGTH:
+        return ""
+    if any(char.isspace() or not char.isprintable() for char in text):
+        return ""
+    return text
 
 
 @dataclass(frozen=True)
@@ -55,10 +77,10 @@ PROVIDER_PRESETS: tuple[ModelProviderPreset, ...] = (
     ModelProviderPreset(
         id="gemini",
         label="Google Gemini",
-        protocol="openai",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        protocol="gemini",
+        base_url="https://generativelanguage.googleapis.com",
         api_key_required=True,
-        description="Google AI Studio 的 OpenAI 兼容接口。",
+        description="Google AI Studio / Gemini 原生 generateContent 接口。",
     ),
     ModelProviderPreset(
         id="anthropic",
@@ -103,6 +125,7 @@ class ModelServiceSettings:
     vision_model: str = ""
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     chat_reasoning_effort: str = ""
+    chat_max_output_tokens: int = 0
 
     @property
     def configured(self) -> bool:
@@ -215,6 +238,12 @@ def settings_from_mapping(
     chat_reasoning_effort = normalize_reasoning_effort(raw_chat_reasoning_effort)
     if raw_chat_reasoning_effort and not chat_reasoning_effort:
         raise ValueError("model_service_chat_reasoning_effort_invalid")
+    chat_max_output_tokens = _bounded_int(
+        raw.get("chatMaxOutputTokens", raw.get("chat_max_output_tokens")),
+        default=0,
+        minimum=0,
+        maximum=131072,
+    )
     settings = ModelServiceSettings(
         provider_id=provider_id if provider_id in PRESET_BY_ID else "openai_compatible",
         protocol=protocol,
@@ -229,6 +258,7 @@ def settings_from_mapping(
         vision_model=vision_model,
         timeout_seconds=timeout_seconds,
         chat_reasoning_effort=chat_reasoning_effort,
+        chat_max_output_tokens=chat_max_output_tokens,
     )
     validate_model_service_settings(settings, require_model=require_model)
     return settings
@@ -259,6 +289,10 @@ def effective_settings_from_config(config_module: Any) -> ModelServiceSettings:
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         chat_reasoning_effort=normalize_reasoning_effort(
             getattr(config_module, "LLM_CHAT_REASONING_EFFORT", "")
+        ),
+        chat_max_output_tokens=max(
+            0,
+            int(getattr(config_module, "LLM_CHAT_MAX_OUTPUT_TOKENS", 0) or 0),
         ),
     )
 
@@ -295,11 +329,17 @@ def effective_settings_from_runtime_settings(settings: Any) -> ModelServiceSetti
         chat_reasoning_effort=normalize_reasoning_effort(
             getattr(settings, "llm_chat_reasoning_effort", "")
         ),
+        chat_max_output_tokens=max(
+            0,
+            int(getattr(settings, "llm_chat_max_output_tokens", 0) or 0),
+        ),
     )
 
 
 def infer_provider_id(*, protocol: str, base_url: str) -> str:
     lowered = str(base_url or "").lower()
+    if protocol == "gemini":
+        return "gemini"
     if "api.pinaic.com" in lowered:
         return "pinai"
     if protocol == "ollama" or "11434" in lowered:
@@ -339,6 +379,7 @@ def public_model_service_snapshot(
         "visionModel": settings.vision_model,
         "timeoutSeconds": settings.timeout_seconds,
         "chatReasoningEffort": settings.chat_reasoning_effort,
+        "chatMaxOutputTokens": settings.chat_max_output_tokens,
         "providers": provider_presets_payload(),
     }
 
@@ -350,6 +391,7 @@ def apply_model_service_settings(config_module: Any, settings: ModelServiceSetti
         setattr(config_module, f"{prefix}_MODEL_NAME", settings.chat_model)
         setattr(config_module, f"{prefix}_API_PROTOCOL", settings.protocol)
     setattr(config_module, "LLM_CHAT_REASONING_EFFORT", settings.chat_reasoning_effort)
+    setattr(config_module, "LLM_CHAT_MAX_OUTPUT_TOKENS", settings.chat_max_output_tokens)
     setattr(config_module, "IMAGE_GENERATION_ENABLED", settings.use_for_image_generation)
     setattr(config_module, "IMAGE_GENERATION_API_KEY", settings.image_generation_api_key)
     setattr(config_module, "IMAGE_GENERATION_BASE_URL", settings.image_generation_base_url)
@@ -400,7 +442,7 @@ def probe_model_ids(settings: ModelServiceSettings) -> list[str]:
         model_id = getattr(item, "id", "")
         if not model_id and isinstance(item, dict):
             model_id = item.get("id", "")
-        text = str(model_id or "").strip()
+        text = normalize_provider_model_id(model_id)
         if text:
             ids.add(text)
     return sorted(ids, key=str.casefold)
@@ -441,7 +483,7 @@ def validate_model_service_settings(
     *,
     require_model: bool = True,
 ) -> None:
-    if settings.protocol not in {"openai", "responses", "anthropic", "ollama"}:
+    if settings.protocol not in {"openai", "responses", "anthropic", "gemini", "ollama"}:
         raise ValueError("model_service_protocol_invalid")
     if not settings.base_url.startswith(("http://", "https://")):
         raise ValueError("model_service_base_url_invalid")

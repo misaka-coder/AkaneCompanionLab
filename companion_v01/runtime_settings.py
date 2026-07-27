@@ -65,6 +65,7 @@ class BotSettingsView:
     llm_reasoning_effort: str = ""
     llm_aux_reasoning_effort: str = ""
     llm_chat_reasoning_effort: str = ""
+    llm_chat_max_output_tokens: int = 0
 
     # Voice/runtime settings.  These belong to a BotRuntime rather than the
     # process-wide config module so multiple Bots can use different voices and
@@ -151,6 +152,10 @@ class BotSettingsView:
             ),
             llm_chat_reasoning_effort=normalize_reasoning_effort(
                 getattr(config_module, "LLM_CHAT_REASONING_EFFORT", "")
+            ),
+            llm_chat_max_output_tokens=max(
+                0,
+                int(getattr(config_module, "LLM_CHAT_MAX_OUTPUT_TOKENS", 0) or 0),
             ),
             tts_voice=_text(getattr(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
             or "zh-CN-XiaoxiaoNeural",
@@ -246,6 +251,7 @@ class BotSettingsView:
             "llm_reasoning_effort",
             "llm_aux_reasoning_effort",
             "llm_chat_reasoning_effort",
+            "llm_chat_max_output_tokens",
             "tts_voice",
             "tts_rate",
             "tts_volume",
@@ -304,6 +310,10 @@ class BotSettingsView:
         chat_reasoning_effort = normalize_reasoning_effort(
             getattr(model_settings, "chat_reasoning_effort", "")
         )
+        chat_max_output_tokens = max(
+            0,
+            int(getattr(model_settings, "chat_max_output_tokens", 0) or 0),
+        )
         return replace(
             self,
             text_api_key=api_key,
@@ -327,6 +337,7 @@ class BotSettingsView:
             image_generation_base_url=image_generation_base_url,
             image_generation_model=image_generation_model,
             llm_chat_reasoning_effort=chat_reasoning_effort,
+            llm_chat_max_output_tokens=chat_max_output_tokens,
         )
 
     def public_snapshot(self) -> dict[str, Any]:
@@ -397,6 +408,7 @@ class BotSettingsView:
             "context": {
                 "window": self.llm_context_window,
                 "auto_compact_token_limit": self.llm_auto_compact_token_limit,
+                "chat_max_output_tokens": self.llm_chat_max_output_tokens,
             },
             "reasoning": {
                 "default": self.llm_reasoning_effort,
@@ -461,6 +473,7 @@ def _overlay_value(key: str, value: Any) -> Any:
         "vision_max_image_bytes",
         "llm_context_window",
         "llm_auto_compact_token_limit",
+        "llm_chat_max_output_tokens",
         "qq_voice_max_text_chars",
         "qq_voice_max_segments",
         "gpt_sovits_batch_size",

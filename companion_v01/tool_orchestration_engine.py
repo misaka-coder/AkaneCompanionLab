@@ -110,6 +110,48 @@ def max_tool_rounds() -> int:
     return _bounded_int(getattr(config, "MAX_TOOL_ROUNDS", 3), default=3, lower=1, upper=5)
 
 
+def max_tool_emergency_rounds(*, current_budget: int = 0) -> int:
+    """Return the universal fail-safe ceiling, never a normal workflow budget."""
+
+    soft_budget = _bounded_int(current_budget, default=max_tool_rounds(), lower=1, upper=32)
+    configured = _bounded_int(
+        getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS", 16),
+        default=16,
+        lower=1,
+        upper=32,
+    )
+    return max(soft_budget, configured)
+
+
+def extend_tool_round_budget_for_progress(
+    *,
+    current_budget: int,
+    emergency_limit: int,
+    tool_round_index: int,
+    tool_calls: Iterable[Mapping[str, Any]],
+    seen_signatures: set[str],
+) -> tuple[int, bool]:
+    """Extend a soft budget only for at least one not-yet-executed call.
+
+    Exact-repeat suppression remains authoritative elsewhere.  This helper
+    only distinguishes a progressing chain from a hard emergency stop; it
+    does not encode tool names, user wording, or workflow-specific steps.
+    """
+
+    budget = max(1, int(current_budget or 1))
+    emergency = max(budget, int(emergency_limit or budget))
+    round_index = max(0, int(tool_round_index or 0))
+    calls = [dict(call) for call in tool_calls if isinstance(call, Mapping)]
+    if not calls or round_index < budget:
+        return budget, False
+    has_new_call = any(tool_call_signature(call) not in seen_signatures for call in calls)
+    if not has_new_call:
+        return budget, False
+    if round_index >= emergency:
+        return budget, True
+    return max(budget, round_index + 1), False
+
+
 def _configured_family_budget(family: str, *, fallback: int) -> int:
     clean_family = str(family or "").strip()
     if clean_family == "web_research":

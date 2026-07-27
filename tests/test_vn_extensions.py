@@ -717,6 +717,40 @@ class EngineExtensionTests(unittest.TestCase):
                 3,
             )
 
+    def test_tool_round_soft_budget_extends_only_for_new_calls(self) -> None:
+        with patch.object(config, "MAX_TOOL_EMERGENCY_ROUNDS", 6, create=True):
+            self.assertEqual(
+                self.engine._max_tool_emergency_rounds(current_budget=3),
+                6,
+            )
+            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
+                current_budget=3,
+                emergency_limit=6,
+                tool_round_index=3,
+                tool_calls=[{"type": "inspect_generated_file", "generated_id": "gen_1"}],
+                seen_signatures=set(),
+            )
+            self.assertEqual(budget, 4)
+            self.assertFalse(stopped)
+            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
+                current_budget=4,
+                emergency_limit=6,
+                tool_round_index=4,
+                tool_calls=[{"type": "inspect_generated_file", "generated_id": "gen_1"}],
+                seen_signatures={self.engine._tool_call_signature({"type": "inspect_generated_file", "generated_id": "gen_1"})},
+            )
+            self.assertEqual(budget, 4)
+            self.assertFalse(stopped)
+            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
+                current_budget=6,
+                emergency_limit=6,
+                tool_round_index=6,
+                tool_calls=[{"type": "send_file", "targets": ["gen_2"]}],
+                seen_signatures=set(),
+            )
+            self.assertEqual(budget, 6)
+            self.assertTrue(stopped)
+
     def test_build_tool_prompt_context_includes_registered_tools(self) -> None:
         class StubTool:
             def build_prompt_instruction(self) -> str:

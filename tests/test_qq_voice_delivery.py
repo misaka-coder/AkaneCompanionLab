@@ -429,6 +429,44 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["send_result"]["deferred_count"], 0)
         self.assertNotIn("我在认真听你说", repr(gateway.text_sends))
 
+    def test_transient_failure_without_text_sends_visible_failure_notice(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "emotion": "concerned",
+                        "speech": "我在认真听你说，要不要再多告诉我一点？",
+                        "speech_segments": ["我在认真听你说，要不要再多告诉我一点？"],
+                        "tool_events": [],
+                        "_transient_final_failure": True,
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_failure",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "继续处理"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(len(gateway.text_sends), 1)
+        self.assertIn("没有形成可交付的文字结果", gateway.text_sends[0][0])
+        self.assertTrue(result["final_failure_notice_result"]["ok"])
+
     def test_group_voice_uses_owner_tts_profile_scope(self) -> None:
         captured_payload: dict = {}
         captured_base_dir: list[Path] = []

@@ -251,8 +251,10 @@ class Settings(BaseSettings):
     PUBLIC_DAILY_LIMIT_MESSAGE: str = "今日体验名额已满，明天再来看看 Akane 吧。"
 
     # === 工具调用 & 后台任务 ===
-    # 同轮对话最大工具调用轮次（防止循环）
+    # 同轮工具调用的常规软预算。持续产生新调用/新结果时允许继续。
     MAX_TOOL_ROUNDS: int = 3
+    # 仅用于阻止失控循环的紧急硬上限；正常工具链不应触及。
+    MAX_TOOL_EMERGENCY_ROUNDS: int = 16
     # native tool 通道总开关。默认开启 native-first：allowlist 内、且 (host, model)
     # 能力档案已验证的工具走 provider native schema；未知/未验证 provider 会结构化
     # 回退 legacy JSON tool_call。需要保守兼容时可经 env 显式关闭。
@@ -533,7 +535,8 @@ def _apply_settings(s: Settings) -> None:
     global GPT_SOVITS_BATCH_SIZE, GPT_SOVITS_SPEED_FACTOR, GPT_SOVITS_FRAGMENT_INTERVAL, GPT_SOVITS_TEXT_SPLIT_METHOD
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
-    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, ENABLE_NATIVE_TOOL_DECISION
+    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_TOOL_EMERGENCY_ROUNDS
+    global ENABLE_NATIVE_TOOL_DECISION
     global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_FINAL_RESPONSE_MAX_ATTEMPTS
     global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
@@ -701,6 +704,10 @@ def _apply_settings(s: Settings) -> None:
         or "今日体验名额已满，明天再来看看 Akane 吧。"
     )
     MAX_TOOL_ROUNDS = max(1, min(5, int(s.MAX_TOOL_ROUNDS)))
+    MAX_TOOL_EMERGENCY_ROUNDS = max(
+        MAX_TOOL_ROUNDS + 1,
+        min(32, int(s.MAX_TOOL_EMERGENCY_ROUNDS)),
+    )
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "web_search").strip()
     NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()

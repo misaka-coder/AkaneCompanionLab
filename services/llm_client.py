@@ -6,13 +6,15 @@ from types import SimpleNamespace
 import requests
 from openai import OpenAI
 
+from .gemini_native_client import GeminiNativeCompatClient
+
 
 ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
 
 
 def normalize_api_protocol(protocol: str = "", base_url: str = "") -> str:
     explicit = str(protocol or "").strip().lower()
-    if explicit in {"openai", "responses", "anthropic", "ollama"}:
+    if explicit in {"openai", "responses", "anthropic", "gemini", "ollama"}:
         return explicit
 
     lowered = str(base_url or "").strip().lower()
@@ -20,6 +22,8 @@ def normalize_api_protocol(protocol: str = "", base_url: str = "") -> str:
         return "anthropic"
     if "11434" in lowered or "ollama" in lowered:
         return "ollama"
+    if "generativelanguage.googleapis.com" in lowered:
+        return "gemini"
     return "openai"
 
 
@@ -45,6 +49,13 @@ def build_llm_client(
     resolved = normalize_api_protocol(protocol=protocol, base_url=base_url)
     if resolved == "anthropic":
         return AnthropicCompatClient(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    if resolved == "gemini":
+        return GeminiNativeCompatClient(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,

@@ -574,6 +574,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(resolve_memcore_provider_profile("openai"), "openai_chat")
         self.assertEqual(resolve_memcore_provider_profile("responses"), "openai_chat")
         self.assertEqual(resolve_memcore_provider_profile("ollama"), "openai_chat")
+        self.assertEqual(resolve_memcore_provider_profile("gemini"), "openai_chat")
         self.assertEqual(resolve_memcore_provider_profile("anthropic"), "anthropic_messages")
         self.assertEqual(resolve_memcore_provider_profile("canonical"), "canonical_user_assistant")
         self.assertEqual(resolve_memcore_provider_profile("finance_bot"), "")
@@ -2197,12 +2198,21 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
+                gemini_projection = manager.build_context_projection(
+                    provider_profile="gemini",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
             finally:
                 manager.close()
 
         self.assertTrue(user["ok"])
         self.assertTrue(trace["ok"])
         self.assertTrue(projection["ok"], projection)
+        self.assertTrue(gemini_projection["ok"], gemini_projection)
+        self.assertEqual(gemini_projection["provider_profile"], "openai_chat")
+        self.assertEqual(gemini_projection["payloads"], projection["payloads"])
         payloads = [item["payload"] for item in projection["messages"]]
         self.assertEqual(payloads[1]["tool_calls"][0]["function"]["name"], "web_search")
         self.assertEqual(payloads[2]["tool_call_id"], "call_1")

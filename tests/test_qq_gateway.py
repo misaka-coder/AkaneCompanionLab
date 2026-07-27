@@ -1298,7 +1298,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "switched")
         self.assertEqual(result["chat_model"], "deepseek-v4-flash")
-        self.assertIn("供应商、密钥和 base_url 仍使用当前全局配置", result["reply"])
+        self.assertEqual(result["reply"], "已把当前 QQ 会话聊天模型切换为：deepseek-v4-flash。")
         self.assertEqual(gateway.resolve_chat_model_override(context.session_id), "deepseek-v4-flash")
 
         next_context = gateway.build_message_context(
@@ -1340,9 +1340,148 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "listed")
         self.assertIn("当前供应商可用模型", result["reply"])
-        self.assertIn("\n  deepseek-v4-flash\n", result["reply"])
-        self.assertIn("\n  qwen/qwen3-coder\n", result["reply"])
-        self.assertIn("切换模型 模型名", result["reply"])
+        self.assertIn("\n  1. deepseek-chat\n", result["reply"])
+        self.assertIn("\n  2. deepseek-v4-flash\n", result["reply"])
+        self.assertIn("\n  3. qwen/qwen3-coder\n", result["reply"])
+        self.assertIn("切换模型 序号", result["reply"])
+
+    def test_chat_model_command_preserves_group_prefixed_provider_model(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-prefixed-1",
+                "raw_message": "切换模型 [ruru20]gemini-2.5-flash",
+            }
+        )
+
+        listed = gateway.handle_chat_model_command(
+            context,
+            command={"action": "list"},
+            default_model="[ruru20]gemini-2.5-flash",
+            available_models=["[ruru20]gemini-2.5-flash"],
+        )
+        switched = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="[ruru20]gemini-2.5-flash",
+        )
+
+        self.assertTrue(listed["ok"])
+        self.assertIn("[ruru20]gemini-2.5-flash", listed["reply"])
+        self.assertTrue(switched["ok"])
+        self.assertEqual(switched["chat_model"], "[ruru20]gemini-2.5-flash")
+        self.assertEqual(
+            gateway.resolve_chat_model_override(context.session_id),
+            "[ruru20]gemini-2.5-flash",
+        )
+
+    def test_chat_model_short_name_prefers_current_default_route_group(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-short-name-1",
+                "raw_message": "切换模型 gemini-2.5-flash",
+            }
+        )
+        available = [
+            "[ruru20]gemini-2.5-flash",
+            "[渠道二-按量cli]gemini-3.5-flash",
+            "[渠道二-按量cli]gemini-2.5-flash",
+            "[渠道一-量-t3]gemini-2.5-flash",
+        ]
+
+        result = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="[渠道二-按量cli]gemini-3.5-flash",
+            available_models=available,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["chat_model"],
+            "[渠道二-按量cli]gemini-2.5-flash",
+        )
+
+    def test_chat_model_number_uses_same_preferred_order_as_model_list(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-number-1",
+                "raw_message": "切换模型 1",
+            }
+        )
+        available = [
+            "[ruru20]gemini-2.5-flash",
+            "[渠道二-按量cli]gemini-3.5-flash",
+            "[渠道二-按量cli]gemini-2.5-flash",
+        ]
+
+        listed = gateway.handle_chat_model_command(
+            context,
+            command={"action": "list"},
+            default_model="[渠道二-按量cli]gemini-3.5-flash",
+            available_models=available,
+        )
+        switched = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="[渠道二-按量cli]gemini-3.5-flash",
+            available_models=available,
+        )
+
+        self.assertIn("1. [渠道二-按量cli]gemini-3.5-flash", listed["reply"])
+        self.assertTrue(switched["ok"])
+        self.assertEqual(
+            switched["chat_model"],
+            "[渠道二-按量cli]gemini-3.5-flash",
+        )
+
+    def test_chat_model_list_keeps_configured_default_missing_from_provider_catalog(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "chat-model-missing-default-1",
+                "raw_message": "切换模型 1",
+            }
+        )
+        available = [
+            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+        ]
+
+        listed = gateway.handle_chat_model_command(
+            context,
+            command={"action": "list"},
+            default_model="gemini-3.5-flash",
+            available_models=available,
+        )
+        switched = gateway.handle_chat_model_command(
+            context,
+            command=gateway.parse_chat_model_command(context.clean_message),
+            default_model="gemini-3.5-flash",
+            available_models=available,
+        )
+
+        self.assertIn("1. gemini-3.5-flash", listed["reply"])
+        self.assertTrue(switched["ok"])
+        self.assertEqual(switched["chat_model"], "gemini-3.5-flash")
 
     def test_chat_model_command_rejects_non_master(self) -> None:
         gateway = NapCatQQGateway()

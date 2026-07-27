@@ -3439,6 +3439,10 @@ class AkaneMemoryEngine:
         seen_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
+        emergency_tool_rounds = self._max_tool_emergency_rounds(
+            domain_profile_id=turn_domain_profile_id,
+            current_budget=max_tool_rounds,
+        )
         tool_round_index = 0
         provider_output_raw = ""
         memory_exclude_source_ids = [
@@ -3446,14 +3450,11 @@ class AkaneMemoryEngine:
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        # Keep the provider request shape stable while the model is making
-        # normal progress.  ``max_tool_rounds`` limits executed tool batches;
-        # it must not pre-emptively turn the preceding result round into
-        # ``tool_choice=none``.  The extra loop pass lets the model consume the
-        # final real result under the same ``auto`` policy and answer normally.
-        # Only an actual request beyond the execution budget takes the hard
-        # close path below.
-        while tool_round_index <= max_tool_rounds:
+        # ``max_tool_rounds`` is a soft budget. A chain that keeps asking for
+        # new, non-repeated work may grow one round at a time without changing
+        # the provider request shape. Only the universal emergency ceiling
+        # forces ``tool_choice=none``.
+        while tool_round_index <= emergency_tool_rounds:
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
@@ -3472,19 +3473,36 @@ class AkaneMemoryEngine:
                     session_id=session_id,
                     domain_profile_id=turn_domain_profile_id,
                 )
-            if tool_calls and tool_round_index >= max_tool_rounds:
+            emergency_tool_rounds = max(emergency_tool_rounds, max_tool_rounds)
+            previous_tool_budget = max_tool_rounds
+            max_tool_rounds, emergency_stop = self._extend_tool_round_budget_for_progress(
+                current_budget=max_tool_rounds,
+                emergency_limit=emergency_tool_rounds,
+                tool_round_index=tool_round_index,
+                tool_calls=tool_calls,
+                seen_signatures=seen_tool_calls,
+            )
+            if max_tool_rounds > previous_tool_budget:
+                logger.info(
+                    "tool_round_budget_extended session=%s previous=%s next=%s emergency=%s",
+                    session_id,
+                    previous_tool_budget,
+                    max_tool_rounds,
+                    emergency_tool_rounds,
+                )
+            if tool_calls and emergency_stop:
                 blocked_calls = "；".join(
                     self._describe_tool_call_for_prompt(tool_call)
                     for tool_call in tool_calls
                 )
                 tool_followups.append(
-                    f"模型在本轮已经执行 {max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
+                    f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
                     "这些额外调用没有执行；请基于已有真实结果完成答复。"
                 )
                 logger.warning(
-                    "tool_round_budget_exhausted session=%s rounds=%s blocked=%s",
+                    "tool_round_emergency_limit session=%s rounds=%s blocked=%s",
                     session_id,
-                    max_tool_rounds,
+                    tool_round_index,
                     len(tool_calls),
                 )
                 final_output = self._build_final_response(
@@ -4027,6 +4045,10 @@ class AkaneMemoryEngine:
         seen_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
+        emergency_tool_rounds = self._max_tool_emergency_rounds(
+            domain_profile_id=turn_domain_profile_id,
+            current_budget=max_tool_rounds,
+        )
         tool_round_index = 0
         provider_output_raw = ""
         memory_exclude_source_ids = [
@@ -4034,11 +4056,9 @@ class AkaneMemoryEngine:
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        # See the synchronous path above: the normal post-result request stays
-        # on ``tool_choice=auto``.  The extra pass observes whether the model
-        # actually asks for another tool before the host applies the emergency
-        # hard close.
-        while tool_round_index <= max_tool_rounds:
+        # See the synchronous path above: progressing calls extend the soft
+        # budget without changing the native tool schema or tool_choice.
+        while tool_round_index <= emergency_tool_rounds:
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
@@ -4057,19 +4077,36 @@ class AkaneMemoryEngine:
                     session_id=session_id,
                     domain_profile_id=turn_domain_profile_id,
                 )
-            if tool_calls and tool_round_index >= max_tool_rounds:
+            emergency_tool_rounds = max(emergency_tool_rounds, max_tool_rounds)
+            previous_tool_budget = max_tool_rounds
+            max_tool_rounds, emergency_stop = self._extend_tool_round_budget_for_progress(
+                current_budget=max_tool_rounds,
+                emergency_limit=emergency_tool_rounds,
+                tool_round_index=tool_round_index,
+                tool_calls=tool_calls,
+                seen_signatures=seen_tool_calls,
+            )
+            if max_tool_rounds > previous_tool_budget:
+                logger.info(
+                    "tool_round_budget_extended session=%s previous=%s next=%s emergency=%s",
+                    session_id,
+                    previous_tool_budget,
+                    max_tool_rounds,
+                    emergency_tool_rounds,
+                )
+            if tool_calls and emergency_stop:
                 blocked_calls = "；".join(
                     self._describe_tool_call_for_prompt(tool_call)
                     for tool_call in tool_calls
                 )
                 tool_followups.append(
-                    f"模型在本轮已经执行 {max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
+                    f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
                     "这些额外调用没有执行；请基于已有真实结果完成答复。"
                 )
                 logger.warning(
-                    "tool_round_budget_exhausted session=%s rounds=%s blocked=%s",
+                    "tool_round_emergency_limit session=%s rounds=%s blocked=%s",
                     session_id,
-                    max_tool_rounds,
+                    tool_round_index,
                     len(tool_calls),
                 )
                 final_output = yield from self._stream_final_response(
@@ -4676,8 +4713,10 @@ class AkaneMemoryEngine:
                 )
             provider_output_raw = str(getattr(call_result, "raw_text", "") or "")
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
-                metrics_before.get("chat_json_fallbacks", 0) or 0
+            parse_fallback = self._llm_result_used_fallback(
+                call_result,
+                metrics_before=metrics_before,
+                metrics_after=metrics_after,
             )
             normalized = self._normalize_final_output(
                 result=result,
@@ -4749,11 +4788,11 @@ class AkaneMemoryEngine:
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
         text = str(output.get("speech") or "").strip()
-        compact = "".join(text.split())
-        if not compact:
+        if not text:
             return True
         if parse_fallback:
             return True
+        compact = "".join(text.split())
         if len(compact) <= 160 and any(
             marker in compact
             for marker in (
@@ -4767,6 +4806,20 @@ class AkaneMemoryEngine:
         ):
             return True
         return False
+
+    @staticmethod
+    def _llm_result_used_fallback(
+        result: Any,
+        *,
+        metrics_before: dict[str, Any],
+        metrics_after: dict[str, Any],
+    ) -> bool:
+        explicit = getattr(result, "fallback_used", None)
+        if explicit is not None:
+            return bool(explicit)
+        return int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
+            metrics_before.get("chat_json_fallbacks", 0) or 0
+        )
 
     def _stream_final_response(
         self,
@@ -4846,6 +4899,7 @@ class AkaneMemoryEngine:
         unrecovered_stream_error = ""
         unrecovered_stream_partial: dict[str, str] = {}
         provider_output_raw = ""
+        final_parse_fallback = False
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = ""
@@ -4915,9 +4969,12 @@ class AkaneMemoryEngine:
                     ):
                         streamed_speech_to_user = True
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            parse_fallback = int(metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
-                metrics_before.get("chat_json_fallbacks", 0) or 0
+            parse_fallback = self._llm_result_used_fallback(
+                stream_result,
+                metrics_before=metrics_before,
+                metrics_after=metrics_after,
             )
+            final_parse_fallback = parse_fallback
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
             provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
             if "request_observer_rejected:" in stream_error:
@@ -4986,9 +5043,12 @@ class AkaneMemoryEngine:
                     return failure_output
                 provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
                 fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-                fallback_parse_failure = int(fallback_metrics_after.get("chat_json_fallbacks", 0) or 0) > int(
-                    fallback_metrics_before.get("chat_json_fallbacks", 0) or 0
+                fallback_parse_failure = self._llm_result_used_fallback(
+                    fallback_call_result,
+                    metrics_before=fallback_metrics_before,
+                    metrics_after=fallback_metrics_after,
                 )
+                final_parse_fallback = fallback_parse_failure
                 fallback_transport_failure = int(fallback_metrics_after.get("errors", 0) or 0) > int(
                     fallback_metrics_before.get("errors", 0) or 0
                 )
@@ -5041,9 +5101,12 @@ class AkaneMemoryEngine:
                     uncached_metrics_after = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                     )
-                    fallback_parse_failure = int(
-                        uncached_metrics_after.get("chat_json_fallbacks", 0) or 0
-                    ) > int(uncached_metrics_before.get("chat_json_fallbacks", 0) or 0)
+                    fallback_parse_failure = self._llm_result_used_fallback(
+                        uncached_call_result,
+                        metrics_before=uncached_metrics_before,
+                        metrics_after=uncached_metrics_after,
+                    )
+                    final_parse_fallback = fallback_parse_failure
                     normalized = self._normalize_final_output(
                         result=uncached_result,
                         visual_defaults=dict(generation_context["visual_defaults"]),
@@ -5100,7 +5163,10 @@ class AkaneMemoryEngine:
                 "message": unrecovered_stream_error,
                 "partial": unrecovered_stream_partial,
             }
-        if self._is_retryable_final_output(normalized):
+        if self._is_retryable_final_output(
+            normalized,
+            parse_fallback=final_parse_fallback,
+        ):
             normalized["_transient_final_failure"] = True
             normalized.pop("_provider_output_raw", None)
         else:
@@ -5404,6 +5470,38 @@ class AkaneMemoryEngine:
         from .engine_services.tool_rounds import max_tool_rounds as _fn
 
         return _fn(domain_profile_id=domain_profile_id)
+
+    def _max_tool_emergency_rounds(
+        self,
+        *,
+        domain_profile_id: str = "",
+        current_budget: int = 0,
+    ) -> int:
+        from .engine_services.tool_rounds import max_tool_emergency_rounds as _fn
+
+        return _fn(
+            domain_profile_id=domain_profile_id,
+            current_budget=current_budget,
+        )
+
+    def _extend_tool_round_budget_for_progress(
+        self,
+        *,
+        current_budget: int,
+        emergency_limit: int,
+        tool_round_index: int,
+        tool_calls: list[dict[str, Any]],
+        seen_signatures: set[str],
+    ) -> tuple[int, bool]:
+        from .engine_services.tool_rounds import extend_tool_round_budget_for_progress as _fn
+
+        return _fn(
+            current_budget=current_budget,
+            emergency_limit=emergency_limit,
+            tool_round_index=tool_round_index,
+            tool_calls=tool_calls,
+            seen_signatures=seen_signatures,
+        )
 
     def _resolve_tool_round_budget(
         self,

@@ -79,7 +79,10 @@ def _build_minimal_final(
 
 class PersonaConfigTomlTests(unittest.TestCase):
     def test_stable_tool_rules_distinguish_parallel_native_from_single_legacy_field(self) -> None:
-        self.assertIn("多个互不依赖的工具", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("不同参数多次调用同一个工具", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("一次调用多个不同工具", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("需要前一步返回的 handle、数据或状态", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("按调用 ID 配对每个真实结果", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("兼容 JSON `tool_call`", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("一次只放一个", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("普通回合不一定重复展开完整清单", TOOL_CONTEXT_STABLE_RULES)
@@ -978,10 +981,10 @@ system = "semantic reinforcement system"
         )
         prompt = build_scene_static_system_prompt()
         self.assertIn("tool_call 是兼容字段，必须放在 speech_segments 之后", prompt)
-        self.assertIn("先发出真实工具调用，不要同时伪造最终 JSON", prompt)
+        self.assertIn("请求中直接附带的工具要走真实工具调用", prompt)
         self.assertIn("同一条真实工具调用消息里先说一句符合当前人设的简短过程说明", prompt)
         self.assertIn("快速查询、记忆读取或无需等待的动作可以静默调用", prompt)
-        self.assertIn("不能提前声称已经完成、成功、失败或已发送", prompt)
+        self.assertNotIn("按调用 ID 配对每个真实结果", prompt)
 
         result = builder.build_final_generation_context(
             now_ts=1712400000,
@@ -1008,6 +1011,8 @@ system = "semantic reinforcement system"
         fallback_keys = list(result["fallback"].keys())
         self.assertLess(fallback_keys.index("speech_segments"), fallback_keys.index("tool_call"))
         self.assertEqual(fallback_keys[:4], ["emotion", "speech", "speech_segments", "tool_call"])
+        self.assertIn("按调用 ID 配对每个真实结果", result["system_prompt"])
+        self.assertEqual(result["system_prompt"].count("按调用 ID 配对每个真实结果"), 1)
 
     def test_default_prompts_do_not_force_akane_identity(self) -> None:
         prompt = build_scene_static_system_prompt()

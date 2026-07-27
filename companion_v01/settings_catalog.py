@@ -290,7 +290,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("PUBLIC_BUSY_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "繁忙提示语（用户可见）"),
     _s("PUBLIC_DAILY_LIMIT_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "每日限额提示语（用户可见）"),
     # 工具调用 & 后台任务
-    _s("MAX_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮对话最大工具调用轮次（防循环）"),
+    _s("MAX_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用常规软预算"),
+    _s("MAX_TOOL_EMERGENCY_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用紧急安全上限"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认关、fail-closed）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
     _s("CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "最终答复异常时的最大生成次数"),

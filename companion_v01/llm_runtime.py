@@ -25,6 +25,7 @@ from capcore_provider_openai import (
 )
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
+from .model_service_config import normalize_provider_model_id
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from .runtime_settings import BotSettingsView, normalize_reasoning_effort
 from .tool_invocation import NATIVE_ANTHROPIC
@@ -46,6 +47,7 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
 )
 PROMPT_AUDIT_LOCK = threading.RLock()
+MAX_NATIVE_TOOL_CALLS_PER_RESPONSE = 16
 JSON_ESCAPE_MAP = {
     '"': '"',
     "\\": "\\",
@@ -81,15 +83,7 @@ def normalize_reply_medium(value: Any) -> str:
 
 
 def _safe_chat_model_override(value: Any) -> str:
-    text = str(value or "").strip()
-    text = text.strip('`\'"""‘’')
-    text = text.rstrip("。.!！?？,，;；")
-    text = re.sub(r"\s+", "", text)
-    if not text or len(text) > 180:
-        return ""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,179}", text):
-        return ""
-    return text
+    return normalize_provider_model_id(value)
 
 
 @dataclass
@@ -183,6 +177,7 @@ class ChatJSONResult:
     parsed: dict[str, Any]
     raw_text: str
     error: str = ""
+    fallback_used: bool = False
     metadata_status: str = "missing"
     metadata_present: bool = False
 
@@ -199,6 +194,7 @@ class ChatJSONStreamResult:
     native_preface_text: str = ""
     stopped_early: bool = False
     early_tool_call: dict[str, Any] | None = None
+    fallback_used: bool = False
     metadata_status: str = "missing"
     metadata_present: bool = False
 
@@ -1072,6 +1068,7 @@ class LLMRuntime:
                 parsed=fallback_payload,
                 raw_text="",
                 error=str(exc or "").strip(),
+                fallback_used=True,
                 metadata_status=metadata_status,
                 metadata_present=metadata_present,
             )
@@ -1085,6 +1082,7 @@ class LLMRuntime:
         return ChatJSONResult(
             parsed=fallback_payload,
             raw_text=content,
+            fallback_used=True,
             metadata_status=metadata_status,
             metadata_present=metadata_present,
         )
@@ -1277,6 +1275,7 @@ class LLMRuntime:
         )
         metadata_origin = "accepted_model"
         metadata_requires_signal = False
+        fallback_used = False
         if native_tool_calls:
             self._record_metric("native_tool_call_extracted")
             parsed = {
@@ -1307,6 +1306,7 @@ class LLMRuntime:
                 parsed = dict(fallback)
                 metadata_origin = "accepted_host"
                 metadata_requires_signal = True
+                fallback_used = True
         else:
             parsed = dict(parsed)
 
@@ -1334,6 +1334,7 @@ class LLMRuntime:
             native_preface_text=native_preface_text if native_tool_calls else "",
             stopped_early=stopped_early,
             early_tool_call=early_tool_call,
+            fallback_used=fallback_used,
             metadata_status=metadata_status,
             metadata_present=metadata_present,
         )
@@ -1522,6 +1523,11 @@ class LLMRuntime:
             "model": bundle.model,
             "messages": messages,
         }
+        if (
+            str(getattr(bundle.client, "_akane_bundle_role", "") or "").strip().lower() == "chat"
+            and self._settings_view().llm_chat_max_output_tokens > 0
+        ):
+            payload["max_tokens"] = int(self._settings_view().llm_chat_max_output_tokens)
         # Current OpenAI reasoning models reject sampling controls when explicit
         # reasoning effort is selected. Keep temperature for all legacy paths.
         if not (self._is_responses_protocol(bundle) and self._responses_reasoning_effort(bundle)):
@@ -1545,6 +1551,8 @@ class LLMRuntime:
             self._ensure_json_keyword(messages)
         if normalized_tools and should_send_native_tools:
             payload["tools"] = normalized_tools
+            if not self._is_anthropic_protocol(bundle):
+                payload["parallel_tool_calls"] = True
             self._record_metric("native_tool_decision_sent")
             tool_choice = self._normalize_native_tool_choice(native_tool_choice)
             if tool_choice:
@@ -1589,21 +1597,61 @@ class LLMRuntime:
         if not limits:
             return
         limit = min(limits)
-        serialized = json.dumps(
+        estimated = self._estimate_prompt_payload_tokens(payload)
+        if estimated > limit:
+            self._record_metric("prompt_token_limit_exceeded")
+            raise ValueError(f"llm_prompt_token_limit_exceeded estimated={estimated} limit={limit}")
+
+    def _estimate_prompt_payload_tokens(self, payload: dict[str, Any]) -> int:
+        """Estimate text and native image input without tokenizing base64 as prose.
+
+        Native image bytes are already bounded by the attachment inbox before
+        this payload is built.  Counting their base64 representation as text
+        overestimates a normal screenshot by hundreds of thousands of tokens
+        and rejects the request before the multimodal provider sees it.  Keep a
+        conservative per-image context allowance while estimating every real
+        text/schema field as before.
+        """
+
+        image_count = 0
+
+        def without_image_bytes(value: Any) -> Any:
+            nonlocal image_count
+            if isinstance(value, list):
+                return [without_image_bytes(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            if str(value.get("type") or "").strip().lower() == "image_url":
+                image_count += 1
+                image_url = value.get("image_url")
+                detail = image_url.get("detail") if isinstance(image_url, dict) else None
+                normalized: dict[str, Any] = {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/<native-image>"},
+                }
+                if detail not in (None, ""):
+                    normalized["image_url"]["detail"] = detail
+                return normalized
+            return {str(key): without_image_bytes(item) for key, item in value.items()}
+
+        estimated_payload = without_image_bytes(
             {
                 "messages": payload.get("messages") or [],
                 "tools": payload.get("tools") or [],
                 "system_extra_blocks": payload.get("system_extra_blocks") or [],
-            },
+            }
+        )
+        serialized = json.dumps(
+            estimated_payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
-        estimated = self._estimate_prompt_tokens(serialized)
-        if estimated > limit:
-            self._record_metric("prompt_token_limit_exceeded")
-            raise ValueError(f"llm_prompt_token_limit_exceeded estimated={estimated} limit={limit}")
+        # Provider image accounting depends on dimensions and detail mode rather
+        # than encoded file size.  8K per image is deliberately conservative
+        # for the host-side guard while the byte/count limits remain authoritative.
+        return self._estimate_prompt_tokens(serialized) + image_count * 8192
 
     def _normalize_message_content_for_payload(self, content: Any) -> str | list[dict[str, Any]]:
         if isinstance(content, list):
@@ -1659,7 +1707,7 @@ class LLMRuntime:
         if not isinstance(value, list):
             return []
         normalized: list[dict[str, Any]] = []
-        for raw in value[:4]:
+        for raw in value[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]:
             if not isinstance(raw, dict):
                 continue
             call_id = str(raw.get("id") or "").strip()
@@ -1698,6 +1746,11 @@ class LLMRuntime:
         client = getattr(bundle, "client", bundle)
         protocol = str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
         return protocol == "responses"
+
+    def _is_gemini_protocol(self, bundle: ModelBundle) -> bool:
+        client = getattr(bundle, "client", bundle)
+        protocol = str(getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or "").strip().lower()
+        return protocol == "gemini"
 
     def _supports_stream_usage(self, bundle: ModelBundle) -> bool:
         if self._is_responses_protocol(bundle):
@@ -2063,6 +2116,14 @@ class LLMRuntime:
                 verified=True,
                 notes="OpenAI Responses wire protocol with function_call/function_call_output items.",
             )
+        if protocol == "gemini":
+            return ProviderToolProfile(
+                supports_native_tools=True,
+                native_tools_coexist_with_forced_json=False,
+                native_call_shape="gemini_function_call",
+                verified=True,
+                notes="Gemini generateContent supports native functionCall/functionResponse items.",
+            )
         if protocol != "openai":
             return DEFAULT_PROVIDER_TOOL_PROFILE
         host = self._bundle_base_host(bundle)
@@ -2214,11 +2275,14 @@ class LLMRuntime:
             return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        if len(invocations) > 4:
-            self._record_metric("native_tool_calls_truncated", len(invocations) - 4)
+        if len(invocations) > MAX_NATIVE_TOOL_CALLS_PER_RESPONSE:
+            self._record_metric(
+                "native_tool_calls_truncated",
+                len(invocations) - MAX_NATIVE_TOOL_CALLS_PER_RESPONSE,
+            )
         calls = [
             self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
-            for invocation in invocations[:4]
+            for invocation in invocations[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]
         ]
         return [call for call in calls if call is not None]
 
@@ -2261,11 +2325,14 @@ class LLMRuntime:
             return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        if len(invocations) > 4:
-            self._record_metric("native_tool_calls_truncated", len(invocations) - 4)
+        if len(invocations) > MAX_NATIVE_TOOL_CALLS_PER_RESPONSE:
+            self._record_metric(
+                "native_tool_calls_truncated",
+                len(invocations) - MAX_NATIVE_TOOL_CALLS_PER_RESPONSE,
+            )
         calls = [
             self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
-            for invocation in invocations[:4]
+            for invocation in invocations[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]
         ]
         return [call for call in calls if call is not None]
 
@@ -2418,7 +2485,7 @@ class LLMRuntime:
             # the strict JSON contract and the normal parser/fallback remains
             # authoritative; omit only this unsupported wire hint.
             return False
-        return protocol in {"ollama", "openai", "responses"}
+        return protocol in {"ollama", "openai", "responses", "gemini"}
 
     def _ensure_json_keyword(self, messages: list[dict[str, Any]]) -> None:
         # OpenAI/DeepSeek reject response_format=json_object unless the messages
@@ -2717,6 +2784,9 @@ class LLMRuntime:
         request = dict(payload)
         messages = list(request.pop("messages", []) or [])
         request.pop("stream_options", None)
+        max_tokens = int(request.pop("max_tokens", 0) or 0)
+        if max_tokens > 0 and not request.get("max_output_tokens"):
+            request["max_output_tokens"] = max_tokens
         system_text = ""
         if messages and str(messages[0].get("role") or "").strip().lower() == "system":
             system_text = self._flatten_message_content(messages.pop(0).get("content")).strip()

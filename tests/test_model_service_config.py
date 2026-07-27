@@ -16,6 +16,7 @@ from companion_v01.model_service_config import (
     apply_model_service_settings,
     public_model_service_snapshot,
     probe_model_ids,
+    normalize_provider_model_id,
     settings_from_mapping,
     test_model_service as run_model_service_test,
 )
@@ -55,6 +56,31 @@ def build_config() -> SimpleNamespace:
 
 
 class ModelServiceConfigTests(unittest.TestCase):
+    def test_provider_model_id_preserves_gateway_routing_prefixes(self) -> None:
+        self.assertEqual(
+            normalize_provider_model_id("[ruru20]gemini-2.5-flash"),
+            "[ruru20]gemini-2.5-flash",
+        )
+        self.assertEqual(
+            normalize_provider_model_id("[渠道一-量-t3]gemini-3.5-flash"),
+            "[渠道一-量-t3]gemini-3.5-flash",
+        )
+        self.assertEqual(normalize_provider_model_id("bad model"), "")
+        self.assertEqual(normalize_provider_model_id("bad\nmodel"), "")
+
+    def test_gemini_preset_uses_native_generate_content_protocol(self) -> None:
+        settings = settings_from_mapping(
+            {
+                "providerId": "gemini",
+                "baseUrl": "https://api.pinaic.com/",
+                "apiKey": "gemini-secret",
+                "chatModel": "gemini-3.5-flash",
+            }
+        )
+
+        self.assertEqual(settings.protocol, "gemini")
+        self.assertEqual(settings.base_url, "https://api.pinaic.com")
+
     def test_pinai_preset_selects_responses_protocol(self) -> None:
         settings = settings_from_mapping(
             {
@@ -62,11 +88,13 @@ class ModelServiceConfigTests(unittest.TestCase):
                 "apiKey": "pinai-secret",
                 "chatModel": "gpt-5.6-sol",
                 "chatReasoningEffort": "high",
+                "chatMaxOutputTokens": 4096,
             }
         )
         self.assertEqual(settings.protocol, "responses")
         self.assertEqual(settings.base_url, "https://api.pinaic.com/v1")
         self.assertEqual(settings.chat_reasoning_effort, "high")
+        self.assertEqual(settings.chat_max_output_tokens, 4096)
 
     def test_store_preserves_secret_without_public_leak(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -93,6 +121,7 @@ class ModelServiceConfigTests(unittest.TestCase):
             self.assertNotIn("image-private", json.dumps(public, ensure_ascii=False))
             self.assertNotIn("apiKey", public)
             self.assertEqual(public["chatReasoningEffort"], "")
+            self.assertEqual(public["chatMaxOutputTokens"], 0)
 
     def test_invalid_chat_reasoning_effort_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "model_service_chat_reasoning_effort_invalid"):

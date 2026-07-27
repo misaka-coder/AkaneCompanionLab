@@ -239,10 +239,40 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         result = runtime.reload_model_services(model_settings)
 
         self.assertEqual(result["status"], "reloaded")
+        self.assertEqual(result["chat_model_overrides_status"], "unchanged")
         self.assertIsNot(runtime.settings, original)
         self.assertEqual(runtime.settings.chat_model_name, "bot-model")
         self.assertEqual(runtime.settings.vision_model_name, "bot-vision")
         self.assertIs(engine.reloaded_settings, runtime.settings)
+
+    async def test_model_provider_change_clears_qq_session_model_overrides(self) -> None:
+        runtime, _plugin_host, _engine, _followups = _runtime()
+        gateway = SimpleNamespace(clear_all_chat_model_overrides=lambda: True)
+        runtime.qq_gateway = gateway
+        runtime.settings = BotSettingsView(
+            chat_api_key="old-key",
+            chat_base_url="https://old.example/v1",
+            chat_model_name="old-model",
+            chat_api_protocol="openai",
+        )
+        model_settings = SimpleNamespace(
+            api_key="new-key",
+            base_url="https://new.example/v1",
+            chat_model="[group]new-model",
+            protocol="openai",
+            use_for_vision=True,
+            vision_model="[group]new-model",
+            use_for_image_generation=False,
+            image_generation_api_key="",
+            image_generation_base_url="",
+            image_generation_model="gpt-image-2",
+            chat_reasoning_effort="",
+            chat_max_output_tokens=0,
+        )
+
+        result = runtime.reload_model_services(model_settings)
+
+        self.assertEqual(result["chat_model_overrides_status"], "cleared")
 
     async def test_start_and_stop_are_idempotent_and_keep_one_lifecycle_owner(self) -> None:
         runtime, plugin_host, engine, followups = _runtime()

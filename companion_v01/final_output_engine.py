@@ -70,7 +70,7 @@ def normalize_final_output(
     normalized = dict(raw_result or {})
     native_tool_call = raw_result.get(NATIVE_TOOL_CALL_FIELD)
     native_tool_calls = raw_result.get(NATIVE_TOOL_CALLS_FIELD)
-    if isinstance(native_tool_calls, list):
+    if allow_tool_call and isinstance(native_tool_calls, list):
         normalized_calls = [dict(call) for call in native_tool_calls if isinstance(call, dict) and call]
         if normalized_calls:
             normalized[NATIVE_TOOL_CALLS_FIELD] = normalized_calls
@@ -78,7 +78,7 @@ def normalize_final_output(
             normalized.pop(NATIVE_TOOL_CALLS_FIELD, None)
     else:
         normalized.pop(NATIVE_TOOL_CALLS_FIELD, None)
-    if isinstance(native_tool_call, dict) and native_tool_call:
+    if allow_tool_call and isinstance(native_tool_call, dict) and native_tool_call:
         normalized[NATIVE_TOOL_CALL_FIELD] = dict(native_tool_call)
     else:
         normalized.pop(NATIVE_TOOL_CALL_FIELD, None)

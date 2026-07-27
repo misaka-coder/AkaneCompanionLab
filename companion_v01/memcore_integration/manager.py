@@ -31,6 +31,9 @@ MEMCORE_PROVIDER_PROFILE_ALIASES = {
     "native_openai": "openai_chat",
     "responses": "openai_chat",
     "ollama": "openai_chat",
+    # GeminiNativeCompatClient accepts the same OpenAI-shaped message history
+    # as the rest of Akane and converts it only at the final wire boundary.
+    "gemini": "openai_chat",
     "anthropic": "anthropic_messages",
     "anthropic_messages": "anthropic_messages",
     "native_anthropic": "anthropic_messages",

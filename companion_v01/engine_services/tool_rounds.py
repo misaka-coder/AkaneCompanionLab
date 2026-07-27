@@ -49,6 +49,28 @@ def max_tool_rounds(*, domain_profile_id: str = "") -> int:
     return tool_orchestration_engine.max_tool_rounds()
 
 
+def max_tool_emergency_rounds(*, domain_profile_id: str = "", current_budget: int = 0) -> int:
+    del domain_profile_id
+    return tool_orchestration_engine.max_tool_emergency_rounds(current_budget=current_budget)
+
+
+def extend_tool_round_budget_for_progress(
+    *,
+    current_budget: int,
+    emergency_limit: int,
+    tool_round_index: int,
+    tool_calls: list[dict[str, Any]],
+    seen_signatures: set[str],
+) -> tuple[int, bool]:
+    return tool_orchestration_engine.extend_tool_round_budget_for_progress(
+        current_budget=current_budget,
+        emergency_limit=emergency_limit,
+        tool_round_index=tool_round_index,
+        tool_calls=tool_calls,
+        seen_signatures=seen_signatures,
+    )
+
+
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
     return tool_orchestration_engine.tool_call_signature(tool_call)
 
@@ -105,9 +127,8 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
     del native_tools
     return (
         "【本轮直接工具入口】\n"
-        "需要请求中已附带的工具时，直接发出真实工具调用；最终 JSON 的 tool_call 保持 null。"
-        "直接工具可以同轮调用多个互不依赖的能力；有依赖时等前一步真实结果返回后再继续。"
-        "不要只在 speech 里宣称调用或完成；只根据真实工具结果说明状态、数据与产物。"
+        "本轮实际附带的工具名称、参数和说明以请求中的工具定义为准；"
+        "需要时直接发出真实工具调用，最终 JSON 的 tool_call 保持 null。"
     )
 
 

@@ -39,6 +39,7 @@ from channelcore_onebot import (
 import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
 from .deployment_security import QQChannelRuntimeConfig
+from .model_service_config import normalize_provider_model_id
 from .onebot_transport import OneBotActionTransport
 
 
@@ -1349,6 +1350,13 @@ class NapCatQQGateway:
             self.chat_model_overrides.pop(key, None)
         return self._persist_chat_model_overrides()
 
+    def clear_all_chat_model_overrides(self) -> bool:
+        with self._chat_model_lock:
+            if not self.chat_model_overrides:
+                return True
+            self.chat_model_overrides.clear()
+        return self._persist_chat_model_overrides()
+
     def handle_chat_model_command(
         self,
         context: QQMessageContext,
@@ -1381,17 +1389,22 @@ class NapCatQQGateway:
         active_model = active_override or default_model_id
         action = str(command.get("action") or "")
         if action == "list":
-            labels = [_safe_chat_model_id(item) for item in list(available_models or [])]
-            labels = [item for item in labels if item]
+            labels = self._ordered_chat_model_ids(
+                available_models,
+                preferred_model=active_model or default_model_id,
+            )
             if labels:
+                visible_labels = labels[:40]
                 return {
                     "handled": True,
                     "ok": True,
                     "status": "listed",
-                    "reply": self._build_multiline_option_reply(
-                        "当前供应商可用模型",
-                        labels[:40],
-                        instruction="发送“切换模型 模型名”即可切换当前 QQ 会话。",
+                    "reply": self._build_numbered_model_reply(
+                        visible_labels,
+                        instruction=(
+                            "发送“切换模型 序号”即可切换；也可以只写基础模型名，"
+                            "系统会优先选择当前默认分组。"
+                        ),
                         overflow_count=max(0, len(labels) - 40),
                     ),
                     "chat_model": active_model,
@@ -1439,18 +1452,52 @@ class NapCatQQGateway:
                 "state_persisted": state_persisted,
             }
         if action == "switch":
-            model_id = _safe_chat_model_id(command.get("model"))
-            if not model_id:
+            requested_model = _safe_chat_model_id(command.get("model"))
+            model_id, resolution_status, candidates = self._resolve_chat_model_choice(
+                requested_model,
+                available_models=available_models,
+                preferred_model=default_model_id or active_model,
+            )
+            if not requested_model:
                 return {
                     "handled": True,
                     "ok": False,
                     "status": "invalid_chat_model",
-                    "reply": "这个模型名不太对。请使用供应商返回的模型 id，比如 deepseek-v4-flash。",
+                    "reply": "这个模型名不太对。请发送“模型列表”查看可用序号和完整模型名。",
+                    "chat_model": active_model,
+                    "chat_model_override": active_override,
+                }
+            if not model_id:
+                if resolution_status == "index_out_of_range":
+                    count = len(self._ordered_chat_model_ids(available_models, preferred_model=default_model_id))
+                    reply = f"模型序号超出范围，当前可选范围是 1-{count}。请重新发送“模型列表”查看。"
+                elif resolution_status == "ambiguous":
+                    reply = self._build_multiline_option_reply(
+                        "这个基础模型名对应多个分组",
+                        candidates[:8],
+                        instruction="请发送完整模型名，或先发送“模型列表”再按序号切换。",
+                        overflow_count=max(0, len(candidates) - 8),
+                    )
+                elif resolution_status == "model_list_unavailable":
+                    reason = str(list_error or "").strip()
+                    reply = "当前无法读取模型列表，因此不能按序号切换。请稍后再试，或发送完整模型名。"
+                    if reason:
+                        reply += f"\n原因：{reason}"
+                else:
+                    reply = (
+                        f"当前供应商没有返回模型“{requested_model}”。"
+                        "请发送“模型列表”查看可用项，避免切到不存在的分组。"
+                    )
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "status": resolution_status or "model_unavailable",
+                    "reply": reply,
                     "chat_model": active_model,
                     "chat_model_override": active_override,
                 }
             state_persisted = self.set_session_chat_model_override(context.session_id, model_id)
-            reply = f"已把当前 QQ 会话聊天模型切换为：{model_id}。供应商、密钥和 base_url 仍使用当前全局配置。"
+            reply = f"已把当前 QQ 会话聊天模型切换为：{model_id}。"
             return {
                 "handled": True,
                 "ok": True,
@@ -1653,6 +1700,108 @@ class NapCatQQGateway:
         lines.append(f"  来源：{source}")
         if has_override and _safe_chat_model_id(default_model):
             lines.append(f"  默认：{_safe_chat_model_id(default_model)}")
+        return "\n".join(lines)
+
+    def _ordered_chat_model_ids(
+        self,
+        available_models: list[str] | None,
+        *,
+        preferred_model: str = "",
+    ) -> list[str]:
+        models: list[str] = []
+        seen: set[str] = set()
+        for raw_model in list(available_models or []):
+            model = _safe_chat_model_id(raw_model)
+            if not model or model in seen:
+                continue
+            seen.add(model)
+            models.append(model)
+        preferred = _safe_chat_model_id(preferred_model)
+        if preferred and all(model.casefold() != preferred.casefold() for model in models):
+            # Some compatible providers accept a configured model while
+            # omitting it from /models. The configured default is still a
+            # verified route and must remain selectable/listed.
+            models.append(preferred)
+        preferred_prefix = _chat_model_route_prefix(preferred)
+        return sorted(
+            models,
+            key=lambda model: (
+                0 if preferred and model.casefold() == preferred.casefold() else 1,
+                0
+                if preferred_prefix and _chat_model_route_prefix(model).casefold() == preferred_prefix.casefold()
+                else 1,
+                _chat_model_base_id(model).casefold(),
+                model.casefold(),
+            ),
+        )
+
+    def _resolve_chat_model_choice(
+        self,
+        requested_model: str,
+        *,
+        available_models: list[str] | None,
+        preferred_model: str = "",
+    ) -> tuple[str, str, list[str]]:
+        requested = _safe_chat_model_id(requested_model)
+        if not requested:
+            return "", "invalid_chat_model", []
+        if available_models is None:
+            if requested.isdecimal():
+                return "", "model_list_unavailable", []
+            return requested, "direct", []
+        models = self._ordered_chat_model_ids(
+            available_models,
+            preferred_model=preferred_model,
+        )
+        if not models:
+            if requested.isdecimal():
+                return "", "model_list_unavailable", []
+            return requested, "direct", []
+        if requested.isdecimal():
+            index = int(requested)
+            if 1 <= index <= len(models):
+                return models[index - 1], "index", []
+            return "", "index_out_of_range", []
+        for model in models:
+            if model.casefold() == requested.casefold():
+                return model, "exact", []
+        if _chat_model_route_prefix(requested):
+            return "", "model_unavailable", []
+        candidates = [
+            model
+            for model in models
+            if _chat_model_base_id(model).casefold() == requested.casefold()
+        ]
+        if len(candidates) == 1:
+            return candidates[0], "unique_base_name", []
+        preferred_prefix = _chat_model_route_prefix(preferred_model)
+        preferred_candidates = [
+            model
+            for model in candidates
+            if preferred_prefix
+            and _chat_model_route_prefix(model).casefold() == preferred_prefix.casefold()
+        ]
+        if len(preferred_candidates) == 1:
+            return preferred_candidates[0], "preferred_group", []
+        if candidates:
+            return "", "ambiguous", candidates
+        return "", "model_unavailable", []
+
+    def _build_numbered_model_reply(
+        self,
+        labels: list[str],
+        *,
+        instruction: str,
+        overflow_count: int = 0,
+    ) -> str:
+        lines = ["当前供应商可用模型", "─" * 18]
+        lines.extend(f"  {index}. {label}" for index, label in enumerate(labels, start=1))
+        if overflow_count > 0:
+            lines.append(f"还有 {overflow_count} 个未显示。")
+        instruction_text = str(instruction or "").strip()
+        if instruction_text:
+            lines.append("─" * 18)
+            lines.append(instruction_text)
         return "\n".join(lines)
 
     def _format_reply_mode_label(self, reply_mode: str) -> str:
@@ -3502,15 +3651,23 @@ def _safe_outfit_id(value: Any) -> str:
 
 
 def _safe_chat_model_id(value: Any) -> str:
-    text = str(value or "").strip()
-    text = text.strip('`\'"""‘’')
-    text = text.rstrip("。.!！?？,，;；")
-    text = re.sub(r"\s+", "", text)
-    if not text or len(text) > 180:
+    return normalize_provider_model_id(value)
+
+
+def _chat_model_route_prefix(value: Any) -> str:
+    model = _safe_chat_model_id(value)
+    if not model.startswith("["):
         return ""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,179}", text):
+    end = model.find("]")
+    if end <= 1:
         return ""
-    return text
+    return model[: end + 1]
+
+
+def _chat_model_base_id(value: Any) -> str:
+    model = _safe_chat_model_id(value)
+    prefix = _chat_model_route_prefix(model)
+    return model[len(prefix) :] if prefix else model
 
 
 def _outfit_lookup_key(value: Any) -> str:

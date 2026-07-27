@@ -791,6 +791,12 @@ class QQSessionTurnCoordinator:
         self._entries: dict[str, tuple[asyncio.Lock, int]] = {}
         self._registry_lock = threading.Lock()
 
+    def is_busy(self, profile_user_id: Any, session_id: Any) -> bool:
+        key = f"{str(profile_user_id or '').strip()}\0{str(session_id or '').strip()}"
+        with self._registry_lock:
+            entry = self._entries.get(key)
+            return bool(entry is not None and entry[1] > 0 and entry[0].locked())
+
     @asynccontextmanager
     async def hold(self, profile_user_id: Any, session_id: Any):
         key = f"{str(profile_user_id or '').strip()}\0{str(session_id or '').strip()}"
@@ -1332,7 +1338,11 @@ def _process_qq_turn_streaming(
     file_delivery_failed = file_delivery_attempted and not bool(file_send_result.get("ok"))
     # Deliver the artifact before any model-authored completion claim. On
     # failure, only the deterministic transport feedback below is allowed out.
-    final_reply_messages = [] if file_delivery_failed else qq_gateway.render_reply_messages(frame)
+    final_reply_messages = (
+        []
+        if file_delivery_failed or bool(frame.get("_transient_final_failure"))
+        else qq_gateway.render_reply_messages(frame)
+    )
     reply_messages = final_reply_messages
     if streamed_messages and bool(frame.get("_transient_final_failure")):
         # A complete speech field may already have reached QQ before a malformed
@@ -1356,6 +1366,32 @@ def _process_qq_turn_streaming(
         delivery_hint=delivery_hint,
         settings=settings,
     )
+    visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
+    visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
+    final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
+    if not visible_text_delivered and not visible_file_delivered:
+        # A streamed emotion is not a reply.  If JSON/tool orchestration
+        # failed before any text or file reached QQ, surface a transport-level
+        # status instead of leaving the user with only a mood sticker.
+        final_failure_notice = (
+            "这次没有形成可交付的文字结果，刚才的处理没有完整结束。请再试一次。"
+        )
+        final_failure_notice_result = qq_gateway.send_reply(context, final_failure_notice)
+        if final_failure_notice_result.get("ok"):
+            reply_messages.append(final_failure_notice)
+            send_result = dict(send_result)
+            send_result_results = [
+                *list(send_result.get("results") or []),
+                dict(final_failure_notice_result),
+            ]
+            send_result.update(
+                {
+                    "ok": all(bool(item.get("ok")) for item in send_result_results),
+                    "count": len(send_result_results),
+                    "results": send_result_results,
+                    "final_failure_notice": True,
+                }
+            )
     if streamed_messages:
         combined_results = [*stream_send_results, *list(send_result.get("results") or [])]
         send_result = {
@@ -1370,7 +1406,15 @@ def _process_qq_turn_streaming(
         }
 
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
-    if send_result.get("ok"):
+    if (
+        send_result.get("ok")
+        and not bool(frame.get("_transient_final_failure"))
+        and (
+        visible_text_delivered
+        or visible_file_delivered
+        or bool(final_failure_notice_result.get("ok") and final_failure_notice_result.get("status") != "skipped")
+        )
+    ):
         qq_delivery_config = _load_qq_delivery_config(engine, context)
         current_outfit_id = _qq_current_outfit_id_from_turn_payload(turn_payload)
         emotion_mface_result = qq_gateway.send_emotion_mface(
@@ -1457,6 +1501,7 @@ def _process_qq_turn_streaming(
         "file_send_result": file_send_result,
         "final_reply_fallback_result": final_reply_fallback_result,
         "file_delivery_feedback_result": file_delivery_feedback_result,
+        "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
     }
 
@@ -1865,6 +1910,64 @@ def build_qq_router(
                                 "policy_mode": str(passive_memory_policy.get("mode") or "all"),
                             }
                         )
+                    if turn_coordinator.is_busy(context.profile_user_id, context.session_id):
+                        recorder = getattr(engine, "record_passive_qq_message", None)
+                        deferred_payload = context.to_turn_payload()
+                        deferred_payload["timestamp"] = int(event.get("time") or time.time())
+
+                        async def _record_passive_after_active_turn(
+                            *,
+                            _recorder: Any = recorder,
+                            _payload: dict[str, Any] = dict(deferred_payload),
+                            _context: Any = context,
+                        ) -> None:
+                            async with turn_coordinator.hold(
+                                _context.profile_user_id,
+                                _context.session_id,
+                            ):
+                                record_result = (
+                                    await asyncio.to_thread(_recorder, _payload)
+                                    if callable(_recorder)
+                                    else {"ok": False, "status": "recorder_unavailable"}
+                                )
+                                record_payload = (
+                                    record_result if isinstance(record_result, dict) else {}
+                                )
+                                log_event(
+                                    "qq_passive_group_message_recorded",
+                                    session_id=_context.session_id,
+                                    profile_user_id=_context.profile_user_id,
+                                    group_id=int(getattr(_context, "group_id", 0) or 0),
+                                    user_id=int(getattr(_context, "user_id", 0) or 0),
+                                    reason=_context.reason,
+                                    record_status=str(record_payload.get("status") or ""),
+                                    deferred=True,
+                                )
+
+                        schedule_followup(_record_passive_after_active_turn())
+                        duration_ms = (time.perf_counter() - started_at) * 1000
+                        runtime_metrics.observe_request(
+                            "qq_napcat_event",
+                            duration_ms=duration_ms,
+                            ok=True,
+                        )
+                        log_event(
+                            "qq_passive_group_message_buffered",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            group_id=int(getattr(context, "group_id", 0) or 0),
+                            user_id=int(getattr(context, "user_id", 0) or 0),
+                            reason="active_turn_in_progress",
+                            duration_ms=round(duration_ms, 1),
+                        )
+                        return JSONResponse(
+                            {
+                                "status": "buffered",
+                                "reason": "active_turn_in_progress",
+                                "session_id": context.session_id,
+                                "profile_user_id": context.profile_user_id,
+                            }
+                        )
                     recorder = getattr(engine, "record_passive_qq_message", None)
                     turn_payload = context.to_turn_payload()
                     turn_payload["timestamp"] = int(event.get("time") or time.time())
@@ -2189,7 +2292,7 @@ def build_qq_router(
             if isinstance(chat_model_command, dict):
                 available_models: list[str] | None = None
                 list_error = ""
-                if str(chat_model_command.get("action") or "") == "list":
+                if str(chat_model_command.get("action") or "") in {"list", "switch"}:
                     try:
                         runtime_settings = getattr(engine, "settings", None)
                         settings = (
@@ -2618,6 +2721,10 @@ def build_qq_router(
                 turn_result.get("emotion_image_result") or {"ok": True, "status": "skipped", "reason": "missing_result"}
             )
             file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})
+            final_failure_notice_result = dict(
+                turn_result.get("final_failure_notice_result")
+                or {"ok": True, "status": "skipped", "reason": "missing_result"}
+            )
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=False)
@@ -2669,6 +2776,7 @@ def build_qq_router(
                 "emotion_mface_result": emotion_mface_result,
                 "emotion_image_result": emotion_image_result,
                 "file_send_result": file_send_result,
+                "final_failure_notice_result": final_failure_notice_result,
             }
         )
 

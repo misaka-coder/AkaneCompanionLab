@@ -796,7 +796,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertNotIn("web_search", instruction)
         self.assertIn("真实工具调用", instruction)
         self.assertIn("最终 JSON 的 tool_call 保持 null", instruction)
-        self.assertIn("真实工具结果", instruction)
+        self.assertIn("请求中的工具定义为准", instruction)
+        self.assertNotIn("互不依赖", instruction)
         self.assertNotIn("同一轮发出多个 native tool calls", instruction)
 
     def test_verified_profile_completion_payload_sends_native_tools(self) -> None:
@@ -818,6 +819,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")
+        self.assertTrue(payload["parallel_tool_calls"])
         self.assertNotIn("response_format", payload)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_decision_sent"], 1)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
