@@ -5233,7 +5233,6 @@ class AkaneMemoryEngine:
         return {
             "emotion": "concerned",
             "speech": "这次上下文没有完整衔接成功，我先不在证据有缺口的情况下乱答。请稍后再试。",
-            "speech_segments": ["这次上下文没有完整衔接成功，我先不在证据有缺口的情况下乱答。请稍后再试。"],
             "tool_call": None,
             "memory_metadata": {},
             "_transient_final_failure": True,
@@ -5411,12 +5410,10 @@ class AkaneMemoryEngine:
         self,
         *,
         speech: Any,
-        speech_segments: Any,
         fallback_to_default: bool = True,
     ) -> tuple[str, list[str]]:
         return final_output_engine.normalize_speech_payload(
             speech=speech,
-            speech_segments=speech_segments,
             fallback_to_default=fallback_to_default,
         )
 

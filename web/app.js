@@ -364,7 +364,7 @@ function normalizeSpeechSegmentsForDisplay(payload) {
   if (!Array.isArray(payload?.speech_segments)) {
     return [];
   }
-  return payload.speech_segments.map((segment) => String(segment || "").trim()).filter(Boolean).slice(0, 3);
+  return payload.speech_segments.map((segment) => String(segment || "").trim()).filter(Boolean);
 }
 
 function detectLocalTimeOfDay(date = new Date()) {

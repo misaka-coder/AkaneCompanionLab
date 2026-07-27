@@ -251,7 +251,7 @@ Live2D 场景模式是在场景舞台内用 Live2D 替代静态立绘。
 | `scene_live2d` | 无 `live2d` | 降级为 `scene_static` |
 | `scene_static` | 无 `background` | 保留对话，省略场景切换 |
 | `desktop_pet` | 无 `touch_event` | 保留桌宠气泡，不注入触摸事件 |
-| 任意模式 | 无 `speech_segments` | 只要求输出 `speech` |
+| 任意模式 | 无 `speech_segments` | 客户端只接收完整 `speech`，后端不附带分段投影 |
 
 ---
 
@@ -317,7 +317,6 @@ client_mode / client_capabilities
 ```json
 {
   "speech": "",
-  "speech_segments": [],
   "emotion": "normal",
   "status": "final",
   "memory_tags": "",
@@ -331,8 +330,9 @@ client_mode / client_capabilities
 
 说明：
 
-- `speech_segments` 是展示层。
-- `speech` 是兼容与记忆聚合层，由后端兜底生成。
+- `speech` 是模型唯一正文，也是记忆与恢复使用的权威文本。
+- `speech_segments` 不再是模型字段；它只是在客户端声明对应能力时，由后端
+  从 `speech` 派生的临时展示/TTS 投影。客户端不得用它反向覆盖 `speech`。
 - `emotion` 是跨模式的高层情绪，不直接等于某个客户端的具体动画文件。
 - `tool_call` 仍然走统一工具运行时，但可见工具由模式决定。
 

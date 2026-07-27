@@ -490,12 +490,12 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertEqual(normalized["speech"], "好的主人。")
         self.assertEqual(normalized["speech_segments"], ["好的主人。"])
 
-    def test_normalize_final_output_aggregates_speech_segments_for_memory(self) -> None:
+    def test_normalize_final_output_ignores_model_speech_segments_as_second_authority(self) -> None:
         normalized = self.engine._normalize_final_output(
             result={
                 "emotion": "normal",
-                "speech": "",
-                "speech_segments": ["在的，主人。", "晚上好呀。", "你在做什么？"],
+                "speech": "真正的完整正文。然后继续！",
+                "speech_segments": ["这不是正文。", "不能覆盖 speech。"],
                 "code_snippet": "",
                 "memory_tags": "",
                 "status": "final",
@@ -517,8 +517,8 @@ class EngineExtensionTests(unittest.TestCase):
             debug_enabled=False,
         )
 
-        self.assertEqual(normalized["speech"], "在的，主人。\n晚上好呀。\n你在做什么？")
-        self.assertEqual(normalized["speech_segments"], ["在的，主人。", "晚上好呀。", "你在做什么？"])
+        self.assertEqual(normalized["speech"], "真正的完整正文。然后继续！")
+        self.assertEqual(normalized["speech_segments"], ["真正的完整正文。", "然后继续！"])
 
     def test_normalize_final_output_infers_segments_from_multiline_speech(self) -> None:
         normalized = self.engine._normalize_final_output(

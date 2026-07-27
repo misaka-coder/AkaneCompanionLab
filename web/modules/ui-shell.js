@@ -207,7 +207,13 @@ export function createUiShellHelpers({
     }
   }
 
-  function stripDisplayPunct(s) { return s.replace(/。/g, ""); }
+  function stripDisplayPunct(s) {
+    const text = String(s || "").trim();
+    if (text.length > 1 && text.endsWith("。") && !/[。！？!?…]/.test(text[text.length - 2])) {
+      return text.slice(0, -1).trim();
+    }
+    return text;
+  }
 
   function normalizeDialogueTurns(payload) {
     const turns = Array.isArray(payload?.dialogue_turns) ? payload.dialogue_turns : [];
@@ -228,7 +234,7 @@ export function createUiShellHelpers({
     }
 
     const speechSegments = Array.isArray(payload?.speech_segments)
-      ? payload.speech_segments.map((segment) => stripDisplayPunct(String(segment || "").trim())).filter(Boolean).slice(0, 3)
+      ? payload.speech_segments.map((segment) => stripDisplayPunct(String(segment || "").trim())).filter(Boolean)
       : [];
     if (speechSegments.length) {
       const codeSnippet = String(payload?.code_snippet || "").trim();

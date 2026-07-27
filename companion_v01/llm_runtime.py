@@ -23,6 +23,7 @@ from capcore_provider_openai import (
     parse_openai_chat_stream_tool_calls,
     parse_openai_chat_tool_calls,
 )
+from memcore import StreamingSpeechParser
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
 from .model_service_config import normalize_provider_model_id
@@ -384,20 +385,21 @@ class _TopLevelJSONStreamTap:
         self.latest_reply_medium = ""
         self._ui_emitted = False
         self._delivery_hint_emitted = False
-        self._speech_segment_count = 0
-        self._last_segment_end = 0
-        self._max_speech_segments = 3
-        self._speech_segments_array_depth: int | None = None
-        self._emitted_speech_segment_keys: set[str] = set()
-        self._top_level_speech_seen = False
-        self._latest_speech_segments: list[str] = []
+        self._speech_complete = False
+        self._speech_stream = StreamingSpeechParser(
+            mode="memcore_json",
+            enable_sentence_segments=True,
+            min_segment_chars=1,
+            max_segments=None,
+        )
+        self._speech_stream_finished = False
 
     def feed(self, text: Any) -> list[dict[str, Any]]:
+        source = str(text or "")
         events: list[dict[str, Any]] = []
-        speech_delta: list[str] = []
-        for char in str(text or ""):
+        for char in source:
             if self.in_string:
-                self._consume_string_char(char, events, speech_delta)
+                self._consume_string_char(char, events)
                 continue
 
             if self.in_primitive:
@@ -418,15 +420,6 @@ class _TopLevelJSONStreamTap:
             if char in " \t\r\n":
                 continue
 
-            if self._speech_segments_array_depth is not None:
-                if char == '"' and self.depth == self._speech_segments_array_depth:
-                    self._start_string("speech_segment")
-                    continue
-                if char == "]" and self.depth == self._speech_segments_array_depth:
-                    self._speech_segments_array_depth = None
-                    self.depth = max(0, self.depth - 1)
-                    continue
-
             if char == "{":
                 self.depth += 1
                 if self.depth == 1:
@@ -441,8 +434,6 @@ class _TopLevelJSONStreamTap:
             if char == "[":
                 self.depth += 1
                 if self.expecting_value:
-                    if self.current_key == "speech_segments" and self.depth == 2:
-                        self._speech_segments_array_depth = self.depth
                     self.expecting_value = False
                 continue
 
@@ -483,22 +474,25 @@ class _TopLevelJSONStreamTap:
                     self.in_primitive = True
                 continue
 
-        if speech_delta:
-            delta_text = "".join(speech_delta)
-            if delta_text:
-                self.latest_speech += delta_text
-                events.append({"type": "speech_chunk", "text": delta_text})
-                if self._speech_segment_count < self._max_speech_segments:
-                    remaining = self.latest_speech[self._last_segment_end :]
-                    match = re.search(r"[。！？!?\n]", remaining)
-                    if match:
-                        end = self._last_segment_end + match.end()
-                        self._emit_speech_segment(
-                            events,
-                            self.latest_speech[self._last_segment_end : end],
-                        )
-                        self._last_segment_end = end
+        for event in self._speech_stream.feed(source):
+            event_type = str(event.get("type") or "")
+            if event_type == "speech_chunk":
+                self.latest_speech += str(event.get("text") or "")
+            if event_type in {"speech_chunk", "speech_segment"}:
+                events.append(event)
         return events
+
+    def finish(self) -> list[dict[str, Any]]:
+        if self._speech_stream_finished:
+            return []
+        self._speech_stream_finished = True
+        if not self._speech_complete:
+            return []
+        return [
+            event
+            for event in self._speech_stream.finish()
+            if str(event.get("type") or "") == "speech_segment"
+        ]
 
     def _start_string(self, role: str) -> None:
         self.in_string = True
@@ -511,7 +505,6 @@ class _TopLevelJSONStreamTap:
         self,
         char: str,
         events: list[dict[str, Any]],
-        speech_delta: list[str],
     ) -> None:
         if self.unicode_buffer is not None:
             if char.lower() in "0123456789abcdef":
@@ -524,18 +517,18 @@ class _TopLevelJSONStreamTap:
                         decoded = ""
                     self.unicode_buffer = None
                     if decoded:
-                        self._append_string_char(decoded, speech_delta)
+                        self._append_string_char(decoded)
                 return
 
             self.unicode_buffer = None
-            self._append_string_char("u", speech_delta)
+            self._append_string_char("u")
 
         if self.escape_pending:
             self.escape_pending = False
             if char == "u":
                 self.unicode_buffer = []
                 return
-            self._append_string_char(JSON_ESCAPE_MAP.get(char, char), speech_delta)
+            self._append_string_char(JSON_ESCAPE_MAP.get(char, char))
             return
 
         if char == "\\":
@@ -549,13 +542,6 @@ class _TopLevelJSONStreamTap:
                 self.current_key = text
                 self.expecting_key = False
                 self.expecting_colon = True
-            elif self.string_role == "speech_segment":
-                segment_text = self._normalize_speech_segment_text(text)
-                if segment_text:
-                    self._latest_speech_segments.append(segment_text)
-                    if not self._top_level_speech_seen:
-                        self.latest_speech = "\n".join(self._latest_speech_segments)
-                    self._emit_speech_segment(events, segment_text)
             else:
                 if self.captured_value_key == "emotion":
                     self.latest_emotion = text
@@ -569,44 +555,18 @@ class _TopLevelJSONStreamTap:
                         if not self._delivery_hint_emitted:
                             self._delivery_hint_emitted = True
                             events.append({"type": "delivery_hint", "medium": medium})
+                elif self.captured_value_key == "speech":
+                    self._speech_complete = True
                 self.expecting_value = False
                 self.captured_value_key = None
             self.string_role = ""
             self.string_buffer = []
             return
 
-        self._append_string_char(char, speech_delta)
+        self._append_string_char(char)
 
-    def _append_string_char(self, char: str, speech_delta: list[str]) -> None:
+    def _append_string_char(self, char: str) -> None:
         self.string_buffer.append(char)
-        if self.string_role == "value" and self.captured_value_key == "speech":
-            if not self._top_level_speech_seen and self._latest_speech_segments:
-                self.latest_speech = ""
-            self._top_level_speech_seen = True
-            speech_delta.append(char)
-
-    def _emit_speech_segment(self, events: list[dict[str, Any]], text: str) -> bool:
-        if self._speech_segment_count >= self._max_speech_segments:
-            return False
-        segment_text = self._normalize_speech_segment_text(text)
-        if not segment_text:
-            return False
-        key = re.sub(r"\s+", "", segment_text)
-        if not key or key in self._emitted_speech_segment_keys:
-            return False
-        self._emitted_speech_segment_keys.add(key)
-        self._speech_segment_count += 1
-        events.append(
-            {
-                "type": "speech_segment",
-                "index": self._speech_segment_count - 1,
-                "text": segment_text,
-            }
-        )
-        return True
-
-    def _normalize_speech_segment_text(self, text: Any) -> str:
-        return " ".join(str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
 
     def _reset_top_level_pair(self) -> None:
         self.current_key = ""
@@ -1013,7 +973,6 @@ class LLMRuntime:
                 native_preface_text = self._native_preface_text_from_content(content)
                 if native_preface_text:
                     parsed["speech"] = native_preface_text
-                    parsed["speech_segments"] = [native_preface_text]
                 metadata_status, metadata_present = _memory_metadata_truth(
                     parsed,
                     accepted_status="accepted_model",
@@ -1267,6 +1226,9 @@ class LLMRuntime:
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             self._close_stream(response)
 
+        for event in tap.finish():
+            yield event
+
         raw_text = "".join(raw_parts)
         native_tool_calls = self._stream_native_tool_calls_from_parts(
             native_tool_parts,
@@ -1286,7 +1248,6 @@ class LLMRuntime:
             native_preface_text = "" if tap.latest_speech else self._native_preface_text_from_content(raw_text)
             if native_preface_text:
                 parsed["speech"] = native_preface_text
-                parsed["speech_segments"] = [native_preface_text]
         elif native_requested:
             self._record_metric("native_tool_no_call")
             parsed = self._extract_json(raw_text)
@@ -1452,12 +1413,7 @@ class LLMRuntime:
         if not isinstance(parsed, dict):
             return ""
         speech = str(parsed.get("speech") or "").strip()
-        if speech:
-            return speech
-        segments = parsed.get("speech_segments")
-        if isinstance(segments, list):
-            return "\n".join(str(item or "").strip() for item in segments if str(item or "").strip())
-        return ""
+        return speech
 
     def _flatten_message_content(self, content: Any) -> str:
         if isinstance(content, str):
@@ -3172,29 +3128,16 @@ class LLMRuntime:
         speech = str(tap.latest_speech or "").strip()
         emotion = str(tap.latest_emotion or "").strip()
         reply_medium = normalize_reply_medium(tap.latest_reply_medium)
-        raw_segments = self._extract_json_key_value(text, "speech_segments")
-        segments: list[str] = []
-        if isinstance(raw_segments, list):
-            for item in raw_segments:
-                value = (item.get("speech") or item.get("text") or "") if isinstance(item, dict) else item
-                segment = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
-                if segment:
-                    segments.append(segment[:500])
-                if len(segments) >= 3:
-                    break
-        if not speech and not emotion and not segments and not reply_medium:
+        if not speech and not emotion and not reply_medium:
             return None
         recovered = dict(fallback)
         if emotion:
             recovered["emotion"] = emotion
         if reply_medium:
             recovered["reply_medium"] = reply_medium
-        if segments:
-            recovered["speech"] = "\n".join(segments)
-            recovered["speech_segments"] = segments
-        elif speech:
+        if speech:
             recovered["speech"] = speech
-            recovered["speech_segments"] = []
+        recovered.pop("speech_segments", None)
         return recovered
 
     def _extract_json_key_value(self, text: str, key: str) -> Any:

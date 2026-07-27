@@ -91,21 +91,14 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(tap.latest_emotion, "happy")
         self.assertEqual(tap.latest_speech, "喵呜，主人欢迎回来……课上辛苦啦！")
 
-    def test_emits_speech_segments_from_array_as_each_item_closes(self) -> None:
+    def test_ignores_legacy_speech_segments_array_without_speech(self) -> None:
         tap = _TopLevelJSONStreamTap()
 
-        first_events = tap.feed('{"emotion":"happy","speech":"","speech_segments":["第一句。')
-        self.assertFalse([event for event in first_events if event.get("type") == "speech_segment"])
+        events = tap.feed('{"emotion":"happy","speech_segments":["第一句。","第二句。"],"tool_call":null}')
 
-        second_events = tap.feed('","第二句。')
-        segment_events = [event for event in second_events if event.get("type") == "speech_segment"]
-        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 0, "text": "第一句。"}])
-        self.assertEqual(tap.latest_speech, "第一句。")
-
-        third_events = tap.feed('"],"tool_call":null}')
-        segment_events = [event for event in third_events if event.get("type") == "speech_segment"]
-        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 1, "text": "第二句。"}])
-        self.assertEqual(tap.latest_speech, "第一句。\n第二句。")
+        self.assertFalse([event for event in events if event.get("type", "").startswith("speech_")])
+        self.assertEqual(tap.latest_speech, "")
+        self.assertEqual(tap.finish(), [])
 
     def test_emits_delivery_hint_before_speech_when_reply_medium_closes(self) -> None:
         tap = _TopLevelJSONStreamTap()
@@ -118,21 +111,37 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         first_speech_index = next(index for index, event in enumerate(events) if event.get("type") == "speech_chunk")
         self.assertLess(delivery_index, first_speech_index)
 
-    def test_speech_segments_array_does_not_duplicate_speech_field_segments(self) -> None:
+    def test_legacy_array_cannot_override_speech_field(self) -> None:
         tap = _TopLevelJSONStreamTap()
-        events = []
+        events = tap.feed(
+            '{"emotion":"happy","speech":"第一句。","speech_segments":["伪造第一句。","伪造第二句。"]}'
+        )
+        events.extend(tap.finish())
 
-        events.extend(tap.feed('{"emotion":"happy","speech":"第一句。","speech_segments":["第一句。","第二句。"]}'))
+        segment_events = [event for event in events if event.get("type") == "speech_segment"]
+        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 0, "text": "第一句。"}])
+        self.assertEqual(tap.latest_speech, "第一句。")
+
+    def test_speech_stream_preserves_punctuation_clusters_and_more_than_three_segments(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed(
+            '{"emotion":"happy","speech":"哈啊？！真的吗。第一句。第二句！第三句？第四句。第五句。"}'
+        )
+        events.extend(tap.finish())
 
         segment_events = [event for event in events if event.get("type") == "speech_segment"]
         self.assertEqual(
-            segment_events,
-            [
-                {"type": "speech_segment", "index": 0, "text": "第一句。"},
-                {"type": "speech_segment", "index": 1, "text": "第二句。"},
-            ],
+            [event["text"] for event in segment_events],
+            ["哈啊？！", "真的吗。", "第一句。", "第二句！", "第三句？", "第四句。", "第五句。"],
         )
-        self.assertEqual(tap.latest_speech, "第一句。")
+        self.assertEqual([event["index"] for event in segment_events], list(range(7)))
+
+    def test_speech_stream_preserves_single_punctuation_segment(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"emotion":"normal","speech":"？"}')
+        events.extend(tap.finish())
+
+        self.assertIn({"type": "speech_segment", "index": 0, "text": "？"}, events)
 
     def test_leading_tool_call_probe_handles_null(self) -> None:
         runtime = object.__new__(LLMRuntime)
@@ -249,9 +258,9 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
 
         self.assertEqual(recovered["emotion"], "happy")
         self.assertEqual(recovered["speech"], "我听到啦，主人。")
-        self.assertEqual(recovered["speech_segments"], [])
+        self.assertNotIn("speech_segments", recovered)
 
-    def test_partial_chat_json_recovery_keeps_speech_segments(self) -> None:
+    def test_partial_chat_json_recovery_does_not_promote_legacy_segments(self) -> None:
         runtime = object.__new__(LLMRuntime)
 
         recovered = runtime._recover_partial_chat_json(
@@ -260,8 +269,8 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         )
 
         self.assertEqual(recovered["emotion"], "happy")
-        self.assertEqual(recovered["speech"], "第一句。\n第二句。")
-        self.assertEqual(recovered["speech_segments"], ["第一句。", "第二句。"])
+        self.assertEqual(recovered["speech"], "fallback")
+        self.assertNotIn("speech_segments", recovered)
 
 
 if __name__ == "__main__":

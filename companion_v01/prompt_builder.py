@@ -202,7 +202,6 @@ class PromptBuilder:
         fallback = {
             "emotion": visual_defaults["emotion"],
             "speech": self.persona.final_fallback_speech,
-            "speech_segments": [],
             "tool_call": None,
             "code_snippet": "",
             "status": "final",

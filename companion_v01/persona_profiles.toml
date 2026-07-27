@@ -82,14 +82,14 @@ debug_mode = '''
 
 [variants.default.final]
 fast_mode = '''
-字段固定为 emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，禁止输出 thought。
+字段固定为 emotion, speech, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，禁止输出 thought。
 输出格式示例如下：
-{"emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
+{"emotion":"normal","speech":"我在哦，欢迎回来。","tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
 '''
 debug_mode = '''
-字段固定为 thought, emotion, speech, speech_segments, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，且必须把 tool_call 放在 speech_segments 后面。
+字段固定为 thought, emotion, speech, tool_call, code_snippet, status, choices, character, scene, persona, memory_metadata, state_request，且必须把 tool_call 放在 speech 后面。
 输出格式示例如下：
-{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
+{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"我在哦，欢迎回来。","tool_call":null,"code_snippet":"","status":"final","choices":[],"character":{"outfit":"default"},"scene":{"major":"default","minor":"default","background":"evening","bgm":""},"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}
 '''
 fallback_thought = "我先根据手头的上下文自然回应用户。"
 fallback_speech = "我在认真听你说，要不要再多告诉我一点？"

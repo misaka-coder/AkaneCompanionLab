@@ -321,7 +321,7 @@ system = "semantic reinforcement system"
 
             self.assertTrue(result["debug_enabled"])
             self.assertEqual(result["fallback"]["thought"], "fallback thought")
-            self.assertEqual(result["fallback"]["speech_segments"], [])
+            self.assertNotIn("speech_segments", result["fallback"])
             self.assertEqual(result["fallback"]["code_snippet"], "")
             self.assertEqual(result["fallback"]["persona"]["active"], "current_card")
             self.assertIn("只输出一个合法 JSON 对象", result["system_prompt"])
@@ -965,22 +965,19 @@ system = "semantic reinforcement system"
             hashlib.sha256(legacy_text.encode("utf-8")).hexdigest(),
         )
 
-    def test_final_output_schema_places_tool_call_after_speech_segments(self) -> None:
+    def test_final_output_schema_places_tool_call_after_single_speech_authority(self) -> None:
         persona = load_persona_config()
         builder = PromptBuilder(persona)
 
-        self.assertIn("字段固定为 emotion, speech, speech_segments, tool_call", persona.final_fast_mode_prompt)
-        self.assertIn(
-            '"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_fast_mode_prompt
-        )
-        self.assertIn(
-            "字段固定为 thought, emotion, speech, speech_segments, tool_call", persona.final_debug_mode_prompt
-        )
-        self.assertIn(
-            '"speech":"我在哦，欢迎回来。","speech_segments":[],"tool_call":null', persona.final_debug_mode_prompt
-        )
+        self.assertIn("字段固定为 emotion, speech, tool_call", persona.final_fast_mode_prompt)
+        self.assertIn('"speech":"我在哦，欢迎回来。","tool_call":null', persona.final_fast_mode_prompt)
+        self.assertIn("字段固定为 thought, emotion, speech, tool_call", persona.final_debug_mode_prompt)
+        self.assertIn('"speech":"我在哦，欢迎回来。","tool_call":null', persona.final_debug_mode_prompt)
+        self.assertNotIn("speech_segments", persona.final_fast_mode_prompt)
+        self.assertNotIn("speech_segments", persona.final_debug_mode_prompt)
         prompt = build_scene_static_system_prompt()
-        self.assertIn("tool_call 是兼容字段，必须放在 speech_segments 之后", prompt)
+        self.assertIn("tool_call 是兼容字段，必须放在 speech 之后", prompt)
+        self.assertIn("speech 是给用户看的唯一正文", prompt)
         self.assertIn("请求中直接附带的工具要走真实工具调用", prompt)
         self.assertIn("同一条真实工具调用消息里先说一句符合当前人设的简短过程说明", prompt)
         self.assertIn("快速查询、记忆读取或无需等待的动作可以静默调用", prompt)
@@ -1009,8 +1006,8 @@ system = "semantic reinforcement system"
             debug_enabled=False,
         )
         fallback_keys = list(result["fallback"].keys())
-        self.assertLess(fallback_keys.index("speech_segments"), fallback_keys.index("tool_call"))
-        self.assertEqual(fallback_keys[:4], ["emotion", "speech", "speech_segments", "tool_call"])
+        self.assertEqual(fallback_keys[:3], ["emotion", "speech", "tool_call"])
+        self.assertNotIn("speech_segments", fallback_keys)
         self.assertIn("按调用 ID 配对每个真实结果", result["system_prompt"])
         self.assertEqual(result["system_prompt"].count("按调用 ID 配对每个真实结果"), 1)
 
@@ -1143,7 +1140,8 @@ system = "semantic reinforcement system"
 
         desktop = registry.get(ClientMode.DESKTOP_PET, care_enabled=False)
         self.assertIn("emotion", desktop.fast_mode_prompt)
-        self.assertIn("speech_segments", desktop.fast_mode_prompt)
+        self.assertIn("speech", desktop.fast_mode_prompt)
+        self.assertNotIn("speech_segments", desktop.fast_mode_prompt)
         self.assertIn("tool_call", desktop.fast_mode_prompt)
         self.assertIn("memory_metadata", desktop.fast_mode_prompt)
 
@@ -1189,7 +1187,8 @@ system = "semantic reinforcement system"
 
         self.assertNotIn("state_request", result["system_prompt"])
         self.assertNotIn("affinity", result["system_prompt"])
-        self.assertIn("speech_segments", result["system_prompt"])
+        self.assertIn("speech 是给用户看的唯一正文", result["system_prompt"])
+        self.assertNotIn("speech_segments", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
 
 

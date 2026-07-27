@@ -2320,47 +2320,51 @@ class NapCatQQGateway:
 
     @staticmethod
     def _trim_segment_ending(text: str) -> str:
-        """Strip a lone sentence-ending punctuation mark from a chat bubble.
+        """Hide only an ordinary trailing Chinese full stop in QQ bubbles.
 
-        Combined marks like ？！or ！？ pass through untouched because they
-        carry deliberate emotional weight. Conversational marks（～…，）and
-        anything else are also left alone.
+        Question/exclamation marks and punctuation clusters carry meaning and
+        stay visible.  This is presentation-only: the authoritative ``speech``
+        text used by memory and TTS keeps its original punctuation.
         """
         text = str(text or "").strip()
         if not text:
             return text
-        if len(text) >= 2 and text[-2:] in ("？！", "！？"):
-            return text
-        if text[-1] in "。！？":
+        if len(text) > 1 and text.endswith("。") and text[-2] not in "。！？!?…":
             return text[:-1].strip()
         return text
 
     def render_reply_messages(self, frame: dict[str, Any]) -> list[str]:
-        messages: list[str] = []
+        segment_texts: list[str] = []
         max_segments = max(1, min(20, int(getattr(config, "QQ_REPLY_MAX_SEGMENTS", 8) or 8)))
         segments = frame.get("speech_segments")
         if isinstance(segments, list):
             for item in segments:
                 text = self._trim_segment_ending(str(item or ""))
                 if text:
-                    messages.append(text[:1800].strip())
-                if len(messages) >= max_segments:
-                    break
+                    segment_texts.append(text)
 
-        if not messages:
+        if not segment_texts:
             speech = str(frame.get("speech") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
             inferred = [self._trim_segment_ending(line) for line in speech.split("\n") if line.strip()]
-            if 1 < len(inferred) <= max_segments:
-                messages = [line[:1800].strip() for line in inferred[:max_segments]]
+            if len(inferred) > 1:
+                segment_texts = inferred
             elif speech:
-                messages = [self._trim_segment_ending(speech)[:1800].strip()]
+                segment_texts = [self._trim_segment_ending(speech)]
+
+        if len(segment_texts) > max_segments:
+            messages = [
+                *segment_texts[: max_segments - 1],
+                "\n".join(segment_texts[max_segments - 1 :]).strip(),
+            ]
+        else:
+            messages = segment_texts
 
         code_snippet = str(frame.get("code_snippet") or "").strip()
         if code_snippet:
             if messages:
-                messages[-1] = f"{messages[-1]}\n\n{code_snippet}".strip()[:1800].strip()
+                messages[-1] = f"{messages[-1]}\n\n{code_snippet}".strip()
             else:
-                messages.append(code_snippet[:1800].strip())
+                messages.append(code_snippet)
         return [message for message in messages if message]
 
     def send_replies(self, context: QQMessageContext, messages: list[str]) -> dict[str, Any]:

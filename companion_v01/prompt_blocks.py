@@ -31,7 +31,7 @@ COMMON_RESPONSE_BLOCKS = (
     "json_object_only",
     "mode_schema_contract",
     "field_order",
-    "reply_bubbles",
+    "speech_streaming",
     "code_snippet",
     "status_choices",
     "tool_call",
@@ -90,16 +90,16 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="field_order",
                     text=(
-                        "输出最终 JSON 时，请先完整输出 emotion，再输出 speech 和 speech_segments，"
+                        "输出最终 JSON 时，请先完整输出 emotion，再输出 speech，"
                         "紧接着输出 tool_call，再继续输出后面的字段。"
                     ),
                 ),
                 PromptBlock(
-                    id="reply_bubbles",
+                    id="speech_streaming",
                     text=(
-                        "speech 是兼容文本；单气泡回复直接填写 speech，并让 speech_segments 为空数组。\n"
-                        "如果本轮适合像即时聊天一样连续发 2 到 3 个小气泡，填写 speech_segments，speech 可以留空；系统会把 speech_segments 合并回 speech。\n"
-                        "speech_segments 最多 3 条，每条都应是自然完整的小气泡，不要把同一句话硬拆碎，也不要和 speech 重复写同一整段。"
+                        "speech 是给用户看的唯一正文，必须完整填写，不要另造分段正文。\n"
+                        "使用当前输出语言自然、清晰的句末标点；每个可独立朗读的完整意思应以合适的句末标点或换行结束，"
+                        "方便系统边生成边展示或播放。不要为了分段把同一句话硬拆碎。"
                     ),
                 ),
                 PromptBlock(
@@ -115,7 +115,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="tool_call",
                     text=(
-                        "tool_call 是兼容字段，必须放在 speech_segments 之后。\n"
+                        "tool_call 是兼容字段，必须放在 speech 之后。\n"
                         "请求中直接附带的工具要走真实工具调用，此字段保持 null；"
                         "只有“兼容 JSON 工具”清单明确给出工具及格式时，才在这里一次调用一个。\n"
                         "不需要兼容工具、没有兼容清单或正在等待真实工具结果时都输出 null。"

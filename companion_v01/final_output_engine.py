@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import config
-from memcore import coerce_memory_metadata
+from memcore import coerce_memory_metadata, segment_speech
 
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from .persona_config import PERSONA
@@ -133,9 +133,12 @@ def normalize_final_output(
                 if any(kw in user_text for kw in keywords):
                     normalized["activity"] = normalize_activity_action({"action": action, "target": "current"})
                     break
+    # Model-visible output has one textual authority: ``speech``.  Keep
+    # ``speech_segments`` only as a derived compatibility projection for
+    # clients that still render or synthesize one sentence at a time.
+    normalized.pop("speech_segments", None)
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
-        speech_segments=normalized.get("speech_segments"),
         fallback_to_default=not bool(
             normalized.get("tool_call")
             or normalized.get(NATIVE_TOOL_CALL_FIELD)
@@ -261,34 +264,19 @@ def extract_memory_search_terms(final_output: dict[str, Any]) -> list[str]:
 def normalize_speech_payload(
     *,
     speech: Any,
-    speech_segments: Any,
     fallback_to_default: bool = True,
 ) -> tuple[str, list[str]]:
-    segments: list[str] = []
-    if isinstance(speech_segments, list):
-        for item in speech_segments:
-            value = item
-            if isinstance(item, dict):
-                value = item.get("speech") or item.get("text") or ""
-            text = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
-            if not text:
-                continue
-            segments.append(text[:500])
-            if len(segments) >= 3:
-                break
-
-    if segments:
-        return "\n".join(segments), segments
-
     text = str(speech or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         if not fallback_to_default:
             return "", []
         text = PERSONA.final_fallback_speech
-    inferred_segments = [line.strip() for line in text.split("\n") if line.strip()]
-    if 1 < len(inferred_segments) <= 3:
-        return "\n".join(inferred_segments), inferred_segments
-    return text, [text]
+    return text, segment_speech(
+        text,
+        min_chars=1,
+        max_chars=180,
+        max_segments=None,
+    )
 
 
 def apply_persona_state_to_final_output(

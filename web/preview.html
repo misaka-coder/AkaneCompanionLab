@@ -442,7 +442,6 @@
           payload.speech_segments
             .map((segment) => String(segment || "").trim())
             .filter(Boolean)
-            .slice(0, 3)
             .forEach((speech) => {
               normalized.push({
                 speaker: defaultSpeakerName,

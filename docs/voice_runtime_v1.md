@@ -90,6 +90,27 @@ Thinking Agent       # 正式回答、MemCore、检索和工具
 Interaction Kernel 只报告和执行设备事实。Turn Controller 结合声学、转写和
 当前活动做轻量语义决策。Thinking Agent 不承担毫秒级声卡控制。
 
+### 2.6 单一正文与派生语音单元
+
+模型回复只有一个正文权威：`speech`。模型不再同时填写
+`speech_segments`，避免两个字段内容不一致、互相覆盖或恢复时选错正文。
+
+宿主使用 MemCore 的公共分段器，从流式 `speech` 中按当前语言的自然句末
+标点和换行派生语音单元。中文的 `。！？`、英文的 `.?!`、标点簇和省略号
+都属于分段线索；它们不是另一份回复正文。
+
+```text
+model speech
+  → StreamingSpeechParser
+  → speech_unit / 临时客户端 speech_segments 投影
+  → TTS 与有序播放
+```
+
+派生单元只服务于低延迟展示、TTS 和播放调度，不能单独写成第二份 MemCore
+正文。完整 `speech` 连同原始标点仍用于最终回复、记忆和中断恢复。聊天气泡
+可以在普通句末隐藏单个中文句号，但 `？/！/?/!`、单独标点和 `？！/!?`
+等标点簇必须保留；TTS 与记忆不得使用这种展示裁剪文本。
+
 ## 3. Voice Transaction
 
 每次用户开口都拥有一个稳定的 `voice_turn_id`。一次语音轮次包含多个阶段，
@@ -164,7 +185,7 @@ status: still_listening
     "input_handling": "take_over",
     "response_preparation": "speculative"
   },
-  "speech_segments": [],
+  "speech": "",
   "candidate": {
     "candidate_id": "c17",
     "purpose": "prepare_reply",
@@ -416,7 +437,7 @@ final_commit_ms
 
 ### Slice A：文本流模拟
 
-- 使用现有文本模型和 `speech_segments`；
+- 使用现有文本模型的单一 `speech` 正文，并由系统派生语音单元；
 - 模拟播放时间和语音单元中断；
 - 验证 candidate、generation、delivery 状态和 MemCore 渲染；
 - 不接真实麦克风。

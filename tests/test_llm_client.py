@@ -1669,7 +1669,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
         self.assertEqual(result["speech"], "我先查一下。")
-        self.assertEqual(result["speech_segments"], ["我先查一下。"])
+        self.assertNotIn("speech_segments", result)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
 
     def test_llm_runtime_preserves_all_native_tool_calls_in_provider_order(self) -> None:

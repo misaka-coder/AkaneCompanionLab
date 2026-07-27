@@ -125,6 +125,39 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertEqual(messages, ["我先说一句", "代码在这里\n\nprint('hi')"])
 
+    def test_trim_segment_ending_only_hides_plain_chinese_full_stop(self) -> None:
+        trim = NapCatQQGateway._trim_segment_ending
+
+        self.assertEqual(trim("好的。"), "好的")
+        self.assertEqual(trim("嗯？"), "嗯？")
+        self.assertEqual(trim("真的！"), "真的！")
+        self.assertEqual(trim("嗯？！"), "嗯？！")
+        self.assertEqual(trim("嗯？？"), "嗯？？")
+        self.assertEqual(trim("？"), "？")
+        self.assertEqual(trim("。"), "。")
+        self.assertEqual(trim("嗯。。"), "嗯。。")
+
+    @patch("companion_v01.qq_gateway.config.QQ_REPLY_MAX_SEGMENTS", 3, create=True)
+    def test_render_reply_messages_merges_tail_instead_of_dropping_it(self) -> None:
+        gateway = NapCatQQGateway()
+
+        messages = gateway.render_reply_messages(
+            {
+                "speech": "第一句。第二句。第三句。第四句。第五句。",
+                "speech_segments": ["第一句。", "第二句。", "第三句。", "第四句。", "第五句。"],
+            }
+        )
+
+        self.assertEqual(messages, ["第一句", "第二句", "第三句\n第四句\n第五句"])
+
+    def test_render_reply_messages_does_not_truncate_long_speech(self) -> None:
+        gateway = NapCatQQGateway()
+        long_speech = "很长的回复" * 400
+
+        messages = gateway.render_reply_messages({"speech": long_speech, "speech_segments": [long_speech]})
+
+        self.assertEqual(messages, [long_speech])
+
     def test_duplicate_message_id_is_ignored(self) -> None:
         gateway = NapCatQQGateway()
         event = {
