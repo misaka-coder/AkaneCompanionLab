@@ -8,13 +8,21 @@ from typing import Any
 from companion_v01.voice_runtime import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
+    VoiceCommandReceiptLoadResult,
+    VoiceCommandReceiptRecord,
     VoiceHostPortResult,
     VoiceProjectionOutboxLoadResult,
     VoiceResponseStreamBridge,
     VoiceTextArtifactResult,
 )
 from companion_v01.llm_runtime import _TopLevelJSONStreamTap
-from voicecore import InputTurnStatus, ResponseStatus, SpeechUnitStatus
+from voicecore import (
+    InputTurnStatus,
+    ResponseStatus,
+    SpeechUnitStatus,
+    voice_command_to_dict,
+    voice_event_to_dict,
+)
 from voicecore.testing import EventFactory
 
 
@@ -26,6 +34,7 @@ class _FakeJournal:
         self.projection_records: dict[str, dict[str, Any]] = {}
         self.delivered_projection_ids: set[str] = set()
         self.acknowledgement_failure_reason = ""
+        self.command_receipts: dict[str, VoiceCommandReceiptRecord] = {}
 
     def append_transition(
         self,
@@ -67,6 +76,88 @@ class _FakeJournal:
         if projection_id in self.delivered_projection_ids:
             return VoiceHostPortResult(status="duplicate")
         self.delivered_projection_ids.add(projection_id)
+        return VoiceHostPortResult.succeeded()
+
+    def begin_command(self, command_record: Mapping[str, Any]) -> VoiceHostPortResult:
+        command = dict(command_record)
+        command_id = str(command["command_id"])
+        existing = self.command_receipts.get(command_id)
+        if existing is not None:
+            if dict(existing.command_record) != command:
+                return VoiceHostPortResult.failed("fake_command_receipt_conflict")
+            if existing.phase == "executing":
+                return VoiceHostPortResult(status="duplicate")
+            if existing.phase == "released":
+                self.command_receipts[command_id] = VoiceCommandReceiptRecord(
+                    phase="executing",
+                    command_record=command,
+                )
+                return VoiceHostPortResult.succeeded()
+            return VoiceHostPortResult.failed("fake_command_receipt_has_result")
+        self.command_receipts[command_id] = VoiceCommandReceiptRecord(
+            phase="executing",
+            command_record=command,
+        )
+        return VoiceHostPortResult.succeeded()
+
+    def store_command_observations(
+        self,
+        command_id: str,
+        observation_records: tuple[Mapping[str, Any], ...],
+    ) -> VoiceHostPortResult:
+        existing = self.command_receipts.get(command_id)
+        if existing is None:
+            return VoiceHostPortResult.failed("fake_command_receipt_missing")
+        normalized = tuple(dict(record) for record in observation_records)
+        if existing.phase in {"observations_pending", "completed"}:
+            if existing.observation_records == normalized:
+                return VoiceHostPortResult(status="duplicate")
+            return VoiceHostPortResult.failed("fake_command_observation_conflict")
+        if existing.phase != "executing":
+            return VoiceHostPortResult.failed("fake_command_receipt_phase_conflict")
+        self.command_receipts[command_id] = VoiceCommandReceiptRecord(
+            phase="observations_pending",
+            command_record=existing.command_record,
+            observation_records=normalized,
+        )
+        return VoiceHostPortResult.succeeded()
+
+    def release_command(self, command_id: str) -> VoiceHostPortResult:
+        existing = self.command_receipts.get(command_id)
+        if existing is None:
+            return VoiceHostPortResult.failed("fake_command_receipt_missing")
+        if existing.phase == "released":
+            return VoiceHostPortResult(status="duplicate")
+        if existing.phase != "executing":
+            return VoiceHostPortResult.failed("fake_command_receipt_phase_conflict")
+        self.command_receipts[command_id] = VoiceCommandReceiptRecord(
+            phase="released",
+            command_record=existing.command_record,
+        )
+        return VoiceHostPortResult.succeeded()
+
+    def load_unfinished_commands(self) -> VoiceCommandReceiptLoadResult:
+        return VoiceCommandReceiptLoadResult.succeeded(
+            tuple(
+                receipt
+                for receipt in self.command_receipts.values()
+                if receipt.phase in {"executing", "observations_pending"}
+            )
+        )
+
+    def mark_command_completed(self, command_id: str) -> VoiceHostPortResult:
+        existing = self.command_receipts.get(command_id)
+        if existing is None:
+            return VoiceHostPortResult.failed("fake_command_receipt_missing")
+        if existing.phase == "completed":
+            return VoiceHostPortResult(status="duplicate")
+        if existing.phase != "observations_pending":
+            return VoiceHostPortResult.failed("fake_command_receipt_phase_conflict")
+        self.command_receipts[command_id] = VoiceCommandReceiptRecord(
+            phase="completed",
+            command_record=existing.command_record,
+            observation_records=existing.observation_records,
+        )
         return VoiceHostPortResult.succeeded()
 
 
@@ -124,6 +215,7 @@ class _FakeAudioCommandExecutor:
         self.command_records: list[dict[str, Any]] = []
         self.snapshot_records: list[dict[str, Any]] = []
         self.raise_error = False
+        self.results_by_idempotency_key: dict[str, VoiceCommandExecutionResult] = {}
 
     def execute(
         self,
@@ -142,19 +234,22 @@ class _FakeAudioCommandExecutor:
         self.snapshot_records.append(snapshot)
 
         if command_kind == "start_response_generation" and not payload.get("response_id"):
-            return VoiceCommandExecutionResult.succeeded(
-                self.factory.make(
-                    "voice.response.created",
-                    voice_turn_id=str(payload["voice_turn_id"]),
-                    response_id="response-1",
-                    turn_revision=int(payload["turn_revision"]),
-                    response_generation=1,
-                    payload={
-                        "command_id": command_id,
-                        "purpose": str(payload.get("purpose") or "content"),
-                        "commitment": "committed",
-                    },
-                )
+            return self._remember(
+                command,
+                VoiceCommandExecutionResult.succeeded(
+                    self.factory.make(
+                        "voice.response.created",
+                        voice_turn_id=str(payload["voice_turn_id"]),
+                        response_id="response-1",
+                        turn_revision=int(payload["turn_revision"]),
+                        response_generation=1,
+                        payload={
+                            "command_id": command_id,
+                            "purpose": str(payload.get("purpose") or "content"),
+                            "commitment": "committed",
+                        },
+                    )
+                ),
             )
 
         if command_kind == "start_response_generation":
@@ -164,11 +259,14 @@ class _FakeAudioCommandExecutor:
                 "turn_revision": int(payload["turn_revision"]),
                 "response_generation": int(payload["response_generation"]),
             }
-            return VoiceCommandExecutionResult.succeeded(
-                self.factory.make(
-                    "voice.response.generation_started",
-                    **common,
-                    payload={"command_id": command_id},
+            return self._remember(
+                command,
+                VoiceCommandExecutionResult.succeeded(
+                    self.factory.make(
+                        "voice.response.generation_started",
+                        **common,
+                        payload={"command_id": command_id},
+                    ),
                 ),
             )
 
@@ -182,15 +280,19 @@ class _FakeAudioCommandExecutor:
                 "turn_revision": int(response["source_turn_revision"]),
                 "response_generation": int(payload["response_generation"]),
             }
-            return VoiceCommandExecutionResult.succeeded(
-                self.factory.make("voice.tts.started", **common, payload={"command_id": command_id}),
-                self.factory.make(
-                    "voice.tts.ready",
-                    **common,
-                    payload={
-                        "audio_artifact_ref": "audio:fake-1",
-                        "duration_ms": 640,
-                    },
+            return self._remember(
+                command,
+                VoiceCommandExecutionResult.succeeded(
+                    self.factory.make("voice.tts.started", **common),
+                    self.factory.make(
+                        "voice.tts.ready",
+                        **common,
+                        payload={
+                            "command_id": command_id,
+                            "audio_artifact_ref": "audio:fake-1",
+                            "duration_ms": 640,
+                        },
+                    ),
                 ),
             )
 
@@ -204,25 +306,43 @@ class _FakeAudioCommandExecutor:
                 "turn_revision": int(response["source_turn_revision"]),
                 "response_generation": int(payload["response_generation"]),
             }
-            return VoiceCommandExecutionResult.succeeded(
-                self.factory.make(
-                    "voice.playback.enqueued",
-                    **common,
-                    payload={"command_id": command_id},
-                ),
-                self.factory.make(
-                    "voice.playback.started",
-                    **common,
-                    payload={"resume_token": "fake-resume-1"},
-                ),
-                self.factory.make(
-                    "voice.playback.completed",
-                    **common,
-                    payload={"played_ms": 640},
+            return self._remember(
+                command,
+                VoiceCommandExecutionResult.succeeded(
+                    self.factory.make("voice.playback.enqueued", **common),
+                    self.factory.make(
+                        "voice.playback.started",
+                        **common,
+                        payload={"resume_token": "fake-resume-1"},
+                    ),
+                    self.factory.make(
+                        "voice.playback.completed",
+                        **common,
+                        payload={"command_id": command_id, "played_ms": 640},
+                    ),
                 ),
             )
 
         return VoiceCommandExecutionResult.failed("fake_command_unsupported")
+
+    def recover(
+        self,
+        command_record: Mapping[str, Any],
+        _snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult:
+        command = dict(command_record)
+        result = self.results_by_idempotency_key.get(str(command.get("idempotency_key") or ""))
+        if result is None:
+            return VoiceCommandExecutionResult.not_started("fake_command_not_started")
+        return result
+
+    def _remember(
+        self,
+        command_record: Mapping[str, Any],
+        result: VoiceCommandExecutionResult,
+    ) -> VoiceCommandExecutionResult:
+        self.results_by_idempotency_key[str(command_record.get("idempotency_key") or "")] = result
+        return result
 
 
 class VoiceRuntimeHostTests(unittest.TestCase):
@@ -445,6 +565,102 @@ class VoiceRuntimeHostTests(unittest.TestCase):
         self.assertNotEqual(tuple(self.host.snapshot.pending_commands), first_command_ids)
         self.assertEqual(len(self.executor.command_kinds), 1)
         self.assertFalse(driven.quiescent)
+
+    def test_multi_observation_receipt_recovers_without_reexecuting_command(self) -> None:
+        self._start_fake_response()
+        self._accept(
+            "voice.speech_unit.declared",
+            voice_turn_id="turn-1",
+            response_id="response-1",
+            speech_unit_id="speech-unit-1",
+            turn_revision=2,
+            response_generation=1,
+            payload={
+                "ordinal": 0,
+                "purpose": "content",
+                "text_artifact_ref": "text:durable-unit-1",
+            },
+        )
+        command = next(
+            command for command in self.host.snapshot.pending_commands.values() if command.command_kind == "start_tts"
+        )
+        self.assertTrue(self.journal.begin_command(voice_command_to_dict(command)).ok)
+        execution = self.host.execute_command(command)
+        self.assertEqual(execution.status, "succeeded")
+        self.assertEqual(len(execution.observations), 2)
+        self.assertNotIn("command_id", execution.observations[0].payload)
+        self.assertEqual(
+            execution.observations[-1].payload["command_id"],
+            command.command_id,
+        )
+        self.assertTrue(
+            self.journal.store_command_observations(
+                command.command_id,
+                tuple(voice_event_to_dict(observation) for observation in execution.observations),
+            ).ok
+        )
+        first = self.host.accept_event(execution.observations[0])
+        self.assertTrue(first.accepted)
+        self.assertIn(command.command_id, self.host.snapshot.pending_commands)
+
+        recovered_host = AkaneVoiceRuntimeHost(
+            conversation_id=self.factory.conversation_id,
+            conversation_generation=1,
+            journal=self.journal,
+            projection_port=self.projections,
+            command_executor=self.executor,
+            capability_snapshot={"playback_interrupt": True},
+            restored_snapshot=self.host.snapshot,
+        )
+        recovered = recovered_host.drive_once()
+
+        self.assertEqual(recovered.status, "succeeded")
+        self.assertEqual(recovered.command_results, ())
+        self.assertEqual(
+            [item.command_kind for item in recovered_host.snapshot.pending_commands.values()],
+            ["enqueue_playback"],
+        )
+        self.assertEqual(
+            recovered_host.snapshot.speech_units["speech-unit-1"].state,
+            SpeechUnitStatus.READY,
+        )
+        self.assertEqual(self.executor.command_kinds.count("start_tts"), 1)
+        self.assertEqual(
+            self.journal.command_receipts[command.command_id].phase,
+            "completed",
+        )
+
+    def test_unknown_executor_outcome_is_recovered_before_safe_retry(self) -> None:
+        self._commit_fake_input()
+        command_id = next(iter(self.host.snapshot.pending_commands))
+        self.executor.raise_error = True
+
+        failed = self.host.drive_once()
+
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(
+            self.journal.command_receipts[command_id].phase,
+            "executing",
+        )
+        self.assertEqual(self.executor.command_kinds, [])
+
+        self.executor.raise_error = False
+        self.executor.recover = None
+        blocked = self.host.drive_once()
+
+        self.assertEqual(blocked.status, "deferred")
+        self.assertEqual(blocked.reason, "command_recovery_unavailable")
+        self.assertEqual(self.executor.command_kinds, [])
+
+        del self.executor.recover
+        recovered = self.host.drive_once()
+
+        self.assertEqual(recovered.status, "succeeded")
+        self.assertEqual(self.executor.command_kinds, ["start_response_generation"])
+        self.assertEqual(
+            self.journal.command_receipts[command_id].phase,
+            "completed",
+        )
 
     def test_journal_failure_prevents_snapshot_and_side_effects(self) -> None:
         self.journal.failure_reason = "fake_journal_unavailable"

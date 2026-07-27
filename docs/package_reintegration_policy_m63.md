@@ -518,6 +518,10 @@ Current Akane use:
 - pending projections are delivered at least once by stable `projection_id`
   and fence later model/audio commands until the missing trigger facts are
   acknowledged;
+- command intent and complete observation batches are persisted as host-owned
+  receipts; restart replays stable observation event ids, while an unknown
+  in-flight effect requires executor recovery by VoiceCore's
+  `idempotency_key` instead of blind re-execution;
 - no `/asr`, `/tts`, QQ, desktop-pet, or model prompt path is activated by this
   slice.
 

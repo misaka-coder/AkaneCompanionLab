@@ -476,6 +476,18 @@ LLMRuntime / MemCore speech_segment
   状态已推进但 MemCore/宿主仍缺少触发事实；
 - 重放只重建权威 snapshot，不盲目重发全部历史 projection；只补偿 outbox 中
   尚未确认的记录。若投影已送达但确认前崩溃，接收端的幂等键会消除重复副作用。
+- Host 在调用 command executor 前先持久化 command intent；executor 成功返回
+  后，整批 observation 必须先作为 command receipt 落盘，再逐条交给 VoiceCore；
+- 一个 command 可以返回任意数量的 observation，但只有批次最后一条携带
+  `payload.command_id` 作为完成确认。中间 observation 使用原有 causation /
+  correlation，不得提前清除 pending command；
+- 若重启时 receipt 已有 observation 批次，Host 直接按原 `event_id` 补偿，不再
+  重做 TTS、播放或模型请求；若只留下 `executing` intent，则 executor 必须按
+  `idempotency_key` 查询真实结果。无法确认时结构化停在
+  `command_recovery_unavailable`，不能盲目重试可见副作用；
+- executor 返回 `deferred/failed` 但没有 observation 时，契约上表示外部副作用
+  尚未提交，Host 才可释放 intent 供以后安全重试；结果不确定时必须返回
+  unknown，而不能伪装成普通失败。
 
 这些端口目前没有在 BotRuntime 或路由中构造。它们没有接入真实 `/asr`、
 `/tts`、QQ、桌宠或生产模型路由，也没有替换现有文件式语音能力。

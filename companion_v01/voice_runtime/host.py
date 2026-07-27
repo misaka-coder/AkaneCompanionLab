@@ -15,7 +15,9 @@ from voicecore import (
     reduce_event,
     snapshot_to_dict,
     validate_snapshot,
+    voice_command_from_dict,
     voice_command_to_dict,
+    voice_event_from_dict,
     voice_event_to_dict,
 )
 
@@ -45,6 +47,7 @@ class VoiceCommandExecutionResult:
     reason: str = ""
     retryable: bool = False
     observations: tuple[VoiceEvent, ...] = ()
+    outcome_known: bool = True
 
     @classmethod
     def succeeded(cls, *observations: VoiceEvent) -> VoiceCommandExecutionResult:
@@ -57,6 +60,19 @@ class VoiceCommandExecutionResult:
     @classmethod
     def failed(cls, reason: str, *, retryable: bool = False) -> VoiceCommandExecutionResult:
         return cls(status="failed", reason=reason, retryable=retryable)
+
+    @classmethod
+    def unknown(cls, reason: str) -> VoiceCommandExecutionResult:
+        return cls(
+            status="failed",
+            reason=reason,
+            retryable=True,
+            outcome_known=False,
+        )
+
+    @classmethod
+    def not_started(cls, reason: str = "") -> VoiceCommandExecutionResult:
+        return cls(status="not_started", reason=reason, retryable=True)
 
 
 @dataclass(frozen=True)
@@ -87,6 +103,41 @@ class VoiceProjectionOutboxLoadResult:
         return cls(status="failed", reason=reason, retryable=retryable)
 
 
+@dataclass(frozen=True)
+class VoiceCommandReceiptRecord:
+    phase: str
+    command_record: Mapping[str, Any]
+    observation_records: tuple[Mapping[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class VoiceCommandReceiptLoadResult:
+    status: str
+    reason: str = ""
+    retryable: bool = False
+    records: tuple[VoiceCommandReceiptRecord, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "succeeded"
+
+    @classmethod
+    def succeeded(
+        cls,
+        records: tuple[VoiceCommandReceiptRecord, ...] = (),
+    ) -> VoiceCommandReceiptLoadResult:
+        return cls(status="succeeded", records=records)
+
+    @classmethod
+    def failed(
+        cls,
+        reason: str,
+        *,
+        retryable: bool = False,
+    ) -> VoiceCommandReceiptLoadResult:
+        return cls(status="failed", reason=reason, retryable=retryable)
+
+
 class VoiceRuntimeJournal(Protocol):
     """Durably commit accepted events and their deterministic projections.
 
@@ -105,6 +156,20 @@ class VoiceRuntimeJournal(Protocol):
 
     def mark_projection_delivered(self, projection_id: str) -> VoiceHostPortResult: ...
 
+    def begin_command(self, command_record: Mapping[str, Any]) -> VoiceHostPortResult: ...
+
+    def store_command_observations(
+        self,
+        command_id: str,
+        observation_records: tuple[Mapping[str, Any], ...],
+    ) -> VoiceHostPortResult: ...
+
+    def release_command(self, command_id: str) -> VoiceHostPortResult: ...
+
+    def load_unfinished_commands(self) -> VoiceCommandReceiptLoadResult: ...
+
+    def mark_command_completed(self, command_id: str) -> VoiceHostPortResult: ...
+
 
 class VoiceProjectionPort(Protocol):
     def emit(self, projection_record: Mapping[str, Any]) -> VoiceHostPortResult: ...
@@ -112,6 +177,12 @@ class VoiceProjectionPort(Protocol):
 
 class VoiceCommandExecutor(Protocol):
     def execute(
+        self,
+        command_record: Mapping[str, Any],
+        snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult: ...
+
+    def recover(
         self,
         command_record: Mapping[str, Any],
         snapshot_record: Mapping[str, Any],
@@ -142,10 +213,16 @@ class VoiceHostDriveResult:
     pending_command_ids: tuple[str, ...]
     pending_projection_ids: tuple[str, ...] = ()
     projection_drain_result: VoiceProjectionDrainResult | None = None
+    command_receipt_result: VoiceCommandReceiptDrainResult | None = None
 
     @property
     def quiescent(self) -> bool:
-        return self.status == "succeeded" and not self.pending_command_ids and not self.pending_projection_ids
+        return (
+            self.status == "succeeded"
+            and not self.pending_command_ids
+            and not self.pending_projection_ids
+            and (self.command_receipt_result is None or self.command_receipt_result.quiescent)
+        )
 
 
 @dataclass(frozen=True)
@@ -159,6 +236,18 @@ class VoiceProjectionDrainResult:
     @property
     def quiescent(self) -> bool:
         return self.status == "succeeded" and not self.pending_projection_ids
+
+
+@dataclass(frozen=True)
+class VoiceCommandReceiptDrainResult:
+    status: str
+    reason: str
+    dispatch_results: tuple[VoiceHostDispatchResult, ...] = ()
+    pending_receipt_command_ids: tuple[str, ...] = ()
+
+    @property
+    def quiescent(self) -> bool:
+        return self.status == "succeeded" and not self.pending_receipt_command_ids
 
 
 class AkaneVoiceRuntimeHost:
@@ -255,19 +344,73 @@ class AkaneVoiceRuntimeHost:
                 snapshot_to_dict(self.snapshot),
             )
         except Exception:
-            return VoiceCommandExecutionResult.failed("command_executor_failed", retryable=True)
+            return VoiceCommandExecutionResult.unknown("command_executor_failed")
+        return self._validate_command_execution_result(
+            command=command,
+            result=result,
+            allow_not_started=False,
+        )
+
+    def _recover_command(self, command: VoiceCommand) -> VoiceCommandExecutionResult:
+        recover = getattr(self.command_executor, "recover", None)
+        if not callable(recover):
+            return VoiceCommandExecutionResult(
+                status="deferred",
+                reason="command_recovery_unavailable",
+                retryable=True,
+                outcome_known=False,
+            )
+        try:
+            result = recover(
+                voice_command_to_dict(command),
+                snapshot_to_dict(self.snapshot),
+            )
+        except Exception:
+            return VoiceCommandExecutionResult(
+                status="deferred",
+                reason="command_recovery_failed",
+                retryable=True,
+                outcome_known=False,
+            )
+        return self._validate_command_execution_result(
+            command=command,
+            result=result,
+            allow_not_started=True,
+        )
+
+    @staticmethod
+    def _validate_command_execution_result(
+        *,
+        command: VoiceCommand,
+        result: Any,
+        allow_not_started: bool,
+    ) -> VoiceCommandExecutionResult:
         if not isinstance(result, VoiceCommandExecutionResult):
-            return VoiceCommandExecutionResult.failed("invalid_command_executor_result")
-        if result.status not in {"succeeded", "deferred", "failed"}:
-            return VoiceCommandExecutionResult.failed("invalid_command_executor_status")
+            return VoiceCommandExecutionResult.unknown("invalid_command_executor_result")
+        allowed_statuses = {"succeeded", "deferred", "failed"}
+        if allow_not_started:
+            allowed_statuses.add("not_started")
+        if result.status not in allowed_statuses:
+            return VoiceCommandExecutionResult.unknown("invalid_command_executor_status")
+        if result.status == "not_started":
+            if result.observations:
+                return VoiceCommandExecutionResult.unknown("not_started_observation_conflict")
+            return result
         if result.status != "succeeded":
+            if result.observations:
+                return VoiceCommandExecutionResult.unknown("failed_command_observation_conflict")
             return result
         if not result.observations:
-            return VoiceCommandExecutionResult.failed("command_observation_missing", retryable=True)
+            return VoiceCommandExecutionResult.unknown("command_observation_missing")
         if any(not isinstance(observation, VoiceEvent) for observation in result.observations):
-            return VoiceCommandExecutionResult.failed("invalid_command_observation")
-        if not any(observation.payload.get("command_id") == command.command_id for observation in result.observations):
-            return VoiceCommandExecutionResult.failed("command_correlation_missing")
+            return VoiceCommandExecutionResult.unknown("invalid_command_observation")
+        completion_indexes = [
+            index
+            for index, observation in enumerate(result.observations)
+            if observation.payload.get("command_id") == command.command_id
+        ]
+        if completion_indexes != [len(result.observations) - 1]:
+            return VoiceCommandExecutionResult.unknown("command_completion_observation_invalid")
         return result
 
     def drive_once(self) -> VoiceHostDriveResult:
@@ -284,21 +427,60 @@ class AkaneVoiceRuntimeHost:
                 pending_projection_ids=projection_drain.pending_projection_ids,
                 projection_drain_result=projection_drain,
             )
+        command_receipt_result = self.drain_command_receipts()
+        dispatch_results.extend(command_receipt_result.dispatch_results)
+        if not command_receipt_result.quiescent:
+            return VoiceHostDriveResult(
+                status=command_receipt_result.status,
+                reason=command_receipt_result.reason or "command_receipt_not_drained",
+                command_results=(),
+                dispatch_results=tuple(dispatch_results),
+                pending_command_ids=tuple(self.snapshot.pending_commands),
+                pending_projection_ids=self._pending_projection_ids(dispatch_results),
+                projection_drain_result=projection_drain,
+                command_receipt_result=command_receipt_result,
+            )
+        if command_receipt_result.dispatch_results:
+            return VoiceHostDriveResult(
+                status="succeeded",
+                reason="",
+                command_results=(),
+                dispatch_results=tuple(dispatch_results),
+                pending_command_ids=tuple(self.snapshot.pending_commands),
+                pending_projection_ids=self._pending_projection_ids(dispatch_results),
+                projection_drain_result=projection_drain,
+                command_receipt_result=command_receipt_result,
+            )
         command_ids = tuple(self.snapshot.pending_commands)
+        command_receipt_issue: VoiceHostPortResult | None = None
 
         for command_id in command_ids:
             command = self.snapshot.pending_commands.get(command_id)
             if command is None:
                 continue
+            begun = self._begin_command(command)
+            if not begun.ok:
+                command_receipt_issue = begun
+                break
             execution = self.execute_command(command)
             command_results.append(execution)
-            if execution.status != "succeeded":
-                continue
-            for observation in execution.observations:
-                dispatch = self.accept_event(observation)
-                dispatch_results.append(dispatch)
-                if not dispatch.accepted:
+            if execution.status == "succeeded":
+                stored = self._store_command_observations(command, execution.observations)
+                if not stored.ok:
+                    command_receipt_issue = stored
                     break
+                command_receipt_result = self.drain_command_receipts()
+                dispatch_results.extend(command_receipt_result.dispatch_results)
+                if not command_receipt_result.quiescent:
+                    break
+                continue
+            if execution.outcome_known:
+                released = self._release_command(command.command_id)
+                if not released.ok:
+                    command_receipt_issue = released
+                    break
+            else:
+                break
 
         failed = any(result.status == "failed" for result in command_results) or any(
             result.status not in {TransitionStatus.ACCEPTED.value, TransitionStatus.DEFERRED.value}
@@ -307,14 +489,7 @@ class AkaneVoiceRuntimeHost:
         deferred = any(result.status == "deferred" for result in command_results) or any(
             result.status == TransitionStatus.DEFERRED.value for result in dispatch_results
         )
-        pending_projection_ids = tuple(
-            dict.fromkeys(
-                projection_id
-                for result in dispatch_results
-                if result.projection_drain_result is not None
-                for projection_id in result.projection_drain_result.pending_projection_ids
-            )
-        )
+        pending_projection_ids = self._pending_projection_ids(dispatch_results)
         projection_failed = any(result.reason == "projection_emit_failed" for result in dispatch_results)
         projection_deferred = any(
             result.projection_drain_result is not None and result.projection_drain_result.status == "deferred"
@@ -324,16 +499,24 @@ class AkaneVoiceRuntimeHost:
             result.projection_drain_result is not None and result.projection_drain_result.status == "failed"
             for result in dispatch_results
         )
+        receipt_failed = command_receipt_issue is not None and not command_receipt_issue.retryable
+        receipt_deferred = (
+            command_receipt_issue is not None and command_receipt_issue.retryable
+        ) or command_receipt_result.status == "deferred"
         status = (
             "failed"
-            if failed or projection_hard_failed
+            if failed or projection_hard_failed or receipt_failed
             else "deferred"
-            if deferred or projection_deferred or pending_projection_ids
+            if deferred or projection_deferred or pending_projection_ids or receipt_deferred
             else "succeeded"
         )
-        if failed or projection_hard_failed:
+        if command_receipt_issue is not None:
+            reason = command_receipt_issue.reason or "command_receipt_persist_failed"
+        elif not command_receipt_result.quiescent:
+            reason = command_receipt_result.reason or "command_receipt_not_drained"
+        elif failed or projection_hard_failed:
             reason = "voice_command_drive_failed"
-        elif deferred or projection_deferred or pending_projection_ids:
+        elif deferred or projection_deferred or pending_projection_ids or receipt_deferred:
             reason = "voice_command_drive_deferred"
         elif projection_failed:
             reason = "projection_emit_failed"
@@ -347,6 +530,142 @@ class AkaneVoiceRuntimeHost:
             pending_command_ids=tuple(self.snapshot.pending_commands),
             pending_projection_ids=pending_projection_ids,
             projection_drain_result=projection_drain,
+            command_receipt_result=command_receipt_result,
+        )
+
+    @staticmethod
+    def _pending_projection_ids(
+        dispatch_results: list[VoiceHostDispatchResult],
+    ) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                projection_id
+                for result in dispatch_results
+                if result.projection_drain_result is not None
+                for projection_id in result.projection_drain_result.pending_projection_ids
+            )
+        )
+
+    def drain_command_receipts(self) -> VoiceCommandReceiptDrainResult:
+        loaded = self._load_unfinished_commands()
+        if not loaded.ok:
+            return VoiceCommandReceiptDrainResult(
+                status="deferred" if loaded.retryable else "failed",
+                reason=loaded.reason or "command_receipt_load_failed",
+            )
+        records = tuple(loaded.records)
+        dispatch_results: list[VoiceHostDispatchResult] = []
+        for index, receipt in enumerate(records):
+            try:
+                command = voice_command_from_dict(receipt.command_record)
+            except (TypeError, ValueError):
+                return self._command_receipt_failure(
+                    reason="command_receipt_record_invalid",
+                    records=records,
+                    index=index,
+                    dispatch_results=dispatch_results,
+                )
+            observation_records = receipt.observation_records
+            if receipt.phase == "executing":
+                recovery = self._recover_command(command)
+                if recovery.status == "not_started":
+                    released = self._release_command(command.command_id)
+                    if not released.ok:
+                        return self._command_receipt_failure(
+                            reason=released.reason or "command_receipt_release_failed",
+                            records=records,
+                            index=index,
+                            dispatch_results=dispatch_results,
+                            retryable=released.retryable,
+                        )
+                    continue
+                if recovery.status != "succeeded":
+                    return self._command_receipt_failure(
+                        reason=recovery.reason or "command_recovery_deferred",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                        retryable=recovery.retryable,
+                    )
+                stored = self._store_command_observations(command, recovery.observations)
+                if not stored.ok:
+                    return self._command_receipt_failure(
+                        reason=stored.reason or "command_observation_store_failed",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                        retryable=stored.retryable,
+                    )
+                observation_records = tuple(voice_event_to_dict(observation) for observation in recovery.observations)
+            elif receipt.phase != "observations_pending":
+                return self._command_receipt_failure(
+                    reason="command_receipt_phase_invalid",
+                    records=records,
+                    index=index,
+                    dispatch_results=dispatch_results,
+                )
+
+            for observation_record in observation_records:
+                try:
+                    observation = voice_event_from_dict(observation_record)
+                except (TypeError, ValueError):
+                    return self._command_receipt_failure(
+                        reason="command_observation_record_invalid",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                    )
+                dispatch = self.accept_event(observation)
+                dispatch_results.append(dispatch)
+                if dispatch.status == TransitionStatus.DUPLICATE.value:
+                    continue
+                if not dispatch.accepted:
+                    return self._command_receipt_failure(
+                        reason=dispatch.reason or "command_observation_dispatch_failed",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                        retryable=dispatch.status == TransitionStatus.DEFERRED.value,
+                    )
+                if dispatch.projection_drain_result is not None and not dispatch.projection_drain_result.quiescent:
+                    return self._command_receipt_failure(
+                        reason=dispatch.projection_drain_result.reason or "command_observation_projection_failed",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                        retryable=dispatch.projection_drain_result.status == "deferred",
+                    )
+            completed = self._mark_command_completed(command.command_id)
+            if not completed.ok:
+                return self._command_receipt_failure(
+                    reason=completed.reason or "command_receipt_completion_failed",
+                    records=records,
+                    index=index,
+                    dispatch_results=dispatch_results,
+                    retryable=completed.retryable,
+                )
+        return VoiceCommandReceiptDrainResult(
+            status="succeeded",
+            reason="",
+            dispatch_results=tuple(dispatch_results),
+        )
+
+    @staticmethod
+    def _command_receipt_failure(
+        *,
+        reason: str,
+        records: tuple[VoiceCommandReceiptRecord, ...],
+        index: int,
+        dispatch_results: list[VoiceHostDispatchResult],
+        retryable: bool = False,
+    ) -> VoiceCommandReceiptDrainResult:
+        return VoiceCommandReceiptDrainResult(
+            status="deferred" if retryable else "failed",
+            reason=reason,
+            dispatch_results=tuple(dispatch_results),
+            pending_receipt_command_ids=tuple(
+                str(record.command_record.get("command_id") or "") for record in records[index:]
+            ),
         )
 
     def drain_projection_outbox(self) -> VoiceProjectionDrainResult:
@@ -415,6 +734,84 @@ class AkaneVoiceRuntimeHost:
             return VoiceHostPortResult.failed("invalid_journal_status")
         return result
 
+    def _begin_command(self, command: VoiceCommand) -> VoiceHostPortResult:
+        try:
+            result = self.journal.begin_command(voice_command_to_dict(command))
+        except Exception:
+            return VoiceHostPortResult.failed("command_receipt_begin_failed", retryable=True)
+        return self._validated_host_port_result(
+            result,
+            invalid_result_reason="invalid_command_receipt_begin_result",
+            invalid_status_reason="invalid_command_receipt_begin_status",
+        )
+
+    def _store_command_observations(
+        self,
+        command: VoiceCommand,
+        observations: tuple[VoiceEvent, ...],
+    ) -> VoiceHostPortResult:
+        try:
+            observation_records = tuple(voice_event_to_dict(observation) for observation in observations)
+            result = self.journal.store_command_observations(
+                command.command_id,
+                observation_records,
+            )
+        except (TypeError, ValueError):
+            return VoiceHostPortResult.failed("command_observation_not_serializable")
+        except Exception:
+            return VoiceHostPortResult.failed(
+                "command_observation_store_failed",
+                retryable=True,
+            )
+        return self._validated_host_port_result(
+            result,
+            invalid_result_reason="invalid_command_observation_store_result",
+            invalid_status_reason="invalid_command_observation_store_status",
+        )
+
+    def _release_command(self, command_id: str) -> VoiceHostPortResult:
+        try:
+            result = self.journal.release_command(command_id)
+        except Exception:
+            return VoiceHostPortResult.failed("command_receipt_release_failed", retryable=True)
+        return self._validated_host_port_result(
+            result,
+            invalid_result_reason="invalid_command_receipt_release_result",
+            invalid_status_reason="invalid_command_receipt_release_status",
+        )
+
+    def _load_unfinished_commands(self) -> VoiceCommandReceiptLoadResult:
+        try:
+            result = self.journal.load_unfinished_commands()
+        except Exception:
+            return VoiceCommandReceiptLoadResult.failed(
+                "command_receipt_load_failed",
+                retryable=True,
+            )
+        if not isinstance(result, VoiceCommandReceiptLoadResult):
+            return VoiceCommandReceiptLoadResult.failed("invalid_command_receipt_load_result")
+        if result.status not in {"succeeded", "failed"}:
+            return VoiceCommandReceiptLoadResult.failed("invalid_command_receipt_load_status")
+        if result.status == "succeeded" and any(
+            not isinstance(record, VoiceCommandReceiptRecord) for record in result.records
+        ):
+            return VoiceCommandReceiptLoadResult.failed("invalid_command_receipt_record")
+        return result
+
+    def _mark_command_completed(self, command_id: str) -> VoiceHostPortResult:
+        try:
+            result = self.journal.mark_command_completed(command_id)
+        except Exception:
+            return VoiceHostPortResult.failed(
+                "command_receipt_completion_failed",
+                retryable=True,
+            )
+        return self._validated_host_port_result(
+            result,
+            invalid_result_reason="invalid_command_receipt_completion_result",
+            invalid_status_reason="invalid_command_receipt_completion_status",
+        )
+
     def _load_pending_projections(self) -> VoiceProjectionOutboxLoadResult:
         try:
             result = self.journal.load_pending_projections()
@@ -443,6 +840,19 @@ class AkaneVoiceRuntimeHost:
             return VoiceHostPortResult.failed("invalid_projection_acknowledgement_result")
         if result.status not in {"succeeded", "duplicate", "failed"}:
             return VoiceHostPortResult.failed("invalid_projection_acknowledgement_status")
+        return result
+
+    @staticmethod
+    def _validated_host_port_result(
+        result: Any,
+        *,
+        invalid_result_reason: str,
+        invalid_status_reason: str,
+    ) -> VoiceHostPortResult:
+        if not isinstance(result, VoiceHostPortResult):
+            return VoiceHostPortResult.failed(invalid_result_reason)
+        if result.status not in {"succeeded", "duplicate", "failed"}:
+            return VoiceHostPortResult.failed(invalid_status_reason)
         return result
 
     def _emit_projection(self, projection_record: Mapping[str, Any]) -> VoiceHostPortResult:

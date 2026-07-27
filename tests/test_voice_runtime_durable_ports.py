@@ -16,7 +16,12 @@ from companion_v01.voice_runtime import (
     VoiceCommandExecutionResult,
     VoiceHostPortResult,
 )
-from voicecore import initial_snapshot, snapshot_to_dict, voice_event_to_dict
+from voicecore import (
+    initial_snapshot,
+    snapshot_to_dict,
+    voice_command_to_dict,
+    voice_event_to_dict,
+)
 from voicecore.testing import EventFactory
 
 
@@ -42,6 +47,35 @@ class _InertCommandExecutor:
         _snapshot_record: Mapping[str, Any],
     ) -> VoiceCommandExecutionResult:
         return VoiceCommandExecutionResult.deferred("durable_port_test_inert")
+
+    def recover(
+        self,
+        _command_record: Mapping[str, Any],
+        _snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult:
+        return VoiceCommandExecutionResult.not_started("durable_port_test_not_started")
+
+
+class _FailIfExecutedCommandExecutor:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+        self.recover_calls = 0
+
+    def execute(
+        self,
+        _command_record: Mapping[str, Any],
+        _snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult:
+        self.execute_calls += 1
+        return VoiceCommandExecutionResult.failed("unexpected_command_execution")
+
+    def recover(
+        self,
+        _command_record: Mapping[str, Any],
+        _snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult:
+        self.recover_calls += 1
+        return VoiceCommandExecutionResult.failed("unexpected_command_recovery")
 
 
 class VoiceRuntimeDurablePortTests(unittest.TestCase):
@@ -210,6 +244,72 @@ class VoiceRuntimeDurablePortTests(unittest.TestCase):
             self.assertEqual(recovered.projection_results[0].status, "duplicate")
             self.assertEqual(len(projections.records), 1)
             self.assertFalse(self._journal(state_dir).load_pending_projections().records)
+
+    def test_command_observation_receipt_survives_restart_without_reexecution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            factory = EventFactory()
+            journal = self._journal(state_dir)
+            host = AkaneVoiceRuntimeHost(
+                conversation_id=factory.conversation_id,
+                conversation_generation=1,
+                journal=journal,
+                projection_port=_RecordingProjectionPort(),
+                command_executor=_InertCommandExecutor(),
+                capability_snapshot={"playback_interrupt": True},
+            )
+            self._accept_committed_turn(host=host, factory=factory)
+            command = next(iter(host.snapshot.pending_commands.values()))
+            observation = factory.make(
+                "voice.response.created",
+                voice_turn_id="turn-1",
+                response_id="response-1",
+                turn_revision=1,
+                response_generation=1,
+                payload={
+                    "command_id": command.command_id,
+                    "purpose": "content",
+                    "commitment": "committed",
+                },
+            )
+            self.assertTrue(journal.begin_command(voice_command_to_dict(command)).ok)
+            self.assertTrue(
+                journal.store_command_observations(
+                    command.command_id,
+                    (voice_event_to_dict(observation),),
+                ).ok
+            )
+
+            replayed = self._journal(state_dir).replay(
+                initial_snapshot(
+                    factory.conversation_id,
+                    conversation_generation=1,
+                    capability_snapshot={"playback_interrupt": True},
+                )
+            )
+            self.assertTrue(replayed.ok, replayed)
+            executor = _FailIfExecutedCommandExecutor()
+            recovered_host = AkaneVoiceRuntimeHost(
+                conversation_id=factory.conversation_id,
+                conversation_generation=1,
+                journal=self._journal(state_dir),
+                projection_port=_RecordingProjectionPort(),
+                command_executor=executor,
+                capability_snapshot={"playback_interrupt": True},
+                restored_snapshot=replayed.replay.snapshot,
+            )
+
+            recovered = recovered_host.drive_once()
+
+            self.assertEqual(recovered.status, "succeeded")
+            self.assertEqual(executor.execute_calls, 0)
+            self.assertEqual(executor.recover_calls, 0)
+            self.assertIn("response-1", recovered_host.snapshot.responses)
+            self.assertNotIn(command.command_id, recovered_host.snapshot.pending_commands)
+            self.assertEqual(
+                self._journal(state_dir).load_unfinished_commands().records,
+                (),
+            )
 
     def test_file_journal_is_idempotent_and_rejects_conflicting_event_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
