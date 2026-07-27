@@ -520,9 +520,30 @@ capcore-adapter-speech provider session
   音频帧，也不另建输入状态机；
 - provider 失败会投影为结构化 `voice.turn.failed`，不会拿 partial 冒充 final。
 
-这一门面仍未在 `/asr`、桌宠麦克风或 BotRuntime 中构造。它使用人工 revision
-测试，不代表中文、专名、噪声、回声等真实音频准确率已经验收；用户当前不会
-感受到新的实时语音输入表现。
+2026-07-27 增补的首个真实 provider 切片：
+
+- `capcore-adapter-speech` 已实现阿里云 `fun-asr-realtime` 官方 WebSocket
+  `run-task → binary audio → result-generated → finish-task` 协议；
+- 业务空间 Host 被固定转换为
+  `wss://<workspace>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`，只接受
+  阿里云官方地域域名，不允许模型或用户文本指定任意外发地址；
+- provider 的 `sentence_end=false` 映射为 `partial`，
+  `sentence_end=true` 映射为 `stable_checkpoint`，只有 Voice Runtime 主动
+  `finalize()` 才形成一个权威 `final`；
+- 多个 provider 句子在 final 时线性合并，不把一句话的中间修订重复提交成多条
+  用户消息；
+- `DASHSCOPE_API_KEY` 只存在于 Bot 私有运行时设置和 WebSocket 握手头，不进入
+  descriptor、公开 snapshot、错误摘要、日志或 prompt；
+- Akane 已有默认关闭的 `build_voice_asr_provider()` 装配门面，并结构化区分
+  `disabled / missing_config / invalid_config / ready`。
+
+本切片仍未激活麦克风、QQ 或桌宠生产入口，也没有使用真实用户录音做云端调用。
+下一切片必须先接入 16 kHz 单声道 PCM 捕获/重采样和可重放测试夹具，再做
+脱敏音频 A/B；不能把现有 WebM 文件上传字节直接标成 PCM 发送。
+
+provider builder 仍未由 `/asr`、桌宠麦克风或 BotRuntime 调用。当前测试覆盖
+协议夹具和人工 revision，不代表中文、专名、噪声、回声等真实音频准确率已经
+验收；用户当前不会感受到新的实时语音输入表现。
 
 ### Slice C：播放和语义打断
 

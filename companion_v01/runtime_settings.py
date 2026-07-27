@@ -94,6 +94,14 @@ class BotSettingsView:
     asr_language: str = "zh"
     asr_vad_filter: bool = True
     whisper_cache_dir: str = ""
+    fun_asr_realtime_enabled: bool = False
+    dashscope_api_key: str = field(default="", repr=False)
+    dashscope_api_host: str = ""
+    fun_asr_realtime_model: str = "fun-asr-realtime"
+    fun_asr_audio_format: str = "pcm"
+    fun_asr_sample_rate: int = 16000
+    fun_asr_max_sentence_silence: int = 800
+    fun_asr_vocabulary_id: str = ""
     qq_tts_profile_user_id: str = "master"
     qq_voice_max_text_chars: int = 280
     qq_voice_max_segments: int = 3
@@ -203,6 +211,23 @@ class BotSettingsView:
             asr_language=_text(getattr(config_module, "ASR_LANGUAGE", "zh")) or "zh",
             asr_vad_filter=bool(getattr(config_module, "ASR_VAD_FILTER", True)),
             whisper_cache_dir=_text(getattr(config_module, "WHISPER_CACHE_DIR", "")),
+            fun_asr_realtime_enabled=bool(getattr(config_module, "FUN_ASR_REALTIME_ENABLED", False)),
+            dashscope_api_key=_text(getattr(config_module, "DASHSCOPE_API_KEY", "")),
+            dashscope_api_host=_text(getattr(config_module, "DASHSCOPE_API_HOST", "")),
+            fun_asr_realtime_model=_text(
+                getattr(config_module, "FUN_ASR_REALTIME_MODEL", "fun-asr-realtime")
+            )
+            or "fun-asr-realtime",
+            fun_asr_audio_format=_text(getattr(config_module, "FUN_ASR_AUDIO_FORMAT", "pcm")) or "pcm",
+            fun_asr_sample_rate=max(
+                8000,
+                min(192000, int(getattr(config_module, "FUN_ASR_SAMPLE_RATE", 16000) or 16000)),
+            ),
+            fun_asr_max_sentence_silence=max(
+                200,
+                min(6000, int(getattr(config_module, "FUN_ASR_MAX_SENTENCE_SILENCE", 800) or 800)),
+            ),
+            fun_asr_vocabulary_id=_text(getattr(config_module, "FUN_ASR_VOCABULARY_ID", "")),
             qq_tts_profile_user_id=_safe_profile_id(
                 getattr(config_module, "QQ_TTS_PROFILE_USER_ID", "")
                 or getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "master")
@@ -276,6 +301,14 @@ class BotSettingsView:
             "asr_language",
             "asr_vad_filter",
             "whisper_cache_dir",
+            "fun_asr_realtime_enabled",
+            "dashscope_api_key",
+            "dashscope_api_host",
+            "fun_asr_realtime_model",
+            "fun_asr_audio_format",
+            "fun_asr_sample_rate",
+            "fun_asr_max_sentence_silence",
+            "fun_asr_vocabulary_id",
             "qq_tts_profile_user_id",
             "qq_voice_max_text_chars",
             "qq_voice_max_segments",
@@ -429,6 +462,14 @@ class BotSettingsView:
                 "asr": {
                     "model": self.asr_whisper_model_size,
                     "language": self.asr_language,
+                    "realtime": {
+                        "enabled": self.fun_asr_realtime_enabled,
+                        "configured": bool(self.dashscope_api_key and self.dashscope_api_host),
+                        "provider": "provider.asr.aliyun_fun_realtime",
+                        "model": self.fun_asr_realtime_model,
+                        "audio_format": self.fun_asr_audio_format,
+                        "sample_rate": self.fun_asr_sample_rate,
+                    },
                 },
             },
             "qq_voice": {
@@ -465,6 +506,7 @@ def _overlay_value(key: str, value: Any) -> Any:
         "streaming_tts_enabled",
         "gpt_sovits_streaming_mode",
         "asr_vad_filter",
+        "fun_asr_realtime_enabled",
     }:
         if not isinstance(value, bool):
             raise ValueError(f"bot_settings_boolean_required:{key}")
@@ -477,6 +519,8 @@ def _overlay_value(key: str, value: Any) -> Any:
         "qq_voice_max_text_chars",
         "qq_voice_max_segments",
         "gpt_sovits_batch_size",
+        "fun_asr_sample_rate",
+        "fun_asr_max_sentence_silence",
     }:
         if value is None and key == "gpt_sovits_batch_size":
             return None
@@ -487,6 +531,10 @@ def _overlay_value(key: str, value: Any) -> Any:
             return max(20, min(1200, parsed))
         if key == "qq_voice_max_segments":
             return max(1, min(10, parsed))
+        if key == "fun_asr_sample_rate":
+            return max(8000, min(192000, parsed))
+        if key == "fun_asr_max_sentence_silence":
+            return max(200, min(6000, parsed))
         return max(0, parsed)
     if key in {
         "vision_request_timeout",

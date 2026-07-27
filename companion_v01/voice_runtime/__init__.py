@@ -8,6 +8,11 @@ from .durable_ports import (
     VoiceTextArtifactReadResult,
 )
 from .asr_bridge import VoiceASRBridgeResult, VoiceASRSessionBridge
+from .asr_provider import (
+    FUN_ASR_REALTIME_PROVIDER_ID,
+    VoiceASRProviderResolution,
+    build_voice_asr_provider,
+)
 from .host import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
@@ -34,6 +39,7 @@ from .stream_bridge import (
 __all__ = [
     "AkaneVoiceRuntimeHost",
     "FileVoiceTextArtifactPort",
+    "FUN_ASR_REALTIME_PROVIDER_ID",
     "SqliteVoiceRuntimeJournal",
     "VoiceCommandExecutionResult",
     "VoiceCommandExecutor",
@@ -44,6 +50,7 @@ __all__ = [
     "VoiceHostDriveResult",
     "VoiceHostPortResult",
     "VoiceASRBridgeResult",
+    "VoiceASRProviderResolution",
     "VoiceASRSessionBridge",
     "VoiceProjectionDrainResult",
     "VoiceProjectionOutboxLoadResult",
@@ -57,4 +64,5 @@ __all__ = [
     "VoiceTextArtifactPort",
     "VoiceTextArtifactReadResult",
     "VoiceTextArtifactResult",
+    "build_voice_asr_provider",
 ]
