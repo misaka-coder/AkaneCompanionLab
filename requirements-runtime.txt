@@ -24,3 +24,6 @@ tzdata
 yt-dlp
 syncedlyrics
 json-repair
+# Realtime microphone PCM normalization for capcore-adapter-speech.
+numpy>=1.24,<3
+soxr>=0.5,<1

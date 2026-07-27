@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import unittest
 from dataclasses import dataclass
 
@@ -8,6 +9,7 @@ from capcore_adapter_speech import (
     ASRSessionMode,
     ASRSessionOpenResult,
     NormalizedASRSession,
+    PCMStreamNormalizer,
 )
 from companion_v01.voice_runtime import (
     VoiceASRRealtimeTurnCoordinator,
@@ -199,6 +201,83 @@ class VoiceASRRealtimeTurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         assert turn.failure is not None
         self.assertEqual(turn.failure.reason_code, "asr_provider_auth_failed")
         self.assertEqual(turn.failure.safe_public_summary, "语音识别服务鉴权失败。")
+
+    async def test_pcm_frames_normalize_before_provider_and_gap_fails_turn(self) -> None:
+        provider = _DelayedFinalProviderSession()
+        coordinator, host = self._coordinator(_Adapter(provider))
+        coordinator.pcm_normalizer = PCMStreamNormalizer(
+            input_format="s16le",
+            input_sample_rate=16000,
+            input_channels=1,
+        )
+        await coordinator.open()
+
+        accepted = await coordinator.feed_pcm_frame(
+            b"\x01\x00" * 160,
+            sequence=0,
+            audio_clock_ms=0,
+        )
+        duplicate = await coordinator.feed_pcm_frame(
+            b"\x01\x00" * 160,
+            sequence=0,
+            audio_clock_ms=0,
+        )
+        failed = await coordinator.feed_pcm_frame(
+            b"\x01\x00" * 160,
+            sequence=2,
+            audio_clock_ms=20,
+        )
+
+        self.assertTrue(accepted.ok)
+        assert accepted.pcm_frame is not None
+        self.assertEqual(accepted.pcm_frame.output_samples, 160)
+        self.assertEqual(provider.feed_count, 1)
+        self.assertEqual(duplicate.status, "duplicate")
+        self.assertEqual(provider.feed_count, 1)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.reason, "pcm_sequence_gap")
+        self.assertTrue(provider.cancelled)
+        turn = host.snapshot.input_turns["turn-realtime-1"]
+        self.assertEqual(turn.state, InputTurnStatus.FAILED)
+        assert turn.failure is not None
+        self.assertEqual(turn.failure.reason_code, "pcm_sequence_gap")
+        self.assertEqual(turn.failure.safe_public_summary, "实时音频输入无效。")
+
+    async def test_pcm_filter_tail_is_sent_before_background_finalize(self) -> None:
+        provider = _DelayedFinalProviderSession()
+        coordinator, host = self._coordinator(_Adapter(provider))
+        coordinator.pcm_normalizer = PCMStreamNormalizer(
+            input_format="f32le",
+            input_sample_rate=48000,
+            input_channels=1,
+        )
+        await coordinator.open()
+
+        fed = await coordinator.feed_pcm_frame(
+            struct.pack("<f", 0.1) * 4800,
+            sequence=0,
+            audio_clock_ms=0,
+        )
+        started = await coordinator.start_finalize_pcm()
+
+        self.assertTrue(fed.ok)
+        self.assertEqual(started.status, "started")
+        self.assertTrue(started.final_pending)
+        self.assertGreaterEqual(provider.feed_count, 2)
+        assert started.early_candidate is not None
+        self.assertEqual(started.early_candidate.stable_text, "你好，伙伴")
+        self.assertEqual(
+            host.snapshot.input_turns["turn-realtime-1"].state,
+            InputTurnStatus.CAPTURING,
+        )
+
+        provider.allow_final.set()
+        settled = await coordinator.settle_finalize()
+        self.assertTrue(settled.ok)
+        self.assertEqual(
+            host.snapshot.input_turns["turn-realtime-1"].state,
+            InputTurnStatus.COMMITTED,
+        )
 
 
 if __name__ == "__main__":

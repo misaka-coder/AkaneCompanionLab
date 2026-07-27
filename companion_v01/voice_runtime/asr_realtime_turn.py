@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Any
 
@@ -11,6 +11,8 @@ from capcore_adapter_speech import (
     ASRSessionUpdate,
     ASRTranscriptRevision,
     NormalizedASRSession,
+    PCMFrameResult,
+    PCMStreamNormalizer,
 )
 
 from .asr_bridge import VoiceASRBridgeResult, VoiceASRSessionBridge
@@ -35,6 +37,7 @@ class VoiceASRRealtimeTurnResult:
     early_candidate: VoiceASREarlyCandidate | None = None
     provider_update: ASRSessionUpdate | None = None
     bridge_result: VoiceASRBridgeResult | None = None
+    pcm_frame: PCMFrameResult | None = None
     final_pending: bool = False
     retryable: bool = False
     provider_status: str = ""
@@ -62,12 +65,14 @@ class VoiceASRRealtimeTurnCoordinator:
         filename: str = "akane_voice_input.pcm",
         content_type: str = "audio/pcm",
         language: str = "",
+        pcm_normalizer: PCMStreamNormalizer | None = None,
     ) -> None:
         self.adapter = adapter
         self.bridge = bridge
         self.filename = str(filename or "akane_voice_input.pcm")
         self.content_type = str(content_type or "audio/pcm")
         self.language = str(language or "")
+        self.pcm_normalizer = pcm_normalizer
         self._open_attempted = False
         self._session: NormalizedASRSession | None = None
         self._finalize_task: asyncio.Task[ASRSessionUpdate] | None = None
@@ -147,6 +152,72 @@ class VoiceASRRealtimeTurnCoordinator:
                 retryable=True,
             )
         return self._accept_provider_update(update)
+
+    async def feed_pcm_frame(
+        self,
+        audio: bytes | bytearray | memoryview,
+        *,
+        sequence: int,
+        audio_clock_ms: int,
+    ) -> VoiceASRRealtimeTurnResult:
+        if self._session is None:
+            return VoiceASRRealtimeTurnResult(status="failed", reason="voice_asr_turn_not_open")
+        if self._finalize_task is not None:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason="voice_asr_finalize_already_started",
+                early_candidate=self._latest_candidate,
+                final_pending=self.final_pending,
+            )
+        if self.pcm_normalizer is None:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason="voice_asr_pcm_normalizer_not_configured",
+            )
+        frame = self.pcm_normalizer.feed(
+            audio,
+            sequence=sequence,
+            audio_clock_ms=audio_clock_ms,
+        )
+        if frame.status == "duplicate":
+            return VoiceASRRealtimeTurnResult(
+                status="duplicate",
+                reason=frame.reason,
+                early_candidate=self._latest_candidate,
+                pcm_frame=frame,
+                final_pending=self.final_pending,
+            )
+        if not frame.ok:
+            return await self._record_pcm_failure(frame)
+        if not frame.audio:
+            return VoiceASRRealtimeTurnResult(
+                status="accepted",
+                reason="pcm_frame_buffered",
+                early_candidate=self._latest_candidate,
+                pcm_frame=frame,
+                final_pending=self.final_pending,
+            )
+        result = await self.feed_audio(frame.audio)
+        return replace(result, pcm_frame=frame)
+
+    async def start_finalize_pcm(self) -> VoiceASRRealtimeTurnResult:
+        if self._session is None:
+            return VoiceASRRealtimeTurnResult(status="failed", reason="voice_asr_turn_not_open")
+        if self._finalize_task is not None or self._settled_result is not None:
+            return self.start_finalize()
+        if self.pcm_normalizer is None:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason="voice_asr_pcm_normalizer_not_configured",
+            )
+        tail = self.pcm_normalizer.finalize()
+        if not tail.ok:
+            return await self._record_pcm_failure(tail)
+        if tail.audio:
+            fed = await self.feed_audio(tail.audio)
+            if not fed.ok:
+                return replace(fed, pcm_frame=tail)
+        return replace(self.start_finalize(), pcm_frame=tail)
 
     def start_finalize(self) -> VoiceASRRealtimeTurnResult:
         if self._session is None:
@@ -259,6 +330,23 @@ class VoiceASRRealtimeTurnCoordinator:
             provider_status=provider_status,
             safe_public_summary=safe_public_summary,
         )
+
+    async def _record_pcm_failure(self, frame: PCMFrameResult) -> VoiceASRRealtimeTurnResult:
+        cleanup_failed = False
+        if self._session is not None:
+            try:
+                cleanup = await self._session.cancel()
+                cleanup_failed = cleanup.status == "failed"
+            except Exception:
+                cleanup_failed = True
+        update = ASRSessionUpdate.failed(
+            ASRSessionMode.STREAMING,
+            frame.reason or "pcm_input_failed",
+            retryable=frame.retryable or cleanup_failed,
+            provider_status="pcm_input",
+            safe_public_summary="实时音频输入无效。",
+        )
+        return replace(self._accept_provider_update(update), pcm_frame=frame)
 
     def _accept_provider_update(self, update: ASRSessionUpdate) -> VoiceASRRealtimeTurnResult:
         bridge_result = self.bridge.accept_update(update)

@@ -570,6 +570,19 @@ stable checkpoint
 仍必须经过 VoiceCore 的 revision fence 与 `voice.candidate.validation_result`；
 provider open/finalize 失败继续结构化写入同一语音轮，不能静默丢失。
 
+实时音频入口与旧文件 `/asr` 有意分开：
+
+- `capcore-adapter-speech.PCMStreamNormalizer` 接受带 `sequence` 和
+  `audio_clock_ms` 的 `s16le`/`f32le` 帧；
+- 输出固定为 16 kHz、单声道、little-endian `s16le`，48 kHz 等输入使用
+  有状态 libsoxr，不能把 WebM/OGG 容器字节重命名为 PCM；
+- 重复帧幂等丢弃，序号缺口、同序号内容冲突、时钟倒退和坏帧结构化失败；
+- normalizer 不拥有麦克风权限、VAD、endpointing 或模型调用；这些仍由宿主
+  输入层和 Voice Runtime 协调。
+
+因此当前桌宠的 `MediaRecorder → 整段 WebM → /asr` 行为不会被这次切片改变；
+下一切片才是让 AudioWorklet/其他捕获端逐帧接入 normalizer 和实时 ASR。
+
 ### Slice C：播放和语义打断
 
 - 加入回声消除、VAD、降音量和语义脉冲；
