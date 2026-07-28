@@ -6046,6 +6046,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
 
 async function processThinkStream(stream, turnToken) {
   let partialSpeech = "";
+  let receivedSpeechSegment = false;
   let rendered = false;
   let streamErrored = false;
   let streamErrorMessage = "";
@@ -6063,9 +6064,20 @@ async function processThinkStream(stream, turnToken) {
       applyPayloadEmotion(event);
     } else if (type === "speech_chunk") {
       const chunk = String(event?.text || "");
-      if (chunk) partialSpeech += chunk;
+      if (chunk) {
+        partialSpeech += chunk;
+        // ``speech_chunk`` has already been parsed from the model's speech
+        // field by the backend. Surface it immediately so a slow first
+        // sentence does not leave the pet frozen on the thinking ellipsis.
+        // Complete ``speech_segment`` events remain the delivery units for
+        // timed bubbles and TTS; the preview is visual only.
+        if (!receivedSpeechSegment) {
+          displayStreamingReplyPreview(partialSpeech);
+        }
+      }
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
+      if (text) receivedSpeechSegment = true;
       if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
       if (queueStreamedReplySegment(text, turnToken, event?.index) || streamingReplyText) {
         rendered = true;
@@ -6754,6 +6766,24 @@ function displayReplyBubbleText(text, { speaking = true } = {}) {
   scheduleNativeHitTestSync({ force: true });
   if (speaking) setPetMotion("speaking");
   updateActivityControls();
+}
+
+function displayStreamingReplyPreview(text) {
+  const preview = String(text || "").trim();
+  if (!preview) return false;
+
+  clearLocalInteraction();
+  window.clearTimeout(bubbleTimer);
+  bubbleKind = "reply";
+  replyDisplayActive = true;
+  setBubbleContent(preview);
+  els.bubble.classList.add("visible");
+  scheduleNativeHitTestSync({ force: true });
+  setPetMotion("speaking");
+  setRuntimeStatus("回复中", { mode: "replying" });
+  markTurnLatencyOnce("first-bubble-preview", { chars: preview.length });
+  updateActivityControls();
+  return true;
 }
 
 function getSegmentDisplayDelay(text) {

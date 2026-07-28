@@ -249,6 +249,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("isDesktopContextFocusedTurnMessage(message)", main_source)
         self.assertIn('"desktop-context-timeout"', main_source)
         self.assertIn('markTurnLatency("think-request-start")', main_source)
+        self.assertIn("function displayStreamingReplyPreview(text)", main_source)
+        self.assertIn("if (!receivedSpeechSegment) {\n          displayStreamingReplyPreview(partialSpeech);", main_source)
         self.assertIn('markTurnLatencyOnce("first-speech-segment"', main_source)
         self.assertIn('markTurnLatencyOnce("first-bubble-displayed"', main_source)
         self.assertIn("function removeStreamingTtsPrefix(text)", main_source)
