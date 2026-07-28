@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from .durable_ports import (
+    FileVoiceAudioArtifactPort,
     FileVoiceTextArtifactPort,
     SqliteVoiceRuntimeJournal,
+    VoiceAudioArtifactReadResult,
+    VoiceAudioArtifactResult,
     VoiceJournalLoadResult,
     VoiceJournalReplayResult,
     VoiceTextArtifactReadResult,
@@ -58,14 +61,23 @@ from .thinking_agent import (
     AkaneThinkingAgentCommandExecutor,
     VoiceThinkingStartResult,
 )
+from .tts_executor import (
+    AkaneVoiceTTSCommandExecutor,
+    VoiceAudioArtifactPort,
+    VoiceCommandRouterExecutor,
+    VoiceReadableTextArtifactPort,
+)
 
 __all__ = [
     "AkaneVoiceRuntimeHost",
+    "AkaneVoiceTTSCommandExecutor",
+    "FileVoiceAudioArtifactPort",
     "FileVoiceTextArtifactPort",
     "FUN_ASR_REALTIME_PROVIDER_ID",
     "SqliteVoiceRuntimeJournal",
     "VoiceCommandExecutionResult",
     "VoiceCommandExecutor",
+    "VoiceCommandRouterExecutor",
     "VoiceCommandReceiptDrainResult",
     "VoiceCommandReceiptLoadResult",
     "VoiceCommandReceiptRecord",
@@ -78,9 +90,13 @@ __all__ = [
     "VoiceASRRealtimeTurnCoordinator",
     "VoiceASRRealtimeTurnResult",
     "VoiceASRSessionBridge",
+    "VoiceAudioArtifactPort",
+    "VoiceAudioArtifactReadResult",
+    "VoiceAudioArtifactResult",
     "VoiceProjectionDrainResult",
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
+    "VoiceReadableTextArtifactPort",
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
     "AkaneVoiceRuntimeService",

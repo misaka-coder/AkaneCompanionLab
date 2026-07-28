@@ -35,7 +35,10 @@ from .stream_bridge import VoiceTextArtifactResult
 
 _STORAGE_SCHEMA_VERSION = 3
 _JOURNAL_DATABASE_FILENAME = "journal.sqlite3"
-_ARTIFACT_REF_PATTERN = re.compile(r"^voice-text:(?P<digest>[0-9a-f]{64})$")
+_TEXT_ARTIFACT_REF_PATTERN = re.compile(r"^voice-text:(?P<digest>[0-9a-f]{64})$")
+_AUDIO_ARTIFACT_REF_PATTERN = re.compile(r"^voice-audio:(?P<digest>[0-9a-f]{64})$")
+_AUDIO_MEDIA_TYPE_PATTERN = re.compile(r"^audio/[a-z0-9][a-z0-9.+-]{0,63}$")
+_AUDIO_ARTIFACT_MAGIC = b"AKANE-VOICE-AUDIO\x00\x01"
 _PROJECTION_TARGETS = frozenset({"runtime", "host", "memcore", "model"})
 _PROJECTION_RECORD_FIELDS = frozenset({"projection_id", "target", "kind", "source_event_id", "payload"})
 _COMMAND_RECEIPT_PHASES = frozenset({"executing", "observations_pending", "completed", "released"})
@@ -74,6 +77,47 @@ class VoiceTextArtifactReadResult:
     status: str
     reason: str = ""
     text: str = ""
+    media_type: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "succeeded"
+
+
+@dataclass(frozen=True)
+class VoiceAudioArtifactResult:
+    status: str
+    artifact_ref: str = ""
+    reason: str = ""
+    retryable: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.status in {"succeeded", "duplicate"} and bool(self.artifact_ref)
+
+    @classmethod
+    def succeeded(cls, artifact_ref: str) -> VoiceAudioArtifactResult:
+        return cls(status="succeeded", artifact_ref=artifact_ref)
+
+    @classmethod
+    def duplicate(cls, artifact_ref: str) -> VoiceAudioArtifactResult:
+        return cls(status="duplicate", artifact_ref=artifact_ref)
+
+    @classmethod
+    def failed(
+        cls,
+        reason: str,
+        *,
+        retryable: bool = False,
+    ) -> VoiceAudioArtifactResult:
+        return cls(status="failed", reason=reason, retryable=retryable)
+
+
+@dataclass(frozen=True)
+class VoiceAudioArtifactReadResult:
+    status: str
+    reason: str = ""
+    audio: bytes = b""
     media_type: str = ""
 
     @property
@@ -1120,7 +1164,7 @@ class FileVoiceTextArtifactPort:
         return VoiceTextArtifactResult.succeeded(artifact_ref)
 
     def read_text(self, artifact_ref: str) -> VoiceTextArtifactReadResult:
-        match = _ARTIFACT_REF_PATTERN.fullmatch(str(artifact_ref or ""))
+        match = _TEXT_ARTIFACT_REF_PATTERN.fullmatch(str(artifact_ref or ""))
         if match is None:
             return VoiceTextArtifactReadResult(status="failed", reason="voice_text_artifact_ref_invalid")
         path = self._artifact_dir / f"{match.group('digest')}.json"
@@ -1157,13 +1201,173 @@ class FileVoiceTextArtifactPort:
             or sha256(text.encode("utf-8")).hexdigest() != payload.get("content_sha256")
         ):
             return VoiceTextArtifactReadResult(status="failed", reason="voice_text_artifact_unreadable")
-        match = _ARTIFACT_REF_PATTERN.fullmatch(expected_ref)
+        match = _TEXT_ARTIFACT_REF_PATTERN.fullmatch(expected_ref)
         if match is None or payload.get("artifact_key_sha256") != match.group("digest"):
             return VoiceTextArtifactReadResult(status="failed", reason="voice_text_artifact_unreadable")
         return VoiceTextArtifactReadResult(
             status="succeeded",
             text=text,
             media_type=media_type,
+        )
+
+
+class FileVoiceAudioArtifactPort:
+    """Immutable, path-free synthesized audio artifacts.
+
+    One atomic binary envelope keeps metadata and audio bytes together. This
+    prevents a crash between an audio file and a sidecar from manufacturing a
+    seemingly ready VoiceCore unit with incomplete storage.
+    """
+
+    def __init__(
+        self,
+        *,
+        state_dir: Path,
+        conversation_id: str,
+        conversation_generation: int,
+    ) -> None:
+        conversation_root = _conversation_storage_root(
+            state_dir=state_dir,
+            conversation_id=_required_identity(conversation_id, "conversation_id"),
+            conversation_generation=_required_generation(conversation_generation),
+        )
+        self._artifact_dir = conversation_root / "audio_artifacts"
+        self._guard = threading.RLock()
+
+    def put_audio(
+        self,
+        *,
+        artifact_key: str,
+        audio: bytes,
+        media_type: str,
+    ) -> VoiceAudioArtifactResult:
+        if not isinstance(artifact_key, str) or not artifact_key:
+            return VoiceAudioArtifactResult.failed("voice_audio_artifact_key_invalid")
+        if not isinstance(audio, bytes) or not audio:
+            return VoiceAudioArtifactResult.failed("voice_audio_artifact_audio_invalid")
+        normalized_media_type = str(media_type or "").strip().lower().split(";", 1)[0]
+        if _AUDIO_MEDIA_TYPE_PATTERN.fullmatch(normalized_media_type) is None:
+            return VoiceAudioArtifactResult.failed("voice_audio_artifact_media_type_invalid")
+
+        key_digest = sha256(artifact_key.encode("utf-8")).hexdigest()
+        artifact_ref = f"voice-audio:{key_digest}"
+        content_digest = sha256(audio).hexdigest()
+        metadata = {
+            "schema_version": _STORAGE_SCHEMA_VERSION,
+            "artifact_ref": artifact_ref,
+            "artifact_key_sha256": key_digest,
+            "content_sha256": content_digest,
+            "media_type": normalized_media_type,
+            "byte_length": len(audio),
+        }
+        encoded_metadata = _canonical_json(metadata).encode("utf-8")
+        envelope = (
+            _AUDIO_ARTIFACT_MAGIC
+            + len(encoded_metadata).to_bytes(4, byteorder="big", signed=False)
+            + encoded_metadata
+            + audio
+        )
+        path = self._artifact_dir / f"{key_digest}.bin"
+        with self._guard:
+            if path.exists():
+                if path.is_symlink():
+                    return VoiceAudioArtifactResult.failed("voice_audio_artifact_unreadable")
+                existing = self._read_record(path=path, expected_ref=artifact_ref)
+                if not existing.ok:
+                    return VoiceAudioArtifactResult.failed(existing.reason)
+                if existing.audio == audio and existing.media_type == normalized_media_type:
+                    return VoiceAudioArtifactResult.duplicate(artifact_ref)
+                return VoiceAudioArtifactResult.failed("voice_audio_artifact_conflict")
+            try:
+                self._artifact_dir.mkdir(parents=True, exist_ok=True)
+                _atomic_write_bytes(path, envelope)
+            except OSError:
+                return VoiceAudioArtifactResult.failed(
+                    "voice_audio_artifact_write_failed",
+                    retryable=True,
+                )
+        return VoiceAudioArtifactResult.succeeded(artifact_ref)
+
+    def read_audio(self, artifact_ref: str) -> VoiceAudioArtifactReadResult:
+        match = _AUDIO_ARTIFACT_REF_PATTERN.fullmatch(str(artifact_ref or ""))
+        if match is None:
+            return VoiceAudioArtifactReadResult(
+                status="failed",
+                reason="voice_audio_artifact_ref_invalid",
+            )
+        path = self._artifact_dir / f"{match.group('digest')}.bin"
+        with self._guard:
+            if not path.is_file():
+                return VoiceAudioArtifactReadResult(
+                    status="failed",
+                    reason="voice_audio_artifact_missing",
+                )
+            if path.is_symlink():
+                return VoiceAudioArtifactReadResult(
+                    status="failed",
+                    reason="voice_audio_artifact_unreadable",
+                )
+            return self._read_record(path=path, expected_ref=str(artifact_ref))
+
+    @staticmethod
+    def _read_record(
+        *,
+        path: Path,
+        expected_ref: str,
+    ) -> VoiceAudioArtifactReadResult:
+        try:
+            envelope = path.read_bytes()
+            prefix_length = len(_AUDIO_ARTIFACT_MAGIC)
+            if envelope[:prefix_length] != _AUDIO_ARTIFACT_MAGIC:
+                raise ValueError
+            metadata_length_offset = prefix_length + 4
+            if len(envelope) < metadata_length_offset:
+                raise ValueError
+            metadata_length = int.from_bytes(
+                envelope[prefix_length:metadata_length_offset],
+                byteorder="big",
+                signed=False,
+            )
+            audio_offset = metadata_length_offset + metadata_length
+            if metadata_length < 2 or audio_offset >= len(envelope):
+                raise ValueError
+            metadata = json.loads(envelope[metadata_length_offset:audio_offset].decode("utf-8"))
+            audio = envelope[audio_offset:]
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return VoiceAudioArtifactReadResult(
+                status="failed",
+                reason="voice_audio_artifact_unreadable",
+            )
+
+        required = {
+            "schema_version",
+            "artifact_ref",
+            "artifact_key_sha256",
+            "content_sha256",
+            "media_type",
+            "byte_length",
+        }
+        match = _AUDIO_ARTIFACT_REF_PATTERN.fullmatch(expected_ref)
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != required
+            or match is None
+            or metadata.get("schema_version") != _STORAGE_SCHEMA_VERSION
+            or metadata.get("artifact_ref") != expected_ref
+            or metadata.get("artifact_key_sha256") != match.group("digest")
+            or not isinstance(metadata.get("media_type"), str)
+            or _AUDIO_MEDIA_TYPE_PATTERN.fullmatch(metadata["media_type"]) is None
+            or metadata.get("byte_length") != len(audio)
+            or metadata.get("content_sha256") != sha256(audio).hexdigest()
+        ):
+            return VoiceAudioArtifactReadResult(
+                status="failed",
+                reason="voice_audio_artifact_unreadable",
+            )
+        return VoiceAudioArtifactReadResult(
+            status="succeeded",
+            audio=audio,
+            media_type=metadata["media_type"],
         )
 
 
@@ -1218,6 +1422,10 @@ def _record_set_digest(canonical_records: list[str]) -> str:
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     encoded = (_canonical_json(payload) + "\n").encode("utf-8")
+    _atomic_write_bytes(path, encoded)
+
+
+def _atomic_write_bytes(path: Path, encoded: bytes) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     file_descriptor = -1
     try:

@@ -16,7 +16,11 @@ from ..background_tasks import BackgroundTaskRunner
 from .asr_bridge import VoiceASRSessionBridge
 from .asr_provider import build_voice_asr_provider
 from .asr_realtime_turn import VoiceASRRealtimeTurnCoordinator
-from .durable_ports import FileVoiceTextArtifactPort, SqliteVoiceRuntimeJournal
+from .durable_ports import (
+    FileVoiceAudioArtifactPort,
+    FileVoiceTextArtifactPort,
+    SqliteVoiceRuntimeJournal,
+)
 from .host import (
     AkaneVoiceRuntimeHost,
     VoiceHostPortResult,
@@ -28,6 +32,10 @@ from .realtime_transport import (
 from .thinking_agent import (
     AkaneThinkingAgentCommandExecutor,
     VoiceThinkingStartResult,
+)
+from .tts_executor import (
+    AkaneVoiceTTSCommandExecutor,
+    VoiceCommandRouterExecutor,
 )
 
 
@@ -169,6 +177,7 @@ class AkaneVoiceRuntimeService:
         instance_id: str,
         bot_id: str,
         default_character_pack_id: str = "",
+        tts_client: Any = None,
         provider_builder: Callable[[Any], Any] = build_voice_asr_provider,
     ) -> None:
         self.engine = engine
@@ -177,6 +186,7 @@ class AkaneVoiceRuntimeService:
         self.instance_id = str(instance_id or "")
         self.bot_id = str(bot_id or "")
         self.default_character_pack_id = str(default_character_pack_id or "")
+        self.tts_client = tts_client
         self.provider_builder = provider_builder
         self._hosts: dict[str, _SerializedVoiceRuntimeHost] = {}
         self._thinking_executors: dict[
@@ -372,6 +382,11 @@ class AkaneVoiceRuntimeService:
                 conversation_id=canonical_conversation_id,
                 conversation_generation=1,
             )
+            audio_artifacts = FileVoiceAudioArtifactPort(
+                state_dir=self.state_dir,
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+            )
             thinking_executor = AkaneThinkingAgentCommandExecutor(
                 engine=self.engine,
                 memcore_manager=manager,
@@ -383,12 +398,25 @@ class AkaneVoiceRuntimeService:
                 text_artifacts=text_artifacts,
                 background_tasks=self._background_tasks,
             )
+            tts_executor = AkaneVoiceTTSCommandExecutor(
+                tts_client=self.tts_client,
+                text_artifacts=text_artifacts,
+                audio_artifacts=audio_artifacts,
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+            )
+            command_executor = VoiceCommandRouterExecutor(
+                {
+                    "start_response_generation": thinking_executor,
+                    "start_tts": tts_executor,
+                }
+            )
             raw_host = AkaneVoiceRuntimeHost(
                 conversation_id=canonical_conversation_id,
                 conversation_generation=1,
                 journal=journal,
                 projection_port=projection_port,
-                command_executor=thinking_executor,
+                command_executor=command_executor,
                 restored_snapshot=replayed.replay.snapshot,
             )
             host = _SerializedVoiceRuntimeHost(raw_host)
@@ -408,7 +436,7 @@ class AkaneVoiceRuntimeService:
                     retryable=receipts.status == "deferred",
                     safe_public_summary="实时语音回复状态尚未恢复，本轮没有开始。",
                 )
-            recovered_commands = self._recover_pending_response_commands(host)
+            recovered_commands = self._recover_pending_commands(host)
             if not recovered_commands.ok:
                 return VoiceRealtimeCoordinatorResolution.failed(
                     recovered_commands.reason or "voice_response_command_recovery_failed",
@@ -448,7 +476,7 @@ class AkaneVoiceRuntimeService:
         return snapshot_to_dict(host.snapshot)
 
     @staticmethod
-    def _recover_pending_response_commands(
+    def _recover_pending_commands(
         host: _SerializedVoiceRuntimeHost,
     ) -> VoiceThinkingStartResult:
         seen_pending: set[tuple[str, ...]] = set()
@@ -463,19 +491,22 @@ class AkaneVoiceRuntimeService:
             seen_pending.add(pending_ids)
             pending = [host.snapshot.pending_commands[command_id] for command_id in pending_ids]
             if any(
-                str(getattr(command, "command_kind", "") or "") != "start_response_generation" for command in pending
+                str(getattr(command, "command_kind", "") or "") not in {"start_response_generation", "start_tts"}
+                for command in pending
             ):
                 return VoiceThinkingStartResult(
                     status="failed",
-                    reason="voice_response_command_recovery_unsupported",
+                    reason="voice_command_recovery_unsupported",
                     retryable=False,
                 )
             driven = host.drive_once()
             if driven.status != "succeeded":
                 return VoiceThinkingStartResult(
                     status="failed",
-                    reason=driven.reason or "voice_response_command_recovery_failed",
-                    retryable=driven.status == "deferred",
+                    reason=driven.reason or "voice_command_recovery_failed",
+                    retryable=(
+                        driven.status == "deferred" or any(result.retryable for result in driven.command_results)
+                    ),
                 )
         return VoiceThinkingStartResult(status="completed")
 

@@ -577,6 +577,7 @@ class BotRuntimeFactory:
                 instance_id=instance_context.instance_id,
                 bot_id=effective_bot_config.bot_id,
                 default_character_pack_id=instance_context.character_pack_id,
+                tts_client=runtime.tts_client,
             )
             runtime.install_qq_task_completion_notifications()
             return runtime

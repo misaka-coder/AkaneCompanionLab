@@ -459,11 +459,12 @@ LLMRuntime / MemCore speech_segment
 全文完成前进入 TTS，同时 MemCore 的 `message.assistant.voice` 仍只投影一次完整
 正文。中断流不会把尚未闭合的残句刷新为完整语音单元。
 
-该链路的 TTS 和 playback 仍只使用 fake 端口。Akane 已提供
-`SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`；journal、MemCore
-projection 与 Thinking Agent 已用于实时 ASR 生产接缝。正式 TTS 未接入前，
-Thinking Agent 不声明 speech unit，文本 artifact 也不会写入；这样不会留下永远
-等待 `start_tts` 的半完成 response：
+该链路的 playback 仍只使用 fake 端口。Akane 已提供
+`SqliteVoiceRuntimeJournal`、`FileVoiceTextArtifactPort` 与
+`FileVoiceAudioArtifactPort`；journal、MemCore projection 与 Thinking Agent 已用于
+实时 ASR 生产接缝。生产 Host 已接入正式 `start_tts` executor，但在客户端播放
+协议尚未协商前，Thinking Agent 仍不声明 speech unit；这样不会留下永远等待
+`enqueue_playback` 的半完成 response：
 
 - 宿主传入 instance 自己的 `state_dir`，端口按会话身份哈希建立私有存储桶；
 - journal 使用单会话 SQLite 事务日志，事件行、权威 head 和该次 transition
@@ -471,6 +472,15 @@ Thinking Agent 不声明 speech unit，文本 artifact 也不会写入；这样�
   VoiceCore 确定性重放，避免高频语音事件制造大量小文件；
 - 文本 artifact 不可变，只通过 `voice-text:<digest>` 引用，不把本地路径放入
   snapshot、command、日志或 prompt；
+- TTS 输出先作为单文件原子 envelope 写成不可变 `voice-audio:<digest>`，元数据与
+  音频字节不会因 sidecar 写入中断而分裂；`voice.tts.ready` 只在 artifact 可读后
+  产生，不等于已经交给客户端，更不等于已经播放；
+- TTS command 使用 VoiceCore `idempotency_key` 派生稳定 artifact 和 observation
+  身份。重启恢复时只有同一 artifact 可完整读回才确认 ready；command intent 已
+  落盘但 artifact 缺失时停在 `voice_tts_outcome_unconfirmed`，不盲目重复请求可能
+  产生二次计费的 provider；
+- TTS provider、文本 artifact 或音频落盘失败会归约为
+  `voice.tts.failed(reason_code)`；异常正文、路径、Host 和 Key 不进入事件；
 - journal 或 artifact 损坏、缺失、内容冲突时结构化失败，不跳过损坏记录继续
   伪造完整状态；
 - projection 按 VoiceCore 的稳定 `projection_id` 顺序投递并在成功后确认；
@@ -498,8 +508,8 @@ Thinking Agent 不声明 speech unit，文本 artifact 也不会写入；这样�
 实时 ASR provider 和 voice turn resolver 都可用时开轮；否则返回结构化状态和
 安全摘要。`start_response_generation` 已接到 Akane 现有 Thinking Agent；它复用
 已提交的 `message.user.voice` source/turn，不把 ASR final 再送普通消息入口，工具
-轨迹也继续挂在同一 MemCore turn。TTS、播放仍未接入，也没有替换现有文件式
-`/asr` 能力。
+轨迹也继续挂在同一 MemCore turn。正式 TTS effect 边界已经接入，客户端播放与
+回执仍未接入；现有文件式 `/asr` 能力没有被替换。
 
 ### Slice B：高准确率 ASR 接入
 
@@ -655,7 +665,7 @@ BotRuntime
 - MemCore 不可用、journal replay 失败、pending projection 无法补齐或 provider
   不可用时，均在打开音频会话前结构化失败。
 
-`start_response_generation` 的生产链路现在是：
+`start_response_generation` 的默认生产链路现在是：
 
 ```text
 VoiceCore durable command
@@ -677,13 +687,16 @@ VoiceCore durable command
   `voice.response.failed → event.voice.failure`，不写假的 assistant final；
 - 重启时先补偿 command receipt，再从 VoiceCore 中仍处于 generating 的 response
   恢复后台任务；同一进程按 response id 去重；
-- 当前没有 TTS/playback，因此流式 `speech_segment` 暂不声明为 VoiceCore speech
-  unit；最终完整 `speech` 以 `text_only` 完成，避免每段生成永久 pending 的
-  `start_tts` 命令。
+- 当前没有协商后的 playback，因此流式 `speech_segment` 暂不声明为 VoiceCore
+  speech unit；最终完整 `speech` 以 `text_only` 完成。正式 TTS executor 已安装在同一
+  Host command router 中，并通过生产接缝测试证明可将已声明 unit 推进到
+  `voice.tts.ready`；但缺少客户端播放 ACK 时，`enqueue_playback` 会保持 pending，
+  不会伪造 queued/started/completed。
 
-当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是接入正式 TTS
-executor 和语音单元交付状态；验收后再为 `desktop_pet_next` 增加 AudioWorklet，
-并在实时入口不可用时自动降级回 MediaRecorder `/asr`。
+当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是增加播放客户端能力
+协商、二进制音频交付与 `enqueued / started / completed / interrupted` 明确回执；
+验收后再为 `desktop_pet_next` 增加 AudioWorklet，并在实时入口不可用时自动降级
+回 MediaRecorder `/asr`。
 
 ### Slice C：播放和语义打断
 

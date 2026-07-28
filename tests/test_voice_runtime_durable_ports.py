@@ -11,6 +11,7 @@ from typing import Any
 
 from companion_v01.voice_runtime import (
     AkaneVoiceRuntimeHost,
+    FileVoiceAudioArtifactPort,
     FileVoiceTextArtifactPort,
     SqliteVoiceRuntimeJournal,
     VoiceCommandExecutionResult,
@@ -490,6 +491,87 @@ class VoiceRuntimeDurablePortTests(unittest.TestCase):
             corrupt = artifacts.read_text(written.artifact_ref)
             self.assertEqual(corrupt.status, "failed")
             self.assertEqual(corrupt.reason, "voice_text_artifact_unreadable")
+
+    def test_audio_artifact_is_atomic_immutable_and_path_free(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            artifacts = FileVoiceAudioArtifactPort(
+                state_dir=state_dir,
+                conversation_id="conversation-1",
+                conversation_generation=1,
+            )
+            audio = b"ID3\x04\x00\x00\x00\x00\x00\x15voice-audio-test"
+            written = artifacts.put_audio(
+                artifact_key="tts-command-idempotency-key-1",
+                audio=audio,
+                media_type="audio/mpeg; charset=binary",
+            )
+            self.assertTrue(written.ok, written)
+            self.assertRegex(written.artifact_ref, r"^voice-audio:[0-9a-f]{64}$")
+            self.assertNotIn(str(state_dir), str(written))
+
+            reopened = FileVoiceAudioArtifactPort(
+                state_dir=state_dir,
+                conversation_id="conversation-1",
+                conversation_generation=1,
+            )
+            read = reopened.read_audio(written.artifact_ref)
+            duplicate = reopened.put_audio(
+                artifact_key="tts-command-idempotency-key-1",
+                audio=audio,
+                media_type="audio/mpeg",
+            )
+            conflict = reopened.put_audio(
+                artifact_key="tts-command-idempotency-key-1",
+                audio=b"different-audio",
+                media_type="audio/mpeg",
+            )
+
+            self.assertTrue(read.ok, read)
+            self.assertEqual(read.audio, audio)
+            self.assertEqual(read.media_type, "audio/mpeg")
+            self.assertEqual(duplicate.status, "duplicate")
+            self.assertEqual(conflict.status, "failed")
+            self.assertEqual(conflict.reason, "voice_audio_artifact_conflict")
+            artifact_path = next(state_dir.rglob("audio_artifacts/*.bin"))
+            stored_bytes = artifact_path.read_bytes()
+            self.assertNotIn(b"tts-command-idempotency-key-1", stored_bytes)
+            self.assertNotIn(str(state_dir).encode(), stored_bytes)
+            self.assertFalse(list(state_dir.rglob("*.tmp")))
+
+    def test_audio_artifact_rejects_bad_refs_and_detects_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            artifacts = FileVoiceAudioArtifactPort(
+                state_dir=state_dir,
+                conversation_id="conversation-1",
+                conversation_generation=1,
+            )
+            invalid_media = artifacts.put_audio(
+                artifact_key="unit-bad-media",
+                audio=b"audio",
+                media_type="application/octet-stream",
+            )
+            self.assertEqual(
+                invalid_media.reason,
+                "voice_audio_artifact_media_type_invalid",
+            )
+            written = artifacts.put_audio(
+                artifact_key="unit-1",
+                audio=b"RIFFvoice-audio-test",
+                media_type="audio/wav",
+            )
+            self.assertTrue(written.ok)
+            invalid = artifacts.read_audio("../../outside")
+            self.assertEqual(invalid.reason, "voice_audio_artifact_ref_invalid")
+
+            artifact_path = next(state_dir.rglob("audio_artifacts/*.bin"))
+            payload = bytearray(artifact_path.read_bytes())
+            payload[-1] ^= 0xFF
+            artifact_path.write_bytes(bytes(payload))
+            corrupt = artifacts.read_audio(written.artifact_ref)
+            self.assertEqual(corrupt.status, "failed")
+            self.assertEqual(corrupt.reason, "voice_audio_artifact_unreadable")
 
 
 if __name__ == "__main__":

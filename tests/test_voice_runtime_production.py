@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,10 @@ from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.voice_runtime import (
+    AkaneVoiceEventFactory,
     AkaneVoiceRuntimeService,
+    FileVoiceTextArtifactPort,
+    VoiceResponseStreamBridge,
     VoiceRealtimeOpenRequest,
 )
 
@@ -105,6 +109,40 @@ class _ThinkingEngine:
         }
 
 
+class _BlockingThinkingEngine(_ThinkingEngine):
+    def __init__(self, manager: MemcoreManager) -> None:
+        super().__init__(manager)
+        self.segment_ready = threading.Event()
+        self.release_final = threading.Event()
+
+    def process_voice_turn_stream(self, **kwargs: Any):
+        self.calls.append(dict(kwargs))
+        self.segment_ready.set()
+        yield {
+            "type": "speech_segment",
+            "index": 0,
+            "text": "第一句现在就可以开始合成。",
+        }
+        if not self.release_final.wait(timeout=5.0):
+            raise RuntimeError("test final release timeout")
+        yield {
+            "type": "final",
+            "payload": {
+                "speech": "第一句现在就可以开始合成。",
+                "memory_metadata": {"topic_terms": ["实时语音"]},
+            },
+        }
+
+
+class _TTSClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def synthesize(self, text: str) -> bytes:
+        self.calls.append(text)
+        return b"ID3-production-tts-audio"
+
+
 def _open_request(*, voice_turn_id: str = "voice-turn-1") -> VoiceRealtimeOpenRequest:
     return VoiceRealtimeOpenRequest(
         profile_user_id="profile-user",
@@ -162,6 +200,7 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
         manager: MemcoreManager,
         adapter: _Adapter,
         engine: Any | None = None,
+        tts_client: Any = None,
     ) -> AkaneVoiceRuntimeService:
         engine = engine or _ThinkingEngine(manager)
         return AkaneVoiceRuntimeService(
@@ -171,12 +210,97 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
             instance_id="instance-private-id",
             bot_id="bot-private-id",
             default_character_pack_id="default-character",
+            tts_client=tts_client,
             provider_builder=lambda _settings: SimpleNamespace(
                 ready=True,
                 adapter=adapter,
                 provider_id="provider.asr.production-test",
             ),
         )
+
+    def test_production_host_synthesizes_before_playback_without_fake_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            engine = _BlockingThinkingEngine(manager)
+            tts_client = _TTSClient()
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+                tts_client=tts_client,
+            )
+            try:
+                request = _open_request(voice_turn_id="voice-turn-production-tts")
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                settled = asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertEqual(settled.response_status, "started")
+                self.assertTrue(engine.segment_ready.wait(timeout=2.0))
+
+                host = resolved.coordinator.bridge.host
+                response = next(
+                    response
+                    for response in host.snapshot.responses.values()
+                    if response.voice_turn_id == request.voice_turn_id
+                )
+                text_artifacts = FileVoiceTextArtifactPort(
+                    state_dir=root / "voice-state",
+                    conversation_id=host.snapshot.conversation_id,
+                    conversation_generation=1,
+                )
+                bridge = VoiceResponseStreamBridge(
+                    host=host,
+                    response_id=response.response_id,
+                    text_artifacts=text_artifacts,
+                    event_factory=AkaneVoiceEventFactory(
+                        conversation_id=host.snapshot.conversation_id,
+                        voice_session_id=resolved.voice_session_id,
+                        conversation_generation=1,
+                    ),
+                )
+                declared = bridge.accept_stream_event(
+                    {
+                        "type": "speech_segment",
+                        "index": 0,
+                        "text": "第一句现在就可以开始合成。",
+                    }
+                )
+                self.assertTrue(declared.accepted, declared)
+                self.assertEqual(
+                    tts_client.calls,
+                    ["第一句现在就可以开始合成。"],
+                )
+                unit = next(iter(host.snapshot.speech_units.values()))
+                self.assertEqual(unit.state.value, "ready")
+                self.assertTrue(unit.audio_artifact_ref.startswith("voice-audio:"))
+                self.assertEqual(
+                    [command.command_kind for command in host.snapshot.pending_commands.values()],
+                    ["enqueue_playback"],
+                )
+
+                system = manager._get_system(
+                    profile_user_id=request.profile_user_id,
+                    session_id=request.session_id,
+                    character_pack_id=request.character_pack_id,
+                )
+                entries = system.store.get_unsummarized_messages(namespace=system.namespace)
+                self.assertNotIn(
+                    "message.assistant.voice",
+                    [str(entry.get("kind") or "") for entry in entries],
+                )
+
+                engine.release_final.set()
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                completed_response = host.snapshot.responses[response.response_id]
+                completed_unit = host.snapshot.speech_units[unit.speech_unit_id]
+                self.assertEqual(completed_response.state.value, "generated")
+                self.assertEqual(completed_unit.state.value, "ready")
+            finally:
+                engine.release_final.set()
+                service.close()
+                manager.close()
 
     def test_durable_realtime_projection_keeps_one_typed_turn_and_hidden_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
