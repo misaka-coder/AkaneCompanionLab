@@ -130,14 +130,14 @@ interruptQueue.enqueue(
 );
 await tick();
 interruptAudio.currentTime = 0.2;
-interruptQueue.interrupt("user_stopped_reply");
+interruptQueue.interrupt("user_started_voice_input");
 assert.deepEqual(interrupted.map((item) => item.type), [
   "client.playback.enqueued",
   "client.playback.started",
   "client.playback.interrupted"
 ]);
 assert.equal(interrupted.at(-1).played_ms, 200);
-assert.equal(interrupted.at(-1).reason, "user_stopped_reply");
+assert.equal(interrupted.at(-1).reason, "user_started_voice_input");
 
 const endpointFailureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",

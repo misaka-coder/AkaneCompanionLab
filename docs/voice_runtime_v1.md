@@ -738,8 +738,16 @@ VoiceCore durable command
 `server.final` 之前失败才回退旧 `/asr`，不会重复提交已经进入 VoiceCore/MemCore
 的语音轮。语音输出关闭或 WebView 不支持 AudioWorklet 时仍保持旧听写体验。
 
-这一客户端切片已通过 Vite build、前端契约测试和可执行播放队列 smoke；尚未部署
-云端，也尚未完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS 全链路人工验收。
+这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
+全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
+MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能
+停在输入框或静默等待。服务端同时提供 finalize/input inactivity 超时与结构化
+失败原因。
+
+Slice C 的首个显式接管子步也已落地：用户主动按下麦克风时，可以停止当前
+生成/播放并立即开始新一轮录音；播放器会按真实 `interrupted` ACK 记录已播放
+部分，不能把整段回复伪装成已送达。该动作代表明确的本地接管，不等同于自动
+VAD 抢话；自动 duck、语义脉冲、backchannel 与误打断恢复仍由后续子步接入。
 
 ### Slice C：播放和语义打断
 

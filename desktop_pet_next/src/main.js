@@ -2811,9 +2811,12 @@ async function startVoiceRecording() {
     showError("语音输入已关闭");
     return;
   }
-  if (sending) {
-    showBubbleText("我正在回复这轮消息，等一下再听你说。", { transient: true, durationMs: 2200 });
-    return;
+  let tookOverReply = false;
+  if (isReplyActive()) {
+    tookOverReply = interruptReply({
+      announce: false,
+      reason: "user_started_voice_input"
+    });
   }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
     showError("当前 WebView 不支持录音");
@@ -2846,8 +2849,13 @@ async function startVoiceRecording() {
     setVoiceInputState("recording");
     setPetEmotion("listening", { persist: false });
     setPetMotion("thinking");
-    showBubbleText("正在听……", { transient: false });
-    setRuntimeStatus("语音录制中", { mode: "listening" });
+    showBubbleText(
+      tookOverReply ? "上一轮已停下，正在听你说……" : "正在听……",
+      { transient: false }
+    );
+    setRuntimeStatus(tookOverReply ? "已接管上一轮，语音录制中" : "语音录制中", {
+      mode: "listening"
+    });
     if (canUseRealtimeVoice()) {
       startRealtimeVoiceTurn(voiceStream);
     }
@@ -5668,7 +5676,7 @@ function isUsableForegroundContext(value) {
   return true;
 }
 
-function interruptReply({ announce = false } = {}) {
+function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}) {
   const hadActivity = isReplyActive();
   activeTurnToken += 1;
   sending = false;
@@ -5678,7 +5686,7 @@ function interruptReply({ announce = false } = {}) {
     realtimeVoiceTurn?.playbackActive ||
     voiceInputState === "processing"
   ) {
-    closeRealtimeVoiceTurn(realtimeVoiceTurn, "user_stopped_reply");
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, reason);
     setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
   }
 
