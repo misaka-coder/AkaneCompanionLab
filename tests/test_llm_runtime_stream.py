@@ -143,6 +143,19 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
 
         self.assertIn({"type": "speech_segment", "index": 0, "text": "？"}, events)
 
+    def test_speech_stream_keeps_numbered_items_across_character_deltas(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = []
+        raw = '{"emotion":"normal","speech":"1. 第一条\\n2. 第二条"}'
+        for character in raw:
+            events.extend(tap.feed(character))
+        events.extend(tap.finish())
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["1. 第一条", "2. 第二条"],
+        )
+
     def test_leading_tool_call_probe_handles_null(self) -> None:
         runtime = object.__new__(LLMRuntime)
 
