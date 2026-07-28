@@ -24,6 +24,11 @@ import {
 import { bindInstanceStorage } from "./instance-storage.js";
 import { botScopedPath, normalizeBotId } from "./bot-routing.js";
 import {
+  RealtimeVoiceSession,
+  buildVoiceWebSocketUrl,
+  supportsRealtimeVoiceCapture
+} from "./realtime-voice-client.js";
+import {
   attachDesktopCareContext,
   cloneCareState,
   createUnresolvedCareFeature,
@@ -31,6 +36,7 @@ import {
   resolveCareFeatureFromHealth
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
+import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
 
 const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{png,jpg,jpeg,webp}", {
@@ -105,6 +111,7 @@ const VOICE_MIME_TYPES = [
   "audio/ogg",
   "audio/mp4"
 ];
+const VOICE_PCM_WORKLET_URL = voicePcmWorkletUrl;
 const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm"]);
 const MUSIC_LYRIC_EXTENSIONS = new Set(["lrc"]);
 const MUSIC_PLAY_MODES = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
@@ -700,6 +707,7 @@ let voiceStream = null;
 let voiceChunks = [];
 let voiceMimeType = "";
 let voiceStartedAt = 0;
+let realtimeVoiceTurn = null;
 let voiceShortcutHeld = false;
 let asrController = null;
 let voiceInputToken = 0;
@@ -1605,6 +1613,7 @@ async function registerWindowListeners() {
     window.clearTimeout(transientEmotionTimer);
     if (thinkController) thinkController.abort();
     if (asrController) asrController.abort();
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "window_closed");
     stopTts();
     stopMusic({ silent: true, clearQueue: true });
     cleanupVoiceRecorder();
@@ -2058,7 +2067,7 @@ function buildSettingsSnapshot() {
     runtimeMode,
     active: {
       sending,
-      speaking: ttsActive,
+      speaking: ttsActive || Boolean(realtimeVoiceTurn?.playbackActive),
       voiceInput: voiceInputState,
       musicPlaying,
       musicPaused,
@@ -2077,6 +2086,13 @@ function buildSettingsSnapshot() {
     tts: {
       active: ttsActive,
       queueLength: ttsQueue.length
+    },
+    realtimeVoice: {
+      active: Boolean(realtimeVoiceTurn?.responseActive),
+      ready: Boolean(realtimeVoiceTurn?.ready),
+      committed: Boolean(realtimeVoiceTurn?.committed),
+      playbackActive: Boolean(realtimeVoiceTurn?.playbackActive),
+      fallbackPending: Boolean(realtimeVoiceTurn?.failure && !realtimeVoiceTurn?.committed)
     },
     visual: visualRenderer.getStatus(),
     music: buildMusicSnapshot(),
@@ -2389,6 +2405,7 @@ function updateVisualOpacity(value, { saveNow = false } = {}) {
 function setVoiceEnabled(enabled) {
   state.voiceEnabled = Boolean(enabled);
   if (!state.voiceEnabled) {
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_output_disabled");
     cancelTtsPrewarm();
     stopTts();
   } else {
@@ -2830,58 +2847,92 @@ async function startVoiceRecording() {
     setPetMotion("thinking");
     showBubbleText("正在听……", { transient: false });
     setRuntimeStatus("语音录制中", { mode: "listening" });
+    if (canUseRealtimeVoice()) {
+      startRealtimeVoiceTurn(voiceStream);
+    }
   } catch (error) {
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "capture_start_failed");
     cleanupVoiceRecorder();
     setVoiceInputState("idle");
     showError(describeVoiceError(error));
   }
 }
 
-function stopVoiceRecording() {
+async function stopVoiceRecording() {
   if (voiceInputState !== "recording" || !voiceRecorder) return Promise.resolve();
 
   const recorder = voiceRecorder;
-  return new Promise((resolve) => {
-    recorder.addEventListener(
-      "stop",
-      () => {
-        const durationMs = Date.now() - voiceStartedAt;
-        const mimeType = recorder.mimeType || voiceMimeType || "audio/webm";
-        const blob = new Blob(voiceChunks, { type: mimeType });
-        cleanupVoiceRecorder();
+  const turn = realtimeVoiceTurn;
+  const durationMs = Date.now() - voiceStartedAt;
+  setVoiceInputState("processing");
 
-        if (durationMs < MIN_RECORDING_MS || blob.size < 512) {
-          setVoiceInputState("idle");
-          showError("录音太短啦，我没听清。");
-          resolve();
-          return;
-        }
-
-        void transcribeVoiceBlob(blob).finally(resolve);
-      },
-      { once: true }
-    );
-
-    recorder.addEventListener(
-      "error",
-      () => {
-        cleanupVoiceRecorder();
-        setVoiceInputState("idle");
-        showError("录音失败了");
-        resolve();
-      },
-      { once: true }
-    );
-
+  if (durationMs < MIN_RECORDING_MS) {
+    closeRealtimeVoiceTurn(turn, "recording_too_short");
     try {
-      recorder.stop();
-    } catch (error) {
-      cleanupVoiceRecorder();
-      setVoiceInputState("idle");
-      showError(describeVoiceError(error));
-      resolve();
+      await stopVoiceRecorderToBlob(recorder);
+    } catch {
+      // The short-recording message below is the actionable result.
     }
-  });
+    cleanupVoiceRecorder();
+    setVoiceInputState("idle");
+    showError("录音太短啦，我没听清。");
+    return;
+  }
+
+  const realtimeFinish = turn?.session
+    ? turn.session
+        .finishInput()
+        .then(() => true)
+        .catch((error) => {
+          markRealtimeVoiceFailure(turn, {
+            reason: "voice_realtime_finalize_failed",
+            message: friendlyErrorMessage(formatError(error)),
+            terminal: true,
+            committed: turn.committed
+          });
+          return false;
+        })
+    : Promise.resolve(false);
+
+  let blob;
+  let realtimeAccepted = false;
+  try {
+    [realtimeAccepted, blob] = await Promise.all([
+      realtimeFinish,
+      stopVoiceRecorderToBlob(recorder)
+    ]);
+  } catch (error) {
+    closeRealtimeVoiceTurn(turn, "recording_stop_failed");
+    cleanupVoiceRecorder();
+    setVoiceInputState("idle");
+    showError(describeVoiceError(error));
+    return;
+  }
+  cleanupVoiceRecorder();
+
+  if (!turn) {
+    if (blob.size < 512) {
+      setVoiceInputState("idle");
+      showError("录音太短啦，我没听清。");
+      return;
+    }
+    await transcribeVoiceBlob(blob);
+    return;
+  }
+  if (turn.closed || realtimeVoiceTurn !== turn) return;
+
+  turn.fallbackBlob = turn.committed ? null : blob;
+  if (realtimeAccepted && !turn.failure) {
+    turn.responseActive = true;
+    sending = true;
+    showThinking();
+    setRuntimeStatus("语音识别收尾中", { mode: "thinking" });
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+    return;
+  }
+
+  await fallbackRealtimeVoiceToBatch(turn);
 }
 
 async function cancelVoiceRecording({ notice = false } = {}) {
@@ -2897,12 +2948,300 @@ async function cancelVoiceRecording({ notice = false } = {}) {
       // Cancellation should stay quiet.
     }
   }
+  closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_input_cancelled");
   cleanupVoiceRecorder();
   setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
   if (notice) {
     showBubbleText("语音输入已取消。", { transient: true, durationMs: 1600 });
     setRuntimeStatus("语音输入已取消", { mode: "idle" });
   }
+}
+
+function canUseRealtimeVoice() {
+  return Boolean(state.voiceEnabled && els.voicePlayer && supportsRealtimeVoiceCapture(window));
+}
+
+function startRealtimeVoiceTurn(stream) {
+  closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_turn_replaced");
+  cancelTtsPrewarm();
+  stopTts();
+  const sessionId = String(state.sessionId || "").trim() || generateSessionId();
+  if (!state.sessionId) {
+    state.sessionId = sessionId;
+    scheduleSave(0);
+  }
+
+  const turn = {
+    session: null,
+    startTask: null,
+    ready: false,
+    committed: false,
+    responseActive: false,
+    playbackActive: false,
+    failure: null,
+    fallbackBlob: null,
+    fallbackStarted: false,
+    closed: false,
+    hasShownSpeech: false
+  };
+  realtimeVoiceTurn = turn;
+
+  try {
+    const session = new RealtimeVoiceSession({
+      websocketUrl: buildVoiceWebSocketUrl(
+        buildBackendEndpointUrl("voiceRealtime", "/voice/realtime", { t: Date.now() })
+      ),
+      mediaStream: stream,
+      audioElement: els.voicePlayer,
+      workletModuleUrl: VOICE_PCM_WORKLET_URL,
+      getVolume: () => state.voiceVolume,
+      openPayload: {
+        profile_user_id: getProfileUserId(),
+        conversation_id: sessionId,
+        session_id: sessionId,
+        character_pack_id: getCurrentCharacterPackId(),
+        language: "zh",
+        disposition: "message"
+      },
+      callbacks: buildRealtimeVoiceCallbacks(turn)
+    });
+    turn.session = session;
+    turn.startTask = session
+      .start()
+      .then(() => {
+        if (realtimeVoiceTurn !== turn || turn.closed) return false;
+        turn.ready = true;
+        return true;
+      })
+      .catch((error) => {
+        markRealtimeVoiceFailure(turn, {
+          reason: "voice_realtime_start_failed",
+          message: friendlyErrorMessage(formatError(error)),
+          terminal: true,
+          committed: false
+        });
+        return false;
+      });
+  } catch (error) {
+    markRealtimeVoiceFailure(turn, {
+      reason: "voice_realtime_start_failed",
+      message: friendlyErrorMessage(formatError(error)),
+      terminal: true,
+      committed: false
+    });
+  }
+}
+
+function buildRealtimeVoiceCallbacks(turn) {
+  const isCurrent = () => realtimeVoiceTurn === turn && !turn.closed;
+  return {
+    onReady() {
+      if (!isCurrent()) return;
+      turn.ready = true;
+      if (voiceInputState === "recording") {
+        setRuntimeStatus("实时语音聆听中", { mode: "listening" });
+      }
+    },
+    onTranscript({ kind, text, unstableTail }) {
+      if (!isCurrent() || voiceInputState !== "recording") return;
+      const transcript = `${String(text || "")}${String(unstableTail || "")}`.trim();
+      if (!transcript) return;
+      const prefix = kind === "checkpoint" ? "听清了" : "正在听";
+      showBubbleText(`${prefix}：${transcript}`, { transient: false, kind: "status" });
+    },
+    onFinal(payload) {
+      if (!isCurrent()) return;
+      turn.committed = true;
+      turn.fallbackBlob = null;
+      turn.responseActive = true;
+      sending = true;
+      setVoiceInputState("processing");
+      showThinking();
+      const responseStatus = String(payload?.response?.status || "");
+      if (responseStatus && responseStatus !== "started") {
+        setRuntimeStatus("语音已识别，但回复启动失败", { mode: "error" });
+      }
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    },
+    onPlaybackEnqueued() {
+      if (!isCurrent()) return;
+      setRuntimeStatus("语音已生成，准备播放", { mode: "speaking" });
+    },
+    onPlaybackStarted(header) {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      turn.hasShownSpeech = true;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      showBubbleText(String(header?.text || ""), {
+        dismiss: true,
+        speaking: true,
+        kind: "reply"
+      });
+      setRuntimeStatus("语音回复中", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackCompleted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      if (turn.responseActive) {
+        setPetMotion("thinking");
+        setRuntimeStatus("回复收尾中", { mode: "thinking" });
+      }
+      updateActivityControls();
+    },
+    onPlaybackInterrupted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      updateActivityControls();
+    },
+    onPlaybackFailed(_header, reason) {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      void reason;
+      setRuntimeStatus("语音没能播放，已把失败状态交回服务端", { mode: "error" });
+      updateActivityControls();
+    },
+    onResponseCompleted(payload) {
+      if (!isCurrent()) return;
+      const speech = String(payload?.speech || "").trim();
+      if (speech && !turn.hasShownSpeech) {
+        showBubbleText(speech, { dismiss: true, kind: "reply" });
+      }
+      finishRealtimeVoiceTurn(turn, { ok: true });
+    },
+    onResponseFailed(payload) {
+      if (!isCurrent()) return;
+      const message = String(payload?.message || "这次语音回复没有生成完成。");
+      finishRealtimeVoiceTurn(turn, { ok: false, message });
+    },
+    onFailure(failure) {
+      if (!isCurrent()) return;
+      markRealtimeVoiceFailure(turn, failure);
+    },
+    onCancelled() {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceTurn(turn, { ok: false, cancelled: true });
+    }
+  };
+}
+
+function markRealtimeVoiceFailure(turn, failure) {
+  if (!turn || turn.closed || realtimeVoiceTurn !== turn) return;
+  const normalized = {
+    reason: String(failure?.reason || "voice_realtime_failed"),
+    message: String(failure?.message || "实时语音链路暂时不可用。"),
+    terminal: Boolean(failure?.terminal),
+    committed: Boolean(failure?.committed || turn.committed)
+  };
+  if (!normalized.terminal) {
+    setRuntimeStatus(normalized.message, { mode: "error" });
+    return;
+  }
+  turn.failure = normalized;
+  if (!normalized.committed) turn.session?.dispose(normalized.reason);
+  if (normalized.committed) {
+    finishRealtimeVoiceTurn(turn, { ok: false, message: normalized.message });
+    return;
+  }
+  if (voiceInputState === "recording") {
+    setRuntimeStatus("实时链路不可用，录完后改用普通识别", { mode: "listening" });
+    return;
+  }
+  if (turn.fallbackBlob) void fallbackRealtimeVoiceToBatch(turn);
+}
+
+async function fallbackRealtimeVoiceToBatch(turn) {
+  if (!turn || turn.closed || turn.committed || turn.fallbackStarted) return;
+  const blob = turn.fallbackBlob;
+  if (!blob || blob.size < 512) {
+    finishRealtimeVoiceTurn(turn, { ok: false, message: "录音太短啦，我没听清。" });
+    return;
+  }
+  turn.fallbackStarted = true;
+  turn.responseActive = false;
+  sending = false;
+  turn.session?.dispose("batch_asr_fallback");
+  setRuntimeStatus("实时链路不可用，改用普通语音识别", { mode: "thinking" });
+  try {
+    await transcribeVoiceBlob(blob);
+  } finally {
+    turn.closed = true;
+    if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+function finishRealtimeVoiceTurn(turn, { ok, message = "", cancelled = false }) {
+  if (!turn || turn.closed || realtimeVoiceTurn !== turn) return;
+  turn.closed = true;
+  turn.responseActive = false;
+  turn.playbackActive = false;
+  turn.fallbackBlob = null;
+  sending = false;
+  turn.session?.dispose(cancelled ? "response_cancelled" : "response_terminal");
+  realtimeVoiceTurn = null;
+  setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  if (!ok && !cancelled) {
+    showError(message || "这次语音回复没有生成完成。");
+  } else if (ok) {
+    if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+      setRestingPetEmotion();
+    }
+    setRuntimeStatus("语音回复完成", { mode: "idle" });
+  }
+  if (!els.bubble.classList.contains("visible")) setPetMotion("idle");
+  scheduleMusicEmotionRestore();
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function closeRealtimeVoiceTurn(turn, reason) {
+  if (!turn || turn.closed) return;
+  const hadActiveResponse = turn.responseActive || turn.playbackActive;
+  turn.closed = true;
+  turn.responseActive = false;
+  turn.playbackActive = false;
+  turn.fallbackBlob = null;
+  void turn.session?.cancel(reason);
+  if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
+  if (hadActiveResponse) {
+    sending = false;
+    if (voiceInputState === "processing") {
+      setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+    }
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+function stopVoiceRecorderToBlob(recorder) {
+  return new Promise((resolve, reject) => {
+    const handleStop = () => {
+      cleanup();
+      const mimeType = recorder.mimeType || voiceMimeType || "audio/webm";
+      resolve(new Blob(voiceChunks, { type: mimeType }));
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("voice_recording_failed"));
+    };
+    const cleanup = () => {
+      recorder.removeEventListener("stop", handleStop);
+      recorder.removeEventListener("error", handleError);
+    };
+    recorder.addEventListener("stop", handleStop, { once: true });
+    recorder.addEventListener("error", handleError, { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
 }
 
 async function transcribeVoiceBlob(blob) {
@@ -5278,6 +5617,15 @@ function interruptReply({ announce = false } = {}) {
   activeTurnToken += 1;
   sending = false;
 
+  if (
+    realtimeVoiceTurn?.responseActive ||
+    realtimeVoiceTurn?.playbackActive ||
+    voiceInputState === "processing"
+  ) {
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "user_stopped_reply");
+    setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  }
+
   if (thinkController) {
     thinkController.abort();
     thinkController = null;
@@ -5325,7 +5673,14 @@ function isTurnActive(turnToken) {
 }
 
 function isReplyActive() {
-  return sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive;
+  return (
+    sending ||
+    ttsActive ||
+    ttsQueue.length > 0 ||
+    replyDisplayActive ||
+    Boolean(realtimeVoiceTurn?.responseActive) ||
+    Boolean(realtimeVoiceTurn?.playbackActive)
+  );
 }
 
 function isAbortLike(error) {
@@ -6496,7 +6851,7 @@ function restoreMotionAfterBubble() {
     visualRenderer.setMotion("thrown");
     return;
   }
-  visualRenderer.setMotion(ttsActive ? "speaking" : "idle");
+  visualRenderer.setMotion(ttsActive || realtimeVoiceTurn?.playbackActive ? "speaking" : "idle");
 }
 
 function showFileDropHint() {

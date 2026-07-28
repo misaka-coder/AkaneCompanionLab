@@ -557,14 +557,15 @@ capcore-adapter-speech provider session
 - Akane 已有默认关闭的 `build_voice_asr_provider()` 装配门面，并结构化区分
   `disabled / missing_config / invalid_config / ready`。
 
-本切片仍未激活 QQ 或桌宠麦克风采集端，也没有使用真实用户录音做云端调用。
-后续仍需增加浏览器 AudioWorklet 捕获和可重放测试夹具，再做脱敏音频 A/B；
-不能把现有 WebM 文件上传字节直接标成 PCM 发送。
+QQ 麦克风采集端仍未激活，也没有使用真实用户录音做云端调用。浏览器
+AudioWorklet 捕获和真实播放 ACK 已接入 `desktop_pet_next`；后续仍需增加
+可重放 PCM 输入夹具，再做脱敏音频 A/B。现有 WebM 文件上传字节不会被标成
+PCM 发送。
 
-provider builder 已由 `BotRuntime` 的实时语音服务调用，但旧 `/asr` 和桌宠
-麦克风仍未切换到它。当前测试覆盖协议夹具、人工 revision 和 production host
-装配，不代表中文、专名、噪声、回声等真实音频准确率已经验收；在桌宠增加
-AudioWorklet 前，用户当前仍使用旧文件式语音输入。
+provider builder 已由 `BotRuntime` 的实时语音服务调用，桌宠也已具备新入口客户端；
+旧 `/asr` 继续作为实时链路在 final 提交前失败时的明确降级通道。当前测试覆盖
+协议夹具、人工 revision、production host 装配和客户端播放队列，不代表中文、
+专名、噪声、回声等真实音频准确率已经验收。
 
 2026-07-28 的真实专属业务空间 smoke 已验证：
 
@@ -601,8 +602,9 @@ provider open/finalize 失败继续结构化写入同一语音轮，不能静默
 - normalizer 不拥有麦克风权限、VAD、endpointing 或模型调用；这些仍由宿主
   输入层和 Voice Runtime 协调。
 
-因此当前桌宠的 `MediaRecorder → 整段 WebM → /asr` 行为不会被这次切片改变；
-它仍作为明确的批量降级通道。
+桌宠仍会为同一段录音保留 `MediaRecorder → 整段 WebM → /asr` 安全副本，但
+WebM 只进入批量降级通道，绝不会改名或送进实时 PCM 入口。收到已提交的
+`server.final` 后立即丢弃安全副本，避免同一用户语音重复写入 MemCore。
 
 2026-07-28 增加了独立的 `/voice/realtime` WebSocket 传输契约。该入口不把
 传输协议变成第二套语音状态机，只负责把有序 PCM 帧交给
@@ -729,10 +731,15 @@ VoiceCore durable command
   `speech_segment → TTS → playback ACK`。缺少客户端 ACK 时，
   `enqueue_playback` 保持 pending，不会伪造 queued/started/completed。
 
-当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是在
-`desktop_pet_next` 实现 AudioWorklet PCM 捕获、二进制音频播放队列和真实 ACK，
-并在实时入口不可用时自动降级回 MediaRecorder `/asr`；服务端协议测试通过不等于
-用户当前已经能听到这条新链路。
+2026-07-28，`desktop_pet_next` 已在本地接入该入口：AudioWorklet 以约 20ms
+的 `f32le` 单声道帧发送，WebSocket 依次发送帧头和 binary PCM；服务端音频由
+同一个 `voice-player` 串行播放，并且只在真实入队、`play()` 成功、`ended` 或
+播放失败/中断后发送对应 ACK。MediaRecorder 同步保留安全副本，但只有
+`server.final` 之前失败才回退旧 `/asr`，不会重复提交已经进入 VoiceCore/MemCore
+的语音轮。语音输出关闭或 WebView 不支持 AudioWorklet 时仍保持旧听写体验。
+
+这一客户端切片已通过 Vite build、前端契约测试和可执行播放队列 smoke；尚未部署
+云端，也尚未完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS 全链路人工验收。
 
 ### Slice C：播放和语义打断
 

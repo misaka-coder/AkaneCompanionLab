@@ -308,6 +308,30 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
             main_source.index("await playPreparedTtsAudio(prepared.audio, token);"),
         )
 
+    def test_next_realtime_voice_uses_pcm_and_real_playback_acknowledgements(self) -> None:
+        main_source = _read("desktop_pet_next/src/main.js")
+        client_source = _read("desktop_pet_next/src/realtime-voice-client.js")
+        worklet_source = _read("desktop_pet_next/src/voice-pcm-worklet.js")
+
+        self.assertIn("new RealtimeVoiceSession", main_source)
+        self.assertIn('buildBackendEndpointUrl("voiceRealtime", "/voice/realtime"', main_source)
+        self.assertIn("fallbackRealtimeVoiceToBatch", main_source)
+        self.assertIn("turn.fallbackBlob = turn.committed ? null : blob", main_source)
+        self.assertIn('format: "f32le"', client_source)
+        self.assertIn('type: "client.audio"', client_source)
+        self.assertIn('type: "client.endpoint"', client_source)
+        self.assertIn('type: "client.playback.enqueued"', client_source)
+        self.assertIn('type: "client.playback.started"', client_source)
+        self.assertIn('"client.playback.completed"', client_source)
+        self.assertLess(
+            client_source.index("await audioElement.play();"),
+            client_source.index('type: "client.playback.started"'),
+        )
+        self.assertIn('audioElement.addEventListener("ended"', client_source)
+        self.assertIn('registerProcessor("akane-voice-pcm-capture"', worklet_source)
+        self.assertIn("new Float32Array", worklet_source)
+        self.assertNotIn("MediaRecorder", worklet_source)
+
     def test_next_tauri_heavy_file_commands_run_on_blocking_worker(self) -> None:
         tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
         blocking_commands = [
