@@ -3152,7 +3152,8 @@ async function openRealtimeVoiceCallTurn(call) {
     fallbackBlob: null,
     finalWatchdogId: 0,
     closed: false,
-    hasShownSpeech: false
+    hasShownSpeech: false,
+    earlyShownDeliveryId: ""
   };
   call.nextTurnId += 1;
   call.turns.add(turn);
@@ -3342,6 +3343,40 @@ async function handleRealtimeVoiceCallEndpoint(turn, endpoint) {
   await turn.endpointTask;
 }
 
+function showFirstRealtimeVoicePlaybackText(turn, header) {
+  const text = String(header?.text || "").trim();
+  if (!text || turn.hasShownSpeech) return false;
+  turn.hasShownSpeech = true;
+  turn.earlyShownDeliveryId = String(header?.delivery_id || "").trim();
+  if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+    setRestingPetEmotion();
+  }
+  showBubbleText(text, {
+    dismiss: true,
+    kind: "reply"
+  });
+  return true;
+}
+
+function showStartedRealtimeVoicePlaybackText(turn, header) {
+  const text = String(header?.text || "").trim();
+  const deliveryId = String(header?.delivery_id || "").trim();
+  turn.hasShownSpeech = turn.hasShownSpeech || Boolean(text);
+  setPetMotion("speaking");
+  if (text && deliveryId && deliveryId === turn.earlyShownDeliveryId) {
+    window.clearTimeout(bubbleTimer);
+    scheduleBubbleReset(Math.max(text.length, 4), bubbleToken);
+    return;
+  }
+  if (text) {
+    showBubbleText(text, {
+      dismiss: true,
+      speaking: true,
+      kind: "reply"
+    });
+  }
+}
+
 function buildRealtimeVoiceCallCallbacks(turn) {
   const isCurrent = () => isActiveRealtimeCallTurn(turn);
   return {
@@ -3379,22 +3414,18 @@ function buildRealtimeVoiceCallCallbacks(turn) {
       updateActivityControls();
       scheduleSettingsSnapshot();
     },
-    onPlaybackEnqueued() {
+    onPlaybackEnqueued(header) {
       if (!isCurrent()) return;
+      showFirstRealtimeVoicePlaybackText(turn, header);
       setRuntimeStatus("语音已生成，准备播放", { mode: "speaking" });
     },
     onPlaybackStarted(header) {
       if (!isCurrent()) return;
       turn.playbackActive = true;
-      turn.hasShownSpeech = true;
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setRestingPetEmotion();
       }
-      showBubbleText(String(header?.text || ""), {
-        dismiss: true,
-        speaking: true,
-        kind: "reply"
-      });
+      showStartedRealtimeVoicePlaybackText(turn, header);
       setRuntimeStatus("语音通话中 · 她正在说", { mode: "speaking" });
       updateActivityControls();
     },
@@ -3701,7 +3732,8 @@ function startRealtimeVoiceTurn(stream) {
     fallbackStarted: false,
     finalWatchdogId: 0,
     closed: false,
-    hasShownSpeech: false
+    hasShownSpeech: false,
+    earlyShownDeliveryId: ""
   };
   realtimeVoiceTurn = turn;
 
@@ -3784,22 +3816,18 @@ function buildRealtimeVoiceCallbacks(turn) {
       updateActivityControls();
       scheduleSettingsSnapshot();
     },
-    onPlaybackEnqueued() {
+    onPlaybackEnqueued(header) {
       if (!isCurrent()) return;
+      showFirstRealtimeVoicePlaybackText(turn, header);
       setRuntimeStatus("语音已生成，准备播放", { mode: "speaking" });
     },
     onPlaybackStarted(header) {
       if (!isCurrent()) return;
       turn.playbackActive = true;
-      turn.hasShownSpeech = true;
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setRestingPetEmotion();
       }
-      showBubbleText(String(header?.text || ""), {
-        dismiss: true,
-        speaking: true,
-        kind: "reply"
-      });
+      showStartedRealtimeVoicePlaybackText(turn, header);
       setRuntimeStatus("语音回复中", { mode: "speaking" });
       updateActivityControls();
     },

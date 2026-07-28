@@ -4876,9 +4876,10 @@ class AkaneMemoryEngine:
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         normalized: dict[str, Any] = {}
         provider_output_raw = ""
+        retry_feedback = ""
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = self._final_response_retry_note(attempt)
+            retry_note = self._final_response_retry_note(attempt, retry_feedback)
             retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
                 generation_context=generation_context,
                 retry_note=retry_note,
@@ -4937,6 +4938,18 @@ class AkaneMemoryEngine:
                 if provider_output_raw:
                     normalized["_provider_output_raw"] = provider_output_raw
                 return normalized
+            retry_feedback = self._final_response_retry_feedback(
+                raw_result=result,
+                normalized=normalized,
+                parse_fallback=parse_fallback,
+            )
+            self._log_final_response_retry(
+                prompt_scope=str(generation_context.get("prompt_scope") or ""),
+                attempt=attempt,
+                feedback=retry_feedback,
+                raw_result=result,
+                provider_output_raw=provider_output_raw,
+            )
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
         normalized["_transient_final_failure"] = True
@@ -4950,14 +4963,70 @@ class AkaneMemoryEngine:
         return max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
 
     @staticmethod
-    def _final_response_retry_note(attempt: int) -> str:
+    def _final_response_retry_note(attempt: int, feedback: str = "") -> str:
         if attempt <= 1:
             return ""
+        issue = {
+            "result_not_object": "上一次输出不是规定的 JSON 对象。",
+            "json_parse_fallback": "上一次输出没有被解析为规定的完整 JSON 对象。",
+            "speech_missing": "上一次 JSON 缺少 `speech` 字段。",
+            "speech_wrong_type": "上一次 JSON 的 `speech` 不是字符串。",
+            "speech_empty": "上一次 JSON 的 `speech` 是空字符串。",
+            "speech_unusable": "上一次输出经规范化后没有形成可交付的 `speech`。",
+            "placeholder_reply": "上一次 `speech` 只是处理中或未完成的占位答复。",
+        }.get(feedback, "上一次生成没有形成有效、可交付的最终答复。")
+        repeated = "相同结构问题已经重复出现；" if attempt >= 3 else ""
         return (
-            "【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
-            "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
-            "speech 必须是本轮真正给用户的完整答复，不要留空，也不要只输出通用兜底语、"
-            "处理中占位语或未完成声明。是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
+            f"【最终答复修复重试】{issue}{repeated}"
+            "请重新输出规定的完整 JSON 对象，并实际写入字符串字段"
+            '`"speech":"这里直接写本轮给用户的完整答复"`；'
+            "先完成 speech 正文，再填写其余规定字段，不要照抄示例文字、留空、"
+            "只写处理中占位语或未完成声明。是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
+        )
+
+    @staticmethod
+    def _final_response_retry_feedback(
+        *,
+        raw_result: Any,
+        normalized: Any,
+        parse_fallback: bool,
+    ) -> str:
+        if parse_fallback:
+            return "json_parse_fallback"
+        if not isinstance(raw_result, dict):
+            return "result_not_object"
+        if "speech" not in raw_result:
+            return "speech_missing"
+        raw_speech = raw_result.get("speech")
+        if not isinstance(raw_speech, str):
+            return "speech_wrong_type"
+        if not raw_speech.strip():
+            return "speech_empty"
+        if not isinstance(normalized, dict) or not str(normalized.get("speech") or "").strip():
+            return "speech_unusable"
+        return "placeholder_reply"
+
+    @staticmethod
+    def _log_final_response_retry(
+        *,
+        prompt_scope: str,
+        attempt: int,
+        feedback: str,
+        raw_result: Any,
+        provider_output_raw: str,
+    ) -> None:
+        raw_keys = sorted(str(key)[:80] for key in raw_result)[:24] if isinstance(raw_result, dict) else []
+        raw_text = str(provider_output_raw or "")
+        logger.warning(
+            "final response unusable prompt_scope=%s attempt=%s reason=%s "
+            "raw_type=%s raw_keys=%s raw_chars=%s raw_sha256=%s",
+            str(prompt_scope or "default")[:80],
+            attempt,
+            feedback,
+            type(raw_result).__name__,
+            raw_keys,
+            len(raw_text),
+            hashlib.sha256(raw_text.encode("utf-8", errors="ignore")).hexdigest()[:16] if raw_text else "",
         )
 
     @staticmethod
@@ -5131,9 +5200,10 @@ class AkaneMemoryEngine:
         unrecovered_stream_partial: dict[str, str] = {}
         provider_output_raw = ""
         final_parse_fallback = False
+        retry_feedback = ""
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = self._final_response_retry_note(attempt)
+            retry_note = self._final_response_retry_note(attempt, retry_feedback)
             retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
                 generation_context=generation_context,
                 retry_note=retry_note,
@@ -5240,6 +5310,18 @@ class AkaneMemoryEngine:
             buffered_events = current_events
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 break
+            retry_feedback = self._final_response_retry_feedback(
+                raw_result=getattr(stream_result, "parsed", None),
+                normalized=normalized,
+                parse_fallback=parse_fallback,
+            )
+            self._log_final_response_retry(
+                prompt_scope=str(generation_context.get("prompt_scope") or ""),
+                attempt=attempt,
+                feedback=retry_feedback,
+                raw_result=getattr(stream_result, "parsed", None),
+                provider_output_raw=provider_output_raw,
+            )
             # Once speech has reached the UI/TTS pipeline, retrying the entire
             # response would expose duplicate or contradictory text. Keep the
             # partial normalized result and mark it as transient below instead

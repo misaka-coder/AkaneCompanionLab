@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import contextvars
 from datetime import datetime
+import json
 from pathlib import Path
 import tempfile
 import threading
@@ -2096,8 +2097,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     }
                 )
                 self.assert_observed = observed
-                speech = "retry" if len(self.calls) == 1 else "完成"
-                return SimpleNamespace(parsed={"speech": speech}, raw_text=f'{{"speech":"{speech}"}}', error="")
+                retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
+                parsed = (
+                    {"emotion": "normal"}
+                    if len(self.calls) == 1 or "缺少 `speech` 字段" not in retry_tail
+                    else {"emotion": "normal", "speech": "完成"}
+                )
+                return SimpleNamespace(parsed=parsed, raw_text=json.dumps(parsed, ensure_ascii=False), error="")
 
         manager = RecordingManager()
         llm = RetryingLLM()
@@ -2130,7 +2136,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
         engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
         engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
-        engine._is_retryable_final_output = lambda output, **_kwargs: output.get("speech") == "retry"
 
         result = engine._build_final_response(
             session_id="private:u1",
@@ -2153,7 +2158,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(llm.calls[1]["ephemeral_turns"][0], llm.calls[0]["ephemeral_turns"][0])
         self.assertIn("最终答复修复重试", llm.calls[1]["ephemeral_turns"][-1]["content"])
-        self.assertIn("speech 必须是本轮真正给用户的完整答复", llm.calls[1]["ephemeral_turns"][-1]["content"])
+        self.assertIn("缺少 `speech` 字段", llm.calls[1]["ephemeral_turns"][-1]["content"])
+        self.assertIn('"speech":"这里直接写本轮给用户的完整答复"', llm.calls[1]["ephemeral_turns"][-1]["content"])
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
@@ -2205,14 +2211,19 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     }
                 )
                 self.assert_observed = observed
-                speech = "retry" if len(self.calls) == 1 else "完成"
+                retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
+                parsed = (
+                    {"emotion": "normal", "speech": ""}
+                    if len(self.calls) == 1 or "`speech` 是空字符串" not in retry_tail
+                    else {"emotion": "normal", "speech": "完成"}
+                )
 
                 def generate():
                     if False:
                         yield {}
                     return SimpleNamespace(
-                        parsed={"speech": speech},
-                        raw_text=f'{{"speech":"{speech}"}}',
+                        parsed=parsed,
+                        raw_text=json.dumps(parsed, ensure_ascii=False),
                         error="",
                         latest_emotion="",
                         latest_speech="",
@@ -2254,7 +2265,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
         engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
         engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
-        engine._is_retryable_final_output = lambda output, **_kwargs: output.get("speech") == "retry"
 
         stream = engine._stream_final_response(
             session_id="private:u1",
@@ -2285,6 +2295,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "最终答复修复重试",
             llm.calls[1]["ephemeral_turns"][-1]["content"],
         )
+        self.assertIn("`speech` 是空字符串", llm.calls[1]["ephemeral_turns"][-1]["content"])
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
