@@ -755,6 +755,12 @@ VoiceCore durable command
 `server.final` 之前失败才回退旧 `/asr`，不会重复提交已经进入 VoiceCore/MemCore
 的语音轮。语音输出关闭或 WebView 不支持 AudioWorklet 时仍保持旧听写体验。
 
+客户端库现已增加通话级资源所有权：`RealtimeVoiceCallResources` 持有一场通话
+唯一的麦克风流和播放器，不同语音轮各自保留 WebSocket/ACK 通道，但音频交付由
+通话级仲裁器串行取得播放器所有权。结束单轮只注销该轮播放队列，不停止麦克风
+轨道；只有结束整场通话才停止轨道并清空播放器。当前按钮尚未切换成持续通话，
+因此该边界已通过双轮 smoke 验证，但还没有宣称自动连续收音已经交付。
+
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
 全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能
@@ -801,8 +807,9 @@ final 先到时只记录提交意图，不先生成普通回复；`treat_as_inte
 当前仍未把声学活动自动转换为 `voice.interruption.suspected`，也尚未启用
 `prepare_candidate/prepare_backchannel` 的推测式回复闭环，因此这一步不宣称自动
 VAD 抢话或候选音频已经可用；现阶段 semantic pulse 的 `response_action` 固定为
-`none`。桌宠当前的单轮 WebSocket 仍把输入与播放生命周期绑在一起；在改成可
-审计的多轮/重叠会话并统一播放器所有权前，不把音量阈值直接接成自动打断。
+`none`。播放器所有权已经提升到通话级，但桌宠当前仍按单轮创建和停止
+AudioWorklet/MediaRecorder；下一步要让持续采音把帧显式路由给当前 Input Turn，
+再接自动 endpoint/VAD。完成这道边界前，不把音量阈值直接接成自动打断。
 
 ### Slice C：播放和语义打断
 

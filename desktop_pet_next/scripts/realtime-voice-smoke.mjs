@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  RealtimeVoiceCallResources,
   RealtimeVoicePlaybackQueue,
   RealtimeVoiceSession,
   buildVoiceWebSocketUrl
@@ -201,6 +202,99 @@ const receiptCount = controlled.length;
 assert.equal(controlQueue.applyControl(stopControl), true);
 assert.equal(controlled.length, receiptCount + 1);
 assert.equal(controlled.at(-1).control_id, "control-stop");
+
+const sharedAudio = new FakeAudioElement();
+const sharedTrack = {
+  stopCalls: 0,
+  stop() {
+    this.stopCalls += 1;
+  }
+};
+const callResources = new RealtimeVoiceCallResources({
+  mediaStream: { getTracks: () => [sharedTrack] },
+  audioElement: sharedAudio
+});
+const firstTurnEvents = [];
+const secondTurnEvents = [];
+const firstTurnQueue = callResources.createPlaybackQueue({
+  sendJson: (payload) => firstTurnEvents.push(payload),
+  BlobImpl: FakeBlob,
+  createObjectUrl: () => "blob:call-turn-1",
+  revokeObjectUrl: () => {},
+  now: () => 3000
+});
+const secondTurnQueue = callResources.createPlaybackQueue({
+  sendJson: (payload) => secondTurnEvents.push(payload),
+  BlobImpl: FakeBlob,
+  createObjectUrl: () => "blob:call-turn-2",
+  revokeObjectUrl: () => {},
+  now: () => 3000
+});
+firstTurnQueue.enqueue(
+  { ...speechHeader, delivery_id: "delivery-call-turn-1" },
+  new Uint8Array([1, 2, 3, 4]).buffer
+);
+secondTurnQueue.enqueue(
+  { ...speechHeader, delivery_id: "delivery-call-turn-2" },
+  new Uint8Array([5, 6, 7, 8]).buffer
+);
+await tick();
+assert.equal(sharedAudio.playCalls, 1);
+assert.equal(sharedAudio.src, "blob:call-turn-1");
+assert.deepEqual(
+  secondTurnEvents.map((item) => item.type),
+  ["client.playback.enqueued"]
+);
+sharedAudio.dispatch("ended");
+await tick();
+assert.equal(sharedAudio.playCalls, 2);
+assert.equal(sharedAudio.src, "blob:call-turn-2");
+assert.deepEqual(
+  secondTurnEvents.map((item) => item.type),
+  ["client.playback.enqueued", "client.playback.started"]
+);
+assert.equal(sharedTrack.stopCalls, 0);
+firstTurnQueue.close("turn_complete");
+assert.equal(sharedTrack.stopCalls, 0);
+sharedAudio.dispatch("ended");
+callResources.close();
+assert.equal(sharedTrack.stopCalls, 1);
+assert.equal(sharedAudio.src, "");
+
+const borrowedTrack = {
+  stopCalls: 0,
+  stop() {
+    this.stopCalls += 1;
+  }
+};
+const borrowedResources = new RealtimeVoiceCallResources({
+  mediaStream: { getTracks: () => [borrowedTrack] },
+  audioElement: new FakeAudioElement()
+});
+const borrowedSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: borrowedResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: {
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:borrowed-session",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 4000 }
+  }
+});
+borrowedSession.sendJson = () => true;
+borrowedSession.handleServerEvent({ type: "server.ready" });
+assert.equal(borrowedResources.playbackQueues.size, 1);
+assert.equal(borrowedSession.playbackQueue.audioElement, borrowedResources.audioElement);
+borrowedSession.dispose("response_terminal");
+await tick();
+assert.equal(borrowedResources.playbackQueues.size, 0);
+assert.equal(borrowedTrack.stopCalls, 0);
+borrowedResources.close();
+assert.equal(borrowedTrack.stopCalls, 1);
 
 const endpointFailureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",

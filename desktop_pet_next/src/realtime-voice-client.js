@@ -35,7 +35,8 @@ export class RealtimeVoicePlaybackQueue {
     createObjectUrl = (blob) => URL.createObjectURL(blob),
     revokeObjectUrl = (url) => URL.revokeObjectURL(url),
     BlobImpl = Blob,
-    now = () => performance.now()
+    now = () => performance.now(),
+    playbackAuthority = null
   }) {
     if (!audioElement) throw new Error("voice_playback_audio_element_missing");
     this.audioElement = audioElement;
@@ -47,6 +48,7 @@ export class RealtimeVoicePlaybackQueue {
     this.revokeObjectUrl = revokeObjectUrl;
     this.BlobImpl = BlobImpl;
     this.now = now;
+    this.playbackAuthority = playbackAuthority;
     this.queue = [];
     this.current = null;
     this.controlReceipts = new Map();
@@ -89,6 +91,7 @@ export class RealtimeVoicePlaybackQueue {
 
   async playNext() {
     if (this.closed || this.current || !this.queue.length) return;
+    if (this.playbackAuthority && !this.playbackAuthority.acquirePlayback(this)) return;
     const item = this.queue.shift();
     this.current = item;
     const { audioElement } = this;
@@ -218,7 +221,7 @@ export class RealtimeVoicePlaybackQueue {
     if (receipt.status === "failed") {
       this.notify("onPlaybackControlFailed", control, receipt.reason);
     }
-    if (action === "stop" && receipt.status === "applied") void this.playNext();
+    if (action === "stop" && receipt.status === "applied") this.continuePlayback();
     return receipt.status === "applied";
   }
 
@@ -237,9 +240,13 @@ export class RealtimeVoicePlaybackQueue {
     if (this.closed) return;
     this.closed = true;
     this.interrupt(reason);
-    this.audioElement.pause();
-    this.audioElement.removeAttribute("src");
-    this.audioElement.load?.();
+    if (this.playbackAuthority) {
+      this.playbackAuthority.unregisterPlaybackQueue(this);
+    } else {
+      this.audioElement.pause();
+      this.audioElement.removeAttribute("src");
+      this.audioElement.load?.();
+    }
   }
 
   finishCurrent(kind, reason = "") {
@@ -264,7 +271,15 @@ export class RealtimeVoicePlaybackQueue {
       this.notify("onPlaybackFailed", item.header, reason || "audio_playback_failed");
     }
     this.releaseItem(item);
-    void this.playNext();
+    this.continuePlayback();
+  }
+
+  continuePlayback() {
+    if (!this.closed && this.queue.length) {
+      void this.playNext();
+      return;
+    }
+    this.playbackAuthority?.releasePlayback(this);
   }
 
   sendTerminal(type, header, extra) {
@@ -289,11 +304,86 @@ export class RealtimeVoicePlaybackQueue {
   }
 }
 
+export class RealtimeVoiceCallResources {
+  constructor({ mediaStream, audioElement }) {
+    if (!mediaStream) throw new Error("voice_call_media_stream_missing");
+    if (!audioElement) throw new Error("voice_call_audio_element_missing");
+    this.mediaStream = mediaStream;
+    this.audioElement = audioElement;
+    this.playbackQueues = new Set();
+    this.playbackWaiters = new Set();
+    this.playbackOwner = null;
+    this.closed = false;
+  }
+
+  createPlaybackQueue(options = {}) {
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    const queue = new RealtimeVoicePlaybackQueue({
+      ...options,
+      audioElement: this.audioElement,
+      playbackAuthority: this
+    });
+    this.playbackQueues.add(queue);
+    return queue;
+  }
+
+  acquirePlayback(queue) {
+    if (this.closed || !this.playbackQueues.has(queue) || queue?.closed) return false;
+    if (!this.playbackOwner || this.playbackOwner === queue) {
+      this.playbackOwner = queue;
+      this.playbackWaiters.delete(queue);
+      return true;
+    }
+    this.playbackWaiters.add(queue);
+    return false;
+  }
+
+  releasePlayback(queue) {
+    this.playbackWaiters.delete(queue);
+    if (this.playbackOwner !== queue) return;
+    this.playbackOwner = null;
+    this.promotePlaybackWaiter();
+  }
+
+  unregisterPlaybackQueue(queue) {
+    this.playbackQueues.delete(queue);
+    this.playbackWaiters.delete(queue);
+    if (this.playbackOwner === queue) {
+      this.playbackOwner = null;
+      this.promotePlaybackWaiter();
+    }
+  }
+
+  promotePlaybackWaiter() {
+    if (this.closed || this.playbackOwner) return;
+    for (const queue of this.playbackWaiters) {
+      this.playbackWaiters.delete(queue);
+      if (queue?.closed || !this.playbackQueues.has(queue)) continue;
+      void queue.playNext();
+      return;
+    }
+  }
+
+  close(reason = "voice_call_closed") {
+    if (this.closed) return;
+    this.closed = true;
+    for (const queue of [...this.playbackQueues]) queue.close(reason);
+    this.playbackQueues.clear();
+    this.playbackWaiters.clear();
+    this.playbackOwner = null;
+    this.audioElement.pause();
+    this.audioElement.removeAttribute("src");
+    this.audioElement.load?.();
+    for (const track of this.mediaStream?.getTracks?.() || []) track.stop();
+  }
+}
+
 export class RealtimeVoiceSession {
   constructor({
     websocketUrl,
     mediaStream,
     audioElement,
+    callResources = null,
     openPayload,
     workletModuleUrl,
     getVolume = () => 1,
@@ -302,8 +392,9 @@ export class RealtimeVoiceSession {
     scope = globalThis
   }) {
     this.websocketUrl = websocketUrl;
-    this.mediaStream = mediaStream;
-    this.audioElement = audioElement;
+    this.callResources = callResources;
+    this.mediaStream = callResources?.mediaStream || mediaStream;
+    this.audioElement = callResources?.audioElement || audioElement;
     this.openPayload = openPayload;
     this.workletModuleUrl = workletModuleUrl;
     this.getVolume = getVolume;
@@ -526,8 +617,7 @@ export class RealtimeVoiceSession {
     const type = String(payload?.type || "");
     if (type === "server.ready") {
       this.ready = true;
-      this.playbackQueue = new RealtimeVoicePlaybackQueue({
-        audioElement: this.audioElement,
+      const playbackQueueOptions = {
         sendJson: (message) => this.sendJson(message),
         getVolume: this.getVolume,
         callbacks: this.callbacks,
@@ -535,7 +625,13 @@ export class RealtimeVoiceSession {
         createObjectUrl: (blob) => this.scope.URL.createObjectURL(blob),
         revokeObjectUrl: (url) => this.scope.URL.revokeObjectURL(url),
         now: () => this.scope.performance?.now?.() ?? Date.now()
-      });
+      };
+      this.playbackQueue = this.callResources
+        ? this.callResources.createPlaybackQueue(playbackQueueOptions)
+        : new RealtimeVoicePlaybackQueue({
+            ...playbackQueueOptions,
+            audioElement: this.audioElement
+          });
       for (const frame of this.pendingFrames.splice(0)) this.sendPcmFrame(frame);
       this.notify("onReady", payload);
       this.resolveReady?.();
