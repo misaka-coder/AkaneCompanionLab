@@ -36,6 +36,7 @@ import {
   resolveCareFeatureFromHealth
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
+import { segmentSpeechForDelivery } from "./speech-delivery.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
 
@@ -6717,51 +6718,10 @@ function buildSpeechTextKey(text) {
 
 function splitSpeechText(text) {
   const source = String(text || "").replace(/\r\n/g, "\n").trim();
-  if (!source || source.length <= CLIENT_SEGMENT_SOFT_LIMIT) return [source].filter(Boolean);
-
-  const sentenceChunks = source
-    .split(/\n+/)
-    .flatMap((line) => line.match(/[^。！？!?；;…]+[。！？!?；;…]*/g) || [line])
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  const segments = [];
-  let current = "";
-  const pushCurrent = () => {
-    if (!current.trim()) return;
-    segments.push(current.trim());
-    current = "";
-  };
-
-  for (const chunk of sentenceChunks) {
-    if (chunk.length > CLIENT_SEGMENT_SOFT_LIMIT * 1.6) {
-      pushCurrent();
-      segments.push(...hardWrapText(chunk, CLIENT_SEGMENT_SOFT_LIMIT));
-      continue;
-    }
-
-    const next = current ? `${current}${chunk}` : chunk;
-    if (current && next.length > CLIENT_SEGMENT_SOFT_LIMIT) {
-      pushCurrent();
-      current = chunk;
-    } else {
-      current = next;
-    }
-  }
-
-  pushCurrent();
-  return limitClientSegments(segments.filter(Boolean));
-}
-
-function hardWrapText(text, limit) {
-  const chunks = [];
-  let rest = String(text || "").trim();
-  while (rest.length > limit) {
-    chunks.push(rest.slice(0, limit).trim());
-    rest = rest.slice(limit).trim();
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
+  if (!source) return [];
+  return limitClientSegments(
+    segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT })
+  );
 }
 
 function limitClientSegments(segments) {
@@ -9559,7 +9519,11 @@ function buildTtsQueueItems(items, { preserveSegments = false } = {}) {
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
   if (!source.length) return [];
-  if (preserveSegments) return source;
+  if (preserveSegments) {
+    return source.flatMap((item) =>
+      item.length > TTS_CHUNK_SOFT_LIMIT ? splitTtsTextForLatency(item) : [item]
+    );
+  }
 
   const chunks = [];
   let current = "";
@@ -9592,18 +9556,7 @@ function buildTtsQueueItems(items, { preserveSegments = false } = {}) {
 function splitTtsTextForLatency(text) {
   const normalized = normalizeTtsText(text);
   if (!normalized) return [];
-  const phraseMatches = normalized.match(/[^。！？!?；;，,、…]+[。！？!?；;，,、…]?/g) || [normalized];
-  const pieces = [];
-  for (const phrase of phraseMatches) {
-    const cleanPhrase = normalizeTtsText(phrase);
-    if (!cleanPhrase) continue;
-    if (cleanPhrase.length <= TTS_CHUNK_SOFT_LIMIT) {
-      pieces.push(cleanPhrase);
-    } else {
-      pieces.push(...hardWrapText(cleanPhrase, TTS_CHUNK_SOFT_LIMIT));
-    }
-  }
-  return pieces.length ? pieces : [normalized];
+  return segmentSpeechForDelivery(normalized, { minChars: 1, maxChars: TTS_CHUNK_SOFT_LIMIT });
 }
 
 async function probeClickThrough(durationMs) {

@@ -295,14 +295,18 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("streamingReplySegmentKeys.clear()", main_source)
         self.assertIn("TTS_SLOW_REQUEST_MS", main_source)
         self.assertIn("const TTS_CHUNK_SOFT_LIMIT = 24", main_source)
+        self.assertIn('import { segmentSpeechForDelivery } from "./speech-delivery.js";', main_source)
         self.assertIn("function splitTtsTextForLatency(text)", main_source)
-        self.assertIn("hardWrapText(cleanPhrase, TTS_CHUNK_SOFT_LIMIT)", main_source)
+        self.assertIn(
+            "segmentSpeechForDelivery(normalized, { minChars: 1, maxChars: TTS_CHUNK_SOFT_LIMIT })",
+            main_source,
+        )
         self.assertIn(
             "function queueTtsItems(items, signature = \"\", { append = false, preserveSegments = false } = {})",
             main_source,
         )
         self.assertIn("function buildTtsQueueItems(items, { preserveSegments = false } = {})", main_source)
-        self.assertIn("if (preserveSegments) return source;", main_source)
+        self.assertIn("item.length > TTS_CHUNK_SOFT_LIMIT ? splitTtsTextForLatency(item) : [item]", main_source)
         self.assertIn("queueTtsItems(normalized, signature);", main_source)
         self.assertIn("ttsQueue.push(...nextItems)", main_source)
         self.assertIn('setRuntimeStatus("语音生成中..."', main_source)
