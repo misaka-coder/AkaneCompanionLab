@@ -61,6 +61,111 @@ class FakeAudioElement {
   }
 }
 
+class FakeAudioNode {
+  constructor() {
+    this.connectCalls = 0;
+    this.disconnectCalls = 0;
+  }
+
+  connect() {
+    this.connectCalls += 1;
+  }
+
+  disconnect() {
+    this.disconnectCalls += 1;
+  }
+}
+
+class FakeCapturePort {
+  constructor({ acknowledge = true } = {}) {
+    this.onmessage = null;
+    this.messages = [];
+    this.acknowledge = acknowledge;
+  }
+
+  postMessage(payload) {
+    this.messages.push(payload);
+    const type = String(payload?.type || "");
+    if (!this.acknowledge) return;
+    if (type === "flush") this.emit({ type: "flushed" });
+    if (type === "reset") this.emit({ type: "reset" });
+    if (type === "stop") this.emit({ type: "stopped" });
+  }
+
+  emit(data) {
+    this.onmessage?.({ data });
+  }
+
+  emitPcm(values) {
+    const frame = new Float32Array(values);
+    this.emit({
+      type: "pcm",
+      frames: frame.length,
+      buffer: frame.buffer
+    });
+  }
+}
+
+function buildFakeCaptureScope({ acknowledge = true } = {}) {
+  const contexts = [];
+  const workletNodes = [];
+
+  class FakeAudioContext {
+    constructor() {
+      this.sampleRate = 16000;
+      this.state = "running";
+      this.closeCalls = 0;
+      this.loadedModules = [];
+      this.destination = new FakeAudioNode();
+      this.audioWorklet = {
+        addModule: async (url) => {
+          this.loadedModules.push(url);
+        }
+      };
+      contexts.push(this);
+    }
+
+    createMediaStreamSource() {
+      return new FakeAudioNode();
+    }
+
+    createGain() {
+      const node = new FakeAudioNode();
+      node.gain = { value: 1 };
+      return node;
+    }
+
+    async close() {
+      this.closeCalls += 1;
+      this.state = "closed";
+    }
+  }
+
+  class FakeAudioWorkletNode extends FakeAudioNode {
+    constructor() {
+      super();
+      this.port = new FakeCapturePort({ acknowledge });
+      workletNodes.push(this);
+    }
+  }
+
+  return {
+    scope: {
+      AudioContext: FakeAudioContext,
+      AudioWorkletNode: FakeAudioWorkletNode,
+      setTimeout,
+      Blob: FakeBlob,
+      URL: {
+        createObjectURL: () => "blob:fake-capture",
+        revokeObjectURL: () => {}
+      },
+      performance: { now: () => 5000 }
+    },
+    contexts,
+    workletNodes
+  };
+}
+
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 assert.equal(
@@ -295,6 +400,104 @@ assert.equal(borrowedResources.playbackQueues.size, 0);
 assert.equal(borrowedTrack.stopCalls, 0);
 borrowedResources.close();
 assert.equal(borrowedTrack.stopCalls, 1);
+
+const captureTrack = {
+  stopCalls: 0,
+  stop() {
+    this.stopCalls += 1;
+  }
+};
+const captureResources = new RealtimeVoiceCallResources({
+  mediaStream: { getTracks: () => [captureTrack] },
+  audioElement: new FakeAudioElement()
+});
+const captureFakes = buildFakeCaptureScope();
+const firstCaptureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: captureResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: captureFakes.scope
+});
+await firstCaptureSession.startCapture();
+assert.equal(captureFakes.contexts.length, 1);
+assert.equal(captureFakes.workletNodes.length, 1);
+const sharedCapturePort = captureFakes.workletNodes[0].port;
+sharedCapturePort.emitPcm([0.1, 0.2]);
+assert.equal(firstCaptureSession.pendingFrames.length, 1);
+await firstCaptureSession.flushAndStopCapture();
+assert.equal(captureFakes.contexts[0].closeCalls, 0);
+assert.equal(captureTrack.stopCalls, 0);
+
+sharedCapturePort.emitPcm([0.3, 0.4]);
+const secondCaptureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: captureResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: captureFakes.scope
+});
+await secondCaptureSession.startCapture();
+assert.equal(captureFakes.contexts.length, 1);
+sharedCapturePort.emitPcm([0.5, 0.6, 0.7]);
+assert.equal(firstCaptureSession.pendingFrames.length, 1);
+assert.equal(secondCaptureSession.pendingFrames.length, 1);
+assert.equal(secondCaptureSession.pendingFrames[0].frameCount, 3);
+
+const blockedCaptureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: captureResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: captureFakes.scope
+});
+await assert.rejects(blockedCaptureSession.startCapture(), /voice_call_capture_busy/);
+const secondReleaseTask = secondCaptureSession.stopCapture();
+const immediateNextSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: captureResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: captureFakes.scope
+});
+await immediateNextSession.startCapture();
+await secondReleaseTask;
+assert.equal(captureFakes.contexts.length, 1);
+await immediateNextSession.stopCapture();
+assert.equal(captureFakes.contexts[0].closeCalls, 0);
+await captureResources.close();
+assert.equal(captureFakes.contexts[0].closeCalls, 1);
+assert.equal(captureTrack.stopCalls, 1);
+assert.deepEqual(
+  sharedCapturePort.messages.map((item) => item.type),
+  ["reset", "flush", "reset", "reset", "reset", "reset", "stop"]
+);
+
+const stalledCaptureTrack = {
+  stopCalls: 0,
+  stop() {
+    this.stopCalls += 1;
+  }
+};
+const stalledCaptureResources = new RealtimeVoiceCallResources({
+  mediaStream: { getTracks: () => [stalledCaptureTrack] },
+  audioElement: new FakeAudioElement(),
+  captureReceiptTimeoutMs: 5
+});
+const stalledCaptureFakes = buildFakeCaptureScope({ acknowledge: false });
+const stalledCaptureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: stalledCaptureResources,
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  scope: stalledCaptureFakes.scope
+});
+await assert.rejects(
+  stalledCaptureSession.startCapture(),
+  /voice_call_capture_reset_timeout/
+);
+await stalledCaptureResources.close();
+assert.equal(stalledCaptureTrack.stopCalls, 1);
 
 const endpointFailureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",

@@ -347,6 +347,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('"client.playback.completed"', client_source)
         self.assertIn('type: "client.playback.control_ack"', client_source)
         self.assertIn('type === "server.playback.control"', client_source)
+        self.assertIn("class RealtimeVoiceCallResources", client_source)
+        self.assertIn("voice_call_capture_busy", client_source)
+        self.assertIn('requestCaptureReceipt("reset")', client_source)
         self.assertIn("this.audioElement.volume = clampVolume(appliedVolume)", client_source)
         self.assertIn("this.audioElement.pause();", client_source)
         self.assertIn("onPlaybackDucked", main_source)
@@ -358,6 +361,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('audioElement.addEventListener("ended"', client_source)
         self.assertIn('registerProcessor("akane-voice-pcm-capture"', worklet_source)
         self.assertIn("new Float32Array", worklet_source)
+        self.assertIn('type === "reset"', worklet_source)
+        self.assertIn("this.pendingLength = 0", worklet_source)
         self.assertNotIn("MediaRecorder", worklet_source)
 
     def test_next_tauri_heavy_file_commands_run_on_blocking_worker(self) -> None:

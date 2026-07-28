@@ -761,6 +761,15 @@ VoiceCore durable command
 轨道；只有结束整场通话才停止轨道并清空播放器。当前按钮尚未切换成持续通话，
 因此该边界已通过双轮 smoke 验证，但还没有宣称自动连续收音已经交付。
 
+通话资源路径也已持有唯一 AudioContext/AudioWorklet。每个
+`RealtimeVoiceSession` 只取得当前 Input Turn 的 PCM sink 租约：开始前先用
+`reset` 回执丢弃无人监听期间不足一帧的残留，结束时用 `flush` 把最后一帧交给
+原轮次后释放；异步释放尚未完成时，紧接着的新轮次等待同一交接任务，不瞬时
+报“麦克风忙”。单轮结束不关闭 AudioContext，整场 `close` 才停止 worklet 和
+媒体轨道；`reset/flush` 未收到 worklet 回执时会结构化失败，不能把可能串轮的
+音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，但桌宠
+主入口尚未创建这份长生命周期资源，因此用户可见按钮仍保持原来的逐轮录音语义。
+
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
 全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能

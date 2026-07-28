@@ -12,6 +12,9 @@ class AkaneVoicePcmCaptureProcessor extends AudioWorkletProcessor {
       if (type === "flush") {
         this.flush();
         this.port.postMessage({ type: "flushed" });
+      } else if (type === "reset") {
+        this.pendingLength = 0;
+        this.port.postMessage({ type: "reset" });
       } else if (type === "stop") {
         this.flush();
         this.stopped = true;

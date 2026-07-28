@@ -305,15 +305,196 @@ export class RealtimeVoicePlaybackQueue {
 }
 
 export class RealtimeVoiceCallResources {
-  constructor({ mediaStream, audioElement }) {
+  constructor({
+    mediaStream,
+    audioElement,
+    captureReceiptTimeoutMs = CAPTURE_FLUSH_TIMEOUT_MS
+  }) {
     if (!mediaStream) throw new Error("voice_call_media_stream_missing");
     if (!audioElement) throw new Error("voice_call_audio_element_missing");
     this.mediaStream = mediaStream;
     this.audioElement = audioElement;
+    this.captureReceiptTimeoutMs = Math.max(1, Number(captureReceiptTimeoutMs) || CAPTURE_FLUSH_TIMEOUT_MS);
     this.playbackQueues = new Set();
     this.playbackWaiters = new Set();
     this.playbackOwner = null;
+    this.captureScope = null;
+    this.captureModuleUrl = "";
+    this.captureStartTask = null;
+    this.captureContext = null;
+    this.captureSourceNode = null;
+    this.captureWorkletNode = null;
+    this.captureMuteGain = null;
+    this.captureOwner = null;
+    this.captureClaimOwner = null;
+    this.captureReleaseTask = null;
+    this.capturePcmSink = null;
+    this.captureErrorSink = null;
+    this.captureFlushResolver = null;
+    this.captureResetResolver = null;
     this.closed = false;
+  }
+
+  async acquireCapture(owner, { scope = globalThis, workletModuleUrl, onPcm, onError = null }) {
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    if (!owner || typeof onPcm !== "function") {
+      throw new Error("voice_call_capture_lease_invalid");
+    }
+    if (this.captureReleaseTask) await this.captureReleaseTask;
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    if (this.captureOwner === owner) {
+      this.capturePcmSink = onPcm;
+      this.captureErrorSink = onError;
+      return Number(this.captureContext?.sampleRate || 0);
+    }
+    if (
+      (this.captureOwner && this.captureOwner !== owner) ||
+      (this.captureClaimOwner && this.captureClaimOwner !== owner)
+    ) {
+      throw new Error("voice_call_capture_busy");
+    }
+
+    this.captureClaimOwner = owner;
+    try {
+      await this.ensureCaptureStarted({ scope, workletModuleUrl });
+      await this.requestCaptureReceipt("reset");
+      if (this.closed) throw new Error("voice_call_resources_closed");
+      if (this.captureOwner && this.captureOwner !== owner) {
+        throw new Error("voice_call_capture_busy");
+      }
+      this.captureOwner = owner;
+      this.capturePcmSink = onPcm;
+      this.captureErrorSink = onError;
+      return Number(this.captureContext?.sampleRate || 0);
+    } finally {
+      if (this.captureClaimOwner === owner) this.captureClaimOwner = null;
+    }
+  }
+
+  releaseCapture(owner, { flush = false } = {}) {
+    if (this.captureOwner !== owner) {
+      return this.captureReleaseTask || Promise.resolve(false);
+    }
+    if (this.captureReleaseTask) return this.captureReleaseTask;
+    const releaseTask = this.releaseCaptureInternal(owner, { flush });
+    const trackedTask = releaseTask.finally(() => {
+      if (this.captureReleaseTask === trackedTask) this.captureReleaseTask = null;
+    });
+    this.captureReleaseTask = trackedTask;
+    return trackedTask;
+  }
+
+  async releaseCaptureInternal(owner, { flush }) {
+    if (flush) {
+      try {
+        await this.requestCaptureReceipt("flush");
+      } finally {
+        if (this.captureOwner === owner) {
+          this.captureOwner = null;
+          this.capturePcmSink = null;
+          this.captureErrorSink = null;
+        }
+      }
+      return true;
+    } else {
+      this.captureOwner = null;
+      this.capturePcmSink = null;
+      this.captureErrorSink = null;
+      await this.requestCaptureReceipt("reset");
+      return true;
+    }
+  }
+
+  async ensureCaptureStarted({ scope, workletModuleUrl }) {
+    const normalizedModuleUrl = String(workletModuleUrl || "").trim();
+    if (!normalizedModuleUrl) throw new Error("voice_call_capture_worklet_missing");
+    if (this.captureModuleUrl && this.captureModuleUrl !== normalizedModuleUrl) {
+      throw new Error("voice_call_capture_config_changed");
+    }
+    if (this.captureStartTask) return this.captureStartTask;
+    this.captureScope = scope;
+    this.captureModuleUrl = normalizedModuleUrl;
+    this.captureStartTask = this.startCaptureEngine().catch((error) => {
+      this.captureStartTask = null;
+      throw error;
+    });
+    return this.captureStartTask;
+  }
+
+  async startCaptureEngine() {
+    const AudioContextImpl = this.captureScope?.AudioContext || this.captureScope?.webkitAudioContext;
+    const AudioWorkletNodeImpl = this.captureScope?.AudioWorkletNode;
+    if (!AudioContextImpl || !AudioWorkletNodeImpl) {
+      throw new Error("voice_realtime_audio_worklet_unavailable");
+    }
+    const context = new AudioContextImpl({ latencyHint: "interactive" });
+    this.captureContext = context;
+    try {
+      await context.audioWorklet.addModule(this.captureModuleUrl);
+      if (this.closed) throw new Error("voice_call_resources_closed");
+      if (context.state === "suspended") await context.resume();
+      const frameSamples = Math.max(128, Math.round(context.sampleRate * 0.02));
+      const node = new AudioWorkletNodeImpl(context, "akane-voice-pcm-capture", {
+        channelCount: 1,
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: { frameSamples }
+      });
+      this.captureWorkletNode = node;
+      node.port.onmessage = (event) => this.handleCaptureMessage(event?.data);
+      this.captureSourceNode = context.createMediaStreamSource(this.mediaStream);
+      this.captureMuteGain = context.createGain();
+      this.captureMuteGain.gain.value = 0;
+      this.captureSourceNode.connect(node);
+      node.connect(this.captureMuteGain);
+      this.captureMuteGain.connect(context.destination);
+    } catch (error) {
+      await this.stopCaptureEngine();
+      throw error;
+    }
+  }
+
+  handleCaptureMessage(payload) {
+    const type = String(payload?.type || "");
+    if (type === "pcm" && payload.buffer instanceof ArrayBuffer) {
+      if (!this.captureOwner || !this.capturePcmSink) return;
+      const frames = Number(payload.frames || payload.buffer.byteLength / 4);
+      try {
+        this.capturePcmSink(payload.buffer, frames);
+      } catch (error) {
+        this.captureErrorSink?.(error);
+      }
+      return;
+    }
+    if (type === "flushed" && this.captureFlushResolver) {
+      this.captureFlushResolver();
+    } else if (type === "reset" && this.captureResetResolver) {
+      this.captureResetResolver();
+    }
+  }
+
+  requestCaptureReceipt(action) {
+    const node = this.captureWorkletNode;
+    if (!node) return Promise.resolve();
+    const resolverKey = action === "flush" ? "captureFlushResolver" : "captureResetResolver";
+    if (this[resolverKey]) {
+      return Promise.reject(new Error(`voice_call_capture_${action}_busy`));
+    }
+    return new Promise((resolve, reject) => {
+      const finish = (error = null) => {
+        if (this[resolverKey] === finish) this[resolverKey] = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      this[resolverKey] = finish;
+      node.port.postMessage({ type: action });
+      const setTimeoutImpl = this.captureScope?.setTimeout?.bind(this.captureScope) || globalThis.setTimeout;
+      setTimeoutImpl(
+        () => finish(new Error(`voice_call_capture_${action}_timeout`)),
+        this.captureReceiptTimeoutMs
+      );
+    });
   }
 
   createPlaybackQueue(options = {}) {
@@ -365,8 +546,12 @@ export class RealtimeVoiceCallResources {
   }
 
   close(reason = "voice_call_closed") {
-    if (this.closed) return;
+    if (this.closed) return Promise.resolve();
     this.closed = true;
+    this.captureOwner = null;
+    this.captureClaimOwner = null;
+    this.capturePcmSink = null;
+    this.captureErrorSink = null;
     for (const queue of [...this.playbackQueues]) queue.close(reason);
     this.playbackQueues.clear();
     this.playbackWaiters.clear();
@@ -375,6 +560,28 @@ export class RealtimeVoiceCallResources {
     this.audioElement.removeAttribute("src");
     this.audioElement.load?.();
     for (const track of this.mediaStream?.getTracks?.() || []) track.stop();
+    return this.stopCaptureEngine();
+  }
+
+  async stopCaptureEngine() {
+    this.captureFlushResolver?.();
+    this.captureResetResolver?.();
+    this.captureWorkletNode?.port?.postMessage?.({ type: "stop" });
+    this.captureSourceNode?.disconnect?.();
+    this.captureWorkletNode?.disconnect?.();
+    this.captureMuteGain?.disconnect?.();
+    this.captureSourceNode = null;
+    this.captureWorkletNode = null;
+    this.captureMuteGain = null;
+    const context = this.captureContext;
+    this.captureContext = null;
+    if (context && context.state !== "closed") {
+      try {
+        await context.close();
+      } catch {
+        // Device release must still stop the media tracks above.
+      }
+    }
   }
 }
 
@@ -403,6 +610,8 @@ export class RealtimeVoiceSession {
     this.scope = scope;
     this.socket = null;
     this.audioContext = null;
+    this.captureSampleRate = 0;
+    this.callCaptureAttached = false;
     this.sourceNode = null;
     this.workletNode = null;
     this.muteGain = null;
@@ -434,6 +643,24 @@ export class RealtimeVoiceSession {
   }
 
   async startCapture() {
+    if (this.callResources) {
+      this.captureSampleRate = await this.callResources.acquireCapture(this, {
+        scope: this.scope,
+        workletModuleUrl: this.workletModuleUrl,
+        onPcm: (buffer, frames) => this.acceptPcmFrame(buffer, frames),
+        onError: (error) => {
+          this.fail(String(error?.message || "voice_realtime_capture_frame_failed"), {
+            terminal: true
+          });
+        }
+      });
+      this.callCaptureAttached = true;
+      if (this.closed) {
+        await this.stopCapture();
+        throw new Error("voice_realtime_session_closed");
+      }
+      return;
+    }
     const AudioContextImpl = this.scope.AudioContext || this.scope.webkitAudioContext;
     const AudioWorkletNodeImpl = this.scope.AudioWorkletNode;
     if (!AudioContextImpl || !AudioWorkletNodeImpl) {
@@ -441,6 +668,7 @@ export class RealtimeVoiceSession {
     }
     const context = new AudioContextImpl({ latencyHint: "interactive" });
     this.audioContext = context;
+    this.captureSampleRate = Number(context.sampleRate || 0);
     await context.audioWorklet.addModule(this.workletModuleUrl);
     if (context.state === "suspended") await context.resume();
     const frameSamples = Math.max(128, Math.round(context.sampleRate * 0.02));
@@ -486,7 +714,7 @@ export class RealtimeVoiceSession {
           protocol_version: VOICE_REALTIME_PROTOCOL_VERSION,
           input: {
             format: "f32le",
-            sample_rate: Math.round(this.audioContext.sampleRate),
+            sample_rate: Math.round(this.captureSampleRate),
             channels: 1
           },
           output: { mode: VOICE_PLAYBACK_OUTPUT_MODE }
@@ -578,7 +806,7 @@ export class RealtimeVoiceSession {
   }
 
   sendPcmFrame(frame) {
-    const sampleRate = Number(this.audioContext?.sampleRate || 1);
+    const sampleRate = Number(this.captureSampleRate || 1);
     const audioClockMs = Math.round((this.audioFramesSent * 1000) / sampleRate);
     this.sendJson({
       type: "client.audio",
@@ -730,6 +958,12 @@ export class RealtimeVoiceSession {
   }
 
   async flushAndStopCapture() {
+    if (this.callResources) {
+      if (!this.callCaptureAttached) return;
+      this.callCaptureAttached = false;
+      await this.callResources.releaseCapture(this, { flush: true });
+      return;
+    }
     if (!this.workletNode) return;
     const flushed = new Promise((resolve) => {
       this.flushResolver = resolve;
@@ -741,6 +975,12 @@ export class RealtimeVoiceSession {
   }
 
   async stopCapture() {
+    if (this.callResources) {
+      if (!this.callCaptureAttached) return;
+      this.callCaptureAttached = false;
+      await this.callResources.releaseCapture(this, { flush: false });
+      return;
+    }
     this.sourceNode?.disconnect?.();
     this.workletNode?.disconnect?.();
     this.muteGain?.disconnect?.();
