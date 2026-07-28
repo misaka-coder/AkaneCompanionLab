@@ -2,6 +2,7 @@ const VOICE_REALTIME_PROTOCOL_VERSION = 1;
 const VOICE_PLAYBACK_OUTPUT_MODE = "binary_audio_ack_v1";
 const DEFAULT_READY_TIMEOUT_MS = 5000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 750;
+const DEFAULT_DUCK_VOLUME_FACTOR = 0.24;
 
 export function buildVoiceWebSocketUrl(endpoint) {
   const url = new URL(String(endpoint || ""));
@@ -30,6 +31,7 @@ export class RealtimeVoicePlaybackQueue {
     sendJson,
     getVolume = () => 1,
     callbacks = {},
+    duckVolumeFactor = DEFAULT_DUCK_VOLUME_FACTOR,
     createObjectUrl = (blob) => URL.createObjectURL(blob),
     revokeObjectUrl = (url) => URL.revokeObjectURL(url),
     BlobImpl = Blob,
@@ -40,12 +42,14 @@ export class RealtimeVoicePlaybackQueue {
     this.sendJson = sendJson;
     this.getVolume = getVolume;
     this.callbacks = callbacks;
+    this.duckVolumeFactor = clampVolume(duckVolumeFactor);
     this.createObjectUrl = createObjectUrl;
     this.revokeObjectUrl = revokeObjectUrl;
     this.BlobImpl = BlobImpl;
     this.now = now;
     this.queue = [];
     this.current = null;
+    this.controlReceipts = new Map();
     this.closed = false;
   }
 
@@ -71,7 +75,8 @@ export class RealtimeVoicePlaybackQueue {
       objectUrl,
       startedAt: 0,
       startedAcknowledged: false,
-      endedBeforeStartAck: false
+      endedBeforeStartAck: false,
+      ducked: false
     };
     this.queue.push(item);
     this.sendJson({
@@ -136,6 +141,96 @@ export class RealtimeVoicePlaybackQueue {
       this.notify("onPlaybackInterrupted", item.header, reason);
     }
     this.closed = wasClosed;
+  }
+
+  applyControl(control) {
+    const controlId = String(control?.control_id || "").trim();
+    const commandId = String(control?.command_id || "").trim();
+    const action = String(control?.action || "").trim();
+    const deliveryId = String(control?.delivery_id || "").trim();
+    if (!controlId || !commandId || !deliveryId || !["duck", "resume", "stop"].includes(action)) {
+      throw new Error("voice_playback_control_invalid");
+    }
+    const existing = this.controlReceipts.get(controlId);
+    if (existing) {
+      if (existing.command_id !== commandId || existing.action !== action) {
+        throw new Error("voice_playback_control_conflict");
+      }
+      this.sendJson(existing);
+      return existing.status === "applied";
+    }
+
+    const currentMatches = String(this.current?.header?.delivery_id || "") === deliveryId;
+    const queuedIndex = this.queue.findIndex(
+      (item) => String(item?.header?.delivery_id || "") === deliveryId
+    );
+    let receipt;
+    if (action === "duck") {
+      if (!currentMatches || !this.current?.startedAcknowledged) {
+        receipt = this.buildControlReceipt(control, "failed", {
+          reason: "target_not_playing"
+        });
+      } else {
+        this.current.ducked = true;
+        const appliedVolume = clampVolume(this.getVolume()) * this.duckVolumeFactor;
+        this.audioElement.volume = clampVolume(appliedVolume);
+        receipt = this.buildControlReceipt(control, "applied", {
+          played_ms: measurePlayedMs(this.audioElement, this.current.startedAt, this.now),
+          applied_volume: this.audioElement.volume
+        });
+        this.notify("onPlaybackDucked", this.current.header, this.audioElement.volume);
+      }
+    } else if (action === "resume") {
+      if (!currentMatches || !this.current?.ducked) {
+        receipt = this.buildControlReceipt(control, "failed", {
+          reason: "target_not_ducked"
+        });
+      } else {
+        this.current.ducked = false;
+        this.audioElement.volume = clampVolume(this.getVolume());
+        receipt = this.buildControlReceipt(control, "applied", {
+          played_ms: measurePlayedMs(this.audioElement, this.current.startedAt, this.now),
+          applied_volume: this.audioElement.volume
+        });
+        this.notify("onPlaybackResumed", this.current.header, this.audioElement.volume);
+      }
+    } else if (currentMatches) {
+      const item = this.current;
+      const playedMs = measurePlayedMs(this.audioElement, item.startedAt, this.now);
+      this.audioElement.pause();
+      this.current = null;
+      this.releaseItem(item);
+      receipt = this.buildControlReceipt(control, "applied", { played_ms: playedMs });
+      this.notify("onPlaybackInterrupted", item.header, String(control?.reason || "interrupted"));
+    } else if (queuedIndex >= 0) {
+      const [item] = this.queue.splice(queuedIndex, 1);
+      this.releaseItem(item);
+      receipt = this.buildControlReceipt(control, "applied", { played_ms: 0 });
+      this.notify("onPlaybackInterrupted", item.header, String(control?.reason || "interrupted"));
+    } else {
+      receipt = this.buildControlReceipt(control, "failed", {
+        reason: "target_not_available"
+      });
+    }
+
+    this.controlReceipts.set(controlId, receipt);
+    this.sendJson(receipt);
+    if (receipt.status === "failed") {
+      this.notify("onPlaybackControlFailed", control, receipt.reason);
+    }
+    if (action === "stop" && receipt.status === "applied") void this.playNext();
+    return receipt.status === "applied";
+  }
+
+  buildControlReceipt(control, status, extra = {}) {
+    return {
+      type: "client.playback.control_ack",
+      control_id: String(control.control_id),
+      command_id: String(control.command_id),
+      action: String(control.action),
+      status,
+      ...extra
+    };
   }
 
   close(reason = "client_closed") {
@@ -465,6 +560,16 @@ export class RealtimeVoiceSession {
         return;
       }
       this.pendingSpeechHeader = payload;
+      return;
+    }
+    if (type === "server.playback.control") {
+      try {
+        this.playbackQueue?.applyControl(payload);
+      } catch (error) {
+        this.fail(String(error?.message || "voice_playback_control_failed"), {
+          terminal: false
+        });
+      }
       return;
     }
     if (type === "server.response.completed") {

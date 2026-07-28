@@ -139,6 +139,69 @@ assert.deepEqual(interrupted.map((item) => item.type), [
 assert.equal(interrupted.at(-1).played_ms, 200);
 assert.equal(interrupted.at(-1).reason, "user_started_voice_input");
 
+const controlled = [];
+const controlEvents = [];
+const controlAudio = new FakeAudioElement();
+const controlQueue = new RealtimeVoicePlaybackQueue({
+  audioElement: controlAudio,
+  sendJson: (payload) => controlled.push(payload),
+  getVolume: () => 0.8,
+  callbacks: {
+    onPlaybackDucked: () => controlEvents.push("ducked"),
+    onPlaybackResumed: () => controlEvents.push("resumed"),
+    onPlaybackInterrupted: () => controlEvents.push("stopped")
+  },
+  BlobImpl: FakeBlob,
+  createObjectUrl: () => "blob:voice-control",
+  revokeObjectUrl: () => {},
+  now: () => 2000
+});
+controlQueue.enqueue(
+  { ...speechHeader, delivery_id: "delivery-control" },
+  new Uint8Array([9, 10, 11, 12]).buffer
+);
+await tick();
+controlAudio.currentTime = 0.25;
+const duckControl = {
+  control_id: "control-duck",
+  command_id: "command-duck",
+  action: "duck",
+  delivery_id: "delivery-control"
+};
+assert.equal(controlQueue.applyControl(duckControl), true);
+assert.equal(controlAudio.volume, 0.8 * 0.24);
+assert.equal(controlled.at(-1).type, "client.playback.control_ack");
+assert.equal(controlled.at(-1).status, "applied");
+assert.equal(controlled.at(-1).played_ms, 250);
+
+assert.equal(
+  controlQueue.applyControl({
+    control_id: "control-resume",
+    command_id: "command-resume",
+    action: "resume",
+    delivery_id: "delivery-control"
+  }),
+  true
+);
+assert.equal(controlAudio.volume, 0.8);
+assert.equal(controlled.at(-1).status, "applied");
+
+const stopControl = {
+  control_id: "control-stop",
+  command_id: "command-stop",
+  action: "stop",
+  delivery_id: "delivery-control",
+  reason: "takeover"
+};
+assert.equal(controlQueue.applyControl(stopControl), true);
+assert.equal(controlled.at(-1).status, "applied");
+assert.equal(controlAudio.pauseCalls, 1);
+assert.deepEqual(controlEvents, ["ducked", "resumed", "stopped"]);
+const receiptCount = controlled.length;
+assert.equal(controlQueue.applyControl(stopControl), true);
+assert.equal(controlled.length, receiptCount + 1);
+assert.equal(controlled.at(-1).control_id, "control-stop");
+
 const endpointFailureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",
   mediaStream: null,

@@ -3103,6 +3103,24 @@ function buildRealtimeVoiceCallbacks(turn) {
       setRuntimeStatus("语音回复中", { mode: "speaking" });
       updateActivityControls();
     },
+    onPlaybackDucked() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("听到新的声音，已暂时压低回复音量", { mode: "listening" });
+      updateActivityControls();
+    },
+    onPlaybackResumed() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("继续语音回复", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackControlFailed(_control, reason) {
+      if (!isCurrent()) return;
+      void reason;
+      setRuntimeStatus("播放控制未生效，已把真实状态交回服务端", { mode: "error" });
+      updateActivityControls();
+    },
     onPlaybackCompleted() {
       if (!isCurrent()) return;
       turn.playbackActive = false;

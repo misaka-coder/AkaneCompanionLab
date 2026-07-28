@@ -1,7 +1,7 @@
 # Akane Voice Runtime V1
 
-状态：方案与状态机已冻结；实时 ASR → durable Voice Host → MemCore → Thinking Agent
-已完成生产装配，TTS / 播放与桌宠采集端尚未接入
+状态：方案与状态机已冻结；实时 ASR、durable Voice Host、MemCore、Thinking Agent、
+TTS、桌宠播放 ACK 与 Slice C 播放控制协议已完成生产装配；自动 VAD / 语义脉冲待接入
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -660,6 +660,11 @@ client.playback.started
   → voice.playback.started
 client.playback.completed / interrupted / failed
   → 对应 VoiceCore terminal observation
+VoiceCore duck_playback / resume_playback / stop_playback
+  → server.playback.control
+  → 桌宠实际降音 / 恢复同一音频 / 停止目标单元
+  → client.playback.control_ack
+  → voice.playback.control_acknowledged
 全部语音单元终态且模型 final 已提交
   → server.response.completed / failed
 ```
@@ -678,6 +683,18 @@ client.playback.completed / interrupted / failed
   `delivery_status=delivered` 的 `message.assistant.voice`；
 - TTS、播放控制与 ACK 只追加到 Voice Runtime 动态尾部，不改写稳定系统提示词，
   高频播放状态也不进入普通 prompt，因此不会为了语音交付破坏既有前缀缓存。
+- `server.ready.output.playback_controls` 明确协商 `duck/resume/stop`；控制请求带稳定
+  `control_id` / VoiceCore `command_id`，同一回执可以幂等重放，身份或结果冲突会
+  结构化失败；
+- `server.playback.control` 写入 WebSocket 不代表动作生效。只有桌宠返回
+  `client.playback.control_ack(status=applied)` 后，VoiceCore 才确认命令完成；
+  `stop` 的 applied 回执才会把目标单元记为 `interrupted`；
+- `duck` 只降低当前音频的实际音量，不暂停、不从头重播；`resume` 恢复同一 audio
+  element 和用户音量；`stop` 回传目标单元实际 `played_ms`。目标已结束或不匹配时
+  返回 failed，不伪装成已执行；
+- 播放控制失败会作为 VoiceCore 事实清除对应 pending command，并保留最后一个已
+  确认的播放状态；晚到的 stop 与自然播放完成相撞时，不会把已 delivered 的单元
+  回滚为 interrupted。
 
 路由继续使用注入式 coordinator factory，真实 `BotRuntime` 已装配：
 
@@ -748,6 +765,13 @@ Slice C 的首个显式接管子步也已落地：用户主动按下麦克风时
 生成/播放并立即开始新一轮录音；播放器会按真实 `interrupted` ACK 记录已播放
 部分，不能把整段回复伪装成已送达。该动作代表明确的本地接管，不等同于自动
 VAD 抢话；自动 duck、语义脉冲、backchannel 与误打断恢复仍由后续子步接入。
+
+Slice C 的播放控制闭环也已落地：VoiceCore 的 `duck_playback`、
+`resume_playback`、`stop_playback` 由同一个 Akane playback executor 路由到拥有
+目标 speech unit 的活动 delivery channel，桌宠执行后用统一控制 ACK 回传。
+VoiceCore 仍是唯一状态机，Akane 没有复制打断转移。当前尚未把声学活动自动转换
+为 `voice.interruption.suspected`，也尚未装配 `request_semantic_pulse` executor；
+因此这一子步只完成执行闭环，不宣称自动抢话已经可用。
 
 ### Slice C：播放和语义打断
 

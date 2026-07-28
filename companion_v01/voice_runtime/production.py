@@ -486,6 +486,9 @@ class AkaneVoiceRuntimeService:
                     "start_response_generation": thinking_executor,
                     "start_tts": tts_executor,
                     "enqueue_playback": playback_executor,
+                    "duck_playback": playback_executor,
+                    "resume_playback": playback_executor,
+                    "stop_playback": playback_executor,
                 }
             )
             raw_host = AkaneVoiceRuntimeHost(

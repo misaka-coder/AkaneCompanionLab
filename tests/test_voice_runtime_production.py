@@ -15,6 +15,8 @@ from capcore_adapter_speech import (
     ASRSessionOpenResult,
     NormalizedASRSession,
 )
+from voicecore import snapshot_to_dict
+from voicecore.testing import EventFactory
 
 from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.engine import AkaneMemoryEngine
@@ -420,6 +422,145 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 assistant = next(entry for entry in entries if entry.get("kind") == "message.assistant.voice")
                 self.assertEqual(
                     assistant["payload"]["delivery_status"],
+                    "delivered",
+                )
+            finally:
+                service.close()
+                manager.close()
+
+    def test_playback_control_commands_wait_for_real_client_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                tts_client=_TTSClient(),
+            )
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-control-receipts",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                deadline = time.monotonic() + 3.0
+                delivery = None
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                resolved.delivery_channel.mark_sent(delivery.delivery_id)
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.enqueued",
+                    {"delivery_id": delivery.delivery_id},
+                )
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.started",
+                    {
+                        "delivery_id": delivery.delivery_id,
+                        "resume_token": "desktop-control-resume",
+                    },
+                )
+
+                host = resolved.coordinator.bridge.host
+                factory = EventFactory(
+                    conversation_id=host.snapshot.conversation_id,
+                    voice_session_id="voice-session-control-test",
+                    conversation_generation=host.snapshot.conversation_generation,
+                )
+                opened = host.accept_event(
+                    factory.make(
+                        "voice.input.activity_started",
+                        sequence=None,
+                        voice_turn_id="voice-turn-interruption-probe",
+                        audio_stream_id="audio-interruption-probe",
+                    )
+                )
+                self.assertTrue(opened.accepted, opened)
+                suspected = host.accept_event(
+                    factory.make(
+                        "voice.interruption.suspected",
+                        sequence=None,
+                        voice_turn_id="voice-turn-interruption-probe",
+                        response_id=delivery.response_id,
+                        speech_unit_id=delivery.speech_unit_id,
+                        audio_stream_id="audio-interruption-probe",
+                        audio_clock_ms=480,
+                        payload={"interruption_id": "interruption-control-test"},
+                    )
+                )
+                self.assertTrue(suspected.accepted, suspected)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ducked",
+                )
+                host.drive_once()
+                duck = resolved.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                self.assertEqual(duck.action, "duck")
+                resolved.delivery_channel.mark_control_sent(duck.control_id)
+                duck_ack = resolved.delivery_channel.acknowledge(
+                    "client.playback.control_ack",
+                    {
+                        "control_id": duck.control_id,
+                        "command_id": duck.command_id,
+                        "action": "duck",
+                        "status": "applied",
+                        "played_ms": 480,
+                        "applied_volume": 0.2,
+                    },
+                )
+                self.assertTrue(duck_ack.ok, duck_ack)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ducked",
+                )
+
+                stop_command = {
+                    "command_id": "command-stop-control-test",
+                    "command_kind": "stop_playback",
+                    "idempotency_key": "voicecore:stop-control-test",
+                    "causation_id": "event-stop-control-test",
+                    "payload": {
+                        "speech_unit_id": delivery.speech_unit_id,
+                        "reason": "takeover",
+                        "interruption_id": "interruption-control-test",
+                    },
+                }
+                executor = service._playback_executors[host.snapshot.conversation_id]
+                offered = executor.execute(stop_command, snapshot_to_dict(host.snapshot))
+                self.assertEqual(offered.status, "deferred", offered)
+                stop = resolved.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(stop)
+                self.assertEqual(stop.action, "stop")
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ducked",
+                )
+                resolved.delivery_channel.mark_control_sent(stop.control_id)
+                stopped = resolved.delivery_channel.acknowledge(
+                    "client.playback.control_ack",
+                    {
+                        "control_id": stop.control_id,
+                        "command_id": stop.command_id,
+                        "action": "stop",
+                        "status": "applied",
+                        "played_ms": 620,
+                    },
+                )
+                self.assertTrue(stopped.ok, stopped)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "interrupted",
+                )
+                self.assertNotEqual(
+                    resolved.delivery_channel.response_outcome().delivery_status,
                     "delivered",
                 )
             finally:

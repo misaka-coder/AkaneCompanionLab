@@ -210,10 +210,7 @@ class VoiceRealtimeWebSocketSession:
                 completed = self.final_sent or self.terminal
                 self._observe_once(
                     ok=completed,
-                    reason=(
-                        self._terminal_reason
-                        or ("client_disconnected" if not completed else "")
-                    ),
+                    reason=(self._terminal_reason or ("client_disconnected" if not completed else "")),
                 )
         if cancelled is not None:
             raise cancelled
@@ -250,6 +247,7 @@ class VoiceRealtimeWebSocketSession:
             "client.playback.completed",
             "client.playback.interrupted",
             "client.playback.failed",
+            "client.playback.control_ack",
         }:
             await self._handle_playback_ack(message_type, payload)
             return
@@ -325,6 +323,9 @@ class VoiceRealtimeWebSocketSession:
                 "output": {
                     "mode": parsed.output_mode,
                     "acknowledgements_required": (parsed.output_mode == VOICE_PLAYBACK_OUTPUT_MODE),
+                    "playback_controls": (
+                        ["duck", "resume", "stop"] if parsed.output_mode == VOICE_PLAYBACK_OUTPUT_MODE else []
+                    ),
                 },
                 **({"provider_id": self.provider_id} if self.provider_id else {}),
             }
@@ -469,10 +470,7 @@ class VoiceRealtimeWebSocketSession:
             return
         response_status = str(getattr(result, "response_status", "") or "")
         if response_status and response_status != "started":
-            reason = str(
-                getattr(result, "response_reason", "")
-                or "voice_response_start_failed"
-            )[:128]
+            reason = str(getattr(result, "response_reason", "") or "voice_response_start_failed")[:128]
             await self.websocket.send_json(
                 {
                     "type": "server.response.failed",
@@ -484,8 +482,7 @@ class VoiceRealtimeWebSocketSession:
                     "reason": reason,
                     "retryable": bool(getattr(result, "response_retryable", False)),
                     "message": str(
-                        getattr(result, "response_safe_public_summary", "")
-                        or "语音已经识别，但回复生成暂时无法启动。"
+                        getattr(result, "response_safe_public_summary", "") or "语音已经识别，但回复生成暂时无法启动。"
                     )[:160],
                 }
             )
@@ -581,7 +578,14 @@ class VoiceRealtimeWebSocketSession:
                 "type": "server.playback.ack",
                 "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
                 "ack_type": message_type,
-                "delivery_id": str(payload.get("delivery_id") or ""),
+                **(
+                    {
+                        "control_id": str(payload.get("control_id") or ""),
+                        "command_id": str(payload.get("command_id") or ""),
+                    }
+                    if message_type == "client.playback.control_ack"
+                    else {"delivery_id": str(payload.get("delivery_id") or "")}
+                ),
                 "status": result.status,
                 **({"reason": result.reason} if result.reason else {}),
             }
@@ -600,6 +604,42 @@ class VoiceRealtimeWebSocketSession:
     async def _handle_delivery_activity(self) -> None:
         if self.delivery_channel is None:
             return
+        take_control = getattr(self.delivery_channel, "take_control_outbound", None)
+        mark_control_sent = getattr(self.delivery_channel, "mark_control_sent", None)
+        while callable(take_control):
+            control = take_control()
+            if control is None:
+                break
+            await self.websocket.send_json(
+                {
+                    "type": "server.playback.control",
+                    "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                    "control_id": control.control_id,
+                    "command_id": control.command_id,
+                    "action": control.action,
+                    "delivery_id": control.delivery_id,
+                    "voice_turn_id": control.voice_turn_id,
+                    "response_id": control.response_id,
+                    "speech_unit_id": control.speech_unit_id,
+                    **({"resume_token": control.resume_token} if control.resume_token else {}),
+                    **({"interruption_id": control.interruption_id} if control.interruption_id else {}),
+                    **({"reason": control.reason} if control.reason else {}),
+                }
+            )
+            if not callable(mark_control_sent):
+                await self._send_failed(
+                    "voice_playback_control_send_confirmation_unavailable",
+                    terminal=True,
+                )
+                return
+            sent = mark_control_sent(control.control_id)
+            if not sent.ok:
+                await self._send_failed(
+                    sent.reason or "voice_playback_control_send_confirmation_failed",
+                    retryable=sent.retryable,
+                    terminal=True,
+                )
+                return
         while True:
             request = self.delivery_channel.take_outbound()
             if request is None:

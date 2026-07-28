@@ -53,6 +53,7 @@ from .production import (
 from .playback_delivery import (
     VOICE_PLAYBACK_OUTPUT_MODE,
     AkaneVoicePlaybackCommandExecutor,
+    VoicePlaybackControlRequest,
     VoicePlaybackDeliveryChannel,
     VoicePlaybackDeliveryRequest,
     VoicePlaybackDeliveryResult,
@@ -105,6 +106,7 @@ __all__ = [
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
     "VoicePlaybackDeliveryChannel",
+    "VoicePlaybackControlRequest",
     "VoicePlaybackDeliveryRequest",
     "VoicePlaybackDeliveryResult",
     "VoiceReadableTextArtifactPort",

@@ -345,6 +345,12 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('type: "client.playback.enqueued"', client_source)
         self.assertIn('type: "client.playback.started"', client_source)
         self.assertIn('"client.playback.completed"', client_source)
+        self.assertIn('type: "client.playback.control_ack"', client_source)
+        self.assertIn('type === "server.playback.control"', client_source)
+        self.assertIn("this.audioElement.volume = clampVolume(appliedVolume)", client_source)
+        self.assertIn("this.audioElement.pause();", client_source)
+        self.assertIn("onPlaybackDucked", main_source)
+        self.assertIn("onPlaybackResumed", main_source)
         self.assertLess(
             client_source.index("await audioElement.play();"),
             client_source.index('type: "client.playback.started"'),

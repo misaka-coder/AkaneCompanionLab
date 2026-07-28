@@ -43,6 +43,9 @@ class _RouteDeliveryChannel:
         self.notified = False
         self._event: asyncio.Event | None = None
         self._request_taken = False
+        self._control_request: Any | None = None
+        self._control_taken = False
+        self._control_sent = False
 
     async def wait_activity(self) -> None:
         if self.notified or self.state == "terminal":
@@ -71,6 +74,37 @@ class _RouteDeliveryChannel:
             audio=b"ID3-route-binary-audio",
         )
 
+    def queue_control(self, *, action: str) -> Any:
+        self._control_request = SimpleNamespace(
+            control_id=f"voice-control-route-{action}",
+            command_id=f"voice-command-route-{action}",
+            action=action,
+            delivery_id=self.delivery_id,
+            voice_turn_id=self.voice_turn_id,
+            response_id="response-route-1",
+            speech_unit_id="speech-route-1",
+            resume_token="route-resume-1" if action == "resume" else "",
+            interruption_id="route-interruption-1",
+            reason="",
+        )
+        self._control_taken = False
+        self._control_sent = False
+        self.notify_runtime_change()
+        return self._control_request
+
+    def take_control_outbound(self) -> Any:
+        if self._control_request is None or self._control_taken:
+            return None
+        self._control_taken = True
+        self.notified = False
+        return self._control_request
+
+    def mark_control_sent(self, control_id: str) -> Any:
+        if control_id != self._control_request.control_id or self._control_sent:
+            return SimpleNamespace(ok=False, reason="route_control_send_invalid", retryable=False)
+        self._control_sent = True
+        return SimpleNamespace(ok=True, status="sent", reason="", retryable=False)
+
     def mark_sent(self, delivery_id: str) -> Any:
         if delivery_id != self.delivery_id or self.state != "waiting":
             return SimpleNamespace(ok=False, reason="route_delivery_send_invalid", retryable=False)
@@ -78,6 +112,30 @@ class _RouteDeliveryChannel:
         return SimpleNamespace(ok=True, status="sent", reason="", retryable=False)
 
     def acknowledge(self, message_type: str, payload: Any) -> Any:
+        if message_type == "client.playback.control_ack":
+            control = self._control_request
+            if (
+                control is None
+                or not self._control_sent
+                or payload.get("control_id") != control.control_id
+                or payload.get("command_id") != control.command_id
+                or payload.get("action") != control.action
+                or payload.get("status") != "applied"
+            ):
+                return SimpleNamespace(
+                    ok=False,
+                    status="failed",
+                    reason="voice_playback_control_ack_invalid",
+                    retryable=False,
+                )
+            self._control_request = None
+            return SimpleNamespace(
+                ok=True,
+                status="accepted",
+                reason="",
+                retryable=False,
+                response_terminal=False,
+            )
         if payload.get("delivery_id") != self.delivery_id:
             return SimpleNamespace(
                 ok=False,
@@ -395,6 +453,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                     {
                         "mode": VOICE_PLAYBACK_OUTPUT_MODE,
                         "acknowledgements_required": True,
+                        "playback_controls": ["duck", "resume", "stop"],
                     },
                 )
                 websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
@@ -432,7 +491,6 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                 for message_type in (
                     "client.playback.enqueued",
                     "client.playback.started",
-                    "client.playback.completed",
                 ):
                     ack: dict[str, Any] = {
                         "type": message_type,
@@ -440,12 +498,44 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                     }
                     if message_type == "client.playback.started":
                         ack["resume_token"] = "route-resume-1"
-                    if message_type == "client.playback.completed":
-                        ack["played_ms"] = 640
                     websocket.send_json(ack)
                     confirmed = websocket.receive_json()
                     self.assertEqual(confirmed["type"], "server.playback.ack")
                     self.assertEqual(confirmed["ack_type"], message_type)
+
+                control = factory.delivery_channels[0].queue_control(action="duck")
+                control_frame = websocket.receive_json()
+                self.assertEqual(control_frame["type"], "server.playback.control")
+                self.assertEqual(control_frame["control_id"], control.control_id)
+                self.assertEqual(control_frame["command_id"], control.command_id)
+                self.assertEqual(control_frame["action"], "duck")
+                self.assertEqual(control_frame["delivery_id"], speech["delivery_id"])
+                websocket.send_json(
+                    {
+                        "type": "client.playback.control_ack",
+                        "control_id": control.control_id,
+                        "command_id": control.command_id,
+                        "action": "duck",
+                        "status": "applied",
+                        "played_ms": 320,
+                        "applied_volume": 0.2,
+                    }
+                )
+                control_ack = websocket.receive_json()
+                self.assertEqual(control_ack["type"], "server.playback.ack")
+                self.assertEqual(control_ack["ack_type"], "client.playback.control_ack")
+                self.assertEqual(control_ack["control_id"], control.control_id)
+
+                websocket.send_json(
+                    {
+                        "type": "client.playback.completed",
+                        "delivery_id": speech["delivery_id"],
+                        "played_ms": 640,
+                    }
+                )
+                completed_ack = websocket.receive_json()
+                self.assertEqual(completed_ack["type"], "server.playback.ack")
+                self.assertEqual(completed_ack["ack_type"], "client.playback.completed")
 
                 completed = websocket.receive_json()
                 self.assertEqual(completed["type"], "server.response.completed")
