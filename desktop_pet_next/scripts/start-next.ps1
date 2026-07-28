@@ -145,7 +145,11 @@ $resolvedDataRoot = if ($dataRootWasBound -and -not [string]::IsNullOrWhiteSpace
 } else {
   ([string]$env:AKANE_DATA_ROOT).Trim()
 }
-$dataStatus = Initialize-AkaneDataRoot -ProjectRoot $ProjectRoot -InstanceId $resolvedInstanceId -DataRoot $resolvedDataRoot
+$dataStatus = Initialize-AkaneDataRoot `
+  -ProjectRoot $ProjectRoot `
+  -InstanceId $resolvedInstanceId `
+  -DataRoot $resolvedDataRoot `
+  -SeedBundledCharacters:$CloudSatellite
 $env:AKANE_INSTANCE_ID = $resolvedInstanceId
 $env:AKANE_DATA_ROOT = $dataStatus.Root
 $env:AKANE_DATA_ROOT_READY = "1"

@@ -87,14 +87,20 @@ class DesktopPetInstanceIsolationTests(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             named_root = temp / "named"
+            satellite_root = temp / "satellite"
             local_root = temp / "local"
             command = (
                 f". {_ps_quote(helper)}; "
                 f"$named = Initialize-AkaneDataRoot -ProjectRoot {_ps_quote(project)} "
                 f"-InstanceId 'instance-a' -DataRoot {_ps_quote(named_root)}; "
+                f"$satellite = Initialize-AkaneDataRoot -ProjectRoot {_ps_quote(project)} "
+                f"-InstanceId 'instance-b' -DataRoot {_ps_quote(satellite_root)} -SeedBundledCharacters; "
+                f"$satelliteAgain = Initialize-AkaneDataRoot -ProjectRoot {_ps_quote(project)} "
+                f"-InstanceId 'instance-b' -DataRoot {_ps_quote(satellite_root)} -SeedBundledCharacters; "
                 f"$local = Initialize-AkaneDataRoot -ProjectRoot {_ps_quote(project)} "
                 f"-InstanceId 'local-default' -DataRoot {_ps_quote(local_root)}; "
-                "@{ namedCopied=$named.Copied; localCopied=$local.Copied } | ConvertTo-Json -Compress"
+                "@{ namedCopied=$named.Copied; satelliteCopied=$satellite.Copied; "
+                "satelliteAgainCopied=$satelliteAgain.Copied; localCopied=$local.Copied } | ConvertTo-Json -Compress"
             )
             result = subprocess.run(
                 [powershell, "-NoProfile", "-Command", command],
@@ -107,9 +113,13 @@ class DesktopPetInstanceIsolationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             payload = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertEqual(payload["namedCopied"], 0)
+            self.assertGreaterEqual(payload["satelliteCopied"], 1)
+            self.assertEqual(payload["satelliteAgainCopied"], 0)
             self.assertGreaterEqual(payload["localCopied"], 2)
             self.assertFalse((named_root / "users_data" / "legacy.txt").exists())
             self.assertFalse((named_root / "characters" / "legacy" / "character.json").exists())
+            self.assertFalse((satellite_root / "users_data" / "legacy.txt").exists())
+            self.assertTrue((satellite_root / "characters" / "legacy" / "character.json").is_file())
             self.assertTrue((local_root / "users_data" / "legacy.txt").is_file())
 
     def test_tauri_mutable_artifacts_and_admin_secret_stay_instance_bound(self) -> None:
@@ -143,6 +153,8 @@ class DesktopPetInstanceIsolationTests(unittest.TestCase):
             self.assertIn("$DataRoot", source)
             self.assertIn("$BackendPort", source)
             self.assertIn("$EnvFile", source)
+        for source in (bootstrap, direct):
+            self.assertIn("SeedBundledCharacters:$CloudSatellite", source)
         self.assertIn("Get-AkaneBackendPortDecision", launcher)
         self.assertIn("akane_backend.$safeInstanceId.log", launcher)
         self.assertIn(

@@ -600,6 +600,7 @@ try {
         -ProjectRoot $projectRoot `
         -InstanceId $resolvedInstanceId `
         -DataRoot $resolvedDataRoot `
+        -SeedBundledCharacters:$CloudSatellite `
         -ReadOnly:$CheckOnly
     $env:AKANE_DATA_ROOT = $dataStatus.Root
     $env:AKANE_DATA_ROOT_READY = "1"

@@ -80,12 +80,33 @@ function Copy-AkaneMissingTree {
     return [pscustomobject]@{ Copied = $copied; Skipped = $skipped; Failed = $failed }
 }
 
+function Test-AkaneCharacterRootHasPack {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CharactersRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $CharactersRoot -PathType Container)) {
+        return $false
+    }
+    foreach ($directory in Get-ChildItem -LiteralPath $CharactersRoot -Directory -Force) {
+        if (($directory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            continue
+        }
+        if (Test-Path -LiteralPath (Join-Path $directory.FullName "character.json") -PathType Leaf) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Initialize-AkaneDataRoot {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectRoot,
         [string]$InstanceId = "local-default",
         [string]$DataRoot = "",
+        [switch]$SeedBundledCharacters,
         [switch]$ReadOnly
     )
 
@@ -118,26 +139,22 @@ function Initialize-AkaneDataRoot {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
 
-    if ($InstanceId -ne "local-default") {
-        return [pscustomobject]@{
-            Root = $root
-            UsersData = $usersData
-            Characters = $characters
-            State = $state
-            Logs = $logs
-            Workspace = $workspace
-            Cache = $cache
-            Run = $run
-            Copied = 0
-            Skipped = 0
-            Failed = 0
-        }
-    }
-
     $legacyUsersData = Join-Path $ProjectRoot "users_data"
-    $legacyCharacters = Join-Path $ProjectRoot "desktop_pet_creator_kit\characters"
-    $userResult = Copy-AkaneMissingTree -Source $legacyUsersData -Destination $usersData
-    $characterResult = Copy-AkaneMissingTree -Source $legacyCharacters -Destination $characters
+    $bundledCharacters = Join-Path $ProjectRoot "desktop_pet_creator_kit\characters"
+    $userResult = [pscustomobject]@{ Copied = 0; Skipped = 0; Failed = 0 }
+    $characterResult = [pscustomobject]@{ Copied = 0; Skipped = 0; Failed = 0 }
+    if ($InstanceId -eq "local-default") {
+        $userResult = Copy-AkaneMissingTree -Source $legacyUsersData -Destination $usersData
+        $characterResult = Copy-AkaneMissingTree -Source $bundledCharacters -Destination $characters
+    } elseif (
+        $SeedBundledCharacters -and
+        -not (Test-AkaneCharacterRootHasPack -CharactersRoot $characters)
+    ) {
+        # A named Cloud Satellite owns its writable character directory just
+        # like every other instance. Seed only a genuinely empty first launch;
+        # never merge legacy users_data or overwrite an installed/custom pack.
+        $characterResult = Copy-AkaneMissingTree -Source $bundledCharacters -Destination $characters
+    }
 
     return [pscustomobject]@{
         Root = $root
