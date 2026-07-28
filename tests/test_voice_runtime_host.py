@@ -630,6 +630,64 @@ class VoiceRuntimeHostTests(unittest.TestCase):
             "completed",
         )
 
+    def test_observation_receipt_is_settled_after_response_supersedes_playback(self) -> None:
+        self._start_fake_response()
+        self._accept(
+            "voice.speech_unit.declared",
+            voice_turn_id="turn-1",
+            response_id="response-1",
+            speech_unit_id="speech-unit-1",
+            turn_revision=2,
+            response_generation=1,
+            payload={
+                "ordinal": 0,
+                "purpose": "content",
+                "text_artifact_ref": "text:superseded-playback",
+            },
+        )
+        self.assertEqual(self.host.drive_once().status, "succeeded")
+        command = next(
+            command
+            for command in self.host.snapshot.pending_commands.values()
+            if command.command_kind == "enqueue_playback"
+        )
+        self.assertTrue(self.journal.begin_command(voice_command_to_dict(command)).ok)
+        execution = self.host.execute_command(command)
+        self.assertEqual(execution.status, "succeeded")
+        self.assertTrue(
+            self.journal.store_command_observations(
+                command.command_id,
+                tuple(voice_event_to_dict(observation) for observation in execution.observations),
+            ).ok
+        )
+
+        self._accept(
+            "voice.response.failed",
+            voice_turn_id="turn-1",
+            response_id="response-1",
+            turn_revision=2,
+            response_generation=1,
+            payload={
+                "stage": "response",
+                "reason_code": "provider_failed",
+                "retryable": False,
+            },
+        )
+        self.assertNotIn(command.command_id, self.host.snapshot.pending_commands)
+
+        before_events = len(self.journal.records)
+        drained = self.host.drain_command_receipts()
+
+        self.assertTrue(drained.quiescent)
+        self.assertEqual(drained.dispatch_results, ())
+        self.assertEqual(len(self.journal.records), before_events)
+        self.assertEqual(
+            self.journal.command_receipts[command.command_id].phase,
+            "completed",
+        )
+        unit = next(iter(self.host.snapshot.speech_units.values()))
+        self.assertEqual(unit.state, SpeechUnitStatus.CANCELLED)
+
     def test_unknown_executor_outcome_is_recovered_before_safe_retry(self) -> None:
         self._commit_fake_input()
         command_id = next(iter(self.host.snapshot.pending_commands))

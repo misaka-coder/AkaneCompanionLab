@@ -565,6 +565,29 @@ class AkaneVoiceRuntimeHost:
                     index=index,
                     dispatch_results=dispatch_results,
                 )
+            pending_command = self.snapshot.pending_commands.get(command.command_id)
+            if pending_command is None:
+                settled = (
+                    self._release_command(command.command_id)
+                    if receipt.phase == "executing"
+                    else self._mark_command_completed(command.command_id)
+                )
+                if not settled.ok:
+                    return self._command_receipt_failure(
+                        reason=settled.reason or "superseded_command_receipt_settlement_failed",
+                        records=records,
+                        index=index,
+                        dispatch_results=dispatch_results,
+                        retryable=settled.retryable,
+                    )
+                continue
+            if pending_command != command:
+                return self._command_receipt_failure(
+                    reason="command_receipt_pending_command_conflict",
+                    records=records,
+                    index=index,
+                    dispatch_results=dispatch_results,
+                )
             observation_records = receipt.observation_records
             if receipt.phase == "executing":
                 recovery = self._recover_command(command)
