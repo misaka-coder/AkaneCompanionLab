@@ -50,6 +50,13 @@ from .production import (
     AkaneVoiceRuntimeService,
     MemcoreVoiceProjectionPort,
 )
+from .playback_delivery import (
+    VOICE_PLAYBACK_OUTPUT_MODE,
+    AkaneVoicePlaybackCommandExecutor,
+    VoicePlaybackDeliveryChannel,
+    VoicePlaybackDeliveryRequest,
+    VoicePlaybackDeliveryResult,
+)
 from .stream_bridge import (
     VoiceResponseStreamBridge,
     VoiceStreamBridgeResult,
@@ -70,6 +77,7 @@ from .tts_executor import (
 
 __all__ = [
     "AkaneVoiceRuntimeHost",
+    "AkaneVoicePlaybackCommandExecutor",
     "AkaneVoiceTTSCommandExecutor",
     "FileVoiceAudioArtifactPort",
     "FileVoiceTextArtifactPort",
@@ -96,6 +104,9 @@ __all__ = [
     "VoiceProjectionDrainResult",
     "VoiceProjectionOutboxLoadResult",
     "VoiceProjectionPort",
+    "VoicePlaybackDeliveryChannel",
+    "VoicePlaybackDeliveryRequest",
+    "VoicePlaybackDeliveryResult",
     "VoiceReadableTextArtifactPort",
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
@@ -105,6 +116,7 @@ __all__ = [
     "VoiceThinkingStartResult",
     "VOICE_REALTIME_MAX_FRAME_BYTES",
     "VOICE_REALTIME_PROTOCOL_VERSION",
+    "VOICE_PLAYBACK_OUTPUT_MODE",
     "VoiceRealtimeCoordinatorFactory",
     "VoiceRealtimeCoordinatorResolution",
     "VoiceRealtimeOpenRequest",

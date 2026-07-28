@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,10 +20,8 @@ from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.voice_runtime import (
-    AkaneVoiceEventFactory,
     AkaneVoiceRuntimeService,
-    FileVoiceTextArtifactPort,
-    VoiceResponseStreamBridge,
+    VOICE_PLAYBACK_OUTPUT_MODE,
     VoiceRealtimeOpenRequest,
 )
 
@@ -134,6 +133,20 @@ class _BlockingThinkingEngine(_ThinkingEngine):
         }
 
 
+class _MultiSegmentThinkingEngine(_ThinkingEngine):
+    def process_voice_turn_stream(self, **kwargs: Any):
+        self.calls.append(dict(kwargs))
+        for index, text in enumerate(("第一句先播放。", "第二句随后播放。")):
+            yield {"type": "speech_segment", "index": index, "text": text}
+        yield {
+            "type": "final",
+            "payload": {
+                "speech": "第一句先播放。第二句随后播放。",
+                "memory_metadata": {"topic_terms": ["顺序播放"]},
+            },
+        }
+
+
 class _TTSClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -143,7 +156,11 @@ class _TTSClient:
         return b"ID3-production-tts-audio"
 
 
-def _open_request(*, voice_turn_id: str = "voice-turn-1") -> VoiceRealtimeOpenRequest:
+def _open_request(
+    *,
+    voice_turn_id: str = "voice-turn-1",
+    output_mode: str = "text_only",
+) -> VoiceRealtimeOpenRequest:
     return VoiceRealtimeOpenRequest(
         profile_user_id="profile-user",
         conversation_id="conversation-visible-id",
@@ -156,6 +173,7 @@ def _open_request(*, voice_turn_id: str = "voice-turn-1") -> VoiceRealtimeOpenRe
         input_format="s16le",
         sample_rate=16000,
         channels=1,
+        output_mode=output_mode,
     )
 
 
@@ -232,46 +250,33 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 tts_client=tts_client,
             )
             try:
-                request = _open_request(voice_turn_id="voice-turn-production-tts")
+                request = _open_request(
+                    voice_turn_id="voice-turn-production-tts",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
                 resolved = service.create_coordinator(request)
                 self.assertEqual(resolved.status, "ready", resolved)
                 settled = asyncio.run(_commit_realtime_turn(resolved.coordinator))
                 self.assertEqual(settled.response_status, "started")
                 self.assertTrue(engine.segment_ready.wait(timeout=2.0))
-
+                deadline = time.monotonic() + 2.0
+                while not tts_client.calls and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(
+                    tts_client.calls,
+                    ["第一句现在就可以开始合成。"],
+                )
                 host = resolved.coordinator.bridge.host
                 response = next(
                     response
                     for response in host.snapshot.responses.values()
                     if response.voice_turn_id == request.voice_turn_id
                 )
-                text_artifacts = FileVoiceTextArtifactPort(
-                    state_dir=root / "voice-state",
-                    conversation_id=host.snapshot.conversation_id,
-                    conversation_generation=1,
-                )
-                bridge = VoiceResponseStreamBridge(
-                    host=host,
-                    response_id=response.response_id,
-                    text_artifacts=text_artifacts,
-                    event_factory=AkaneVoiceEventFactory(
-                        conversation_id=host.snapshot.conversation_id,
-                        voice_session_id=resolved.voice_session_id,
-                        conversation_generation=1,
-                    ),
-                )
-                declared = bridge.accept_stream_event(
-                    {
-                        "type": "speech_segment",
-                        "index": 0,
-                        "text": "第一句现在就可以开始合成。",
-                    }
-                )
-                self.assertTrue(declared.accepted, declared)
-                self.assertEqual(
-                    tts_client.calls,
-                    ["第一句现在就可以开始合成。"],
-                )
+                while time.monotonic() < deadline:
+                    unit = next(iter(host.snapshot.speech_units.values()))
+                    if unit.state.value == "ready":
+                        break
+                    time.sleep(0.01)
                 unit = next(iter(host.snapshot.speech_units.values()))
                 self.assertEqual(unit.state.value, "ready")
                 self.assertTrue(unit.audio_artifact_ref.startswith("voice-audio:"))
@@ -279,6 +284,15 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                     [command.command_kind for command in host.snapshot.pending_commands.values()],
                     ["enqueue_playback"],
                 )
+                deadline = time.monotonic() + 2.0
+                delivery = None
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                self.assertEqual(delivery.text, "第一句现在就可以开始合成。")
+                self.assertEqual(delivery.audio, b"ID3-production-tts-audio")
 
                 system = manager._get_system(
                     profile_user_id=request.profile_user_id,
@@ -297,6 +311,264 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 completed_unit = host.snapshot.speech_units[unit.speech_unit_id]
                 self.assertEqual(completed_response.state.value, "generated")
                 self.assertEqual(completed_unit.state.value, "ready")
+            finally:
+                engine.release_final.set()
+                service.close()
+                manager.close()
+
+    def test_client_acknowledgements_are_the_only_delivery_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            tts_client = _TTSClient()
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                tts_client=tts_client,
+            )
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-playback-acks",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                settled = asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertEqual(settled.response_status, "started")
+
+                deadline = time.monotonic() + 3.0
+                delivery = None
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                host = resolved.coordinator.bridge.host
+                unit = host.snapshot.speech_units[delivery.speech_unit_id]
+                self.assertEqual(unit.state.value, "ready")
+
+                sent = resolved.delivery_channel.mark_sent(delivery.delivery_id)
+                self.assertEqual(sent.status, "sent", sent)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ready",
+                )
+                enqueued = resolved.delivery_channel.acknowledge(
+                    "client.playback.enqueued",
+                    {"delivery_id": delivery.delivery_id},
+                )
+                self.assertTrue(enqueued.ok, enqueued)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "queued",
+                )
+
+                too_early = resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": delivery.delivery_id, "played_ms": 320},
+                )
+                self.assertEqual(too_early.status, "failed")
+                self.assertEqual(
+                    too_early.reason,
+                    "voice_playback_terminal_ack_out_of_order",
+                )
+                started = resolved.delivery_channel.acknowledge(
+                    "client.playback.started",
+                    {
+                        "delivery_id": delivery.delivery_id,
+                        "resume_token": "client-playback-1",
+                    },
+                )
+                self.assertTrue(started.ok, started)
+                completed = resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": delivery.delivery_id, "played_ms": 640},
+                )
+                self.assertTrue(completed.ok, completed)
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                outcome = resolved.delivery_channel.response_outcome()
+                self.assertTrue(outcome.response_terminal, outcome)
+                self.assertEqual(outcome.response_state, "completed")
+                self.assertEqual(outcome.delivery_status, "delivered")
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "delivered",
+                )
+                duplicate = resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": delivery.delivery_id, "played_ms": 640},
+                )
+                conflict = resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": delivery.delivery_id, "played_ms": 641},
+                )
+                self.assertEqual(duplicate.status, "duplicate")
+                self.assertEqual(conflict.status, "failed")
+                self.assertEqual(
+                    conflict.reason,
+                    "voice_playback_terminal_ack_conflict",
+                )
+
+                system = manager._get_system(
+                    profile_user_id=request.profile_user_id,
+                    session_id=request.session_id,
+                    character_pack_id=request.character_pack_id,
+                )
+                entries = system.store.get_unsummarized_messages(namespace=system.namespace)
+                assistant = next(entry for entry in entries if entry.get("kind") == "message.assistant.voice")
+                self.assertEqual(
+                    assistant["payload"]["delivery_status"],
+                    "delivered",
+                )
+            finally:
+                service.close()
+                manager.close()
+
+    def test_multiple_speech_units_are_offered_only_in_playback_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=_MultiSegmentThinkingEngine(manager),
+                tts_client=_TTSClient(),
+            )
+            try:
+                resolved = service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-two-segments",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(resolved.status, "ready", resolved)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                deadline = time.monotonic() + 3.0
+                first = None
+                while first is None and time.monotonic() < deadline:
+                    first = resolved.delivery_channel.take_outbound()
+                    if first is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(first)
+                self.assertEqual(first.ordinal, 0)
+                self.assertEqual(first.text, "第一句先播放。")
+                self.assertIsNone(resolved.delivery_channel.take_outbound())
+
+                resolved.delivery_channel.mark_sent(first.delivery_id)
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.enqueued",
+                    {"delivery_id": first.delivery_id},
+                )
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.started",
+                    {"delivery_id": first.delivery_id},
+                )
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": first.delivery_id},
+                )
+
+                second = None
+                deadline = time.monotonic() + 2.0
+                while second is None and time.monotonic() < deadline:
+                    second = resolved.delivery_channel.take_outbound()
+                    if second is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(second)
+                self.assertEqual(second.ordinal, 1)
+                self.assertEqual(second.text, "第二句随后播放。")
+                resolved.delivery_channel.mark_sent(second.delivery_id)
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.enqueued",
+                    {"delivery_id": second.delivery_id},
+                )
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.started",
+                    {"delivery_id": second.delivery_id},
+                )
+                completed = resolved.delivery_channel.acknowledge(
+                    "client.playback.completed",
+                    {"delivery_id": second.delivery_id},
+                )
+                self.assertTrue(completed.response_terminal, completed)
+                self.assertEqual(completed.delivery_status, "delivered")
+            finally:
+                service.close()
+                manager.close()
+
+    def test_client_disconnect_marks_started_audio_interrupted_not_delivered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            engine = _BlockingThinkingEngine(manager)
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+                tts_client=_TTSClient(),
+            )
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-disconnect",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = service.create_coordinator(request)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                deadline = time.monotonic() + 3.0
+                delivery = None
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                resolved.delivery_channel.mark_sent(delivery.delivery_id)
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.enqueued",
+                    {"delivery_id": delivery.delivery_id},
+                )
+                resolved.delivery_channel.acknowledge(
+                    "client.playback.started",
+                    {"delivery_id": delivery.delivery_id},
+                )
+
+                closed = resolved.delivery_channel.close(reason="client_disconnected")
+                self.assertFalse(closed.response_terminal)
+                host = resolved.coordinator.bridge.host
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "interrupted",
+                )
+                engine.release_final.set()
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                outcome = resolved.delivery_channel.response_outcome()
+                self.assertTrue(outcome.response_terminal)
+                self.assertEqual(outcome.delivery_status, "partial")
+                self.assertNotEqual(outcome.delivery_status, "delivered")
+                system = manager._get_system(
+                    profile_user_id=request.profile_user_id,
+                    session_id=request.session_id,
+                    character_pack_id=request.character_pack_id,
+                )
+                assistant = next(
+                    entry
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if entry.get("kind") == "message.assistant.voice"
+                )
+                self.assertEqual(
+                    assistant["payload"]["delivery_status"],
+                    "partial",
+                )
+                self.assertEqual(
+                    assistant["payload"]["interrupted_units"],
+                    [0],
+                )
             finally:
                 engine.release_final.set()
                 service.close()
@@ -625,6 +897,31 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 self.assertNotIn("private path", str(failed))
             finally:
                 initialization_failure.close()
+                manager.close()
+
+    def test_requested_playback_fails_before_asr_when_tts_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            adapter = _Adapter()
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=adapter,
+                tts_client=None,
+            )
+            try:
+                result = service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-no-tts",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(result.status, "unavailable")
+                self.assertEqual(result.reason, "voice_tts_provider_unavailable")
+                self.assertEqual(adapter.sessions, [])
+            finally:
+                service.close()
                 manager.close()
 
     def test_thinking_failure_is_a_typed_event_instead_of_silent_completion(self) -> None:

@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from voicecore import VoiceEvent
 
@@ -46,6 +46,8 @@ class _GenerationJob:
     message: str
     timestamp: int
     event_factory: VoiceStreamEventFactory
+    speech_delivery_enabled: bool = False
+    delivery_notifier: Callable[[], None] | None = None
 
 
 class AkaneThinkingAgentCommandExecutor:
@@ -79,6 +81,8 @@ class AkaneThinkingAgentCommandExecutor:
         self.text_artifacts = text_artifacts
         self.background_tasks = background_tasks
         self._event_factories: dict[str, VoiceStreamEventFactory] = {}
+        self._speech_delivery_by_turn: dict[str, bool] = {}
+        self._delivery_notifiers: dict[str, Callable[[], None]] = {}
         self._jobs: dict[str, _GenerationJob] = {}
         self._running_response_ids: set[str] = set()
         self._guard = threading.RLock()
@@ -89,6 +93,8 @@ class AkaneThinkingAgentCommandExecutor:
         *,
         voice_turn_id: str,
         event_factory: VoiceStreamEventFactory,
+        speech_delivery_enabled: bool = False,
+        delivery_notifier: Callable[[], None] | None = None,
     ) -> None:
         normalized_turn_id = str(voice_turn_id or "").strip()
         if not normalized_turn_id or event_factory is None:
@@ -97,6 +103,9 @@ class AkaneThinkingAgentCommandExecutor:
             if self._closed:
                 raise RuntimeError("voice_thinking_executor_closed")
             self._event_factories[normalized_turn_id] = event_factory
+            self._speech_delivery_by_turn[normalized_turn_id] = bool(speech_delivery_enabled)
+            if delivery_notifier is not None:
+                self._delivery_notifiers[normalized_turn_id] = delivery_notifier
 
     def execute(
         self,
@@ -259,6 +268,7 @@ class AkaneThinkingAgentCommandExecutor:
                         message=str(resolved["text"]),
                         timestamp=int(resolved.get("timestamp") or 0),
                         event_factory=self._event_factory_for_turn(voice_turn_id),
+                        speech_delivery_enabled=False,
                     ),
                 )
             restored += 1
@@ -271,6 +281,8 @@ class AkaneThinkingAgentCommandExecutor:
         with self._guard:
             self._closed = True
             self._event_factories.clear()
+            self._speech_delivery_by_turn.clear()
+            self._delivery_notifiers.clear()
 
     def _execute_or_recover(
         self,
@@ -357,6 +369,8 @@ class AkaneThinkingAgentCommandExecutor:
             message=str(resolved["text"]),
             timestamp=int(resolved.get("timestamp") or 0),
             event_factory=event_factory,
+            speech_delivery_enabled=self._speech_delivery_enabled(voice_turn_id),
+            delivery_notifier=self._delivery_notifier(voice_turn_id),
         )
         with self._guard:
             existing = self._jobs.get(response_id)
@@ -456,10 +470,18 @@ class AkaneThinkingAgentCommandExecutor:
                         failure_reason = result.reason or "voice_thinking_final_dispatch_failed"
                         break
                     final_seen = True
+                    self._notify_delivery(job)
                     break
-                # Speech units are deliberately not declared until production
-                # TTS/playback is connected. Declaring them now would leave
-                # permanent start_tts commands and prevent text-only completion.
+                if event_type == "speech_segment" and job.speech_delivery_enabled:
+                    result = bridge.accept_stream_event(stream_event)
+                    if not result.accepted and result.status != "duplicate":
+                        failure_reason = result.reason or "voice_speech_segment_dispatch_failed"
+                        break
+                    delivery_drive = host.drive_once()
+                    if delivery_drive.status == "failed":
+                        failure_reason = delivery_drive.reason or "voice_playback_offer_failed"
+                        break
+                    self._notify_delivery(job)
             if not final_seen and not failure_reason:
                 failure_reason = "voice_thinking_final_missing"
         except Exception:
@@ -472,10 +494,13 @@ class AkaneThinkingAgentCommandExecutor:
                 reason=failure_reason,
                 retryable=True,
             )
+            self._notify_delivery(job)
         with self._guard:
             self._running_response_ids.discard(job.response_id)
             self._jobs.pop(job.response_id, None)
             self._event_factories.pop(job.voice_turn_id, None)
+            self._speech_delivery_by_turn.pop(job.voice_turn_id, None)
+            self._delivery_notifiers.pop(job.voice_turn_id, None)
 
     def _fail_response(
         self,
@@ -523,6 +548,26 @@ class AkaneThinkingAgentCommandExecutor:
             conversation_generation=self.conversation_generation,
             voice_turn_id=voice_turn_id,
         )
+
+    def _speech_delivery_enabled(self, voice_turn_id: str) -> bool:
+        with self._guard:
+            return bool(self._speech_delivery_by_turn.get(voice_turn_id, False))
+
+    def _delivery_notifier(
+        self,
+        voice_turn_id: str,
+    ) -> Callable[[], None] | None:
+        with self._guard:
+            return self._delivery_notifiers.get(voice_turn_id)
+
+    @staticmethod
+    def _notify_delivery(job: _GenerationJob) -> None:
+        if job.delivery_notifier is None:
+            return
+        try:
+            job.delivery_notifier()
+        except Exception:
+            pass
 
     @staticmethod
     def _response_id(command_record: Mapping[str, Any]) -> str:

@@ -11,6 +11,8 @@ from typing import Any, Awaitable, Callable, Mapping
 import anyio
 from fastapi import WebSocket
 
+from .playback_delivery import VOICE_PLAYBACK_OUTPUT_MODE
+
 
 VOICE_REALTIME_PROTOCOL_VERSION = 1
 VOICE_REALTIME_MAX_FRAME_BYTES = 1024 * 1024
@@ -29,6 +31,7 @@ class VoiceRealtimeOpenRequest:
     input_format: str
     sample_rate: int
     channels: int
+    output_mode: str = "text_only"
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ class VoiceRealtimeCoordinatorResolution:
     voice_session_id: str = ""
     retryable: bool = False
     safe_public_summary: str = ""
+    delivery_channel: Any | None = None
 
     @property
     def ready(self) -> bool:
@@ -52,12 +56,14 @@ class VoiceRealtimeCoordinatorResolution:
         *,
         provider_id: str = "",
         voice_session_id: str = "",
+        delivery_channel: Any | None = None,
     ) -> VoiceRealtimeCoordinatorResolution:
         return cls(
             status="ready",
             coordinator=coordinator,
             provider_id=str(provider_id or ""),
             voice_session_id=str(voice_session_id or ""),
+            delivery_channel=delivery_channel,
         )
 
     @classmethod
@@ -105,6 +111,8 @@ class VoiceRealtimeWebSocketSession:
         self.pending_audio: tuple[int, int] | None = None
         self.finalize_task: asyncio.Task[Any] | None = None
         self.receive_task: asyncio.Task[dict[str, Any]] | None = None
+        self.delivery_channel: Any | None = None
+        self.delivery_task: asyncio.Task[None] | None = None
         self.terminal = False
         self.final_sent = False
         self.started_at = time.perf_counter()
@@ -124,6 +132,8 @@ class VoiceRealtimeWebSocketSession:
                 wait_for: set[asyncio.Task[Any]] = {self.receive_task}
                 if self.finalize_task is not None:
                     wait_for.add(self.finalize_task)
+                if self.delivery_task is not None:
+                    wait_for.add(self.delivery_task)
                 done, _pending = await asyncio.wait(
                     wait_for,
                     return_when=asyncio.FIRST_COMPLETED,
@@ -131,6 +141,13 @@ class VoiceRealtimeWebSocketSession:
 
                 if self.finalize_task is not None and self.finalize_task in done:
                     await self._handle_finalize_completion()
+                    continue
+
+                if self.delivery_task is not None and self.delivery_task in done:
+                    self.delivery_task = None
+                    await self._handle_delivery_activity()
+                    if not self.terminal:
+                        self._arm_delivery_wait()
                     continue
 
                 if self.receive_task not in done:
@@ -159,6 +176,14 @@ class VoiceRealtimeWebSocketSession:
                 if self.receive_task is not None and not self.receive_task.done():
                     self.receive_task.cancel()
                     await asyncio.gather(self.receive_task, return_exceptions=True)
+                if self.delivery_task is not None and not self.delivery_task.done():
+                    self.delivery_task.cancel()
+                    await asyncio.gather(self.delivery_task, return_exceptions=True)
+                if not self.terminal and self.delivery_channel is not None:
+                    try:
+                        self.delivery_channel.close(reason="client_disconnected")
+                    except Exception:
+                        pass
                 if not self.terminal and self.coordinator is not None:
                     try:
                         await self.coordinator.cancel(reason="client_disconnected")
@@ -197,6 +222,15 @@ class VoiceRealtimeWebSocketSession:
         if message_type == "client.endpoint":
             await self._handle_endpoint()
             return
+        if message_type in {
+            "client.playback.enqueued",
+            "client.playback.started",
+            "client.playback.completed",
+            "client.playback.interrupted",
+            "client.playback.failed",
+        }:
+            await self._handle_playback_ack(message_type, payload)
+            return
         await self._send_failed("client_message_type_unsupported", terminal=False)
 
     async def _handle_open(self, payload: Mapping[str, Any]) -> None:
@@ -233,6 +267,14 @@ class VoiceRealtimeWebSocketSession:
         self.coordinator = resolution.coordinator
         self.provider_id = resolution.provider_id
         self.voice_session_id = resolution.voice_session_id
+        self.delivery_channel = resolution.delivery_channel
+        if parsed.output_mode == VOICE_PLAYBACK_OUTPUT_MODE and self.delivery_channel is None:
+            await self._send_failed(
+                "voice_playback_delivery_unavailable",
+                retryable=True,
+                terminal=True,
+            )
+            return
         try:
             opened = await self.coordinator.open()
         except Exception:
@@ -258,9 +300,14 @@ class VoiceRealtimeWebSocketSession:
                     "sample_rate": 16000,
                     "channels": 1,
                 },
+                "output": {
+                    "mode": parsed.output_mode,
+                    "acknowledgements_required": (parsed.output_mode == VOICE_PLAYBACK_OUTPUT_MODE),
+                },
                 **({"provider_id": self.provider_id} if self.provider_id else {}),
             }
         )
+        self._arm_delivery_wait()
 
     async def _handle_audio_header(self, payload: Mapping[str, Any]) -> None:
         if self.finalize_task is not None:
@@ -377,12 +424,30 @@ class VoiceRealtimeWebSocketSession:
         if not emitted or not self.final_sent:
             await self._send_failed("voice_realtime_final_missing", retryable=True, terminal=True)
             return
+        if self.delivery_channel is not None:
+            self.delivery_channel.notify_runtime_change()
+            self._arm_delivery_wait()
+            return
         self.terminal = True
         self._observe_once(ok=True)
         await self.websocket.close(code=1000, reason="voice_realtime_complete")
 
     async def _handle_cancel(self, payload: Mapping[str, Any]) -> None:
         reason = str(payload.get("reason") or "client_cancelled")[:96]
+        if self.final_sent and self.delivery_channel is not None:
+            self.delivery_channel.close(reason=reason)
+            self.terminal = True
+            await self.websocket.send_json(
+                {
+                    "type": "server.cancelled",
+                    "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                    "reason": reason,
+                    "voice_turn_id": self.open_request.voice_turn_id if self.open_request else "",
+                }
+            )
+            self._observe_once(ok=True)
+            await self.websocket.close(code=1000, reason="voice_realtime_cancelled")
+            return
         if self.coordinator is None:
             self.terminal = True
             await self.websocket.send_json(
@@ -413,6 +478,116 @@ class VoiceRealtimeWebSocketSession:
         )
         self._observe_once(ok=True)
         await self.websocket.close(code=1000, reason="voice_realtime_cancelled")
+
+    async def _handle_playback_ack(
+        self,
+        message_type: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if self.delivery_channel is None:
+            await self._send_failed(
+                "voice_playback_not_negotiated",
+                terminal=False,
+            )
+            return
+        try:
+            result = self.delivery_channel.acknowledge(message_type, payload)
+        except Exception:
+            await self._send_failed(
+                "voice_playback_ack_failed",
+                retryable=True,
+                terminal=False,
+            )
+            return
+        if not result.ok:
+            await self._send_failed(
+                result.reason or "voice_playback_ack_rejected",
+                retryable=result.retryable,
+                terminal=False,
+            )
+            return
+        await self.websocket.send_json(
+            {
+                "type": "server.playback.ack",
+                "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                "ack_type": message_type,
+                "delivery_id": str(payload.get("delivery_id") or ""),
+                "status": result.status,
+                **({"reason": result.reason} if result.reason else {}),
+            }
+        )
+        if result.response_terminal:
+            await self._finish_delivered_response(result)
+
+    def _arm_delivery_wait(self) -> None:
+        if self.delivery_channel is None or self.delivery_task is not None or self.terminal:
+            return
+        self.delivery_task = asyncio.create_task(
+            self.delivery_channel.wait_activity(),
+            name="voice-realtime-playback-delivery",
+        )
+
+    async def _handle_delivery_activity(self) -> None:
+        if self.delivery_channel is None:
+            return
+        while True:
+            request = self.delivery_channel.take_outbound()
+            if request is None:
+                break
+            await self.websocket.send_json(
+                {
+                    "type": "server.speech",
+                    "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                    "delivery_id": request.delivery_id,
+                    "voice_turn_id": request.voice_turn_id,
+                    "response_id": request.response_id,
+                    "speech_unit_id": request.speech_unit_id,
+                    "ordinal": request.ordinal,
+                    "text": request.text,
+                    "media_type": request.media_type,
+                    "byte_length": len(request.audio),
+                    "binary_follows": True,
+                }
+            )
+            await self.websocket.send_bytes(request.audio)
+            sent = self.delivery_channel.mark_sent(request.delivery_id)
+            if not sent.ok:
+                await self._send_failed(
+                    sent.reason or "voice_playback_send_confirmation_failed",
+                    retryable=sent.retryable,
+                    terminal=True,
+                )
+                return
+        outcome = self.delivery_channel.response_outcome()
+        if outcome.response_terminal:
+            await self._finish_delivered_response(outcome)
+
+    async def _finish_delivered_response(self, outcome: Any) -> None:
+        if self.terminal:
+            return
+        event_type = "server.response.completed" if outcome.response_state == "completed" else "server.response.failed"
+        await self.websocket.send_json(
+            {
+                "type": event_type,
+                "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                "voice_turn_id": self.open_request.voice_turn_id if self.open_request else "",
+                "state": outcome.response_state,
+                "delivery_status": outcome.delivery_status,
+                "speech": outcome.full_text,
+                **(
+                    {
+                        "reason": outcome.response_reason or "voice_response_failed",
+                        "retryable": bool(outcome.response_retryable),
+                        "message": (outcome.safe_public_summary or "这次语音回复没有生成完成。"),
+                    }
+                    if outcome.response_state != "completed"
+                    else {}
+                ),
+            }
+        )
+        self.terminal = True
+        self._observe_once(ok=outcome.response_state == "completed")
+        await self.websocket.close(code=1000, reason="voice_realtime_complete")
 
     async def _send_provider_updates(self, result: Any) -> bool:
         emitted = False
@@ -445,24 +620,14 @@ class VoiceRealtimeWebSocketSession:
             if isinstance(confidence_hint, (int, float)) and not isinstance(confidence_hint, bool):
                 payload["confidence"] = float(confidence_hint)
             if message_type == "server.final":
-                payload["commit_status"] = str(
-                    getattr(getattr(result, "bridge_result", None), "status", "") or ""
-                )
-                response_status = str(
-                    getattr(result, "response_status", "") or ""
-                )
+                payload["commit_status"] = str(getattr(getattr(result, "bridge_result", None), "status", "") or "")
+                response_status = str(getattr(result, "response_status", "") or "")
                 if response_status:
                     payload["response"] = {
                         "status": response_status,
-                        "reason": str(
-                            getattr(result, "response_reason", "") or ""
-                        ),
-                        "response_id": str(
-                            getattr(result, "response_id", "") or ""
-                        ),
-                        "retryable": bool(
-                            getattr(result, "response_retryable", False)
-                        ),
+                        "reason": str(getattr(result, "response_reason", "") or ""),
+                        "response_id": str(getattr(result, "response_id", "") or ""),
+                        "retryable": bool(getattr(result, "response_retryable", False)),
                         "safe_public_summary": str(
                             getattr(
                                 result,
@@ -622,6 +787,15 @@ def _parse_open_request(
     if character_pack_id is None:
         return None, "voice_realtime_character_pack_invalid"
 
+    output_spec = payload.get("output")
+    output_mode = "text_only"
+    if output_spec is not None:
+        if not isinstance(output_spec, Mapping):
+            return None, "voice_realtime_output_invalid"
+        output_mode = str(output_spec.get("mode") or "text_only").strip()
+        if output_mode not in {"text_only", VOICE_PLAYBACK_OUTPUT_MODE}:
+            return None, "voice_realtime_output_mode_unsupported"
+
     voice_turn_id = _bounded_text(payload.get("voice_turn_id"), 160, allow_empty=True)
     audio_stream_id = _bounded_text(payload.get("audio_stream_id"), 160, allow_empty=True)
     if voice_turn_id is None or audio_stream_id is None:
@@ -644,6 +818,7 @@ def _parse_open_request(
             input_format=input_format,
             sample_rate=sample_rate,
             channels=channels,
+            output_mode=output_mode,
         ),
         "",
     )

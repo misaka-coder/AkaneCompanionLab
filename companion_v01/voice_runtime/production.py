@@ -25,6 +25,11 @@ from .host import (
     AkaneVoiceRuntimeHost,
     VoiceHostPortResult,
 )
+from .playback_delivery import (
+    VOICE_PLAYBACK_OUTPUT_MODE,
+    AkaneVoicePlaybackCommandExecutor,
+    VoicePlaybackDeliveryChannel,
+)
 from .realtime_transport import (
     VoiceRealtimeCoordinatorResolution,
     VoiceRealtimeOpenRequest,
@@ -193,6 +198,13 @@ class AkaneVoiceRuntimeService:
             str,
             AkaneThinkingAgentCommandExecutor,
         ] = {}
+        self._playback_executors: dict[str, AkaneVoicePlaybackCommandExecutor] = {}
+        self._text_artifacts: dict[str, FileVoiceTextArtifactPort] = {}
+        self._audio_artifacts: dict[str, FileVoiceAudioArtifactPort] = {}
+        self._delivery_channels: dict[
+            tuple[str, str],
+            VoicePlaybackDeliveryChannel,
+        ] = {}
         self._background_tasks = BackgroundTaskRunner(default_workers=1)
         self._guard = threading.RLock()
         self._closed = False
@@ -241,6 +253,13 @@ class AkaneVoiceRuntimeService:
                 retryable=str(getattr(provider, "status", "")) == "unavailable",
                 safe_public_summary=_provider_public_summary(reason),
             )
+        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE and self.tts_client is None:
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_tts_provider_unavailable",
+                status="unavailable",
+                retryable=False,
+                safe_public_summary="实时语音输出暂时不可用，本轮没有开始。",
+            )
 
         character_pack_id = request.character_pack_id or self.default_character_pack_id
         canonical_conversation_id = self._canonical_conversation_id(
@@ -272,6 +291,9 @@ class AkaneVoiceRuntimeService:
         )
         with self._guard:
             thinking_executor = self._thinking_executors.get(canonical_conversation_id)
+            playback_executor = self._playback_executors.get(canonical_conversation_id)
+            text_artifacts = self._text_artifacts.get(canonical_conversation_id)
+            audio_artifacts = self._audio_artifacts.get(canonical_conversation_id)
         if thinking_executor is None:
             return VoiceRealtimeCoordinatorResolution.failed(
                 "voice_thinking_executor_unavailable",
@@ -279,10 +301,38 @@ class AkaneVoiceRuntimeService:
                 retryable=True,
                 safe_public_summary="实时语音回复服务暂时不可用，本轮没有开始。",
             )
+        delivery_channel: VoicePlaybackDeliveryChannel | None = None
+        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE:
+            if playback_executor is None or text_artifacts is None or audio_artifacts is None:
+                return VoiceRealtimeCoordinatorResolution.failed(
+                    "voice_playback_delivery_unavailable",
+                    status="unavailable",
+                    retryable=True,
+                    safe_public_summary="实时语音播放通道暂时不可用，本轮没有开始。",
+                )
+            delivery_channel = VoicePlaybackDeliveryChannel(
+                host=host_result,
+                voice_turn_id=request.voice_turn_id,
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+                text_artifacts=text_artifacts,
+                audio_artifacts=audio_artifacts,
+                terminal_notifier=(
+                    lambda voice_turn_id: self._release_delivery_channel(
+                        canonical_conversation_id,
+                        voice_turn_id,
+                    )
+                ),
+            )
+            playback_executor.register_channel(request.voice_turn_id, delivery_channel)
+            with self._guard:
+                self._delivery_channels[(canonical_conversation_id, request.voice_turn_id)] = delivery_channel
         try:
             thinking_executor.register_turn(
                 voice_turn_id=request.voice_turn_id,
                 event_factory=event_factory,
+                speech_delivery_enabled=delivery_channel is not None,
+                delivery_notifier=(delivery_channel.notify_runtime_change if delivery_channel is not None else None),
             )
             normalizer = PCMStreamNormalizer(
                 input_format=request.input_format,
@@ -318,6 +368,7 @@ class AkaneVoiceRuntimeService:
             coordinator,
             provider_id=str(getattr(provider, "provider_id", "") or ""),
             voice_session_id=voice_session_id,
+            delivery_channel=delivery_channel,
         )
 
     def close(self) -> dict[str, Any]:
@@ -327,8 +378,15 @@ class AkaneVoiceRuntimeService:
             self._closed = True
             host_count = len(self._hosts)
             executors = list(self._thinking_executors.values())
+            delivery_channels = list(self._delivery_channels.values())
             self._hosts.clear()
             self._thinking_executors.clear()
+            self._playback_executors.clear()
+            self._text_artifacts.clear()
+            self._audio_artifacts.clear()
+            self._delivery_channels.clear()
+        for channel in delivery_channels:
+            channel.close(reason="voice_runtime_stopped")
         for executor in executors:
             executor.close()
         background_stopped = self._background_tasks.close(timeout=10.0)
@@ -340,6 +398,20 @@ class AkaneVoiceRuntimeService:
 
     def wait_idle(self, *, timeout: float = 10.0) -> bool:
         return self._background_tasks.wait_idle(timeout=timeout)
+
+    def _release_delivery_channel(
+        self,
+        canonical_conversation_id: str,
+        voice_turn_id: str,
+    ) -> None:
+        with self._guard:
+            channel = self._delivery_channels.pop(
+                (canonical_conversation_id, voice_turn_id),
+                None,
+            )
+            executor = self._playback_executors.get(canonical_conversation_id)
+        if channel is not None and executor is not None:
+            executor.unregister_channel(voice_turn_id, channel)
 
     def _resolve_host(
         self,
@@ -405,10 +477,15 @@ class AkaneVoiceRuntimeService:
                 conversation_id=canonical_conversation_id,
                 conversation_generation=1,
             )
+            playback_executor = AkaneVoicePlaybackCommandExecutor(
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+            )
             command_executor = VoiceCommandRouterExecutor(
                 {
                     "start_response_generation": thinking_executor,
                     "start_tts": tts_executor,
+                    "enqueue_playback": playback_executor,
                 }
             )
             raw_host = AkaneVoiceRuntimeHost(
@@ -456,6 +533,9 @@ class AkaneVoiceRuntimeService:
                 )
             self._hosts[canonical_conversation_id] = host
             self._thinking_executors[canonical_conversation_id] = thinking_executor
+            self._playback_executors[canonical_conversation_id] = playback_executor
+            self._text_artifacts[canonical_conversation_id] = text_artifacts
+            self._audio_artifacts[canonical_conversation_id] = audio_artifacts
             if restored.status == "started":
                 started = thinking_executor.start_ready_generations(host)
                 if not started.ok:
@@ -491,7 +571,8 @@ class AkaneVoiceRuntimeService:
             seen_pending.add(pending_ids)
             pending = [host.snapshot.pending_commands[command_id] for command_id in pending_ids]
             if any(
-                str(getattr(command, "command_kind", "") or "") not in {"start_response_generation", "start_tts"}
+                str(getattr(command, "command_kind", "") or "")
+                not in {"start_response_generation", "start_tts", "enqueue_playback"}
                 for command in pending
             ):
                 return VoiceThinkingStartResult(

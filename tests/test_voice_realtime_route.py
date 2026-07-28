@@ -27,10 +27,102 @@ from voicecore.testing import EventFactory
 
 from companion_v01.routes.voice import build_voice_router
 from companion_v01.voice_runtime import (
+    VOICE_PLAYBACK_OUTPUT_MODE,
     VoiceASRRealtimeTurnCoordinator,
     VoiceASRSessionBridge,
     VoiceRealtimeCoordinatorResolution,
 )
+
+
+class _RouteDeliveryChannel:
+    def __init__(self, *, voice_turn_id: str) -> None:
+        self.voice_turn_id = voice_turn_id
+        self.delivery_id = "voice-delivery-route-1"
+        self.state = "waiting"
+        self.notified = False
+        self._event: asyncio.Event | None = None
+        self._request_taken = False
+
+    async def wait_activity(self) -> None:
+        if self.notified or self.state == "terminal":
+            return
+        self._event = asyncio.Event()
+        await self._event.wait()
+
+    def notify_runtime_change(self) -> None:
+        self.notified = True
+        if self._event is not None:
+            self._event.set()
+
+    def take_outbound(self) -> Any:
+        if not self.notified or self._request_taken:
+            return None
+        self._request_taken = True
+        self.notified = False
+        return SimpleNamespace(
+            delivery_id=self.delivery_id,
+            voice_turn_id=self.voice_turn_id,
+            response_id="response-route-1",
+            speech_unit_id="speech-route-1",
+            ordinal=0,
+            text="这是首个完整语音单元。",
+            media_type="audio/mpeg",
+            audio=b"ID3-route-binary-audio",
+        )
+
+    def mark_sent(self, delivery_id: str) -> Any:
+        if delivery_id != self.delivery_id or self.state != "waiting":
+            return SimpleNamespace(ok=False, reason="route_delivery_send_invalid", retryable=False)
+        self.state = "sent"
+        return SimpleNamespace(ok=True, status="sent", reason="", retryable=False)
+
+    def acknowledge(self, message_type: str, payload: Any) -> Any:
+        if payload.get("delivery_id") != self.delivery_id:
+            return SimpleNamespace(
+                ok=False,
+                status="failed",
+                reason="voice_playback_delivery_unknown",
+                retryable=False,
+            )
+        expected = {
+            "client.playback.enqueued": "sent",
+            "client.playback.started": "enqueued",
+            "client.playback.completed": "started",
+        }
+        if message_type not in expected or self.state != expected[message_type]:
+            return SimpleNamespace(
+                ok=False,
+                status="failed",
+                reason="voice_playback_ack_out_of_order",
+                retryable=False,
+            )
+        self.state = {
+            "client.playback.enqueued": "enqueued",
+            "client.playback.started": "started",
+            "client.playback.completed": "terminal",
+        }[message_type]
+        return SimpleNamespace(
+            ok=True,
+            status="accepted",
+            reason="",
+            retryable=False,
+            response_terminal=self.state == "terminal",
+            response_state="completed" if self.state == "terminal" else "streaming",
+            delivery_status="delivered" if self.state == "terminal" else "",
+            full_text="这是首个完整语音单元。",
+        )
+
+    def response_outcome(self) -> Any:
+        return SimpleNamespace(
+            response_terminal=self.state == "terminal",
+            response_state="completed" if self.state == "terminal" else "streaming",
+            delivery_status="delivered" if self.state == "terminal" else "",
+            full_text="这是首个完整语音单元。" if self.state == "terminal" else "",
+        )
+
+    def close(self, *, reason: str) -> Any:
+        self.state = "terminal"
+        return self.response_outcome()
 
 
 @dataclass(frozen=True)
@@ -129,6 +221,7 @@ class _CoordinatorFactory:
         self.requests: list[Any] = []
         self.hosts: list[_ReducerHost] = []
         self.providers: list[_ProviderSession] = []
+        self.delivery_channels: list[_RouteDeliveryChannel] = []
 
     def __call__(self, request: Any) -> VoiceRealtimeCoordinatorResolution:
         self.requests.append(request)
@@ -164,10 +257,15 @@ class _CoordinatorFactory:
         )
         self.hosts.append(host)
         self.providers.append(provider)
+        delivery_channel = None
+        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE:
+            delivery_channel = _RouteDeliveryChannel(voice_turn_id=request.voice_turn_id)
+            self.delivery_channels.append(delivery_channel)
         return VoiceRealtimeCoordinatorResolution.succeeded(
             coordinator,
             provider_id="provider.asr.fake_realtime",
             voice_session_id="voice-session-server-1",
+            delivery_channel=delivery_channel,
         )
 
 
@@ -231,17 +329,13 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                 self.assertEqual(ready["voice_session_id"], "voice-session-server-1")
                 self.assertEqual(ready["normalized_output"]["sample_rate"], 16000)
 
-                websocket.send_json(
-                    {"type": "client.audio", "sequence": 0, "audio_clock_ms": 0}
-                )
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
                 websocket.send_bytes(b"\x01\x00" * 160)
                 partial = websocket.receive_json()
                 self.assertEqual(partial["type"], "server.partial")
                 self.assertEqual(partial["unstable_tail"], "你好")
 
-                websocket.send_json(
-                    {"type": "client.audio", "sequence": 1, "audio_clock_ms": 10}
-                )
+                websocket.send_json({"type": "client.audio", "sequence": 1, "audio_clock_ms": 10})
                 websocket.send_bytes(b"\x02\x00" * 160)
                 checkpoint = websocket.receive_json()
                 candidate = websocket.receive_json()
@@ -269,11 +363,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         self.assertEqual(request.character_pack_id, "character-realtime-1")
         turn = host.snapshot.input_turns[request.voice_turn_id]
         self.assertEqual(turn.state, InputTurnStatus.COMMITTED)
-        projections = [
-            projection
-            for transition in host.transitions
-            for projection in transition.projections
-        ]
+        projections = [projection for transition in host.transitions for projection in transition.projections]
         self.assertEqual(
             [projection.kind for projection in projections],
             ["event.voice.asr_checkpoint", "message.user.voice"],
@@ -283,6 +373,79 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         self.assertEqual(logs[0]["input_frames"], 2)
         self.assertNotIn("text", logs[0])
 
+    def test_realtime_route_sends_binary_speech_and_waits_for_ordered_playback_acks(self) -> None:
+        factory = _CoordinatorFactory()
+        payload = _open_payload(output={"mode": VOICE_PLAYBACK_OUTPUT_MODE})
+
+        with TestClient(self._app(factory=factory)) as client:
+            with client.websocket_connect("/voice/realtime") as websocket:
+                websocket.send_json(payload)
+                ready = websocket.receive_json()
+                self.assertEqual(
+                    ready["output"],
+                    {
+                        "mode": VOICE_PLAYBACK_OUTPUT_MODE,
+                        "acknowledgements_required": True,
+                    },
+                )
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
+                websocket.send_bytes(b"\x01\x00" * 160)
+                websocket.receive_json()
+                websocket.send_json({"type": "client.endpoint"})
+                self.assertEqual(websocket.receive_json()["type"], "server.finalizing")
+                self.assertEqual(websocket.receive_json()["type"], "server.final")
+
+                speech = websocket.receive_json()
+                audio = websocket.receive_bytes()
+                self.assertEqual(speech["type"], "server.speech")
+                self.assertTrue(speech["binary_follows"])
+                self.assertEqual(speech["text"], "这是首个完整语音单元。")
+                self.assertEqual(speech["byte_length"], len(audio))
+                self.assertEqual(audio, b"ID3-route-binary-audio")
+                self.assertNotIn("artifact", str(speech).lower())
+                self.assertNotIn("path", str(speech).lower())
+
+                websocket.send_json(
+                    {
+                        "type": "client.playback.completed",
+                        "delivery_id": speech["delivery_id"],
+                        "played_ms": 640,
+                    }
+                )
+                rejected = websocket.receive_json()
+                self.assertEqual(rejected["type"], "server.failed")
+                self.assertEqual(
+                    rejected["reason"],
+                    "voice_playback_ack_out_of_order",
+                )
+                self.assertFalse(rejected["terminal"])
+
+                for message_type in (
+                    "client.playback.enqueued",
+                    "client.playback.started",
+                    "client.playback.completed",
+                ):
+                    ack: dict[str, Any] = {
+                        "type": message_type,
+                        "delivery_id": speech["delivery_id"],
+                    }
+                    if message_type == "client.playback.started":
+                        ack["resume_token"] = "route-resume-1"
+                    if message_type == "client.playback.completed":
+                        ack["played_ms"] = 640
+                    websocket.send_json(ack)
+                    confirmed = websocket.receive_json()
+                    self.assertEqual(confirmed["type"], "server.playback.ack")
+                    self.assertEqual(confirmed["ack_type"], message_type)
+
+                completed = websocket.receive_json()
+                self.assertEqual(completed["type"], "server.response.completed")
+                self.assertEqual(completed["state"], "completed")
+                self.assertEqual(completed["delivery_status"], "delivered")
+                self.assertEqual(completed["speech"], "这是首个完整语音单元。")
+
+        self.assertEqual(factory.delivery_channels[0].state, "terminal")
+
     def test_endpoint_is_idempotent_while_provider_final_is_pending(self) -> None:
         factory = _CoordinatorFactory(finalize_delay=0.15)
 
@@ -290,9 +453,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
             with client.websocket_connect("/voice/realtime") as websocket:
                 websocket.send_json(_open_payload())
                 websocket.receive_json()
-                websocket.send_json(
-                    {"type": "client.audio", "sequence": 0, "audio_clock_ms": 0}
-                )
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
                 websocket.send_bytes(b"\x01\x00" * 160)
                 websocket.receive_json()
                 websocket.send_json({"type": "client.endpoint"})
@@ -318,15 +479,21 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                 self.assertEqual(missing_open["reason"], "client_open_required")
                 self.assertFalse(missing_open["terminal"])
 
-                websocket.send_json(
-                    _open_payload(input={"format": "mp3", "sample_rate": 16000, "channels": 1})
-                )
+                websocket.send_json(_open_payload(input={"format": "mp3", "sample_rate": 16000, "channels": 1}))
                 invalid_format = websocket.receive_json()
                 self.assertEqual(
                     invalid_format["reason"],
                     "voice_realtime_input_format_unsupported",
                 )
                 self.assertFalse(invalid_format["terminal"])
+
+                websocket.send_json(_open_payload(output={"mode": "implicit_fake_playback"}))
+                invalid_output = websocket.receive_json()
+                self.assertEqual(
+                    invalid_output["reason"],
+                    "voice_realtime_output_mode_unsupported",
+                )
+                self.assertFalse(invalid_output["terminal"])
 
                 websocket.send_json(_open_payload())
                 websocket.receive_json()
@@ -345,14 +512,10 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
             with client.websocket_connect("/voice/realtime") as websocket:
                 websocket.send_json(_open_payload())
                 websocket.receive_json()
-                websocket.send_json(
-                    {"type": "client.audio", "sequence": 0, "audio_clock_ms": 0}
-                )
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
                 websocket.send_bytes(b"\x01\x00" * 160)
                 websocket.receive_json()
-                websocket.send_json(
-                    {"type": "client.audio", "sequence": 2, "audio_clock_ms": 20}
-                )
+                websocket.send_json({"type": "client.audio", "sequence": 2, "audio_clock_ms": 20})
                 websocket.send_bytes(b"\x01\x00" * 160)
                 failed = websocket.receive_json()
 
@@ -376,9 +539,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(factory.providers[0].cancelled)
         projections = [
-            projection
-            for transition in factory.hosts[0].transitions
-            for projection in transition.projections
+            projection for transition in factory.hosts[0].transitions for projection in transition.projections
         ]
         self.assertEqual(projections, [])
 
@@ -399,9 +560,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         turn = factory.hosts[0].snapshot.input_turns[factory.requests[0].voice_turn_id]
         self.assertEqual(turn.state, InputTurnStatus.CANCELLED)
         projections = [
-            projection
-            for transition in factory.hosts[0].transitions
-            for projection in transition.projections
+            projection for transition in factory.hosts[0].transitions for projection in transition.projections
         ]
         self.assertEqual(projections, [])
 
