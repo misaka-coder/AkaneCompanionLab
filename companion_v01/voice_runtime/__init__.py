@@ -50,6 +50,7 @@ from .production import (
     AkaneVoiceRuntimeService,
     MemcoreVoiceProjectionPort,
 )
+from .semantic_pulse import AkaneVoiceSemanticPulseCommandExecutor
 from .playback_delivery import (
     VOICE_PLAYBACK_OUTPUT_MODE,
     AkaneVoicePlaybackCommandExecutor,
@@ -113,6 +114,7 @@ __all__ = [
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
     "AkaneVoiceRuntimeService",
+    "AkaneVoiceSemanticPulseCommandExecutor",
     "MemcoreVoiceProjectionPort",
     "AkaneThinkingAgentCommandExecutor",
     "VoiceThinkingStartResult",

@@ -34,6 +34,7 @@ from .realtime_transport import (
     VoiceRealtimeCoordinatorResolution,
     VoiceRealtimeOpenRequest,
 )
+from .semantic_pulse import AkaneVoiceSemanticPulseCommandExecutor
 from .thinking_agent import (
     AkaneThinkingAgentCommandExecutor,
     VoiceThinkingStartResult,
@@ -183,6 +184,7 @@ class AkaneVoiceRuntimeService:
         bot_id: str,
         default_character_pack_id: str = "",
         tts_client: Any = None,
+        runtime_metrics: Any = None,
         provider_builder: Callable[[Any], Any] = build_voice_asr_provider,
     ) -> None:
         self.engine = engine
@@ -192,11 +194,16 @@ class AkaneVoiceRuntimeService:
         self.bot_id = str(bot_id or "")
         self.default_character_pack_id = str(default_character_pack_id or "")
         self.tts_client = tts_client
+        self.runtime_metrics = runtime_metrics
         self.provider_builder = provider_builder
         self._hosts: dict[str, _SerializedVoiceRuntimeHost] = {}
         self._thinking_executors: dict[
             str,
             AkaneThinkingAgentCommandExecutor,
+        ] = {}
+        self._semantic_executors: dict[
+            str,
+            AkaneVoiceSemanticPulseCommandExecutor,
         ] = {}
         self._playback_executors: dict[str, AkaneVoicePlaybackCommandExecutor] = {}
         self._text_artifacts: dict[str, FileVoiceTextArtifactPort] = {}
@@ -377,10 +384,14 @@ class AkaneVoiceRuntimeService:
                 return {"status": "stopped", "reason": "already_stopped"}
             self._closed = True
             host_count = len(self._hosts)
-            executors = list(self._thinking_executors.values())
+            executors = [
+                *self._thinking_executors.values(),
+                *self._semantic_executors.values(),
+            ]
             delivery_channels = list(self._delivery_channels.values())
             self._hosts.clear()
             self._thinking_executors.clear()
+            self._semantic_executors.clear()
             self._playback_executors.clear()
             self._text_artifacts.clear()
             self._audio_artifacts.clear()
@@ -470,6 +481,18 @@ class AkaneVoiceRuntimeService:
                 text_artifacts=text_artifacts,
                 background_tasks=self._background_tasks,
             )
+            semantic_executor = AkaneVoiceSemanticPulseCommandExecutor(
+                engine=self.engine,
+                memcore_manager=manager,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+                text_artifacts=text_artifacts,
+                background_tasks=self._background_tasks,
+                runtime_metrics=self.runtime_metrics,
+            )
             tts_executor = AkaneVoiceTTSCommandExecutor(
                 tts_client=self.tts_client,
                 text_artifacts=text_artifacts,
@@ -489,6 +512,7 @@ class AkaneVoiceRuntimeService:
                     "duck_playback": playback_executor,
                     "resume_playback": playback_executor,
                     "stop_playback": playback_executor,
+                    "request_semantic_pulse": semantic_executor,
                 }
             )
             raw_host = AkaneVoiceRuntimeHost(
@@ -500,6 +524,7 @@ class AkaneVoiceRuntimeService:
                 restored_snapshot=replayed.replay.snapshot,
             )
             host = _SerializedVoiceRuntimeHost(raw_host)
+            semantic_executor.bind_host(host)
             pending = host.drain_projection_outbox()
             if not pending.quiescent:
                 return VoiceRealtimeCoordinatorResolution.failed(
@@ -534,8 +559,10 @@ class AkaneVoiceRuntimeService:
                     retryable=restored.retryable,
                     safe_public_summary="实时语音回复状态无法恢复，本轮没有开始。",
                 )
+            semantic_executor.enable_live_commands()
             self._hosts[canonical_conversation_id] = host
             self._thinking_executors[canonical_conversation_id] = thinking_executor
+            self._semantic_executors[canonical_conversation_id] = semantic_executor
             self._playback_executors[canonical_conversation_id] = playback_executor
             self._text_artifacts[canonical_conversation_id] = text_artifacts
             self._audio_artifacts[canonical_conversation_id] = audio_artifacts
@@ -575,7 +602,12 @@ class AkaneVoiceRuntimeService:
             pending = [host.snapshot.pending_commands[command_id] for command_id in pending_ids]
             if any(
                 str(getattr(command, "command_kind", "") or "")
-                not in {"start_response_generation", "start_tts", "enqueue_playback"}
+                not in {
+                    "start_response_generation",
+                    "start_tts",
+                    "enqueue_playback",
+                    "request_semantic_pulse",
+                }
                 for command in pending
             ):
                 return VoiceThinkingStartResult(

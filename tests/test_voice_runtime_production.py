@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 import threading
 import time
@@ -30,6 +31,30 @@ from companion_v01.voice_runtime import (
 
 class _FakeLLM:
     pass
+
+
+class _SemanticLLM:
+    def __init__(self, *, error: str = "") -> None:
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def chat_provider_protocol() -> str:
+        return "openai"
+
+    def call_chat_json_result(self, **kwargs: Any) -> Any:
+        self.calls.append(dict(kwargs))
+        return SimpleNamespace(
+            parsed={
+                "playback_action": "resume",
+                "input_action": "treat_as_interaction",
+                "response_action": "none",
+                "reason_summary": "用户是在补充，不需要抢走当前回复。",
+                "confidence_hint": 0.86,
+            },
+            fallback_used=False,
+            error=self.error,
+        )
 
 
 class _FakeEmbeddingProvider:
@@ -108,6 +133,12 @@ class _ThinkingEngine:
                 },
             },
         }
+
+
+class _SemanticThinkingEngine(_ThinkingEngine):
+    def __init__(self, manager: MemcoreManager, *, llm: _SemanticLLM) -> None:
+        super().__init__(manager)
+        self.llm = llm
 
 
 class _BlockingThinkingEngine(_ThinkingEngine):
@@ -565,6 +596,343 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 )
             finally:
                 service.close()
+                manager.close()
+
+    def test_stable_interruption_checkpoint_runs_read_only_semantic_control(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            semantic_llm = _SemanticLLM()
+            engine = _SemanticThinkingEngine(manager, llm=semantic_llm)
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+                tts_client=_TTSClient(),
+            )
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-semantic-source",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                delivery = None
+                deadline = time.monotonic() + 3.0
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                resolved.delivery_channel.mark_sent(delivery.delivery_id)
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": delivery.delivery_id,
+                            "resume_token": "semantic-resume-token",
+                        },
+                    ).ok
+                )
+
+                host = resolved.coordinator.bridge.host
+                factory = EventFactory(
+                    conversation_id=host.snapshot.conversation_id,
+                    voice_session_id="voice-session-semantic-control",
+                    conversation_generation=host.snapshot.conversation_generation,
+                )
+                opened = host.accept_event(
+                    factory.make(
+                        "voice.input.activity_started",
+                        sequence=None,
+                        voice_turn_id="voice-turn-semantic-interruption",
+                        audio_stream_id="audio-semantic-interruption",
+                    )
+                )
+                self.assertTrue(opened.accepted, opened)
+                suspected = host.accept_event(
+                    factory.make(
+                        "voice.interruption.suspected",
+                        sequence=None,
+                        voice_turn_id="voice-turn-semantic-interruption",
+                        response_id=delivery.response_id,
+                        speech_unit_id=delivery.speech_unit_id,
+                        audio_stream_id="audio-semantic-interruption",
+                        audio_clock_ms=420,
+                        payload={"interruption_id": "interruption-semantic-control"},
+                    )
+                )
+                self.assertTrue(suspected.accepted, suspected)
+                self.assertFalse(
+                    [
+                        command
+                        for command in host.snapshot.pending_commands.values()
+                        if command.command_kind == "request_semantic_pulse"
+                    ]
+                )
+
+                host.drive_once()
+                duck = resolved.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                self.assertEqual(duck.action, "duck")
+                resolved.delivery_channel.mark_control_sent(duck.control_id)
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": duck.control_id,
+                            "command_id": duck.command_id,
+                            "action": "duck",
+                            "status": "applied",
+                            "played_ms": 420,
+                            "applied_volume": 0.2,
+                        },
+                    ).ok
+                )
+
+                checkpoint = host.accept_event(
+                    factory.make(
+                        "voice.asr.checkpoint",
+                        sequence=None,
+                        voice_turn_id="voice-turn-semantic-interruption",
+                        turn_revision=1,
+                        payload={
+                            "stable_text": "不对，我想补充一下",
+                            "unstable_tail": "",
+                            "control_significant": True,
+                        },
+                    )
+                )
+                self.assertTrue(checkpoint.accepted, checkpoint)
+                pulse = next(
+                    command
+                    for command in host.snapshot.pending_commands.values()
+                    if command.command_kind == "request_semantic_pulse"
+                )
+                self.assertEqual(pulse.payload["turn_revision"], 1)
+
+                system = manager._get_system(
+                    profile_user_id=request.profile_user_id,
+                    session_id=request.session_id,
+                    character_pack_id=request.character_pack_id,
+                )
+                before_dialogue_ids = {
+                    str(entry.get("source_id") or "")
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if str(entry.get("role") or "") in {"user", "assistant"}
+                }
+
+                driven = host.drive_once()
+                self.assertEqual(driven.status, "deferred", driven)
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(len(semantic_llm.calls), 1)
+                call = semantic_llm.calls[0]
+                self.assertIsNone(call["native_tools"])
+                self.assertEqual(call["native_tool_choice"], "")
+                self.assertTrue(call["history_turns"])
+                self.assertTrue(str(call["prompt_cache_key"]).startswith("voice-semantic-"))
+                self.assertIn("好，我从状态机的边界继续讲。", call["user_prompt"])
+                self.assertIn("不对，我想补充一下", call["user_prompt"])
+
+                after_dialogue_ids = {
+                    str(entry.get("source_id") or "")
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if str(entry.get("role") or "") in {"user", "assistant"}
+                }
+                self.assertEqual(after_dialogue_ids, before_dialogue_ids)
+
+                resume = resolved.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(resume)
+                self.assertEqual(resume.action, "resume")
+                resolved.delivery_channel.mark_control_sent(resume.control_id)
+                acknowledged = resolved.delivery_channel.acknowledge(
+                    "client.playback.control_ack",
+                    {
+                        "control_id": resume.control_id,
+                        "command_id": resume.command_id,
+                        "action": "resume",
+                        "status": "applied",
+                        "played_ms": 520,
+                        "applied_volume": 1.0,
+                    },
+                )
+                self.assertTrue(acknowledged.ok, acknowledged)
+                self.assertEqual(
+                    host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "playing",
+                )
+            finally:
+                service.close()
+                manager.close()
+
+    def test_restart_skips_semantic_pulse_bound_to_the_old_playback_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            semantic_llm = _SemanticLLM()
+            engine = _SemanticThinkingEngine(manager, llm=semantic_llm)
+            first_service: AkaneVoiceRuntimeService | None = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+                tts_client=_TTSClient(),
+            )
+            recovered_service: AkaneVoiceRuntimeService | None = None
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-semantic-before-restart",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = first_service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertTrue(first_service.wait_idle(timeout=5.0))
+
+                delivery = None
+                deadline = time.monotonic() + 3.0
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = resolved.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                resolved.delivery_channel.mark_sent(delivery.delivery_id)
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": delivery.delivery_id,
+                            "resume_token": "semantic-restart-resume-token",
+                        },
+                    ).ok
+                )
+
+                host = resolved.coordinator.bridge.host
+                factory = EventFactory(
+                    conversation_id=host.snapshot.conversation_id,
+                    voice_session_id="voice-session-semantic-restart",
+                    conversation_generation=host.snapshot.conversation_generation,
+                )
+                self.assertTrue(
+                    host.accept_event(
+                        factory.make(
+                            "voice.input.activity_started",
+                            sequence=None,
+                            voice_turn_id="voice-turn-semantic-restart-interruption",
+                            audio_stream_id="audio-semantic-restart-interruption",
+                        )
+                    ).accepted
+                )
+                self.assertTrue(
+                    host.accept_event(
+                        factory.make(
+                            "voice.interruption.suspected",
+                            sequence=None,
+                            voice_turn_id="voice-turn-semantic-restart-interruption",
+                            response_id=delivery.response_id,
+                            speech_unit_id=delivery.speech_unit_id,
+                            audio_stream_id="audio-semantic-restart-interruption",
+                            audio_clock_ms=360,
+                            payload={"interruption_id": "interruption-semantic-restart"},
+                        )
+                    ).accepted
+                )
+                host.drive_once()
+                duck = resolved.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                resolved.delivery_channel.mark_control_sent(duck.control_id)
+                self.assertTrue(
+                    resolved.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": duck.control_id,
+                            "command_id": duck.command_id,
+                            "action": "duck",
+                            "status": "applied",
+                            "played_ms": 360,
+                            "applied_volume": 0.2,
+                        },
+                    ).ok
+                )
+                self.assertTrue(
+                    host.accept_event(
+                        factory.make(
+                            "voice.asr.checkpoint",
+                            sequence=None,
+                            voice_turn_id="voice-turn-semantic-restart-interruption",
+                            turn_revision=1,
+                            payload={
+                                "stable_text": "等一下，我想补充",
+                                "unstable_tail": "",
+                                "control_significant": True,
+                            },
+                        )
+                    ).accepted
+                )
+                self.assertEqual(
+                    [command.command_kind for command in host.snapshot.pending_commands.values()],
+                    ["request_semantic_pulse"],
+                )
+                self.assertEqual(semantic_llm.calls, [])
+
+                recovered_root = root / "recovered-process"
+                shutil.copytree(root / "voice-state", recovered_root / "voice-state")
+                first_service.close()
+                first_service = None
+
+                recovered_service = self._service(
+                    root=recovered_root,
+                    manager=manager,
+                    adapter=_Adapter(),
+                    engine=engine,
+                    tts_client=_TTSClient(),
+                )
+                recovered = recovered_service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-after-semantic-restart",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(recovered.status, "ready", recovered)
+                recovered_host = recovered.coordinator.bridge.host
+                self.assertEqual(semantic_llm.calls, [])
+                self.assertFalse(
+                    [
+                        command.command_kind
+                        for command in recovered_host.snapshot.pending_commands.values()
+                        if command.command_kind
+                        in {
+                            "request_semantic_pulse",
+                            "resume_playback",
+                            "stop_playback",
+                        }
+                    ]
+                )
+                self.assertEqual(
+                    recovered_host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ducked",
+                )
+            finally:
+                if first_service is not None:
+                    first_service.close()
+                if recovered_service is not None:
+                    recovered_service.close()
                 manager.close()
 
     def test_multiple_speech_units_are_offered_only_in_playback_order(self) -> None:

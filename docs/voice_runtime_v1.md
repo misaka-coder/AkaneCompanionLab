@@ -1,7 +1,7 @@
 # Akane Voice Runtime V1
 
 状态：方案与状态机已冻结；实时 ASR、durable Voice Host、MemCore、Thinking Agent、
-TTS、桌宠播放 ACK 与 Slice C 播放控制协议已完成生产装配；自动 VAD / 语义脉冲待接入
+TTS、桌宠播放 ACK、Slice C 播放控制与语义脉冲已完成生产装配；自动 VAD 与候选回复待接入
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -769,9 +769,31 @@ VAD 抢话；自动 duck、语义脉冲、backchannel 与误打断恢复仍由�
 Slice C 的播放控制闭环也已落地：VoiceCore 的 `duck_playback`、
 `resume_playback`、`stop_playback` 由同一个 Akane playback executor 路由到拥有
 目标 speech unit 的活动 delivery channel，桌宠执行后用统一控制 ACK 回传。
-VoiceCore 仍是唯一状态机，Akane 没有复制打断转移。当前尚未把声学活动自动转换
-为 `voice.interruption.suspected`，也尚未装配 `request_semantic_pulse` executor；
-因此这一子步只完成执行闭环，不宣称自动抢话已经可用。
+VoiceCore 仍是唯一状态机，Akane 没有复制打断转移。
+
+Slice C 的语义判断子步也已落地：`voice.interruption.suspected` 只立即发出
+`duck_playback`；直到同一 Input Turn 出现 `control_significant=true` 的稳定
+checkpoint 或 final，VoiceCore 才发出带 `turn_revision` 围栏的
+`request_semantic_pulse`。Akane 使用独立的只读模型请求执行该命令：
+
+- 复用 MemCore 的 provider-native 历史投影，并在动态尾部补充完整生成正文、已
+  送达单元、当前播放单元及 stable/unstable 转写；
+- 不暴露 native tools，不执行外部动作，不写新的正式 user/assistant 消息；只有
+  真正形成 backchannel/takeover 的 directive 才按 VoiceCore 投影语义事件；
+- 使用独立稳定的 `voice-semantic-<identity hash>` cache family，不改普通聊天的
+  system prompt 或 cache key；当前播放/转写事实只在该请求尾部变化；
+- 新 ASR revision 到达后，旧模型结果以 `stale_turn_revision`/skipped 收束，不能
+  覆盖较新的判断；
+- 进程重启时不重放只属于旧实时播放通道的 semantic pulse；旧 command 以
+  `semantic_runtime_restarted` 结构化跳过，服务完成 durable recovery 后才接受
+  新 pulse，不能生成没有播放器可以执行的 resume/stop；
+- 模型失败、非法 JSON 或上下文不可用会形成 `voice.semantic_pulse.failed`，并请求
+  恢复同一播放单元，不能让声音永久保持低音量或静默消失。
+
+当前仍未把声学活动自动转换为 `voice.interruption.suspected`，也尚未启用
+`prepare_candidate/prepare_backchannel` 的推测式回复闭环，因此这一步不宣称自动
+VAD 抢话或候选音频已经可用；现阶段 semantic pulse 的 `response_action` 固定为
+`none`。
 
 ### Slice C：播放和语义打断
 
