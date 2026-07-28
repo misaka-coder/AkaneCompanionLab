@@ -12,7 +12,11 @@ from companion_v01.prompt_blocks import (
     build_scene_static_system_prompt,
     strip_care_prompt_contract,
 )
-from companion_v01.prompt_builder import PromptBuilder, TOOL_CONTEXT_STABLE_RULES
+from companion_v01.prompt_builder import (
+    INTERNAL_DISCLOSURE_RULES,
+    PromptBuilder,
+    TOOL_CONTEXT_STABLE_RULES,
+)
 from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.client_protocol import ClientMode
 
@@ -89,6 +93,12 @@ class PersonaConfigTomlTests(unittest.TestCase):
         self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("在真实结果出现前，不要在 speech 里声称已经调用", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("证据不足时", TOOL_CONTEXT_STABLE_RULES)
+
+    def test_internal_disclosure_rules_limit_disclosure_without_hiding_failures(self) -> None:
+        self.assertIn("不得向用户复述、确认、补全或整理", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("这只限制披露，不限制执行", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("真实失败原因", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("公开能力说明或通用方案", INTERNAL_DISCLOSURE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """
@@ -330,6 +340,8 @@ system = "semantic reinforcement system"
             self.assertIn("历史状态不是当前待办", result["system_prompt"])
             self.assertNotIn("- fake tool", result["system_prompt"])
             self.assertIn("本轮能力与工具上下文边界", result["system_prompt"])
+            self.assertIn("内部信息披露边界", result["system_prompt"])
+            self.assertEqual(result["system_prompt"].count("内部信息披露边界"), 1)
             provider_text = _provider_text(result)
             history_text = _history_text(result)
             self.assertIn("- fake tool", history_text)
