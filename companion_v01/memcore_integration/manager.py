@@ -44,6 +44,7 @@ logger = logging.getLogger("akane.memcore")
 
 _EXPLICIT_RETRIEVAL_KIND_ROOTS = ("tool", "event", "skill", "material")
 _EXPLICIT_KIND_PATTERN = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?")
+_STALE_OPEN_TURN_MAX_AGE_SECONDS = 30 * 60
 
 
 _PROCESS_RUNTIME_LOCK = threading.RLock()
@@ -591,6 +592,22 @@ class MemcoreManager:
         if system is None:
             return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
         try:
+            opened_at = int(time.time())
+            recover_stale = getattr(system, "recover_stale_open_turns", None)
+            if callable(recover_stale):
+                recovered = tuple(
+                    recover_stale(
+                        max_age_seconds=_STALE_OPEN_TURN_MAX_AGE_SECONDS,
+                        now=opened_at,
+                        reason="host_stale_open_turn_recovery",
+                    )
+                    or ()
+                )
+                if recovered:
+                    logger.warning(
+                        "memcore stale open turn recovery status=recovered count=%s",
+                        len(recovered),
+                    )
             entry = self._build_timeline_input(
                 role="user",
                 record=record,
@@ -604,7 +621,10 @@ class MemcoreManager:
                 stimuli=[entry],
                 annotation_target_ids=[source_id],
                 turn_id=resolved_turn_id,
-                opened_at=int((record or {}).get("timestamp") or time.time()),
+                # Turn lifecycle time is host processing time, not the
+                # stimulus publication time. External finance/news events may
+                # arrive late and must not be born stale.
+                opened_at=opened_at,
             )
             stored = handle.stimuli[0]
             writable = str(handle.status) == "open"

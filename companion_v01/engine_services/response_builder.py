@@ -545,6 +545,23 @@ def prepare_context(
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
 
+    def _authoritative_history_for_prompt() -> list[dict[str, Any]]:
+        history = [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
+        if normalized_prompt_scope != "plugin_proactive":
+            return history
+        event_history: list[dict[str, Any]] = []
+        keep_event_turn = False
+        for turn in history:
+            role = str(turn.get("role") or "").strip().lower()
+            if role == "user":
+                content = str(turn.get("content") or "")
+                keep_event_turn = bool(re.search(r"(?:^|\]\s|\n)event\.[a-z0-9]", content, flags=re.IGNORECASE))
+            if keep_event_turn:
+                event_history.append(dict(turn))
+        return event_history
+
+    authoritative_history_turns = _authoritative_history_for_prompt() if projection_authoritative else []
+
     def _build_generation_context() -> dict[str, Any]:
         current_message_visible_in_raw = bool(provider_projection.get("current_source_visible")) if (
             projection_read_active
@@ -553,7 +570,7 @@ def prepare_context(
             and any(str(record.get("source_id") or "").strip() == current_source_id for record in raw_records)
         )
         if projection_authoritative:
-            history_turns = [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
+            history_turns = [dict(turn) for turn in authoritative_history_turns]
         elif current_source_id:
             history_records = [
                 record
@@ -680,13 +697,28 @@ def prepare_context(
                 )
                 if projected_current_message:
                     current_message_text = projected_current_message
+                authoritative_history_turns = _authoritative_history_for_prompt()
             generation_context = _build_generation_context()
 
     # Emergency second boundary: compaction normally keeps these layers small,
-    # but a single oversized imported/tool trace must never make context grow
-    # without a bound. Drop oldest raw lines first, then oldest episodic lines;
-    # semantic memory and the current user message remain intact.
+    # but a blocked turn or one oversized imported/tool trace must never make
+    # context grow without a bound. Trim complete authoritative history groups,
+    # or the legacy raw/episodic fallback layers; semantic memory and the
+    # current user message remain intact.
     trimmed_layers: list[str] = []
+    trimmed_history_messages = 0
+    if prompt_token_limit and projection_authoritative:
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and authoritative_history_turns
+        ):
+            removed = _trim_oldest_provider_history_group(authoritative_history_turns)
+            if removed <= 0:
+                break
+            trimmed_history_messages += removed
+            if "memcore_history" not in trimmed_layers:
+                trimmed_layers.append("memcore_history")
+            generation_context = _build_generation_context()
     if prompt_token_limit and not projection_authoritative:
         while (
             _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
@@ -715,6 +747,7 @@ def prepare_context(
         "final_estimated_tokens": _estimate_generation_context_tokens(generation_context, native_tools),
         "compact_attempted": compact_attempted,
         "trimmed_layers": trimmed_layers,
+        "trimmed_history_messages": trimmed_history_messages,
     }
     if not care_enabled:
         fallback_payload = generation_context.get("fallback")
@@ -1032,6 +1065,28 @@ def _drop_oldest_prompt_lines(text: str) -> str:
     remove_count = max(1, len(lines) // 4)
     remaining = lines[remove_count:]
     return marker + "\n" + "\n".join(remaining)
+
+
+def _trim_oldest_provider_history_group(history_turns: list[dict[str, Any]]) -> int:
+    """Drop one oldest complete provider-history group.
+
+    Provider projections no longer carry host-only turn ids once converted to
+    request messages. A new user message is therefore the safest portable
+    group boundary: remove the oldest user/assistant/tool prefix up to the next
+    user message. If only one historical group remains, drop it whole rather
+    than splitting a tool exchange. The current user turn is stored separately
+    and is never passed to this helper.
+    """
+
+    if not history_turns:
+        return 0
+    remove_count = len(history_turns)
+    for index in range(1, len(history_turns)):
+        if str(history_turns[index].get("role") or "").strip().lower() == "user":
+            remove_count = index
+            break
+    del history_turns[:remove_count]
+    return remove_count
 
 
 def _trim_oldest_prompt_raw_record(

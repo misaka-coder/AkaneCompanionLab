@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Generator
 
@@ -167,6 +168,12 @@ from .vector_entry_builder import (
 from .vector_store import VectorStore
 from .vision_observation_router import VisionObservationRouter
 from .workspace_files import WorkspaceFileService
+
+
+_MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
+    "akane_memcore_open_turn_guard",
+    default=None,
+)
 
 logger = logging.getLogger("akane.engine")
 
@@ -819,6 +826,66 @@ class AkaneMemoryEngine:
             logger.warning("memcore passive message append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    @staticmethod
+    def _track_open_memcore_turn_for_guard(
+        *,
+        turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> None:
+        if _MEMCORE_OPEN_TURN_GUARD.get() is None:
+            return
+        resolved_turn_id = str(turn_id or "").strip()
+        if not resolved_turn_id:
+            return
+        _MEMCORE_OPEN_TURN_GUARD.set(
+            {
+                "turn_id": resolved_turn_id,
+                "profile_user_id": str(profile_user_id or "").strip(),
+                "session_id": str(session_id or "").strip(),
+                "character_pack_id": str(character_pack_id or "").strip(),
+            }
+        )
+
+    @staticmethod
+    def _clear_open_memcore_turn_guard(turn_id: str) -> None:
+        tracked = _MEMCORE_OPEN_TURN_GUARD.get()
+        if not isinstance(tracked, dict):
+            return
+        if str(tracked.get("turn_id") or "").strip() != str(turn_id or "").strip():
+            return
+        _MEMCORE_OPEN_TURN_GUARD.set({})
+
+    def _abort_open_memcore_turn_guard(self, *, reason: str) -> None:
+        tracked = _MEMCORE_OPEN_TURN_GUARD.get()
+        if not isinstance(tracked, dict):
+            return
+        turn_id = str(tracked.get("turn_id") or "").strip()
+        if not turn_id:
+            return
+        # Clear first so a failure in the recovery path cannot recursively
+        # retain or re-abort the same turn while unwinding the caller.
+        _MEMCORE_OPEN_TURN_GUARD.set({})
+        try:
+            result = self._abort_memcore_input_turn(
+                turn_id=turn_id,
+                reason=str(reason or "turn_scope_exited_open"),
+                profile_user_id=str(tracked.get("profile_user_id") or ""),
+                session_id=str(tracked.get("session_id") or ""),
+                character_pack_id=str(tracked.get("character_pack_id") or ""),
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                logger.warning(
+                    "memcore guarded turn abort failed status=%s reason=%s",
+                    str((result or {}).get("status") or "unknown")[:40] if isinstance(result, dict) else "invalid",
+                    str((result or {}).get("reason") or "abort_failed")[:120]
+                    if isinstance(result, dict)
+                    else "invalid_result",
+                )
+        except Exception as exc:
+            logger.warning("memcore guarded turn abort failed type=%s", type(exc).__name__)
+
     def _begin_memcore_input_turn(
         self,
         *,
@@ -873,6 +940,13 @@ class AkaneMemoryEngine:
                         "memcore input turn is not writable status=%s",
                         status[:80],
                     )
+            else:
+                self._track_open_memcore_turn_for_guard(
+                    turn_id=turn_id,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
             return normalized
         except Exception as exc:
             exception_code = f"exception_{type(exc).__name__}"
@@ -1098,6 +1172,8 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
             )
             if not completion or bool(completion.get("ok")):
+                if completion and completion.get("ok"):
+                    self._clear_open_memcore_turn_guard(turn_id)
                 return True
         aborted = self._abort_memcore_input_turn(
             turn_id=turn_id,
@@ -1175,6 +1251,7 @@ class AkaneMemoryEngine:
             )
             self._warn_memcore_write_result("input turn abort", result)
             if isinstance(result, dict) and bool(result.get("ok")):
+                self._clear_open_memcore_turn_guard(turn_id)
                 compaction = self._schedule_memcore_compaction(
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -3255,6 +3332,18 @@ class AkaneMemoryEngine:
         )
 
     def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
+        exit_reason = "turn_scope_exited_open"
+        try:
+            return self._process_turn_impl(payload)
+        except BaseException:
+            exit_reason = "turn_processing_exception"
+            raise
+        finally:
+            self._abort_open_memcore_turn_guard(reason=exit_reason)
+            _MEMCORE_OPEN_TURN_GUARD.reset(guard_token)
+
+    def _process_turn_impl(self, payload: dict[str, Any]) -> dict[str, Any]:
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
@@ -3904,6 +3993,26 @@ class AkaneMemoryEngine:
         )
 
     def process_turn_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        _precommitted_memcore_turn: dict[str, str] | None = None,
+    ) -> Generator[dict[str, Any], None, None]:
+        guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
+        exit_reason = "turn_stream_scope_exited_open"
+        try:
+            yield from self._process_turn_stream_impl(
+                payload,
+                _precommitted_memcore_turn=_precommitted_memcore_turn,
+            )
+        except BaseException:
+            exit_reason = "turn_stream_processing_exception"
+            raise
+        finally:
+            self._abort_open_memcore_turn_guard(reason=exit_reason)
+            _MEMCORE_OPEN_TURN_GUARD.reset(guard_token)
+
+    def _process_turn_stream_impl(
         self,
         payload: dict[str, Any],
         *,

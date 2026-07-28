@@ -655,6 +655,106 @@ class MemcoreIntegrationTests(unittest.TestCase):
             manager_module._release_process_runtime(runtime)
         self.assertEqual(created, [3])
 
+    def test_begin_input_turn_recovers_stale_open_turn_before_opening_next(self) -> None:
+        from companion_v01.memcore_integration import manager as manager_module
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                with patch.object(manager_module.time, "time", return_value=1000):
+                    stale = manager.begin_input_turn(
+                        {"source_id": "stale-source", "content": "旧请求", "timestamp": 10},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                with patch.object(manager_module.time, "time", return_value=2801):
+                    fresh = manager.begin_input_turn(
+                        {"source_id": "fresh-source", "content": "新请求", "timestamp": 20},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                stale_status = manager.abort_input_turn(
+                    turn_id=str(stale["turn_id"]),
+                    reason="test_cleanup",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(stale["writable"], stale)
+        self.assertTrue(fresh["writable"], fresh)
+        self.assertTrue(stale_status["ok"], stale_status)
+        self.assertEqual(stale_status["status"], "already_aborted")
+        self.assertEqual(stale_status["reason"], "host_stale_open_turn_recovery")
+
+    def test_process_turn_guard_aborts_open_memcore_turn_on_exception(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        abort_calls: list[dict[str, object]] = []
+
+        def process_impl(_payload: dict[str, object]) -> dict[str, object]:
+            engine._track_open_memcore_turn_for_guard(
+                turn_id="turn-sync-failed",
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            raise ValueError("model_failed")
+
+        engine._process_turn_impl = process_impl
+        engine._abort_memcore_input_turn = lambda **kwargs: (
+            abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "model_failed"):
+            engine.process_turn({})
+
+        self.assertEqual(len(abort_calls), 1)
+        self.assertEqual(abort_calls[0]["turn_id"], "turn-sync-failed")
+        self.assertEqual(abort_calls[0]["reason"], "turn_processing_exception")
+
+    def test_stream_turn_guard_aborts_open_memcore_turn_on_exception(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        abort_calls: list[dict[str, object]] = []
+
+        def stream_impl(
+            _payload: dict[str, object],
+            *,
+            _precommitted_memcore_turn: dict[str, str] | None = None,
+        ):
+            _ = _precommitted_memcore_turn
+            engine._track_open_memcore_turn_for_guard(
+                turn_id="turn-stream-failed",
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            yield {"type": "partial"}
+            raise RuntimeError("stream_failed")
+
+        engine._process_turn_stream_impl = stream_impl
+        engine._abort_memcore_input_turn = lambda **kwargs: (
+            abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "stream_failed"):
+            list(engine.process_turn_stream({}))
+
+        self.assertEqual(len(abort_calls), 1)
+        self.assertEqual(abort_calls[0]["turn_id"], "turn-stream-failed")
+        self.assertEqual(abort_calls[0]["reason"], "turn_stream_processing_exception")
+
     def test_projection_facades_delegate_to_memcore_and_return_safe_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -4916,6 +5016,86 @@ class MemcoreIntegrationTests(unittest.TestCase):
         history_start = int(result["memcore_history_start_index"])
         self.assertEqual(result["history_turns"][history_start:], [])
         self.assertNotIn("很长的旧历史", repr(result))
+
+    def test_authoritative_projection_hard_budget_trims_complete_oldest_groups(self) -> None:
+        projection = {
+            "ok": True,
+            "status": "ok",
+            "provider_profile": "openai_chat",
+            "messages": [
+                {
+                    "turn_id": "turn-old-1",
+                    "payload": {"role": "user", "content": "第一轮旧问题" * 300},
+                    "source_ids": ["old-user-1"],
+                },
+                {
+                    "turn_id": "turn-old-1",
+                    "payload": {"role": "assistant", "content": "第一轮旧回答" * 300},
+                    "source_ids": ["old-assistant-1"],
+                },
+                {
+                    "turn_id": "turn-old-2",
+                    "payload": {"role": "user", "content": "第二轮旧问题" * 40},
+                    "source_ids": ["old-user-2"],
+                },
+                {
+                    "turn_id": "turn-old-2",
+                    "payload": {"role": "assistant", "content": "第二轮旧回答" * 40},
+                    "source_ids": ["old-assistant-2"],
+                },
+                {
+                    "turn_id": "turn-current",
+                    "payload": {"role": "user", "content": "当前问题"},
+                    "source_ids": ["current"],
+                },
+            ],
+            "stable_prefix_hash": "3" * 64,
+            "projection_version": 1,
+            "compaction_generation": 0,
+            "projection_generation": 1,
+        }
+
+        class _BlockedCompactionManager(_PromptContextMemcoreManager):
+            def __init__(self) -> None:
+                super().__init__({}, projection_payload=projection)
+                self.compact_calls: list[dict[str, object]] = []
+
+            def compact_due_sync(self, **kwargs) -> dict[str, object]:
+                self.compact_calls.append(dict(kwargs))
+                return {
+                    "ok": True,
+                    "status": "completed",
+                    "stats": {"status": "blocked_by_open_turn"},
+                }
+
+        memcore_manager = _BlockedCompactionManager()
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+
+        with (
+            patch.object(config, "MEMORY_BACKEND", "memcore"),
+            patch.object(config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 100),
+        ):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[{"source_id": "current", "role": "user", "content": "当前问题"}],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+            )
+
+        budget = result["prompt_budget"]
+        self.assertEqual(len(memcore_manager.compact_calls), 1)
+        self.assertTrue(budget["compact_attempted"])
+        self.assertIn("memcore_history", budget["trimmed_layers"])
+        self.assertGreaterEqual(budget["trimmed_history_messages"], 2)
+        self.assertLessEqual(budget["final_estimated_tokens"], 100)
+        self.assertEqual(result["user_prompt"], "当前问题")
+        self.assertNotIn("第一轮旧问题", repr(result["history_turns"]))
 
     def test_plain_prompt_shadow_compares_normalized_history_without_changing_prompt(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
