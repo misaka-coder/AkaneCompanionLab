@@ -6,6 +6,7 @@ import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from capcore_adapter_speech import (
     ASRSessionMode,
@@ -216,8 +217,14 @@ class _RuntimeMetrics:
 
 
 class _CoordinatorFactory:
-    def __init__(self, *, finalize_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        finalize_delay: float = 0.0,
+        response_status: str = "started",
+    ) -> None:
         self.finalize_delay = finalize_delay
+        self.response_status = response_status
         self.requests: list[Any] = []
         self.hosts: list[_ReducerHost] = []
         self.providers: list[_ProviderSession] = []
@@ -248,11 +255,13 @@ class _CoordinatorFactory:
                 input_channels=request.channels,
             ),
             response_starter=lambda: SimpleNamespace(
-                status="started",
-                reason="",
+                status=self.response_status,
+                reason=("" if self.response_status == "started" else "voice_response_start_failed"),
                 response_id="response-route-1",
-                retryable=False,
-                safe_public_summary="",
+                retryable=self.response_status != "started",
+                safe_public_summary=(
+                    "" if self.response_status == "started" else "语音已经识别，但回复生成暂时无法启动。"
+                ),
             ),
         )
         self.hosts.append(host)
@@ -468,6 +477,59 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         self.assertEqual(duplicate["status"], "duplicate")
         self.assertEqual(final["type"], "server.final")
         self.assertEqual(len(factory.hosts[0].snapshot.input_turns), 1)
+
+    def test_finalize_timeout_fails_structurally_and_cancels_provider(self) -> None:
+        factory = _CoordinatorFactory(finalize_delay=1.0)
+        metrics = _RuntimeMetrics()
+        logs: list[dict[str, Any]] = []
+
+        with patch(
+            "companion_v01.voice_runtime.realtime_transport.VOICE_REALTIME_FINALIZE_TIMEOUT_SECONDS",
+            0.05,
+        ):
+            with TestClient(self._app(factory=factory, metrics=metrics, logs=logs)) as client:
+                with client.websocket_connect("/voice/realtime") as websocket:
+                    websocket.send_json(_open_payload())
+                    websocket.receive_json()
+                    websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
+                    websocket.send_bytes(b"\x01\x00" * 160)
+                    websocket.receive_json()
+                    websocket.send_json({"type": "client.endpoint"})
+                    finalizing = websocket.receive_json()
+                    failed = websocket.receive_json()
+
+        self.assertEqual(finalizing["type"], "server.finalizing")
+        self.assertEqual(failed["type"], "server.failed")
+        self.assertEqual(failed["reason"], "voice_realtime_finalize_timeout")
+        self.assertTrue(failed["terminal"])
+        self.assertTrue(factory.providers[0].cancelled)
+        self.assertEqual(metrics.observed, [("asr_realtime", False)])
+        self.assertEqual(logs[0]["reason"], "voice_realtime_finalize_timeout")
+
+    def test_committed_transcript_reports_response_start_failure_without_hanging(self) -> None:
+        factory = _CoordinatorFactory(response_status="failed")
+        metrics = _RuntimeMetrics()
+        logs: list[dict[str, Any]] = []
+
+        with TestClient(self._app(factory=factory, metrics=metrics, logs=logs)) as client:
+            with client.websocket_connect("/voice/realtime") as websocket:
+                websocket.send_json(_open_payload())
+                websocket.receive_json()
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
+                websocket.send_bytes(b"\x01\x00" * 160)
+                websocket.receive_json()
+                websocket.send_json({"type": "client.endpoint"})
+                self.assertEqual(websocket.receive_json()["type"], "server.finalizing")
+                final = websocket.receive_json()
+                failed = websocket.receive_json()
+
+        self.assertEqual(final["type"], "server.final")
+        self.assertEqual(final["response"]["status"], "failed")
+        self.assertEqual(failed["type"], "server.response.failed")
+        self.assertEqual(failed["reason"], "voice_response_start_failed")
+        self.assertEqual(failed["delivery_status"], "not_started")
+        self.assertEqual(metrics.observed, [("asr_realtime", False)])
+        self.assertEqual(logs[0]["reason"], "voice_response_start_failed")
 
     def test_invalid_or_out_of_order_messages_fail_structurally_without_fake_audio(self) -> None:
         factory = _CoordinatorFactory()

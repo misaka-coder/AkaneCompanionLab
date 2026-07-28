@@ -16,6 +16,8 @@ from .playback_delivery import VOICE_PLAYBACK_OUTPUT_MODE
 
 VOICE_REALTIME_PROTOCOL_VERSION = 1
 VOICE_REALTIME_MAX_FRAME_BYTES = 1024 * 1024
+VOICE_REALTIME_FINALIZE_TIMEOUT_SECONDS = 12.0
+VOICE_REALTIME_INPUT_INACTIVITY_TIMEOUT_SECONDS = 45.0
 
 
 @dataclass(frozen=True)
@@ -116,8 +118,10 @@ class VoiceRealtimeWebSocketSession:
         self.terminal = False
         self.final_sent = False
         self.started_at = time.perf_counter()
+        self.last_client_activity_at = self.started_at
         self.input_bytes = 0
         self.input_frames = 0
+        self._terminal_reason = ""
         self._observed = False
 
     async def run(self) -> None:
@@ -136,8 +140,18 @@ class VoiceRealtimeWebSocketSession:
                     wait_for.add(self.delivery_task)
                 done, _pending = await asyncio.wait(
                     wait_for,
+                    timeout=self._input_inactivity_wait_seconds(),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+
+                if not done:
+                    await self._send_failed(
+                        "voice_realtime_input_timeout",
+                        retryable=True,
+                        safe_public_summary="实时语音输入等待超时。",
+                        terminal=True,
+                    )
+                    continue
 
                 if self.finalize_task is not None and self.finalize_task in done:
                     await self._handle_finalize_completion()
@@ -153,6 +167,7 @@ class VoiceRealtimeWebSocketSession:
                 if self.receive_task not in done:
                     continue
                 message = self.receive_task.result()
+                self.last_client_activity_at = time.perf_counter()
                 self.receive_task = asyncio.create_task(
                     self.websocket.receive(),
                     name="voice-realtime-websocket-receive",
@@ -192,7 +207,14 @@ class VoiceRealtimeWebSocketSession:
                 if self.finalize_task is not None and not self.finalize_task.done():
                     self.finalize_task.cancel()
                     await asyncio.gather(self.finalize_task, return_exceptions=True)
-                self._observe_once(ok=self.final_sent or self.terminal)
+                completed = self.final_sent or self.terminal
+                self._observe_once(
+                    ok=completed,
+                    reason=(
+                        self._terminal_reason
+                        or ("client_disconnected" if not completed else "")
+                    ),
+                )
         if cancelled is not None:
             raise cancelled
 
@@ -402,9 +424,22 @@ class VoiceRealtimeWebSocketSession:
             }
         )
         self.finalize_task = asyncio.create_task(
-            self.coordinator.settle_finalize(),
+            self._settle_finalize_with_timeout(),
             name=f"voice-realtime-finalize-{self.open_request.voice_turn_id if self.open_request else 'unknown'}",
         )
+
+    async def _settle_finalize_with_timeout(self) -> Any:
+        try:
+            return await asyncio.wait_for(
+                self.coordinator.settle_finalize(),
+                timeout=VOICE_REALTIME_FINALIZE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            try:
+                await self.coordinator.cancel(reason="voice_realtime_finalize_timeout")
+            except Exception:
+                pass
+            raise
 
     async def _handle_finalize_completion(self) -> None:
         assert self.finalize_task is not None
@@ -413,6 +448,14 @@ class VoiceRealtimeWebSocketSession:
         try:
             result = task.result()
         except asyncio.CancelledError:
+            return
+        except TimeoutError:
+            await self._send_failed(
+                "voice_realtime_finalize_timeout",
+                retryable=True,
+                safe_public_summary="实时识别收尾超时，请改用普通语音识别。",
+                terminal=True,
+            )
             return
         except Exception:
             await self._send_failed("voice_realtime_finalize_failed", retryable=True, terminal=True)
@@ -423,6 +466,33 @@ class VoiceRealtimeWebSocketSession:
         emitted = await self._send_provider_updates(result)
         if not emitted or not self.final_sent:
             await self._send_failed("voice_realtime_final_missing", retryable=True, terminal=True)
+            return
+        response_status = str(getattr(result, "response_status", "") or "")
+        if response_status and response_status != "started":
+            reason = str(
+                getattr(result, "response_reason", "")
+                or "voice_response_start_failed"
+            )[:128]
+            await self.websocket.send_json(
+                {
+                    "type": "server.response.failed",
+                    "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                    "voice_turn_id": self.open_request.voice_turn_id if self.open_request else "",
+                    "state": "failed",
+                    "delivery_status": "not_started",
+                    "speech": "",
+                    "reason": reason,
+                    "retryable": bool(getattr(result, "response_retryable", False)),
+                    "message": str(
+                        getattr(result, "response_safe_public_summary", "")
+                        or "语音已经识别，但回复生成暂时无法启动。"
+                    )[:160],
+                }
+            )
+            self._terminal_reason = reason
+            self.terminal = True
+            self._observe_once(ok=False, reason=reason)
+            await self.websocket.close(code=1011, reason="voice_response_start_failed")
             return
         if self.delivery_channel is not None:
             self.delivery_channel.notify_runtime_change()
@@ -689,14 +759,15 @@ class VoiceRealtimeWebSocketSession:
             pass
         if not terminal:
             return
+        self._terminal_reason = str(reason or "voice_realtime_failed")[:128]
         self.terminal = True
-        self._observe_once(ok=False)
+        self._observe_once(ok=False, reason=self._terminal_reason)
         try:
             await self.websocket.close(code=1011, reason="voice_realtime_failed")
         except Exception:
             pass
 
-    def _observe_once(self, *, ok: bool) -> None:
+    def _observe_once(self, *, ok: bool, reason: str = "") -> None:
         if self._observed:
             return
         self._observed = True
@@ -713,6 +784,7 @@ class VoiceRealtimeWebSocketSession:
             self.log_event(
                 "asr_realtime_complete",
                 ok=bool(ok),
+                **({"reason": str(reason or "voice_realtime_failed")[:128]} if not ok else {}),
                 duration_ms=round(duration_ms, 1),
                 input_frames=self.input_frames,
                 input_bytes=self.input_bytes,
@@ -720,6 +792,12 @@ class VoiceRealtimeWebSocketSession:
             )
         except Exception:
             pass
+
+    def _input_inactivity_wait_seconds(self) -> float | None:
+        if self.coordinator is None or self.finalize_task is not None or self.final_sent:
+            return None
+        elapsed = time.perf_counter() - self.last_client_activity_at
+        return max(0.05, VOICE_REALTIME_INPUT_INACTIVITY_TIMEOUT_SECONDS - elapsed)
 
 
 async def handle_voice_realtime_websocket(

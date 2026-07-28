@@ -342,7 +342,9 @@ export class RealtimeVoiceSession {
     if (this.failed || !this.ready) throw new Error("voice_realtime_not_ready");
     if (!this.endpointSent) {
       this.endpointSent = true;
-      this.sendJson({ type: "client.endpoint" });
+      if (!this.sendJson({ type: "client.endpoint" })) {
+        throw new Error("voice_realtime_endpoint_send_failed");
+      }
       this.notify("onFinalizing");
     }
   }

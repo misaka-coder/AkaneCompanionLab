@@ -68,6 +68,7 @@ const TTS_PREWARM_DELAY_MS = 650;
 const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
 const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
+const REALTIME_VOICE_FINAL_TIMEOUT_MS = 15 * 1000;
 const DESKTOP_CONTEXT_POLL_MS = 1500;
 const DESKTOP_CONTEXT_TURN_WAIT_MS = 280;
 const DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS = 1200;
@@ -2916,7 +2917,7 @@ async function stopVoiceRecording() {
       showError("录音太短啦，我没听清。");
       return;
     }
-    await transcribeVoiceBlob(blob);
+    await transcribeVoiceBlob(blob, { autoSubmit: true });
     return;
   }
   if (turn.closed || realtimeVoiceTurn !== turn) return;
@@ -2927,6 +2928,7 @@ async function stopVoiceRecording() {
     sending = true;
     showThinking();
     setRuntimeStatus("语音识别收尾中", { mode: "thinking" });
+    armRealtimeVoiceFinalWatchdog(turn);
     updateActivityControls();
     scheduleSettingsSnapshot();
     return;
@@ -2981,6 +2983,7 @@ function startRealtimeVoiceTurn(stream) {
     failure: null,
     fallbackBlob: null,
     fallbackStarted: false,
+    finalWatchdogId: 0,
     closed: false,
     hasShownSpeech: false
   };
@@ -3050,7 +3053,8 @@ function buildRealtimeVoiceCallbacks(turn) {
       showBubbleText(`${prefix}：${transcript}`, { transient: false, kind: "status" });
     },
     onFinal(payload) {
-      if (!isCurrent()) return;
+      if (!isCurrent() || turn.fallbackStarted) return;
+      clearRealtimeVoiceFinalWatchdog(turn);
       turn.committed = true;
       turn.fallbackBlob = null;
       turn.responseActive = true;
@@ -3140,6 +3144,7 @@ function markRealtimeVoiceFailure(turn, failure) {
     setRuntimeStatus(normalized.message, { mode: "error" });
     return;
   }
+  clearRealtimeVoiceFinalWatchdog(turn);
   turn.failure = normalized;
   if (!normalized.committed) turn.session?.dispose(normalized.reason);
   if (normalized.committed) {
@@ -3153,6 +3158,39 @@ function markRealtimeVoiceFailure(turn, failure) {
   if (turn.fallbackBlob) void fallbackRealtimeVoiceToBatch(turn);
 }
 
+function armRealtimeVoiceFinalWatchdog(turn) {
+  clearRealtimeVoiceFinalWatchdog(turn);
+  if (!turn || turn.closed || turn.committed || turn.fallbackStarted) return;
+  turn.finalWatchdogId = window.setTimeout(() => {
+    turn.finalWatchdogId = 0;
+    if (
+      !turn ||
+      turn.closed ||
+      turn.committed ||
+      turn.fallbackStarted ||
+      realtimeVoiceTurn !== turn
+    ) {
+      return;
+    }
+    showBubbleText("实时识别超时，正在改用普通识别……", {
+      transient: false,
+      kind: "status"
+    });
+    markRealtimeVoiceFailure(turn, {
+      reason: "voice_realtime_final_timeout",
+      message: "实时识别超时，正在改用普通识别。",
+      terminal: true,
+      committed: false
+    });
+  }, REALTIME_VOICE_FINAL_TIMEOUT_MS);
+}
+
+function clearRealtimeVoiceFinalWatchdog(turn) {
+  if (!turn?.finalWatchdogId) return;
+  window.clearTimeout(turn.finalWatchdogId);
+  turn.finalWatchdogId = 0;
+}
+
 async function fallbackRealtimeVoiceToBatch(turn) {
   if (!turn || turn.closed || turn.committed || turn.fallbackStarted) return;
   const blob = turn.fallbackBlob;
@@ -3161,15 +3199,21 @@ async function fallbackRealtimeVoiceToBatch(turn) {
     return;
   }
   turn.fallbackStarted = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
   turn.responseActive = false;
   sending = false;
   turn.session?.dispose("batch_asr_fallback");
-  setRuntimeStatus("实时链路不可用，改用普通语音识别", { mode: "thinking" });
+  turn.closed = true;
+  if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
+  const timedOut = turn.failure?.reason === "voice_realtime_final_timeout";
+  const statusText = timedOut
+    ? "实时识别超时，正在改用普通识别"
+    : "实时链路不可用，正在改用普通识别";
+  showBubbleText(`${statusText}……`, { transient: false, kind: "status" });
+  setRuntimeStatus(statusText, { mode: "thinking" });
   try {
-    await transcribeVoiceBlob(blob);
+    await transcribeVoiceBlob(blob, { autoSubmit: true });
   } finally {
-    turn.closed = true;
-    if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
     updateActivityControls();
     scheduleSettingsSnapshot();
   }
@@ -3178,6 +3222,7 @@ async function fallbackRealtimeVoiceToBatch(turn) {
 function finishRealtimeVoiceTurn(turn, { ok, message = "", cancelled = false }) {
   if (!turn || turn.closed || realtimeVoiceTurn !== turn) return;
   turn.closed = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
   turn.responseActive = false;
   turn.playbackActive = false;
   turn.fallbackBlob = null;
@@ -3203,6 +3248,7 @@ function closeRealtimeVoiceTurn(turn, reason) {
   if (!turn || turn.closed) return;
   const hadActiveResponse = turn.responseActive || turn.playbackActive;
   turn.closed = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
   turn.responseActive = false;
   turn.playbackActive = false;
   turn.fallbackBlob = null;
@@ -3244,7 +3290,7 @@ function stopVoiceRecorderToBlob(recorder) {
   });
 }
 
-async function transcribeVoiceBlob(blob) {
+async function transcribeVoiceBlob(blob, { autoSubmit = false } = {}) {
   const token = ++voiceInputToken;
   setVoiceInputState("processing");
   setPetEmotion("thinking", { persist: false });
@@ -3286,6 +3332,16 @@ async function transcribeVoiceBlob(blob) {
     const text = String(payload?.text || payload?.transcript || "").trim();
     if (!payload?.ok || !text) {
       throw new Error(extractBackendErrorMessage(payload) || "没听清，可以再说一次。");
+    }
+
+    if (autoSubmit) {
+      showBubbleText(`听清了：${text}`, {
+        transient: false,
+        kind: "status"
+      });
+      setRuntimeStatus("语音已识别，正在发送", { mode: "thinking" });
+      await sendMessage(text);
+      return;
     }
 
     setChatInputText(text, { append: Boolean(els.chatInput.value.trim()) });

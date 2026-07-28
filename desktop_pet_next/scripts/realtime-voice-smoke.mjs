@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   RealtimeVoicePlaybackQueue,
+  RealtimeVoiceSession,
   buildVoiceWebSocketUrl
 } from "../src/realtime-voice-client.js";
 
@@ -137,5 +138,21 @@ assert.deepEqual(interrupted.map((item) => item.type), [
 ]);
 assert.equal(interrupted.at(-1).played_ms, 200);
 assert.equal(interrupted.at(-1).reason, "user_stopped_reply");
+
+const endpointFailureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js"
+});
+endpointFailureSession.flushAndStopCapture = async () => {};
+endpointFailureSession.start = async () => endpointFailureSession;
+endpointFailureSession.ready = true;
+endpointFailureSession.sendJson = () => false;
+await assert.rejects(
+  endpointFailureSession.finishInput(),
+  /voice_realtime_endpoint_send_failed/
+);
 
 console.log("realtime voice playback smoke: ok");
