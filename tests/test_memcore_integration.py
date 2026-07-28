@@ -787,6 +787,46 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     }
                 )
                 self.assertEqual(missing_slot["reason"], "persistent_turn_messages_missing")
+                strict_mismatch = observer(
+                    {
+                        "protocol": "responses",
+                        "history_messages": [actual_user, ephemeral],
+                        "persistent_turn_messages": [
+                            actual_user,
+                            {"role": "assistant", "content": "unexpected extra reply"},
+                        ],
+                        "audit_history_messages": [actual_user, ephemeral],
+                    }
+                )
+                self.assertFalse(strict_mismatch["ok"], strict_mismatch)
+                self.assertEqual(strict_mismatch["reason"], "persistent_turn_count_mismatch")
+                current_messages[0]["projection_status"] = "request_frozen"
+                stale_observer = engine._build_memcore_request_observer(
+                    generation_context={
+                        "memcore_projection_read": {
+                            "current_turn_id": opened["turn_id"],
+                            "current_turn_messages": current_messages,
+                        }
+                    },
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                stale_turn = stale_observer(
+                    {
+                        "protocol": "responses",
+                        "history_messages": [actual_user, ephemeral],
+                        "persistent_turn_messages": [
+                            actual_user,
+                            {"role": "assistant", "content": "stale completed reply"},
+                        ],
+                        "audit_history_messages": [actual_user, ephemeral],
+                    }
+                )
+                self.assertTrue(stale_turn["ok"], stale_turn)
+                self.assertEqual(stale_turn["status"], "skipped")
+                self.assertEqual(stale_turn["reason"], "persistent_turn_count_mismatch")
+                self.assertFalse(stale_turn["recorded"])
                 observed = observer(
                     {
                         "protocol": "responses",

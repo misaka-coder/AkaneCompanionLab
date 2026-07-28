@@ -5370,7 +5370,31 @@ class AkaneMemoryEngine:
                 if not persistent_messages:
                     return {"ok": False, "status": "failed", "reason": "persistent_turn_messages_missing"}
                 if len(persistent_messages) != len(current_messages):
-                    return {"ok": False, "status": "failed", "reason": "persistent_turn_count_mismatch"}
+                    stale_frozen_turn = bool(current_messages) and all(
+                        str(message.get("projection_status") or "").strip().lower() == "request_frozen"
+                        for message in current_messages
+                    )
+                    if not stale_frozen_turn:
+                        return {"ok": False, "status": "failed", "reason": "persistent_turn_count_mismatch"}
+                    # An idempotently replayed stimulus can resolve to an
+                    # already completed/aborted turn.  That stale turn is not
+                    # writable, and its request-frozen user/tool/assistant sequence no
+                    # longer has the same shape as this delivery attempt.
+                    # Preserve the model reply while declining to mutate the
+                    # stale projection; normal writable turns still take the
+                    # strict record-and-verify path below.
+                    logger.warning(
+                        "memcore request projection skipped reason=persistent_turn_count_mismatch "
+                        "projected_count=%s request_count=%s",
+                        len(current_messages),
+                        len(persistent_messages),
+                    )
+                    return {
+                        "ok": True,
+                        "status": "skipped",
+                        "reason": "persistent_turn_count_mismatch",
+                        "recorded": False,
+                    }
                 prepared: list[dict[str, Any]] = []
                 for metadata, actual in zip(current_messages, persistent_messages):
                     actual_role = str(actual.get("role") or "").strip().lower()
