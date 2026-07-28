@@ -14,6 +14,7 @@
     "smoke:speech-delivery": "node ./scripts/speech-delivery-smoke.mjs",
     "smoke:realtime-voice": "node ./scripts/realtime-voice-smoke.mjs",
     "smoke:voice-endpoint": "node ./scripts/realtime-voice-endpoint-smoke.mjs",
+    "smoke:voice-call": "node ./scripts/realtime-voice-call-flow-smoke.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 1421",
     "start:release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-next.ps1",
     "smoke:control-center-actions": "node ./scripts/control-center-action-bridge-smoke.mjs",

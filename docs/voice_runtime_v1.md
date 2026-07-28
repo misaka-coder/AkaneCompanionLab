@@ -758,8 +758,8 @@ VoiceCore durable command
 客户端库现已增加通话级资源所有权：`RealtimeVoiceCallResources` 持有一场通话
 唯一的麦克风流和播放器，不同语音轮各自保留 WebSocket/ACK 通道，但音频交付由
 通话级仲裁器串行取得播放器所有权。结束单轮只注销该轮播放队列，不停止麦克风
-轨道；只有结束整场通话才停止轨道并清空播放器。当前按钮尚未切换成持续通话，
-因此该边界已通过双轮 smoke 验证，但还没有宣称自动连续收音已经交付。
+轨道；只有结束整场通话才停止轨道并清空播放器。主入口现已用这份所有权实现
+连续多轮通话，按钮不再逐轮创建和销毁麦克风。
 
 通话资源路径也已持有唯一 AudioContext/AudioWorklet。每个
 `RealtimeVoiceSession` 只取得当前 Input Turn 的 PCM sink 租约：开始前先用
@@ -767,16 +767,16 @@ VoiceCore durable command
 原轮次后释放；异步释放尚未完成时，紧接着的新轮次等待同一交接任务，不瞬时
 报“麦克风忙”。单轮结束不关闭 AudioContext，整场 `close` 才停止 worklet 和
 媒体轨道；`reset/flush` 未收到 worklet 回执时会结构化失败，不能把可能串轮的
-音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，但桌宠
-主入口尚未创建这份长生命周期资源，因此用户可见按钮仍保持原来的逐轮录音语义。
+音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，桌宠
+主入口也已复用它；每轮安全录音仍独立收口，不能跨轮拼接。
 
 客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
 判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR
 `partial/checkpoint` 组合起来：稳定 checkpoint 后允许较短静音收尾，只有 partial
 时保留更长等待；单个爆音、持续背景噪声和句中短停顿不提交。检测到有效人声但
 始终没有 ASR 文本时形成 `discard/speech_without_transcript`，不请求 Thinking
-Agent，也不设置固定的单句最长时限。检测器已接入 `RealtimeVoiceSession` 的 PCM
-与转写观测，但主入口尚未实例化它，因此当前不会擅自替用户自动点“停止”。
+Agent，也不设置固定的单句最长时限。检测器现已由主入口为每个 Input Turn
+实例化，自动 endpoint 只结束当前发言，不结束整场通话。
 
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
 全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
@@ -821,13 +821,26 @@ final 先到时只记录提交意图，不先生成普通回复；`treat_as_inte
 也只在 VoiceCore 已真实提交为 `message` 后启动 Thinking Agent，不能依据入口
 默认值越过这道状态边界。
 
-当前仍未把声学活动自动转换为 `voice.interruption.suspected`，也尚未启用
-`prepare_candidate/prepare_backchannel` 的推测式回复闭环，因此这一步不宣称自动
-VAD 抢话或候选音频已经可用；现阶段 semantic pulse 的 `response_action` 固定为
-`none`。播放器所有权已经提升到通话级，但桌宠当前仍按单轮创建和停止
-AudioWorklet/MediaRecorder；下一步由通话控制器在主入口创建长生命周期资源和
-endpoint detector，并根据 `commit/discard` 关闭当前 Input Turn、启动下一轮。
-完成真实入口验收前，不把音量阈值直接接成自动打断。
+桌宠主入口现已接入连续通话控制器。用户点一次麦克风按钮开始通话，按钮在整场
+通话中显示“挂”，再次点击、按 Escape、关闭语音能力或退出窗口才结束通话。
+`RealtimeVoiceCallResources` 在整场通话中持有同一麦克风、AudioContext 和播放
+器；每个 Input Turn 单独创建实时 session、endpoint detector 与安全录音。
+检测器只在稳定转写或可确认的语音停顿后提交，无法确认的声学活动会 discard，
+不创建用户消息；服务端完成当前回复和真实播放回执后，控制器自动申请下一轮
+监听。重复 endpoint、已结束 turn 和挂断后排队的监听请求都由 call flow 拒绝，
+不会产生双提交或挂断后偷偷重开。
+
+实时链路在正式提交前失败时，当前 turn 的安全录音会结束整场通话并转入普通
+ASR；正式提交后的回复失败会明确提示，并继续下一轮。这个降级边界避免实时请求
+与普通请求同时提交。安全录音只属于当前 turn，不作为每轮提示词或 MemCore
+上下文，因此不会改变模型前缀或缓存命中。
+
+当前连续通话采用自然轮流说话：Akane 回复及播放完成后再开始下一轮监听，已经
+不需要用户逐句点停止，但还不宣称全双工语义抢话已经完成。声学活动仍未自动转换
+为 `voice.interruption.suspected`，`prepare_candidate/prepare_backchannel` 的
+推测式回复也未启用；现阶段 semantic pulse 的 `response_action` 固定为 `none`。
+下一步把通话期间的新声学活动送入 VoiceCore 的 duck → semantic pulse →
+resume/stop 权威链路，在此之前不以音量阈值硬停播放。
 
 ### Slice C：播放和语义打断
 
