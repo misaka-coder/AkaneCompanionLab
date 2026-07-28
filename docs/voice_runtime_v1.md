@@ -790,10 +790,19 @@ checkpoint 或 final，VoiceCore 才发出带 `turn_revision` 围栏的
 - 模型失败、非法 JSON 或上下文不可用会形成 `voice.semantic_pulse.failed`，并请求
   恢复同一播放单元，不能让声音永久保持低音量或静默消失。
 
+VoiceCore 现在还会把 final commit 与同 revision semantic pulse 做一次权威握手：
+final 先到时只记录提交意图，不先生成普通回复；`treat_as_interaction` 最终只落
+交互事件，`take_over/commit_when_final` 才落正式语音消息。checkpoint 与 final
+正文相同时复用已有判断，正文继续增长时才重新请求；语义请求失败则退回宿主
+原始 disposition，保证用户 final 不丢失且只提交一次。Akane 的 ASR coordinator
+也只在 VoiceCore 已真实提交为 `message` 后启动 Thinking Agent，不能依据入口
+默认值越过这道状态边界。
+
 当前仍未把声学活动自动转换为 `voice.interruption.suspected`，也尚未启用
 `prepare_candidate/prepare_backchannel` 的推测式回复闭环，因此这一步不宣称自动
 VAD 抢话或候选音频已经可用；现阶段 semantic pulse 的 `response_action` 固定为
-`none`。
+`none`。桌宠当前的单轮 WebSocket 仍把输入与播放生命周期绑在一起；在改成可
+审计的多轮/重叠会话并统一播放器所有权前，不把音量阈值直接接成自动打断。
 
 ### Slice C：播放和语义打断
 

@@ -771,6 +771,54 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                     host.snapshot.speech_units[delivery.speech_unit_id].state.value,
                     "playing",
                 )
+
+                finalized = host.accept_event(
+                    factory.make(
+                        "voice.asr.finalized",
+                        sequence=None,
+                        voice_turn_id="voice-turn-semantic-interruption",
+                        turn_revision=2,
+                        payload={
+                            "stable_text": "不对，我想补充一下",
+                            "unstable_tail": "",
+                            "supersedes_revision": 1,
+                        },
+                    )
+                )
+                self.assertTrue(finalized.accepted, finalized)
+                self.assertNotIn(
+                    "request_semantic_pulse",
+                    [command.command_kind for command in finalized.transition.commands],
+                )
+                committed = host.accept_event(
+                    factory.make(
+                        "voice.turn.commit_requested",
+                        sequence=None,
+                        voice_turn_id="voice-turn-semantic-interruption",
+                        turn_revision=2,
+                        payload={"disposition": "message"},
+                    )
+                )
+                self.assertTrue(committed.accepted, committed)
+                interruption_turn = host.snapshot.input_turns["voice-turn-semantic-interruption"]
+                self.assertEqual(interruption_turn.state.value, "committed")
+                self.assertEqual(interruption_turn.disposition.value, "interaction")
+                self.assertFalse(
+                    [
+                        command
+                        for command in host.snapshot.pending_commands.values()
+                        if command.command_kind == "start_response_generation"
+                        and command.payload.get("voice_turn_id") == "voice-turn-semantic-interruption"
+                    ]
+                )
+                self.assertEqual(len(engine.calls), 1)
+                interaction_entries = [
+                    entry
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if entry.get("kind") == "event.voice.interaction"
+                    and entry.get("payload", {}).get("voice_turn_id") == "voice-turn-semantic-interruption"
+                ]
+                self.assertEqual(len(interaction_entries), 1)
             finally:
                 service.close()
                 manager.close()

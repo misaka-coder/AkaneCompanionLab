@@ -12,6 +12,7 @@ from capcore_adapter_speech import (
     PCMStreamNormalizer,
 )
 from companion_v01.voice_runtime import (
+    VoiceASRBridgeResult,
     VoiceASRRealtimeTurnCoordinator,
     VoiceASRSessionBridge,
 )
@@ -116,6 +117,27 @@ class _FailedAdapter:
         )
 
 
+class _PendingCommitBridge:
+    voice_turn_id = "turn-pending-semantic"
+    committed_disposition = ""
+
+    @staticmethod
+    def open_turn():
+        return VoiceASRBridgeResult(
+            status="accepted",
+            reason="",
+            source_status="open",
+        )
+
+    @staticmethod
+    def accept_update(_update):
+        return VoiceASRBridgeResult(
+            status="accepted",
+            reason="",
+            source_status="accepted",
+        )
+
+
 class VoiceASRRealtimeTurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     def _coordinator(self, adapter):
         factory = EventFactory()
@@ -201,6 +223,24 @@ class VoiceASRRealtimeTurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         assert turn.failure is not None
         self.assertEqual(turn.failure.reason_code, "asr_provider_auth_failed")
         self.assertEqual(turn.failure.safe_public_summary, "语音识别服务鉴权失败。")
+
+    async def test_response_does_not_start_before_voicecore_commits_message(self) -> None:
+        provider = _DelayedFinalProviderSession()
+        response_starts: list[bool] = []
+        coordinator = VoiceASRRealtimeTurnCoordinator(
+            adapter=_Adapter(provider),
+            bridge=_PendingCommitBridge(),
+            response_starter=lambda: response_starts.append(True),
+        )
+
+        self.assertTrue((await coordinator.open()).ok)
+        coordinator.start_finalize()
+        provider.allow_final.set()
+        settled = await coordinator.settle_finalize()
+
+        self.assertTrue(settled.ok)
+        self.assertEqual(settled.response_status, "")
+        self.assertEqual(response_starts, [])
 
     async def test_pcm_frames_normalize_before_provider_and_gap_fails_turn(self) -> None:
         provider = _DelayedFinalProviderSession()

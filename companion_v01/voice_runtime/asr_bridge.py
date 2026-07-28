@@ -84,6 +84,13 @@ class VoiceASRSessionBridge:
         dispatch = self.host.accept_event(event)
         return self._from_dispatches("open", (dispatch,))
 
+    @property
+    def committed_disposition(self) -> str:
+        turn = self.host.snapshot.input_turns.get(self.voice_turn_id)
+        if turn is None or str(getattr(turn.state, "value", "") or "") != "committed":
+            return ""
+        return str(getattr(getattr(turn, "disposition", None), "value", "") or "")
+
     def accept_update(self, update: ASRSessionUpdate) -> VoiceASRBridgeResult:
         if not isinstance(update, ASRSessionUpdate):
             return self._failed("", "asr_session_update_invalid")

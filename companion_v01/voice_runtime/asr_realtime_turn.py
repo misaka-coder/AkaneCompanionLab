@@ -283,7 +283,7 @@ class VoiceASRRealtimeTurnCoordinator:
         result = self._accept_provider_update(update)
         if (
             result.ok
-            and self.bridge.disposition == "message"
+            and self.bridge.committed_disposition == "message"
             and any(revision.quality is ASRRevisionQuality.FINAL for revision in update.revisions)
         ):
             result = self._start_response(result)
