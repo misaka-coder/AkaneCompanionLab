@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from companion_v01.tts_provider_runtime import (
+    EDGE_TTS_PROVIDER_ID,
+    GPT_SOVITS_PROVIDER_ID,
+    resolve_character_tts_client,
+)
 from services.tts_client import GptSovitsTTSClient
 
 
@@ -68,6 +75,89 @@ class GptSovitsTTSClientTests(unittest.TestCase):
         self.assertEqual(payload["text_split_method"], "cut5")
         self.assertEqual(payload["prompt_text"], "主人，今天也要一起努力。")
         self.assertEqual(payload["ref_audio_path"], r"C:\voices\reimu_ref.wav")
+
+    def test_character_runtime_binds_gpt_sovits_profile_without_edge_substitution(self) -> None:
+        class CharacterClient:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def synthesize(
+                self,
+                text: str,
+                *,
+                voice_profile_id: str,
+                profile: dict[str, object],
+            ) -> bytes:
+                self.calls.append(
+                    {
+                        "text": text,
+                        "voice_profile_id": voice_profile_id,
+                        "profile": dict(profile),
+                    }
+                )
+                return b"character-voice"
+
+        character_client = CharacterClient()
+        with patch(
+            "companion_v01.tts_provider_runtime.resolve_tts_runtime_provider",
+            return_value={
+                "status": "ready",
+                "requestedProviderId": GPT_SOVITS_PROVIDER_ID,
+                "activeProviderId": GPT_SOVITS_PROVIDER_ID,
+                "voiceProfileId": "reimu_main",
+                "voiceProfile": {"promptText": "灵梦参考音频"},
+                "client": character_client,
+            },
+        ):
+            resolved = resolve_character_tts_client(
+                engine=object(),
+                profile_user_id="master",
+                session_id="desktop",
+                character_pack_id="reimu",
+                base_dir=Path("."),
+                config_module=None,
+                settings=None,
+                edge_tts_client=object(),
+            )
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.provider_id, GPT_SOVITS_PROVIDER_ID)
+        self.assertEqual(asyncio.run(resolved.synthesize("你好。")), b"character-voice")
+        self.assertEqual(
+            character_client.calls,
+            [
+                {
+                    "text": "你好。",
+                    "voice_profile_id": "reimu_main",
+                    "profile": {"promptText": "灵梦参考音频"},
+                }
+            ],
+        )
+
+    def test_character_runtime_refuses_edge_when_gpt_sovits_was_requested(self) -> None:
+        with patch(
+            "companion_v01.tts_provider_runtime.resolve_tts_runtime_provider",
+            return_value={
+                "status": "degraded",
+                "reason": "requested_provider_unreachable",
+                "requestedProviderId": GPT_SOVITS_PROVIDER_ID,
+                "activeProviderId": EDGE_TTS_PROVIDER_ID,
+                "voiceProfileId": "reimu_main",
+                "client": None,
+            },
+        ):
+            resolved = resolve_character_tts_client(
+                engine=object(),
+                profile_user_id="master",
+                session_id="desktop",
+                character_pack_id="reimu",
+                base_dir=Path("."),
+                config_module=None,
+                settings=None,
+                edge_tts_client=object(),
+            )
+
+        self.assertIsNone(resolved)
 
 
 if __name__ == "__main__":

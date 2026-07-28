@@ -252,6 +252,7 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
         adapter: _Adapter,
         engine: Any | None = None,
         tts_client: Any = None,
+        tts_client_resolver: Any = None,
     ) -> AkaneVoiceRuntimeService:
         engine = engine or _ThinkingEngine(manager)
         return AkaneVoiceRuntimeService(
@@ -262,12 +263,69 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
             bot_id="bot-private-id",
             default_character_pack_id="default-character",
             tts_client=tts_client,
+            tts_client_resolver=tts_client_resolver,
             provider_builder=lambda _settings: SimpleNamespace(
                 ready=True,
                 adapter=adapter,
                 provider_id="provider.asr.production-test",
             ),
         )
+
+    def test_playback_uses_character_resolved_tts_instead_of_global_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            edge = _TTSClient()
+            character_tts = _TTSClient()
+            character_tts.provider_id = "provider.tts.gpt_sovits.local"
+            resolver_calls: list[dict[str, str]] = []
+
+            def resolve_tts(**identity: str) -> _TTSClient:
+                resolver_calls.append(dict(identity))
+                return character_tts
+
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                tts_client=edge,
+                tts_client_resolver=resolve_tts,
+            )
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-character-tts",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                settled = asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertEqual(settled.response_status, "started")
+                self.assertTrue(service.wait_idle(timeout=3.0))
+                self.assertEqual(edge.calls, [])
+                self.assertEqual(
+                    character_tts.calls,
+                    ["好，我从状态机的边界继续讲。"],
+                )
+                self.assertEqual(
+                    resolver_calls,
+                    [
+                        {
+                            "profile_user_id": request.profile_user_id,
+                            "session_id": request.session_id,
+                            "character_pack_id": request.character_pack_id,
+                        }
+                    ],
+                )
+                loaded = resolved.coordinator.bridge.host._host.journal.load_events()
+                self.assertTrue(loaded.ok, loaded)
+                ready = next(event for event in loaded.events if event.event_kind == "voice.tts.ready")
+                self.assertEqual(
+                    ready.payload["provider_id"],
+                    "provider.tts.gpt_sovits.local",
+                )
+            finally:
+                service.close()
+                manager.close()
 
     def test_production_host_synthesizes_before_playback_without_fake_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

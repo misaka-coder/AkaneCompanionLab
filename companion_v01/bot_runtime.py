@@ -42,6 +42,7 @@ from .settings_overrides import (
     load_and_apply_saved_overrides,
     load_saved_overrides,
 )
+from .tts_provider_runtime import resolve_character_tts_client
 from .voice_runtime import AkaneVoiceRuntimeService
 
 
@@ -578,6 +579,23 @@ class BotRuntimeFactory:
                 bot_id=effective_bot_config.bot_id,
                 default_character_pack_id=instance_context.character_pack_id,
                 tts_client=runtime.tts_client,
+                tts_client_resolver=(
+                    lambda *, profile_user_id, session_id, character_pack_id: resolve_character_tts_client(
+                        engine=engine,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=character_pack_id,
+                        base_dir=runtime_layout.users_data_dir,
+                        config_module=runtime_config,
+                        settings=settings,
+                        edge_tts_client=runtime.tts_client,
+                        # If a character explicitly requests GPT-SoVITS, using
+                        # a different voice is not a transparent degradation.
+                        # Let VoiceCore report provider unavailability instead
+                        # of silently speaking with Edge.
+                        allow_requested_provider_fallback=False,
+                    )
+                ),
                 runtime_metrics=runtime.runtime_metrics,
             )
             runtime.install_qq_task_completion_notifications()

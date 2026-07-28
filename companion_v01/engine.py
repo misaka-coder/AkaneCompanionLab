@@ -433,8 +433,7 @@ class AkaneMemoryEngine:
             asr_executor=self.local_media_executor,
             audio_separation_executor=self.local_media_executor,
             audio_separation_model=str(
-                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
-                or "HP5_only_main_vocal"
+                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
             ),
         )
         self.cover_song_service: CoverSongService | None = None
@@ -974,10 +973,7 @@ class AkaneMemoryEngine:
             status = str(normalized.get("status") or "").strip().lower()
             turn_id = str(normalized.get("turn_id") or "").strip()
             writable = bool(
-                normalized.get("ok")
-                and turn_id
-                and status in {"open", "opened"}
-                and normalized.get("writable", True)
+                normalized.get("ok") and turn_id and status in {"open", "opened"} and normalized.get("writable", True)
             )
             normalized["writable"] = writable
             if not writable:
@@ -1017,11 +1013,7 @@ class AkaneMemoryEngine:
         status = str(result.get("status") or "failed").strip().lower()
         writable = bool(
             result.get("writable")
-            or (
-                result.get("ok")
-                and str(result.get("turn_id") or "").strip()
-                and status in {"open", "opened"}
-            )
+            or (result.get("ok") and str(result.get("turn_id") or "").strip() and status in {"open", "opened"})
         )
         if writable:
             return None
@@ -1155,9 +1147,7 @@ class AkaneMemoryEngine:
             provider_profile = ""
             provider_projection: dict[str, Any] | None = None
             if str(provider_output_raw or ""):
-                provider_profile = self._chat_provider_protocol_for_memcore(
-                    chat_model_override=chat_model_override
-                )
+                provider_profile = self._chat_provider_protocol_for_memcore(chat_model_override=chat_model_override)
                 if provider_profile:
                     provider_projection = {
                         "role": "assistant",
@@ -1422,9 +1412,7 @@ class AkaneMemoryEngine:
             return {"ok": True, "status": "skipped", "reason": "memcore_disabled"}
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
-        character_pack_id = str(
-            metadata.get("character_pack_id") or delivery.get("character_pack_id") or ""
-        ).strip()
+        character_pack_id = str(metadata.get("character_pack_id") or delivery.get("character_pack_id") or "").strip()
         try:
             return manager.record_task_event(
                 task=task,
@@ -1453,9 +1441,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
-                provider_profile=self._chat_provider_protocol_for_memcore(
-                    chat_model_override=chat_model_override
-                ),
+                provider_profile=self._chat_provider_protocol_for_memcore(chat_model_override=chat_model_override),
             )
         except Exception as exc:
             logger.warning("memcore compaction scheduling failed: %s", exc)
@@ -1585,8 +1571,7 @@ class AkaneMemoryEngine:
             base_provider = JinaEmbeddingProvider(
                 api_key=str(getattr(config, "EMBEDDING_API_KEY", "") or ""),
                 base_url=(
-                    str(getattr(config, "EMBEDDING_BASE_URL", "") or "").strip()
-                    or DEFAULT_JINA_EMBEDDING_BASE_URL
+                    str(getattr(config, "EMBEDDING_BASE_URL", "") or "").strip() or DEFAULT_JINA_EMBEDDING_BASE_URL
                 ),
                 model_name=model_name,
                 dimension=int(getattr(config, "EMBEDDING_DIMENSION", 1024) or 1024),
@@ -2145,8 +2130,7 @@ class AkaneMemoryEngine:
             asr_executor=self._get_local_media_executor(),
             audio_separation_executor=self._get_local_media_executor(),
             audio_separation_model=str(
-                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
-                or "HP5_only_main_vocal"
+                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
             ),
         )
         self.generated_file_service = service
@@ -2159,9 +2143,7 @@ class AkaneMemoryEngine:
         try:
             return LocalMediaExecutorClient(
                 base_url=base_url,
-                timeout_seconds=float(
-                    getattr(config, "LOCAL_MEDIA_EXECUTOR_TIMEOUT_SECONDS", 1800.0) or 1800.0
-                ),
+                timeout_seconds=float(getattr(config, "LOCAL_MEDIA_EXECUTOR_TIMEOUT_SECONDS", 1800.0) or 1800.0),
             )
         except ValueError as exc:
             logger.warning("local media executor disabled: %s", exc)
@@ -2239,8 +2221,7 @@ class AkaneMemoryEngine:
                     client=local_executor,
                     default_model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
                     separation_model=str(
-                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
-                        or "HP5_only_main_vocal"
+                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
                     ),
                 )
                 if local_executor is not None
@@ -2249,8 +2230,7 @@ class AkaneMemoryEngine:
                     root_dir=str(getattr(config, "RVC_ROOT_DIR", "") or ""),
                     timeout_seconds=float(getattr(config, "COVER_SONG_TIMEOUT_SECONDS", 1800.0) or 1800.0),
                     separation_model=str(
-                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal")
-                        or "HP5_only_main_vocal"
+                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
                     ),
                 )
             )
@@ -3102,11 +3082,7 @@ class AkaneMemoryEngine:
         for raw_key, raw_value in raw_fields.items():
             key = str(raw_key or "").strip()
             value = str(raw_value or "").strip()
-            if (
-                re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", key) is None
-                or not value
-                or len(value) > 4_000
-            ):
+            if re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", key) is None or not value or len(value) > 4_000:
                 return None
             fields[key] = value
         if not fields:
@@ -3421,9 +3397,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
             memory_role=(
-                f"event.{plugin_external_event['event_type']}"
-                if plugin_external_event is not None
-                else "user"
+                f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"
             ),
         )
         user_message = str(payload.get("message") or "").strip()
@@ -3474,11 +3448,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
-                role=(
-                    f"event.{plugin_external_event['event_type']}"
-                    if plugin_external_event is not None
-                    else "user"
-                ),
+                role=(f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"),
                 content=user_message,
                 timestamp=now_ts,
                 date_label=date_label,
@@ -3631,10 +3601,7 @@ class AkaneMemoryEngine:
                     emergency_tool_rounds,
                 )
             if tool_calls and emergency_stop:
-                blocked_calls = "；".join(
-                    self._describe_tool_call_for_prompt(tool_call)
-                    for tool_call in tool_calls
-                )
+                blocked_calls = "；".join(self._describe_tool_call_for_prompt(tool_call) for tool_call in tool_calls)
                 tool_followups.append(
                     f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
                     "这些额外调用没有执行；请基于已有真实结果完成答复。"
@@ -4018,12 +3985,7 @@ class AkaneMemoryEngine:
         normalized_turn_id = str(memcore_turn_id or "").strip()
         normalized_voice_turn_id = str(voice_turn_id or "").strip()
         normalized_message = str(message or "").strip()
-        if (
-            not normalized_source_id
-            or not normalized_turn_id
-            or not normalized_voice_turn_id
-            or not normalized_message
-        ):
+        if not normalized_source_id or not normalized_turn_id or not normalized_voice_turn_id or not normalized_message:
             raise ValueError("voice_precommitted_turn_invalid")
         return self.process_turn_stream(
             {
@@ -4085,20 +4047,14 @@ class AkaneMemoryEngine:
         _precommitted_memcore_turn: dict[str, str] | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         precommitted_memcore_turn = (
-            dict(_precommitted_memcore_turn)
-            if isinstance(_precommitted_memcore_turn, dict)
-            else {}
+            dict(_precommitted_memcore_turn) if isinstance(_precommitted_memcore_turn, dict) else {}
         )
         externally_managed_memcore_turn = bool(precommitted_memcore_turn)
         precommitted_source_id = str(precommitted_memcore_turn.get("source_id") or "").strip()
         precommitted_turn_id = str(precommitted_memcore_turn.get("turn_id") or "").strip()
-        precommitted_voice_turn_id = str(
-            precommitted_memcore_turn.get("voice_turn_id") or ""
-        ).strip()
+        precommitted_voice_turn_id = str(precommitted_memcore_turn.get("voice_turn_id") or "").strip()
         if externally_managed_memcore_turn and (
-            not precommitted_source_id
-            or not precommitted_turn_id
-            or not precommitted_voice_turn_id
+            not precommitted_source_id or not precommitted_turn_id or not precommitted_voice_turn_id
         ):
             raise ValueError("voice_precommitted_turn_invalid")
         client_context = self._resolve_client_protocol_context(payload)
@@ -4127,9 +4083,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
             memory_role=(
-                f"event.{plugin_external_event['event_type']}"
-                if plugin_external_event is not None
-                else "user"
+                f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"
             ),
         )
         user_message = str(payload.get("message") or "").strip()
@@ -4158,10 +4112,7 @@ class AkaneMemoryEngine:
             )
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
         transient_user_turn = self._is_transient_user_turn(payload) or externally_managed_memcore_turn
-        persist_assistant_turn = (
-            self._should_persist_assistant_turn(payload)
-            and not externally_managed_memcore_turn
-        )
+        persist_assistant_turn = self._should_persist_assistant_turn(payload) and not externally_managed_memcore_turn
         external_event_turn = plugin_external_event is not None
 
         self.consume_due_reminders(
@@ -4197,11 +4148,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
-                role=(
-                    f"event.{plugin_external_event['event_type']}"
-                    if plugin_external_event is not None
-                    else "user"
-                ),
+                role=(f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"),
                 content=user_message,
                 timestamp=now_ts,
                 date_label=date_label,
@@ -4354,10 +4301,7 @@ class AkaneMemoryEngine:
                     emergency_tool_rounds,
                 )
             if tool_calls and emergency_stop:
-                blocked_calls = "；".join(
-                    self._describe_tool_call_for_prompt(tool_call)
-                    for tool_call in tool_calls
-                )
+                blocked_calls = "；".join(self._describe_tool_call_for_prompt(tool_call) for tool_call in tool_calls)
                 tool_followups.append(
                     f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
                     "这些额外调用没有执行；请基于已有真实结果完成答复。"
@@ -4934,24 +4878,23 @@ class AkaneMemoryEngine:
         provider_output_raw = ""
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = ""
-            if attempt > 1 and request_observer is None:
-                retry_note = (
-                    "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
-                    "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
-                    "不要只输出通用兜底语、处理中占位语或未完成声明。"
-                    "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
-                )
+            retry_note = self._final_response_retry_note(attempt)
+            retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
+                generation_context=generation_context,
+                retry_note=retry_note,
+                request_observer=request_observer,
+            )
             request_kwargs = {
                 "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": str(generation_context["user_prompt"]) + retry_note,
+                "user_prompt": str(generation_context["user_prompt"])
+                + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
                 "temperature": 0.7,
                 "prompt_cache_key": prompt_cache_key,
                 "user_images": user_images,
                 "system_extra_blocks": generation_context.get("system_extra_blocks"),
                 "history_turns": generation_context.get("history_turns"),
-                "ephemeral_turns": generation_context.get("ephemeral_turns"),
+                "ephemeral_turns": retry_ephemeral_turns,
                 "post_user_turns": generation_context.get("post_user_turns"),
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "native_tools": generation_context.get("native_tools"),
@@ -4961,9 +4904,7 @@ class AkaneMemoryEngine:
             if request_observer is not None:
                 request_kwargs["request_observer"] = request_observer
             call_result = (
-                self.llm.call_chat_json_result(**request_kwargs)
-                if hasattr(self.llm, "call_chat_json_result")
-                else None
+                self.llm.call_chat_json_result(**request_kwargs) if hasattr(self.llm, "call_chat_json_result") else None
             )
             result = call_result.parsed if call_result is not None else self.llm.call_chat_json(**request_kwargs)
             if "request_observer_rejected:" in str(getattr(call_result, "error", "") or ""):
@@ -5007,6 +4948,39 @@ class AkaneMemoryEngine:
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
         return max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+
+    @staticmethod
+    def _final_response_retry_note(attempt: int) -> str:
+        if attempt <= 1:
+            return ""
+        return (
+            "【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
+            "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
+            "speech 必须是本轮真正给用户的完整答复，不要留空，也不要只输出通用兜底语、"
+            "处理中占位语或未完成声明。是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
+        )
+
+    @staticmethod
+    def _final_response_retry_ephemeral_turns(
+        *,
+        generation_context: dict[str, Any],
+        retry_note: str,
+        request_observer: Any,
+    ) -> list[dict[str, Any]] | None:
+        original = generation_context.get("ephemeral_turns")
+        turns = [dict(turn) for turn in list(original or []) if isinstance(turn, dict)]
+        # A MemCore request observer freezes the persistent current user
+        # message.  Mutating that message on retry would make the provider
+        # request diverge from the recorded projection, but omitting the repair
+        # instruction entirely just repeats the same failed request.  Put the
+        # repair instruction in a request-scoped tail turn instead: the
+        # append-only history and cacheable prefix stay identical, while the
+        # model can see exactly what must be repaired.
+        if retry_note and request_observer is not None:
+            turns.append({"role": "user", "content": retry_note})
+        if turns:
+            return turns
+        return [] if isinstance(original, list) else None
 
     @staticmethod
     def _final_prompt_cache_key(generation_context: dict[str, Any]) -> str:
@@ -5159,17 +5133,16 @@ class AkaneMemoryEngine:
         final_parse_fallback = False
         for attempt in range(1, max_attempts + 1):
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = ""
-            if attempt > 1 and request_observer is None:
-                retry_note = (
-                    "\n\n【最终答复修复重试】上一次生成没有形成有效、可交付的最终答复。"
-                    "请重新基于当前消息、已有工具结果和证据完成回答；保持规定输出格式，"
-                    "不要只输出通用兜底语、处理中占位语或未完成声明。"
-                    "是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
-                )
+            retry_note = self._final_response_retry_note(attempt)
+            retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
+                generation_context=generation_context,
+                retry_note=retry_note,
+                request_observer=request_observer,
+            )
             request_kwargs = {
                 "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": str(generation_context["user_prompt"]) + retry_note,
+                "user_prompt": str(generation_context["user_prompt"])
+                + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
                 "temperature": 0.7,
                 "prompt_cache_key": prompt_cache_key,
@@ -5178,7 +5151,7 @@ class AkaneMemoryEngine:
                 "native_tool_choice": generation_context.get("native_tool_choice", ""),
                 "system_extra_blocks": generation_context.get("system_extra_blocks"),
                 "history_turns": generation_context.get("history_turns"),
-                "ephemeral_turns": generation_context.get("ephemeral_turns"),
+                "ephemeral_turns": retry_ephemeral_turns,
                 "post_user_turns": generation_context.get("post_user_turns"),
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "chat_model_override": chat_model_override,
@@ -5195,9 +5168,7 @@ class AkaneMemoryEngine:
                             profile_user_id=profile_user_id,
                             session_id=session_id,
                             domain_profile_id=domain_profile_id,
-                            capability_selection=generation_context.get(
-                                TOOL_CAPABILITY_SELECTION_FIELD
-                            ),
+                            capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
                         )
                         is not None
                     )
@@ -5904,11 +5875,7 @@ class AkaneMemoryEngine:
                     "如果不再需要，请基于当前证据自然回答。"
                 )
                 continue
-            receipt = (
-                execution_receipts.get(raw_tool_name)
-                if isinstance(execution_receipts, dict)
-                else None
-            )
+            receipt = execution_receipts.get(raw_tool_name) if isinstance(execution_receipts, dict) else None
             if isinstance(receipt, dict):
                 raw_tool_call = dict(raw_tool_call)
                 raw_tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
@@ -6261,9 +6228,7 @@ class AkaneMemoryEngine:
         )
         manager = getattr(self, "memcore_manager", None)
         memcore_required = bool(
-            str(memcore_turn_id or "").strip()
-            and manager is not None
-            and getattr(manager, "enabled", False)
+            str(memcore_turn_id or "").strip() and manager is not None and getattr(manager, "enabled", False)
         )
         memcore_failure: dict[str, Any] | None = None
         if memcore_required and trace_record_failure is not None:
@@ -6293,17 +6258,14 @@ class AkaneMemoryEngine:
             for result in completed:
                 result.state_updates["_memcore_failure"] = dict(memcore_failure)
         has_native_calls = any(
-            str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
-            for call in calls
+            str(call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI} for call in calls
         )
         if tool_projection.get("ok") and tool_projection.get("status") == "projected" and not has_native_calls:
             del tool_followups[followup_start:]
         if not tool_projection.get("ok") and has_native_calls:
             for _call, result, shaped_followup, workspace_followup in history_items:
                 feedback = "\n\n".join(
-                    part
-                    for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()]
-                    if part
+                    part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
                 )
                 if feedback:
                     tool_followups.append(
@@ -6442,9 +6404,7 @@ class AkaneMemoryEngine:
             if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
         }
         media_ids = {
-            str(source_id or "").strip()
-            for source_id in list(media_source_ids or [])
-            if str(source_id or "").strip()
+            str(source_id or "").strip() for source_id in list(media_source_ids or []) if str(source_id or "").strip()
         }
         has_legacy_calls = any(
             str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
@@ -6461,9 +6421,7 @@ class AkaneMemoryEngine:
         build_projection = getattr(manager, "build_context_projection", None)
         selected_ids = set(media_ids)
         selected_ids.update(
-            str(source_id or "").strip()
-            for source_id in trace_source_ids
-            if str(source_id or "").strip()
+            str(source_id or "").strip() for source_id in trace_source_ids if str(source_id or "").strip()
         )
         if not callable(build_projection) or not selected_ids:
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
@@ -6484,16 +6442,12 @@ class AkaneMemoryEngine:
         if not isinstance(projection, dict) or not projection.get("ok"):
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_build_failed"}
         projection_messages = [
-            message
-            for message in list(projection.get("messages") or [])
-            if isinstance(message, dict)
+            message for message in list(projection.get("messages") or []) if isinstance(message, dict)
         ]
         selected_messages = [
             message
             for message in projection_messages
-            if selected_ids.intersection(
-                str(source_id or "").strip() for source_id in message.get("source_ids") or []
-            )
+            if selected_ids.intersection(str(source_id or "").strip() for source_id in message.get("source_ids") or [])
         ]
         selected_turn_ids = {
             str(message.get("turn_id") or "").strip()
@@ -6581,8 +6535,7 @@ class AkaneMemoryEngine:
             nested_call_ids = [
                 str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
                 for item in content
-                if isinstance(item, dict)
-                and str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
+                if isinstance(item, dict) and str(item.get("tool_use_id") or item.get("tool_call_id") or "").strip()
             ]
             result_text = "\n".join(
                 str(item.get("text") or item.get("content") or "").strip()
@@ -6679,16 +6632,8 @@ class AkaneMemoryEngine:
             if key != "type" and not str(key).startswith("_tool_")
         }
         wrapped = payload.get("arguments")
-        if (
-            str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
-            and len(payload) == 1
-            and isinstance(wrapped, dict)
-        ):
-            return {
-                str(key): value
-                for key, value in wrapped.items()
-                if not str(key).startswith("_tool_")
-            }
+        if str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip() and len(payload) == 1 and isinstance(wrapped, dict):
+            return {str(key): value for key, value in wrapped.items() if not str(key).startswith("_tool_")}
         return payload
 
     def _record_memcore_tool_batch(
@@ -7410,6 +7355,7 @@ class AkaneMemoryEngine:
                         detail += f" 恢复条件：{item.activation}"
                     parts.append(f"- {detail}")
                 parts.append("")
+
         if not handlers:
             if not include_capability_status and excluded:
                 return (
@@ -7871,10 +7817,7 @@ class AkaneMemoryEngine:
             try:
                 from memcore.rendering import render_prompt_message
 
-                timezone = (
-                    str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip()
-                    or "Asia/Shanghai"
-                )
+                timezone = str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip() or "Asia/Shanghai"
                 return render_prompt_message(dict(record), tz=timezone)
             except Exception:
                 pass

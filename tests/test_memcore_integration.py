@@ -189,8 +189,7 @@ class _CapturePromptBuilder:
         self.kwargs = dict(kwargs)
         self.calls.append(dict(kwargs))
         linear_timeline_turn = bool(
-            kwargs.get("current_message_in_raw")
-            and not str(kwargs.get("memory_text") or "").strip()
+            kwargs.get("current_message_in_raw") and not str(kwargs.get("memory_text") or "").strip()
         )
         ephemeral_parts = [
             str(kwargs.get("memory_text") or "").strip(),
@@ -425,9 +424,7 @@ class _ActorCaptureMemcoreManager:
         self.user_calls.append({"record": dict(record), **dict(kwargs)})
         return {"ok": True, "status": "opened", "turn_id": "turn-1"}
 
-    def append_standalone_message(
-        self, record: dict[str, object], *, role: str, **kwargs
-    ) -> dict[str, object]:
+    def append_standalone_message(self, record: dict[str, object], *, role: str, **kwargs) -> dict[str, object]:
         self.user_calls.append({"record": dict(record), "role": role, **dict(kwargs)})
         return {"ok": True, "status": "recorded"}
 
@@ -828,9 +825,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 current_messages = [
-                    message
-                    for message in projection["messages"]
-                    if "projection-stimulus" in message["source_ids"]
+                    message for message in projection["messages"] if "projection-stimulus" in message["source_ids"]
                 ]
                 recorded = manager.record_request_projection(
                     turn_id=str(opened["turn_id"]),
@@ -892,9 +887,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 current_messages = [
-                    dict(message)
-                    for message in projection["messages"]
-                    if message.get("turn_id") == opened["turn_id"]
+                    dict(message) for message in projection["messages"] if message.get("turn_id") == opened["turn_id"]
                 ]
                 engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
                 engine.llm = SimpleNamespace(supports_request_observer=True)
@@ -1105,8 +1098,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     for source_id in (exchange["tool_use_source_id"], exchange["tool_result_source_id"])
                 ]
                 provider_raw = (
-                    '{"speech":"我查一下。","tool_call":{"type":"web_search",'
-                    '"query":"北京天气"},"memory_metadata":{}}'
+                    '{"speech":"我查一下。","tool_call":{"type":"web_search","query":"北京天气"},"memory_metadata":{}}'
                 )
                 post_turns: list[dict[str, object]] = []
                 projected = engine._append_tool_history_batch(
@@ -1733,15 +1725,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             finally:
                 manager.close()
 
-        frozen_turn = [
-            dict(message)
-            for message in frozen["messages"]
-            if message.get("turn_id") == opened["turn_id"]
-        ]
+        frozen_turn = [dict(message) for message in frozen["messages"] if message.get("turn_id") == opened["turn_id"]]
         self.assertEqual(frozen_turn[0]["payload"], actual_user)
-        media_message = next(
-            message for message in frozen_turn if media["source_id"] in message.get("source_ids", [])
-        )
+        media_message = next(message for message in frozen_turn if media["source_id"] in message.get("source_ids", []))
         persisted = str(media_message["payload"])
         self.assertIn("omitted from persistent history", persisted)
         self.assertNotIn("AAAA", persisted)
@@ -1877,9 +1863,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 first_turn_messages = [
-                    dict(message)
-                    for message in after_first["messages"]
-                    if message.get("turn_id") == opened["turn_id"]
+                    dict(message) for message in after_first["messages"] if message.get("turn_id") == opened["turn_id"]
                 ]
                 second_context = {
                     "memcore_projection_read": {
@@ -1957,9 +1941,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 complete_turn_messages = [
-                    dict(message)
-                    for message in after_second["messages"]
-                    if message.get("turn_id") == opened["turn_id"]
+                    dict(message) for message in after_second["messages"] if message.get("turn_id") == opened["turn_id"]
                 ]
                 self.assertEqual(len(native_history), len(complete_turn_messages) - 1)
                 third_context = {
@@ -2072,7 +2054,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("上下文没有完整衔接成功", result["speech"])
         self.assertNotIn("认真听你说", result["speech"])
 
-    def test_memcore_final_retry_reuses_identical_user_payload(self) -> None:
+    def test_memcore_final_retry_keeps_user_payload_and_adds_ephemeral_repair_tail(self) -> None:
         class RecordingManager:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
@@ -2130,6 +2112,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "debug_enabled": False,
             "allow_tool_call": False,
             "prompt_scope": "",
+            "ephemeral_turns": [{"role": "user", "content": "本轮临时证据"}],
             "memcore_projection_read": {
                 "current_turn_id": "turn-retry",
                 "current_turn_messages": [
@@ -2164,6 +2147,144 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["speech"], "完成")
         self.assertEqual(len(llm.calls), 2)
         self.assertEqual(llm.calls[0]["user_prompt"], llm.calls[1]["user_prompt"])
+        self.assertEqual(
+            llm.calls[0]["ephemeral_turns"],
+            [{"role": "user", "content": "本轮临时证据"}],
+        )
+        self.assertEqual(llm.calls[1]["ephemeral_turns"][0], llm.calls[0]["ephemeral_turns"][0])
+        self.assertIn("最终答复修复重试", llm.calls[1]["ephemeral_turns"][-1]["content"])
+        self.assertIn("speech 必须是本轮真正给用户的完整答复", llm.calls[1]["ephemeral_turns"][-1]["content"])
+        self.assertEqual(len(manager.calls), 2)
+        self.assertTrue(llm.assert_observed["ok"])
+
+    def test_memcore_stream_retry_keeps_projection_and_adds_ephemeral_repair_tail(self) -> None:
+        class RecordingManager:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def record_request_projection(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "attempt": len(self.calls),
+                    "turn_id": kwargs["turn_id"],
+                }
+
+        class RetryingStreamLLM:
+            supports_request_observer = True
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict[str, int]:
+                return {}
+
+            @staticmethod
+            def record_metric(*_args, **_kwargs) -> None:
+                return None
+
+            def stream_chat_json(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                observed = kwargs["request_observer"](
+                    {
+                        "protocol": "responses",
+                        "model_route": {"protocol": "responses", "model": "gpt-test"},
+                        "system_prefix": kwargs["system_prompt"],
+                        "tool_schema": [],
+                        "history_messages": [
+                            {"role": "user", "content": kwargs["user_prompt"]},
+                            *list(kwargs.get("ephemeral_turns") or []),
+                        ],
+                        "persistent_turn_messages": [{"role": "user", "content": kwargs["user_prompt"]}],
+                        "audit_history_messages": [
+                            {"role": "user", "content": kwargs["user_prompt"]},
+                            *list(kwargs.get("ephemeral_turns") or []),
+                        ],
+                    }
+                )
+                self.assert_observed = observed
+                speech = "retry" if len(self.calls) == 1 else "完成"
+
+                def generate():
+                    if False:
+                        yield {}
+                    return SimpleNamespace(
+                        parsed={"speech": speech},
+                        raw_text=f'{{"speech":"{speech}"}}',
+                        error="",
+                        latest_emotion="",
+                        latest_speech="",
+                        fallback_used=False,
+                        native_preface_text="",
+                    )
+
+                return generate()
+
+        manager = RecordingManager()
+        llm = RetryingStreamLLM()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.llm = llm
+        engine.memcore_manager = manager
+        engine._prepare_final_response_context = lambda **_kwargs: {
+            "system_prompt": "stable system",
+            "user_prompt": "[100] message.user.voice\ncontent:\n请回答",
+            "fallback": {"speech": "fallback"},
+            "visual_defaults": {"emotion": "normal"},
+            "debug_enabled": False,
+            "allow_tool_call": False,
+            "prompt_scope": "",
+            "ephemeral_turns": [{"role": "user", "content": "本轮语音临时证据"}],
+            "memcore_projection_read": {
+                "current_turn_id": "turn-stream-retry",
+                "current_turn_messages": [
+                    {
+                        "turn_id": "turn-stream-retry",
+                        "payload": {"role": "user", "content": "canonical voice"},
+                        "source_ids": ["retry-voice-user"],
+                        "projection_index": 0,
+                        "projection_status": "complete",
+                        "projection_version": 1,
+                    }
+                ],
+            },
+        }
+        engine._resolve_turn_speaker_identity = lambda *_args, **_kwargs: {"assistant_name": "Akane"}
+        engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
+        engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
+        engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
+        engine._is_retryable_final_output = lambda output, **_kwargs: output.get("speech") == "retry"
+
+        stream = engine._stream_final_response(
+            session_id="private:u1",
+            profile_user_id="u1",
+            user_message="请回答",
+            recent_raw=[],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            confirmed_snippets=[],
+            now_ts=100,
+            character_pack_id="char",
+        )
+        while True:
+            try:
+                next(stream)
+            except StopIteration as stopped:
+                result = stopped.value
+                break
+
+        self.assertEqual(result["speech"], "完成")
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["user_prompt"], llm.calls[1]["user_prompt"])
+        self.assertEqual(
+            llm.calls[0]["ephemeral_turns"],
+            [{"role": "user", "content": "本轮语音临时证据"}],
+        )
+        self.assertIn(
+            "最终答复修复重试",
+            llm.calls[1]["ephemeral_turns"][-1]["content"],
+        )
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
@@ -2697,11 +2818,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         release = threading.Event()
         calls = 0
         try:
-            with tempfile.TemporaryDirectory() as temp_dir, patch.object(
-                config,
-                "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",
-                0.2,
-                create=True,
+            with (
+                tempfile.TemporaryDirectory() as temp_dir,
+                patch.object(
+                    config,
+                    "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",
+                    0.2,
+                    create=True,
+                ),
             ):
                 manager = MemcoreManager(
                     backend="memcore",
@@ -5025,8 +5149,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         memcore_manager = _CompactingProjectionManager()
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
-        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
-            config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 100
+        with (
+            patch.object(config, "MEMORY_BACKEND", "memcore"),
+            patch.object(config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 100),
         ):
             result = response_builder.prepare_context(
                 engine,
@@ -5167,9 +5292,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
-        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
-            config, "MEMCORE_SHADOW_COMPARE", True
-        ):
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
             result = response_builder.prepare_context(
                 engine,
                 session_id="s1",
@@ -5437,11 +5560,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("LEGACY", repr(result))
 
     def test_plugin_proactive_prompt_context_isolates_conversation_history(self) -> None:
-        previous_event = (
-            "[2026-07-20 周一 08:50 | 上午] event.finance\n"
-            "source: 东方财富\n"
-            "title: 上一条财经事件"
-        )
+        previous_event = "[2026-07-20 周一 08:50 | 上午] event.finance\nsource: 东方财富\ntitle: 上一条财经事件"
         memcore_manager = _PromptContextMemcoreManager(
             {
                 "operation": "build_prompt_context",
@@ -5486,9 +5605,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         engine = _PromptContextEngine(memcore_manager=memcore_manager)
 
-        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(
-            config, "MEMCORE_SHADOW_COMPARE", True
-        ):
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
             result = response_builder.prepare_context(
                 engine,
                 session_id="s1",
@@ -5581,13 +5698,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._get_generated_file_service = lambda: generated_index_reads.append(True)
         engine._get_task_workspace_service = lambda: SimpleNamespace(
             activity_prompt_context_lifecycle=lambda: "event_backed",
-            build_activity_prompt_context=lambda **kwargs: task_index_reads.append(dict(kwargs))
-            or "TASK WORKSPACE CONTEXT"
+            build_activity_prompt_context=lambda **kwargs: (
+                task_index_reads.append(dict(kwargs)) or "TASK WORKSPACE CONTEXT"
+            ),
         )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
             activity_prompt_context_lifecycle=lambda: "event_backed",
-            build_activity_prompt_context=lambda **kwargs: attachment_index_reads.append(dict(kwargs))
-            or "ATTACHMENT FOCUS CONTEXT"
+            build_activity_prompt_context=lambda **kwargs: (
+                attachment_index_reads.append(dict(kwargs)) or "ATTACHMENT FOCUS CONTEXT"
+            ),
         )
         engine.gift_service = SimpleNamespace(
             build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",
@@ -5689,12 +5808,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
             mode_prompt_override=lambda **_kwargs: "",
             to_public_dict=lambda: {"name": "desktop"},
         )
-        engine._get_prompt_profile_registry = lambda: SimpleNamespace(
-            resolve=lambda _context, **_kwargs: profile
-        )
+        engine._get_prompt_profile_registry = lambda: SimpleNamespace(resolve=lambda _context, **_kwargs: profile)
         workspace_resolver_calls: list[bool] = []
-        engine._get_workspace_file_service = lambda: workspace_resolver_calls.append(True) or SimpleNamespace(
-            build_prompt_context=lambda **_kwargs: "WORKSPACE CATALOG MUST NOT REPEAT"
+        engine._get_workspace_file_service = lambda: (
+            workspace_resolver_calls.append(True)
+            or SimpleNamespace(build_prompt_context=lambda **_kwargs: "WORKSPACE CATALOG MUST NOT REPEAT")
         )
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
@@ -5760,9 +5878,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             mode_prompt_override=lambda **_kwargs: "",
             to_public_dict=lambda: {"name": "character-test"},
         )
-        engine._get_prompt_profile_registry = lambda: SimpleNamespace(
-            resolve=lambda _context, **_kwargs: profile
-        )
+        engine._get_prompt_profile_registry = lambda: SimpleNamespace(resolve=lambda _context, **_kwargs: profile)
         engine._build_desktop_pet_character_pack_prompt_context = lambda **_kwargs: {
             "system_context": "STABLE CHARACTER SYSTEM",
             "reference_context": "STABLE CHARACTER REFERENCE",

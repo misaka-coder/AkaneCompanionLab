@@ -741,12 +741,20 @@ VoiceCore durable command
   安全摘要，不能只给出 ASR 成功却悄悄不启动回复；
 - 模型异常、缺 final 或不可交付 transient final 会进入
   `voice.response.failed → event.voice.failure`，不写假的 assistant final；
+- 最终答复需要修复重试时，正式 user 消息和 MemCore provider projection 保持
+  原样；修复说明只作为请求级临时尾部追加。这样模型能看见 `speech` 不能为空、
+  不能只给占位话的具体修复要求，同时不污染时间线，也不改写已经缓存的前缀；
 - 重启时先补偿 command receipt，再从 VoiceCore 中仍处于 generating 的 response
   恢复后台任务；同一进程按 response id 去重；
 - 未协商 playback 时，流式 `speech_segment` 不声明为 VoiceCore speech unit，最终
   完整 `speech` 仍以 `text_only` 完成；协商 `binary_audio_ack_v1` 后才启用
   `speech_segment → TTS → playback ACK`。缺少客户端 ACK 时，
   `enqueue_playback` 保持 pending，不会伪造 queued/started/completed。
+- 连续通话的 TTS 不再直接使用 Bot 的全局 Edge client。Host 会按本轮
+  `profile_user_id + character_pack_id` 复用普通桌宠 TTS 的角色 provider/profile
+  解析，并把实际 `provider_id` 写进 `voice.tts.started/ready/failed`。角色明确
+  请求 GPT-SoVITS 时，provider 不可用会结构化失败，不允许无提示地换成另一个
+  Edge 声线；未配置角色声线且默认请求 Edge 的角色仍可正常使用 Edge。
 
 2026-07-28，`desktop_pet_next` 已在本地接入该入口：AudioWorklet 以约 20ms
 的 `f32le` 单声道帧发送，WebSocket 依次发送帧头和 binary PCM；服务端音频由

@@ -184,6 +184,7 @@ class AkaneVoiceRuntimeService:
         bot_id: str,
         default_character_pack_id: str = "",
         tts_client: Any = None,
+        tts_client_resolver: Callable[..., Any] | None = None,
         runtime_metrics: Any = None,
         provider_builder: Callable[[Any], Any] = build_voice_asr_provider,
     ) -> None:
@@ -194,6 +195,7 @@ class AkaneVoiceRuntimeService:
         self.bot_id = str(bot_id or "")
         self.default_character_pack_id = str(default_character_pack_id or "")
         self.tts_client = tts_client
+        self.tts_client_resolver = tts_client_resolver
         self.runtime_metrics = runtime_metrics
         self.provider_builder = provider_builder
         self._hosts: dict[str, _SerializedVoiceRuntimeHost] = {}
@@ -260,15 +262,19 @@ class AkaneVoiceRuntimeService:
                 retryable=str(getattr(provider, "status", "")) == "unavailable",
                 safe_public_summary=_provider_public_summary(reason),
             )
-        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE and self.tts_client is None:
+        character_pack_id = request.character_pack_id or self.default_character_pack_id
+        resolved_tts_client = self._resolve_tts_client(
+            profile_user_id=request.profile_user_id,
+            session_id=request.session_id,
+            character_pack_id=character_pack_id,
+        )
+        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE and resolved_tts_client is None:
             return VoiceRealtimeCoordinatorResolution.failed(
                 "voice_tts_provider_unavailable",
                 status="unavailable",
                 retryable=False,
-                safe_public_summary="实时语音输出暂时不可用，本轮没有开始。",
+                safe_public_summary="当前角色的语音合成服务暂时不可用，本轮没有开始。",
             )
-
-        character_pack_id = request.character_pack_id or self.default_character_pack_id
         canonical_conversation_id = self._canonical_conversation_id(
             request=request,
             character_pack_id=character_pack_id,
@@ -280,6 +286,7 @@ class AkaneVoiceRuntimeService:
                 profile_user_id=request.profile_user_id,
                 session_id=request.session_id,
                 character_pack_id=character_pack_id,
+                tts_client=resolved_tts_client,
             )
         except Exception:
             return VoiceRealtimeCoordinatorResolution.failed(
@@ -432,6 +439,7 @@ class AkaneVoiceRuntimeService:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        tts_client: Any,
     ) -> _SerializedVoiceRuntimeHost | VoiceRealtimeCoordinatorResolution:
         with self._guard:
             existing = self._hosts.get(canonical_conversation_id)
@@ -494,7 +502,7 @@ class AkaneVoiceRuntimeService:
                 runtime_metrics=self.runtime_metrics,
             )
             tts_executor = AkaneVoiceTTSCommandExecutor(
-                tts_client=self.tts_client,
+                tts_client=tts_client,
                 text_artifacts=text_artifacts,
                 audio_artifacts=audio_artifacts,
                 conversation_id=canonical_conversation_id,
@@ -578,6 +586,25 @@ class AkaneVoiceRuntimeService:
                         ),
                     )
             return host
+
+    def _resolve_tts_client(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> Any:
+        resolver = self.tts_client_resolver
+        if not callable(resolver):
+            return self.tts_client
+        try:
+            return resolver(
+                profile_user_id=str(profile_user_id or ""),
+                session_id=str(session_id or ""),
+                character_pack_id=str(character_pack_id or ""),
+            )
+        except Exception:
+            return None
 
     @staticmethod
     def _snapshot_record(host: _SerializedVoiceRuntimeHost) -> dict[str, Any]:

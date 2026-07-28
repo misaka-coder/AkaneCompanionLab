@@ -115,6 +115,7 @@ class AkaneVoiceTTSCommandExecutor:
         self.audio_artifacts = audio_artifacts
         self.conversation_id = str(conversation_id or "")
         self.conversation_generation = int(conversation_generation)
+        self.provider_id = str(getattr(tts_client, "provider_id", "") or "").strip()
 
     def execute(
         self,
@@ -175,7 +176,7 @@ class AkaneVoiceTTSCommandExecutor:
                 common=common,
                 stage="started",
                 event_kind="voice.tts.started",
-                payload={},
+                payload=self._provider_payload(),
             ),
             self._event(
                 command=command,
@@ -185,6 +186,7 @@ class AkaneVoiceTTSCommandExecutor:
                 payload={
                     "command_id": str(command["command_id"]),
                     "audio_artifact_ref": stored.artifact_ref,
+                    **self._provider_payload(),
                 },
             ),
         )
@@ -208,7 +210,7 @@ class AkaneVoiceTTSCommandExecutor:
                 common=common,
                 stage="started",
                 event_kind="voice.tts.started",
-                payload={},
+                payload=self._provider_payload(),
             ),
             self._event(
                 command=command,
@@ -218,6 +220,7 @@ class AkaneVoiceTTSCommandExecutor:
                 payload={
                     "command_id": str(command["command_id"]),
                     "audio_artifact_ref": artifact_ref,
+                    **self._provider_payload(),
                 },
             ),
         )
@@ -295,7 +298,7 @@ class AkaneVoiceTTSCommandExecutor:
                     common=common,
                     stage="started",
                     event_kind="voice.tts.started",
-                    payload={},
+                    payload=self._provider_payload(),
                 )
             )
         observations.append(
@@ -307,10 +310,14 @@ class AkaneVoiceTTSCommandExecutor:
                 payload={
                     "command_id": str(command["command_id"]),
                     "reason_code": str(reason or "voice_tts_failed")[:128],
+                    **self._provider_payload(),
                 },
             )
         )
         return VoiceCommandExecutionResult.succeeded(*observations)
+
+    def _provider_payload(self) -> dict[str, str]:
+        return {"provider_id": self.provider_id} if self.provider_id else {}
 
     def _event(
         self,
