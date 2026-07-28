@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import contextvars
 from datetime import datetime
 from pathlib import Path
 import tempfile
@@ -754,6 +755,39 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(abort_calls), 1)
         self.assertEqual(abort_calls[0]["turn_id"], "turn-stream-failed")
         self.assertEqual(abort_calls[0]["reason"], "turn_stream_processing_exception")
+
+    def test_stream_turn_guard_survives_cross_context_iteration_and_close(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        abort_calls: list[dict[str, object]] = []
+
+        def stream_impl(
+            _payload: dict[str, object],
+            *,
+            _precommitted_memcore_turn: dict[str, str] | None = None,
+        ):
+            _ = _precommitted_memcore_turn
+            engine._track_open_memcore_turn_for_guard(
+                turn_id="turn-cross-context",
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+            )
+            yield {"type": "partial"}
+            yield {"type": "unreached"}
+
+        engine._process_turn_stream_impl = stream_impl
+        engine._abort_memcore_input_turn = lambda **kwargs: (
+            abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
+        )
+        stream = engine.process_turn_stream({})
+
+        first = contextvars.Context().run(next, stream)
+        contextvars.Context().run(stream.close)
+
+        self.assertEqual(first, {"type": "partial"})
+        self.assertEqual(len(abort_calls), 1)
+        self.assertEqual(abort_calls[0]["turn_id"], "turn-cross-context")
+        self.assertEqual(abort_calls[0]["reason"], "turn_stream_scope_exited_open")
 
     def test_projection_facades_delegate_to_memcore_and_return_safe_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2255,7 +2289,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(result["_transient_final_failure"])
         self.assertEqual(result["_memcore_failure"]["reason"], "request_projection_record_failed")
         self.assertNotIn("认真听你说", result["speech"])
-        self.assertEqual(events[-1]["text"], result["speech"])
+        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
 
     def test_prompt_token_estimate_counts_structured_history(self) -> None:
         base = {

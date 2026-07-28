@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Any, Callable, Generator
 
@@ -174,6 +174,57 @@ _MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
     "akane_memcore_open_turn_guard",
     default=None,
 )
+
+
+class _ContextBoundGenerator:
+    """Advance one generator inside the same Context for its whole lifetime.
+
+    Starlette may iterate a synchronous response generator from different
+    copied AnyIO contexts. ContextVar tokens cannot be reset from a different
+    Context, and turn-scope state would otherwise disappear between yields.
+    """
+
+    def __init__(self, generator: Generator[dict[str, Any], None, None]) -> None:
+        self._generator = generator
+        self._context = copy_context()
+        self._closed = False
+
+    def __iter__(self) -> _ContextBoundGenerator:
+        return self
+
+    def __next__(self) -> dict[str, Any]:
+        if self._closed:
+            raise StopIteration
+        try:
+            return self._context.run(next, self._generator)
+        except StopIteration:
+            self._closed = True
+            raise
+
+    def send(self, value: None) -> dict[str, Any]:
+        if self._closed:
+            raise StopIteration
+        try:
+            return self._context.run(self._generator.send, value)
+        except StopIteration:
+            self._closed = True
+            raise
+
+    def throw(self, *args: Any) -> dict[str, Any]:
+        if self._closed:
+            raise StopIteration
+        try:
+            return self._context.run(self._generator.throw, *args)
+        except StopIteration:
+            self._closed = True
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._context.run(self._generator.close)
+
 
 logger = logging.getLogger("akane.engine")
 
@@ -3997,6 +4048,19 @@ class AkaneMemoryEngine:
         payload: dict[str, Any],
         *,
         _precommitted_memcore_turn: dict[str, str] | None = None,
+    ) -> _ContextBoundGenerator:
+        return _ContextBoundGenerator(
+            self._process_turn_stream_scoped(
+                payload,
+                _precommitted_memcore_turn=_precommitted_memcore_turn,
+            )
+        )
+
+    def _process_turn_stream_scoped(
+        self,
+        payload: dict[str, Any],
+        *,
+        _precommitted_memcore_turn: dict[str, str] | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
         exit_reason = "turn_stream_scope_exited_open"
@@ -4005,6 +4069,8 @@ class AkaneMemoryEngine:
                 payload,
                 _precommitted_memcore_turn=_precommitted_memcore_turn,
             )
+        except GeneratorExit:
+            raise
         except BaseException:
             exit_reason = "turn_stream_processing_exception"
             raise
@@ -5066,9 +5132,7 @@ class AkaneMemoryEngine:
         )
         projection_failure = generation_context.get("memcore_projection_failure")
         if isinstance(projection_failure, dict):
-            failure_output = self._memcore_projection_failure_output(projection_failure)
-            yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
-            return failure_output
+            return self._memcore_projection_failure_output(projection_failure)
         request_observer = self._build_memcore_request_observer(
             generation_context=generation_context,
             profile_user_id=profile_user_id,
@@ -5171,11 +5235,9 @@ class AkaneMemoryEngine:
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
             provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
             if "request_observer_rejected:" in stream_error:
-                failure_output = self._memcore_projection_failure_output(
+                return self._memcore_projection_failure_output(
                     {"status": "failed", "reason": "request_projection_record_failed"}
                 )
-                yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
-                return failure_output
             if stream_error:
                 unrecovered_stream_error = stream_error
                 unrecovered_stream_partial = {
@@ -5229,11 +5291,9 @@ class AkaneMemoryEngine:
                 )
                 fallback_error = str(getattr(fallback_call_result, "error", "") or "").strip()
                 if "request_observer_rejected:" in fallback_error:
-                    failure_output = self._memcore_projection_failure_output(
+                    return self._memcore_projection_failure_output(
                         {"status": "failed", "reason": "request_projection_record_failed"}
                     )
-                    yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
-                    return failure_output
                 provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
                 fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                 fallback_parse_failure = self._llm_result_used_fallback(
@@ -5285,11 +5345,9 @@ class AkaneMemoryEngine:
                     )
                     uncached_error = str(getattr(uncached_call_result, "error", "") or "").strip()
                     if "request_observer_rejected:" in uncached_error:
-                        failure_output = self._memcore_projection_failure_output(
+                        return self._memcore_projection_failure_output(
                             {"status": "failed", "reason": "request_projection_record_failed"}
                         )
-                        yield {"type": "speech_segment", "index": 0, "text": failure_output["speech"]}
-                        return failure_output
                     provider_output_raw = str(getattr(uncached_call_result, "raw_text", "") or "")
                     uncached_metrics_after = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -7765,10 +7823,18 @@ class AkaneMemoryEngine:
             return [], current_record
 
         last_record = records[-1]
-        last_role = str(last_record.get("role", "") or "").strip().lower()
         last_content = normalize_text(str(last_record.get("content", "") or ""))
         current_content = normalize_text(user_message)
-        if (last_role == "user" or last_role.startswith("event.")) and last_content == current_content:
+        last_role = str(last_record.get("role", "") or "").strip().lower()
+        last_kind = str(last_record.get("kind", "") or "").strip().lower()
+        current_stimulus = any(
+            candidate == "user"
+            or candidate == "message.user"
+            or candidate.startswith("message.user.")
+            or candidate.startswith("event.")
+            for candidate in (last_role, last_kind)
+        )
+        if current_stimulus and last_content == current_content:
             return records[:-1], last_record
         return records, current_record
 

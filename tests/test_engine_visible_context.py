@@ -39,6 +39,30 @@ class EngineVisibleContextExclusionTests(unittest.TestCase):
         self.assertEqual([item["content"] for item in history], ["上一句"])
         self.assertEqual(current["content"], "你好")
 
+    def test_split_history_records_preserves_typed_voice_current_source(self) -> None:
+        voice_record = {
+            "source_id": "voice-source-1",
+            "turn_id": "voice-turn-1",
+            "role": "message.user.voice",
+            "kind": "message.user.voice",
+            "content": "能听到声音吗？",
+            "timestamp": 1712400060,
+        }
+
+        history, current = AkaneMemoryEngine._split_history_records(
+            recent_raw=[
+                {"role": "assistant", "content": "上一句", "timestamp": 1712400000},
+                voice_record,
+            ],
+            user_message="能听到声音吗？",
+            now_ts=1712400060,
+        )
+
+        self.assertEqual([item["content"] for item in history], ["上一句"])
+        self.assertIs(current, voice_record)
+        self.assertEqual(current["source_id"], "voice-source-1")
+        self.assertEqual(current["kind"], "message.user.voice")
+
     def test_split_history_records_keeps_non_user_tail_for_tool_followup(self) -> None:
         history, current = AkaneMemoryEngine._split_history_records(
             recent_raw=[

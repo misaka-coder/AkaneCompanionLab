@@ -439,6 +439,7 @@ class AkaneThinkingAgentCommandExecutor:
     ) -> None:
         final_seen = False
         failure_reason = ""
+        iterator: Any | None = None
         try:
             iterator = self.engine.process_voice_turn_stream(
                 profile_user_id=self.profile_user_id,
@@ -486,6 +487,14 @@ class AkaneThinkingAgentCommandExecutor:
                 failure_reason = "voice_thinking_final_missing"
         except Exception:
             failure_reason = "voice_thinking_generation_failed"
+        finally:
+            close_iterator = getattr(iterator, "close", None)
+            if callable(close_iterator):
+                try:
+                    close_iterator()
+                except Exception:
+                    if not final_seen and not failure_reason:
+                        failure_reason = "voice_thinking_stream_close_failed"
 
         if failure_reason:
             self._fail_response(
