@@ -593,6 +593,7 @@ export class RealtimeVoiceSession {
     callResources = null,
     openPayload,
     workletModuleUrl,
+    endpointDetector = null,
     getVolume = () => 1,
     callbacks = {},
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
@@ -604,6 +605,7 @@ export class RealtimeVoiceSession {
     this.audioElement = callResources?.audioElement || audioElement;
     this.openPayload = openPayload;
     this.workletModuleUrl = workletModuleUrl;
+    this.endpointDetector = endpointDetector;
     this.getVolume = getVolume;
     this.callbacks = callbacks;
     this.readyTimeoutMs = readyTimeoutMs;
@@ -797,6 +799,19 @@ export class RealtimeVoiceSession {
 
   acceptPcmFrame(buffer, frameCount) {
     if (this.closed || this.endpointSent || this.failed) return;
+    try {
+      this.endpointDetector?.acceptPcmFrame?.(
+        buffer,
+        frameCount,
+        this.captureSampleRate
+      );
+    } catch (error) {
+      this.fail(String(error?.message || "voice_realtime_endpoint_detector_failed"), {
+        terminal: true
+      });
+      return;
+    }
+    if (this.closed || this.endpointSent || this.failed) return;
     const frame = { buffer, frameCount: Math.max(0, Math.round(frameCount)) };
     if (!this.ready) {
       this.pendingFrames.push(frame);
@@ -866,11 +881,20 @@ export class RealtimeVoiceSession {
       return;
     }
     if (type === "server.partial" || type === "server.checkpoint") {
-      this.notify("onTranscript", {
+      const transcript = {
         kind: type.slice("server.".length),
         text: String(payload.text || ""),
         unstableTail: String(payload.unstable_tail || "")
-      });
+      };
+      try {
+        this.endpointDetector?.observeTranscript?.(transcript);
+      } catch (error) {
+        this.fail(String(error?.message || "voice_realtime_endpoint_detector_failed"), {
+          terminal: true
+        });
+        return;
+      }
+      this.notify("onTranscript", transcript);
       return;
     }
     if (type === "server.final") {

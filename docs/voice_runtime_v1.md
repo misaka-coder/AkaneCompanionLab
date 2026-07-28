@@ -770,6 +770,14 @@ VoiceCore durable command
 音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，但桌宠
 主入口尚未创建这份长生命周期资源，因此用户可见按钮仍保持原来的逐轮录音语义。
 
+客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
+判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR
+`partial/checkpoint` 组合起来：稳定 checkpoint 后允许较短静音收尾，只有 partial
+时保留更长等待；单个爆音、持续背景噪声和句中短停顿不提交。检测到有效人声但
+始终没有 ASR 文本时形成 `discard/speech_without_transcript`，不请求 Thinking
+Agent，也不设置固定的单句最长时限。检测器已接入 `RealtimeVoiceSession` 的 PCM
+与转写观测，但主入口尚未实例化它，因此当前不会擅自替用户自动点“停止”。
+
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
 全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能
@@ -817,8 +825,9 @@ final 先到时只记录提交意图，不先生成普通回复；`treat_as_inte
 `prepare_candidate/prepare_backchannel` 的推测式回复闭环，因此这一步不宣称自动
 VAD 抢话或候选音频已经可用；现阶段 semantic pulse 的 `response_action` 固定为
 `none`。播放器所有权已经提升到通话级，但桌宠当前仍按单轮创建和停止
-AudioWorklet/MediaRecorder；下一步要让持续采音把帧显式路由给当前 Input Turn，
-再接自动 endpoint/VAD。完成这道边界前，不把音量阈值直接接成自动打断。
+AudioWorklet/MediaRecorder；下一步由通话控制器在主入口创建长生命周期资源和
+endpoint detector，并根据 `commit/discard` 关闭当前 Input Turn、启动下一轮。
+完成真实入口验收前，不把音量阈值直接接成自动打断。
 
 ### Slice C：播放和语义打断
 

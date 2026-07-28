@@ -324,6 +324,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
     def test_next_realtime_voice_uses_pcm_and_real_playback_acknowledgements(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         client_source = _read("desktop_pet_next/src/realtime-voice-client.js")
+        endpoint_source = _read("desktop_pet_next/src/realtime-voice-endpoint.js")
         worklet_source = _read("desktop_pet_next/src/voice-pcm-worklet.js")
 
         self.assertIn("new RealtimeVoiceSession", main_source)
@@ -350,6 +351,11 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("class RealtimeVoiceCallResources", client_source)
         self.assertIn("voice_call_capture_busy", client_source)
         self.assertIn('requestCaptureReceipt("reset")', client_source)
+        self.assertIn("this.endpointDetector?.acceptPcmFrame", client_source)
+        self.assertIn("this.endpointDetector?.observeTranscript", client_source)
+        self.assertIn("class RealtimeVoiceEndpointDetector", endpoint_source)
+        self.assertIn('"stable_checkpoint_silence"', endpoint_source)
+        self.assertIn('"speech_without_transcript"', endpoint_source)
         self.assertIn("this.audioElement.volume = clampVolume(appliedVolume)", client_source)
         self.assertIn("this.audioElement.pause();", client_source)
         self.assertIn("onPlaybackDucked", main_source)
