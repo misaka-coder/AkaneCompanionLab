@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from companion_v01.voice_runtime import (
+    AkaneVoicePlaybackCommandExecutor,
     AkaneVoiceTTSCommandExecutor,
     FileVoiceAudioArtifactPort,
     FileVoiceTextArtifactPort,
@@ -259,6 +260,45 @@ class VoiceRuntimeTTSExecutorTests(unittest.TestCase):
             unsupported.reason,
             "voice_command_not_connected:enqueue_playback",
         )
+
+    def test_missing_old_playback_channel_is_structurally_settled(self) -> None:
+        command = {
+            "command_id": "command-enqueue-before-restart",
+            "command_kind": "enqueue_playback",
+            "idempotency_key": "idempotency-enqueue-before-restart",
+            "causation_id": "tts-ready-before-restart",
+            "payload": {
+                "speech_unit_id": "speech-unit-1",
+                "response_id": "response-1",
+                "response_generation": 1,
+                "ordinal": 0,
+                "audio_artifact_ref": "voice-audio:test",
+            },
+        }
+        snapshot = _snapshot()
+        snapshot["speech_units"] = {
+            "speech-unit-1": {
+                "speech_unit_id": "speech-unit-1",
+                "response_id": "response-1",
+            }
+        }
+
+        for method_name in ("execute", "recover"):
+            executor = AkaneVoicePlaybackCommandExecutor(
+                conversation_id="conversation-1",
+                conversation_generation=1,
+            )
+            result = getattr(executor, method_name)(command, snapshot)
+
+            self.assertEqual(result.status, "succeeded", result)
+            self.assertEqual(len(result.observations), 1)
+            event = result.observations[0]
+            self.assertEqual(event.event_kind, "voice.playback.failed")
+            self.assertEqual(event.payload["command_id"], command["command_id"])
+            self.assertEqual(
+                event.payload["reason_code"],
+                "voice_playback_runtime_restarted",
+            )
 
 
 if __name__ == "__main__":

@@ -1576,6 +1576,89 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 second_service.close()
                 manager.close()
 
+    def test_restart_settles_playback_bound_to_the_old_client_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            first_engine = _BlockingThinkingEngine(manager)
+            first_service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=first_engine,
+                tts_client=_TTSClient(),
+            )
+            recovered_service: AkaneVoiceRuntimeService | None = None
+            try:
+                request = _open_request(
+                    voice_turn_id="voice-turn-playback-before-restart",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                first = first_service.create_coordinator(request)
+                self.assertEqual(first.status, "ready", first)
+                asyncio.run(_commit_realtime_turn(first.coordinator))
+                self.assertTrue(first_engine.segment_ready.wait(timeout=2.0))
+
+                deadline = time.monotonic() + 3.0
+                old_host = first.coordinator.bridge.host
+                while time.monotonic() < deadline:
+                    if any(
+                        command.command_kind == "enqueue_playback"
+                        for command in old_host.snapshot.pending_commands.values()
+                    ):
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(
+                    any(
+                        command.command_kind == "enqueue_playback"
+                        for command in old_host.snapshot.pending_commands.values()
+                    )
+                )
+                first_engine.release_final.set()
+                self.assertTrue(first_service.wait_idle(timeout=5.0))
+
+                recovered_service = self._service(
+                    root=root,
+                    manager=manager,
+                    adapter=_Adapter(),
+                    tts_client=_TTSClient(),
+                )
+                recovered = recovered_service.create_coordinator(
+                    _open_request(voice_turn_id="voice-turn-playback-after-restart")
+                )
+
+                self.assertEqual(recovered.status, "ready", recovered)
+                recovered_host = recovered.coordinator.bridge.host
+                old_unit = next(
+                    unit
+                    for unit in recovered_host.snapshot.speech_units.values()
+                    if unit.response_id
+                    in {
+                        response.response_id
+                        for response in recovered_host.snapshot.responses.values()
+                        if response.voice_turn_id == request.voice_turn_id
+                    }
+                )
+                self.assertEqual(old_unit.state.value, "failed")
+                self.assertEqual(
+                    old_unit.failure_reason,
+                    "voice_playback_runtime_restarted",
+                )
+                self.assertFalse(
+                    [
+                        command
+                        for command in recovered_host.snapshot.pending_commands.values()
+                        if command.command_kind == "enqueue_playback"
+                        and command.payload.get("speech_unit_id") == old_unit.speech_unit_id
+                    ]
+                )
+            finally:
+                first_engine.release_final.set()
+                if recovered_service is not None:
+                    recovered_service.close()
+                first_service.close()
+                manager.close()
+
     def test_engine_voice_entry_uses_a_trusted_precommitted_turn(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         captured: dict[str, Any] = {}

@@ -954,6 +954,7 @@ class AkaneVoicePlaybackCommandExecutor:
         self.conversation_id = str(conversation_id or "")
         self.conversation_generation = int(conversation_generation)
         self._channels: dict[str, VoicePlaybackDeliveryChannel] = {}
+        self._has_registered_channel = False
         self._guard = threading.RLock()
 
     def register_channel(
@@ -962,6 +963,7 @@ class AkaneVoicePlaybackCommandExecutor:
         channel: VoicePlaybackDeliveryChannel,
     ) -> None:
         with self._guard:
+            self._has_registered_channel = True
             self._channels[str(voice_turn_id or "")] = channel
 
     def unregister_channel(
@@ -981,6 +983,16 @@ class AkaneVoicePlaybackCommandExecutor:
     ) -> VoiceCommandExecutionResult:
         context = self._context(command_record, snapshot_record)
         if isinstance(context, str):
+            if context == "voice_playback_channel_unavailable":
+                return self._missing_channel_result(
+                    command_record,
+                    snapshot_record,
+                    reason=(
+                        "voice_playback_channel_unavailable"
+                        if self._has_registered_channel
+                        else "voice_playback_runtime_restarted"
+                    ),
+                )
             return VoiceCommandExecutionResult.failed(context)
         channel, command, common = context
         command_kind = str(command.get("command_kind") or "")
@@ -994,7 +1006,6 @@ class AkaneVoicePlaybackCommandExecutor:
         if command_kind != "enqueue_playback":
             return VoiceCommandExecutionResult.succeeded(
                 self._control_failure_event(
-                    channel=channel,
                     command=command,
                     common=common,
                     reason=(
@@ -1010,7 +1021,6 @@ class AkaneVoicePlaybackCommandExecutor:
         if offered.status == "closed":
             return VoiceCommandExecutionResult.succeeded(
                 self._failure_event(
-                    channel=channel,
                     command=command,
                     common=common,
                     reason="voice_playback_channel_closed",
@@ -1018,7 +1028,6 @@ class AkaneVoicePlaybackCommandExecutor:
             )
         return VoiceCommandExecutionResult.succeeded(
             self._failure_event(
-                channel=channel,
                 command=command,
                 common=common,
                 reason=_safe_reason(
@@ -1035,6 +1044,12 @@ class AkaneVoicePlaybackCommandExecutor:
     ) -> VoiceCommandExecutionResult:
         context = self._context(command_record, snapshot_record)
         if isinstance(context, str):
+            if context == "voice_playback_channel_unavailable":
+                return self._missing_channel_result(
+                    command_record,
+                    snapshot_record,
+                    reason="voice_playback_runtime_restarted",
+                )
             return VoiceCommandExecutionResult.unknown(context)
         channel, _command, _common = context
         if channel.closed:
@@ -1046,6 +1061,21 @@ class AkaneVoicePlaybackCommandExecutor:
         command_record: Mapping[str, Any],
         snapshot_record: Mapping[str, Any],
     ) -> tuple[VoicePlaybackDeliveryChannel, dict[str, Any], dict[str, Any]] | str:
+        resolved = self._command_context(command_record, snapshot_record)
+        if isinstance(resolved, str):
+            return resolved
+        command, common = resolved
+        with self._guard:
+            channel = self._channels.get(common["voice_turn_id"])
+        if channel is None:
+            return "voice_playback_channel_unavailable"
+        return channel, command, common
+
+    @staticmethod
+    def _command_context(
+        command_record: Mapping[str, Any],
+        snapshot_record: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]] | str:
         if not isinstance(command_record, Mapping) or not isinstance(snapshot_record, Mapping):
             return "voice_playback_command_contract_invalid"
         command = dict(command_record)
@@ -1069,12 +1099,9 @@ class AkaneVoicePlaybackCommandExecutor:
         if not isinstance(response, Mapping):
             return "voice_playback_snapshot_context_invalid"
         voice_turn_id = str(response.get("voice_turn_id") or "")
-        with self._guard:
-            channel = self._channels.get(voice_turn_id)
-        if channel is None:
-            return "voice_playback_channel_unavailable"
+        input_turns = snapshot_record.get("input_turns")
+        input_turn = input_turns.get(voice_turn_id) if isinstance(input_turns, Mapping) else None
         return (
-            channel,
             command,
             {
                 "voice_turn_id": voice_turn_id,
@@ -1082,27 +1109,53 @@ class AkaneVoicePlaybackCommandExecutor:
                 "speech_unit_id": speech_unit_id,
                 "turn_revision": response.get("source_turn_revision"),
                 "response_generation": response.get("response_generation"),
+                "voice_session_id": (
+                    str(input_turn.get("voice_session_id") or "") if isinstance(input_turn, Mapping) else ""
+                ),
             },
         )
+
+    def _missing_channel_result(
+        self,
+        command_record: Mapping[str, Any],
+        snapshot_record: Mapping[str, Any],
+        *,
+        reason: str,
+    ) -> VoiceCommandExecutionResult:
+        resolved = self._command_context(command_record, snapshot_record)
+        if isinstance(resolved, str):
+            return VoiceCommandExecutionResult.failed(resolved)
+        command, common = resolved
+        if str(command.get("command_kind") or "") == "enqueue_playback":
+            event = self._failure_event(
+                command=command,
+                common=common,
+                reason=reason,
+            )
+        else:
+            event = self._control_failure_event(
+                command=command,
+                common=common,
+                reason=reason,
+            )
+        return VoiceCommandExecutionResult.succeeded(event)
 
     def _failure_event(
         self,
         *,
-        channel: VoicePlaybackDeliveryChannel,
         command: Mapping[str, Any],
         common: Mapping[str, Any],
         reason: str,
     ) -> VoiceEvent:
         now = datetime.now(timezone.utc).isoformat()
         digest = hashlib.sha256(f"{str(command.get('command_id') or '')}:playback_failed".encode("utf-8")).hexdigest()
-        input_turn = channel.host.snapshot.input_turns.get(common["voice_turn_id"])
         return VoiceEvent(
             event_id=f"voice_evt_{digest[:32]}",
             event_kind="voice.playback.failed",
             occurred_at=now,
             recorded_at=now,
             conversation_id=self.conversation_id,
-            voice_session_id=str(getattr(input_turn, "voice_session_id", "") or ""),
+            voice_session_id=str(common.get("voice_session_id") or ""),
             conversation_generation=self.conversation_generation,
             producer="akane.voice_playback_delivery",
             voice_turn_id=str(common["voice_turn_id"]),
@@ -1120,7 +1173,6 @@ class AkaneVoicePlaybackCommandExecutor:
     def _control_failure_event(
         self,
         *,
-        channel: VoicePlaybackDeliveryChannel,
         command: Mapping[str, Any],
         common: Mapping[str, Any],
         reason: str,
@@ -1135,7 +1187,6 @@ class AkaneVoicePlaybackCommandExecutor:
             "stop_playback": "stop",
         }[command_kind]
         digest = hashlib.sha256(f"{command_id}:control_failed".encode("utf-8")).hexdigest()
-        input_turn = channel.host.snapshot.input_turns.get(common["voice_turn_id"])
         event_payload: dict[str, Any] = {
             "command_id": command_id,
             "action": action,
@@ -1155,7 +1206,7 @@ class AkaneVoicePlaybackCommandExecutor:
             occurred_at=now,
             recorded_at=now,
             conversation_id=self.conversation_id,
-            voice_session_id=str(getattr(input_turn, "voice_session_id", "") or ""),
+            voice_session_id=str(common.get("voice_session_id") or ""),
             conversation_generation=self.conversation_generation,
             producer="akane.voice_playback_delivery",
             voice_turn_id=str(common["voice_turn_id"]),
