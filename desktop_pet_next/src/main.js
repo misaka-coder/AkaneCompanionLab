@@ -63,6 +63,8 @@ const THINK_TIMEOUT_MS = 5 * 60 * 1000;
 const TTS_TIMEOUT_MS = 45 * 1000;
 const TTS_SLOW_REQUEST_MS = 1200;
 const TTS_CHUNK_SOFT_LIMIT = 24;
+const TTS_SHORT_SEGMENT_MAX_CHARS = 4;
+const TTS_SHORT_SEGMENT_HOLD_MS = 420;
 const TTS_PREWARM_TEXT = "嗯。";
 const TTS_PREWARM_DELAY_MS = 650;
 const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
@@ -676,10 +678,15 @@ let lastTtsSignature = "";
 let resolveTtsWait = null;
 let streamingTtsTurnToken = 0;
 let streamingTtsText = "";
+let streamingTtsPendingShort = "";
+let streamingTtsPendingShortKey = "";
+let streamingTtsPendingShortTimer = 0;
 const streamingTtsSegmentKeys = new Set();
 let streamingReplyTurnToken = 0;
 let streamingReplyText = "";
+let streamingReplyFinalText = "";
 let streamingReplyFinalized = false;
+let streamedReplyCompletionShown = false;
 let streamedReplyLastShownAt = 0;
 let streamedReplyLastShownText = "";
 let streamedReplyQueue = [];
@@ -6177,6 +6184,7 @@ async function processThinkStream(stream, turnToken) {
         finalizeStreamedReplyDisplay();
         rendered = true;
       }
+      flushStreamingTtsPending({ turnToken });
       if (event?.partial && !rendered) {
         firstSpeechSegmentShown = false;
         if (renderPayload(event.partial)) rendered = true;
@@ -6185,6 +6193,7 @@ async function processThinkStream(stream, turnToken) {
   }
 
   if (!isTurnActive(turnToken)) return false;
+  flushStreamingTtsPending({ turnToken });
   if (!rendered && partialSpeech.trim()) {
     firstSpeechSegmentShown = false;
     rendered = renderPayload({ speech: partialSpeech.trim() });
@@ -6212,13 +6221,14 @@ function renderPayload(
 
   const segments = normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
+    const finalSpeech = String(payload.speech || payload.text || "").trim();
     const signature = `segments:${segments.join("\u241e")}`;
     const textKey = buildSpeechTextKey(segments.join(""));
     if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
     lastTurnSignature = signature;
     lastTurnTextKey = textKey;
     if (source === "live" && streamingReplyText) {
-      queueLiveReplyPayloadItems(segments, { speaking });
+      queueLiveReplyPayloadItems(segments, { speaking, finalText: finalSpeech });
     } else {
       showSpeechSegments(segments, { speaking });
     }
@@ -6237,7 +6247,10 @@ function renderPayload(
   lastTurnSignature = signature;
   lastTurnTextKey = textKey;
   if (source === "live" && streamingReplyText) {
-    queueLiveReplyPayloadItems(displaySegments.length ? displaySegments : [speech], { speaking });
+    queueLiveReplyPayloadItems(displaySegments.length ? displaySegments : [speech], {
+      speaking,
+      finalText: speech
+    });
   } else if (displaySegments.length) {
     showSpeechSegments(displaySegments, { speaking });
   } else {
@@ -6912,6 +6925,7 @@ function hideBubble(token = null) {
 function setBubbleContent(text) {
   const value = String(text || "").trim();
   els.bubbleText.textContent = value;
+  els.bubbleText.scrollTop = 0;
   els.bubble.dataset.size = getBubbleSizeForText(value);
 }
 
@@ -8901,7 +8915,9 @@ function buildPlayableMusicCatalog() {
 function resetStreamingReplyState(turnToken = 0) {
   streamingReplyTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
   streamingReplyText = "";
+  streamingReplyFinalText = "";
   streamingReplyFinalized = false;
+  streamedReplyCompletionShown = false;
   streamedReplyLastShownAt = 0;
   streamedReplyLastShownText = "";
   streamedReplyQueue = [];
@@ -8935,7 +8951,7 @@ function queueStreamedReplySegment(text, turnToken, segmentIndex = null) {
   return true;
 }
 
-function queueLiveReplyPayloadItems(items, { speaking = true } = {}) {
+function queueLiveReplyPayloadItems(items, { speaking = true, finalText = "" } = {}) {
   const normalized = (Array.isArray(items) ? items : [items])
     .map((item) => normalizeTtsText(item))
     .filter(Boolean);
@@ -8943,6 +8959,9 @@ function queueLiveReplyPayloadItems(items, { speaking = true } = {}) {
     finalizeStreamedReplyDisplay();
     return false;
   }
+
+  const authoritativeFinalText = normalizeTtsText(finalText || normalized.join(""));
+  if (authoritativeFinalText) streamingReplyFinalText = authoritativeFinalText;
 
   const tail = removeStreamingReplyPrefix(normalized.join(""));
   if (tail) {
@@ -9008,7 +9027,7 @@ function showNextStreamedReplySegment() {
   if (streamedReplyQueue.length) {
     scheduleStreamedReplyDisplay();
   } else if (streamingReplyFinalized) {
-    scheduleBubbleReset(Math.max(String(text || "").length, 4), bubbleToken);
+    scheduleStreamedReplyCompletion();
   }
 }
 
@@ -9019,12 +9038,36 @@ function finalizeStreamedReplyDisplay() {
     scheduleStreamedReplyDisplay();
     return;
   }
-  if (replyDisplayActive && bubbleKind === "reply") {
-    scheduleBubbleReset(Math.max(String(streamedReplyLastShownText || "").length, 4), bubbleToken);
+  scheduleStreamedReplyCompletion();
+}
+
+function scheduleStreamedReplyCompletion() {
+  if (streamedReplyCompletionShown || streamedReplyQueue.length || segmentTimer) return;
+  if (!replyDisplayActive || bubbleKind !== "reply" || !isTurnActive(streamingReplyTurnToken)) return;
+
+  const finalText = normalizeTtsText(streamingReplyFinalText || streamingReplyText);
+  if (!finalText) return;
+  if (buildSpeechTextKey(finalText) === buildSpeechTextKey(streamedReplyLastShownText)) {
+    streamedReplyCompletionShown = true;
+    scheduleBubbleReset(Math.max(finalText.length, 4), bubbleToken);
+    return;
   }
+
+  const elapsed = Date.now() - streamedReplyLastShownAt;
+  const delay = Math.max(0, getSegmentDisplayDelay(streamedReplyLastShownText) - elapsed);
+  segmentTimer = window.setTimeout(() => {
+    segmentTimer = 0;
+    if (!isTurnActive(streamingReplyTurnToken)) return;
+    streamedReplyCompletionShown = true;
+    streamedReplyLastShownText = finalText;
+    streamedReplyLastShownAt = Date.now();
+    displayReplyBubbleText(finalText, { speaking: ttsActive });
+    scheduleBubbleReset(Math.max(finalText.length, 4), bubbleToken);
+  }, delay);
 }
 
 function resetStreamingTtsState(turnToken = 0) {
+  clearStreamingTtsPending();
   streamingTtsTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
   streamingTtsText = "";
   streamingTtsSegmentKeys.clear();
@@ -9052,7 +9095,55 @@ function queueStreamedTtsSegment(text, turnToken, segmentIndex = null) {
 
   streamingTtsSegmentKeys.add(segmentKey);
   streamingTtsText = normalizeTtsText(streamingTtsText ? `${streamingTtsText}${normalized}` : normalized);
-  queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true, preserveSegments: true });
+  bufferStreamingTtsSegment(normalized, turnToken, segmentKey);
+}
+
+function bufferStreamingTtsSegment(text, turnToken, segmentKey = "") {
+  const normalized = normalizeTtsText(text);
+  if (!normalized || !isTurnActive(turnToken) || !state.voiceEnabled) return;
+
+  window.clearTimeout(streamingTtsPendingShortTimer);
+  streamingTtsPendingShortTimer = 0;
+  const combined = normalizeTtsText(
+    streamingTtsPendingShort ? `${streamingTtsPendingShort} ${normalized}` : normalized
+  );
+  const combinedKey = [streamingTtsPendingShortKey, segmentKey].filter(Boolean).join("+");
+  streamingTtsPendingShort = "";
+  streamingTtsPendingShortKey = "";
+
+  if (combined.length <= TTS_SHORT_SEGMENT_MAX_CHARS) {
+    streamingTtsPendingShort = combined;
+    streamingTtsPendingShortKey = combinedKey;
+    streamingTtsPendingShortTimer = window.setTimeout(() => {
+      streamingTtsPendingShortTimer = 0;
+      flushStreamingTtsPending({ turnToken });
+    }, TTS_SHORT_SEGMENT_HOLD_MS);
+    return;
+  }
+
+  queueTtsItems([combined], `stream:${turnToken}:${combinedKey || buildSpeechTextKey(combined)}`, {
+    append: true,
+    preserveSegments: true
+  });
+}
+
+function flushStreamingTtsPending({ turnToken = streamingTtsTurnToken } = {}) {
+  const text = streamingTtsPendingShort;
+  const segmentKey = streamingTtsPendingShortKey;
+  clearStreamingTtsPending();
+  if (!text || !isTurnActive(turnToken) || !state.voiceEnabled) return false;
+  queueTtsItems([text], `stream:${turnToken}:${segmentKey || buildSpeechTextKey(text)}`, {
+    append: true,
+    preserveSegments: true
+  });
+  return true;
+}
+
+function clearStreamingTtsPending() {
+  window.clearTimeout(streamingTtsPendingShortTimer);
+  streamingTtsPendingShortTimer = 0;
+  streamingTtsPendingShort = "";
+  streamingTtsPendingShortKey = "";
 }
 
 function queueLiveTtsPayloadItems(items, signature = "") {
@@ -9065,15 +9156,15 @@ function queueLiveTtsPayloadItems(items, signature = "") {
     const tail = removeStreamingTtsPrefix(normalized.join(""));
     if (tail) {
       const tailSegments = splitSpeechText(tail);
-      queueTtsItems(tailSegments.length ? tailSegments : [tail], signature ? `${signature}:tail` : "stream-tail", {
-        append: true,
-        preserveSegments: true
-      });
+      for (const segment of tailSegments.length ? tailSegments : [tail]) {
+        bufferStreamingTtsSegment(segment, activeTurnToken, `tail:${buildSpeechTextKey(segment)}`);
+      }
     }
+    flushStreamingTtsPending({ turnToken: activeTurnToken });
     return;
   }
 
-  queueTtsItems(normalized, signature, { preserveSegments: true });
+  queueTtsItems(normalized, signature);
 }
 
 function removeStreamingTtsPrefix(text) {
@@ -9152,16 +9243,13 @@ async function runTtsPrewarm({ force = false } = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
+      signal: controller.signal,
       body: JSON.stringify({
         text: TTS_PREWARM_TEXT,
         ...buildBackendCharacterContext()
       })
     };
-    if (isTauriRuntime) {
-      requestInit.connectTimeout = TTS_PREWARM_TIMEOUT_MS;
-    } else {
-      requestInit.signal = controller.signal;
-    }
+    if (isTauriRuntime) requestInit.connectTimeout = TTS_PREWARM_TIMEOUT_MS;
 
     const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
     if (response.ok) {
@@ -9233,6 +9321,7 @@ async function previewTts(text) {
 }
 
 function stopTts({ resetSignature = true } = {}) {
+  clearStreamingTtsPending();
   ttsToken += 1;
   ttsQueue = [];
   if (resetSignature) lastTtsSignature = "";
@@ -9309,16 +9398,13 @@ async function fetchTtsAudio(text, token) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
+      signal: controller.signal,
       body: JSON.stringify({
         text,
         ...buildBackendCharacterContext()
       })
     };
-    if (isTauriRuntime) {
-      requestInit.connectTimeout = 30_000;
-    } else {
-      requestInit.signal = controller.signal;
-    }
+    if (isTauriRuntime) requestInit.connectTimeout = 30_000;
 
     const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
     if (!response.ok) throw new Error(await readBackendErrorMessage(response, `TTS HTTP ${response.status}`));

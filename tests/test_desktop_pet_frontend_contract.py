@@ -238,7 +238,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function queueStreamedTtsSegment(text, turnToken, segmentIndex = null)", main_source)
         self.assertIn("function queueStreamedReplySegment(text, turnToken, segmentIndex = null)", main_source)
         self.assertIn("function queueLiveTtsPayloadItems(items, signature = \"\")", main_source)
-        self.assertIn("function queueLiveReplyPayloadItems(items, { speaking = true } = {})", main_source)
+        self.assertIn(
+            'function queueLiveReplyPayloadItems(items, { speaking = true, finalText = "" } = {})',
+            main_source,
+        )
         self.assertIn("function createTurnLatencyTrace(kind, turnToken, details = {})", main_source)
         self.assertIn('storage?.getItem("akane.debug.turn") === "1"', main_source)
         self.assertIn("const DESKTOP_CONTEXT_TURN_WAIT_MS = 280", main_source)
@@ -256,6 +259,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function removeStreamingTtsPrefix(text)", main_source)
         self.assertIn("function removeStreamingReplyPrefix(text)", main_source)
         self.assertIn("function finalizeStreamedReplyDisplay()", main_source)
+        self.assertIn("function scheduleStreamedReplyCompletion()", main_source)
+        self.assertIn("streamingReplyFinalText = authoritativeFinalText", main_source)
+        self.assertIn("els.bubbleText.scrollTop = 0", main_source)
         self.assertIn("function displayReplyBubbleText(text, { speaking = true } = {})", main_source)
         self.assertIn("function getSegmentDisplayDelay(text)", main_source)
         self.assertIn("if (!rendered && !streamingReplyText && !firstSpeechSegmentShown) {\n        showThinking();", main_source)
@@ -264,11 +270,11 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("if (streamingReplyText) {\n        finalizeStreamedReplyDisplay();", main_source)
         self.assertIn('if (!rendered && bubbleKind === "thinking")', main_source)
         self.assertIn("queueStreamedTtsSegment(text, turnToken, event?.index)", main_source)
-        self.assertIn("queueLiveReplyPayloadItems(segments, { speaking })", main_source)
-        self.assertIn(
-            "queueTtsItems([normalized], `stream:${turnToken}:${segmentKey}`, { append: true, preserveSegments: true })",
-            main_source,
-        )
+        self.assertIn("queueLiveReplyPayloadItems(segments, { speaking, finalText: finalSpeech })", main_source)
+        self.assertIn("bufferStreamingTtsSegment(normalized, turnToken, segmentKey)", main_source)
+        self.assertIn("function flushStreamingTtsPending", main_source)
+        self.assertIn("const TTS_SHORT_SEGMENT_MAX_CHARS = 4", main_source)
+        self.assertIn("const TTS_SHORT_SEGMENT_HOLD_MS = 420", main_source)
         self.assertIn("queueLiveTtsPayloadItems(segments, signature)", main_source)
         self.assertIn("const TTS_PREWARM_TEXT = \"嗯。\"", main_source)
         self.assertIn("function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {})", main_source)
@@ -279,6 +285,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("cancelTtsPrewarm();\n  stopTts();", main_source)
         self.assertIn("ttsPrewarmReadyAtByKey.set(key, Date.now())", main_source)
         self.assertIn('logTtsTiming("prewarm-ready"', main_source)
+        self.assertGreaterEqual(main_source.count("signal: controller.signal"), 2)
         self.assertIn("async function fetchTtsAudio(text, token)", main_source)
         self.assertIn("async function playPreparedTtsAudio(prepared, token)", main_source)
         self.assertIn("function discardPendingTtsPrepare(pendingPrepared)", main_source)
@@ -296,7 +303,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("function buildTtsQueueItems(items, { preserveSegments = false } = {})", main_source)
         self.assertIn("if (preserveSegments) return source;", main_source)
-        self.assertIn("queueTtsItems(normalized, signature, { preserveSegments: true })", main_source)
+        self.assertIn("queueTtsItems(normalized, signature);", main_source)
         self.assertIn("ttsQueue.push(...nextItems)", main_source)
         self.assertIn('setRuntimeStatus("语音生成中..."', main_source)
         self.assertIn('logTtsTiming("prepared"', main_source)

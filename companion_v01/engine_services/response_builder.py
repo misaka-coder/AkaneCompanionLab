@@ -150,19 +150,6 @@ def prepare_context(
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
-    workspace_file_service = engine._get_workspace_file_service()
-    workspace_file_context = (
-        workspace_file_service.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-        if (
-            workspace_file_service is not None
-            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
-            and client_context.effective_mode == ClientMode.DESKTOP_PET
-        )
-        else ""
-    )
     task_workspace_service = engine._get_task_workspace_service()
     pending_gift_context = (
         engine.gift_service.build_pending_prompt_context(
@@ -302,7 +289,6 @@ def prepare_context(
             lifecycle=_declared_activity_context_lifecycle(task_workspace_service),
             enabled=bool(task_workspace_service is not None and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)),
         ),
-        PromptContextContribution(name="workspace_files", content=workspace_file_context),
         PromptContextContribution(
             name="attachment_focus",
             content=lambda: attachment_service.build_activity_prompt_context(

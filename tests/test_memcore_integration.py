@@ -5400,6 +5400,72 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
 
+    def test_desktop_prompt_does_not_repeat_workspace_catalog_each_turn(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "operation": "build_prompt_context",
+                "ok": True,
+                "status": "ok",
+                "raw": [{"source_id": "current", "role": "user", "content": "看看工作区"}],
+                "raw_text": "",
+                "episodic_text": "",
+                "semantic_text": "",
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": "看看工作区"},
+                        "source_ids": ["current"],
+                    }
+                ],
+                "stable_prefix_hash": "f" * 64,
+                "projection_version": 1,
+                "compaction_generation": 0,
+                "projection_generation": 1,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        profile = SimpleNamespace(
+            supports_thought_debug=False,
+            system_prompt_override="",
+            includes=lambda module: module is PromptModule.EXTRA_CONTEXT,
+            mode_prompt_override=lambda **_kwargs: "",
+            to_public_dict=lambda: {"name": "desktop"},
+        )
+        engine._get_prompt_profile_registry = lambda: SimpleNamespace(
+            resolve=lambda _context, **_kwargs: profile
+        )
+        workspace_resolver_calls: list[bool] = []
+        engine._get_workspace_file_service = lambda: workspace_resolver_calls.append(True) or SimpleNamespace(
+            build_prompt_context=lambda **_kwargs: "WORKSPACE CATALOG MUST NOT REPEAT"
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="desktop-session",
+                profile_user_id="master",
+                user_message="看看工作区",
+                recent_raw=[{"source_id": "current", "role": "user", "content": "看看工作区"}],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                client_context=ClientProtocolContext(
+                    requested_mode=ClientMode.DESKTOP_PET,
+                    effective_mode=ClientMode.DESKTOP_PET,
+                    capabilities=("speech_segments", "tts", "tool_actions"),
+                ),
+            )
+
+        captured = engine.prompt_builder.kwargs
+        self.assertEqual(workspace_resolver_calls, [])
+        self.assertNotIn("WORKSPACE CATALOG MUST NOT REPEAT", captured["extra_context"])
+        self.assertNotIn("WORKSPACE CATALOG MUST NOT REPEAT", captured["volatile_extra_context"])
+
     def test_automatic_character_library_context_stays_after_history_not_in_persona_prefix(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
             {
