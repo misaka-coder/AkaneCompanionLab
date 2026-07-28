@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import Any
+from typing import Any, Callable
 
 from capcore_adapter_speech import (
     ASRRevisionQuality,
@@ -42,6 +42,11 @@ class VoiceASRRealtimeTurnResult:
     retryable: bool = False
     provider_status: str = ""
     safe_public_summary: str = ""
+    response_status: str = ""
+    response_reason: str = ""
+    response_id: str = ""
+    response_retryable: bool = False
+    response_safe_public_summary: str = ""
 
     @property
     def ok(self) -> bool:
@@ -66,6 +71,7 @@ class VoiceASRRealtimeTurnCoordinator:
         content_type: str = "audio/pcm",
         language: str = "",
         pcm_normalizer: PCMStreamNormalizer | None = None,
+        response_starter: Callable[[], Any] | None = None,
     ) -> None:
         self.adapter = adapter
         self.bridge = bridge
@@ -73,6 +79,7 @@ class VoiceASRRealtimeTurnCoordinator:
         self.content_type = str(content_type or "audio/pcm")
         self.language = str(language or "")
         self.pcm_normalizer = pcm_normalizer
+        self.response_starter = response_starter
         self._open_attempted = False
         self._session: NormalizedASRSession | None = None
         self._finalize_task: asyncio.Task[ASRSessionUpdate] | None = None
@@ -274,6 +281,12 @@ class VoiceASRRealtimeTurnCoordinator:
                 retryable=True,
             )
         result = self._accept_provider_update(update)
+        if (
+            result.ok
+            and self.bridge.disposition == "message"
+            and any(revision.quality is ASRRevisionQuality.FINAL for revision in update.revisions)
+        ):
+            result = self._start_response(result)
         self._settled_result = result
         return result
 
@@ -382,6 +395,40 @@ class VoiceASRRealtimeTurnCoordinator:
             provider_update=update,
             bridge_result=bridge_result,
             final_pending=self.final_pending,
+        )
+
+    def _start_response(
+        self,
+        result: VoiceASRRealtimeTurnResult,
+    ) -> VoiceASRRealtimeTurnResult:
+        if self.response_starter is None:
+            return result
+        try:
+            started = self.response_starter()
+        except Exception:
+            return replace(
+                result,
+                response_status="failed",
+                response_reason="voice_response_start_failed",
+                response_retryable=True,
+                response_safe_public_summary="语音已经识别，但回复生成暂时无法启动。",
+            )
+        status = str(getattr(started, "status", "") or "")
+        if not status:
+            return replace(
+                result,
+                response_status="failed",
+                response_reason="voice_response_start_result_invalid",
+                response_retryable=True,
+                response_safe_public_summary="语音已经识别，但回复生成状态不可用。",
+            )
+        return replace(
+            result,
+            response_status=status,
+            response_reason=str(getattr(started, "reason", "") or ""),
+            response_id=str(getattr(started, "response_id", "") or ""),
+            response_retryable=bool(getattr(started, "retryable", False)),
+            response_safe_public_summary=str(getattr(started, "safe_public_summary", "") or ""),
         )
 
     def _candidate_from_update(

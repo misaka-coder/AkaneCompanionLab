@@ -448,6 +448,30 @@ class VoiceRealtimeWebSocketSession:
                 payload["commit_status"] = str(
                     getattr(getattr(result, "bridge_result", None), "status", "") or ""
                 )
+                response_status = str(
+                    getattr(result, "response_status", "") or ""
+                )
+                if response_status:
+                    payload["response"] = {
+                        "status": response_status,
+                        "reason": str(
+                            getattr(result, "response_reason", "") or ""
+                        ),
+                        "response_id": str(
+                            getattr(result, "response_id", "") or ""
+                        ),
+                        "retryable": bool(
+                            getattr(result, "response_retryable", False)
+                        ),
+                        "safe_public_summary": str(
+                            getattr(
+                                result,
+                                "response_safe_public_summary",
+                                "",
+                            )
+                            or ""
+                        ),
+                    }
                 self.final_sent = True
             await self.websocket.send_json(payload)
             emitted = True

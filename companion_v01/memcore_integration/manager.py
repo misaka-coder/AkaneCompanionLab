@@ -437,6 +437,103 @@ class MemcoreManager:
                 reason="voice_projection_write_failed",
             )
 
+    def resolve_voice_projection_turn(
+        self,
+        *,
+        projection_id: str,
+        voice_turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        """Resolve a committed voice stimulus for the host Thinking Agent."""
+
+        operation = "resolve_voice_projection_turn"
+        normalized_projection_id = str(projection_id or "").strip()
+        normalized_voice_turn_id = str(voice_turn_id or "").strip()
+        if not normalized_projection_id or not normalized_voice_turn_id:
+            return self._status(
+                operation,
+                False,
+                "invalid_request",
+                reason="voice_projection_turn_identity_missing",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None or self._store is None:
+            return self._status(
+                operation,
+                False,
+                "unavailable",
+                reason=self._reason or "memcore_store_unavailable",
+            )
+        source_id = f"voice-projection:{normalized_projection_id}"
+        try:
+            existing = self._store.get_record_by_source_id(source_id)
+        except Exception:
+            return self._status(
+                operation,
+                False,
+                "failed",
+                source_id=source_id,
+                reason="voice_projection_turn_read_failed",
+            )
+        if existing is None:
+            return self._status(
+                operation,
+                False,
+                "not_found",
+                source_id=source_id,
+                reason="voice_projection_turn_not_found",
+            )
+        if not self._record_belongs_to_namespace(existing, system.namespace):
+            return self._status(
+                operation,
+                False,
+                "conflict",
+                source_id=source_id,
+                reason="voice_projection_owned_by_other_namespace",
+            )
+        payload = existing.get("payload")
+        text = str((payload or {}).get("text") or "").strip() if isinstance(payload, dict) else ""
+        expected_turn_id = self._voice_projection_turn_id(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            voice_turn_id=normalized_voice_turn_id,
+        )
+        if (
+            str(existing.get("kind") or "") != "message.user.voice"
+            or not isinstance(payload, dict)
+            or str(payload.get("voice_turn_id") or "").strip() != normalized_voice_turn_id
+            or str(existing.get("turn_id") or "").strip() != expected_turn_id
+            or not text
+        ):
+            return self._status(
+                operation,
+                False,
+                "conflict",
+                source_id=source_id,
+                reason="voice_projection_turn_contract_mismatch",
+            )
+        return {
+            **self._status(
+                operation,
+                True,
+                "resolved",
+                source_id=source_id,
+                index_status=str(existing.get("index_status") or ""),
+            ),
+            "turn_id": expected_turn_id,
+            "voice_turn_id": normalized_voice_turn_id,
+            "text": text,
+            "timestamp": int(existing.get("timestamp") or 0),
+        }
+
     def import_legacy_message(
         self,
         record: dict[str, Any],

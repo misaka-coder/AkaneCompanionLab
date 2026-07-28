@@ -4720,7 +4720,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "payload": {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
                 "source_ids": ["t0-result"],
             },
-            {"payload": {"role": "user", "content": "现在的问题"}, "source_ids": ["current"]},
+            {
+                "payload": {"role": "user", "content": "[typed current] 现在的问题"},
+                "source_ids": ["current"],
+            },
         ]
         memcore_manager = _PromptContextMemcoreManager(
             {
@@ -4803,6 +4806,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             ["user", "assistant", "assistant", "tool"],
         )
         self.assertNotIn("现在的问题", repr(captured["history_turns"]))
+        self.assertEqual(captured["current_message_text"], "[typed current] 现在的问题")
         self.assertIn("call_1", repr(captured["history_turns"]))
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")

@@ -45,7 +45,6 @@ from .realtime_transport import (
 from .production import (
     AkaneVoiceEventFactory,
     AkaneVoiceRuntimeService,
-    DeferredVoiceCommandExecutor,
     MemcoreVoiceProjectionPort,
 )
 from .stream_bridge import (
@@ -54,6 +53,10 @@ from .stream_bridge import (
     VoiceStreamEventFactory,
     VoiceTextArtifactPort,
     VoiceTextArtifactResult,
+)
+from .thinking_agent import (
+    AkaneThinkingAgentCommandExecutor,
+    VoiceThinkingStartResult,
 )
 
 __all__ = [
@@ -81,8 +84,9 @@ __all__ = [
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
     "AkaneVoiceRuntimeService",
-    "DeferredVoiceCommandExecutor",
     "MemcoreVoiceProjectionPort",
+    "AkaneThinkingAgentCommandExecutor",
+    "VoiceThinkingStartResult",
     "VOICE_REALTIME_MAX_FRAME_BYTES",
     "VOICE_REALTIME_PROTOCOL_VERSION",
     "VoiceRealtimeCoordinatorFactory",

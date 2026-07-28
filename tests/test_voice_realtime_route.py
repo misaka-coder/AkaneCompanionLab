@@ -154,6 +154,13 @@ class _CoordinatorFactory:
                 input_sample_rate=request.sample_rate,
                 input_channels=request.channels,
             ),
+            response_starter=lambda: SimpleNamespace(
+                status="started",
+                reason="",
+                response_id="response-route-1",
+                retryable=False,
+                safe_public_summary="",
+            ),
         )
         self.hosts.append(host)
         self.providers.append(provider)
@@ -251,6 +258,11 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
                 self.assertEqual(final["type"], "server.final")
                 self.assertEqual(final["text"], "你好，伙伴")
                 self.assertEqual(final["commit_status"], "accepted")
+                self.assertEqual(final["response"]["status"], "started")
+                self.assertEqual(
+                    final["response"]["response_id"],
+                    "response-route-1",
+                )
 
         host = factory.hosts[0]
         request = factory.requests[0]

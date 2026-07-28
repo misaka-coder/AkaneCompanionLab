@@ -530,10 +530,17 @@ Current Akane use:
   receipts; restart replays stable observation event ids, while an unknown
   in-flight effect requires executor recovery by VoiceCore's
   `idempotency_key` instead of blind re-execution;
+- `start_response_generation` now uses Akane's existing Thinking Agent over the
+  already committed MemCore voice turn; model, retrieval, and tool behavior are
+  not copied into VoiceCore or a second Akane engine path;
+- command receipts durably apply `response.created` and `generation_started`
+  before model work is submitted in the background; completion and failure flow
+  back through VoiceCore, while duplicate ordinary-message persistence is
+  suppressed;
 - old file-oriented `/asr` remains the active desktop-pet fallback; no QQ,
-  desktop-pet AudioWorklet, production Thinking Agent, `/tts`, or playback path
-  is activated by this slice. The production command executor reports
-  `voice_command_executor_not_connected` instead of fake generation success.
+  desktop-pet AudioWorklet, `/tts`, or playback path is activated by this slice.
+  Until TTS exists, the response completes as typed `text_only` and does not
+  declare fake speech units.
 
 Authority:
 

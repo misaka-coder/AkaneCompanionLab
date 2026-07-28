@@ -139,6 +139,13 @@ def prepare_context(
     projection_authoritative = not projection_migration_window
     if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
         return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+    if projection_read_active and projection_authoritative:
+        projected_current_message = _projected_current_message_text(
+            provider_projection,
+            current_source_id=current_source_id,
+        )
+        if projected_current_message:
+            current_message_text = projected_current_message
     event_timeline_authoritative = bool(projection_read_active and projection_authoritative)
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
@@ -680,6 +687,13 @@ def prepare_context(
             projection_authoritative = not projection_migration_window
             if not projection_read_active and not projection_migration_window:
                 return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+            if projection_read_active and projection_authoritative:
+                projected_current_message = _projected_current_message_text(
+                    provider_projection,
+                    current_source_id=current_source_id,
+                )
+                if projected_current_message:
+                    current_message_text = projected_current_message
             generation_context = _build_generation_context()
 
     # Emergency second boundary: compaction normally keeps these layers small,
@@ -828,6 +842,33 @@ def _compare_memcore_projection_shadow(
     except Exception as exc:
         logger.warning("memcore projection shadow unavailable: %s", exc.__class__.__name__)
         return {"ok": False, "status": "failed", "reason": "shadow_compare_failed"}
+
+
+def _projected_current_message_text(
+    projection: dict[str, Any],
+    *,
+    current_source_id: str,
+) -> str:
+    current_sid = str(current_source_id or "").strip()
+    if not current_sid:
+        return ""
+    for message in list(projection.get("current_turn_messages") or []):
+        if not isinstance(message, dict):
+            continue
+        source_ids = {
+            str(source_id or "").strip()
+            for source_id in list(message.get("source_ids") or [])
+            if str(source_id or "").strip()
+        }
+        if current_sid not in source_ids:
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or str(payload.get("role") or "") != "user":
+            continue
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
 
 
 def _build_memcore_provider_history(

@@ -1,7 +1,7 @@
 # Akane Voice Runtime V1
 
-状态：方案与状态机已冻结；实时 ASR → durable Voice Host → MemCore 输入投影已完成生产装配，
-Thinking Agent / TTS / 播放与桌宠采集端尚未接入
+状态：方案与状态机已冻结；实时 ASR → durable Voice Host → MemCore → Thinking Agent
+已完成生产装配，TTS / 播放与桌宠采集端尚未接入
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -460,9 +460,10 @@ LLMRuntime / MemCore speech_segment
 正文。中断流不会把尚未闭合的残句刷新为完整语音单元。
 
 该链路的 TTS 和 playback 仍只使用 fake 端口。Akane 已提供
-`SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`；其中 journal 与
-MemCore projection 已用于实时 ASR 生产输入接缝，文本 artifact 要等正式
-Thinking Agent / TTS executor 接入：
+`SqliteVoiceRuntimeJournal` 与 `FileVoiceTextArtifactPort`；journal、MemCore
+projection 与 Thinking Agent 已用于实时 ASR 生产接缝。正式 TTS 未接入前，
+Thinking Agent 不声明 speech unit，文本 artifact 也不会写入；这样不会留下永远
+等待 `start_tts` 的半完成 response：
 
 - 宿主传入 instance 自己的 `state_dir`，端口按会话身份哈希建立私有存储桶；
 - journal 使用单会话 SQLite 事务日志，事件行、权威 head 和该次 transition
@@ -493,11 +494,12 @@ Thinking Agent / TTS executor 接入：
   unknown，而不能伪装成普通失败。
 
 `BotRuntime` 现在按实例拥有一个 `AkaneVoiceRuntimeService`，并在
-`/voice/realtime` 路由中注入真实 coordinator factory。服务只在 MemCore 和
-实时 ASR provider 都可用时开轮；否则返回结构化状态和安全摘要。当前
-`start_response_generation` 仍由 `DeferredVoiceCommandExecutor` 明确停在
-`voice_command_executor_not_connected`，没有伪接生产模型、TTS 或播放，也没有
-替换现有文件式 `/asr` 能力。
+`/voice/realtime` 路由中注入真实 coordinator factory。服务只在 MemCore、
+实时 ASR provider 和 voice turn resolver 都可用时开轮；否则返回结构化状态和
+安全摘要。`start_response_generation` 已接到 Akane 现有 Thinking Agent；它复用
+已提交的 `message.user.voice` source/turn，不把 ASR final 再送普通消息入口，工具
+轨迹也继续挂在同一 MemCore turn。TTS、播放仍未接入，也没有替换现有文件式
+`/asr` 能力。
 
 ### Slice B：高准确率 ASR 接入
 
@@ -653,11 +655,35 @@ BotRuntime
 - MemCore 不可用、journal replay 失败、pending projection 无法补齐或 provider
   不可用时，均在打开音频会话前结构化失败。
 
-当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是把
-`start_response_generation` 接到现有 Thinking Agent，并让最终输出只能沿
-VoiceCore response lifecycle 回写，不能把 final 文本重新走普通消息入口。
-该切片验收后，再为 `desktop_pet_next` 增加 AudioWorklet，并在实时入口不可用
-时自动降级回 MediaRecorder `/asr`。
+`start_response_generation` 的生产链路现在是：
+
+```text
+VoiceCore durable command
+  → voice.response.created
+  → voice.response.generation_started
+  → 后台复用 Akane process_turn_stream（检索 / 工具 / 流式 JSON）
+  → voice.response.generation_completed
+  → message.assistant.voice（text_only）
+```
+
+- command observation 先写 journal receipt，再启动后台模型请求；模型耗时不会
+  阻塞 ASR `server.final`；
+- 当前语音尾部直接复用 MemCore provider projection 中该 source 的完整 typed
+  payload；下一轮它转入历史时字节结构保持一致，不用普通 user 文本重新包装，
+  因而不会为了标注语音模态牺牲前缀缓存；
+- `server.final.response` 会明确返回 `started / failed`、response id、retryable 和
+  安全摘要，不能只给出 ASR 成功却悄悄不启动回复；
+- 模型异常、缺 final 或不可交付 transient final 会进入
+  `voice.response.failed → event.voice.failure`，不写假的 assistant final；
+- 重启时先补偿 command receipt，再从 VoiceCore 中仍处于 generating 的 response
+  恢复后台任务；同一进程按 response id 去重；
+- 当前没有 TTS/playback，因此流式 `speech_segment` 暂不声明为 VoiceCore speech
+  unit；最终完整 `speech` 以 `text_only` 完成，避免每段生成永久 pending 的
+  `start_tts` 命令。
+
+当前桌宠尚未调用该入口，用户体验仍是旧 `/asr`。下一切片是接入正式 TTS
+executor 和语音单元交付状态；验收后再为 `desktop_pet_next` 增加 AudioWorklet，
+并在实时入口不可用时自动降级回 MediaRecorder `/asr`。
 
 ### Slice C：播放和语义打断
 

@@ -3860,7 +3860,72 @@ class AkaneMemoryEngine:
         final_output["_debug"] = debug_payload
         return final_output
 
-    def process_turn_stream(self, payload: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
+    def process_voice_turn_stream(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        source_id: str,
+        memcore_turn_id: str,
+        voice_turn_id: str,
+        message: str,
+        timestamp: int,
+    ) -> Generator[dict[str, Any], None, None]:
+        """Run the normal Thinking Agent over an already committed voice turn."""
+
+        normalized_source_id = str(source_id or "").strip()
+        normalized_turn_id = str(memcore_turn_id or "").strip()
+        normalized_voice_turn_id = str(voice_turn_id or "").strip()
+        normalized_message = str(message or "").strip()
+        if (
+            not normalized_source_id
+            or not normalized_turn_id
+            or not normalized_voice_turn_id
+            or not normalized_message
+        ):
+            raise ValueError("voice_precommitted_turn_invalid")
+        return self.process_turn_stream(
+            {
+                "message": normalized_message,
+                "user_id": str(session_id or ""),
+                "real_user_id": str(profile_user_id or ""),
+                "character_pack_id": str(character_pack_id or ""),
+                "timestamp": int(timestamp or time.time()),
+                "client_mode": "desktop_pet",
+                "transient_user_message": True,
+                "transient_assistant_message": True,
+            },
+            _precommitted_memcore_turn={
+                "source_id": normalized_source_id,
+                "turn_id": normalized_turn_id,
+                "voice_turn_id": normalized_voice_turn_id,
+            },
+        )
+
+    def process_turn_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        _precommitted_memcore_turn: dict[str, str] | None = None,
+    ) -> Generator[dict[str, Any], None, None]:
+        precommitted_memcore_turn = (
+            dict(_precommitted_memcore_turn)
+            if isinstance(_precommitted_memcore_turn, dict)
+            else {}
+        )
+        externally_managed_memcore_turn = bool(precommitted_memcore_turn)
+        precommitted_source_id = str(precommitted_memcore_turn.get("source_id") or "").strip()
+        precommitted_turn_id = str(precommitted_memcore_turn.get("turn_id") or "").strip()
+        precommitted_voice_turn_id = str(
+            precommitted_memcore_turn.get("voice_turn_id") or ""
+        ).strip()
+        if externally_managed_memcore_turn and (
+            not precommitted_source_id
+            or not precommitted_turn_id
+            or not precommitted_voice_turn_id
+        ):
+            raise ValueError("voice_precommitted_turn_invalid")
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
@@ -3917,8 +3982,11 @@ class AkaneMemoryEngine:
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
-        transient_user_turn = self._is_transient_user_turn(payload)
-        persist_assistant_turn = self._should_persist_assistant_turn(payload)
+        transient_user_turn = self._is_transient_user_turn(payload) or externally_managed_memcore_turn
+        persist_assistant_turn = (
+            self._should_persist_assistant_turn(payload)
+            and not externally_managed_memcore_turn
+        )
         external_event_turn = plugin_external_event is not None
 
         self.consume_due_reminders(
@@ -3935,6 +4003,20 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
             )
+            if externally_managed_memcore_turn:
+                user_record.update(
+                    {
+                        "source_id": precommitted_source_id,
+                        "role": "message.user.voice",
+                        "kind": "message.user.voice",
+                        "semantic_text": user_message,
+                        "payload": {
+                            "text": user_message,
+                            "modality": "voice",
+                            "voice_turn_id": precommitted_voice_turn_id,
+                        },
+                    }
+                )
         else:
             user_record = self.store.add_message(
                 profile_user_id=profile_user_id,
@@ -3993,7 +4075,9 @@ class AkaneMemoryEngine:
         verifier_timing = retrieval_pipeline.verifier_timing
         memcore_turn_id = ""
         turn_memcore_failure: dict[str, Any] | None = None
-        if not transient_user_turn:
+        if externally_managed_memcore_turn:
+            memcore_turn_id = precommitted_turn_id
+        elif not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
                 router_output=router_output,
@@ -4376,7 +4460,7 @@ class AkaneMemoryEngine:
                 user_record=user_record,
                 memory_metadata=memory_metadata,
             )
-        if memcore_turn_id:
+        if memcore_turn_id and not externally_managed_memcore_turn:
             self._stage_memcore_turn_metadata(
                 source_id=str(user_record.get("source_id") or ""),
                 memory_metadata=memory_metadata,
@@ -4433,7 +4517,7 @@ class AkaneMemoryEngine:
                         character_pack_id=turn_character_pack_id,
                         chat_model_override=chat_model_override,
                     )
-        elif memcore_turn_id:
+        elif memcore_turn_id and not externally_managed_memcore_turn:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
                 reason="assistant_turn_not_persisted",
