@@ -187,6 +187,50 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual([segment["type"] for segment in messages[1]], ["text"])
         self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
 
+    def test_final_reply_uses_authoritative_segments_not_provisional_stream_pieces(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "1."}
+                yield {"type": "speech_segment", "text": "第一条"}
+                yield {"type": "speech_segment", "text": "2."}
+                yield {"type": "speech_segment", "text": "第二条"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "1. 第一条\n2. 第二条",
+                        "speech_segments": ["1. 第一条", "2. 第二条"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_authoritative_segments",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "列两项"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["1. 第一条", "2. 第二条"]])
+        self.assertEqual(result["reply_messages"], ["1. 第一条", "2. 第二条"])
+        self.assertEqual(result["send_result"].get("streamed_count"), None)
+
     def test_auto_mode_sends_native_tool_preface_before_final_reply(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):

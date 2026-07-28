@@ -1252,6 +1252,13 @@ def _process_qq_turn_streaming(
                 if has_tool_call:
                     pending_stage_messages = []
                 continue
+            # A tool preface must be delivered before the tool runs.  A final
+            # no-tool response has no such latency boundary: its authoritative
+            # final_ui frame follows immediately and may correct provisional
+            # segmentation produced from arbitrarily small provider deltas.
+            # Do not irreversibly send those provisional pieces to QQ.
+            if not has_tool_call:
+                continue
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,
                 context=context,
@@ -1263,6 +1270,22 @@ def _process_qq_turn_streaming(
             continue
         if event_type == "final_ui" and isinstance(stream_event.get("payload"), dict):
             frame = dict(stream_event.get("payload") or {})
+            if (
+                pending_stage_messages
+                and bool(frame.get("_transient_final_failure"))
+                and _streaming_allows_text(active_reply_mode, delivery_hint)
+            ):
+                # The final contract failed after real speech was parsed.  Keep
+                # that truthful partial delivery, while the generic fallback in
+                # the transient frame remains suppressed below.
+                pending_stage_messages = _send_pending_stage_messages(
+                    qq_gateway=qq_gateway,
+                    context=context,
+                    pending_messages=pending_stage_messages,
+                    streamed_messages=streamed_messages,
+                    stream_send_results=stream_send_results,
+                    max_streamed=max_streamed,
+                )
 
     if (
         stream_enabled
