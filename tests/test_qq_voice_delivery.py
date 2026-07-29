@@ -400,6 +400,94 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(result["file_send_result"]["count"], 1)
 
+    def test_send_file_event_supersedes_same_turn_generation_receipt(self) -> None:
+        class DeliveryGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivery_events: list[dict] = []
+
+            def add_delivery_note(self, session_id: str, note: str) -> None:
+                return None
+
+            def send_generated_files(self, context, tool_events):
+                self.delivery_events = list(tool_events or [])
+                sendable = [item for item in self.delivery_events if bool(item.get("send_to_user"))]
+                return {
+                    "ok": bool(sendable),
+                    "status": "sent" if sendable else "failed",
+                    "count": len(sendable),
+                    "results": [{"ok": True} for _item in sendable],
+                }
+
+        generated_receipt = {
+            "type": "generated_file_ready",
+            "send_to_user": False,
+            "generated_file": {
+                "generated_id": "generated::test-file",
+                "generated_handle": "gen_146",
+                "absolute_path": "C:/managed/test.txt",
+                "file_ext": "txt",
+            },
+        }
+        delivery_event = {
+            "type": "file_ready",
+            "send_to_user": True,
+            "client_mode": "qq_text",
+            "file": {
+                "source_type": "generated",
+                "source_id": "generated::test-file",
+                "generated_id": "generated::test-file",
+                "handle": "gen_146",
+                "absolute_path": "C:/managed/test.txt",
+                "name": "测试文件.txt",
+            },
+        }
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "compose_file"}
+                yield dict(generated_receipt)
+                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "send_file"}
+                yield dict(delivery_event)
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "文件准备好了。",
+                        "speech_segments": ["文件准备好了。"],
+                        "tool_events": [dict(generated_receipt), dict(delivery_event)],
+                    },
+                }
+
+        gateway = DeliveryGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "写个文件发给我"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        file_events = [
+            item for item in gateway.delivery_events if item.get("type") in {"generated_file_ready", "file_ready"}
+        ]
+        self.assertEqual(len(file_events), 1)
+        self.assertEqual(file_events[0]["type"], "file_ready")
+        self.assertTrue(file_events[0]["send_to_user"])
+        self.assertEqual(result["file_send_result"]["status"], "sent")
+        self.assertEqual(result["file_send_result"]["count"], 1)
+
     def test_non_file_tool_event_is_not_duplicated_when_stream_events_are_merged(self) -> None:
         class DeliveryGateway(FakeQQGateway):
             def __init__(self) -> None:

@@ -1313,7 +1313,7 @@ def _process_qq_turn_streaming(
         and str(event.get("type") or "").strip() not in {"generated_file_ready", "file_ready"}
     ]
     merged_file_events: list[dict[str, Any]] = []
-    seen_delivery_events: set[tuple[str, str]] = set()
+    delivery_event_indexes: dict[tuple[str, str], int] = {}
     for raw_event in [*streamed_delivery_events, *frame_delivery_events]:
         if not isinstance(raw_event, dict):
             continue
@@ -1323,9 +1323,17 @@ def _process_qq_turn_streaming(
             continue
         identity = _qq_file_delivery_event_identity(event)
         if identity:
-            if identity in seen_delivery_events:
+            existing_index = delivery_event_indexes.get(identity)
+            if existing_index is not None:
+                existing = merged_file_events[existing_index]
+                # One physical artifact may first appear as a generation
+                # receipt (send_to_user=false) and later as an explicit
+                # send_file handoff.  The delivery decision is the stronger,
+                # later state and must not be discarded as a duplicate.
+                if bool(event.get("send_to_user")) and not bool(existing.get("send_to_user")):
+                    merged_file_events[existing_index] = event
                 continue
-            seen_delivery_events.add(identity)
+            delivery_event_indexes[identity] = len(merged_file_events)
         merged_file_events.append(event)
     if merged_file_events:
         frame["tool_events"] = [*retained_frame_events, *merged_file_events]
