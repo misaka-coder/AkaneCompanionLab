@@ -3385,21 +3385,24 @@ async function handleRealtimeVoiceCallEndpoint(turn, endpoint) {
     let realtimeAccepted = false;
     let blob;
     try {
-      [realtimeAccepted, blob] = await Promise.all([
-        turn.session
-          .finishInput()
-          .then(() => true)
-          .catch((error) => {
-            turn.failure = {
-              reason: "voice_realtime_finalize_failed",
-              message: friendlyErrorMessage(formatError(error)),
-              terminal: true,
-              committed: turn.committed
-            };
-            return false;
-          }),
+      [, blob] = await Promise.all([
+        turn.session.flushAndStopCapture(),
         stopRealtimeCallSafetyRecorder(turn)
       ]);
+      await cancelSupersededRealtimeVoiceResponses(turn);
+      if (!isActiveRealtimeCallTurn(turn)) return;
+      realtimeAccepted = await turn.session
+        .finishInput()
+        .then(() => true)
+        .catch((error) => {
+          turn.failure = {
+            reason: "voice_realtime_finalize_failed",
+            message: friendlyErrorMessage(formatError(error)),
+            terminal: true,
+            committed: turn.committed
+          };
+          return false;
+        });
     } catch (error) {
       turn.failure = {
         reason: "voice_recording_stop_failed",
@@ -3502,6 +3505,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
         setRuntimeStatus("语音已识别，但回复启动失败", { mode: "error" });
       } else {
         setRuntimeStatus("她正在回应", { mode: "thinking" });
+        turn.call.flow?.allowOverlapListening(turn.flowTurn);
       }
       updateActivityControls();
       scheduleSettingsSnapshot();
@@ -3514,7 +3518,6 @@ function buildRealtimeVoiceCallCallbacks(turn) {
     onPlaybackStarted(header) {
       if (!isCurrent()) return;
       turn.playbackActive = true;
-      turn.call.flow?.allowOverlapListening(turn.flowTurn);
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setRestingPetEmotion();
       }
@@ -3819,17 +3822,44 @@ async function cancelRealtimeVoiceCallResponse(reason) {
     (candidate) => candidate.responseActive || candidate.playbackActive
   );
   if (!turn || turn.closed) return false;
+  await cancelRealtimeVoiceResponseTurn(turn, reason);
+  return true;
+}
+
+async function cancelSupersededRealtimeVoiceResponses(currentTurn) {
+  const call = currentTurn?.call;
+  if (!isActiveRealtimeVoiceCall(call)) return;
+  const superseded = [...call.turns].filter(
+    (candidate) =>
+      candidate !== currentTurn &&
+      !candidate.closed &&
+      (candidate.responseActive || candidate.playbackActive)
+  );
+  for (const candidate of superseded) {
+    const cancelled = await cancelRealtimeVoiceResponseTurn(
+      candidate,
+      "new_voice_turn_committed"
+    );
+    if (!cancelled) throw new Error("voice_response_cancel_not_acknowledged");
+  }
+}
+
+async function cancelRealtimeVoiceResponseTurn(turn, reason) {
+  if (!isActiveRealtimeCallTurn(turn)) return false;
+  let acknowledged = false;
   try {
-    await turn.session?.cancel(reason);
+    acknowledged = Boolean(await turn.session?.cancel(reason));
   } finally {
+    const alreadyTerminal = !isActiveRealtimeCallTurn(turn);
     if (isActiveRealtimeCallTurn(turn)) {
       finishRealtimeVoiceCallTurn(turn, {
         ok: false,
         cancelled: true
       });
     }
+    if (alreadyTerminal) acknowledged = true;
   }
-  return true;
+  return acknowledged;
 }
 
 async function stopRealtimeVoiceCall({

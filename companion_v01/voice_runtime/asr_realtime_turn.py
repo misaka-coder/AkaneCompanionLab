@@ -186,6 +186,50 @@ class VoiceASRRealtimeTurnCoordinator:
             final_pending=self.final_pending,
         )
 
+    def cancel_response(self, *, reason: str) -> VoiceASRRealtimeTurnResult:
+        bridge_result = self.bridge.cancel_response(reason=reason)
+        if bridge_result.status == "failed":
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason=bridge_result.reason,
+                bridge_result=bridge_result,
+            )
+        if bridge_result.status == "duplicate":
+            return VoiceASRRealtimeTurnResult(
+                status="duplicate",
+                reason=bridge_result.reason,
+                bridge_result=bridge_result,
+            )
+        driver = self.interruption_runtime_driver
+        if not callable(driver):
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason="voice_response_cancel_runtime_unavailable",
+                bridge_result=bridge_result,
+                retryable=True,
+            )
+        try:
+            driven = driver()
+        except Exception:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason="voice_response_cancel_runtime_drive_failed",
+                bridge_result=bridge_result,
+                retryable=True,
+            )
+        if str(getattr(driven, "status", "") or "") == "failed":
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason=str(getattr(driven, "reason", "") or "voice_response_cancel_runtime_drive_failed"),
+                bridge_result=bridge_result,
+                retryable=True,
+            )
+        return VoiceASRRealtimeTurnResult(
+            status="accepted",
+            reason=bridge_result.reason,
+            bridge_result=bridge_result,
+        )
+
     async def feed_pcm_frame(
         self,
         audio: bytes | bytearray | memoryview,

@@ -647,4 +647,56 @@ assert.equal(transportFailures[0].terminal, true);
 assert.equal(transportFailures[0].retryable, true);
 assert.equal(transportFailures[0].committed, false);
 
+const cancelMessages = [];
+const cancelTimers = new Map();
+let nextCancelTimer = 1;
+const cancelEvents = [];
+const cancelSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  callbacks: {
+    onCancelled: () => cancelEvents.push("cancelled")
+  },
+  scope: {
+    setTimeout: (callback) => {
+      const timer = nextCancelTimer;
+      nextCancelTimer += 1;
+      cancelTimers.set(timer, callback);
+      return timer;
+    },
+    clearTimeout: (timer) => cancelTimers.delete(timer),
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:cancel-session",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 7000 }
+  }
+});
+cancelSession.stopCapture = async () => {};
+cancelSession.sendJson = (payload) => {
+  cancelMessages.push(payload);
+  return true;
+};
+const cancelTask = cancelSession.cancel("new_voice_turn_committed");
+await tick();
+assert.deepEqual(cancelMessages, [
+  {
+    type: "client.cancel",
+    reason: "new_voice_turn_committed"
+  }
+]);
+assert.equal(cancelTimers.size, 1);
+cancelSession.handleServerEvent({
+  type: "server.cancelled",
+  reason: "new_voice_turn_committed"
+});
+assert.equal(await cancelTask, true);
+assert.equal(cancelTimers.size, 0);
+assert.deepEqual(cancelEvents, ["cancelled"]);
+assert.equal(cancelSession.closed, true);
+
 console.log("realtime voice playback smoke: ok");

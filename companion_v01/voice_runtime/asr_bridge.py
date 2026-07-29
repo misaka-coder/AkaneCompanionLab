@@ -157,6 +157,37 @@ class VoiceASRSessionBridge:
             return ""
         return str(getattr(getattr(turn, "disposition", None), "value", "") or "")
 
+    def cancel_response(self, *, reason: str) -> VoiceASRBridgeResult:
+        terminal_states = {"completed", "cancelled", "failed", "discarded"}
+        response = next(
+            (
+                candidate
+                for candidate in reversed(tuple(self.host.snapshot.responses.values()))
+                if str(getattr(candidate, "voice_turn_id", "") or "") == self.voice_turn_id
+                and str(getattr(getattr(candidate, "state", None), "value", "") or "") not in terminal_states
+            ),
+            None,
+        )
+        if response is None:
+            return VoiceASRBridgeResult(
+                status="duplicate",
+                reason="voice_response_already_terminal",
+                source_status="response_cancel",
+            )
+        event = self._make_event(
+            "voice.response.cancel_requested",
+            provider_receipt_id=self._receipt(f"response_cancel:{response.response_id}:{reason}"),
+            voice_turn_id=self.voice_turn_id,
+            response_id=response.response_id,
+            turn_revision=response.source_turn_revision,
+            response_generation=response.response_generation,
+            payload={"reason": str(reason or "client_cancelled")},
+        )
+        if event is None:
+            return self._failed("response_cancel", "voice_event_build_failed")
+        dispatch = self.host.accept_event(event)
+        return self._from_dispatches("response_cancel", (dispatch,))
+
     def accept_update(self, update: ASRSessionUpdate) -> VoiceASRBridgeResult:
         if not isinstance(update, ASRSessionUpdate):
             return self._failed("", "asr_session_update_invalid")

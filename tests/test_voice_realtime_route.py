@@ -750,6 +750,39 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         ]
         self.assertEqual(projections, [])
 
+    def test_client_cancel_after_final_closes_the_response_before_acknowledging(self) -> None:
+        factory = _CoordinatorFactory()
+
+        with TestClient(self._app(factory=factory)) as client:
+            with client.websocket_connect("/voice/realtime") as websocket:
+                websocket.send_json(_open_payload(output={"mode": VOICE_PLAYBACK_OUTPUT_MODE}))
+                websocket.receive_json()
+                websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
+                websocket.send_bytes(b"\x01\x00" * 160)
+                websocket.receive_json()
+                websocket.send_json({"type": "client.endpoint"})
+                self.assertEqual(
+                    websocket.receive_json()["type"],
+                    "server.finalizing",
+                )
+                self.assertEqual(websocket.receive_json()["type"], "server.final")
+                self.assertEqual(websocket.receive_json()["type"], "server.speech")
+                self.assertTrue(websocket.receive_bytes())
+                websocket.send_json(
+                    {
+                        "type": "client.cancel",
+                        "reason": "new_voice_turn_committed",
+                    }
+                )
+                cancelled = websocket.receive_json()
+
+        self.assertEqual(cancelled["type"], "server.cancelled")
+        self.assertEqual(cancelled["reason"], "new_voice_turn_committed")
+        self.assertEqual(
+            factory.delivery_channels[0].close_reason,
+            "new_voice_turn_committed",
+        )
+
     def test_missing_runtime_factory_reports_unavailable_without_opening_provider(self) -> None:
         metrics = _RuntimeMetrics()
 

@@ -6,6 +6,7 @@ const DEFAULT_DUCK_VOLUME_FACTOR = 0.24;
 const DEFAULT_IDLE_PRE_ROLL_MS = 800;
 const DEFAULT_IDLE_CAPTURE_MAX_MS = 2 * 60 * 1000;
 const DEFAULT_FALLBACK_PCM_MAX_MS = 2 * 60 * 1000;
+const CANCEL_RECEIPT_TIMEOUT_MS = 2000;
 
 export function buildVoiceWebSocketUrl(endpoint) {
   const url = new URL(String(endpoint || ""));
@@ -731,6 +732,9 @@ export class RealtimeVoiceSession {
     this.fallbackPcmFrameCount = 0;
     this.fallbackPcmDroppedFrames = 0;
     this.flushResolver = null;
+    this.cancelPromise = null;
+    this.cancelResolver = null;
+    this.cancelTimeoutId = 0;
     this.startPromise = null;
   }
 
@@ -907,16 +911,35 @@ export class RealtimeVoiceSession {
   }
 
   async cancel(reason = "client_cancelled") {
-    if (this.closed) return;
+    if (this.cancelPromise) return this.cancelPromise;
+    this.cancelPromise = this.cancelInternal(reason);
+    return this.cancelPromise;
+  }
+
+  async cancelInternal(reason) {
+    if (this.closed) return false;
     this.playbackQueue?.interrupt(reason);
     await this.stopCapture();
-    this.sendJson({ type: "client.cancel", reason: safeReason(reason) });
-    this.scope.setTimeout(() => this.dispose(reason), 750);
+    if (
+      this.closed ||
+      !this.sendJson({ type: "client.cancel", reason: safeReason(reason) })
+    ) {
+      this.dispose(reason);
+      return false;
+    }
+    return new Promise((resolve) => {
+      this.cancelResolver = resolve;
+      this.cancelTimeoutId = this.scope.setTimeout(() => {
+        this.resolveCancel(false);
+        this.dispose("voice_cancel_receipt_timeout");
+      }, CANCEL_RECEIPT_TIMEOUT_MS);
+    });
   }
 
   dispose(reason = "client_closed") {
     if (this.closed) return;
     this.closed = true;
+    this.resolveCancel(false);
     this.playbackQueue?.close(reason);
     void this.stopCapture();
     try {
@@ -1005,6 +1028,16 @@ export class RealtimeVoiceSession {
     this.fallbackPcmFrames = [];
     this.fallbackPcmFrameCount = 0;
     this.fallbackPcmDroppedFrames = 0;
+  }
+
+  resolveCancel(acknowledged) {
+    if (this.cancelTimeoutId) {
+      this.scope.clearTimeout(this.cancelTimeoutId);
+      this.cancelTimeoutId = 0;
+    }
+    const resolve = this.cancelResolver;
+    this.cancelResolver = null;
+    resolve?.(Boolean(acknowledged));
   }
 
   sendPcmFrame(frame) {
@@ -1142,6 +1175,7 @@ export class RealtimeVoiceSession {
     }
     if (type === "server.cancelled") {
       this.responseTerminal = true;
+      this.resolveCancel(true);
       this.notify("onCancelled", payload);
       this.dispose("server_cancelled");
       return;

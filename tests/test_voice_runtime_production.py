@@ -350,30 +350,8 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                     item for item in host.snapshot.responses.values() if item.voice_turn_id == request.voice_turn_id
                 )
                 self.assertEqual(response.state.value, "generating")
-                factory = EventFactory(
-                    conversation_id=host.snapshot.conversation_id,
-                    voice_session_id="voice-session-cancel-generation",
-                    conversation_generation=host.snapshot.conversation_generation,
-                )
-                requested = host.accept_event(
-                    factory.make(
-                        "voice.response.cancel_requested",
-                        sequence=None,
-                        voice_turn_id=request.voice_turn_id,
-                        response_id=response.response_id,
-                        turn_revision=response.source_turn_revision,
-                        response_generation=response.response_generation,
-                        payload={"reason": "new_user_turn"},
-                    )
-                )
-                self.assertTrue(requested.accepted, requested)
-                self.assertIn(
-                    "cancel_response_generation",
-                    [command.command_kind for command in host.snapshot.pending_commands.values()],
-                )
-
-                driven = host.drive_once()
-                self.assertEqual(driven.status, "succeeded", driven)
+                cancelled = resolved.coordinator.cancel_response(reason="new_user_turn")
+                self.assertEqual(cancelled.status, "accepted", cancelled)
                 self.assertEqual(
                     host.snapshot.responses[response.response_id].state.value,
                     "cancelled",

@@ -571,6 +571,18 @@ class VoiceRealtimeWebSocketSession:
     async def _handle_cancel(self, payload: Mapping[str, Any]) -> None:
         reason = str(payload.get("reason") or "client_cancelled")[:96]
         if self.final_sent and self.delivery_channel is not None:
+            response_cancel = getattr(self.coordinator, "cancel_response", None)
+            if not callable(response_cancel):
+                await self._send_failed(
+                    "voice_response_cancel_unavailable",
+                    retryable=True,
+                    terminal=True,
+                )
+                return
+            result = response_cancel(reason=reason)
+            if getattr(result, "status", "") == "failed":
+                await self._send_result_failure(result, terminal=True)
+                return
             self.delivery_channel.close(reason=reason)
             self.terminal = True
             await self.websocket.send_json(
