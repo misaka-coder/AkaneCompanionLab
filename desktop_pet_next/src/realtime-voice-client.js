@@ -3,6 +3,9 @@ const VOICE_PLAYBACK_OUTPUT_MODE = "binary_audio_ack_v1";
 const DEFAULT_READY_TIMEOUT_MS = 5000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 750;
 const DEFAULT_DUCK_VOLUME_FACTOR = 0.24;
+const DEFAULT_IDLE_PRE_ROLL_MS = 800;
+const DEFAULT_IDLE_CAPTURE_MAX_MS = 2 * 60 * 1000;
+const DEFAULT_FALLBACK_PCM_MAX_MS = 2 * 60 * 1000;
 
 export function buildVoiceWebSocketUrl(endpoint) {
   const url = new URL(String(endpoint || ""));
@@ -308,7 +311,9 @@ export class RealtimeVoiceCallResources {
   constructor({
     mediaStream,
     audioElement,
-    captureReceiptTimeoutMs = CAPTURE_FLUSH_TIMEOUT_MS
+    captureReceiptTimeoutMs = CAPTURE_FLUSH_TIMEOUT_MS,
+    idlePreRollMs = DEFAULT_IDLE_PRE_ROLL_MS,
+    idleCaptureMaxMs = DEFAULT_IDLE_CAPTURE_MAX_MS
   }) {
     if (!mediaStream) throw new Error("voice_call_media_stream_missing");
     if (!audioElement) throw new Error("voice_call_audio_element_missing");
@@ -332,7 +337,54 @@ export class RealtimeVoiceCallResources {
     this.captureErrorSink = null;
     this.captureFlushResolver = null;
     this.captureResetResolver = null;
+    this.idlePreRollMs = Math.max(0, Number(idlePreRollMs) || 0);
+    this.idleCaptureMaxMs = Math.max(
+      this.idlePreRollMs,
+      Number(idleCaptureMaxMs) || DEFAULT_IDLE_CAPTURE_MAX_MS
+    );
+    this.idleCaptureFrames = [];
+    this.idleCaptureFrameCount = 0;
+    this.idleCaptureHeld = false;
+    this.idleCaptureOverflowed = false;
+    this.idleCapturePcmSink = null;
+    this.idleCaptureErrorSink = null;
     this.closed = false;
+  }
+
+  setIdleCaptureObserver({ onPcm = null, onError = null } = {}) {
+    this.idleCapturePcmSink = typeof onPcm === "function" ? onPcm : null;
+    this.idleCaptureErrorSink = typeof onError === "function" ? onError : null;
+  }
+
+  holdIdleCapture() {
+    if (this.closed) return false;
+    this.idleCaptureHeld = true;
+    return true;
+  }
+
+  resetIdleCapture() {
+    this.idleCaptureFrames = [];
+    this.idleCaptureFrameCount = 0;
+    this.idleCaptureHeld = false;
+    this.idleCaptureOverflowed = false;
+  }
+
+  replayIdleCapture(owner) {
+    if (this.captureOwner !== owner || typeof this.capturePcmSink !== "function") {
+      return 0;
+    }
+    const frames = this.idleCaptureFrames;
+    const frameCount = this.idleCaptureFrameCount;
+    this.resetIdleCapture();
+    for (const frame of frames) {
+      try {
+        this.capturePcmSink(frame.buffer, frame.frameCount);
+      } catch (error) {
+        this.captureErrorSink?.(error);
+        break;
+      }
+    }
+    return frameCount;
   }
 
   async acquireCapture(owner, { scope = globalThis, workletModuleUrl, onPcm, onError = null }) {
@@ -458,8 +510,20 @@ export class RealtimeVoiceCallResources {
   handleCaptureMessage(payload) {
     const type = String(payload?.type || "");
     if (type === "pcm" && payload.buffer instanceof ArrayBuffer) {
-      if (!this.captureOwner || !this.capturePcmSink) return;
       const frames = Number(payload.frames || payload.buffer.byteLength / 4);
+      if (!this.captureOwner || !this.capturePcmSink) {
+        this.retainIdleCaptureFrame(payload.buffer, frames);
+        try {
+          this.idleCapturePcmSink?.(
+            payload.buffer,
+            frames,
+            Number(this.captureContext?.sampleRate || 0)
+          );
+        } catch (error) {
+          this.idleCaptureErrorSink?.(error);
+        }
+        return;
+      }
       try {
         this.capturePcmSink(payload.buffer, frames);
       } catch (error) {
@@ -471,6 +535,31 @@ export class RealtimeVoiceCallResources {
       this.captureFlushResolver();
     } else if (type === "reset" && this.captureResetResolver) {
       this.captureResetResolver();
+    }
+  }
+
+  retainIdleCaptureFrame(buffer, frameCount) {
+    const frames = Math.max(0, Math.round(Number(frameCount) || 0));
+    if (!(buffer instanceof ArrayBuffer) || !frames) return;
+    this.idleCaptureFrames.push({ buffer, frameCount: frames });
+    this.idleCaptureFrameCount += frames;
+    const sampleRate = Math.max(1, Number(this.captureContext?.sampleRate || 0));
+    const maxMs = this.idleCaptureHeld
+      ? this.idleCaptureMaxMs
+      : this.idlePreRollMs;
+    const maxFrames = Math.max(1, Math.round((sampleRate * maxMs) / 1000));
+    while (
+      this.idleCaptureFrameCount > maxFrames &&
+      this.idleCaptureFrames.length > 1
+    ) {
+      const removed = this.idleCaptureFrames.shift();
+      this.idleCaptureFrameCount -= Number(removed?.frameCount || 0);
+      if (this.idleCaptureHeld && !this.idleCaptureOverflowed) {
+        this.idleCaptureOverflowed = true;
+        this.idleCaptureErrorSink?.(
+          new Error("voice_call_idle_capture_overflow")
+        );
+      }
     }
   }
 
@@ -552,6 +641,9 @@ export class RealtimeVoiceCallResources {
     this.captureClaimOwner = null;
     this.capturePcmSink = null;
     this.captureErrorSink = null;
+    this.idleCapturePcmSink = null;
+    this.idleCaptureErrorSink = null;
+    this.resetIdleCapture();
     for (const queue of [...this.playbackQueues]) queue.close(reason);
     this.playbackQueues.clear();
     this.playbackWaiters.clear();
@@ -597,6 +689,7 @@ export class RealtimeVoiceSession {
     getVolume = () => 1,
     callbacks = {},
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    fallbackPcmMaxMs = DEFAULT_FALLBACK_PCM_MAX_MS,
     scope = globalThis
   }) {
     this.websocketUrl = websocketUrl;
@@ -609,6 +702,10 @@ export class RealtimeVoiceSession {
     this.getVolume = getVolume;
     this.callbacks = callbacks;
     this.readyTimeoutMs = readyTimeoutMs;
+    this.fallbackPcmMaxMs = Math.max(
+      1000,
+      Number(fallbackPcmMaxMs) || DEFAULT_FALLBACK_PCM_MAX_MS
+    );
     this.scope = scope;
     this.socket = null;
     this.audioContext = null;
@@ -630,6 +727,9 @@ export class RealtimeVoiceSession {
     this.pendingSpeechHeader = null;
     this.sequence = 0;
     this.audioFramesSent = 0;
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
     this.flushResolver = null;
     this.startPromise = null;
   }
@@ -659,6 +759,7 @@ export class RealtimeVoiceSession {
         }
       });
       this.callCaptureAttached = true;
+      this.callResources.replayIdleCapture(this);
       if (this.closed) {
         await this.stopCapture();
         throw new Error("voice_realtime_session_closed");
@@ -839,6 +940,7 @@ export class RealtimeVoiceSession {
 
   acceptPcmFrame(buffer, frameCount) {
     if (this.closed || this.endpointSent || this.failed) return;
+    this.retainFallbackPcmFrame(buffer, frameCount);
     try {
       this.endpointDetector?.acceptPcmFrame?.(
         buffer,
@@ -858,6 +960,51 @@ export class RealtimeVoiceSession {
       return;
     }
     this.sendPcmFrame(frame);
+  }
+
+  retainFallbackPcmFrame(buffer, frameCount) {
+    const frames = Math.max(0, Math.round(Number(frameCount) || 0));
+    if (!(buffer instanceof ArrayBuffer) || !frames) return;
+    this.fallbackPcmFrames.push({ buffer, frameCount: frames });
+    this.fallbackPcmFrameCount += frames;
+    const maxFrames = Math.max(
+      1,
+      Math.round(
+        (Math.max(1, Number(this.captureSampleRate || 0)) *
+          this.fallbackPcmMaxMs) /
+          1000
+      )
+    );
+    while (
+      this.fallbackPcmFrameCount > maxFrames &&
+      this.fallbackPcmFrames.length > 1
+    ) {
+      const removed = this.fallbackPcmFrames.shift();
+      const removedFrames = Number(removed?.frameCount || 0);
+      this.fallbackPcmFrameCount -= removedFrames;
+      this.fallbackPcmDroppedFrames += removedFrames;
+    }
+  }
+
+  buildFallbackPcmBlob() {
+    if (
+      !this.fallbackPcmFrameCount ||
+      this.fallbackPcmDroppedFrames ||
+      !this.captureSampleRate
+    ) {
+      return null;
+    }
+    return encodeFloat32PcmAsWav(
+      this.fallbackPcmFrames,
+      this.captureSampleRate,
+      this.scope.Blob || globalThis.Blob
+    );
+  }
+
+  releaseFallbackPcm() {
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
   }
 
   sendPcmFrame(frame) {
@@ -1083,6 +1230,66 @@ export class RealtimeVoiceSession {
     } catch {
       // UI callbacks are observational; protocol state remains authoritative.
     }
+  }
+}
+
+export function encodeFloat32PcmAsWav(
+  frames,
+  sampleRate,
+  BlobImpl = globalThis.Blob
+) {
+  if (typeof BlobImpl !== "function") return null;
+  const normalizedRate = Math.max(1, Math.round(Number(sampleRate) || 0));
+  const normalizedFrames = [];
+  let sampleCount = 0;
+  for (const frame of Array.isArray(frames) ? frames : []) {
+    if (!(frame?.buffer instanceof ArrayBuffer)) continue;
+    const available = Math.floor(frame.buffer.byteLength / 4);
+    const frameCount = Math.min(
+      available,
+      Math.max(0, Math.round(Number(frame.frameCount) || 0))
+    );
+    if (!frameCount) continue;
+    normalizedFrames.push({ buffer: frame.buffer, frameCount });
+    sampleCount += frameCount;
+  }
+  if (!sampleCount) return null;
+
+  const wav = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(wav);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, normalizedRate, true);
+  view.setUint32(28, normalizedRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+
+  let offset = 44;
+  for (const frame of normalizedFrames) {
+    const samples = new Float32Array(frame.buffer, 0, frame.frameCount);
+    for (const sample of samples) {
+      const clamped = Math.max(-1, Math.min(1, Number(sample) || 0));
+      view.setInt16(
+        offset,
+        clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff),
+        true
+      );
+      offset += 2;
+    }
+  }
+  return new BlobImpl([wav], { type: "audio/wav" });
+}
+
+function writeAscii(view, offset, value) {
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index));
   }
 }
 

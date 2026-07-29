@@ -4,13 +4,19 @@ import {
   RealtimeVoiceCallResources,
   RealtimeVoicePlaybackQueue,
   RealtimeVoiceSession,
-  buildVoiceWebSocketUrl
+  buildVoiceWebSocketUrl,
+  encodeFloat32PcmAsWav
 } from "../src/realtime-voice-client.js";
 
 class FakeBlob {
   constructor(parts, options = {}) {
     this.parts = parts;
     this.type = options.type || "";
+    this.size = parts.reduce((total, part) => {
+      if (part instanceof ArrayBuffer) return total + part.byteLength;
+      if (ArrayBuffer.isView(part)) return total + part.byteLength;
+      return total + Number(part?.size || 0);
+    }, 0);
   }
 }
 
@@ -429,7 +435,16 @@ await firstCaptureSession.flushAndStopCapture();
 assert.equal(captureFakes.contexts[0].closeCalls, 0);
 assert.equal(captureTrack.stopCalls, 0);
 
+const idleCaptureFrames = [];
+captureResources.setIdleCaptureObserver({
+  onPcm: (_buffer, frames) => {
+    idleCaptureFrames.push(frames);
+    captureResources.holdIdleCapture();
+  }
+});
 sharedCapturePort.emitPcm([0.3, 0.4]);
+assert.deepEqual(idleCaptureFrames, [2]);
+assert.equal(captureResources.idleCaptureHeld, true);
 const secondCaptureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",
   callResources: captureResources,
@@ -439,10 +454,30 @@ const secondCaptureSession = new RealtimeVoiceSession({
 });
 await secondCaptureSession.startCapture();
 assert.equal(captureFakes.contexts.length, 1);
+assert.equal(captureResources.idleCaptureHeld, false);
 sharedCapturePort.emitPcm([0.5, 0.6, 0.7]);
 assert.equal(firstCaptureSession.pendingFrames.length, 1);
-assert.equal(secondCaptureSession.pendingFrames.length, 1);
-assert.equal(secondCaptureSession.pendingFrames[0].frameCount, 3);
+assert.equal(secondCaptureSession.pendingFrames.length, 2);
+assert.equal(secondCaptureSession.pendingFrames[0].frameCount, 2);
+assert.equal(secondCaptureSession.pendingFrames[1].frameCount, 3);
+const fallbackPcm = secondCaptureSession.buildFallbackPcmBlob();
+assert.equal(fallbackPcm.type, "audio/wav");
+assert.equal(fallbackPcm.size, 44 + 5 * 2);
+secondCaptureSession.releaseFallbackPcm();
+assert.equal(secondCaptureSession.buildFallbackPcmBlob(), null);
+
+const clippedWav = encodeFloat32PcmAsWav(
+  [{ buffer: new Float32Array([-2, 0, 2]).buffer, frameCount: 3 }],
+  16000,
+  FakeBlob
+);
+assert.equal(clippedWav.type, "audio/wav");
+assert.equal(clippedWav.size, 50);
+const clippedWavView = new DataView(clippedWav.parts[0]);
+assert.equal(clippedWavView.getUint32(24, true), 16000);
+assert.equal(clippedWavView.getInt16(44, true), -32768);
+assert.equal(clippedWavView.getInt16(46, true), 0);
+assert.equal(clippedWavView.getInt16(48, true), 32767);
 
 const blockedCaptureSession = new RealtimeVoiceSession({
   websocketUrl: "wss://example.test/voice/realtime",

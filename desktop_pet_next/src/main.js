@@ -3083,6 +3083,8 @@ async function startRealtimeVoiceCall() {
       inputTurn: null,
       openingTurn: false,
       reconnect: null,
+      standbyDetector: null,
+      standbySpeechPending: false,
       nextTurnId: 1
     };
     call.flow = new RealtimeVoiceCallFlow({
@@ -3108,6 +3110,7 @@ async function startRealtimeVoiceCall() {
     });
     call.flow.start();
     realtimeVoiceCall = call;
+    configureRealtimeVoiceStandbyCapture(call);
     cancelTtsPrewarm();
     stopTts();
     setVoiceInputState("recording");
@@ -3228,6 +3231,8 @@ async function openRealtimeVoiceCallTurn(call) {
       },
       callbacks: buildRealtimeVoiceCallCallbacks(turn)
     });
+    call.standbyDetector?.reset();
+    call.standbySpeechPending = false;
     await turn.session.start();
     if (!isActiveRealtimeCallTurn(turn) || call.inputTurn !== turn) return false;
     turn.ready = true;
@@ -3244,6 +3249,49 @@ async function openRealtimeVoiceCallTurn(call) {
   } finally {
     call.openingTurn = false;
   }
+}
+
+function configureRealtimeVoiceStandbyCapture(call) {
+  call.standbyDetector = new RealtimeVoiceEndpointDetector({
+    onSpeechStarted: () => {
+      if (
+        !isActiveRealtimeVoiceCall(call) ||
+        call.inputTurn ||
+        call.standbySpeechPending
+      ) {
+        return;
+      }
+      call.standbySpeechPending = true;
+      call.resources.holdIdleCapture();
+      const hasActiveReply = [...call.turns].some(
+        (turn) => turn.responseActive || turn.playbackActive
+      );
+      setRuntimeStatus(
+        hasActiveReply
+          ? "听到你了 · 已保留这一句，准备接管"
+          : "听到你了 · 正在恢复实时监听",
+        { mode: "listening" }
+      );
+      updateActivityControls();
+    }
+  });
+  call.resources.setIdleCaptureObserver({
+    onPcm: (buffer, frames, sampleRate) => {
+      if (!isActiveRealtimeVoiceCall(call) || call.inputTurn) return;
+      call.standbyDetector?.acceptPcmFrame(buffer, frames, sampleRate);
+    },
+    onError: (error) => {
+      if (!isActiveRealtimeVoiceCall(call)) return;
+      const reason = String(error?.message || "");
+      setRuntimeStatus(
+        reason === "voice_call_idle_capture_overflow"
+          ? "连续收音过长，已保留最近的语音"
+          : "连续收音缓冲异常，当前通话仍在继续",
+        { mode: "error" }
+      );
+      updateActivityControls();
+    }
+  });
 }
 
 function startRealtimeCallSafetyRecorder(turn, stream) {
@@ -3444,6 +3492,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
       clearRealtimeVoiceFinalWatchdog(turn);
       turn.committed = true;
       turn.call.reconnect?.reset();
+      turn.session?.releaseFallbackPcm();
       turn.fallbackBlob = null;
       turn.responseActive = true;
       refreshRealtimeVoiceCallSending(turn.call);
@@ -3647,6 +3696,7 @@ async function markRealtimeVoiceCallFailure(turn, failure) {
       if (!isActiveRealtimeCallTurn(turn)) return;
       turn.fallbackBlob = null;
       turn.recorderChunks = [];
+      turn.session?.releaseFallbackPcm();
       if (
         shouldReconnectPassiveVoiceFailure({
           committed: normalized.committed,
@@ -3698,7 +3748,7 @@ async function markRealtimeVoiceCallFailure(turn, failure) {
       showError(normalized.message);
       return;
     }
-    let blob = turn.fallbackBlob;
+    let blob = turn.session?.buildFallbackPcmBlob?.() || turn.fallbackBlob;
     if (!blob) {
       try {
         blob = await stopRealtimeCallSafetyRecorder(turn);
@@ -3706,6 +3756,7 @@ async function markRealtimeVoiceCallFailure(turn, failure) {
         blob = null;
       }
     }
+    turn.session?.releaseFallbackPcm();
     await stopRealtimeVoiceCall({
       notice: false,
       reason: normalized.reason
@@ -3740,6 +3791,7 @@ function finishRealtimeVoiceCallTurn(
   turn.responseActive = false;
   turn.playbackActive = false;
   turn.fallbackBlob = null;
+  turn.session?.releaseFallbackPcm();
   turn.session?.dispose(cancelled ? "response_cancelled" : "response_terminal");
   call.turns.delete(turn);
   if (call.inputTurn === turn) call.inputTurn = null;
@@ -3798,6 +3850,7 @@ async function stopRealtimeVoiceCall({
     clearRealtimeVoiceFinalWatchdog(turn);
     turn.responseActive = false;
     turn.playbackActive = false;
+    turn.session?.releaseFallbackPcm();
   }
   call.inputTurn = null;
   call.turns.clear();
@@ -4344,6 +4397,7 @@ function selectVoiceMimeType() {
 
 function getVoiceFilename(mimeTypeValue = voiceMimeType) {
   const mimeType = String(mimeTypeValue || "").toLowerCase();
+  if (mimeType.includes("wav")) return "akane_voice_input.wav";
   if (mimeType.includes("ogg")) return "akane_voice_input.ogg";
   if (mimeType.includes("mp4")) return "akane_voice_input.m4a";
   return "akane_voice_input.webm";
