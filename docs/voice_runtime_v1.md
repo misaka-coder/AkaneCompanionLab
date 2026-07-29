@@ -786,6 +786,13 @@ VoiceCore durable command
 Agent，也不设置固定的单句最长时限。检测器现已由主入口为每个 Input Turn
 实例化，自动 endpoint 只结束当前发言，不结束整场通话。
 
+端点现在分成“候选”和“确认”两步：达到 checkpoint/partial 对应的静音条件时
+先进入可撤销的 `endpoint_pending`，继续保持采集；只有静音再稳定保持一个短确认
+窗口才真正提交。确认前一旦检测到用户继续说话，候选立即撤销并回到采集中。
+这把 VoiceCore 规格中的 `endpoint_pending → activity_resumed` 落到真实声学入口，
+避免把思考停顿直接当成不可逆的句末；确认窗口只处理声学迟滞，不按关键词猜测
+用户语义，也不设置整句最长时限。
+
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
 基础链路验证，但连续抢话的人体时序验收尚未通过。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能

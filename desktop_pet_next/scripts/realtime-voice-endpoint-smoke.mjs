@@ -46,6 +46,13 @@ stableDetector.observeTranscript({
 feed(stableDetector, 0, 340);
 assert.equal(stableEndpoints.length, 0);
 feed(stableDetector, 0, 20);
+assert.equal(stableDetector.snapshot().endpoint_pending, true);
+assert.equal(stableEndpoints.length, 0);
+feed(stableDetector, 0.06, 220);
+assert.equal(stableDetector.snapshot().endpoint_pending, false);
+feed(stableDetector, 0, 620);
+assert.equal(stableEndpoints.length, 0);
+feed(stableDetector, 0, 20);
 assert.equal(speechStarts.length, 1);
 assert.equal(stableEndpoints.length, 1);
 assert.equal(stableEndpoints[0].action, "commit");
@@ -64,7 +71,7 @@ partialDetector.observeTranscript({
 });
 feed(partialDetector, 0, 660);
 assert.equal(partialEndpoints.length, 0);
-feed(partialDetector, 0, 20);
+feed(partialDetector, 0, 300);
 assert.equal(partialEndpoints.length, 1);
 assert.equal(partialEndpoints[0].reason, "partial_transcript_silence");
 
@@ -78,6 +85,9 @@ shortDetector.observeTranscript({
   text: "嗯"
 });
 feed(shortDetector, 0, 360);
+assert.equal(shortDetector.snapshot().endpoint_pending, true);
+assert.equal(shortEndpoints.length, 0);
+feed(shortDetector, 0, 280);
 assert.equal(shortEndpoints.length, 1);
 assert.equal(shortEndpoints[0].action, "commit");
 
@@ -89,7 +99,7 @@ feed(discardDetector, 0.004, 400);
 feed(discardDetector, 0.06, 300);
 feed(discardDetector, 0, 1080);
 assert.equal(discardEndpoints.length, 0);
-feed(discardDetector, 0, 20);
+feed(discardDetector, 0, 300);
 assert.equal(discardEndpoints.length, 1);
 assert.equal(discardEndpoints[0].action, "discard");
 assert.equal(discardEndpoints[0].reason, "speech_without_transcript");
@@ -122,8 +132,13 @@ session.handleServerEvent({
 for (let index = 0; index < 18; index += 1) {
   session.acceptPcmFrame(pcmFrame(0), FRAME_SAMPLES);
 }
+assert.equal(sessionDetector.snapshot().endpoint_pending, true);
+assert.equal(sessionEndpoints.length, 0);
+for (let index = 0; index < 14; index += 1) {
+  session.acceptPcmFrame(pcmFrame(0), FRAME_SAMPLES);
+}
 assert.equal(sessionEndpoints.length, 1);
 assert.equal(sessionEndpoints[0].reason, "stable_checkpoint_silence");
-assert.equal(session.pendingFrames.length, 33);
+assert.equal(session.pendingFrames.length, 47);
 
 console.log("realtime voice endpoint smoke: ok");

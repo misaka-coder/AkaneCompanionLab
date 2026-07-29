@@ -13,6 +13,7 @@ export class RealtimeVoiceEndpointDetector {
     checkpointSilenceMs = 360,
     partialSilenceMs = 680,
     noTextSilenceMs = 1100,
+    endpointConfirmationMs = 280,
     noiseAdaptation = 0.06,
     onSpeechStarted = null,
     onEndpoint = null
@@ -29,6 +30,7 @@ export class RealtimeVoiceEndpointDetector {
       checkpointSilenceMs: positiveNumber(checkpointSilenceMs, 360),
       partialSilenceMs: positiveNumber(partialSilenceMs, 680),
       noTextSilenceMs: positiveNumber(noTextSilenceMs, 1100),
+      endpointConfirmationMs: positiveNumber(endpointConfirmationMs, 280),
       noiseAdaptation: clamp(Number(noiseAdaptation), 0.001, 0.5)
     };
     this.onSpeechStarted = onSpeechStarted;
@@ -47,6 +49,10 @@ export class RealtimeVoiceEndpointDetector {
     this.voiced = false;
     this.speechStarted = false;
     this.endpointEmitted = false;
+    this.endpointPending = false;
+    this.endpointPendingAction = "";
+    this.endpointPendingReason = "";
+    this.endpointPendingAtSilenceMs = 0;
     this.hasTranscript = false;
     this.hasStableCheckpoint = false;
     this.transcriptKind = "";
@@ -83,6 +89,7 @@ export class RealtimeVoiceEndpointDetector {
     }
 
     if (frameVoiced) {
+      this.clearPendingEndpoint();
       this.voiced = true;
       this.candidateVoiceMs += durationMs;
       this.trailingSilenceMs = 0;
@@ -137,14 +144,22 @@ export class RealtimeVoiceEndpointDetector {
       this.hasStableCheckpoint &&
       this.trailingSilenceMs >= this.options.checkpointSilenceMs
     ) {
-      this.emitEndpoint("commit", "stable_checkpoint_silence");
+      this.proposeEndpoint(
+        "commit",
+        "stable_checkpoint_silence",
+        this.options.checkpointSilenceMs
+      );
       return;
     }
     if (
       this.hasTranscript &&
       this.trailingSilenceMs >= this.options.partialSilenceMs
     ) {
-      this.emitEndpoint("commit", "partial_transcript_silence");
+      this.proposeEndpoint(
+        "commit",
+        "partial_transcript_silence",
+        this.options.partialSilenceMs
+      );
       return;
     }
     if (
@@ -155,13 +170,45 @@ export class RealtimeVoiceEndpointDetector {
         this.speechDurationMs >= this.options.minSpeechMs
           ? "speech_without_transcript"
           : "unconfirmed_acoustic_activity";
-      this.emitEndpoint("discard", reason);
+      this.proposeEndpoint("discard", reason, this.options.noTextSilenceMs);
     }
+  }
+
+  proposeEndpoint(action, reason, silenceThresholdMs) {
+    if (
+      !this.endpointPending ||
+      this.endpointPendingAction !== action ||
+      this.endpointPendingReason !== reason
+    ) {
+      this.endpointPending = true;
+      this.endpointPendingAction = action;
+      this.endpointPendingReason = reason;
+      this.endpointPendingAtSilenceMs = Math.max(
+        Number(silenceThresholdMs) || 0,
+        this.trailingSilenceMs
+      );
+      return;
+    }
+    if (
+      this.trailingSilenceMs - this.endpointPendingAtSilenceMs <
+      this.options.endpointConfirmationMs
+    ) {
+      return;
+    }
+    this.emitEndpoint(action, reason);
+  }
+
+  clearPendingEndpoint() {
+    this.endpointPending = false;
+    this.endpointPendingAction = "";
+    this.endpointPendingReason = "";
+    this.endpointPendingAtSilenceMs = 0;
   }
 
   emitEndpoint(action, reason) {
     if (this.endpointEmitted) return;
     this.endpointEmitted = true;
+    this.clearPendingEndpoint();
     this.notify(this.onEndpoint, {
       ...this.snapshot(),
       action,
@@ -182,6 +229,9 @@ export class RealtimeVoiceEndpointDetector {
     return {
       speech_started: this.speechStarted,
       endpoint_emitted: this.endpointEmitted,
+      endpoint_pending: this.endpointPending,
+      endpoint_pending_action: this.endpointPendingAction,
+      endpoint_pending_reason: this.endpointPendingReason,
       has_transcript: this.hasTranscript,
       has_stable_checkpoint: this.hasStableCheckpoint,
       transcript_kind: this.transcriptKind,
