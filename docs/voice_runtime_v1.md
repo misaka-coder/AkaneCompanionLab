@@ -606,9 +606,10 @@ provider open/finalize 失败继续结构化写入同一语音轮，不能静默
 WebM 只进入批量降级通道，绝不会改名或送进实时 PCM 入口。收到已提交的
 `server.final` 后立即丢弃安全副本，避免同一用户语音重复写入 MemCore。
 
-2026-07-28 增加了独立的 `/voice/realtime` WebSocket 传输契约。该入口不把
-传输协议变成第二套语音状态机，只负责把有序 PCM 帧交给
-`VoiceASRRealtimeTurnCoordinator`：
+2026-07-28 增加了独立的 `/voice/realtime` WebSocket 传输契约。以下
+`client.open → client.endpoint → connection close` 是当时已经落地的逐轮过渡
+协议，不是连续通话的最终权威边界。该入口不把传输协议变成第二套语音状态机，
+只负责把有序 PCM 帧交给 `VoiceASRRealtimeTurnCoordinator`：
 
 ```text
 client.open
@@ -764,10 +765,10 @@ VoiceCore durable command
 的语音轮。语音输出关闭或 WebView 不支持 AudioWorklet 时仍保持旧听写体验。
 
 客户端库现已增加通话级资源所有权：`RealtimeVoiceCallResources` 持有一场通话
-唯一的麦克风流和播放器，不同语音轮各自保留 WebSocket/ACK 通道，但音频交付由
-通话级仲裁器串行取得播放器所有权。结束单轮只注销该轮播放队列，不停止麦克风
-轨道；只有结束整场通话才停止轨道并清空播放器。主入口现已用这份所有权实现
-连续多轮通话，按钮不再逐轮创建和销毁麦克风。
+唯一的麦克风流和播放器。当前迁移窗口中，不同语音轮仍各自保留 WebSocket/ACK
+通道，音频交付由通话级仲裁器串行取得播放器所有权；这一“共享设备、逐轮建链”
+形态只作为兼容旧协议的过渡实现，不再继续扩展。结束单轮只注销该轮播放队列，
+不停止麦克风轨道；只有结束整场通话才停止轨道并清空播放器。
 
 通话资源路径也已持有唯一 AudioContext/AudioWorklet。每个
 `RealtimeVoiceSession` 只取得当前 Input Turn 的 PCM sink 租约：开始前先用
@@ -784,6 +785,75 @@ Input Turn，provider 就绪后先补送音频，再允许发送 `client.endpoin
 ASR 冷启动慢时不会被短连接超时误判成“实时语音未接通”，也不会要求用户等待
 某个提示后才敢开口。WebSocket 本身和 provider 准备分别有结构化超时；provider
 始终未就绪时才释放等待者并进入既有的有界重连/安全录音降级路径。
+
+### 2026-07-29：Call-scoped 连续会话修正
+
+真实多轮验收确认，“麦克风资源贯穿整场通话、但 WebSocket/ASR provider 每句话
+重建”仍会反复产生冷启动、交接空窗和多连接竞态。成熟实时语音系统把通话会话
+作为长期边界，把 Input Turn 表达为会话内事件；因此从这一里程碑开始，下面的
+call-scoped 协议取代逐轮协议成为目标权威：
+
+```text
+client.call.open
+  → server.call.ready(voice_session_id)
+client.turn.start(voice_turn_id, audio_stream_id)
+client.audio(voice_turn_id, sequence, audio_clock_ms)
+  → binary PCM
+  → server.turn.partial / checkpoint
+client.turn.endpoint(voice_turn_id)
+  → server.turn.finalizing
+  → server.turn.final
+  → response / speech / playback events（同一通话通道复用）
+client.turn.start(next voice_turn_id)
+  → 不重新建立 WebSocket，不重新 run-task
+client.call.close
+  → provider finish-call
+  → server.call.closed
+```
+
+权威约束：
+
+- 一次“开始通话”最多持有一个客户端到 Akane 的活动 WebSocket；正常轮次切换
+  不得触发 reconnect；
+- 一场通话最多持有一个活动 streaming ASR provider task。Fun-ASR 的
+  `sentence_end` 是 provider checkpoint，宿主 endpoint 通过非终态
+  `commit_turn()` 形成当前 VoiceCore Input Turn 的 final；只有挂断调用
+  `finish_call()` 并发送 `finish-task`；
+- `voice_session_id` 贯穿整场通话，`voice_turn_id`、`audio_stream_id` 和 PCM
+  sequence 在每轮重新建立；VoiceCore 继续保证一个输入流同时最多一个非终态
+  Input Turn；
+- LLM Response、TTS artifact 和 Speech Unit 仍按回复创建、取消和恢复，不因
+  ASR 长连接而合并为一个巨大 response；
+- 播放 ACK、duck/resume/stop、semantic pulse、candidate validation 继续使用
+  既有 VoiceCore 身份和 revision 围栏；迁移不得复制第二套状态机；
+- 初次 provider ready 前的 PCM 缓冲继续保留，但只服务整场通话的一次冷启动；
+  后续轮次不再重复等待 provider ready；
+- 连接真正断开时才进入会话级重连/恢复。Input Turn 被 discard、finalize 失败或
+  response 失败必须结构化收口，但不得把正常轮次结束伪装成断线；
+- trace 只记录 call/turn/stage/timing/计数，不记录音频、转写正文、密钥、路径或
+  provider 原始响应。
+
+包与宿主边界：
+
+```text
+capcore-adapter-speech
+  owns provider session + commit_turn + finish_call
+
+Akane Voice Runtime
+  owns one call transport + per-turn bridge/coordinator + delivery multiplexing
+
+VoiceCore
+  remains the only Input Turn / Response / Speech Unit state machine
+
+desktop_pet_next
+  owns microphone/playback execution and projects one call session into UI
+```
+
+迁移窗口从本节开始。旧 `RealtimeVoiceSession` 逐轮路径只能作为明确的兼容入口；
+新路径通过真实多轮测试后，必须删除或折叠旧逐轮建链逻辑，不能长期保留两套
+正常通话实现。第一门槛是同一个 provider task 连续提交至少两个逻辑 turn，且
+只有一次 `run-task`、挂断时一次 `finish-task`；随后才回填单 WebSocket 和桌宠
+整场通话表现。
 
 客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
 判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR

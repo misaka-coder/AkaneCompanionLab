@@ -5,11 +5,17 @@ import re
 import threading
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from capcore_adapter_speech import PCMStreamNormalizer
+from capcore_adapter_speech import (
+    ASRSessionOpenResult,
+    ASRSessionUpdate,
+    NormalizedASRSession,
+    PCMStreamNormalizer,
+)
 from voicecore import VoiceEvent, initial_snapshot
 
 from ..background_tasks import BackgroundTaskRunner
@@ -181,6 +187,147 @@ class MemcoreVoiceProjectionPort:
         )
 
 
+@dataclass(frozen=True)
+class VoiceRuntimeCallOpenResult:
+    status: str
+    reason: str = ""
+    call: AkaneVoiceRuntimeCall | None = None
+    retryable: bool = False
+    safe_public_summary: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return self.status == "ready" and self.call is not None
+
+    @classmethod
+    def succeeded(
+        cls,
+        call: AkaneVoiceRuntimeCall,
+    ) -> VoiceRuntimeCallOpenResult:
+        return cls(status="ready", call=call)
+
+    @classmethod
+    def failed(
+        cls,
+        reason: str,
+        *,
+        status: str = "unavailable",
+        retryable: bool = False,
+        safe_public_summary: str = "",
+    ) -> VoiceRuntimeCallOpenResult:
+        return cls(
+            status=status,
+            reason=str(reason or "voice_realtime_call_unavailable"),
+            retryable=bool(retryable),
+            safe_public_summary=str(safe_public_summary or ""),
+        )
+
+
+@dataclass(frozen=True)
+class _VoiceRuntimeContext:
+    provider: Any
+    character_pack_id: str
+    canonical_conversation_id: str
+    host: _SerializedVoiceRuntimeHost
+    thinking_executor: AkaneThinkingAgentCommandExecutor
+    playback_executor: AkaneVoicePlaybackCommandExecutor | None
+    text_artifacts: FileVoiceTextArtifactPort | None
+    audio_artifacts: FileVoiceAudioArtifactPort | None
+
+
+class AkaneVoiceRuntimeCall:
+    """Own one provider ASR session across multiple VoiceCore input turns."""
+
+    def __init__(
+        self,
+        *,
+        service: AkaneVoiceRuntimeService,
+        open_request: VoiceRealtimeOpenRequest,
+        context: _VoiceRuntimeContext,
+        provider_session: NormalizedASRSession,
+        voice_session_id: str,
+    ) -> None:
+        self.service = service
+        self.open_request = open_request
+        self.context = context
+        self.provider_session = provider_session
+        self.voice_session_id = str(voice_session_id or "")
+        self.provider_id = str(getattr(context.provider, "provider_id", "") or "")
+        self._active_coordinator: VoiceASRRealtimeTurnCoordinator | None = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def create_turn(
+        self,
+        request: VoiceRealtimeOpenRequest,
+    ) -> VoiceRealtimeCoordinatorResolution:
+        if self._closed:
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_realtime_call_closed",
+                status="unavailable",
+            )
+        if not self._same_call_identity(request):
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_realtime_call_identity_conflict",
+                status="invalid_request",
+            )
+        if self._active_coordinator is not None and not self._active_coordinator.terminal:
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_realtime_call_input_turn_active",
+                status="conflict",
+            )
+        resolved = self.service._build_turn_coordinator(
+            request=request,
+            context=self.context,
+            voice_session_id=self.voice_session_id,
+            provider_session=self.provider_session,
+        )
+        if resolved.ready:
+            self._active_coordinator = resolved.coordinator
+        return resolved
+
+    async def finish(self) -> ASRSessionUpdate:
+        if self._closed:
+            return ASRSessionUpdate.duplicate(self.provider_session.mode)
+        if self._active_coordinator is not None and not self._active_coordinator.terminal:
+            return ASRSessionUpdate.failed(
+                self.provider_session.mode,
+                "voice_realtime_call_input_turn_active",
+            )
+        result = await self.provider_session.finish_call()
+        if result.ok:
+            self._closed = True
+        return result
+
+    async def cancel(self) -> ASRSessionUpdate:
+        if self._closed:
+            return ASRSessionUpdate.duplicate(self.provider_session.mode)
+        result = await self.provider_session.cancel()
+        if result.status in {"cancelled", "duplicate"}:
+            self._closed = True
+        return result
+
+    def _same_call_identity(self, request: VoiceRealtimeOpenRequest) -> bool:
+        if not isinstance(request, VoiceRealtimeOpenRequest):
+            return False
+        fields = (
+            "profile_user_id",
+            "conversation_id",
+            "session_id",
+            "disposition",
+            "language",
+            "character_pack_id",
+            "input_format",
+            "sample_rate",
+            "channels",
+            "output_mode",
+        )
+        return all(getattr(request, field) == getattr(self.open_request, field) for field in fields)
+
+
 class AkaneVoiceRuntimeService:
     """Own durable VoiceCore hosts for one BotRuntime instance."""
 
@@ -236,6 +383,68 @@ class AkaneVoiceRuntimeService:
         self,
         request: VoiceRealtimeOpenRequest,
     ) -> VoiceRealtimeCoordinatorResolution:
+        invalid = self._validate_open_request(request)
+        if invalid is not None:
+            return invalid
+        context = self._prepare_runtime_context(request)
+        if isinstance(context, VoiceRealtimeCoordinatorResolution):
+            return context
+        return self._build_turn_coordinator(
+            request=request,
+            context=context,
+            voice_session_id=f"voice_session_{uuid.uuid4().hex}",
+        )
+
+    async def open_call(
+        self,
+        request: VoiceRealtimeOpenRequest,
+    ) -> VoiceRuntimeCallOpenResult:
+        invalid = self._validate_open_request(request)
+        if invalid is not None:
+            return self._call_failure(invalid)
+        context = self._prepare_runtime_context(request)
+        if isinstance(context, VoiceRealtimeCoordinatorResolution):
+            return self._call_failure(context)
+        adapter = getattr(context.provider, "adapter", None)
+        try:
+            opened = await adapter.open_session(
+                filename="akane_voice_input.pcm",
+                content_type="audio/pcm",
+                language=request.language,
+            )
+        except Exception:
+            return VoiceRuntimeCallOpenResult.failed(
+                "asr_provider_open_failed",
+                retryable=True,
+            )
+        if not isinstance(opened, ASRSessionOpenResult) or not opened.ok or opened.session is None:
+            return VoiceRuntimeCallOpenResult.failed(
+                str(getattr(opened, "reason", "") or "asr_provider_open_failed"),
+                status="unavailable",
+                retryable=bool(getattr(opened, "retryable", False)),
+                safe_public_summary=str(getattr(opened, "safe_public_summary", "") or ""),
+            )
+        if not opened.session.supports_turn_commit:
+            await opened.session.cancel()
+            return VoiceRuntimeCallOpenResult.failed(
+                "asr_provider_commit_turn_unsupported",
+                status="unsupported",
+                safe_public_summary="当前语音识别服务不支持连续多轮通话。",
+            )
+        return VoiceRuntimeCallOpenResult.succeeded(
+            AkaneVoiceRuntimeCall(
+                service=self,
+                open_request=request,
+                context=context,
+                provider_session=opened.session,
+                voice_session_id=f"voice_session_{uuid.uuid4().hex}",
+            )
+        )
+
+    def _validate_open_request(
+        self,
+        request: VoiceRealtimeOpenRequest,
+    ) -> VoiceRealtimeCoordinatorResolution | None:
         if not isinstance(request, VoiceRealtimeOpenRequest):
             return VoiceRealtimeCoordinatorResolution.failed(
                 "voice_realtime_open_request_invalid",
@@ -248,7 +457,12 @@ class AkaneVoiceRuntimeService:
                     status="unavailable",
                     retryable=True,
                 )
+        return None
 
+    def _prepare_runtime_context(
+        self,
+        request: VoiceRealtimeOpenRequest,
+    ) -> _VoiceRuntimeContext | VoiceRealtimeCoordinatorResolution:
         manager = self._memcore_manager()
         if manager is None:
             return VoiceRealtimeCoordinatorResolution.failed(
@@ -311,12 +525,6 @@ class AkaneVoiceRuntimeService:
             )
         if isinstance(host_result, VoiceRealtimeCoordinatorResolution):
             return host_result
-        voice_session_id = f"voice_session_{uuid.uuid4().hex}"
-        event_factory = AkaneVoiceEventFactory(
-            conversation_id=canonical_conversation_id,
-            voice_session_id=voice_session_id,
-            conversation_generation=1,
-        )
         with self._guard:
             thinking_executor = self._thinking_executors.get(canonical_conversation_id)
             playback_executor = self._playback_executors.get(canonical_conversation_id)
@@ -329,75 +537,120 @@ class AkaneVoiceRuntimeService:
                 retryable=True,
                 safe_public_summary="实时语音回复服务暂时不可用，本轮没有开始。",
             )
+        if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE and (
+            playback_executor is None or text_artifacts is None or audio_artifacts is None
+        ):
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_playback_delivery_unavailable",
+                status="unavailable",
+                retryable=True,
+                safe_public_summary="实时语音播放通道暂时不可用，本轮没有开始。",
+            )
+        return _VoiceRuntimeContext(
+            provider=provider,
+            character_pack_id=character_pack_id,
+            canonical_conversation_id=canonical_conversation_id,
+            host=host_result,
+            thinking_executor=thinking_executor,
+            playback_executor=playback_executor,
+            text_artifacts=text_artifacts,
+            audio_artifacts=audio_artifacts,
+        )
+
+    def _build_turn_coordinator(
+        self,
+        *,
+        request: VoiceRealtimeOpenRequest,
+        context: _VoiceRuntimeContext,
+        voice_session_id: str,
+        provider_session: NormalizedASRSession | None = None,
+    ) -> VoiceRealtimeCoordinatorResolution:
+        event_factory = AkaneVoiceEventFactory(
+            conversation_id=context.canonical_conversation_id,
+            voice_session_id=voice_session_id,
+            conversation_generation=1,
+        )
         delivery_channel: VoicePlaybackDeliveryChannel | None = None
         if request.output_mode == VOICE_PLAYBACK_OUTPUT_MODE:
-            if playback_executor is None or text_artifacts is None or audio_artifacts is None:
-                return VoiceRealtimeCoordinatorResolution.failed(
-                    "voice_playback_delivery_unavailable",
-                    status="unavailable",
-                    retryable=True,
-                    safe_public_summary="实时语音播放通道暂时不可用，本轮没有开始。",
-                )
+            assert context.playback_executor is not None
+            assert context.text_artifacts is not None
+            assert context.audio_artifacts is not None
             delivery_channel = VoicePlaybackDeliveryChannel(
-                host=host_result,
+                host=context.host,
                 voice_turn_id=request.voice_turn_id,
-                conversation_id=canonical_conversation_id,
+                conversation_id=context.canonical_conversation_id,
                 conversation_generation=1,
-                text_artifacts=text_artifacts,
-                audio_artifacts=audio_artifacts,
+                text_artifacts=context.text_artifacts,
+                audio_artifacts=context.audio_artifacts,
                 terminal_notifier=(
                     lambda voice_turn_id: self._release_delivery_channel(
-                        canonical_conversation_id,
+                        context.canonical_conversation_id,
                         voice_turn_id,
                     )
                 ),
             )
-            playback_executor.register_channel(request.voice_turn_id, delivery_channel)
+            context.playback_executor.register_channel(
+                request.voice_turn_id,
+                delivery_channel,
+            )
             with self._guard:
-                self._delivery_channels[(canonical_conversation_id, request.voice_turn_id)] = delivery_channel
+                self._delivery_channels[(context.canonical_conversation_id, request.voice_turn_id)] = delivery_channel
         try:
-            thinking_executor.register_turn(
+            context.thinking_executor.register_turn(
                 voice_turn_id=request.voice_turn_id,
                 event_factory=event_factory,
                 speech_delivery_enabled=delivery_channel is not None,
                 delivery_notifier=(delivery_channel.notify_runtime_change if delivery_channel is not None else None),
             )
-            normalizer = PCMStreamNormalizer(
-                input_format=request.input_format,
-                input_sample_rate=request.sample_rate,
-                input_channels=request.channels,
-            )
-            bridge = VoiceASRSessionBridge(
-                host=host_result,
-                event_factory=event_factory,
-                voice_turn_id=request.voice_turn_id,
-                audio_stream_id=request.audio_stream_id,
-                disposition=request.disposition,
-            )
             coordinator = VoiceASRRealtimeTurnCoordinator(
-                adapter=provider.adapter,
-                bridge=bridge,
+                adapter=(None if provider_session is not None else context.provider.adapter),
+                provider_session=provider_session,
+                retain_provider_session=provider_session is not None,
+                bridge=VoiceASRSessionBridge(
+                    host=context.host,
+                    event_factory=event_factory,
+                    voice_turn_id=request.voice_turn_id,
+                    audio_stream_id=request.audio_stream_id,
+                    disposition=request.disposition,
+                ),
                 language=request.language,
-                pcm_normalizer=normalizer,
-                interruption_runtime_driver=host_result.drive_once,
+                pcm_normalizer=PCMStreamNormalizer(
+                    input_format=request.input_format,
+                    input_sample_rate=request.sample_rate,
+                    input_channels=request.channels,
+                ),
+                interruption_runtime_driver=context.host.drive_once,
                 response_starter=(
                     lambda: self._start_response_generation(
-                        host=host_result,
-                        executor=thinking_executor,
+                        host=context.host,
+                        executor=context.thinking_executor,
                         voice_turn_id=request.voice_turn_id,
                     )
                 ),
             )
         except (RuntimeError, TypeError, ValueError):
+            if delivery_channel is not None:
+                delivery_channel.close(reason="voice_realtime_coordinator_invalid")
             return VoiceRealtimeCoordinatorResolution.failed(
                 "voice_realtime_coordinator_invalid",
                 status="invalid_request",
             )
         return VoiceRealtimeCoordinatorResolution.succeeded(
             coordinator,
-            provider_id=str(getattr(provider, "provider_id", "") or ""),
+            provider_id=str(getattr(context.provider, "provider_id", "") or ""),
             voice_session_id=voice_session_id,
             delivery_channel=delivery_channel,
+        )
+
+    @staticmethod
+    def _call_failure(
+        failure: VoiceRealtimeCoordinatorResolution,
+    ) -> VoiceRuntimeCallOpenResult:
+        return VoiceRuntimeCallOpenResult.failed(
+            failure.reason,
+            status=failure.status,
+            retryable=failure.retryable,
+            safe_public_summary=failure.safe_public_summary,
         )
 
     def close(self) -> dict[str, Any]:

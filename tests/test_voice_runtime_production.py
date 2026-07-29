@@ -91,6 +91,9 @@ class _FakeEmbeddingProvider:
 
 
 class _ProviderSession:
+    def __init__(self) -> None:
+        self.cancelled = False
+
     async def feed_audio(self, *, audio: bytes) -> dict[str, Any]:
         if not audio:
             raise ValueError("test audio must not be empty")
@@ -109,6 +112,7 @@ class _ProviderSession:
         }
 
     async def cancel(self) -> None:
+        self.cancelled = True
         return None
 
 
@@ -123,6 +127,60 @@ class _Adapter:
             ASRSessionMode.STREAMING,
             NormalizedASRSession(
                 provider_session=provider_session,
+                mode=ASRSessionMode.STREAMING,
+            ),
+        )
+
+
+class _CallProviderSession:
+    def __init__(self) -> None:
+        self.turn_index = 0
+        self.commit_count = 0
+        self.finish_count = 0
+        self.cancel_count = 0
+        self.finalize_count = 0
+
+    async def feed_audio(self, *, audio: bytes) -> dict[str, Any]:
+        if not audio:
+            raise ValueError("test audio must not be empty")
+        return {
+            "quality": "stable_checkpoint",
+            "stable_text": f"第{self.turn_index + 1}轮语音",
+            "provider_receipt_id": f"checkpoint-{self.turn_index + 1}",
+            "control_significant": True,
+        }
+
+    async def commit_turn(self) -> dict[str, Any]:
+        self.turn_index += 1
+        self.commit_count += 1
+        return {
+            "quality": "final",
+            "stable_text": f"第{self.turn_index}轮语音",
+            "provider_receipt_id": f"final-{self.turn_index}",
+        }
+
+    async def finish_call(self) -> None:
+        self.finish_count += 1
+
+    async def finalize(self) -> dict[str, Any]:
+        self.finalize_count += 1
+        raise AssertionError("call-scoped ASR must not finalize per input turn")
+
+    async def cancel(self) -> None:
+        self.cancel_count += 1
+
+
+class _CallAdapter:
+    def __init__(self) -> None:
+        self.open_count = 0
+        self.provider_session = _CallProviderSession()
+
+    async def open_session(self, **_kwargs: Any) -> ASRSessionOpenResult:
+        self.open_count += 1
+        return ASRSessionOpenResult.succeeded(
+            ASRSessionMode.STREAMING,
+            NormalizedASRSession(
+                provider_session=self.provider_session,
                 mode=ASRSessionMode.STREAMING,
             ),
         )
@@ -321,7 +379,7 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
         *,
         root: Path,
         manager: MemcoreManager,
-        adapter: _Adapter,
+        adapter: Any,
         engine: Any | None = None,
         tts_client: Any = None,
         tts_client_resolver: Any = None,
@@ -342,6 +400,102 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 provider_id="provider.asr.production-test",
             ),
         )
+
+    def test_call_scoped_asr_reuses_one_provider_session_across_two_turns(self) -> None:
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                manager = self._manager(root)
+                adapter = _CallAdapter()
+                engine = _ThinkingEngine(manager)
+                service = self._service(
+                    root=root,
+                    manager=manager,
+                    adapter=adapter,
+                    engine=engine,
+                )
+                try:
+                    first_request = _open_request(
+                        voice_turn_id="voice-turn-call-1",
+                    )
+                    opened = await service.open_call(first_request)
+                    self.assertTrue(opened.ready, opened)
+                    assert opened.call is not None
+
+                    first = opened.call.create_turn(first_request)
+                    self.assertTrue(first.ready, first)
+                    overlapping = opened.call.create_turn(_open_request(voice_turn_id="voice-turn-call-overlap"))
+                    self.assertEqual(overlapping.status, "conflict")
+                    self.assertEqual(
+                        overlapping.reason,
+                        "voice_realtime_call_input_turn_active",
+                    )
+                    first_settled = await _commit_realtime_turn(first.coordinator)
+                    self.assertEqual(first_settled.response_status, "started")
+                    self.assertTrue(service.wait_idle(timeout=5.0))
+
+                    second_request = _open_request(
+                        voice_turn_id="voice-turn-call-2",
+                    )
+                    second = opened.call.create_turn(second_request)
+                    self.assertTrue(second.ready, second)
+                    second_settled = await _commit_realtime_turn(second.coordinator)
+                    self.assertEqual(second_settled.response_status, "started")
+                    self.assertTrue(service.wait_idle(timeout=5.0))
+
+                    finished = await opened.call.finish()
+                    self.assertTrue(finished.ok, finished)
+                    self.assertTrue(opened.call.closed)
+                    self.assertEqual(adapter.open_count, 1)
+                    self.assertEqual(adapter.provider_session.commit_count, 2)
+                    self.assertEqual(adapter.provider_session.finish_count, 1)
+                    self.assertEqual(adapter.provider_session.finalize_count, 0)
+                    self.assertEqual(adapter.provider_session.cancel_count, 0)
+                    self.assertEqual(first.voice_session_id, second.voice_session_id)
+                    self.assertEqual(first.voice_session_id, opened.call.voice_session_id)
+                    self.assertEqual(len(engine.calls), 2)
+                    self.assertEqual(
+                        [call["message"] for call in engine.calls],
+                        ["第1轮语音", "第2轮语音"],
+                    )
+                    after_finish = opened.call.create_turn(_open_request(voice_turn_id="voice-turn-call-after-finish"))
+                    self.assertEqual(after_finish.status, "unavailable")
+                    self.assertEqual(
+                        after_finish.reason,
+                        "voice_realtime_call_closed",
+                    )
+                finally:
+                    service.close()
+                    manager.close()
+
+        asyncio.run(exercise())
+
+    def test_call_scoped_asr_rejects_a_provider_that_only_finalizes_sessions(self) -> None:
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                manager = self._manager(root)
+                adapter = _Adapter()
+                service = self._service(
+                    root=root,
+                    manager=manager,
+                    adapter=adapter,
+                )
+                try:
+                    opened = await service.open_call(_open_request(voice_turn_id="voice-turn-unsupported-call"))
+                    self.assertFalse(opened.ready)
+                    self.assertEqual(opened.status, "unsupported")
+                    self.assertEqual(
+                        opened.reason,
+                        "asr_provider_commit_turn_unsupported",
+                    )
+                    self.assertEqual(len(adapter.sessions), 1)
+                    self.assertTrue(adapter.sessions[0].cancelled)
+                finally:
+                    service.close()
+                    manager.close()
+
+        asyncio.run(exercise())
 
     def test_playback_uses_character_resolved_tts_instead_of_global_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

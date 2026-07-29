@@ -48,8 +48,10 @@ from .realtime_transport import (
 )
 from .production import (
     AkaneVoiceEventFactory,
+    AkaneVoiceRuntimeCall,
     AkaneVoiceRuntimeService,
     MemcoreVoiceProjectionPort,
+    VoiceRuntimeCallOpenResult,
 )
 from .semantic_pulse import AkaneVoiceSemanticPulseCommandExecutor
 from .playback_delivery import (
@@ -114,10 +116,12 @@ __all__ = [
     "VoiceReadableTextArtifactPort",
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
+    "AkaneVoiceRuntimeCall",
     "AkaneVoiceRuntimeService",
     "AkaneVoiceCandidateValidationCommandExecutor",
     "AkaneVoiceSemanticPulseCommandExecutor",
     "MemcoreVoiceProjectionPort",
+    "VoiceRuntimeCallOpenResult",
     "AkaneThinkingAgentCommandExecutor",
     "VoiceThinkingStartResult",
     "VOICE_REALTIME_MAX_FRAME_BYTES",

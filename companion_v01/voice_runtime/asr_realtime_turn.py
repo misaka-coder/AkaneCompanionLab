@@ -65,7 +65,9 @@ class VoiceASRRealtimeTurnCoordinator:
     def __init__(
         self,
         *,
-        adapter: Any,
+        adapter: Any | None = None,
+        provider_session: NormalizedASRSession | None = None,
+        retain_provider_session: bool = False,
         bridge: VoiceASRSessionBridge,
         filename: str = "akane_voice_input.pcm",
         content_type: str = "audio/pcm",
@@ -75,6 +77,8 @@ class VoiceASRRealtimeTurnCoordinator:
         interruption_runtime_driver: Callable[[], Any] | None = None,
     ) -> None:
         self.adapter = adapter
+        self.provider_session = provider_session
+        self.retain_provider_session = bool(retain_provider_session)
         self.bridge = bridge
         self.filename = str(filename or "akane_voice_input.pcm")
         self.content_type = str(content_type or "audio/pcm")
@@ -96,6 +100,10 @@ class VoiceASRRealtimeTurnCoordinator:
     def final_pending(self) -> bool:
         return self._finalize_task is not None and not self._finalize_task.done()
 
+    @property
+    def terminal(self) -> bool:
+        return self._settled_result is not None
+
     async def open(self) -> VoiceASRRealtimeTurnResult:
         if self._open_attempted:
             return VoiceASRRealtimeTurnResult(
@@ -114,29 +122,50 @@ class VoiceASRRealtimeTurnCoordinator:
                 bridge_result=opened_turn,
             )
 
-        try:
-            opened_session = await self.adapter.open_session(
-                filename=self.filename,
-                content_type=self.content_type,
-                language=self.language,
-            )
-        except Exception:
-            return self._record_open_failure(
-                mode=ASRSessionMode.STREAMING,
-                reason="asr_provider_open_failed",
-                retryable=True,
-            )
+        if self.provider_session is not None:
+            if not self.retain_provider_session:
+                return self._record_open_failure(
+                    mode=self.provider_session.mode,
+                    reason="asr_shared_session_policy_required",
+                    retryable=False,
+                )
+            if not self.provider_session.supports_turn_commit:
+                return self._record_open_failure(
+                    mode=self.provider_session.mode,
+                    reason="asr_provider_commit_turn_unsupported",
+                    retryable=False,
+                )
+            self._session = self.provider_session
+        else:
+            if self.adapter is None:
+                return self._record_open_failure(
+                    mode=ASRSessionMode.STREAMING,
+                    reason="asr_provider_adapter_missing",
+                    retryable=False,
+                )
+            try:
+                opened_session = await self.adapter.open_session(
+                    filename=self.filename,
+                    content_type=self.content_type,
+                    language=self.language,
+                )
+            except Exception:
+                return self._record_open_failure(
+                    mode=ASRSessionMode.STREAMING,
+                    reason="asr_provider_open_failed",
+                    retryable=True,
+                )
 
-        if not opened_session.ok or opened_session.session is None:
-            return self._record_open_failure(
-                mode=opened_session.mode,
-                reason=opened_session.reason or "asr_provider_open_failed",
-                retryable=opened_session.retryable,
-                provider_status=opened_session.provider_status,
-                safe_public_summary=opened_session.safe_public_summary,
-            )
+            if not opened_session.ok or opened_session.session is None:
+                return self._record_open_failure(
+                    mode=opened_session.mode,
+                    reason=opened_session.reason or "asr_provider_open_failed",
+                    retryable=opened_session.retryable,
+                    provider_status=opened_session.provider_status,
+                    safe_public_summary=opened_session.safe_public_summary,
+                )
 
-        self._session = opened_session.session
+            self._session = opened_session.session
         return VoiceASRRealtimeTurnResult(
             status="succeeded",
             bridge_result=opened_turn,
@@ -314,8 +343,9 @@ class VoiceASRRealtimeTurnCoordinator:
                 early_candidate=self._latest_candidate,
                 final_pending=self.final_pending,
             )
+        finalize = self._session.commit_turn if self.retain_provider_session else self._session.finalize
         self._finalize_task = asyncio.create_task(
-            self._session.finalize(),
+            finalize(),
             name=f"voice-asr-finalize-{self.bridge.voice_turn_id}",
         )
         return VoiceASRRealtimeTurnResult(

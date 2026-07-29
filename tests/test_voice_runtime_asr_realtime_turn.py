@@ -209,6 +209,76 @@ class VoiceASRRealtimeTurnCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         replay_projections = [projection for transition in host.transitions for projection in transition.projections]
         self.assertEqual(replay_projections, projections)
 
+    async def test_two_turns_share_one_call_scoped_provider_session(self) -> None:
+        class CallProviderSession:
+            def __init__(self) -> None:
+                self.feed_count = 0
+                self.commit_count = 0
+                self.cancelled = False
+
+            async def feed_audio(self, *, audio: bytes):
+                self.feed_count += 1
+                return {
+                    "quality": "stable_checkpoint",
+                    "stable_text": f"第{self.feed_count}句",
+                    "provider_receipt_id": f"checkpoint-{self.feed_count}",
+                    "control_significant": True,
+                }
+
+            async def commit_turn(self):
+                self.commit_count += 1
+                return {
+                    "quality": "final",
+                    "stable_text": f"第{self.commit_count}句",
+                    "provider_receipt_id": f"final-{self.commit_count}",
+                    "control_significant": True,
+                }
+
+            async def finalize(self):
+                raise AssertionError("call-scoped turns must not finalize the provider")
+
+            async def cancel(self):
+                self.cancelled = True
+
+        provider = CallProviderSession()
+        session = NormalizedASRSession(
+            provider_session=provider,
+            mode=ASRSessionMode.STREAMING,
+        )
+        factory = EventFactory()
+        host = _ReducerHost(factory)
+
+        async def run_turn(turn_id: str, stream_id: str) -> None:
+            coordinator = VoiceASRRealtimeTurnCoordinator(
+                provider_session=session,
+                retain_provider_session=True,
+                bridge=VoiceASRSessionBridge(
+                    host=host,
+                    event_factory=factory,
+                    voice_turn_id=turn_id,
+                    audio_stream_id=stream_id,
+                ),
+            )
+            self.assertTrue((await coordinator.open()).ok)
+            self.assertTrue((await coordinator.feed_audio(b"voice")).ok)
+            self.assertTrue(coordinator.start_finalize().ok)
+            self.assertTrue((await coordinator.settle_finalize()).ok)
+
+        await run_turn("turn-call-1", "stream-call-1")
+        await run_turn("turn-call-2", "stream-call-2")
+
+        self.assertEqual(provider.feed_count, 2)
+        self.assertEqual(provider.commit_count, 2)
+        self.assertFalse(provider.cancelled)
+        self.assertEqual(
+            host.snapshot.input_turns["turn-call-1"].state,
+            InputTurnStatus.COMMITTED,
+        )
+        self.assertEqual(
+            host.snapshot.input_turns["turn-call-2"].state,
+            InputTurnStatus.COMMITTED,
+        )
+
     async def test_open_failure_is_structured_into_the_voice_turn(self) -> None:
         coordinator, host = self._coordinator(_FailedAdapter())
 
