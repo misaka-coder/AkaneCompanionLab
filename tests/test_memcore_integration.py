@@ -605,6 +605,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(counter.count_text(""), 0)
 
     def test_manager_injects_single_v2_config_and_estimated_counter(self) -> None:
+        self.assertEqual(config.MEMCORE_RAW_TOKEN_TRIGGER, 48000)
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",

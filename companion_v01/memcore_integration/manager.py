@@ -2421,7 +2421,7 @@ class MemcoreManager:
         return memcore.MemoryConfig(
             raw_token_trigger=max(
                 1000,
-                int(getattr(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000) or 24000),
+                int(getattr(config, "MEMCORE_RAW_TOKEN_TRIGGER", 48000) or 48000),
             ),
             raw_token_batch_ratio=max(
                 0.01,

@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
     MEMCORE_SHADOW_COMPARE: bool = False
     # MemCore V2 raw projection 达到多少 tokens 后触发差值压缩
-    MEMCORE_RAW_TOKEN_TRIGGER: int = 24000
+    MEMCORE_RAW_TOKEN_TRIGGER: int = 48000
     # 触发后计划压缩的旧 raw token 比例；实际切点对齐完整 turn/component
     MEMCORE_RAW_TOKEN_BATCH_RATIO: float = 0.67
     # 单次结构化检索结果可回填给模型的 token 预算；0 表示不设预算
@@ -875,7 +875,7 @@ def _apply_settings(s: Settings) -> None:
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
     MEMCORE_RAW_TOKEN_TRIGGER = max(
         1000,
-        min(200000, int(s.MEMCORE_RAW_TOKEN_TRIGGER or 24000)),
+        min(200000, int(s.MEMCORE_RAW_TOKEN_TRIGGER or 48000)),
     )
     MEMCORE_RAW_TOKEN_BATCH_RATIO = max(0.01, min(0.99, float(s.MEMCORE_RAW_TOKEN_BATCH_RATIO or 0.67)))
     MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET = max(
