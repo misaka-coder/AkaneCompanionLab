@@ -3,3 +3,5 @@ akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root stat
 akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root personal
 akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root finance
 akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root both
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root personal-finance-enable
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root personal-finance-disable

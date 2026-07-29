@@ -23,21 +23,25 @@ case "$original_command" in
         echo "  2. Recover Personal Bot (QR only if needed)"
         echo "  3. Recover Finance Bot (QR only if needed)"
         echo "  4. Recover Both"
-        printf 'Choose 1-4: '
+        echo "  5. Enable Personal Bot finance standby"
+        echo "  6. Disable Personal Bot finance standby"
+        printf 'Choose 1-6: '
         IFS= read -r choice
         case "$choice" in
             1) action="status" ;;
             2) action="personal" ;;
             3) action="finance" ;;
             4) action="both" ;;
+            5) action="personal-finance-enable" ;;
+            6) action="personal-finance-disable" ;;
             *) echo "Denied: invalid choice"; exit 64 ;;
         esac
         ;;
-    status|personal|finance|both)
+    status|personal|finance|both|personal-finance-enable|personal-finance-disable)
         action="$original_command"
         ;;
     help)
-        echo "Allowed commands: status, personal, finance, both"
+        echo "Allowed commands: status, personal, finance, both, personal-finance-enable, personal-finance-disable"
         exit 0
         ;;
     *)
@@ -67,6 +71,11 @@ elif grep -q '^AKANE_FILE=' <<<"$result"; then
     echo "then download personal.png or finance.png within 10 minutes."
 elif grep -Eq '^AKANE_STATE=(connected|connected_after_restart)$' <<<"$result"; then
     echo "All requested Bots are already connected. No QR image is needed or created."
+elif grep -q '^AKANE_STATE=personal_finance_enabled$' <<<"$result"; then
+    echo "Personal Bot finance standby is enabled."
+    echo "Pull the Personal Bot into the target group, then send: /财经订阅 全部快讯"
+elif grep -q '^AKANE_STATE=personal_finance_disabled$' <<<"$result"; then
+    echo "Personal Bot finance standby is disabled; its normal prompt/tools are restored."
 fi
 
 echo

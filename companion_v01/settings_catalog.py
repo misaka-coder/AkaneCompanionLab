@@ -192,6 +192,22 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("AUX_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "AUX 模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("AUX_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "AUX 协议", managed_in=MANAGED_MODEL_SERVICE),
     _s(
+        "AUX_FAILOVER_API_KEY",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "AUX 故障降级 API Key",
+        sensitive=True,
+    ),
+    _s("AUX_FAILOVER_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级 base_url"),
+    _s("AUX_FAILOVER_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级模型名"),
+    _s("AUX_FAILOVER_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级协议"),
+    _s(
+        "LLM_AUX_FAILOVER_ENABLED",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "AUX 主提供者失败时使用独立备用提供者重试一次",
+    ),
+    _s(
         "CHAT_API_KEY",
         _LLM,
         SCOPE_RESTART_CLIENT,
