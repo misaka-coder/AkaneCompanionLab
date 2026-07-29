@@ -107,6 +107,11 @@ def build_bot_runtime_routers(
                 if getattr(runtime, "voice_runtime_service", None) is not None
                 else None
             ),
+            realtime_asr_call_factory=(
+                getattr(runtime.voice_runtime_service, "open_call", None)
+                if getattr(runtime, "voice_runtime_service", None) is not None
+                else None
+            ),
         ),
         build_control_center_router(
             runtime_metrics=runtime_metrics,

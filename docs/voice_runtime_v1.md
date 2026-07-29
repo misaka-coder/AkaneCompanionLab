@@ -855,6 +855,15 @@ desktop_pet_next
 只有一次 `run-task`、挂断时一次 `finish-task`；随后才回填单 WebSocket 和桌宠
 整场通话表现。
 
+服务端现已提供协议版本 2 的同路由分流：首帧为 `client.call.open` 时进入
+call-scoped 会话，首帧为旧 `client.open` 时仍进入逐轮兼容会话。新版在一条
+WebSocket 内复用 `AkaneVoiceRuntimeCall`，每个 `client.turn.start` 只新建
+VoiceCore turn coordinator；上一轮仍在播放时，下一轮可以开始收音，播放
+ACK 通过 `delivery_id` / `control_id` 回到原交付 channel，不会被当前输入轮
+覆盖。断线会取消活动输入轮和 provider，会话正常挂断才调用 `finish_call()`。
+桌宠客户端尚未切到协议版本 2，因此这一里程碑只代表服务端传输和宿主能力已
+接通，不代表用户界面已经完成连续通话验收。
+
 客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
 判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR
 `partial/checkpoint` 组合起来：稳定 checkpoint 后允许较短静音收尾，只有 partial

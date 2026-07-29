@@ -38,8 +38,11 @@ from .host import (
     VoiceRuntimeJournal,
 )
 from .realtime_transport import (
+    VOICE_REALTIME_CALL_PROTOCOL_VERSION,
     VOICE_REALTIME_MAX_FRAME_BYTES,
     VOICE_REALTIME_PROTOCOL_VERSION,
+    VoiceRealtimeCallFactory,
+    VoiceRealtimeCallWebSocketSession,
     VoiceRealtimeCoordinatorFactory,
     VoiceRealtimeCoordinatorResolution,
     VoiceRealtimeOpenRequest,
@@ -125,8 +128,11 @@ __all__ = [
     "AkaneThinkingAgentCommandExecutor",
     "VoiceThinkingStartResult",
     "VOICE_REALTIME_MAX_FRAME_BYTES",
+    "VOICE_REALTIME_CALL_PROTOCOL_VERSION",
     "VOICE_REALTIME_PROTOCOL_VERSION",
     "VOICE_PLAYBACK_OUTPUT_MODE",
+    "VoiceRealtimeCallFactory",
+    "VoiceRealtimeCallWebSocketSession",
     "VoiceRealtimeCoordinatorFactory",
     "VoiceRealtimeCoordinatorResolution",
     "VoiceRealtimeOpenRequest",

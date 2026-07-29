@@ -254,6 +254,8 @@ class AkaneVoiceRuntimeCall:
         self.voice_session_id = str(voice_session_id or "")
         self.provider_id = str(getattr(context.provider, "provider_id", "") or "")
         self._active_coordinator: VoiceASRRealtimeTurnCoordinator | None = None
+        self._used_voice_turn_ids: set[str] = set()
+        self._used_audio_stream_ids: set[str] = set()
         self._closed = False
 
     @property
@@ -279,6 +281,11 @@ class AkaneVoiceRuntimeCall:
                 "voice_realtime_call_input_turn_active",
                 status="conflict",
             )
+        if request.voice_turn_id in self._used_voice_turn_ids or request.audio_stream_id in self._used_audio_stream_ids:
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_realtime_call_turn_identity_reused",
+                status="conflict",
+            )
         resolved = self.service._build_turn_coordinator(
             request=request,
             context=self.context,
@@ -287,6 +294,8 @@ class AkaneVoiceRuntimeCall:
         )
         if resolved.ready:
             self._active_coordinator = resolved.coordinator
+            self._used_voice_turn_ids.add(request.voice_turn_id)
+            self._used_audio_stream_ids.add(request.audio_stream_id)
         return resolved
 
     async def finish(self) -> ASRSessionUpdate:

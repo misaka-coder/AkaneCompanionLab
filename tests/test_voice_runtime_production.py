@@ -433,6 +433,12 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                     first_settled = await _commit_realtime_turn(first.coordinator)
                     self.assertEqual(first_settled.response_status, "started")
                     self.assertTrue(service.wait_idle(timeout=5.0))
+                    reused = opened.call.create_turn(first_request)
+                    self.assertEqual(reused.status, "conflict")
+                    self.assertEqual(
+                        reused.reason,
+                        "voice_realtime_call_turn_identity_reused",
+                    )
 
                     second_request = _open_request(
                         voice_turn_id="voice-turn-call-2",

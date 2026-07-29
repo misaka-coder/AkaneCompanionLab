@@ -26,6 +26,7 @@ from ..tts_provider_runtime import (
     resolve_tts_runtime_provider as _resolve_tts_runtime_provider,
 )
 from ..voice_runtime.realtime_transport import (
+    VoiceRealtimeCallFactory,
     VoiceRealtimeCoordinatorFactory,
     handle_voice_realtime_websocket,
 )
@@ -47,6 +48,7 @@ def build_voice_router(
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     asr_adapter_factory: Callable[[str], Any] | None = None,
     realtime_asr_coordinator_factory: VoiceRealtimeCoordinatorFactory | None = None,
+    realtime_asr_call_factory: VoiceRealtimeCallFactory | None = None,
 ) -> APIRouter:
     router = APIRouter()
     provider_config_base_dir = _resolve_provider_config_base_dir(
@@ -59,6 +61,7 @@ def build_voice_router(
         await handle_voice_realtime_websocket(
             websocket,
             coordinator_factory=realtime_asr_coordinator_factory,
+            call_factory=realtime_asr_call_factory,
             runtime_metrics=runtime_metrics,
             log_event=log_event,
         )
