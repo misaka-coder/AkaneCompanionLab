@@ -707,7 +707,10 @@ export class RealtimeVoiceSession {
       const timeoutId = this.scope.setTimeout(() => {
         if (settled) return;
         settled = true;
-        this.fail("voice_realtime_ready_timeout", { terminal: true });
+        this.fail("voice_realtime_ready_timeout", {
+          terminal: true,
+          retryable: true
+        });
         reject(new Error("voice_realtime_ready_timeout"));
       }, this.readyTimeoutMs);
 
@@ -733,7 +736,10 @@ export class RealtimeVoiceSession {
           this.scope.clearTimeout(timeoutId);
           reject(new Error("voice_realtime_websocket_failed"));
         }
-        this.fail("voice_realtime_websocket_failed", { terminal: true });
+        this.fail("voice_realtime_websocket_failed", {
+          terminal: true,
+          retryable: true
+        });
       });
       socket.addEventListener("close", () => {
         this.scope.clearTimeout(timeoutId);
@@ -742,7 +748,10 @@ export class RealtimeVoiceSession {
           reject(new Error("voice_realtime_closed_before_ready"));
         }
         if (!this.closed && !this.responseTerminal) {
-          this.fail("voice_realtime_connection_closed", { terminal: true });
+          this.fail("voice_realtime_connection_closed", {
+            terminal: true,
+            retryable: true
+          });
         }
       });
       this.resolveReady = () => {

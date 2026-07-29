@@ -556,4 +556,60 @@ interruptionSession.handleServerEvent({ type: "server.interruption.accepted" });
 interruptionSession.handleServerEvent({ type: "server.interruption.skipped" });
 assert.deepEqual(interruptionEvents, ["accepted", "skipped"]);
 
+class FakeWebSocket {
+  static latest = null;
+
+  constructor() {
+    this.listeners = new Map();
+    this.readyState = 0;
+    FakeWebSocket.latest = this;
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = 3;
+  }
+
+  emit(type, payload = {}) {
+    for (const listener of this.listeners.get(type) || []) listener(payload);
+  }
+}
+
+const transportFailures = [];
+const transportFailureSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  callbacks: {
+    onFailure: (failure) => transportFailures.push(failure)
+  },
+  scope: {
+    WebSocket: FakeWebSocket,
+    setTimeout,
+    clearTimeout,
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:transport-failure",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 6000 }
+  }
+});
+const transportOpenTask = transportFailureSession.openSocket();
+FakeWebSocket.latest.emit("error");
+await assert.rejects(transportOpenTask, /voice_realtime_websocket_failed/);
+assert.equal(transportFailures.length, 1);
+assert.equal(transportFailures[0].terminal, true);
+assert.equal(transportFailures[0].retryable, true);
+assert.equal(transportFailures[0].committed, false);
+
 console.log("realtime voice playback smoke: ok");

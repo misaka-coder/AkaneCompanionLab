@@ -29,7 +29,12 @@ import {
   buildVoiceWebSocketUrl,
   supportsRealtimeVoiceCapture
 } from "./realtime-voice-client.js";
-import { RealtimeVoiceCallFlow } from "./realtime-voice-call-flow.js";
+import {
+  RealtimeVoiceCallFlow,
+  RealtimeVoiceReconnectBackoff,
+  hasRealtimeVoiceInputEvidence,
+  shouldReconnectPassiveVoiceFailure
+} from "./realtime-voice-call-flow.js";
 import { RealtimeVoiceEndpointDetector } from "./realtime-voice-endpoint.js";
 import {
   attachDesktopCareContext,
@@ -75,6 +80,7 @@ const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
 const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const REALTIME_VOICE_FINAL_TIMEOUT_MS = 15 * 1000;
+const REALTIME_VOICE_STABLE_LISTENER_MS = 5 * 1000;
 const DESKTOP_CONTEXT_POLL_MS = 1500;
 const DESKTOP_CONTEXT_TURN_WAIT_MS = 280;
 const DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS = 1200;
@@ -3076,10 +3082,29 @@ async function startRealtimeVoiceCall() {
       turns: new Set(),
       inputTurn: null,
       openingTurn: false,
+      reconnect: null,
       nextTurnId: 1
     };
     call.flow = new RealtimeVoiceCallFlow({
       onListenRequested: () => scheduleNextRealtimeVoiceCallTurn(call)
+    });
+    call.reconnect = new RealtimeVoiceReconnectBackoff({
+      schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancel: (timer) => window.clearTimeout(timer),
+      onReconnect: () => {
+        if (!isActiveRealtimeVoiceCall(call)) return;
+        call.flow?.requestNextListeningTurn();
+      },
+      onExhausted: () => {
+        if (!isActiveRealtimeVoiceCall(call)) return;
+        void (async () => {
+          await stopRealtimeVoiceCall({
+            notice: false,
+            reason: "voice_realtime_reconnect_exhausted"
+          });
+          showError("实时监听连续重连失败，语音通话已结束。");
+        })();
+      }
     });
     call.flow.start();
     realtimeVoiceCall = call;
@@ -3097,7 +3122,12 @@ async function startRealtimeVoiceCall() {
     scheduleSettingsSnapshot();
 
     const opened = await openRealtimeVoiceCallTurn(call);
-    if (!opened && realtimeVoiceCall === call && !call.stopping) {
+    if (
+      !opened &&
+      realtimeVoiceCall === call &&
+      !call.stopping &&
+      !call.reconnect?.pending
+    ) {
       await stopRealtimeVoiceCall({
         notice: false,
         reason: "initial_voice_turn_failed"
@@ -3152,6 +3182,7 @@ async function openRealtimeVoiceCallTurn(call) {
     fallbackBlob: null,
     finalWatchdogId: 0,
     closed: false,
+    readyAt: 0,
     hasShownSpeech: false,
     earlyShownDeliveryId: ""
   };
@@ -3392,6 +3423,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
     onReady() {
       if (!isCurrent()) return;
       turn.ready = true;
+      turn.readyAt = Date.now();
       if (turn.call.inputTurn === turn) {
         setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
       }
@@ -3400,6 +3432,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
       if (!isCurrent() || turn.call.inputTurn !== turn) return;
       const transcript = `${String(text || "")}${String(unstableTail || "")}`.trim();
       if (!transcript) return;
+      turn.call.reconnect?.reset();
       const prefix = kind === "checkpoint" ? "听清了" : "正在听";
       showBubbleText(`${prefix}：${transcript}`, {
         transient: false,
@@ -3410,6 +3443,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
       if (!isCurrent()) return;
       clearRealtimeVoiceFinalWatchdog(turn);
       turn.committed = true;
+      turn.call.reconnect?.reset();
       turn.fallbackBlob = null;
       turn.responseActive = true;
       refreshRealtimeVoiceCallSending(turn.call);
@@ -3584,7 +3618,8 @@ async function markRealtimeVoiceCallFailure(turn, failure) {
     reason: String(failure?.reason || "voice_realtime_failed"),
     message: String(failure?.message || "实时语音链路暂时不可用。"),
     terminal: Boolean(failure?.terminal),
-    committed: Boolean(failure?.committed || turn.committed)
+    committed: Boolean(failure?.committed || turn.committed),
+    retryable: Boolean(failure?.retryable)
   };
   if (!normalized.terminal) {
     setRuntimeStatus(normalized.message, { mode: "error" });
@@ -3599,6 +3634,68 @@ async function markRealtimeVoiceCallFailure(turn, failure) {
         ok: false,
         message: normalized.message
       });
+      return;
+    }
+    const detectorSnapshot = turn.detector?.snapshot?.() || {};
+    const hasInputEvidence = hasRealtimeVoiceInputEvidence(detectorSnapshot);
+    if (!hasInputEvidence) {
+      try {
+        await stopRealtimeCallSafetyRecorder(turn);
+      } catch {
+        // There is no speech evidence to recover from this recorder.
+      }
+      if (!isActiveRealtimeCallTurn(turn)) return;
+      turn.fallbackBlob = null;
+      turn.recorderChunks = [];
+      if (
+        shouldReconnectPassiveVoiceFailure({
+          committed: normalized.committed,
+          retryable: normalized.retryable,
+          detectorSnapshot
+        })
+      ) {
+        const call = turn.call;
+        if (
+          turn.readyAt > 0 &&
+          Date.now() - turn.readyAt >= REALTIME_VOICE_STABLE_LISTENER_MS
+        ) {
+          call.reconnect?.reset();
+        }
+        turn.closed = true;
+        turn.session?.dispose(normalized.reason);
+        call.turns.delete(turn);
+        if (call.inputTurn === turn) call.inputTurn = null;
+        call.flow?.complete(turn.flowTurn, { requestNext: false });
+        refreshRealtimeVoiceCallSending(call);
+        const reconnectState = call.reconnect?.schedule();
+        if (reconnectState === "scheduled" || reconnectState === "pending") {
+          const hasActiveReply = [...call.turns].some(
+            (candidate) => candidate.responseActive || candidate.playbackActive
+          );
+          if (!hasActiveReply) {
+            setVoiceInputState("recording");
+            setPetEmotion("listening", { persist: false });
+            setPetMotion("thinking");
+            showBubbleText("监听短暂断开，正在自动重连……", {
+              transient: true,
+              durationMs: 1600,
+              kind: "status"
+            });
+          }
+          setRuntimeStatus("语音通话中 · 监听正在重连", {
+            mode: "listening"
+          });
+          updateActivityControls();
+          scheduleSettingsSnapshot();
+          return;
+        }
+        if (reconnectState === "exhausted") return;
+      }
+      await stopRealtimeVoiceCall({
+        notice: false,
+        reason: normalized.reason
+      });
+      showError(normalized.message);
       return;
     }
     let blob = turn.fallbackBlob;
@@ -3692,6 +3789,7 @@ async function stopRealtimeVoiceCall({
   if (call.stopTask) return call.stopTask;
   call.active = false;
   call.stopping = true;
+  call.reconnect?.stop();
   call.flow?.stop();
   realtimeVoiceCall = null;
   const turns = [...call.turns];
