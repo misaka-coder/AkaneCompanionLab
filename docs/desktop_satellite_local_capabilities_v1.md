@@ -105,12 +105,17 @@ start_akane_cloud_personal.bat
 该入口只启动桌面端与 Desktop Satellite，不启动第二个 Akane 后端。它会：
 
 1. 优先读取用户环境中的 `AKANE_DESKTOP_SATELLITE_TOKEN_PERSONAL`；
-2. 建立或复用 `akane-vps` 到云端 personal 后端的加密 SSH 隧道；
-3. 精确核对 `/health` 的 `personal / ok / valid`；
-4. 以 `-CloudSatellite` 调用正式桌宠启动器；
-5. 等待 `open_browser`、`desktop_context_snapshot`、`system_media_snapshot`、`system_media_control` 四项能力在云端目录中变为 `ready`。
+2. 从参数或用户环境 `AKANE_GPT_SOVITS_ROOT` 定位 GPT-SoVITS，复用或启动
+   loopback-only `api_v2.py`，并用 OpenAPI 中真实存在的 `/tts` 做就绪判断；
+3. 建立 GPT-SoVITS 到云端 loopback 的反向隧道，并从云端再次验证 `/tts`；
+4. 建立或复用 `akane-vps` 到云端 personal 后端的加密 SSH 隧道；
+5. 精确核对 `/health` 的 `personal / ok / valid`；
+6. 以 `-CloudSatellite` 调用正式桌宠启动器；
+7. 等待 `open_browser`、`desktop_context_snapshot`、`system_media_snapshot`、`system_media_control` 四项能力在云端目录中变为 `ready`。
 
 token 不写进仓库、命令行、prompt 或普通日志。隧道 PID 和无敏感信息的 SSH 日志位于本机 personal Satellite 数据根的 `run/`、`logs/` 下。已验证但并非该入口创建的 loopback 隧道也可以安全复用。
+明确不需要角色语音的启动可传 `-SkipGptSoVits`；默认启动不会再因 GPT-SoVITS
+尚未手动运行而悄悄跳过角色语音。
 
 ## 7. 尚未完成，不能对外宣称可用
 

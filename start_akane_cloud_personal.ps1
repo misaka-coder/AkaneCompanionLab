@@ -4,6 +4,7 @@ param(
     [int]$RemotePort = 10001,
     [int]$GptSoVitsLocalPort = 9880,
     [int]$GptSoVitsRemotePort = 19880,
+    [string]$GptSoVitsRoot = "",
     [int]$LocalMediaPort = 9879,
     [int]$LocalMediaRemotePort = 19879,
     [string]$InstanceId = "personal",
@@ -13,7 +14,8 @@ param(
     [switch]$OpenSettings,
     [switch]$SkipDesktop,
     [switch]$SkipOfferCheck,
-    [switch]$SkipLocalMedia
+    [switch]$SkipLocalMedia,
+    [switch]$SkipGptSoVits
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,6 +64,179 @@ function Test-AkaneTcpPort {
     } finally {
         $client.Dispose()
     }
+}
+
+function Get-AkaneGptSoVitsApi {
+    param([int]$Port)
+    try {
+        $spec = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/openapi.json" -TimeoutSec 3
+        $paths = @($spec.paths.PSObject.Properties.Name)
+        if ($paths -contains "/tts") {
+            return $spec
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+function Wait-AkaneGptSoVitsApi {
+    param(
+        [int]$Port,
+        [int]$Attempts = 120
+    )
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt += 1) {
+        $spec = Get-AkaneGptSoVitsApi -Port $Port
+        if ($null -ne $spec) {
+            return $spec
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $null
+}
+
+function Resolve-AkaneGptSoVitsRoot {
+    param([string]$ExplicitRoot)
+    $configured = ([string]$ExplicitRoot).Trim()
+    if (-not $configured) {
+        $configured = ([string][Environment]::GetEnvironmentVariable(
+            "AKANE_GPT_SOVITS_ROOT",
+            "Process"
+        )).Trim()
+    }
+    if (-not $configured) {
+        $configured = ([string][Environment]::GetEnvironmentVariable(
+            "AKANE_GPT_SOVITS_ROOT",
+            "User"
+        )).Trim()
+    }
+    if (-not $configured) {
+        throw "gpt_sovits_root_not_configured"
+    }
+    return [System.IO.Path]::GetFullPath($configured)
+}
+
+function Test-AkaneTrackedProcess {
+    param(
+        [string]$PidPath,
+        [string]$ExpectedExecutable,
+        [string]$ExpectedCommandFragment
+    )
+    if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) {
+        return $false
+    }
+    $storedProcessId = 0
+    if (-not [int]::TryParse(
+        [System.IO.File]::ReadAllText($PidPath).Trim(),
+        [ref]$storedProcessId
+    )) {
+        return $false
+    }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$storedProcessId" -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        return $false
+    }
+    $actualExecutable = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+    $expectedPath = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    return (
+        $actualExecutable.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]$process.CommandLine -like "*$ExpectedCommandFragment*"
+    )
+}
+
+function Stop-AkaneTrackedProcess {
+    param(
+        [string]$PidPath,
+        [string]$ExpectedExecutable,
+        [string]$ExpectedCommandFragment
+    )
+    if (-not (Test-AkaneTrackedProcess `
+        -PidPath $PidPath `
+        -ExpectedExecutable $ExpectedExecutable `
+        -ExpectedCommandFragment $ExpectedCommandFragment
+    )) {
+        return
+    }
+    $storedProcessId = [int][System.IO.File]::ReadAllText($PidPath).Trim()
+    Stop-Process -Id $storedProcessId -Force
+    Start-Sleep -Milliseconds 250
+}
+
+function Start-AkaneGptSoVitsApi {
+    param(
+        [string]$Root,
+        [int]$Port,
+        [string]$LogDirectory
+    )
+    $python = Join-Path $Root "runtime\python.exe"
+    $entry = Join-Path $Root "api_v2.py"
+    $config = Join-Path $Root "GPT_SoVITS\configs\tts_infer.yaml"
+    foreach ($requiredPath in @($python, $entry, $config)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "gpt_sovits_dependency_missing"
+        }
+    }
+    return Start-Process `
+        -FilePath $python `
+        -ArgumentList @(
+            "-I",
+            "api_v2.py",
+            "-a", "127.0.0.1",
+            "-p", [string]$Port,
+            "-c", "GPT_SoVITS/configs/tts_infer.yaml"
+        ) `
+        -WorkingDirectory $Root `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $LogDirectory "gpt_sovits_api.log") `
+        -RedirectStandardError (Join-Path $LogDirectory "gpt_sovits_api.err.log") `
+        -PassThru
+}
+
+function Get-AkaneRemoteGptSoVitsApi {
+    param(
+        [string]$Target,
+        [int]$Port
+    )
+    $ssh = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        throw "ssh_not_found"
+    }
+    try {
+        $remoteCommand = "curl -fsS --max-time 4 http://127.0.0.1:$Port/openapi.json"
+        $response = & $ssh.Source `
+            "-T" `
+            "-o" "BatchMode=yes" `
+            "-o" "ConnectTimeout=4" `
+            $Target `
+            $remoteCommand 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+        $spec = (($response -join "`n") | ConvertFrom-Json)
+        $paths = @($spec.paths.PSObject.Properties.Name)
+        if ($paths -contains "/tts") {
+            return $spec
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+function Wait-AkaneRemoteGptSoVitsApi {
+    param(
+        [string]$Target,
+        [int]$Port,
+        [int]$Attempts = 10
+    )
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt += 1) {
+        $spec = Get-AkaneRemoteGptSoVitsApi -Target $Target -Port $Port
+        if ($null -ne $spec) {
+            return $spec
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $null
 }
 
 function Import-AkanePersonalSatelliteToken {
@@ -247,27 +422,46 @@ if (-not $SkipLocalMedia) {
         -DataRoot (Join-Path $resolvedDataRoot "local-media")
 }
 
+$gptSoVitsApiPidPath = Join-Path $runDirectory "gpt_sovits_api.pid"
 $gptSoVitsTunnelPidPath = Join-Path $runDirectory "gpt_sovits_reverse_tunnel.pid"
-if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $GptSoVitsLocalPort) {
-    $expectedReverseForward = "127.0.0.1:{0}:127.0.0.1:{1}" -f $GptSoVitsRemotePort, $GptSoVitsLocalPort
-    if (Test-Path -LiteralPath $gptSoVitsTunnelPidPath -PathType Leaf) {
-        $storedProcessId = 0
-        if ([int]::TryParse(
-            [System.IO.File]::ReadAllText($gptSoVitsTunnelPidPath).Trim(),
-            [ref]$storedProcessId
-        )) {
-            $storedProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$storedProcessId" -ErrorAction SilentlyContinue
-            $isTrackedReverseTunnel = (
-                $null -ne $storedProcess -and
-                [System.IO.Path]::GetFileNameWithoutExtension([string]$storedProcess.ExecutablePath) -eq "ssh" -and
-                [string]$storedProcess.CommandLine -like "*-R*$expectedReverseForward*"
-            )
-            if ($isTrackedReverseTunnel) {
-                Stop-Process -Id $storedProcessId -Force
-                Start-Sleep -Milliseconds 200
-            }
+if (-not $SkipGptSoVits) {
+    $resolvedGptSoVitsRoot = Resolve-AkaneGptSoVitsRoot -ExplicitRoot $GptSoVitsRoot
+    $gptSoVitsPython = Join-Path $resolvedGptSoVitsRoot "runtime\python.exe"
+    $gptSoVitsApi = Get-AkaneGptSoVitsApi -Port $GptSoVitsLocalPort
+    if ($null -eq $gptSoVitsApi) {
+        Stop-AkaneTrackedProcess `
+            -PidPath $gptSoVitsApiPidPath `
+            -ExpectedExecutable $gptSoVitsPython `
+            -ExpectedCommandFragment "api_v2.py"
+        if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $GptSoVitsLocalPort) {
+            throw "gpt_sovits_port_in_use_by_another_service"
         }
+        Write-Host "[INFO] Starting the configured character voice runtime..."
+        $gptSoVitsProcess = Start-AkaneGptSoVitsApi `
+            -Root $resolvedGptSoVitsRoot `
+            -Port $GptSoVitsLocalPort `
+            -LogDirectory $logDirectory
+        [System.IO.File]::WriteAllText($gptSoVitsApiPidPath, [string]$gptSoVitsProcess.Id)
+        $gptSoVitsApi = Wait-AkaneGptSoVitsApi -Port $GptSoVitsLocalPort
+        if ($null -eq $gptSoVitsApi) {
+            if (-not $gptSoVitsProcess.HasExited) {
+                Stop-Process -Id $gptSoVitsProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+            throw "gpt_sovits_start_timeout: see $logDirectory"
+        }
+    } else {
+        Write-Host "[INFO] Reusing the verified character voice runtime."
     }
+
+    $expectedReverseForward = "127.0.0.1:{0}:127.0.0.1:{1}" -f $GptSoVitsRemotePort, $GptSoVitsLocalPort
+    $ssh = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        throw "ssh_not_found"
+    }
+    Stop-AkaneTrackedProcess `
+        -PidPath $gptSoVitsTunnelPidPath `
+        -ExpectedExecutable $ssh.Source `
+        -ExpectedCommandFragment $expectedReverseForward
     Write-Host "[INFO] Publishing local GPT-SoVITS to the cloud over SSH loopback..."
     $gptSoVitsTunnelProcess = Start-AkaneGptSoVitsReverseTunnel `
         -Target $SshHost `
@@ -279,8 +473,13 @@ if (Test-AkaneTcpPort -HostName "127.0.0.1" -Port $GptSoVitsLocalPort) {
         throw "gpt_sovits_reverse_tunnel_failed: see $logDirectory"
     }
     [System.IO.File]::WriteAllText($gptSoVitsTunnelPidPath, [string]$gptSoVitsTunnelProcess.Id)
+    if ($null -eq (Wait-AkaneRemoteGptSoVitsApi -Target $SshHost -Port $GptSoVitsRemotePort)) {
+        Stop-Process -Id $gptSoVitsTunnelProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "gpt_sovits_reverse_tunnel_health_failed: see $logDirectory"
+    }
+    Write-Host "[OK] Character voice runtime is reachable from the cloud."
 } else {
-    Write-Host "[INFO] GPT-SoVITS is not listening on 127.0.0.1:$GptSoVitsLocalPort; provider tunnel not started."
+    Write-Host "[INFO] Character voice runtime startup was explicitly skipped."
 }
 
 $tokenSource = Import-AkanePersonalSatelliteToken -ExpectedInstanceId $InstanceId

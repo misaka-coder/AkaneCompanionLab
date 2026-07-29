@@ -448,7 +448,14 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertIn('"-R"', source)
         self.assertIn("$GptSoVitsLocalPort = 9880", source)
         self.assertIn("$GptSoVitsRemotePort = 19880", source)
+        self.assertIn("AKANE_GPT_SOVITS_ROOT", source)
+        self.assertIn("api_v2.py", source)
+        self.assertIn("GPT_SoVITS/configs/tts_infer.yaml", source)
+        self.assertIn("gpt_sovits_api.pid", source)
         self.assertIn("gpt_sovits_reverse_tunnel.pid", source)
+        self.assertIn("Get-AkaneGptSoVitsApi", source)
+        self.assertIn("Get-AkaneRemoteGptSoVitsApi", source)
+        self.assertIn('"/tts"', source)
         self.assertIn("Get-CimInstance Win32_Process", source)
         self.assertIn("Stop-Process -Id $storedProcessId -Force", source)
         self.assertIn("Import-AkanePersonalSatelliteToken", source)
@@ -505,6 +512,8 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                         temp_dir,
                         "-SkipDesktop",
                         "-SkipOfferCheck",
+                        "-SkipLocalMedia",
+                        "-SkipGptSoVits",
                     ],
                     cwd=ROOT,
                     env=env,

@@ -215,6 +215,42 @@ def build_voice_router(
             edge_tts_available=tts_client is not None,
             gpt_sovits_client_factory=gpt_sovits_client_factory,
         )
+        requested_provider = str(resolution.get("requestedProviderId") or "")
+        active_provider = str(resolution.get("activeProviderId") or "")
+        if requested_provider == GPT_SOVITS_PROVIDER_ID and active_provider != requested_provider:
+            reason = _safe_tts_reason(str(resolution.get("reason") or "requested_provider_unavailable"))
+            failure_resolution = {
+                **resolution,
+                "status": "unavailable",
+                "activeProviderId": "",
+                "fallbackProviderId": "",
+                "reason": reason,
+            }
+            runtime_metrics.observe_request(
+                "tts",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "tts_requested_provider_unavailable",
+                provider=GPT_SOVITS_PROVIDER_ID,
+                reason=reason,
+                text_length=len(text),
+            )
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="requested_tts_provider_unavailable",
+                    message="角色指定的 GPT-SoVITS 暂不可用，没有改用其他声线。",
+                    retryable=reason
+                    not in {
+                        "requested_voice_profile_missing",
+                        "requested_provider_disabled",
+                        "requested_provider_invalid_config",
+                    },
+                ),
+                status_code=503,
+                headers=_tts_response_headers(failure_resolution),
+            )
         headers = _tts_response_headers(resolution)
 
         if resolution["activeProviderId"] == GPT_SOVITS_PROVIDER_ID:
@@ -238,21 +274,33 @@ def build_voice_router(
                 )
                 return Response(content=audio, media_type=media_type, headers=headers)
             except Exception as exc:
-                resolution = {
+                failure_resolution = {
                     **resolution,
-                    "status": "degraded",
-                    "activeProviderId": EDGE_TTS_PROVIDER_ID if tts_client is not None else "",
-                    "fallbackProviderId": EDGE_TTS_PROVIDER_ID if tts_client is not None else "",
+                    "status": "unavailable",
+                    "activeProviderId": GPT_SOVITS_PROVIDER_ID,
+                    "fallbackProviderId": "",
                     "reason": "gpt_sovits_failed",
                 }
-                headers = _tts_response_headers(resolution)
+                runtime_metrics.observe_request(
+                    "tts",
+                    duration_ms=(time.perf_counter() - started_at) * 1000,
+                    ok=False,
+                )
                 log_event(
-                    "tts_provider_fallback",
+                    "tts_provider_failed",
                     provider=GPT_SOVITS_PROVIDER_ID,
-                    fallbackProviderId=resolution.get("fallbackProviderId"),
                     reason="gpt_sovits_failed",
                     errorType=_safe_tts_reason(type(exc).__name__),
                     text_length=len(text),
+                )
+                return JSONResponse(
+                    build_desktop_pet_error_payload(
+                        error="gpt_sovits_failed",
+                        message="角色语音合成失败，没有改用其他声线。",
+                        retryable=True,
+                    ),
+                    status_code=502,
+                    headers=_tts_response_headers(failure_resolution),
                 )
 
         if tts_client is None:

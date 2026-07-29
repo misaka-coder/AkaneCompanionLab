@@ -3811,7 +3811,7 @@ for line in sys.stdin:
         self.assertEqual(edge.calls, ["你好"])
         self.assertIn(("tts", True), runtime.observed)
 
-    def test_tts_route_degrades_character_gpt_sovits_request_without_profile(self) -> None:
+    def test_tts_route_rejects_character_gpt_sovits_request_without_profile(self) -> None:
         class FakeCharacterVoiceService:
             def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
                 return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": ""}
@@ -3836,11 +3836,12 @@ for line in sys.stdin:
             json={"text": "测试", "real_user_id": "master", "character_pack_id": "reimu"},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"edge-audio")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"], "requested_tts_provider_unavailable")
+        self.assertFalse(response.json()["retryable"])
         self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.gpt_sovits.local")
-        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
-        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "")
         self.assertEqual(response.headers.get("x-akane-tts-reason"), "requested_voice_profile_missing")
 
     def test_tts_route_uses_configured_gpt_sovits_for_character_voice(self) -> None:
@@ -4030,7 +4031,7 @@ for line in sys.stdin:
             ],
         )
 
-    def test_tts_route_falls_back_to_edge_when_gpt_sovits_call_fails_without_leak(self) -> None:
+    def test_tts_route_reports_gpt_sovits_failure_without_edge_or_leak(self) -> None:
         class FakeCharacterVoiceService:
             def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
                 return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": "reimu_main"}
@@ -4078,13 +4079,14 @@ for line in sys.stdin:
                 json={"text": "失败回退", "real_user_id": "master", "character_pack_id": "reimu"},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"edge-after-gpt-fail")
-        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
-        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "provider.tts.edge")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"], "gpt_sovits_failed")
+        self.assertTrue(response.json()["retryable"])
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "")
         self.assertEqual(response.headers.get("x-akane-tts-reason"), "gpt_sovits_failed")
         serialized_logs = json.dumps(logs, ensure_ascii=False).lower()
-        self.assertIn("tts_provider_fallback", serialized_logs)
+        self.assertIn("tts_provider_failed", serialized_logs)
         self.assertNotIn("secret", serialized_logs)
         self.assertNotIn("token", serialized_logs)
         self.assertNotIn("users", serialized_logs)
