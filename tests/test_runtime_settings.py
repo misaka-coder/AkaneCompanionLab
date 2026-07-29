@@ -85,6 +85,7 @@ class BotSettingsViewTests(unittest.TestCase):
             PROMPT_CACHE_RETENTION="24h",
             LLM_CONTEXT_WINDOW=12000,
             LLM_AUTO_COMPACT_TOKEN_LIMIT=9000,
+            LLM_THINKING_MODE="enabled",
             LLM_REASONING_EFFORT="medium",
             LLM_AUX_REASONING_EFFORT="low",
             LLM_CHAT_REASONING_EFFORT="high",
@@ -106,6 +107,7 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertNotIn("image-secret", repr(view))
         self.assertEqual(view.prompt_cache_namespace, "bot-a")
         self.assertEqual(view.llm_context_window, 12000)
+        self.assertEqual(view.llm_thinking_mode, "enabled")
         self.assertEqual(view.llm_chat_reasoning_effort, "high")
         self.assertTrue(view.llm_chat_failover_to_aux_enabled)
         self.assertTrue(view.llm_aux_failover_enabled)
@@ -119,6 +121,7 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertTrue(public["aux_failover"]["configured"])
         self.assertTrue(public["vision"]["configured"])
         self.assertEqual(public["context"]["auto_compact_token_limit"], 9000)
+        self.assertEqual(public["reasoning"]["thinking_mode"], "enabled")
         with self.assertRaises(dataclasses.FrozenInstanceError):
             view.chat_model_name = "other"  # type: ignore[misc]
 
@@ -146,6 +149,7 @@ class BotSettingsViewTests(unittest.TestCase):
                 "image_generation_enabled": True,
                 "prompt_cache_namespace": "bot-b",
                 "llm_context_window": 4096,
+                "llm_thinking_mode": "enabled",
                 "llm_chat_reasoning_effort": "medium",
                 "llm_aux_failover_enabled": True,
                 "llm_chat_failover_to_aux_enabled": True,
@@ -155,11 +159,14 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertTrue(vision_override.image_generation_enabled)
         self.assertEqual(vision_override.prompt_cache_namespace, "bot-b")
         self.assertEqual(vision_override.llm_context_window, 4096)
+        self.assertEqual(vision_override.llm_thinking_mode, "enabled")
         self.assertEqual(vision_override.llm_chat_reasoning_effort, "medium")
         self.assertTrue(vision_override.llm_aux_failover_enabled)
         self.assertTrue(vision_override.llm_chat_failover_to_aux_enabled)
         with self.assertRaisesRegex(ValueError, "bot_settings_reasoning_effort_invalid"):
             base.overlay({"llm_chat_reasoning_effort": "ultra"})
+        with self.assertRaisesRegex(ValueError, "bot_settings_thinking_mode_invalid"):
+            base.overlay({"llm_thinking_mode": "sometimes"})
         with self.assertRaises(ValueError) as raised:
             base.overlay({"absolute_path": "not-allowed"})
         self.assertEqual(str(raised.exception), "bot_settings_unknown_field:absolute_path")

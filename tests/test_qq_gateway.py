@@ -1434,6 +1434,60 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.to_delivery_context()["chat_model_override"], "deepseek-v4-flash")
         self.assertNotIn("deepseek-v4-flash", next_context.extra_context)
 
+    def test_thinking_mode_command_switches_runtime_for_master(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "thinking-mode-enable-1",
+                "raw_message": "思考模式 开",
+            }
+        )
+        applied: list[str] = []
+
+        result = gateway.handle_thinking_mode_command(
+            context,
+            current_mode="disabled",
+            supported=True,
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "enabled")
+        self.assertEqual(result["thinking_mode"], "enabled")
+        self.assertEqual(applied, ["enabled"])
+        self.assertIn("不会发送温度参数", result["reply"])
+
+    def test_thinking_mode_command_rejects_unsupported_model_without_writing(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "thinking-mode-unsupported-1",
+                "raw_message": "开启思考模式",
+            }
+        )
+        applied: list[str] = []
+
+        result = gateway.handle_thinking_mode_command(
+            context,
+            current_mode="disabled",
+            supported=False,
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "unsupported_current_model")
+        self.assertEqual(applied, [])
+
     def test_chat_model_command_lists_current_provider_models(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(

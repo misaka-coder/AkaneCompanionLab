@@ -40,6 +40,8 @@ class _FakeEngine:
     def __init__(self) -> None:
         self.close_count = 0
         self.reloaded_settings = None
+        self.settings = BotSettingsView()
+        self.llm = SimpleNamespace(settings=self.settings)
 
     def close(self) -> dict[str, str]:
         self.close_count += 1
@@ -224,6 +226,21 @@ class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_thinking_mode_update_is_persisted_and_applied_to_one_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime, _plugin_host, engine, _followups = _runtime()
+            store = SettingsOverrideStore(Path(temp_dir) / "settings_overrides.json")
+            runtime.settings_override_store = store
+            runtime.config_module = RuntimeConfigView(config, {})
+
+            applied = runtime.set_llm_thinking_mode("enabled")
+
+            self.assertEqual(applied, "enabled")
+            self.assertEqual(runtime.settings.llm_thinking_mode, "enabled")
+            self.assertIs(engine.settings, runtime.settings)
+            self.assertIs(engine.llm.settings, runtime.settings)
+            self.assertEqual(store.load()["LLM_THINKING_MODE"], "enabled")
+
     async def test_model_reload_replaces_only_this_runtime_settings_snapshot(self) -> None:
         runtime, _plugin_host, engine, _followups = _runtime()
         original = runtime.settings

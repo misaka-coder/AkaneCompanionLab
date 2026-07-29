@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from channelcore_onebot import (
     AttachmentRef,
@@ -192,6 +192,24 @@ QQ_CHAT_MODEL_SWITCH_PATTERNS = (
     re.compile(r"^模型(?:切换|切到|改为|换成)[:：\s]+(.+)$", re.IGNORECASE),
     re.compile(r"^model[:：\s]+(.+)$", re.IGNORECASE),
 )
+QQ_THINKING_MODE_CURRENT_COMMANDS = {
+    "思考模式",
+    "思考状态",
+    "当前思考模式",
+    "思考模式状态",
+}
+QQ_THINKING_MODE_ENABLE_COMMANDS = {
+    "思考模式开",
+    "思考模式开启",
+    "开启思考模式",
+    "启用思考模式",
+}
+QQ_THINKING_MODE_DISABLE_COMMANDS = {
+    "思考模式关",
+    "思考模式关闭",
+    "关闭思考模式",
+    "禁用思考模式",
+}
 QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 
 QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
@@ -1352,6 +1370,124 @@ class NapCatQQGateway:
                 continue
             return {"action": "switch", "model": _safe_chat_model_id(match.group(1))}
         return None
+
+    def parse_thinking_mode_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        compact = re.sub(r"[\s:：]+", "", text)
+        if compact in QQ_THINKING_MODE_CURRENT_COMMANDS:
+            return {"action": "current"}
+        if compact in QQ_THINKING_MODE_ENABLE_COMMANDS:
+            return {"action": "enable"}
+        if compact in QQ_THINKING_MODE_DISABLE_COMMANDS:
+            return {"action": "disable"}
+        return None
+
+    def handle_thinking_mode_command(
+        self,
+        context: QQMessageContext,
+        *,
+        command: dict[str, str] | None = None,
+        current_mode: str = "disabled",
+        supported: bool = True,
+        apply_mode: Callable[[str], str] | None = None,
+    ) -> dict[str, Any] | None:
+        command = command or self.parse_thinking_mode_command(context.clean_message)
+        if command is None:
+            return None
+
+        normalized_current = str(current_mode or "").strip().lower()
+        if normalized_current not in {"enabled", "disabled"}:
+            normalized_current = "disabled"
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq and int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "这个命令只允许主人使用。",
+                "thinking_mode": normalized_current,
+                "supported": supported,
+            }
+
+        action = str(command.get("action") or "")
+        if action == "current":
+            label = "开启" if normalized_current == "enabled" else "关闭"
+            support_note = "" if supported else "\n当前聊天模型不支持 DeepSeek thinking 开关。"
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": (
+                    f"当前思考模式：{label}。{support_note}\n"
+                    "发送“思考模式 开”或“思考模式 关”切换。"
+                ),
+                "thinking_mode": normalized_current,
+                "supported": supported,
+            }
+
+        target_mode = {"enable": "enabled", "disable": "disabled"}.get(action, "")
+        if not target_mode:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "invalid_action",
+                "reply": "这个思考模式指令暂时不支持。",
+                "thinking_mode": normalized_current,
+                "supported": supported,
+            }
+        if not supported:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "unsupported_current_model",
+                "reply": "当前聊天模型不支持 DeepSeek thinking 开关，配置没有修改。",
+                "thinking_mode": normalized_current,
+                "supported": False,
+            }
+        if apply_mode is None:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_unavailable",
+                "reply": "当前运行环境暂时不能切换思考模式，配置没有修改。",
+                "thinking_mode": normalized_current,
+                "supported": True,
+            }
+        try:
+            applied_mode = str(apply_mode(target_mode) or "").strip().lower()
+        except Exception:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_failed",
+                "reply": "思考模式切换失败，原配置保持不变。",
+                "thinking_mode": normalized_current,
+                "supported": True,
+            }
+        if applied_mode != target_mode:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_mismatch",
+                "reply": "思考模式没有切换成功，原配置保持不变。",
+                "thinking_mode": normalized_current,
+                "supported": True,
+            }
+
+        enabled = applied_mode == "enabled"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "enabled" if enabled else "disabled",
+            "reply": (
+                "已开启 DeepSeek 思考模式；从下一条消息开始生效，开启时不会发送温度参数。"
+                if enabled
+                else "已关闭 DeepSeek 思考模式；从下一条消息开始恢复非思考采样。"
+            ),
+            "thinking_mode": applied_mode,
+            "supported": True,
+            "state_persisted": True,
+        }
 
     def set_session_character_pack_id(self, session_id: str, character_pack_id: str) -> bool:
         key = _safe_qq_session_key(session_id)

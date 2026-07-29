@@ -28,7 +28,7 @@ from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
 from .model_service_config import normalize_provider_model_id
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
-from .runtime_settings import BotSettingsView, normalize_reasoning_effort
+from .runtime_settings import BotSettingsView, normalize_reasoning_effort, normalize_thinking_mode
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
@@ -728,6 +728,11 @@ class LLMRuntime:
         if not model_override:
             return bundle
         return ModelBundle(client=bundle.client, model=model_override)
+
+    def chat_supports_deepseek_thinking(self, *, chat_model_override: str = "") -> bool:
+        return self._supports_deepseek_thinking_control(
+            self._chat_bundle_for_override(chat_model_override)
+        )
 
     def _chat_failover_bundle(
         self,
@@ -1690,7 +1695,10 @@ class LLMRuntime:
             payload["max_tokens"] = int(self._settings_view().llm_chat_max_output_tokens)
         # Current OpenAI reasoning models reject sampling controls when explicit
         # reasoning effort is selected. Keep temperature for all legacy paths.
-        if not (self._is_responses_protocol(bundle) and self._responses_reasoning_effort(bundle)):
+        if not (
+            (self._is_responses_protocol(bundle) and self._responses_reasoning_effort(bundle))
+            or self._deepseek_thinking_mode(bundle) == "enabled"
+        ):
             payload["temperature"] = temperature
         if stream:
             payload["stream"] = True
@@ -2581,14 +2589,18 @@ class LLMRuntime:
         if self._is_responses_protocol(bundle):
             effort = self._responses_reasoning_effort(bundle)
             return {"reasoning": {"effort": effort}} if effort else {}
-        mode = str(getattr(config, "LLM_THINKING_MODE", "disabled") or "").strip().lower()
-        if mode in {"", "default", "auto"}:
-            return {}
-        if mode not in {"enabled", "disabled"}:
-            return {}
-        if not self._supports_deepseek_thinking_control(bundle):
+        mode = self._deepseek_thinking_mode(bundle)
+        if not mode:
             return {}
         return {"extra_body": {"thinking": {"type": mode}}}
+
+    def _deepseek_thinking_mode(self, bundle: ModelBundle) -> str:
+        mode = normalize_thinking_mode(self._settings_view().llm_thinking_mode)
+        if mode in {"", "default", "auto"}:
+            return ""
+        if not self._supports_deepseek_thinking_control(bundle):
+            return ""
+        return mode
 
     def _responses_reasoning_effort(self, bundle: ModelBundle | None = None) -> str:
         client = getattr(bundle, "client", bundle)

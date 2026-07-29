@@ -174,6 +174,7 @@ _MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
     "akane_memcore_open_turn_guard",
     default=None,
 )
+FINAL_RESPONSE_TEMPERATURE = 0.8
 
 
 class _ContextBoundGenerator:
@@ -5056,7 +5057,7 @@ class AkaneMemoryEngine:
                 "user_prompt": str(generation_context["user_prompt"])
                 + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
-                "temperature": 0.7,
+                "temperature": FINAL_RESPONSE_TEMPERATURE,
                 "prompt_cache_key": prompt_cache_key,
                 "user_images": user_images,
                 "system_extra_blocks": generation_context.get("system_extra_blocks"),
@@ -5380,7 +5381,7 @@ class AkaneMemoryEngine:
                 "user_prompt": str(generation_context["user_prompt"])
                 + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
-                "temperature": 0.7,
+                "temperature": FINAL_RESPONSE_TEMPERATURE,
                 "prompt_cache_key": prompt_cache_key,
                 "user_images": user_images,
                 "native_tools": generation_context.get("native_tools"),

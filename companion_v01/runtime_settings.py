@@ -13,11 +13,17 @@ from typing import Any, Mapping
 
 
 REASONING_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+THINKING_MODE_VALUES = frozenset({"default", "auto", "enabled", "disabled"})
 
 
 def normalize_reasoning_effort(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in REASONING_EFFORT_VALUES else ""
+
+
+def normalize_thinking_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in THINKING_MODE_VALUES else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +72,7 @@ class BotSettingsView:
     prompt_cache_retention: str = ""
     llm_context_window: int = 0
     llm_auto_compact_token_limit: int = 0
+    llm_thinking_mode: str = "disabled"
     llm_reasoning_effort: str = ""
     llm_aux_reasoning_effort: str = ""
     llm_chat_reasoning_effort: str = ""
@@ -165,6 +172,10 @@ class BotSettingsView:
                 0,
                 int(getattr(config_module, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0),
             ),
+            llm_thinking_mode=normalize_thinking_mode(
+                getattr(config_module, "LLM_THINKING_MODE", "disabled")
+            )
+            or "disabled",
             llm_reasoning_effort=normalize_reasoning_effort(
                 getattr(config_module, "LLM_REASONING_EFFORT", "")
             ),
@@ -296,6 +307,7 @@ class BotSettingsView:
             "prompt_cache_retention",
             "llm_context_window",
             "llm_auto_compact_token_limit",
+            "llm_thinking_mode",
             "llm_reasoning_effort",
             "llm_aux_reasoning_effort",
             "llm_chat_reasoning_effort",
@@ -484,6 +496,7 @@ class BotSettingsView:
                 "chat_to_aux_enabled": self.llm_chat_failover_to_aux_enabled,
             },
             "reasoning": {
+                "thinking_mode": self.llm_thinking_mode,
                 "default": self.llm_reasoning_effort,
                 "aux": self.llm_aux_reasoning_effort,
                 "chat": self.llm_chat_reasoning_effort,
@@ -529,6 +542,12 @@ def _configured(api_key: str, base_url: str, model: str, protocol: str) -> bool:
 
 
 def _overlay_value(key: str, value: Any) -> Any:
+    if key == "llm_thinking_mode":
+        raw = str(value or "").strip()
+        normalized = normalize_thinking_mode(raw)
+        if not normalized:
+            raise ValueError("bot_settings_thinking_mode_invalid")
+        return normalized
     if key in {"llm_reasoning_effort", "llm_aux_reasoning_effort", "llm_chat_reasoning_effort"}:
         raw = str(value or "").strip()
         normalized = normalize_reasoning_effort(raw)
@@ -658,6 +677,8 @@ def runtime_setting(settings: Any, config_module: Any, field_name: str, config_n
 __all__ = [
     "BotSettingsView",
     "REASONING_EFFORT_VALUES",
+    "THINKING_MODE_VALUES",
     "normalize_reasoning_effort",
+    "normalize_thinking_mode",
     "runtime_setting",
 ]

@@ -1626,6 +1626,7 @@ def build_qq_router(
     admin_auth: AdminWriteAuth | None = None,
     route_base: str = "/api/qq",
     plugin_command_broker_provider: Callable[[], Any] | None = None,
+    thinking_mode_setter: Callable[[str], str] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
@@ -2338,6 +2339,68 @@ def build_qq_router(
                         "send_result": send_result,
                     }
                 )
+
+            thinking_mode_command = qq_gateway.parse_thinking_mode_command(context.clean_message)
+            if isinstance(thinking_mode_command, dict):
+                llm_runtime = getattr(engine, "llm", None)
+                try:
+                    supports_thinking = bool(
+                        llm_runtime is not None
+                        and callable(getattr(llm_runtime, "chat_supports_deepseek_thinking", None))
+                        and llm_runtime.chat_supports_deepseek_thinking(
+                            chat_model_override=str(getattr(context, "chat_model_override", "") or "")
+                        )
+                    )
+                except Exception:
+                    supports_thinking = False
+                thinking_mode_command_result = qq_gateway.handle_thinking_mode_command(
+                    context,
+                    command=thinking_mode_command,
+                    current_mode=str(
+                        getattr(getattr(engine, "settings", None), "llm_thinking_mode", "disabled")
+                        or "disabled"
+                    ),
+                    supported=supports_thinking,
+                    apply_mode=thinking_mode_setter,
+                )
+                if isinstance(thinking_mode_command_result, dict):
+                    reply = str(thinking_mode_command_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    )
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    command_ok = bool(thinking_mode_command_result.get("ok"))
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")) and command_ok,
+                    )
+                    log_event(
+                        "qq_thinking_mode_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        command_status=str(thinking_mode_command_result.get("status") or ""),
+                        command_ok=command_ok,
+                        thinking_mode=str(thinking_mode_command_result.get("thinking_mode") or ""),
+                        supported=bool(thinking_mode_command_result.get("supported")),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_thinking_mode_command",
+                            "command_status": str(thinking_mode_command_result.get("status") or ""),
+                            "command_ok": command_ok,
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "thinking_mode": str(
+                                thinking_mode_command_result.get("thinking_mode") or ""
+                            ),
+                            "supported": bool(thinking_mode_command_result.get("supported")),
+                            "send_result": send_result,
+                        }
+                    )
 
             chat_model_command = qq_gateway.parse_chat_model_command(context.clean_message)
             if isinstance(chat_model_command, dict):

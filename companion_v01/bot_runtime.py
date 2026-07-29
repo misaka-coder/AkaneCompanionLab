@@ -35,12 +35,13 @@ from .public_guard import PublicThinkGuard
 from .qq_channel_profiles import QQChannelDeploymentProfile
 from .qq_gateway import NapCatQQGateway
 from .resource_manifest import ResourceManifest
-from .runtime_settings import BotSettingsView
+from .runtime_settings import BotSettingsView, normalize_thinking_mode
 from .settings_overrides import (
     RuntimeConfigView,
     SettingsOverrideStore,
     load_and_apply_saved_overrides,
     load_saved_overrides,
+    set_override,
 )
 from .tts_provider_runtime import resolve_character_tts_client
 from .voice_runtime import AkaneVoiceRuntimeService
@@ -140,6 +141,24 @@ class BotRuntime:
         persisted = self.qq_gateway.clear_all_chat_model_overrides()
         result["chat_model_overrides_status"] = "cleared" if persisted else "persist_failed"
         return result
+
+    def set_llm_thinking_mode(self, mode: str) -> str:
+        normalized = normalize_thinking_mode(mode)
+        if normalized not in {"enabled", "disabled"}:
+            raise ValueError("llm_thinking_mode_invalid")
+        applied = str(
+            set_override(
+                self.config_module,
+                self.settings_override_store,
+                key="LLM_THINKING_MODE",
+                raw_value=normalized,
+            )
+            or ""
+        )
+        self.settings = self.settings.overlay({"llm_thinking_mode": applied})
+        self.engine.settings = self.settings
+        self.engine.llm.settings = self.settings
+        return self.settings.llm_thinking_mode
 
     def bind_app_state(self, app: Any) -> None:
         app.state.akane_bot_runtime = self

@@ -220,6 +220,7 @@ for qq_bot_runtime in bot_registry.values():
         "channel_config": qq_bot_runtime.qq_channel_config,
         "admin_auth": qq_bot_runtime.admin_write_auth,
         "plugin_command_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_command_broker,
+        "thinking_mode_setter": qq_bot_runtime.set_llm_thinking_mode,
     }
     app.include_router(
         build_qq_router(

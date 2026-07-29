@@ -836,6 +836,79 @@ class BackendRouteModuleTests(unittest.TestCase):
         mocked_post.assert_called_once()
         self.assertIn("养成模块未启用", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
 
+    def test_qq_router_applies_deepseek_thinking_mode_command_without_running_chat(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        applied: list[str] = []
+
+        class FakeLLM:
+            @staticmethod
+            def chat_supports_deepseek_thinking(*, chat_model_override: str = "") -> bool:
+                return True
+
+        class FakeEngine:
+            llm = FakeLLM()
+            settings = SimpleNamespace(llm_thinking_mode="disabled")
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        def set_thinking_mode(mode: str) -> str:
+            applied.append(mode)
+            FakeEngine.settings = SimpleNamespace(llm_thinking_mode=mode)
+            return mode
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+                thinking_mode_setter=set_thinking_mode,
+            )
+        )
+
+        with (
+            patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=FakeResponse(),
+            ) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-thinking-mode-1",
+                    "raw_message": "思考模式 开",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_thinking_mode_command")
+        self.assertEqual(payload["command_status"], "enabled")
+        self.assertTrue(payload["command_ok"])
+        self.assertEqual(payload["thinking_mode"], "enabled")
+        self.assertEqual(applied, ["enabled"])
+        self.assertEqual(process_calls, [])
+        self.assertIn("已开启 DeepSeek 思考模式", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
+
     def test_qq_router_does_not_intercept_retired_finance_mode_command(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

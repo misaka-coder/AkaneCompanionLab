@@ -2318,7 +2318,52 @@ class LLMClientConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(payload["temperature"], 0.1)
         self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_llm_runtime_enables_deepseek_thinking_without_temperature(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.8,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertNotIn("temperature", payload)
+
+    def test_non_deepseek_model_keeps_temperature_when_thinking_setting_is_enabled(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.com/v1"),
+            model="regular-chat-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.8,
+        )
+
+        self.assertEqual(payload["temperature"], 0.8)
+        self.assertNotIn("extra_body", payload)
 
     def test_chat_output_budget_is_provider_payload_not_prompt_content(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
