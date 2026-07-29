@@ -3165,6 +3165,15 @@ async function openRealtimeVoiceCallTurn(call) {
       onSpeechStarted: () => {
         if (!isActiveRealtimeCallTurn(turn) || call.inputTurn !== turn) return;
         setRuntimeStatus("语音通话中 · 听到你了", { mode: "listening" });
+        const overlapsPlayback = [...call.turns].some(
+          (candidate) =>
+            candidate !== turn &&
+            !candidate.closed &&
+            candidate.playbackActive
+        );
+        if (overlapsPlayback) {
+          turn.session?.reportInterruptionSuspected();
+        }
       },
       onEndpoint: (endpoint) => {
         void handleRealtimeVoiceCallEndpoint(turn, endpoint);
@@ -3422,6 +3431,7 @@ function buildRealtimeVoiceCallCallbacks(turn) {
     onPlaybackStarted(header) {
       if (!isCurrent()) return;
       turn.playbackActive = true;
+      turn.call.flow?.allowOverlapListening(turn.flowTurn);
       if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setRestingPetEmotion();
       }
@@ -3448,6 +3458,17 @@ function buildRealtimeVoiceCallCallbacks(turn) {
         mode: "error"
       });
       updateActivityControls();
+    },
+    onInterruptionAccepted() {
+      if (!isCurrent()) return;
+      setRuntimeStatus("听到你在说话，正在判断是否接管", {
+        mode: "listening"
+      });
+      updateActivityControls();
+    },
+    onInterruptionSkipped() {
+      if (!isCurrent() || turn.call.inputTurn !== turn) return;
+      setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
     },
     onPlaybackCompleted() {
       if (!isCurrent()) return;

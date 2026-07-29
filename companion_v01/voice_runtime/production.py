@@ -365,6 +365,7 @@ class AkaneVoiceRuntimeService:
                 bridge=bridge,
                 language=request.language,
                 pcm_normalizer=normalizer,
+                interruption_runtime_driver=host_result.drive_once,
                 response_starter=(
                     lambda: self._start_response_generation(
                         host=host_result,

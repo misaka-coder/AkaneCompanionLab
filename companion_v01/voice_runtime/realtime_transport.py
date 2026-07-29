@@ -238,6 +238,9 @@ class VoiceRealtimeWebSocketSession:
         if message_type == "client.audio":
             await self._handle_audio_header(payload)
             return
+        if message_type == "client.interruption.suspected":
+            await self._handle_interruption_suspected(payload)
+            return
         if message_type == "client.endpoint":
             await self._handle_endpoint()
             return
@@ -252,6 +255,42 @@ class VoiceRealtimeWebSocketSession:
             await self._handle_playback_ack(message_type, payload)
             return
         await self._send_failed("client_message_type_unsupported", terminal=False)
+
+    async def _handle_interruption_suspected(self, payload: Mapping[str, Any]) -> None:
+        audio_clock_ms = payload.get("audio_clock_ms")
+        if isinstance(audio_clock_ms, bool) or not isinstance(audio_clock_ms, int) or audio_clock_ms < 0:
+            await self._send_failed(
+                "voice_interruption_audio_clock_invalid",
+                terminal=False,
+            )
+            return
+        try:
+            result = self.coordinator.suspect_interruption(
+                audio_clock_ms=audio_clock_ms,
+            )
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            await self._send_failed(
+                "voice_interruption_dispatch_failed",
+                retryable=True,
+                terminal=False,
+            )
+            return
+        status = str(getattr(result, "status", "") or "")
+        if status == "failed":
+            await self._send_result_failure(result, terminal=False)
+            return
+        accepted = status == "accepted"
+        await self.websocket.send_json(
+            {
+                "type": ("server.interruption.accepted" if accepted else "server.interruption.skipped"),
+                "protocol_version": VOICE_REALTIME_PROTOCOL_VERSION,
+                "voice_turn_id": (self.open_request.voice_turn_id if self.open_request is not None else ""),
+                "status": status or "duplicate",
+                "reason": str(getattr(result, "reason", "") or "")[:128],
+            }
+        )
 
     async def _handle_open(self, payload: Mapping[str, Any]) -> None:
         if self.open_request is not None:

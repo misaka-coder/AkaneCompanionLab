@@ -58,10 +58,31 @@ export class RealtimeVoiceCallFlow {
     return true;
   }
 
-  complete(turn) {
-    if (!this.active || this.currentTurn !== turn) return false;
-    turn.phase = "completed";
+  allowOverlapListening(turn) {
+    if (
+      !this.active ||
+      this.currentTurn !== turn ||
+      turn.phase !== "responding"
+    ) {
+      return false;
+    }
     this.currentTurn = null;
+    this.requestNextListeningTurn();
+    return true;
+  }
+
+  complete(turn) {
+    if (
+      !this.active ||
+      !turn ||
+      turn.phase === "completed" ||
+      turn.phase === "stopped"
+    ) {
+      return false;
+    }
+    if (this.currentTurn !== turn && turn.phase !== "responding") return false;
+    turn.phase = "completed";
+    if (this.currentTurn === turn) this.currentTurn = null;
     this.requestNextListeningTurn();
     return true;
   }

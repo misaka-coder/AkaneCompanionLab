@@ -237,7 +237,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function startNextTtsPrepare(token)", main_source)
         self.assertIn("function queueStreamedTtsSegment(text, turnToken, segmentIndex = null)", main_source)
         self.assertIn("function queueStreamedReplySegment(text, turnToken, segmentIndex = null)", main_source)
-        self.assertIn("function queueLiveTtsPayloadItems(items, signature = \"\")", main_source)
+        self.assertIn('function queueLiveTtsPayloadItems(items, signature = "")', main_source)
         self.assertIn(
             'function queueLiveReplyPayloadItems(items, { speaking = true, finalText = "" } = {})',
             main_source,
@@ -253,7 +253,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('"desktop-context-timeout"', main_source)
         self.assertIn('markTurnLatency("think-request-start")', main_source)
         self.assertIn("function displayStreamingReplyPreview(text)", main_source)
-        self.assertIn("if (!receivedSpeechSegment) {\n          displayStreamingReplyPreview(partialSpeech);", main_source)
+        self.assertIn(
+            "if (!receivedSpeechSegment) {\n          displayStreamingReplyPreview(partialSpeech);", main_source
+        )
         self.assertIn('markTurnLatencyOnce("first-speech-segment"', main_source)
         self.assertIn('markTurnLatencyOnce("first-bubble-displayed"', main_source)
         self.assertIn("function removeStreamingTtsPrefix(text)", main_source)
@@ -264,7 +266,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("els.bubbleText.scrollTop = 0", main_source)
         self.assertIn("function displayReplyBubbleText(text, { speaking = true } = {})", main_source)
         self.assertIn("function getSegmentDisplayDelay(text)", main_source)
-        self.assertIn("if (!rendered && !streamingReplyText && !firstSpeechSegmentShown) {\n        showThinking();", main_source)
+        self.assertIn(
+            "if (!rendered && !streamingReplyText && !firstSpeechSegmentShown) {\n        showThinking();", main_source
+        )
         self.assertIn("queueStreamedReplySegment(text, turnToken, event?.index)", main_source)
         self.assertIn("rendered = true;", main_source)
         self.assertIn("if (streamingReplyText) {\n        finalizeStreamedReplyDisplay();", main_source)
@@ -276,8 +280,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("const TTS_SHORT_SEGMENT_MAX_CHARS = 4", main_source)
         self.assertIn("const TTS_SHORT_SEGMENT_HOLD_MS = 420", main_source)
         self.assertIn("queueLiveTtsPayloadItems(segments, signature)", main_source)
-        self.assertIn("const TTS_PREWARM_TEXT = \"嗯。\"", main_source)
-        self.assertIn("function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {})", main_source)
+        self.assertIn('const TTS_PREWARM_TEXT = "嗯。"', main_source)
+        self.assertIn(
+            "function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {})", main_source
+        )
         self.assertIn("function cancelTtsPrewarm()", main_source)
         self.assertIn("async function runTtsPrewarm({ force = false } = {})", main_source)
         self.assertIn("scheduleTtsPrewarm({ force: true, delayMs: 200 })", main_source)
@@ -302,7 +308,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
             main_source,
         )
         self.assertIn(
-            "function queueTtsItems(items, signature = \"\", { append = false, preserveSegments = false } = {})",
+            'function queueTtsItems(items, signature = "", { append = false, preserveSegments = false } = {})',
             main_source,
         )
         self.assertIn("function buildTtsQueueItems(items, { preserveSegments = false } = {})", main_source)
@@ -357,15 +363,19 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("async function stopRealtimeVoiceCall(", main_source)
         self.assertIn('els.voiceRecordButton.textContent = "挂"', main_source)
         self.assertIn("turn.call.flow?.acceptEndpoint(turn.flowTurn, action)", main_source)
+        self.assertIn("turn.call.flow?.allowOverlapListening(turn.flowTurn)", main_source)
         self.assertIn("turn.call.flow?.complete(turn.flowTurn)", main_source)
         self.assertIn("call.flow?.stop()", main_source)
         self.assertIn("class RealtimeVoiceCallFlow", call_flow_source)
         self.assertIn("turn.endpointAccepted", call_flow_source)
         self.assertIn("this.requestNextListeningTurn()", call_flow_source)
+        self.assertIn("allowOverlapListening(turn)", call_flow_source)
         self.assertIn("voice_call_capture_busy", client_source)
         self.assertIn('requestCaptureReceipt("reset")', client_source)
         self.assertIn("this.endpointDetector?.acceptPcmFrame", client_source)
         self.assertIn("this.endpointDetector?.observeTranscript", client_source)
+        self.assertIn('type: "client.interruption.suspected"', client_source)
+        self.assertIn("reportInterruptionSuspected()", client_source)
         self.assertIn("class RealtimeVoiceEndpointDetector", endpoint_source)
         self.assertIn('"stable_checkpoint_silence"', endpoint_source)
         self.assertIn('"speech_without_transcript"', endpoint_source)
@@ -421,7 +431,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("let emotion = sanitize_asset_id(&emotion)", blocking_source)
         self.assertIn("safe_child_path(&characters_dir, &pack_id)", blocking_source)
         self.assertIn("safe_child_path(&characters_dir, &outfit)", blocking_source)
-        self.assertIn("safe_child_path(&outfit_dir, &format!(\"{emotion}.{extension}\"))", blocking_source)
+        self.assertIn('safe_child_path(&outfit_dir, &format!("{emotion}.{extension}"))', blocking_source)
         self.assertIn(
             "write_bytes_atomic_with_cleanup(&target_path, &image_bytes, &cleanup_paths)",
             blocking_source,
@@ -431,7 +441,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         writer_index = tauri_source.index("fn write_bytes_atomic")
         safe_path_index = tauri_source.index("fn safe_child_path", writer_index)
         writer_source = tauri_source[writer_index:safe_path_index]
-        self.assertIn("let tmp_path = parent.join(format!(\".{file_name}.tmp\"))", writer_source)
+        self.assertIn('let tmp_path = parent.join(format!(".{file_name}.tmp"))', writer_source)
         self.assertIn("fs::rename(&tmp_path, path)", writer_source)
 
     def test_character_pack_install_commands_remain_owned_by_tauri_and_workshop(self) -> None:
@@ -572,41 +582,54 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("Boolean(workflowId && state.activeWorkflowConfigId === workflowId)", control_center_source)
         self.assertIn('class="workflow-config-fields"', control_center_source)
         self.assertIn('class="provider-toggle workflow-enable-toggle"', control_center_source)
-        self.assertIn('data-workflow-file-import', control_center_source)
-        self.assertIn('data-workflow-file-input', control_center_source)
-        self.assertIn('data-provider-tts-test', control_center_source)
-        self.assertIn('data-provider-tts-test-text', control_center_source)
-        self.assertIn('data-provider-test-audio', control_center_source)
-        self.assertIn('provider-tts-test-player', control_center_source)
-        self.assertIn('data-provider-voice-profile-save', control_center_source)
-        self.assertIn('data-provider-voice-profile-assign', control_center_source)
-        self.assertIn('data-provider-voice-profile-clear', control_center_source)
-        self.assertIn('data-provider-voice-profile-id-input', control_center_source)
-        self.assertIn('data-provider-ref-audio-path-input', control_center_source)
-        self.assertIn('data-provider-prompt-text-input', control_center_source)
+        self.assertIn("data-workflow-file-import", control_center_source)
+        self.assertIn("data-workflow-file-input", control_center_source)
+        self.assertIn("data-provider-tts-test", control_center_source)
+        self.assertIn("data-provider-tts-test-text", control_center_source)
+        self.assertIn("data-provider-test-audio", control_center_source)
+        self.assertIn("provider-tts-test-player", control_center_source)
+        self.assertIn("data-provider-voice-profile-save", control_center_source)
+        self.assertIn("data-provider-voice-profile-assign", control_center_source)
+        self.assertIn("data-provider-voice-profile-clear", control_center_source)
+        self.assertIn("data-provider-voice-profile-id-input", control_center_source)
+        self.assertIn("data-provider-ref-audio-path-input", control_center_source)
+        self.assertIn("data-provider-prompt-text-input", control_center_source)
         self.assertIn("provider-voice-profile-current", control_center_source)
         self.assertIn("abilitiesProviderTtsTest", _read("desktop_pet_next/src/control-center/action-router.js"))
-        self.assertIn("abilitiesProviderVoiceProfileSave", _read("desktop_pet_next/src/control-center/action-router.js"))
-        self.assertIn("abilitiesProviderVoiceProfileAssignToCurrentCharacter", _read("desktop_pet_next/src/control-center/action-router.js"))
-        self.assertIn("abilitiesProviderVoiceProfileClearCurrentCharacter", _read("desktop_pet_next/src/control-center/action-router.js"))
+        self.assertIn(
+            "abilitiesProviderVoiceProfileSave", _read("desktop_pet_next/src/control-center/action-router.js")
+        )
+        self.assertIn(
+            "abilitiesProviderVoiceProfileAssignToCurrentCharacter",
+            _read("desktop_pet_next/src/control-center/action-router.js"),
+        )
+        self.assertIn(
+            "abilitiesProviderVoiceProfileClearCurrentCharacter",
+            _read("desktop_pet_next/src/control-center/action-router.js"),
+        )
         self.assertIn("abilitiesMcpConfigSave", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("abilitiesMcpDiscover", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("abilitiesApprovalPolicySave", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("abilitiesWorkflowFileImport", _read("desktop_pet_next/src/control-center/action-router.js"))
-        self.assertIn('payload.serverId = String(dataset.payloadServerId).trim()', _read("desktop_pet_next/src/control-center/action-helpers.js"))
-        self.assertIn('workflowActionPath(actionId) {', data_source)
-        self.assertIn('function runMcpBackendAction', data_source)
-        self.assertIn('/capabilities/mcp-servers/${encodeURIComponent(serverId)}/${mcpActionPath(actionId)}', data_source)
+        self.assertIn(
+            "payload.serverId = String(dataset.payloadServerId).trim()",
+            _read("desktop_pet_next/src/control-center/action-helpers.js"),
+        )
+        self.assertIn("workflowActionPath(actionId) {", data_source)
+        self.assertIn("function runMcpBackendAction", data_source)
+        self.assertIn(
+            "/capabilities/mcp-servers/${encodeURIComponent(serverId)}/${mcpActionPath(actionId)}", data_source
+        )
         self.assertIn("summarizeMcpToolDetails", data_source)
         self.assertIn('promptLabel: tool.exposedToPrompt ? "已进提示词" : "默认不进提示词"', data_source)
         self.assertIn('"/capabilities/approval-policy"', data_source)
         self.assertIn('return "file"', data_source)
         self.assertIn('return "tts-test"', data_source)
-        self.assertIn('voice-profiles/${encodeURIComponent(voiceProfileId)}/config', data_source)
+        self.assertIn("voice-profiles/${encodeURIComponent(voiceProfileId)}/config", data_source)
         self.assertIn('bridge.invoke("set_character_voice_profile", { request })', data_source)
         self.assertIn('bridge.invoke("clear_character_voice_profile", { packId })', data_source)
         self.assertIn("normalizeCharacterVoicePreference", data_source)
-        self.assertIn('function readVoiceProfilesCatalog', data_source)
+        self.assertIn("function readVoiceProfilesCatalog", data_source)
         self.assertIn("workflowJson", data_source)
         self.assertIn('placeholder="12.inputs.image"', control_center_source)
         self.assertIn('placeholder="20.inputs.filename_prefix"', control_center_source)
@@ -655,7 +678,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("abilitiesQqSelfCheck", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("runQqBackendAction", _read("desktop_pet_next/src/control-center/data-sources.js"))
         self.assertIn("/api/qq/self-check", _read("desktop_pet_next/src/control-center/data-sources.js"))
-        self.assertIn("qqBackendActionIds.has(normalizedActionId)", _read("desktop_pet_next/src/control-center/data-sources.js"))
+        self.assertIn(
+            "qqBackendActionIds.has(normalizedActionId)", _read("desktop_pet_next/src/control-center/data-sources.js")
+        )
 
         self.assertIn("transcribe_media", runtime_probe)
         self.assertIn("capability modules should not expose raw id", runtime_probe)
@@ -755,9 +780,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn("workshop.portrait.cutout/run", workshop_source)
         self.assertNotIn("executePortraitCutout", workshop_source)
         self.assertIn("async function runPortraitCutoutForPreview()", workshop_source)
-        self.assertIn('buildBackendUrl(`/capabilities/workflows/${PORTRAIT_CUTOUT_WORKFLOW_ID}/jobs`', workshop_source)
-        self.assertIn('buildBackendUrl(`/capabilities/workflow-jobs/${jobId}`', workshop_source)
-        self.assertIn('buildBackendUrl(`/capabilities/workflow-jobs/${jobId}/outputs/${outputHandle}`', workshop_source)
+        self.assertIn("buildBackendUrl(`/capabilities/workflows/${PORTRAIT_CUTOUT_WORKFLOW_ID}/jobs`", workshop_source)
+        self.assertIn("buildBackendUrl(`/capabilities/workflow-jobs/${jobId}`", workshop_source)
+        self.assertIn("buildBackendUrl(`/capabilities/workflow-jobs/${jobId}/outputs/${outputHandle}`", workshop_source)
         self.assertIn('invoke("import_generated_portrait_image"', workshop_source)
         self.assertIn("readPortraitImageBytes(packId, outfitId, emotionId)", workshop_source)
         self.assertIn("overwrite: false", workshop_source)
@@ -893,16 +918,16 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("emit(CHARACTER_PACK_ACTIVATED_EVENT, { packId: activePackId })", workshop_source)
         self.assertNotIn("packId === view.activePackId) return", workshop_source)
         self.assertNotIn("applyBtn.disabled = isActive || Boolean(view.pendingApplyPackId)", workshop_source)
-        self.assertIn('applyBtn.disabled = Boolean(view.pendingApplyPackId)', workshop_source)
+        self.assertIn("applyBtn.disabled = Boolean(view.pendingApplyPackId)", workshop_source)
         self.assertIn('"重新应用"', workshop_source)
         self.assertNotIn("main_window.reload()", tauri_source)
         self.assertIn("write_text_atomic(&path, &raw_state)", tauri_source)
-        self.assertNotIn('app.emit_to(', tauri_source)
+        self.assertNotIn("app.emit_to(", tauri_source)
         self.assertIn("fn set_default_portrait", tauri_source)
         self.assertIn("tauri::ipc::Response::new(bytes)", tauri_source)
         self.assertNotIn("if emotions.is_empty() {\n            continue;", tauri_source)
         self.assertIn("fn pack_characters_dir", tauri_source)
-        self.assertIn("safe_child_path(&asset_root_dir, \"characters\")", tauri_source)
+        self.assertIn('safe_child_path(&asset_root_dir, "characters")', tauri_source)
         self.assertNotIn('pack_dir.join(&asset_root).join("characters")', tauri_source)
         self.assertNotIn('if clean.is_empty() { "default".to_string() }', tauri_source)
         self.assertIn('const DATA_ROOT_ENV: &str = "AKANE_DATA_ROOT";', tauri_source)
@@ -943,9 +968,15 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("setPetEmotion(state.currentEmotion, { persist: false, force: true });", main_source)
         self.assertIn("scheduleTauriRuntimeBridges();\n    await loadAndApplyPersistedCharacterState();", main_source)
         self.assertIn("window.setTimeout(startTauriRuntimeBridges, 0);", main_source)
-        self.assertIn("await reloadCharacterResources({ startup: true });\n    scheduleNativeWindowStateApply({ forceHitTest: true });", main_source)
+        self.assertIn(
+            "await reloadCharacterResources({ startup: true });\n    scheduleNativeWindowStateApply({ forceHitTest: true });",
+            main_source,
+        )
         self.assertNotIn("await syncNativeHitTest({ force: true });\n    await reloadCharacterResources", main_source)
-        self.assertNotIn('await invoke("apply_window_state", { state });\n    await applyCharacterLayoutResize();\n    scheduleNativeHitTestSync({ force: true });\n    await reloadCharacterResources', main_source)
+        self.assertNotIn(
+            'await invoke("apply_window_state", { state });\n    await applyCharacterLayoutResize();\n    scheduleNativeHitTestSync({ force: true });\n    await reloadCharacterResources',
+            main_source,
+        )
         self.assertIn("void Promise.allSettled([", main_source)
         self.assertIn("resolveAssetUrl(item.path || item.url || item.src", main_source)
         self.assertIn("function scheduleNativeWindowStateApply", main_source)
@@ -1026,7 +1057,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn("function persistCareRuntimeChange", main_source)
         self.assertNotIn("function randomCareReward", main_source)
         self.assertIn("careFeature: { ...getCareFeatureStatus() }", main_source)
-        self.assertIn("shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0", main_source)
+        self.assertIn(
+            "shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0", main_source
+        )
         self.assertIn('id="btn-shop" type="button" hidden', panel_html)
         self.assertIn("function renderShopAvailability()", panel_source)
         self.assertIn("els.btnShop.hidden = !available;", panel_source)
@@ -1154,9 +1187,7 @@ class PetReachGestureT5ContractTests(unittest.TestCase):
     def test_control_system_media_awaits_reach_gesture_before_tauri_call(self) -> None:
         self.assertIn("await triggerPetReachGesture()", self.main_src)
         reach_pos = self.main_src.index("await triggerPetReachGesture()")
-        tauri_pos = self.main_src.index(
-            'tauriCall("control_system_media"', reach_pos
-        )
+        tauri_pos = self.main_src.index('tauriCall("control_system_media"', reach_pos)
         self.assertLess(reach_pos, tauri_pos)
 
     def test_is_reaching_class_in_styles(self) -> None:
@@ -1223,7 +1254,7 @@ class FloatingPanelHandoffContractTests(unittest.TestCase):
         self.assertIn('emitTo("panel", eventName, payload)', self.main_js)
         self.assertIn('emitTo("main", "panel:action", payload)', self.panel_js)
         self.assertIn('emitTo("main", SETTINGS_COMMAND_EVENT, payload)', self.workspace_js)
-        self.assertIn('musicController: panelMusicController', self.main_js)
+        self.assertIn("musicController: panelMusicController", self.main_js)
         self.assertNotIn('/capabilities/music/co_listen_summary"', self.panel_js)
         self.assertNotIn('/capabilities/music/control_permissions"', self.panel_js)
 

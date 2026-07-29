@@ -624,6 +624,8 @@ export class RealtimeVoiceSession {
     this.endpointSent = false;
     this.serverFinalCommitted = false;
     this.responseTerminal = false;
+    this.interruptionSent = false;
+    this.pendingInterruptionClockMs = null;
     this.pendingFrames = [];
     this.pendingSpeechHeader = null;
     this.sequence = 0;
@@ -765,6 +767,35 @@ export class RealtimeVoiceSession {
     }
   }
 
+  reportInterruptionSuspected() {
+    if (this.closed || this.endpointSent || this.failed || this.interruptionSent) {
+      return false;
+    }
+    const sampleRate = Number(this.captureSampleRate || 1);
+    const audioClockMs = Math.max(
+      0,
+      Math.round((this.audioFramesSent * 1000) / sampleRate)
+    );
+    if (!this.ready) {
+      this.pendingInterruptionClockMs = audioClockMs;
+      return true;
+    }
+    return this.sendInterruptionSignal(audioClockMs);
+  }
+
+  sendInterruptionSignal(audioClockMs) {
+    if (this.interruptionSent) return false;
+    const sent = this.sendJson({
+      type: "client.interruption.suspected",
+      audio_clock_ms: Math.max(0, Math.round(Number(audioClockMs) || 0))
+    });
+    if (sent) {
+      this.interruptionSent = true;
+      this.pendingInterruptionClockMs = null;
+    }
+    return sent;
+  }
+
   async cancel(reason = "client_cancelled") {
     if (this.closed) return;
     this.playbackQueue?.interrupt(reason);
@@ -875,6 +906,9 @@ export class RealtimeVoiceSession {
             ...playbackQueueOptions,
             audioElement: this.audioElement
           });
+      if (this.pendingInterruptionClockMs !== null) {
+        this.sendInterruptionSignal(this.pendingInterruptionClockMs);
+      }
       for (const frame of this.pendingFrames.splice(0)) this.sendPcmFrame(frame);
       this.notify("onReady", payload);
       this.resolveReady?.();
@@ -918,6 +952,18 @@ export class RealtimeVoiceSession {
           terminal: false
         });
       }
+      return;
+    }
+    if (
+      type === "server.interruption.accepted" ||
+      type === "server.interruption.skipped"
+    ) {
+      this.notify(
+        type === "server.interruption.accepted"
+          ? "onInterruptionAccepted"
+          : "onInterruptionSkipped",
+        payload
+      );
       return;
     }
     if (type === "server.response.completed") {

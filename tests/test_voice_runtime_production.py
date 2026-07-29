@@ -517,6 +517,110 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 service.close()
                 manager.close()
 
+    def test_realtime_acoustic_signal_drives_duck_to_the_active_delivery_channel(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            semantic_llm = _SemanticLLM()
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=_SemanticThinkingEngine(manager, llm=semantic_llm),
+                tts_client=_TTSClient(),
+            )
+            try:
+                response_request = _open_request(
+                    voice_turn_id="voice-turn-playing-response",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                response = service.create_coordinator(response_request)
+                self.assertEqual(response.status, "ready", response)
+                asyncio.run(_commit_realtime_turn(response.coordinator))
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                delivery = None
+                deadline = time.monotonic() + 3.0
+                while delivery is None and time.monotonic() < deadline:
+                    delivery = response.delivery_channel.take_outbound()
+                    if delivery is None:
+                        time.sleep(0.01)
+                self.assertIsNotNone(delivery)
+                response.delivery_channel.mark_sent(delivery.delivery_id)
+                self.assertTrue(
+                    response.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    response.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": delivery.delivery_id,
+                            "resume_token": "desktop-overlap-resume",
+                        },
+                    ).ok
+                )
+
+                overlap_request = _open_request(
+                    voice_turn_id="voice-turn-overlap-input",
+                    output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                )
+                overlap = service.create_coordinator(overlap_request)
+                self.assertEqual(overlap.status, "ready", overlap)
+                self.assertTrue(asyncio.run(overlap.coordinator.open()).ok)
+
+                suspected = overlap.coordinator.suspect_interruption(
+                    audio_clock_ms=360,
+                )
+
+                self.assertTrue(suspected.ok, suspected)
+                duck = response.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                self.assertEqual(duck.action, "duck")
+                self.assertEqual(duck.delivery_id, delivery.delivery_id)
+                self.assertEqual(duck.speech_unit_id, delivery.speech_unit_id)
+                self.assertEqual(
+                    response.coordinator.bridge.host.snapshot.speech_units[delivery.speech_unit_id].state.value,
+                    "ducked",
+                )
+                self.assertIsNone(overlap.delivery_channel.take_control_outbound())
+                response.delivery_channel.mark_control_sent(duck.control_id)
+                self.assertTrue(
+                    response.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": duck.control_id,
+                            "command_id": duck.command_id,
+                            "action": "duck",
+                            "status": "applied",
+                            "played_ms": 360,
+                            "applied_volume": 0.2,
+                        },
+                    ).ok
+                )
+
+                checkpoint = asyncio.run(
+                    overlap.coordinator.feed_pcm_frame(
+                        b"\x01\x00" * 160,
+                        sequence=0,
+                        audio_clock_ms=0,
+                    )
+                )
+                self.assertTrue(checkpoint.ok, checkpoint)
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(len(semantic_llm.calls), 1)
+                resume = response.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(resume)
+                self.assertEqual(resume.action, "resume")
+                self.assertEqual(resume.speech_unit_id, delivery.speech_unit_id)
+            finally:
+                service.close()
+                manager.close()
+
     def test_playback_control_commands_wait_for_real_client_receipts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

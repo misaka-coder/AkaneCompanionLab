@@ -649,6 +649,34 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
 
                 websocket.send_json(_open_payload())
                 websocket.receive_json()
+                websocket.send_json(
+                    {
+                        "type": "client.interruption.suspected",
+                        "audio_clock_ms": -1,
+                    }
+                )
+                invalid_interruption = websocket.receive_json()
+                self.assertEqual(
+                    invalid_interruption["reason"],
+                    "voice_interruption_audio_clock_invalid",
+                )
+                self.assertFalse(invalid_interruption["terminal"])
+
+                websocket.send_json(
+                    {
+                        "type": "client.interruption.suspected",
+                        "audio_clock_ms": 120,
+                    }
+                )
+                skipped_interruption = websocket.receive_json()
+                self.assertEqual(
+                    skipped_interruption["type"],
+                    "server.interruption.skipped",
+                )
+                self.assertEqual(
+                    skipped_interruption["reason"],
+                    "voice_playback_not_active",
+                )
                 websocket.send_bytes(b"\x01\x00")
                 missing_metadata = websocket.receive_json()
                 self.assertEqual(missing_metadata["reason"], "audio_metadata_required")

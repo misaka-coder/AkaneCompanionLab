@@ -12,6 +12,10 @@ from capcore_adapter_speech import (
 from companion_v01.voice_runtime import VoiceASRSessionBridge
 from voicecore import (
     InputTurnStatus,
+    Response,
+    ResponseStatus,
+    SpeechUnit,
+    SpeechUnitStatus,
     TransitionResult,
     TransitionStatus,
     VoiceRuntimeSnapshot,
@@ -207,6 +211,75 @@ class VoiceASRSessionBridgeTests(unittest.TestCase):
         ).open_turn()
         self.assertEqual(conflicting.status, "failed")
         self.assertEqual(conflicting.reason, "voice_turn_identity_conflict")
+
+    def test_confirmed_acoustic_activity_targets_the_playing_unit_once(self) -> None:
+        self.assertTrue(self.bridge.open_turn().accepted)
+        response = Response(
+            response_id="response-playing",
+            voice_turn_id="turn-before-interruption",
+            response_generation=1,
+            state=ResponseStatus.STREAMING,
+            source_turn_revision=2,
+        )
+        unit = SpeechUnit(
+            speech_unit_id="speech-playing",
+            response_id=response.response_id,
+            response_generation=response.response_generation,
+            ordinal=0,
+            purpose="content",
+            state=SpeechUnitStatus.PLAYING,
+            resume_token="resume-playing",
+        )
+        response.unit_ids.append(unit.speech_unit_id)
+        self.host.snapshot.responses[response.response_id] = response
+        self.host.snapshot.speech_units[unit.speech_unit_id] = unit
+
+        suspected = self.bridge.suspect_interruption(audio_clock_ms=480)
+
+        self.assertTrue(suspected.accepted)
+        self.assertEqual(
+            self.host.snapshot.speech_units[unit.speech_unit_id].state,
+            SpeechUnitStatus.DUCKED,
+        )
+        attempt = next(iter(self.host.snapshot.interruption_attempts.values()))
+        self.assertEqual(attempt.voice_turn_id, "turn-asr-1")
+        self.assertEqual(attempt.response_id, response.response_id)
+        self.assertEqual(attempt.speech_unit_id, unit.speech_unit_id)
+        self.assertEqual(attempt.suspected_at_audio_clock_ms, 480)
+        self.assertEqual(
+            [command.command_kind for command in self.host.snapshot.pending_commands.values()],
+            ["duck_playback"],
+        )
+
+        duplicate = self.bridge.suspect_interruption(audio_clock_ms=520)
+        self.assertEqual(duplicate.status, "duplicate")
+        self.assertEqual(duplicate.reason, "voice_interruption_already_suspected")
+        self.assertEqual(len(self.host.snapshot.interruption_attempts), 1)
+
+        cancelled = self.bridge.accept_update(
+            ASRSessionUpdate.cancelled(
+                ASRSessionMode.STREAMING,
+                "speech_without_transcript",
+            )
+        )
+        self.assertTrue(cancelled.accepted)
+        self.assertEqual(
+            next(iter(self.host.snapshot.interruption_attempts.values())).state.value,
+            "false_positive",
+        )
+        self.assertEqual(
+            [command.command_kind for command in self.host.snapshot.pending_commands.values()],
+            ["duck_playback", "resume_playback"],
+        )
+
+    def test_acoustic_activity_without_active_playback_is_not_an_error(self) -> None:
+        self.assertTrue(self.bridge.open_turn().accepted)
+
+        result = self.bridge.suspect_interruption(audio_clock_ms=120)
+
+        self.assertEqual(result.status, "duplicate")
+        self.assertEqual(result.reason, "voice_playback_not_active")
+        self.assertFalse(self.host.snapshot.interruption_attempts)
 
 
 if __name__ == "__main__":

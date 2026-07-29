@@ -515,4 +515,45 @@ await assert.rejects(
   /voice_realtime_endpoint_send_failed/
 );
 
+const interruptionMessages = [];
+const interruptionEvents = [];
+const interruptionSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  callbacks: {
+    onInterruptionAccepted: () => interruptionEvents.push("accepted"),
+    onInterruptionSkipped: () => interruptionEvents.push("skipped")
+  },
+  scope: {
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:interruption-session",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 5000 }
+  }
+});
+interruptionSession.captureSampleRate = 16000;
+interruptionSession.audioFramesSent = 3200;
+interruptionSession.sendJson = (payload) => {
+  interruptionMessages.push(payload);
+  return true;
+};
+assert.equal(interruptionSession.reportInterruptionSuspected(), true);
+assert.deepEqual(interruptionMessages, []);
+interruptionSession.handleServerEvent({ type: "server.ready" });
+assert.deepEqual(interruptionMessages, [
+  {
+    type: "client.interruption.suspected",
+    audio_clock_ms: 200
+  }
+]);
+assert.equal(interruptionSession.reportInterruptionSuspected(), false);
+interruptionSession.handleServerEvent({ type: "server.interruption.accepted" });
+interruptionSession.handleServerEvent({ type: "server.interruption.skipped" });
+assert.deepEqual(interruptionEvents, ["accepted", "skipped"]);
+
 console.log("realtime voice playback smoke: ok");

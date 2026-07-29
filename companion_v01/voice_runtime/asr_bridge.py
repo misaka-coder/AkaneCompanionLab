@@ -84,6 +84,72 @@ class VoiceASRSessionBridge:
         dispatch = self.host.accept_event(event)
         return self._from_dispatches("open", (dispatch,))
 
+    def suspect_interruption(self, *, audio_clock_ms: int) -> VoiceASRBridgeResult:
+        """Attach real acoustic activity to the currently playing speech unit.
+
+        Opening an ASR session is not proof that the user spoke. The desktop
+        client reports this boundary only after its acoustic detector confirms
+        speech, and VoiceCore remains authoritative for ducking and the later
+        semantic decision.
+        """
+
+        if self.voice_turn_id not in self.host.snapshot.input_turns:
+            return self._failed("interruption", "voice_turn_not_open")
+        if isinstance(audio_clock_ms, bool) or not isinstance(audio_clock_ms, int) or audio_clock_ms < 0:
+            return self._failed("interruption", "voice_interruption_audio_clock_invalid")
+
+        existing = next(
+            (
+                attempt
+                for attempt in self.host.snapshot.interruption_attempts.values()
+                if str(getattr(attempt, "voice_turn_id", "") or "") == self.voice_turn_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return VoiceASRBridgeResult(
+                status="duplicate",
+                reason="voice_interruption_already_suspected",
+                source_status="interruption",
+            )
+
+        unit = next(
+            (
+                candidate
+                for candidate in self.host.snapshot.speech_units.values()
+                if str(getattr(getattr(candidate, "state", None), "value", "") or "") == "playing"
+            ),
+            None,
+        )
+        if unit is None:
+            return VoiceASRBridgeResult(
+                status="duplicate",
+                reason="voice_playback_not_active",
+                source_status="interruption",
+            )
+        response = self.host.snapshot.responses.get(unit.response_id)
+        if response is None:
+            return self._failed("interruption", "voice_interruption_response_missing")
+
+        material = f"{self.voice_turn_id}:{unit.speech_unit_id}:interruption"
+        interruption_id = "voice_interrupt_" + sha256(material.encode("utf-8")).hexdigest()[:32]
+        event = self._make_event(
+            "voice.interruption.suspected",
+            provider_receipt_id=self._receipt(material),
+            voice_turn_id=self.voice_turn_id,
+            response_id=response.response_id,
+            speech_unit_id=unit.speech_unit_id,
+            audio_stream_id=self.audio_stream_id,
+            audio_clock_ms=audio_clock_ms,
+            turn_revision=response.source_turn_revision,
+            response_generation=response.response_generation,
+            payload={"interruption_id": interruption_id},
+        )
+        if event is None:
+            return self._failed("interruption", "voice_event_build_failed")
+        dispatch = self.host.accept_event(event)
+        return self._from_dispatches("interruption", (dispatch,))
+
     @property
     def committed_disposition(self) -> str:
         turn = self.host.snapshot.input_turns.get(self.voice_turn_id)
@@ -239,7 +305,38 @@ class VoiceASRSessionBridge:
         if event is None:
             return self._failed(update.status, "voice_event_build_failed")
         dispatch = self.host.accept_event(event)
-        return self._from_dispatches(update.status, (dispatch,))
+        dispatches = [dispatch]
+        if dispatch.accepted and reason in {
+            "speech_without_transcript",
+            "unconfirmed_acoustic_activity",
+            "utterance_discarded",
+        }:
+            attempt = next(
+                (
+                    candidate
+                    for candidate in reversed(tuple(self.host.snapshot.interruption_attempts.values()))
+                    if str(getattr(candidate, "voice_turn_id", "") or "") == self.voice_turn_id
+                    and str(getattr(getattr(candidate, "state", None), "value", "") or "") == "suspected"
+                ),
+                None,
+            )
+            if attempt is not None:
+                false_positive = self._make_event(
+                    "voice.interruption.false_positive",
+                    provider_receipt_id=self._receipt(f"false_positive:{attempt.interruption_id}:{reason}"),
+                    voice_turn_id=self.voice_turn_id,
+                    response_id=attempt.response_id,
+                    speech_unit_id=attempt.speech_unit_id,
+                    audio_stream_id=self.audio_stream_id,
+                    payload={"interruption_id": attempt.interruption_id},
+                )
+                if false_positive is None:
+                    return self._failed(
+                        update.status,
+                        "voice_event_build_failed",
+                    )
+                dispatches.append(self.host.accept_event(false_positive))
+        return self._from_dispatches(update.status, tuple(dispatches))
 
     def _make_event(self, event_kind: str, **overrides: Any) -> VoiceEvent | None:
         try:

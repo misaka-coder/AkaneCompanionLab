@@ -72,6 +72,7 @@ class VoiceASRRealtimeTurnCoordinator:
         language: str = "",
         pcm_normalizer: PCMStreamNormalizer | None = None,
         response_starter: Callable[[], Any] | None = None,
+        interruption_runtime_driver: Callable[[], Any] | None = None,
     ) -> None:
         self.adapter = adapter
         self.bridge = bridge
@@ -80,6 +81,7 @@ class VoiceASRRealtimeTurnCoordinator:
         self.language = str(language or "")
         self.pcm_normalizer = pcm_normalizer
         self.response_starter = response_starter
+        self.interruption_runtime_driver = interruption_runtime_driver
         self._open_attempted = False
         self._session: NormalizedASRSession | None = None
         self._finalize_task: asyncio.Task[ASRSessionUpdate] | None = None
@@ -159,6 +161,30 @@ class VoiceASRRealtimeTurnCoordinator:
                 retryable=True,
             )
         return self._accept_provider_update(update)
+
+    def suspect_interruption(self, *, audio_clock_ms: int) -> VoiceASRRealtimeTurnResult:
+        bridge_result = self.bridge.suspect_interruption(audio_clock_ms=audio_clock_ms)
+        if bridge_result.status == "failed":
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason=bridge_result.reason,
+                bridge_result=bridge_result,
+            )
+        driven_failure = self._drive_interruption_runtime()
+        if driven_failure:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason=driven_failure,
+                bridge_result=bridge_result,
+                retryable=True,
+            )
+        return VoiceASRRealtimeTurnResult(
+            status=bridge_result.status,
+            reason=bridge_result.reason,
+            bridge_result=bridge_result,
+            early_candidate=self._latest_candidate,
+            final_pending=self.final_pending,
+        )
 
     async def feed_pcm_frame(
         self,
@@ -388,6 +414,17 @@ class VoiceASRRealtimeTurnCoordinator:
                 bridge_result=bridge_result,
                 final_pending=self.final_pending,
             )
+        driven_failure = self._drive_interruption_runtime()
+        if driven_failure:
+            return VoiceASRRealtimeTurnResult(
+                status="failed",
+                reason=driven_failure,
+                early_candidate=self._latest_candidate,
+                provider_update=update,
+                bridge_result=bridge_result,
+                final_pending=self.final_pending,
+                retryable=True,
+            )
         return VoiceASRRealtimeTurnResult(
             status=update.status,
             reason=update.reason or bridge_result.reason,
@@ -396,6 +433,24 @@ class VoiceASRRealtimeTurnCoordinator:
             bridge_result=bridge_result,
             final_pending=self.final_pending,
         )
+
+    def _drive_interruption_runtime(self) -> str:
+        driver = self.interruption_runtime_driver
+        if not callable(driver):
+            return ""
+        has_attempt = any(
+            str(getattr(attempt, "voice_turn_id", "") or "") == self.bridge.voice_turn_id
+            for attempt in self.bridge.host.snapshot.interruption_attempts.values()
+        )
+        if not has_attempt:
+            return ""
+        try:
+            driven = driver()
+        except Exception:
+            return "voice_interruption_runtime_drive_failed"
+        if str(getattr(driven, "status", "") or "") == "failed":
+            return str(getattr(driven, "reason", "") or "voice_interruption_runtime_drive_failed")
+        return ""
 
     def _start_response(
         self,

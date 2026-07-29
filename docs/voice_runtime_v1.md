@@ -1,7 +1,7 @@
 # Akane Voice Runtime V1
 
 状态：方案与状态机已冻结；实时 ASR、durable Voice Host、MemCore、Thinking Agent、
-TTS、桌宠播放 ACK、Slice C 播放控制与语义脉冲已完成生产装配；自动 VAD 与候选回复待接入
+TTS、桌宠播放 ACK、自动端点、连续通话及 Slice C 播放期语义抢话入口已完成生产装配；候选回复待接入
 日期：2026-07-27
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
@@ -843,12 +843,23 @@ ASR；正式提交后的回复失败会明确提示，并继续下一轮。这�
 与普通请求同时提交。安全录音只属于当前 turn，不作为每轮提示词或 MemCore
 上下文，因此不会改变模型前缀或缓存命中。
 
-当前连续通话采用自然轮流说话：Akane 回复及播放完成后再开始下一轮监听，已经
-不需要用户逐句点停止，但还不宣称全双工语义抢话已经完成。声学活动仍未自动转换
-为 `voice.interruption.suspected`，`prepare_candidate/prepare_backchannel` 的
-推测式回复也未启用；现阶段 semantic pulse 的 `response_action` 固定为 `none`。
-下一步把通话期间的新声学活动送入 VoiceCore 的 duck → semantic pulse →
-resume/stop 权威链路，在此之前不以音量阈值硬停播放。
+当前连续通话已经从纯轮流说话推进到播放期监听。首个语音单元真实开始播放后，
+通话控制器会释放 Input Turn 槽并提前建立下一轮 ASR；旧回复的 WebSocket、播放
+队列和 ACK 通道继续存活，因此监听不会伪装成旧回复已经结束。客户端声学检测器
+只有确认连续人声后才发送 `client.interruption.suspected`；单纯打开麦克风、背景
+静音和短爆音都不是打断证据。
+
+服务端把这份声学证据绑定到 VoiceCore 中唯一处于 `playing` 的真实语音单元，
+并立即驱动 `duck_playback`。后续稳定 checkpoint/final 仍走已有 semantic pulse，
+由模型在完整播放原文、实际送达单元和当前转写证据上决定 resume、当前单元后停
+或立即接管。若声学活动最终没有形成任何 ASR 文本，取消输入轮时会追加
+`voice.interruption.false_positive` 并驱动 resume，不能把回复永久留在低音量。
+没有真实播放单元时，协议返回 `server.interruption.skipped`，不会 fake duck。
+
+这仍不是 native speech-to-speech provider 意义上的完全全双工：
+`prepare_candidate/prepare_backchannel` 推测式回复尚未启用，semantic pulse 的
+`response_action` 仍固定为 `none`。当前完成的是级联架构中可恢复、可审计的
+自动抢话控制闭环，不以本地音量阈值直接停止模型回复。
 
 ### Slice C：播放和语义打断
 
