@@ -20,9 +20,9 @@ case "$original_command" in
         interactive_session=1
         echo "Akane Bot emergency recovery"
         echo "  1. Check status"
-        echo "  2. Personal Bot QR"
-        echo "  3. Finance Bot QR"
-        echo "  4. Both"
+        echo "  2. Recover Personal Bot (QR only if needed)"
+        echo "  3. Recover Finance Bot (QR only if needed)"
+        echo "  4. Recover Both"
         printf 'Choose 1-4: '
         IFS= read -r choice
         case "$choice" in

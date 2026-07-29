@@ -53,6 +53,23 @@ actual_login_qq() {
     printf '%s' "$response" | jq -r '.data.user_id // empty' 2>/dev/null || true
 }
 
+profile_is_healthy() {
+    local token response
+    token="$(onebot_token 2>/dev/null || true)"
+    if [[ -z "$token" ]]; then
+        return 1
+    fi
+    response="$(curl -sS --max-time 3 \
+        -H "Authorization: Bearer $token" \
+        "http://127.0.0.1:${PROFILE_ONEBOT_PORT}/get_status" 2>/dev/null || true)"
+    printf '%s' "$response" | jq -e '
+        .status == "ok"
+        and .retcode == 0
+        and .data.online == true
+        and .data.good == true
+    ' >/dev/null 2>&1
+}
+
 remove_qr() {
     local bot_id="$1"
     rm -f -- "$QR_DIR/${bot_id}.png"
@@ -62,17 +79,22 @@ show_status() {
     local bot_id="$1" actual
     profile_for "$bot_id"
     actual="$(actual_login_qq || true)"
-    echo "AKANE_BOT=$bot_id"
-    if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]]; then
+    if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]] && profile_is_healthy; then
         remove_qr "$bot_id"
+        echo "AKANE_BOT=$bot_id"
         echo "AKANE_STATE=connected"
         return 0
     fi
-    if [[ -n "$actual" ]]; then
+    if [[ -n "$actual" && "$actual" != "$PROFILE_EXPECTED_QQ" ]]; then
+        echo "AKANE_BOT=$bot_id"
         echo "AKANE_STATE=account_mismatch"
         return 2
     fi
+    echo "AKANE_BOT=$bot_id"
     echo "AKANE_STATE=offline"
+    if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]]; then
+        echo "AKANE_DETAIL=session_unhealthy"
+    fi
     return 1
 }
 
@@ -101,13 +123,7 @@ prepare_qr() {
     fi
 
     actual="$(actual_login_qq || true)"
-    if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]]; then
-        remove_qr "$bot_id"
-        echo "AKANE_BOT=$bot_id"
-        echo "AKANE_STATE=connected"
-        return 0
-    fi
-    if [[ -n "$actual" ]]; then
+    if [[ -n "$actual" && "$actual" != "$PROFILE_EXPECTED_QQ" ]]; then
         echo "AKANE_BOT=$bot_id"
         echo "AKANE_STATE=account_mismatch"
         return 32
@@ -128,7 +144,7 @@ prepare_qr() {
     deadline=$(( $(date +%s) + 60 ))
     while [[ "$(date +%s)" -lt "$deadline" ]]; do
         actual="$(actual_login_qq || true)"
-        if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]]; then
+        if [[ "$actual" == "$PROFILE_EXPECTED_QQ" ]] && profile_is_healthy; then
             echo "AKANE_BOT=$bot_id"
             echo "AKANE_STATE=connected_after_restart"
             logger -t akane-recovery "action=relogin bot=$bot_id status=fast_login"
