@@ -738,18 +738,20 @@ class LLMRuntime:
         if chat_model_override or not self._settings_view().llm_chat_failover_to_aux_enabled:
             return None
         with self._bundle_lock:
-            candidates = (
-                getattr(self, "aux_failover", None),
-                getattr(self, "aux", None),
-            )
+            dedicated_fallback = getattr(self, "aux_failover", None)
+            legacy_fallback = getattr(self, "aux", None)
         primary_identity = self._bundle_route_identity(primary)
-        for fallback in candidates:
-            if not isinstance(fallback, ModelBundle):
-                continue
-            fallback_identity = self._bundle_route_identity(fallback)
-            if all(fallback_identity) and primary_identity != fallback_identity:
-                return fallback
-        return None
+        if isinstance(dedicated_fallback, ModelBundle):
+            fallback_identity = self._bundle_route_identity(dedicated_fallback)
+            if not all(fallback_identity) or primary_identity == fallback_identity:
+                return None
+            return dedicated_fallback
+        if not isinstance(legacy_fallback, ModelBundle):
+            return None
+        fallback_identity = self._bundle_route_identity(legacy_fallback)
+        if not all(fallback_identity) or primary_identity == fallback_identity:
+            return None
+        return legacy_fallback
 
     def _aux_failover_bundle(self, *, primary: ModelBundle) -> ModelBundle | None:
         if not self._settings_view().llm_aux_failover_enabled:

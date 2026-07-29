@@ -500,6 +500,45 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(result.parsed["speech"], "recovered")
         self.assertIs(call.call_args_list[1].kwargs["bundle"], runtime.aux_failover)
 
+    def test_chat_provider_failover_does_not_fall_through_to_expensive_aux_primary(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_aux_failover_enabled=True,
+            llm_chat_failover_to_aux_enabled=True,
+        )
+        runtime._bundle_lock = threading.RLock()
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.chat = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+        runtime.aux_failover = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+        runtime.aux = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
+            model="gpt-5.6-sol",
+        )
+        primary = ChatJSONResult(
+            parsed={"speech": "fallback"},
+            raw_text="",
+            error="official provider unavailable",
+            fallback_used=True,
+        )
+
+        with patch.object(runtime, "_call_json_result", return_value=primary) as call:
+            result = runtime.call_chat_json_result(
+                system_prompt="system",
+                user_prompt="hello",
+                fallback={"speech": "fallback"},
+            )
+
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(call.call_count, 1)
+        self.assertNotIn("chat_provider_failovers", runtime.snapshot_metrics())
+
     def test_aux_json_failover_retries_once_through_dedicated_provider(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime.instance_id = "personal"
