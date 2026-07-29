@@ -533,6 +533,11 @@ class AkaneVoiceRuntimeService:
                 restored_snapshot=replayed.replay.snapshot,
             )
             host = _SerializedVoiceRuntimeHost(raw_host)
+            stale_generation_ids = tuple(
+                str(response.response_id)
+                for response in host.snapshot.responses.values()
+                if str(getattr(response.state, "value", "") or "") == "generating"
+            )
             semantic_executor.bind_host(host)
             pending = host.drain_projection_outbox()
             if not pending.quiescent:
@@ -559,6 +564,17 @@ class AkaneVoiceRuntimeService:
                     safe_public_summary=(
                         recovered_commands.safe_public_summary or "实时语音回复命令无法恢复，本轮没有开始。"
                     ),
+                )
+            failed_stale_generations = thinking_executor.fail_restarted_generations(
+                host,
+                response_ids=stale_generation_ids,
+            )
+            if not failed_stale_generations.ok:
+                return VoiceRealtimeCoordinatorResolution.failed(
+                    failed_stale_generations.reason or "voice_thinking_restart_recovery_failed",
+                    status="unavailable",
+                    retryable=failed_stale_generations.retryable,
+                    safe_public_summary="上次中断的语音回复无法安全收口，本轮没有开始。",
                 )
             restored = thinking_executor.restore_generating_jobs(self._snapshot_record(host))
             if restored.status == "failed":

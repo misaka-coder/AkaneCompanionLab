@@ -863,6 +863,12 @@ Host 的 pending command 队列，使后续正常输入被误报为
 `voice_command_drive_deferred`，并诱发多个回复回合并发。传输异常日志只记录
 阶段、异常类型和计数，不记录转写、音频或密钥。
 
+恢复时还要区分两种状态：上次只完成输入提交、尚未真正进入模型生成的命令可以
+从 durable command 继续；上个进程已经处于 `generating` 的模型请求没有可验证的
+连续流和原客户端，必须追加 `voice.response.failed` /
+`voice_thinking_runtime_restarted` 后收口，不能在下一场通话里重新生成一段用户
+从未听到的旧回复并写成正常助手记忆。
+
 这仍不是 native speech-to-speech provider 意义上的完全全双工：
 `prepare_candidate/prepare_backchannel` 推测式回复尚未启用，semantic pulse 的
 `response_action` 仍固定为 `none`。当前完成的是级联架构中可恢复、可审计的

@@ -1738,6 +1738,63 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 second_service.close()
                 manager.close()
 
+    def test_restart_fails_an_already_generating_response_without_replaying_the_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            first_service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+            )
+            request = _open_request(voice_turn_id="voice-turn-generating-before-restart")
+            try:
+                first = first_service.create_coordinator(request)
+                self.assertEqual(first.status, "ready", first)
+                first.coordinator.response_starter = None
+                settled = asyncio.run(_commit_realtime_turn(first.coordinator))
+                self.assertEqual(settled.response_status, "")
+                host = first.coordinator.bridge.host
+                while host.snapshot.pending_commands:
+                    driven = host.drive_once()
+                    self.assertEqual(driven.status, "succeeded", driven)
+                old_response = next(
+                    response
+                    for response in host.snapshot.responses.values()
+                    if response.voice_turn_id == request.voice_turn_id
+                )
+                self.assertEqual(old_response.state.value, "generating")
+            finally:
+                first_service.close()
+
+            second_engine = _ThinkingEngine(manager)
+            second_service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=second_engine,
+            )
+            try:
+                second = second_service.create_coordinator(
+                    _open_request(voice_turn_id="voice-turn-after-stale-generation")
+                )
+                self.assertEqual(second.status, "ready", second)
+                recovered_response = next(
+                    response
+                    for response in second.coordinator.bridge.host.snapshot.responses.values()
+                    if response.voice_turn_id == request.voice_turn_id
+                )
+                self.assertEqual(recovered_response.state.value, "failed")
+                assert recovered_response.failure is not None
+                self.assertEqual(
+                    recovered_response.failure.reason_code,
+                    "voice_thinking_runtime_restarted",
+                )
+                self.assertEqual(second_engine.calls, [])
+            finally:
+                second_service.close()
+                manager.close()
+
     def test_restart_settles_playback_bound_to_the_old_client_channel(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

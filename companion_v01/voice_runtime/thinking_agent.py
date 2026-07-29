@@ -277,6 +277,53 @@ class AkaneThinkingAgentCommandExecutor:
             reason="" if restored else "voice_thinking_no_generation_to_restore",
         )
 
+    def fail_restarted_generations(
+        self,
+        host: AkaneVoiceRuntimeHost,
+        *,
+        response_ids: tuple[str, ...],
+    ) -> VoiceThinkingStartResult:
+        failed: list[str] = []
+        for response_id in response_ids:
+            response = host.snapshot.responses.get(str(response_id or ""))
+            if response is None or str(getattr(response.state, "value", "")) != "generating":
+                continue
+            voice_turn_id = str(getattr(response, "voice_turn_id", "") or "")
+            try:
+                event = self._event_factory_for_turn(voice_turn_id).make(
+                    "voice.response.failed",
+                    voice_turn_id=voice_turn_id,
+                    response_id=str(response.response_id),
+                    turn_revision=int(response.source_turn_revision),
+                    response_generation=int(response.response_generation),
+                    payload={
+                        "stage": "thinking_agent",
+                        "reason_code": "voice_thinking_runtime_restarted",
+                        "retryable": True,
+                        "safe_public_summary": "语音回复生成期间服务已重启，本轮没有伪装成完成。",
+                        "affected_ids": [voice_turn_id, str(response.response_id)],
+                    },
+                )
+            except Exception:
+                return VoiceThinkingStartResult(
+                    status="failed",
+                    reason="voice_thinking_restart_failure_event_invalid",
+                    retryable=False,
+                )
+            dispatched = host.accept_event(event)
+            if not dispatched.accepted:
+                return VoiceThinkingStartResult(
+                    status="failed",
+                    reason=dispatched.reason or "voice_thinking_restart_failure_dispatch_failed",
+                    retryable=True,
+                )
+            failed.append(str(response.response_id))
+        return VoiceThinkingStartResult(
+            status="completed" if failed else "duplicate",
+            reason="" if failed else "voice_thinking_no_stale_generation",
+            response_id=failed[0] if failed else "",
+        )
+
     def close(self) -> None:
         with self._guard:
             self._closed = True
