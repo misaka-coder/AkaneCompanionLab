@@ -516,6 +516,7 @@ class AkaneVoiceRuntimeService:
             command_executor = VoiceCommandRouterExecutor(
                 {
                     "start_response_generation": thinking_executor,
+                    "cancel_response_generation": thinking_executor,
                     "start_tts": tts_executor,
                     "enqueue_playback": playback_executor,
                     "duck_playback": playback_executor,
@@ -648,6 +649,7 @@ class AkaneVoiceRuntimeService:
                 str(getattr(command, "command_kind", "") or "")
                 not in {
                     "start_response_generation",
+                    "cancel_response_generation",
                     "start_tts",
                     "enqueue_playback",
                     "request_semantic_pulse",

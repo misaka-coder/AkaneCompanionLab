@@ -883,6 +883,13 @@ Host 的 pending command 队列，使后续正常输入被误报为
 `voice_thinking_runtime_restarted` 后收口，不能在下一场通话里重新生成一段用户
 从未听到的旧回复并写成正常助手记忆。
 
+VoiceCore 发出的 `cancel_response_generation` 现在由 Thinking Agent 执行器真实
+接管：先把取消意图加入线程安全围栏，再用带 `command_id` 的
+`voice.response.generation_cancelled` 作为 durable observation 收口命令。仍在
+运行的模型流在下一流事件边界停止消费并关闭 iterator；即使取消与 final 同时
+到达，取消围栏也阻止旧 final 被投影成正常助手记忆。该命令纳入恢复白名单，
+不能再以未路由的 deferred 命令阻塞后续语音轮。
+
 这仍不是 native speech-to-speech provider 意义上的完全全双工：
 `prepare_candidate/prepare_backchannel` 推测式回复尚未启用，semantic pulse 的
 `response_action` 仍固定为 `none`。当前完成的是级联架构中可恢复、可审计的

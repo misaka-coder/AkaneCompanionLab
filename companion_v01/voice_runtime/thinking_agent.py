@@ -85,6 +85,7 @@ class AkaneThinkingAgentCommandExecutor:
         self._delivery_notifiers: dict[str, Callable[[], None]] = {}
         self._jobs: dict[str, _GenerationJob] = {}
         self._running_response_ids: set[str] = set()
+        self._cancel_requested_response_ids: set[str] = set()
         self._guard = threading.RLock()
         self._closed = False
 
@@ -330,6 +331,7 @@ class AkaneThinkingAgentCommandExecutor:
             self._event_factories.clear()
             self._speech_delivery_by_turn.clear()
             self._delivery_notifiers.clear()
+            self._cancel_requested_response_ids.clear()
 
     def _execute_or_recover(
         self,
@@ -344,6 +346,12 @@ class AkaneThinkingAgentCommandExecutor:
         if not isinstance(payload, Mapping):
             return VoiceCommandExecutionResult.failed("voice_command_payload_invalid")
         command_kind = str(command.get("command_kind") or "")
+        if command_kind == "cancel_response_generation":
+            return self._cancel_generation(
+                command=command,
+                payload=payload,
+                snapshot_record=snapshot_record,
+            )
         if command_kind != "start_response_generation":
             return VoiceCommandExecutionResult.deferred(f"voice_command_not_connected:{command_kind or 'unknown'}")
 
@@ -435,6 +443,61 @@ class AkaneThinkingAgentCommandExecutor:
             )
         )
 
+    def _cancel_generation(
+        self,
+        *,
+        command: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        snapshot_record: Mapping[str, Any],
+    ) -> VoiceCommandExecutionResult:
+        command_id = str(command.get("command_id") or "").strip()
+        response_id = str(payload.get("response_id") or "").strip()
+        response_generation = payload.get("response_generation")
+        responses = snapshot_record.get("responses")
+        response = responses.get(response_id) if isinstance(responses, Mapping) else None
+        if (
+            not command_id
+            or not response_id
+            or isinstance(response_generation, bool)
+            or not isinstance(response_generation, int)
+            or response_generation < 1
+            or not isinstance(response, Mapping)
+        ):
+            return VoiceCommandExecutionResult.failed("voice_generation_cancel_command_invalid")
+        voice_turn_id = str(response.get("voice_turn_id") or "").strip()
+        turn_revision = response.get("source_turn_revision")
+        if (
+            not voice_turn_id
+            or isinstance(turn_revision, bool)
+            or not isinstance(turn_revision, int)
+            or turn_revision < 1
+            or int(response.get("response_generation") or 0) != response_generation
+        ):
+            return VoiceCommandExecutionResult.failed("voice_generation_cancel_target_invalid")
+        try:
+            event_factory = self._event_factory_for_turn(voice_turn_id)
+        except RuntimeError:
+            return VoiceCommandExecutionResult.failed(
+                "voice_generation_cancel_context_unavailable",
+                retryable=True,
+            )
+        with self._guard:
+            self._cancel_requested_response_ids.add(response_id)
+        return VoiceCommandExecutionResult.succeeded(
+            event_factory.make(
+                "voice.response.generation_cancelled",
+                voice_turn_id=voice_turn_id,
+                response_id=response_id,
+                turn_revision=turn_revision,
+                response_generation=response_generation,
+                payload={"command_id": command_id},
+            )
+        )
+
+    def _generation_cancel_requested(self, response_id: str) -> bool:
+        with self._guard:
+            return response_id in self._cancel_requested_response_ids
+
     def _resolve_turn_context(
         self,
         *,
@@ -485,26 +548,31 @@ class AkaneThinkingAgentCommandExecutor:
         job: _GenerationJob,
     ) -> None:
         final_seen = False
+        cancelled = self._generation_cancel_requested(job.response_id)
         failure_reason = ""
         iterator: Any | None = None
         try:
-            iterator = self.engine.process_voice_turn_stream(
-                profile_user_id=self.profile_user_id,
-                session_id=self.session_id,
-                character_pack_id=self.character_pack_id,
-                source_id=job.source_id,
-                memcore_turn_id=job.memcore_turn_id,
-                voice_turn_id=job.voice_turn_id,
-                message=job.message,
-                timestamp=job.timestamp,
-            )
+            if not cancelled:
+                iterator = self.engine.process_voice_turn_stream(
+                    profile_user_id=self.profile_user_id,
+                    session_id=self.session_id,
+                    character_pack_id=self.character_pack_id,
+                    source_id=job.source_id,
+                    memcore_turn_id=job.memcore_turn_id,
+                    voice_turn_id=job.voice_turn_id,
+                    message=job.message,
+                    timestamp=job.timestamp,
+                )
             bridge = VoiceResponseStreamBridge(
                 host=host,
                 response_id=job.response_id,
                 text_artifacts=self.text_artifacts,
                 event_factory=job.event_factory,
             )
-            for stream_event in iterator:
+            for stream_event in iterator or ():
+                if self._generation_cancel_requested(job.response_id):
+                    cancelled = True
+                    break
                 if not isinstance(stream_event, Mapping):
                     continue
                 event_type = str(stream_event.get("type") or "")
@@ -515,6 +583,10 @@ class AkaneThinkingAgentCommandExecutor:
                         break
                     result = bridge.accept_stream_event(stream_event)
                     if not result.accepted and result.status != "duplicate":
+                        if self._generation_cancel_requested(job.response_id):
+                            cancelled = True
+                            failure_reason = ""
+                            break
                         failure_reason = result.reason or "voice_thinking_final_dispatch_failed"
                         break
                     final_seen = True
@@ -523,6 +595,10 @@ class AkaneThinkingAgentCommandExecutor:
                 if event_type == "speech_segment" and job.speech_delivery_enabled:
                     result = bridge.accept_stream_event(stream_event)
                     if not result.accepted and result.status != "duplicate":
+                        if self._generation_cancel_requested(job.response_id):
+                            cancelled = True
+                            failure_reason = ""
+                            break
                         failure_reason = result.reason or "voice_speech_segment_dispatch_failed"
                         break
                     delivery_drive = host.drive_once()
@@ -530,19 +606,26 @@ class AkaneThinkingAgentCommandExecutor:
                         failure_reason = delivery_drive.reason or "voice_playback_offer_failed"
                         break
                     self._notify_delivery(job)
-            if not final_seen and not failure_reason:
+            if not cancelled and not final_seen and not failure_reason:
                 failure_reason = "voice_thinking_final_missing"
         except Exception:
-            failure_reason = "voice_thinking_generation_failed"
+            if self._generation_cancel_requested(job.response_id):
+                cancelled = True
+                failure_reason = ""
+            else:
+                failure_reason = "voice_thinking_generation_failed"
         finally:
             close_iterator = getattr(iterator, "close", None)
             if callable(close_iterator):
                 try:
                     close_iterator()
                 except Exception:
-                    if not final_seen and not failure_reason:
+                    if not cancelled and not final_seen and not failure_reason:
                         failure_reason = "voice_thinking_stream_close_failed"
 
+        if self._generation_cancel_requested(job.response_id):
+            cancelled = True
+            failure_reason = ""
         if failure_reason:
             self._fail_response(
                 host,
@@ -553,6 +636,7 @@ class AkaneThinkingAgentCommandExecutor:
             self._notify_delivery(job)
         with self._guard:
             self._running_response_ids.discard(job.response_id)
+            self._cancel_requested_response_ids.discard(job.response_id)
             self._jobs.pop(job.response_id, None)
             self._event_factories.pop(job.voice_turn_id, None)
             self._speech_delivery_by_turn.pop(job.voice_turn_id, None)

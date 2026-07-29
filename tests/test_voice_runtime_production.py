@@ -327,6 +327,71 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 service.close()
                 manager.close()
 
+    def test_generation_cancel_command_stops_old_stream_without_assistant_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            engine = _BlockingThinkingEngine(manager)
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+            )
+            try:
+                request = _open_request(voice_turn_id="voice-turn-cancel-generation")
+                resolved = service.create_coordinator(request)
+                self.assertEqual(resolved.status, "ready", resolved)
+                asyncio.run(_commit_realtime_turn(resolved.coordinator))
+                self.assertTrue(engine.segment_ready.wait(timeout=2.0))
+
+                host = resolved.coordinator.bridge.host
+                response = next(
+                    item for item in host.snapshot.responses.values() if item.voice_turn_id == request.voice_turn_id
+                )
+                self.assertEqual(response.state.value, "generating")
+                factory = EventFactory(
+                    conversation_id=host.snapshot.conversation_id,
+                    voice_session_id="voice-session-cancel-generation",
+                    conversation_generation=host.snapshot.conversation_generation,
+                )
+                requested = host.accept_event(
+                    factory.make(
+                        "voice.response.cancel_requested",
+                        sequence=None,
+                        voice_turn_id=request.voice_turn_id,
+                        response_id=response.response_id,
+                        turn_revision=response.source_turn_revision,
+                        response_generation=response.response_generation,
+                        payload={"reason": "new_user_turn"},
+                    )
+                )
+                self.assertTrue(requested.accepted, requested)
+                self.assertIn(
+                    "cancel_response_generation",
+                    [command.command_kind for command in host.snapshot.pending_commands.values()],
+                )
+
+                driven = host.drive_once()
+                self.assertEqual(driven.status, "succeeded", driven)
+                self.assertEqual(
+                    host.snapshot.responses[response.response_id].state.value,
+                    "cancelled",
+                )
+                self.assertFalse(host.snapshot.pending_commands)
+
+                engine.release_final.set()
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(
+                    host.snapshot.responses[response.response_id].state.value,
+                    "cancelled",
+                )
+                self.assertIsNone(host.snapshot.responses[response.response_id].memory_projection_id)
+            finally:
+                engine.release_final.set()
+                service.close()
+                manager.close()
+
     def test_production_host_synthesizes_before_playback_without_fake_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
