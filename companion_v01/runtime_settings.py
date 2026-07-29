@@ -66,6 +66,7 @@ class BotSettingsView:
     llm_aux_reasoning_effort: str = ""
     llm_chat_reasoning_effort: str = ""
     llm_chat_max_output_tokens: int = 0
+    llm_chat_failover_to_aux_enabled: bool = False
 
     # Voice/runtime settings.  These belong to a BotRuntime rather than the
     # process-wide config module so multiple Bots can use different voices and
@@ -164,6 +165,9 @@ class BotSettingsView:
             llm_chat_max_output_tokens=max(
                 0,
                 int(getattr(config_module, "LLM_CHAT_MAX_OUTPUT_TOKENS", 0) or 0),
+            ),
+            llm_chat_failover_to_aux_enabled=bool(
+                getattr(config_module, "LLM_CHAT_FAILOVER_TO_AUX_ENABLED", False)
             ),
             tts_voice=_text(getattr(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
             or "zh-CN-XiaoxiaoNeural",
@@ -277,6 +281,7 @@ class BotSettingsView:
             "llm_aux_reasoning_effort",
             "llm_chat_reasoning_effort",
             "llm_chat_max_output_tokens",
+            "llm_chat_failover_to_aux_enabled",
             "tts_voice",
             "tts_rate",
             "tts_volume",
@@ -443,6 +448,9 @@ class BotSettingsView:
                 "auto_compact_token_limit": self.llm_auto_compact_token_limit,
                 "chat_max_output_tokens": self.llm_chat_max_output_tokens,
             },
+            "failover": {
+                "chat_to_aux_enabled": self.llm_chat_failover_to_aux_enabled,
+            },
             "reasoning": {
                 "default": self.llm_reasoning_effort,
                 "aux": self.llm_aux_reasoning_effort,
@@ -503,6 +511,7 @@ def _overlay_value(key: str, value: Any) -> Any:
         "image_generation_enabled",
         "prompt_cache_hints_enabled",
         "prompt_cache_hints_force",
+        "llm_chat_failover_to_aux_enabled",
         "streaming_tts_enabled",
         "gpt_sovits_streaming_mode",
         "asr_vad_filter",

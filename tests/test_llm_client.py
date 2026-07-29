@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
-from companion_v01.llm_runtime import LLMRuntime, ModelBundle
+from companion_v01.llm_runtime import ChatJSONResult, LLMRuntime, ModelBundle
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import (
@@ -414,6 +414,111 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(persistent[0]["content"], "current event")
         self.assertEqual(persistent[1]["tool_calls"][0]["id"], "call-1")
         self.assertEqual(persistent[2]["tool_call_id"], "call-1")
+
+    def test_chat_provider_failover_retries_once_through_distinct_aux_route(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.instance_id = "finance"
+        runtime.settings = BotSettingsView(llm_chat_failover_to_aux_enabled=True)
+        runtime._bundle_lock = threading.RLock()
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.chat = ModelBundle(
+            client=SimpleNamespace(
+                _akane_protocol="responses",
+                base_url="https://api.pinaic.com/v1",
+            ),
+            model="gpt-5.6-luna",
+        )
+        runtime.aux = ModelBundle(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+        primary = ChatJSONResult(
+            parsed={"speech": "fallback"},
+            raw_text="",
+            error="relay unavailable",
+            fallback_used=True,
+        )
+        recovered = ChatJSONResult(
+            parsed={"speech": "recovered"},
+            raw_text='{"speech":"recovered"}',
+        )
+
+        with patch.object(runtime, "_call_json_result", side_effect=[primary, recovered]) as call:
+            result = runtime.call_chat_json_result(
+                system_prompt="system",
+                user_prompt="hello",
+                fallback={"speech": "fallback"},
+            )
+
+        self.assertEqual(result.parsed["speech"], "recovered")
+        self.assertIs(call.call_args_list[0].kwargs["bundle"], runtime.chat)
+        self.assertIs(call.call_args_list[1].kwargs["bundle"], runtime.aux)
+        self.assertEqual(runtime.snapshot_metrics()["chat_provider_failovers"], 1)
+        self.assertEqual(runtime.snapshot_metrics()["chat_provider_failover_successes"], 1)
+
+    def test_chat_provider_failover_does_not_touch_successful_primary_request(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(llm_chat_failover_to_aux_enabled=True)
+        runtime._bundle_lock = threading.RLock()
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.chat = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://relay.example/v1"),
+            model="primary",
+        )
+        runtime.aux = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://official.example/v1"),
+            model="fallback",
+        )
+        primary = ChatJSONResult(parsed={"speech": "ok"}, raw_text='{"speech":"ok"}')
+
+        with patch.object(runtime, "_call_json_result", return_value=primary) as call:
+            result = runtime.call_chat_json_result(
+                system_prompt="system",
+                user_prompt="hello",
+                fallback={"speech": "fallback"},
+            )
+
+        self.assertEqual(result.parsed["speech"], "ok")
+        self.assertEqual(call.call_count, 1)
+        self.assertNotIn("chat_provider_failovers", runtime.snapshot_metrics())
+
+    def test_chat_model_override_never_crosses_to_aux_provider(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(llm_chat_failover_to_aux_enabled=True)
+        runtime._bundle_lock = threading.RLock()
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.chat = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://relay.example/v1"),
+            model="primary",
+        )
+        runtime.aux = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://official.example/v1"),
+            model="fallback",
+        )
+        primary = ChatJSONResult(
+            parsed={"speech": "fallback"},
+            raw_text="",
+            error="override unavailable",
+            fallback_used=True,
+        )
+
+        with patch.object(runtime, "_call_json_result", return_value=primary) as call:
+            result = runtime.call_chat_json_result(
+                system_prompt="system",
+                user_prompt="hello",
+                fallback={"speech": "fallback"},
+                chat_model_override="requested-model",
+            )
+
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(call.call_count, 1)
+        self.assertNotIn("chat_provider_failovers", runtime.snapshot_metrics())
 
     def test_request_observer_rejection_stops_nonstream_before_provider_transport(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

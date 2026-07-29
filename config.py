@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     LLM_DISABLE_RESPONSE_STORAGE: bool = True
     LLM_CONTEXT_WINDOW: int = 0
     LLM_AUTO_COMPACT_TOKEN_LIMIT: int = 0
+    # Primary CHAT provider failure can retry once through the separately
+    # configured AUX provider. Disabled by default; cloud deployments may use
+    # an official AUX route as an emergency fallback for a relay CHAT route.
+    LLM_CHAT_FAILOVER_TO_AUX_ENABLED: bool = False
     # 记录最终回复 prompt section 的长度/hash 审计日志（不记录原文）
     LLM_PROMPT_AUDIT_ENABLED: bool = False
     # 开启后也记录辅助 LLM 调用；默认只记录 chat:final，避免日志噪声
@@ -529,7 +533,7 @@ def _apply_settings(s: Settings) -> None:
     global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
     global LLM_THINKING_MODE, LLM_REASONING_EFFORT, LLM_AUX_REASONING_EFFORT, LLM_CHAT_REASONING_EFFORT
     global LLM_DISABLE_RESPONSE_STORAGE
-    global LLM_CONTEXT_WINDOW, LLM_AUTO_COMPACT_TOKEN_LIMIT
+    global LLM_CONTEXT_WINDOW, LLM_AUTO_COMPACT_TOKEN_LIMIT, LLM_CHAT_FAILOVER_TO_AUX_ENABLED
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_BASE_URL, IMAGE_GENERATION_API_KEY, IMAGE_GENERATION_MODEL
@@ -627,6 +631,7 @@ def _apply_settings(s: Settings) -> None:
     LLM_DISABLE_RESPONSE_STORAGE = bool(s.LLM_DISABLE_RESPONSE_STORAGE)
     LLM_CONTEXT_WINDOW = max(0, int(s.LLM_CONTEXT_WINDOW or 0))
     LLM_AUTO_COMPACT_TOKEN_LIMIT = max(0, int(s.LLM_AUTO_COMPACT_TOKEN_LIMIT or 0))
+    LLM_CHAT_FAILOVER_TO_AUX_ENABLED = bool(s.LLM_CHAT_FAILOVER_TO_AUX_ENABLED)
 
     VISION_API_KEY = s.VISION_API_KEY or ""
     VISION_BASE_URL = s.VISION_BASE_URL or ""

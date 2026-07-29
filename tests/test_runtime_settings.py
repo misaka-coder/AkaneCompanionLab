@@ -84,6 +84,7 @@ class BotSettingsViewTests(unittest.TestCase):
             LLM_REASONING_EFFORT="medium",
             LLM_AUX_REASONING_EFFORT="low",
             LLM_CHAT_REASONING_EFFORT="high",
+            LLM_CHAT_FAILOVER_TO_AUX_ENABLED=True,
         )
 
         view = BotSettingsView.from_config(config_module)
@@ -100,6 +101,8 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(view.prompt_cache_namespace, "bot-a")
         self.assertEqual(view.llm_context_window, 12000)
         self.assertEqual(view.llm_chat_reasoning_effort, "high")
+        self.assertTrue(view.llm_chat_failover_to_aux_enabled)
+        self.assertTrue(public["failover"]["chat_to_aux_enabled"])
         self.assertNotIn("secret", repr(view))
         self.assertNotIn("api_key", public["chat"])
         self.assertNotIn("vision-secret", repr(view))
@@ -133,6 +136,7 @@ class BotSettingsViewTests(unittest.TestCase):
                 "prompt_cache_namespace": "bot-b",
                 "llm_context_window": 4096,
                 "llm_chat_reasoning_effort": "medium",
+                "llm_chat_failover_to_aux_enabled": True,
             }
         )
         self.assertFalse(vision_override.vision_enabled)
@@ -140,6 +144,7 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(vision_override.prompt_cache_namespace, "bot-b")
         self.assertEqual(vision_override.llm_context_window, 4096)
         self.assertEqual(vision_override.llm_chat_reasoning_effort, "medium")
+        self.assertTrue(vision_override.llm_chat_failover_to_aux_enabled)
         with self.assertRaisesRegex(ValueError, "bot_settings_reasoning_effort_invalid"):
             base.overlay({"llm_chat_reasoning_effort": "ultra"})
         with self.assertRaises(ValueError) as raised:

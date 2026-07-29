@@ -632,6 +632,9 @@ class LLMRuntime:
             "plugin_proactive_cache_usage_calls": 0,
             "plugin_proactive_cache_hit_calls": 0,
             "chat_json_fallbacks": 0,
+            "chat_provider_failovers": 0,
+            "chat_provider_failover_successes": 0,
+            "chat_provider_failover_failures": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
             "native_tool_call_extracted": 0,
@@ -697,6 +700,33 @@ class LLMRuntime:
         if not model_override:
             return bundle
         return ModelBundle(client=bundle.client, model=model_override)
+
+    def _chat_failover_bundle(
+        self,
+        *,
+        primary: ModelBundle,
+        chat_model_override: str = "",
+    ) -> ModelBundle | None:
+        if chat_model_override or not self._settings_view().llm_chat_failover_to_aux_enabled:
+            return None
+        with self._bundle_lock:
+            fallback = self.aux
+        primary_identity = self._bundle_route_identity(primary)
+        fallback_identity = self._bundle_route_identity(fallback)
+        if not all(fallback_identity) or primary_identity == fallback_identity:
+            return None
+        return fallback
+
+    def _bundle_route_identity(self, bundle: ModelBundle) -> tuple[str, str, str]:
+        client = getattr(bundle, "client", bundle)
+        protocol = str(
+            getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or ""
+        ).strip().lower()
+        return (
+            protocol,
+            self._bundle_base_host(bundle),
+            str(getattr(bundle, "model", "") or "").strip().lower(),
+        )
 
     def call_aux_json(
         self,
@@ -774,8 +804,50 @@ class LLMRuntime:
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> ChatJSONResult:
         self._record_metric("chat_json_calls")
-        return self._call_json_result(
-            bundle=self._chat_bundle_for_override(chat_model_override),
+        primary_bundle = self._chat_bundle_for_override(chat_model_override)
+        request_kwargs = {
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "fallback": fallback,
+            "temperature": temperature,
+            "prompt_cache_key": prompt_cache_key,
+            "user_images": user_images,
+            "native_tools": native_tools,
+            "native_tool_choice": native_tool_choice,
+            "system_extra_blocks": system_extra_blocks,
+            "history_turns": history_turns,
+            "ephemeral_turns": ephemeral_turns,
+            "post_user_turns": post_user_turns,
+            "prompt_audit_sections": prompt_audit_sections,
+            "request_observer": request_observer,
+        }
+        primary_result = self._call_json_result(
+            bundle=primary_bundle,
+            **request_kwargs,
+        )
+        if not primary_result.fallback_used:
+            return primary_result
+
+        failover_bundle = self._chat_failover_bundle(
+            primary=primary_bundle,
+            chat_model_override=chat_model_override,
+        )
+        if failover_bundle is None:
+            return primary_result
+
+        self._record_metric("chat_provider_failovers")
+        logger.warning(
+            "llm chat provider failover instance=%s primary_host=%s primary_model=%s "
+            "fallback_host=%s fallback_model=%s reason=%s",
+            str(getattr(self, "instance_id", "") or "unknown"),
+            self._bundle_base_host(primary_bundle) or "unknown",
+            primary_bundle.model,
+            self._bundle_base_host(failover_bundle) or "unknown",
+            failover_bundle.model,
+            self._sanitize_error_message(primary_result.error or "invalid_json"),
+        )
+        failover_result = self._call_json_result(
+            bundle=failover_bundle,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,
@@ -791,6 +863,11 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
         )
+        if not failover_result.fallback_used:
+            self._record_metric("chat_provider_failover_successes")
+            return failover_result
+        self._record_metric("chat_provider_failover_failures")
+        return primary_result
 
     def chat_supports_native_tools(self, *, chat_model_override: str = "") -> bool:
         bundle = self._chat_bundle_for_override(chat_model_override)
