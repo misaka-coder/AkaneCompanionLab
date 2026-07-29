@@ -797,7 +797,16 @@ class NapCatQQGateway:
             if label:
                 clean_message = clean_message.replace(label, " ")
         clean_message = re.sub(r"\s+", " ", clean_message).strip()
-        if not clean_message or (not inbound.has_text_content and not attachments):
+        mentions = self.resolve_mention_labels(
+            mentions=inbound.mentions,
+            group_id=group_id,
+        )
+        mention_only = bool(mentions and not clean_message)
+        if mention_only:
+            clean_message = "event.mention"
+        if not clean_message or (
+            not inbound.has_text_content and not attachments and not mention_only
+        ):
             return QQMessageContext(False, "empty_message")
         mentions_bot = inbound.mentioned_bot
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
@@ -844,7 +853,7 @@ class NapCatQQGateway:
                     attachments=attachments,
                     source_message_id=str(event.get("message_id") or "").strip(),
                     mentioned_bot=mentions_bot,
-                    mentions=inbound.mentions,
+                    mentions=mentions,
                 )
 
         return QQMessageContext(
@@ -865,7 +874,7 @@ class NapCatQQGateway:
             attachments=attachments,
             source_message_id=str(event.get("message_id") or "").strip(),
             mentioned_bot=mentions_bot,
-            mentions=inbound.mentions,
+            mentions=mentions,
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,
@@ -2308,6 +2317,43 @@ class NapCatQQGateway:
                     self.sender_label_cache[cache_key] = remote_label
                 return remote_label
         return f"QQ {user_id}" if user_id else "群成员"
+
+    def resolve_mention_labels(
+        self,
+        *,
+        mentions: tuple[MentionRef, ...],
+        group_id: int,
+    ) -> tuple[MentionRef, ...]:
+        if not mentions or not group_id:
+            return tuple(mentions)
+        resolved: list[MentionRef] = []
+        for mention in mentions:
+            target_text = str(mention.target_id or "").strip()
+            target_id = self._safe_int(target_text)
+            display_name = str(mention.display_name or "").strip()
+            if mention.is_bot:
+                resolved.append(mention)
+                continue
+            cache_key = self._sender_label_cache_key(group_id=group_id, user_id=target_id)
+            if display_name and cache_key:
+                self.sender_label_cache[cache_key] = display_name
+            if not display_name and cache_key:
+                display_name = str(self.sender_label_cache.get(cache_key) or "").strip()
+            if not display_name and target_id:
+                display_name = self.lookup_group_member_label(
+                    group_id=group_id,
+                    user_id=target_id,
+                )
+                if display_name and cache_key:
+                    self.sender_label_cache[cache_key] = display_name
+            resolved.append(
+                MentionRef(
+                    target_id=target_text,
+                    display_name=display_name,
+                    is_bot=False,
+                )
+            )
+        return tuple(resolved)
 
     def _sender_label_cache_key(self, *, group_id: int, user_id: int) -> str:
         if not user_id:

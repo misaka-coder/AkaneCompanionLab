@@ -240,13 +240,14 @@ class QQGatewayTests(unittest.TestCase):
             "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-2",
             "message": [
-                {"type": "at", "data": {"qq": "40004", "name": "天为"}},
+                {"type": "at", "data": {"qq": "40004"}},
                 {"type": "text", "data": {"text": "我是在回复别人"}},
             ],
         }
 
         mentioned = gateway.build_message_context(mention_event)
-        follow = gateway.build_message_context(follow_event)
+        with patch.object(gateway, "lookup_group_member_label", return_value="天为") as lookup:
+            follow = gateway.build_message_context(follow_event)
 
         self.assertTrue(mentioned.should_respond)
         self.assertEqual(mentioned.reason, "group_mention")
@@ -290,6 +291,53 @@ class QQGatewayTests(unittest.TestCase):
                     "is_assistant": False,
                 }
             ],
+        )
+        lookup.assert_called_once_with(
+            group_id=QQ_GROUP_FIXTURE_ID,
+            user_id=40004,
+        )
+
+    def test_group_mention_only_is_recorded_as_a_typed_gesture(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "group-mention-only-1",
+            "sender": {"card": "misaka"},
+            "message": [
+                {"type": "at", "data": {"qq": "40004"}},
+            ],
+        }
+
+        with patch.object(gateway, "lookup_group_member_label", return_value="天为"):
+            context = gateway.build_message_context(event)
+
+        self.assertFalse(context.should_respond)
+        self.assertTrue(context.should_record)
+        self.assertEqual(context.reason, "group_passive_observed")
+        self.assertEqual(context.clean_message, "event.mention")
+        payload = context.to_turn_payload()
+        self.assertEqual(payload["message"], "【misaka】event.mention")
+        self.assertEqual(
+            payload["message_addressing"]["primary_target"],
+            {"actor_id": "qq:40004", "display_name": "天为"},
+        )
+
+        bot_event = dict(event)
+        bot_event["message_id"] = "group-mention-only-2"
+        bot_event["message"] = [
+            {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+        ]
+        addressed = gateway.build_message_context(bot_event)
+        self.assertTrue(addressed.should_respond)
+        self.assertEqual(addressed.reason, "group_mention")
+        self.assertEqual(addressed.clean_message, "event.mention")
+        self.assertEqual(
+            addressed.to_turn_payload()["message_addressing"]["primary_target"],
+            {"actor_id": "assistant", "display_name": ""},
         )
 
     def test_group_wake_word_triggers_response_without_at(self) -> None:
