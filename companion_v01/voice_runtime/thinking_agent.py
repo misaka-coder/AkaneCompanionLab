@@ -41,6 +41,8 @@ class _GenerationJob:
     voice_turn_id: str
     response_generation: int
     turn_revision: int
+    commitment: str
+    candidate_id: str
     source_id: str
     memcore_turn_id: str
     message: str
@@ -133,8 +135,10 @@ class AkaneThinkingAgentCommandExecutor:
         host: AkaneVoiceRuntimeHost,
         *,
         voice_turn_id: str = "",
+        commitment: str = "",
     ) -> VoiceThinkingStartResult:
         target_turn_id = str(voice_turn_id or "").strip()
+        target_commitment = str(commitment or "").strip()
         with self._guard:
             if self._closed:
                 return VoiceThinkingStartResult(
@@ -147,6 +151,7 @@ class AkaneThinkingAgentCommandExecutor:
                 job
                 for job in self._jobs.values()
                 if (not target_turn_id or job.voice_turn_id == target_turn_id)
+                and (not target_commitment or job.commitment == target_commitment)
                 and job.response_id not in self._running_response_ids
             ]
         if not ready:
@@ -264,6 +269,8 @@ class AkaneThinkingAgentCommandExecutor:
                         voice_turn_id=voice_turn_id,
                         response_generation=response_generation,
                         turn_revision=turn_revision,
+                        commitment=str(raw_response.get("commitment") or "committed"),
+                        candidate_id=str(raw_response.get("candidate_id") or ""),
                         source_id=str(resolved["source_id"]),
                         memcore_turn_id=str(resolved["turn_id"]),
                         message=str(resolved["text"]),
@@ -287,7 +294,10 @@ class AkaneThinkingAgentCommandExecutor:
         failed: list[str] = []
         for response_id in response_ids:
             response = host.snapshot.responses.get(str(response_id or ""))
-            if response is None or str(getattr(response.state, "value", "")) != "generating":
+            if response is None or str(getattr(response.state, "value", "")) not in {
+                "generating",
+                "streaming",
+            }:
                 continue
             voice_turn_id = str(getattr(response, "voice_turn_id", "") or "")
             try:
@@ -369,6 +379,10 @@ class AkaneThinkingAgentCommandExecutor:
         event_factory = self._event_factory_for_turn(voice_turn_id)
         response_id = str(payload.get("response_id") or "").strip()
         if not response_id:
+            commitment = str(payload.get("commitment") or "committed")
+            candidate_id = str(payload.get("candidate_id") or "").strip()
+            if commitment == "speculative" and not candidate_id:
+                return VoiceCommandExecutionResult.failed("voice_candidate_id_missing")
             response_id = self._response_id(command)
             return VoiceCommandExecutionResult.succeeded(
                 event_factory.make(
@@ -379,7 +393,8 @@ class AkaneThinkingAgentCommandExecutor:
                     response_generation=1,
                     payload={
                         "purpose": str(payload.get("purpose") or "content"),
-                        "commitment": str(payload.get("commitment") or "committed"),
+                        "commitment": commitment,
+                        **({"candidate_id": candidate_id, "playable": False} if candidate_id else {}),
                         "command_id": command_id,
                     },
                 )
@@ -388,9 +403,19 @@ class AkaneThinkingAgentCommandExecutor:
         response_generation = payload.get("response_generation")
         if isinstance(response_generation, bool) or not isinstance(response_generation, int) or response_generation < 1:
             return VoiceCommandExecutionResult.failed("voice_generation_command_invalid")
-        resolved = self._resolve_turn_context(
-            snapshot_record=snapshot_record,
-            voice_turn_id=voice_turn_id,
+        commitment = str(payload.get("commitment") or "committed")
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        resolved = (
+            self._resolve_candidate_turn_context(
+                snapshot_record=snapshot_record,
+                voice_turn_id=voice_turn_id,
+                turn_revision=turn_revision,
+            )
+            if commitment == "speculative"
+            else self._resolve_turn_context(
+                snapshot_record=snapshot_record,
+                voice_turn_id=voice_turn_id,
+            )
         )
         if not resolved.get("ok"):
             return VoiceCommandExecutionResult.succeeded(
@@ -419,6 +444,8 @@ class AkaneThinkingAgentCommandExecutor:
             voice_turn_id=voice_turn_id,
             response_generation=response_generation,
             turn_revision=turn_revision,
+            commitment=commitment,
+            candidate_id=candidate_id,
             source_id=str(resolved["source_id"]),
             memcore_turn_id=str(resolved["turn_id"]),
             message=str(resolved["text"]),
@@ -542,6 +569,43 @@ class AkaneThinkingAgentCommandExecutor:
             }
         )
 
+    @staticmethod
+    def _resolve_candidate_turn_context(
+        *,
+        snapshot_record: Mapping[str, Any],
+        voice_turn_id: str,
+        turn_revision: int,
+    ) -> dict[str, Any]:
+        input_turns = snapshot_record.get("input_turns")
+        turn = input_turns.get(voice_turn_id) if isinstance(input_turns, Mapping) else None
+        revisions = turn.get("revisions") if isinstance(turn, Mapping) else None
+        revision = None
+        if isinstance(revisions, Mapping):
+            revision = revisions.get(str(turn_revision), revisions.get(turn_revision))
+        if not isinstance(revision, Mapping):
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "voice_candidate_revision_unavailable",
+            }
+        stable_text = str(revision.get("stable_text") or "")
+        unstable_tail = str(revision.get("unstable_tail") or "")
+        message = f"{stable_text}{unstable_tail}".strip()
+        if not message:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "voice_candidate_text_unavailable",
+            }
+        return {
+            "ok": True,
+            "status": "ready",
+            "source_id": f"voice-candidate:{voice_turn_id}:{turn_revision}",
+            "turn_id": "",
+            "text": message,
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+        }
+
     def _run_generation(
         self,
         host: AkaneVoiceRuntimeHost,
@@ -553,16 +617,33 @@ class AkaneThinkingAgentCommandExecutor:
         iterator: Any | None = None
         try:
             if not cancelled:
-                iterator = self.engine.process_voice_turn_stream(
-                    profile_user_id=self.profile_user_id,
-                    session_id=self.session_id,
-                    character_pack_id=self.character_pack_id,
-                    source_id=job.source_id,
-                    memcore_turn_id=job.memcore_turn_id,
-                    voice_turn_id=job.voice_turn_id,
-                    message=job.message,
-                    timestamp=job.timestamp,
-                )
+                if job.commitment == "speculative":
+                    candidate_stream = getattr(
+                        self.engine,
+                        "process_voice_candidate_stream",
+                        None,
+                    )
+                    if not callable(candidate_stream):
+                        raise RuntimeError("voice_candidate_runtime_unavailable")
+                    iterator = candidate_stream(
+                        profile_user_id=self.profile_user_id,
+                        session_id=self.session_id,
+                        character_pack_id=self.character_pack_id,
+                        voice_turn_id=job.voice_turn_id,
+                        message=job.message,
+                        timestamp=job.timestamp,
+                    )
+                else:
+                    iterator = self.engine.process_voice_turn_stream(
+                        profile_user_id=self.profile_user_id,
+                        session_id=self.session_id,
+                        character_pack_id=self.character_pack_id,
+                        source_id=job.source_id,
+                        memcore_turn_id=job.memcore_turn_id,
+                        voice_turn_id=job.voice_turn_id,
+                        message=job.message,
+                        timestamp=job.timestamp,
+                    )
             bridge = VoiceResponseStreamBridge(
                 host=host,
                 response_id=job.response_id,
@@ -590,6 +671,11 @@ class AkaneThinkingAgentCommandExecutor:
                         failure_reason = result.reason or "voice_thinking_final_dispatch_failed"
                         break
                     final_seen = True
+                    if job.commitment == "speculative":
+                        validation_drive = host.drive_once()
+                        if validation_drive.status == "failed":
+                            failure_reason = validation_drive.reason or "voice_candidate_validation_dispatch_failed"
+                            break
                     self._notify_delivery(job)
                     break
                 if event_type == "speech_segment" and job.speech_delivery_enabled:
@@ -638,9 +724,10 @@ class AkaneThinkingAgentCommandExecutor:
             self._running_response_ids.discard(job.response_id)
             self._cancel_requested_response_ids.discard(job.response_id)
             self._jobs.pop(job.response_id, None)
-            self._event_factories.pop(job.voice_turn_id, None)
-            self._speech_delivery_by_turn.pop(job.voice_turn_id, None)
-            self._delivery_notifiers.pop(job.voice_turn_id, None)
+            if job.commitment != "speculative":
+                self._event_factories.pop(job.voice_turn_id, None)
+                self._speech_delivery_by_turn.pop(job.voice_turn_id, None)
+                self._delivery_notifiers.pop(job.voice_turn_id, None)
 
     def _fail_response(
         self,
@@ -722,10 +809,20 @@ class AkaneThinkingAgentCommandExecutor:
     ) -> Any | None:
         if not voice_turn_id:
             return None
-        for response in host.snapshot.responses.values():
-            if str(getattr(response, "voice_turn_id", "") or "") == voice_turn_id:
-                return response
-        return None
+        responses = [
+            response
+            for response in host.snapshot.responses.values()
+            if str(getattr(response, "voice_turn_id", "") or "") == voice_turn_id
+        ]
+        return next(
+            (
+                response
+                for response in reversed(responses)
+                if str(getattr(getattr(response, "state", None), "value", "") or "")
+                not in {"failed", "cancelled", "discarded"}
+            ),
+            responses[-1] if responses else None,
+        )
 
 
 class _RecoveryVoiceEventFactory:

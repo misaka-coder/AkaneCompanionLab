@@ -29,12 +29,14 @@ _SEMANTIC_PULSE_SYSTEM_PROMPT = """
 {
   "playback_action": "duck | resume | finish_current_unit_then_stop | stop_now",
   "input_action": "keep_listening | commit_when_final | treat_as_interaction | take_over",
-  "response_action": "none",
+  "response_action": "none | prepare_candidate",
   "reason_summary": "简短说明判断依据",
   "confidence_hint": 0.0
 }
 
-当前宿主尚未启用推测式候选回复，因此 response_action 必须为 none。
+只有在当前稳定转写已经足以判断用户正在接管，而且 input_action=take_over 时，
+才可使用 prepare_candidate 提前准备一份不可播放、不可执行工具的候选回复。
+证据不足、用户仍可能继续补充或只是附和时使用 none。
 转写仍明显未完整时，通常保持 duck + keep_listening；确认只是附和且不需要接管时，
 使用 resume + treat_as_interaction；明确纠正或开启新请求时可使用 stop_now + take_over；
 希望让当前完整语义单元说完再接管时使用 finish_current_unit_then_stop + take_over。
@@ -57,6 +59,7 @@ _INPUT_ACTIONS = frozenset(
         "take_over",
     }
 )
+_RESPONSE_ACTIONS = frozenset({"none", "prepare_candidate"})
 
 
 @dataclass(frozen=True)
@@ -375,8 +378,10 @@ class AkaneVoiceSemanticPulseCommandExecutor:
             return "voice_semantic_playback_action_invalid"
         if input_action not in _INPUT_ACTIONS:
             return "voice_semantic_input_action_invalid"
-        if response_action != "none":
+        if response_action not in _RESPONSE_ACTIONS:
             return "voice_semantic_response_action_unsupported"
+        if response_action == "prepare_candidate" and input_action != "take_over":
+            return "voice_semantic_candidate_action_invalid"
         reason_summary = " ".join(str(payload.get("reason_summary") or "").split())[:240]
         confidence = payload.get("confidence_hint")
         if confidence is not None:

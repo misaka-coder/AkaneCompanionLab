@@ -57,6 +57,30 @@ class _SemanticLLM:
         )
 
 
+class _CandidateSemanticLLM(_SemanticLLM):
+    def call_chat_json_result(self, **kwargs: Any) -> Any:
+        self.calls.append(dict(kwargs))
+        system_prompt = str(kwargs.get("system_prompt") or "")
+        if "候选回复校验器" in system_prompt:
+            parsed = {
+                "compatible": True,
+                "reason_code": "same_request_with_more_detail",
+            }
+        else:
+            parsed = {
+                "playback_action": "stop_now",
+                "input_action": "take_over",
+                "response_action": "prepare_candidate",
+                "reason_summary": "用户正在纠正并接管当前回复。",
+                "confidence_hint": 0.92,
+            }
+        return SimpleNamespace(
+            parsed=parsed,
+            fallback_used=False,
+            error=self.error,
+        )
+
+
 class _FakeEmbeddingProvider:
     name = "hashed"
     version = "test"
@@ -109,6 +133,7 @@ class _ThinkingEngine:
         self.memcore_manager = manager
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
+        self.candidate_calls: list[dict[str, Any]] = []
 
     def _memcore_manager_if_enabled(self) -> MemcoreManager:
         return self.memcore_manager
@@ -130,6 +155,26 @@ class _ThinkingEngine:
                     "memory_facets": ["knowledge"],
                     "about_roles": ["external"],
                     "topic_terms": ["状态机"],
+                },
+            },
+        }
+
+    def process_voice_candidate_stream(self, **kwargs: Any):
+        self.candidate_calls.append(dict(kwargs))
+        if self.fail:
+            raise RuntimeError("private speculative model detail")
+        yield {
+            "type": "speech_segment",
+            "index": 0,
+            "text": "好，我按你刚才的纠正重新说明。",
+        }
+        yield {
+            "type": "final",
+            "payload": {
+                "speech": "好，我按你刚才的纠正重新说明。",
+                "memory_metadata": {
+                    "memory_facets": ["knowledge"],
+                    "topic_terms": ["候选回复"],
                 },
             },
         }
@@ -231,6 +276,33 @@ async def _commit_realtime_turn(coordinator: Any) -> Any:
 
 
 class VoiceRuntimeProductionTests(unittest.TestCase):
+    def test_engine_candidate_boundary_is_transient_and_tool_free(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        captured: list[dict[str, Any]] = []
+
+        def process_turn_stream(payload: dict[str, Any]):
+            captured.append(dict(payload))
+            return iter(({"type": "final", "payload": {"speech": "候选"}},))
+
+        engine.process_turn_stream = process_turn_stream
+        events = list(
+            engine.process_voice_candidate_stream(
+                profile_user_id="profile-user",
+                session_id="session-visible-id",
+                character_pack_id="character-pack",
+                voice_turn_id="voice-turn-candidate-boundary",
+                message="我先说到这里",
+                timestamp=123,
+            )
+        )
+
+        self.assertEqual(events[0]["payload"]["speech"], "候选")
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0]["transient_user_message"])
+        self.assertTrue(captured[0]["transient_assistant_message"])
+        self.assertTrue(captured[0]["voice_speculative_candidate"])
+        self.assertEqual(captured[0]["client_mode"], "desktop_pet")
+
     def _manager(self, root: Path) -> MemcoreManager:
         manager = MemcoreManager(
             backend="memcore",
@@ -1026,6 +1098,358 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 self.assertEqual(len(interaction_entries), 1)
             finally:
                 service.close()
+                manager.close()
+
+    def test_speculative_candidate_waits_for_final_transcript_before_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            semantic_llm = _CandidateSemanticLLM()
+            engine = _SemanticThinkingEngine(manager, llm=semantic_llm)
+            tts_client = _TTSClient()
+            service = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=engine,
+                tts_client=tts_client,
+            )
+            try:
+                source = service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-candidate-source",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(source.status, "ready", source)
+                asyncio.run(_commit_realtime_turn(source.coordinator))
+                self.assertTrue(service.wait_idle(timeout=5.0))
+
+                source_delivery = source.delivery_channel.take_outbound()
+                self.assertIsNotNone(source_delivery)
+                source.delivery_channel.mark_sent(source_delivery.delivery_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": source_delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": source_delivery.delivery_id,
+                            "resume_token": "candidate-source-resume",
+                        },
+                    ).ok
+                )
+
+                candidate = service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-candidate-takeover",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(candidate.status, "ready", candidate)
+                self.assertTrue(asyncio.run(candidate.coordinator.open()).ok)
+                suspected = candidate.coordinator.suspect_interruption(
+                    audio_clock_ms=420,
+                )
+                self.assertTrue(suspected.ok, suspected)
+
+                duck = source.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                self.assertEqual(duck.action, "duck")
+                source.delivery_channel.mark_control_sent(duck.control_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": duck.control_id,
+                            "command_id": duck.command_id,
+                            "action": "duck",
+                            "status": "applied",
+                            "played_ms": 420,
+                            "applied_volume": 0.2,
+                        },
+                    ).ok
+                )
+
+                system = manager._get_system(
+                    profile_user_id="profile-user",
+                    session_id="session-visible-id",
+                    character_pack_id="character-pack",
+                )
+                before_dialogue_ids = {
+                    str(entry.get("source_id") or "")
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if str(entry.get("kind") or "") in {"message.user.voice", "message.assistant.voice"}
+                    and entry.get("payload", {}).get("voice_turn_id") == "voice-turn-candidate-takeover"
+                }
+
+                checkpoint = asyncio.run(
+                    candidate.coordinator.feed_pcm_frame(
+                        b"\x01\x00" * 160,
+                        sequence=0,
+                        audio_clock_ms=0,
+                    )
+                )
+                self.assertTrue(checkpoint.ok, checkpoint)
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(len(semantic_llm.calls), 1)
+
+                stop = source.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(stop)
+                self.assertEqual(stop.action, "stop")
+                source.delivery_channel.mark_control_sent(stop.control_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": stop.control_id,
+                            "command_id": stop.command_id,
+                            "action": "stop",
+                            "status": "applied",
+                            "played_ms": 520,
+                        },
+                    ).ok
+                )
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(len(engine.candidate_calls), 1)
+                self.assertEqual(len(engine.calls), 1)
+                self.assertIsNone(candidate.delivery_channel.take_outbound())
+
+                host = candidate.coordinator.bridge.host
+                candidate_response = next(
+                    response
+                    for response in host.snapshot.responses.values()
+                    if response.voice_turn_id == "voice-turn-candidate-takeover"
+                    and response.commitment.value == "speculative"
+                )
+                self.assertFalse(candidate_response.playable)
+                self.assertEqual(candidate_response.state.value, "generated")
+                after_candidate_dialogue_ids = {
+                    str(entry.get("source_id") or "")
+                    for entry in system.store.get_unsummarized_messages(namespace=system.namespace)
+                    if str(entry.get("kind") or "") in {"message.user.voice", "message.assistant.voice"}
+                    and entry.get("payload", {}).get("voice_turn_id") == "voice-turn-candidate-takeover"
+                }
+                self.assertEqual(after_candidate_dialogue_ids, before_dialogue_ids)
+
+                started = asyncio.run(candidate.coordinator.start_finalize_pcm())
+                self.assertTrue(started.ok, started)
+                settled = asyncio.run(candidate.coordinator.settle_finalize())
+                self.assertTrue(settled.ok, settled)
+                self.assertTrue(service.wait_idle(timeout=5.0))
+                self.assertEqual(len(semantic_llm.calls), 2)
+                validator_call = semantic_llm.calls[-1]
+                self.assertIn(
+                    "候选回复校验器",
+                    str(validator_call.get("system_prompt") or ""),
+                )
+                self.assertIsNone(validator_call["native_tools"])
+                self.assertTrue(str(validator_call["prompt_cache_key"]).startswith("voice-candidate-validator-"))
+
+                adopted = host.snapshot.responses[candidate_response.response_id]
+                self.assertEqual(adopted.commitment.value, "committed")
+                self.assertTrue(adopted.playable)
+                self.assertEqual(adopted.candidate_status, "adopted")
+                self.assertEqual(len(engine.candidate_calls), 1)
+                self.assertEqual(len(engine.calls), 1)
+
+                adopted_delivery = candidate.delivery_channel.take_outbound()
+                self.assertIsNotNone(adopted_delivery)
+                self.assertEqual(
+                    adopted_delivery.response_id,
+                    candidate_response.response_id,
+                )
+                candidate.delivery_channel.mark_sent(adopted_delivery.delivery_id)
+                self.assertTrue(
+                    candidate.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": adopted_delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    candidate.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": adopted_delivery.delivery_id,
+                            "resume_token": "candidate-adopted-resume",
+                        },
+                    ).ok
+                )
+                self.assertTrue(
+                    candidate.delivery_channel.acknowledge(
+                        "client.playback.completed",
+                        {
+                            "delivery_id": adopted_delivery.delivery_id,
+                            "played_ms": 780,
+                        },
+                    ).ok
+                )
+                entries = system.store.get_unsummarized_messages(namespace=system.namespace)
+                self.assertTrue(
+                    any(
+                        entry.get("kind") == "message.user.voice"
+                        and entry.get("payload", {}).get("voice_turn_id") == "voice-turn-candidate-takeover"
+                        for entry in entries
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        entry.get("kind") == "message.assistant.voice"
+                        and entry.get("payload", {}).get("voice_turn_id") == "voice-turn-candidate-takeover"
+                        for entry in entries
+                    )
+                )
+            finally:
+                service.close()
+                manager.close()
+
+    def test_restart_discards_unconfirmed_candidate_without_replaying_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manager = self._manager(root)
+            semantic_llm = _CandidateSemanticLLM()
+            first_engine = _SemanticThinkingEngine(manager, llm=semantic_llm)
+            first_service: AkaneVoiceRuntimeService | None = self._service(
+                root=root,
+                manager=manager,
+                adapter=_Adapter(),
+                engine=first_engine,
+                tts_client=_TTSClient(),
+            )
+            recovered_service: AkaneVoiceRuntimeService | None = None
+            try:
+                source = first_service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-restart-candidate-source",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(source.status, "ready", source)
+                asyncio.run(_commit_realtime_turn(source.coordinator))
+                self.assertTrue(first_service.wait_idle(timeout=5.0))
+                source_delivery = source.delivery_channel.take_outbound()
+                self.assertIsNotNone(source_delivery)
+                source.delivery_channel.mark_sent(source_delivery.delivery_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.enqueued",
+                        {"delivery_id": source_delivery.delivery_id},
+                    ).ok
+                )
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.started",
+                        {
+                            "delivery_id": source_delivery.delivery_id,
+                            "resume_token": "restart-candidate-source",
+                        },
+                    ).ok
+                )
+
+                candidate = first_service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-restart-candidate",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(candidate.status, "ready", candidate)
+                self.assertTrue(asyncio.run(candidate.coordinator.open()).ok)
+                self.assertTrue(
+                    candidate.coordinator.suspect_interruption(
+                        audio_clock_ms=300,
+                    ).ok
+                )
+                duck = source.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(duck)
+                source.delivery_channel.mark_control_sent(duck.control_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": duck.control_id,
+                            "command_id": duck.command_id,
+                            "action": "duck",
+                            "status": "applied",
+                            "played_ms": 300,
+                            "applied_volume": 0.2,
+                        },
+                    ).ok
+                )
+                checkpoint = asyncio.run(
+                    candidate.coordinator.feed_pcm_frame(
+                        b"\x01\x00" * 160,
+                        sequence=0,
+                        audio_clock_ms=0,
+                    )
+                )
+                self.assertTrue(checkpoint.ok, checkpoint)
+                self.assertTrue(first_service.wait_idle(timeout=5.0))
+                stop = source.delivery_channel.take_control_outbound()
+                self.assertIsNotNone(stop)
+                source.delivery_channel.mark_control_sent(stop.control_id)
+                self.assertTrue(
+                    source.delivery_channel.acknowledge(
+                        "client.playback.control_ack",
+                        {
+                            "control_id": stop.control_id,
+                            "command_id": stop.command_id,
+                            "action": "stop",
+                            "status": "applied",
+                            "played_ms": 420,
+                        },
+                    ).ok
+                )
+                self.assertTrue(first_service.wait_idle(timeout=5.0))
+                self.assertEqual(len(first_engine.candidate_calls), 1)
+                old_host = candidate.coordinator.bridge.host
+                old_candidate = next(
+                    response
+                    for response in old_host.snapshot.responses.values()
+                    if response.voice_turn_id == "voice-turn-restart-candidate"
+                )
+                self.assertEqual(old_candidate.state.value, "generated")
+                self.assertFalse(old_candidate.playable)
+                old_response_id = old_candidate.response_id
+
+                first_service.close()
+                first_service = None
+                recovered_engine = _SemanticThinkingEngine(
+                    manager,
+                    llm=_CandidateSemanticLLM(),
+                )
+                recovered_service = self._service(
+                    root=root,
+                    manager=manager,
+                    adapter=_Adapter(),
+                    engine=recovered_engine,
+                    tts_client=_TTSClient(),
+                )
+                recovered = recovered_service.create_coordinator(
+                    _open_request(
+                        voice_turn_id="voice-turn-after-candidate-restart",
+                        output_mode=VOICE_PLAYBACK_OUTPUT_MODE,
+                    )
+                )
+                self.assertEqual(recovered.status, "ready", recovered)
+                recovered_candidate = recovered.coordinator.bridge.host.snapshot.responses[old_response_id]
+                self.assertEqual(recovered_candidate.state.value, "discarded")
+                self.assertEqual(
+                    recovered_candidate.candidate_status,
+                    "rejected",
+                )
+                self.assertFalse(recovered_candidate.playable)
+                self.assertEqual(recovered_engine.candidate_calls, [])
+                self.assertEqual(recovered_engine.calls, [])
+                self.assertIsNone(recovered.delivery_channel.take_outbound())
+            finally:
+                if first_service is not None:
+                    first_service.close()
+                if recovered_service is not None:
+                    recovered_service.close()
                 manager.close()
 
     def test_restart_skips_semantic_pulse_bound_to_the_old_playback_channel(self) -> None:

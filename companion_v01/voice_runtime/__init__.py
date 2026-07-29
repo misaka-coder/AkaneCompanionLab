@@ -21,6 +21,7 @@ from .asr_realtime_turn import (
     VoiceASRRealtimeTurnCoordinator,
     VoiceASRRealtimeTurnResult,
 )
+from .candidate import AkaneVoiceCandidateValidationCommandExecutor
 from .host import (
     AkaneVoiceRuntimeHost,
     VoiceCommandExecutionResult,
@@ -114,6 +115,7 @@ __all__ = [
     "VoiceRuntimeJournal",
     "AkaneVoiceEventFactory",
     "AkaneVoiceRuntimeService",
+    "AkaneVoiceCandidateValidationCommandExecutor",
     "AkaneVoiceSemanticPulseCommandExecutor",
     "MemcoreVoiceProjectionPort",
     "AkaneThinkingAgentCommandExecutor",

@@ -1,8 +1,8 @@
 # Akane Voice Runtime V1
 
 状态：方案与状态机已冻结；实时 ASR、durable Voice Host、MemCore、Thinking Agent、
-TTS、桌宠播放 ACK、自动端点、连续通话及 Slice C 播放期语义抢话入口已完成生产装配；候选回复待接入
-日期：2026-07-27
+TTS、桌宠播放 ACK、自动端点、连续通话、Slice C 播放期语义抢话及候选回复采用闭环已完成生产装配
+日期：2026-07-29
 
 本文档定义 Akane 面向低延迟语音对话的第一版运行时方案。目标不是单独增加
 ASR 或 TTS 接口，而是让系统侧的实时音频处理、模型侧的语义判断，以及
@@ -802,7 +802,8 @@ MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinkin
 Slice C 的首个显式接管子步也已落地：用户主动按下麦克风时，可以停止当前
 生成/播放并立即开始新一轮录音；播放器会按真实 `interrupted` ACK 记录已播放
 部分，不能把整段回复伪装成已送达。该动作代表明确的本地接管，不等同于自动
-VAD 抢话；自动 duck、语义脉冲、backchannel 与误打断恢复仍由后续子步接入。
+VAD 抢话。自动 duck、语义脉冲与误打断恢复由下述统一状态机处理；独立
+backchannel 回复仍未启用。
 
 Slice C 的播放控制闭环也已落地：VoiceCore 的 `duck_playback`、
 `resume_playback`、`stop_playback` 由同一个 Akane playback executor 路由到拥有
@@ -835,6 +836,27 @@ final 先到时只记录提交意图，不先生成普通回复；`treat_as_inte
 原始 disposition，保证用户 final 不丢失且只提交一次。Akane 的 ASR coordinator
 也只在 VoiceCore 已真实提交为 `message` 后启动 Thinking Agent，不能依据入口
 默认值越过这道状态边界。
+
+Slice C 的推测式候选回复也已接通。semantic pulse 只有在
+`input_action=take_over` 且稳定转写已经足够明确时，才能返回
+`response_action=prepare_candidate`。该候选：
+
+- 使用临时 ASR revision 生成，禁止 native tools、外部动作、提醒消费及人物/关怀
+  状态写入；不形成正式 user/assistant MemCore 消息；
+- 可以提前完成文字生成和 TTS，但 `commitment=speculative`、
+  `playable=false`，final 到达前不会产生 `enqueue_playback`；
+- final 提交后由独立、只读的候选校验请求比较临时转写、最终转写和完整候选正文，
+  并用 `voice-candidate-validator-<identity hash>` cache family 隔离动态尾部；
+- 校验通过时采用同一个 `response_id`、文字和音频 artifact，不再请求第二次正式
+  回复；校验拒绝或模型失败时丢弃候选，只启动一次绑定 final revision 的正式回复；
+- 只有采用后的真实播放终态才完成 `message.assistant.voice`，因此未确认候选不会
+  污染正式对话记忆；进程重启时旧实时通道上的未确认候选直接结构化丢弃，不在新
+  通话里重播或补生成。
+
+候选启动不依赖轮询。Voice Host 每次完成 durable command drive 后，只尝试接手
+已经进入 `generating` 的 speculative job；即使前面的 `stop_playback` 曾等待桌宠
+ACK，ACK 解锁命令队列后也会自然启动候选。普通 committed 回复继续由 ASR
+coordinator 的正式 response starter 启动，两条路径不会互相抢跑。
 
 桌宠主入口现已接入连续通话控制器。用户点一次麦克风按钮开始通话，按钮在整场
 通话中显示“挂”，再次点击、按 Escape、关闭语音能力或退出窗口才结束通话。
@@ -907,9 +929,9 @@ VoiceCore 发出的 `cancel_response_generation` 现在由 Thinking Agent 执行
 不能再以未路由的 deferred 命令阻塞后续语音轮。
 
 这仍不是 native speech-to-speech provider 意义上的完全全双工：
-`prepare_candidate/prepare_backchannel` 推测式回复尚未启用，semantic pulse 的
-`response_action` 仍固定为 `none`。当前完成的是级联架构中可恢复、可审计的
-自动抢话控制闭环，不以本地音量阈值直接停止模型回复。
+`prepare_candidate` 已在级联架构中启用，`prepare_backchannel` 仍未启用。当前
+完成的是可恢复、可审计的自动抢话和候选采用闭环，不以本地音量阈值直接停止
+模型回复，也不把附和强行生成为一条独立语音。
 
 ### Slice C：播放和语义打断
 

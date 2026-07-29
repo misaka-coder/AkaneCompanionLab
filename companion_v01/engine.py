@@ -4120,6 +4120,36 @@ class AkaneMemoryEngine:
             },
         )
 
+    def process_voice_candidate_stream(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        voice_turn_id: str,
+        message: str,
+        timestamp: int,
+    ) -> Generator[dict[str, Any], None, None]:
+        """Generate a non-persistent, tool-free candidate from provisional ASR text."""
+
+        normalized_voice_turn_id = str(voice_turn_id or "").strip()
+        normalized_message = str(message or "").strip()
+        if not normalized_voice_turn_id or not normalized_message:
+            raise ValueError("voice_candidate_turn_invalid")
+        return self.process_turn_stream(
+            {
+                "message": normalized_message,
+                "user_id": str(session_id or ""),
+                "real_user_id": str(profile_user_id or ""),
+                "character_pack_id": str(character_pack_id or ""),
+                "timestamp": int(timestamp or time.time()),
+                "client_mode": "desktop_pet",
+                "transient_user_message": True,
+                "transient_assistant_message": True,
+                "voice_speculative_candidate": True,
+            }
+        )
+
     def process_turn_stream(
         self,
         payload: dict[str, Any],
@@ -4181,6 +4211,7 @@ class AkaneMemoryEngine:
             payload,
             fallback_mode="current_request",
         )
+        speculative_voice_candidate = bool(payload.get("voice_speculative_candidate"))
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
@@ -4234,12 +4265,13 @@ class AkaneMemoryEngine:
         persist_assistant_turn = self._should_persist_assistant_turn(payload) and not externally_managed_memcore_turn
         external_event_turn = plugin_external_event is not None
 
-        self.consume_due_reminders(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            now_ts=now_ts,
-            current_visual_payload=payload.get("current_visual"),
-        )
+        if not speculative_voice_candidate:
+            self.consume_due_reminders(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                now_ts=now_ts,
+                current_visual_payload=payload.get("current_visual"),
+            )
 
         if transient_user_turn:
             user_record = self._build_transient_user_record(
@@ -4366,6 +4398,7 @@ class AkaneMemoryEngine:
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
             stable_system_context=plugin_stable_system_context,
+            allow_tool_call=not speculative_voice_candidate,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -4377,11 +4410,15 @@ class AkaneMemoryEngine:
         tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
-        max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
-        emergency_tool_rounds = self._max_tool_emergency_rounds(
-            domain_profile_id=turn_domain_profile_id,
-            current_budget=max_tool_rounds,
-        )
+        if speculative_voice_candidate:
+            max_tool_rounds = -1
+            emergency_tool_rounds = -1
+        else:
+            max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
+            emergency_tool_rounds = self._max_tool_emergency_rounds(
+                domain_profile_id=turn_domain_profile_id,
+                current_budget=max_tool_rounds,
+            )
         tool_round_index = 0
         provider_output_raw = ""
         memory_exclude_source_ids = [
@@ -4662,14 +4699,15 @@ class AkaneMemoryEngine:
             )
             tool_round_index += 1
 
-        final_output = self._apply_persona_state_to_final_output(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            final_output=final_output,
-            now_ts=now_ts,
-            source_id=str(user_record.get("source_id") or ""),
-            tool_result=tool_result,
-        )
+        if not speculative_voice_candidate:
+            final_output = self._apply_persona_state_to_final_output(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                final_output=final_output,
+                now_ts=now_ts,
+                source_id=str(user_record.get("source_id") or ""),
+                tool_result=tool_result,
+            )
         self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
         final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
@@ -4683,14 +4721,15 @@ class AkaneMemoryEngine:
                 turn_character_pack_id,
             )["assistant_name"],
         )
-        self._apply_care_state_request(
-            final_output,
-            client_context,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            payload=payload,
-            now_ts=now_ts,
-        )
+        if not speculative_voice_candidate:
+            self._apply_care_state_request(
+                final_output,
+                client_context,
+                profile_user_id=profile_user_id,
+                character_pack_id=turn_character_pack_id,
+                payload=payload,
+                now_ts=now_ts,
+            )
         provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
         memory_annotation_status = self._pop_memory_annotation_status(final_output)
         memory_tags = final_output_engine.extract_memory_search_terms(final_output)
@@ -4772,7 +4811,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
             )
-        if not self._memcore_owns_compaction():
+        if not speculative_voice_candidate and not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
                 session_id=session_id,

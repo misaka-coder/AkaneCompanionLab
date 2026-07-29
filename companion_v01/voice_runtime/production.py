@@ -16,6 +16,7 @@ from ..background_tasks import BackgroundTaskRunner
 from .asr_bridge import VoiceASRSessionBridge
 from .asr_provider import build_voice_asr_provider
 from .asr_realtime_turn import VoiceASRRealtimeTurnCoordinator
+from .candidate import AkaneVoiceCandidateValidationCommandExecutor
 from .durable_ports import (
     FileVoiceAudioArtifactPort,
     FileVoiceTextArtifactPort,
@@ -54,6 +55,11 @@ class _SerializedVoiceRuntimeHost:
     def __init__(self, host: AkaneVoiceRuntimeHost) -> None:
         self._host = host
         self._guard = threading.RLock()
+        self._after_drive: Callable[[], Any] | None = None
+
+    def set_after_drive(self, callback: Callable[[], Any] | None) -> None:
+        with self._guard:
+            self._after_drive = callback
 
     @property
     def snapshot(self) -> Any:
@@ -65,7 +71,11 @@ class _SerializedVoiceRuntimeHost:
 
     def drive_once(self) -> Any:
         with self._guard:
-            return self._host.drive_once()
+            result = self._host.drive_once()
+            callback = self._after_drive
+            if callback is not None:
+                callback()
+            return result
 
     def drain_projection_outbox(self) -> Any:
         with self._guard:
@@ -206,6 +216,10 @@ class AkaneVoiceRuntimeService:
         self._semantic_executors: dict[
             str,
             AkaneVoiceSemanticPulseCommandExecutor,
+        ] = {}
+        self._candidate_executors: dict[
+            str,
+            AkaneVoiceCandidateValidationCommandExecutor,
         ] = {}
         self._playback_executors: dict[str, AkaneVoicePlaybackCommandExecutor] = {}
         self._text_artifacts: dict[str, FileVoiceTextArtifactPort] = {}
@@ -395,11 +409,13 @@ class AkaneVoiceRuntimeService:
             executors = [
                 *self._thinking_executors.values(),
                 *self._semantic_executors.values(),
+                *self._candidate_executors.values(),
             ]
             delivery_channels = list(self._delivery_channels.values())
             self._hosts.clear()
             self._thinking_executors.clear()
             self._semantic_executors.clear()
+            self._candidate_executors.clear()
             self._playback_executors.clear()
             self._text_artifacts.clear()
             self._audio_artifacts.clear()
@@ -502,6 +518,22 @@ class AkaneVoiceRuntimeService:
                 background_tasks=self._background_tasks,
                 runtime_metrics=self.runtime_metrics,
             )
+            candidate_executor = AkaneVoiceCandidateValidationCommandExecutor(
+                engine=self.engine,
+                memcore_manager=manager,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                conversation_id=canonical_conversation_id,
+                conversation_generation=1,
+                background_tasks=self._background_tasks,
+                generation_starter=(
+                    lambda host, voice_turn_id: thinking_executor.start_ready_generations(
+                        host,
+                        voice_turn_id=voice_turn_id,
+                    )
+                ),
+            )
             tts_executor = AkaneVoiceTTSCommandExecutor(
                 tts_client=tts_client,
                 text_artifacts=text_artifacts,
@@ -523,6 +555,7 @@ class AkaneVoiceRuntimeService:
                     "resume_playback": playback_executor,
                     "stop_playback": playback_executor,
                     "request_semantic_pulse": semantic_executor,
+                    "validate_response_candidate": candidate_executor,
                 }
             )
             raw_host = AkaneVoiceRuntimeHost(
@@ -537,9 +570,10 @@ class AkaneVoiceRuntimeService:
             stale_generation_ids = tuple(
                 str(response.response_id)
                 for response in host.snapshot.responses.values()
-                if str(getattr(response.state, "value", "") or "") == "generating"
+                if str(getattr(response.state, "value", "") or "") in {"generating", "streaming"}
             )
             semantic_executor.bind_host(host)
+            candidate_executor.bind_host(host)
             pending = host.drain_projection_outbox()
             if not pending.quiescent:
                 return VoiceRealtimeCoordinatorResolution.failed(
@@ -555,6 +589,14 @@ class AkaneVoiceRuntimeService:
                     status="unavailable",
                     retryable=receipts.status == "deferred",
                     safe_public_summary="实时语音回复状态尚未恢复，本轮没有开始。",
+                )
+            discarded_candidates = candidate_executor.discard_restarted_candidates(host)
+            if not discarded_candidates.ok:
+                return VoiceRealtimeCoordinatorResolution.failed(
+                    discarded_candidates.reason or "voice_candidate_restart_discard_failed",
+                    status="unavailable",
+                    retryable=discarded_candidates.retryable,
+                    safe_public_summary="上次未确认的候选回复无法安全清理，本轮没有开始。",
                 )
             recovered_commands = self._recover_pending_commands(host)
             if not recovered_commands.ok:
@@ -586,9 +628,17 @@ class AkaneVoiceRuntimeService:
                     safe_public_summary="实时语音回复状态无法恢复，本轮没有开始。",
                 )
             semantic_executor.enable_live_commands()
+            candidate_executor.enable_live_commands()
+            host.set_after_drive(
+                lambda: thinking_executor.start_ready_generations(
+                    host,
+                    commitment="speculative",
+                )
+            )
             self._hosts[canonical_conversation_id] = host
             self._thinking_executors[canonical_conversation_id] = thinking_executor
             self._semantic_executors[canonical_conversation_id] = semantic_executor
+            self._candidate_executors[canonical_conversation_id] = candidate_executor
             self._playback_executors[canonical_conversation_id] = playback_executor
             self._text_artifacts[canonical_conversation_id] = text_artifacts
             self._audio_artifacts[canonical_conversation_id] = audio_artifacts
@@ -653,6 +703,7 @@ class AkaneVoiceRuntimeService:
                     "start_tts",
                     "enqueue_playback",
                     "request_semantic_pulse",
+                    "validate_response_candidate",
                 }
                 for command in pending
             ):
@@ -681,14 +732,36 @@ class AkaneVoiceRuntimeService:
     ) -> VoiceThinkingStartResult:
         seen_states: set[tuple[tuple[str, ...], str, str]] = set()
         while True:
+            responses = [
+                item
+                for item in host.snapshot.responses.values()
+                if str(getattr(item, "voice_turn_id", "") or "") == str(voice_turn_id or "")
+            ]
             response = next(
                 (
                     item
-                    for item in host.snapshot.responses.values()
-                    if str(getattr(item, "voice_turn_id", "") or "") == str(voice_turn_id or "")
+                    for item in responses
+                    if str(getattr(getattr(item, "state", None), "value", "") or "") == "generating"
                 ),
                 None,
             )
+            if response is None:
+                response = next(
+                    (
+                        item
+                        for item in reversed(responses)
+                        if str(
+                            getattr(
+                                getattr(item, "state", None),
+                                "value",
+                                "",
+                            )
+                            or ""
+                        )
+                        not in {"failed", "cancelled", "discarded"}
+                    ),
+                    responses[-1] if responses else None,
+                )
             response_state = str(getattr(getattr(response, "state", None), "value", "") or "")
             response_id = str(getattr(response, "response_id", "") or "")
             if response_state == "generating":
@@ -696,14 +769,36 @@ class AkaneVoiceRuntimeService:
                     host,
                     voice_turn_id=voice_turn_id,
                 )
-            if response_state in {"failed", "cancelled", "discarded", "completed"}:
+            pending_ids = tuple(host.snapshot.pending_commands)
+            if response_state == "completed":
+                return VoiceThinkingStartResult(
+                    status="completed",
+                    response_id=response_id,
+                )
+            if response_state in {"failed", "cancelled", "discarded"} and not pending_ids:
                 return VoiceThinkingStartResult(
                     status="failed",
                     reason="voice_response_start_terminal",
                     response_id=response_id,
                     safe_public_summary="语音已经识别，但回复没有进入生成状态。",
                 )
-            pending_ids = tuple(host.snapshot.pending_commands)
+            if (
+                response_state in {"streaming", "generated"}
+                and str(
+                    getattr(
+                        getattr(response, "commitment", None),
+                        "value",
+                        "",
+                    )
+                    or ""
+                )
+                in {"speculative", "committed"}
+                and not pending_ids
+            ):
+                return VoiceThinkingStartResult(
+                    status="started",
+                    response_id=response_id,
+                )
             state_key = (pending_ids, response_id, response_state)
             if not pending_ids or state_key in seen_states:
                 return VoiceThinkingStartResult(
@@ -715,6 +810,14 @@ class AkaneVoiceRuntimeService:
                 )
             seen_states.add(state_key)
             driven = host.drive_once()
+            if driven.status == "deferred" and any(
+                command.command_kind == "validate_response_candidate"
+                for command in host.snapshot.pending_commands.values()
+            ):
+                return VoiceThinkingStartResult(
+                    status="started",
+                    response_id=response_id,
+                )
             if driven.status != "succeeded":
                 return VoiceThinkingStartResult(
                     status="failed",
