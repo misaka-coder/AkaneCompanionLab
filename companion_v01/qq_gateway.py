@@ -15,6 +15,7 @@ from channelcore_onebot import (
     AttachmentRef,
     EventAdmissionConfig,
     GroupTriggerPolicy,
+    MentionRef,
     OneBotEventAdmission,
     OutboundAction,
     OutboundTarget,
@@ -275,6 +276,8 @@ class QQMessageContext:
     chat_model_override: str = ""
     attachments: list[dict[str, Any]] | None = None
     source_message_id: str = ""
+    mentioned_bot: bool = False
+    mentions: tuple[MentionRef, ...] = ()
 
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
@@ -290,6 +293,8 @@ class QQMessageContext:
             "extra_context": self.extra_context,
             "qq_delivery_context": self.to_delivery_context(),
         }
+        if self.is_group:
+            payload["message_addressing"] = self._message_addressing()
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
             payload["actor_display_name"] = self.sender_label
@@ -304,6 +309,38 @@ class QQMessageContext:
         if chat_model_override:
             payload["chat_model_override"] = chat_model_override
         return payload
+
+    def _message_addressing(self) -> dict[str, Any]:
+        mentions = [
+            {
+                "actor_id": "assistant" if mention.is_bot else f"qq:{mention.target_id}",
+                "display_name": "" if mention.is_bot else mention.display_name,
+                "is_assistant": bool(mention.is_bot),
+            }
+            for mention in self.mentions
+            if str(mention.target_id or "").strip()
+        ]
+        addressed_to_assistant = bool(self.should_respond)
+        primary_target = (
+            {"actor_id": "assistant", "display_name": ""}
+            if addressed_to_assistant
+            else (
+                {
+                    "actor_id": str(mentions[0].get("actor_id") or ""),
+                    "display_name": str(mentions[0].get("display_name") or ""),
+                }
+                if mentions
+                else {}
+            )
+        )
+        return {
+            "mode": "current_request" if self.should_respond else "observed",
+            "trigger": str(self.reason or ""),
+            "addressed_to_assistant": addressed_to_assistant,
+            "explicit_assistant_mention": bool(self.mentioned_bot),
+            "primary_target": primary_target,
+            "mentions": mentions,
+        }
 
     def to_delivery_context(self) -> dict[str, Any]:
         payload = {
@@ -806,6 +843,8 @@ class NapCatQQGateway:
                     chat_model_override=chat_model_override,
                     attachments=attachments,
                     source_message_id=str(event.get("message_id") or "").strip(),
+                    mentioned_bot=mentions_bot,
+                    mentions=inbound.mentions,
                 )
 
         return QQMessageContext(
@@ -825,6 +864,8 @@ class NapCatQQGateway:
             chat_model_override=chat_model_override,
             attachments=attachments,
             source_message_id=str(event.get("message_id") or "").strip(),
+            mentioned_bot=mentions_bot,
+            mentions=inbound.mentions,
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,

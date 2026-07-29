@@ -225,7 +225,10 @@ class QQGatewayTests(unittest.TestCase):
             "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-1",
             "message": [
-                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {
+                    "type": "at",
+                    "data": {"qq": str(QQ_BOT_FIXTURE_ID), "name": "Akane"},
+                },
                 {"type": "text", "data": {"text": " 在吗"}},
             ],
         }
@@ -237,6 +240,7 @@ class QQGatewayTests(unittest.TestCase):
             "group_id": QQ_GROUP_FIXTURE_ID,
             "message_id": "group-2",
             "message": [
+                {"type": "at", "data": {"qq": "40004", "name": "天为"}},
                 {"type": "text", "data": {"text": "我是在回复别人"}},
             ],
         }
@@ -246,6 +250,23 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(mentioned.should_respond)
         self.assertEqual(mentioned.reason, "group_mention")
+        mentioned_addressing = mentioned.to_turn_payload()["message_addressing"]
+        self.assertTrue(mentioned_addressing["addressed_to_assistant"])
+        self.assertTrue(mentioned_addressing["explicit_assistant_mention"])
+        self.assertEqual(
+            mentioned_addressing["primary_target"],
+            {"actor_id": "assistant", "display_name": ""},
+        )
+        self.assertEqual(
+            mentioned_addressing["mentions"],
+            [
+                {
+                    "actor_id": "assistant",
+                    "display_name": "",
+                    "is_assistant": True,
+                }
+            ],
+        )
         self.assertFalse(follow.should_respond)
         self.assertTrue(follow.should_record)
         self.assertEqual(follow.reason, "group_passive_observed")
@@ -254,6 +275,22 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(follow_payload["actor_stable_id"], f"qq:{QQ_MASTER_FIXTURE_ID}")
         self.assertEqual(follow_payload["actor_display_name"], f"QQ {QQ_MASTER_FIXTURE_ID}")
         self.assertEqual(follow_payload["actor_platform"], "qq")
+        self.assertEqual(follow_payload["message_addressing"]["mode"], "observed")
+        self.assertFalse(follow_payload["message_addressing"]["addressed_to_assistant"])
+        self.assertEqual(
+            follow_payload["message_addressing"]["primary_target"],
+            {"actor_id": "qq:40004", "display_name": "天为"},
+        )
+        self.assertEqual(
+            follow_payload["message_addressing"]["mentions"],
+            [
+                {
+                    "actor_id": "qq:40004",
+                    "display_name": "天为",
+                    "is_assistant": False,
+                }
+            ],
+        )
 
     def test_group_wake_word_triggers_response_without_at(self) -> None:
         gateway = NapCatQQGateway()

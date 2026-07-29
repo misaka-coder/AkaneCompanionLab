@@ -858,6 +858,8 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None:
@@ -871,6 +873,9 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                observed=True,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
             )
         except Exception as exc:
             logger.warning("memcore passive message append failed: %s", exc)
@@ -946,6 +951,8 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         actor_stable_id: str,
         actor_display_name: str,
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None:
@@ -958,6 +965,8 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
                 external_event=external_event,
             )
             self._warn_memcore_write_result("input turn open", result)
@@ -3110,6 +3119,89 @@ class AkaneMemoryEngine:
 
         return _fn(user_message=user_message, now_ts=now_ts, date_label=date_label, time_of_day=time_of_day)
 
+    @staticmethod
+    def _normalize_message_addressing(
+        payload: dict[str, Any],
+        *,
+        fallback_mode: str,
+    ) -> dict[str, Any]:
+        raw = payload.get("message_addressing")
+        if not isinstance(raw, dict):
+            return (
+                {
+                    "mode": "observed",
+                    "trigger": "passive",
+                    "addressed_to_assistant": False,
+                    "explicit_assistant_mention": False,
+                    "primary_target": {},
+                    "mentions": [],
+                }
+                if fallback_mode == "observed"
+                else {}
+            )
+        mode = str(raw.get("mode") or fallback_mode).strip().lower()
+        if mode not in {"current_request", "observed"}:
+            mode = fallback_mode
+        trigger = str(raw.get("trigger") or "").strip()[:80]
+        mentions: list[dict[str, Any]] = []
+        for item in list(raw.get("mentions") or [])[:16]:
+            if not isinstance(item, dict):
+                continue
+            actor_id = str(item.get("actor_id") or "").strip()[:160]
+            if not actor_id:
+                continue
+            mentions.append(
+                {
+                    "actor_id": actor_id,
+                    "display_name": str(item.get("display_name") or "").strip()[:160],
+                    "is_assistant": bool(item.get("is_assistant")),
+                }
+            )
+        addressed_to_assistant = bool(raw.get("addressed_to_assistant"))
+        primary_raw = raw.get("primary_target")
+        primary = dict(primary_raw) if isinstance(primary_raw, dict) else {}
+        target_id = str(primary.get("actor_id") or "").strip()[:160]
+        target_name = str(primary.get("display_name") or "").strip()[:160]
+        if addressed_to_assistant:
+            target_id = "assistant"
+            target_name = ""
+        elif not target_id and mentions:
+            target_id = str(mentions[0]["actor_id"])
+            target_name = str(mentions[0]["display_name"])
+        return {
+            "mode": mode,
+            "trigger": trigger,
+            "addressed_to_assistant": addressed_to_assistant,
+            "explicit_assistant_mention": bool(raw.get("explicit_assistant_mention")),
+            "primary_target": {
+                "actor_id": target_id,
+                "display_name": target_name,
+            }
+            if target_id
+            else {},
+            "mentions": mentions,
+        }
+
+    @staticmethod
+    def _apply_message_addressing(
+        record: dict[str, Any],
+        addressing: dict[str, Any],
+    ) -> tuple[str, str]:
+        if not addressing:
+            return "", ""
+        record["message_addressing"] = dict(addressing)
+        if str(addressing.get("mode") or "") == "observed":
+            record["kind"] = "message.user.observed"
+        target = addressing.get("primary_target")
+        if not isinstance(target, dict):
+            return "", ""
+        target_id = str(target.get("actor_id") or "").strip()
+        target_name = str(target.get("display_name") or "").strip()
+        if target_id:
+            record["target_actor_id"] = target_id
+            record["target_actor_display_name"] = target_name
+        return target_id, target_name
+
     def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
@@ -3127,10 +3219,15 @@ class AkaneMemoryEngine:
         now_ts = int(payload.get("timestamp") or time.time())
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
+        addressing = self._normalize_message_addressing(
+            payload,
+            fallback_mode="observed",
+        )
         memory_metadata = {
             "source": "qq_group_passive",
             "client_mode": str(payload.get("client_mode") or "qq_text"),
             "passive": True,
+            "message_addressing": addressing,
         }
         user_record = self.store.add_message(
             profile_user_id=profile_user_id,
@@ -3145,6 +3242,10 @@ class AkaneMemoryEngine:
             memory_metadata=memory_metadata,
             index_in_vector=False,
         )
+        target_actor_id, target_actor_display_name = self._apply_message_addressing(
+            user_record,
+            addressing,
+        )
         if not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -3158,6 +3259,8 @@ class AkaneMemoryEngine:
             character_pack_id=turn_character_pack_id,
             actor_stable_id=actor_stable_id,
             actor_display_name=actor_display_name,
+            target_actor_id=target_actor_id,
+            target_actor_display_name=target_actor_display_name,
         )
         compaction_result = (
             self._schedule_memcore_compaction(
@@ -3376,6 +3479,10 @@ class AkaneMemoryEngine:
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         turn_domain_profile_id = self._resolve_turn_domain_profile(payload)
         payload = dict(payload)
+        message_addressing = self._normalize_message_addressing(
+            payload,
+            fallback_mode="current_request",
+        )
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
@@ -3457,6 +3564,8 @@ class AkaneMemoryEngine:
                 memory_metadata=(
                     self._external_event_memory_metadata(plugin_external_event)
                     if plugin_external_event is not None
+                    else {"message_addressing": message_addressing}
+                    if message_addressing
                     else None
                 ),
                 source_id=user_memory_source_id,
@@ -3468,6 +3577,10 @@ class AkaneMemoryEngine:
                     character_pack_id=turn_character_pack_id,
                 )
 
+        target_actor_id, target_actor_display_name = self._apply_message_addressing(
+            user_record,
+            message_addressing,
+        )
         recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
             session_id=session_id,
             profile_user_id=profile_user_id,
@@ -3511,6 +3624,8 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
             )
             memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
             turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
@@ -4062,6 +4177,10 @@ class AkaneMemoryEngine:
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         turn_domain_profile_id = self._resolve_turn_domain_profile(payload)
         payload = dict(payload)
+        message_addressing = self._normalize_message_addressing(
+            payload,
+            fallback_mode="current_request",
+        )
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
@@ -4157,6 +4276,8 @@ class AkaneMemoryEngine:
                 memory_metadata=(
                     self._external_event_memory_metadata(plugin_external_event)
                     if plugin_external_event is not None
+                    else {"message_addressing": message_addressing}
+                    if message_addressing
                     else None
                 ),
                 source_id=user_memory_source_id,
@@ -4168,6 +4289,10 @@ class AkaneMemoryEngine:
                     character_pack_id=turn_character_pack_id,
                 )
 
+        target_actor_id, target_actor_display_name = self._apply_message_addressing(
+            user_record,
+            message_addressing,
+        )
         recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
             session_id=session_id,
             profile_user_id=profile_user_id,
@@ -4213,6 +4338,8 @@ class AkaneMemoryEngine:
                 character_pack_id=turn_character_pack_id,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
             )
             memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
             turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)

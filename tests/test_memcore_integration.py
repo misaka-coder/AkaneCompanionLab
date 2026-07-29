@@ -3018,6 +3018,109 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "unavailable")
 
+    def test_group_observation_and_current_addressee_remain_distinct_in_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                observed = manager.append_standalone_message(
+                    {
+                        "source_id": "group-observed-1",
+                        "content": "【张三】这是群友之间的讨论",
+                        "timestamp": _ts(2026, 7, 29, 11, 38),
+                        "message_addressing": {
+                            "mode": "observed",
+                            "addressed_to_assistant": False,
+                            "mentions": [
+                                {
+                                    "actor_id": "qq:40004",
+                                    "display_name": "天为",
+                                    "is_assistant": False,
+                                }
+                            ],
+                        },
+                        "index_in_vector": False,
+                    },
+                    role="user",
+                    observed=True,
+                    profile_user_id="group-1",
+                    session_id="group-1",
+                    character_pack_id="reimu",
+                    actor_stable_id="qq:1",
+                    actor_display_name="张三",
+                    target_actor_id="qq:40004",
+                    target_actor_display_name="天为",
+                )
+                opened = manager.begin_input_turn(
+                    {
+                        "source_id": "group-current-1",
+                        "content": "【李四】你怎么看？",
+                        "timestamp": _ts(2026, 7, 29, 11, 39),
+                        "message_addressing": {
+                            "mode": "current_request",
+                            "addressed_to_assistant": True,
+                            "mentions": [
+                                {
+                                    "actor_id": "assistant",
+                                    "display_name": "",
+                                    "is_assistant": True,
+                                },
+                                {
+                                    "actor_id": "qq:40004",
+                                    "display_name": "天为",
+                                    "is_assistant": False,
+                                },
+                            ],
+                        },
+                    },
+                    profile_user_id="group-1",
+                    session_id="group-1",
+                    character_pack_id="reimu",
+                    actor_stable_id="qq:2",
+                    actor_display_name="李四",
+                    target_actor_id="assistant",
+                )
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="group-1",
+                    session_id="group-1",
+                    character_pack_id="reimu",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(observed["ok"], observed)
+        self.assertTrue(opened["ok"], opened)
+        projected = [str(payload.get("content") or "") for payload in projection["payloads"]]
+        self.assertTrue(
+            any(
+                "message.user.observed" in text
+                and "actor: 张三 (id=qq:1)" in text
+                and "target_actor: 天为 (id=qq:40004)" in text
+                and "【张三】这是群友之间的讨论" in text
+                for text in projected
+            ),
+            projected,
+        )
+        self.assertTrue(
+            any(
+                "message.user" in text
+                and "actor: 李四 (id=qq:2)" in text
+                and "target_actor: assistant" in text
+                and "【李四】你怎么看?" in text
+                and '"mentioned_actors":[{"actor_id":"qq:40004","display_name":"天为"}]' in text
+                for text in projected
+            ),
+            projected,
+        )
+
     def test_engine_memcore_mode_lets_memcore_own_compaction_when_available(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         legacy_compaction = _LegacyCompactionRecorder()
@@ -4091,6 +4194,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             character_pack_id="char-1",
             actor_stable_id="qq:10001",
             actor_display_name="张三",
+            target_actor_id="assistant",
         )
         updated = engine._stage_memcore_turn_metadata(
             source_id="qq-turn-1",
@@ -4108,6 +4212,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             character_pack_id="char-1",
             actor_stable_id="qq:10002",
             actor_display_name="李四",
+            target_actor_id="qq:10003",
+            target_actor_display_name="王五",
         )
 
         self.assertTrue(recorded["ok"])
@@ -4115,9 +4221,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(passive["ok"])
         self.assertEqual(manager.user_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.user_calls[0]["actor_display_name"], "张三")
+        self.assertEqual(manager.user_calls[0]["target_actor_id"], "assistant")
         self.assertEqual(manager.user_calls[1]["role"], "user")
         self.assertEqual(manager.user_calls[1]["actor_stable_id"], "qq:10002")
         self.assertEqual(manager.user_calls[1]["actor_display_name"], "李四")
+        self.assertTrue(manager.user_calls[1]["observed"])
+        self.assertEqual(manager.user_calls[1]["target_actor_id"], "qq:10003")
+        self.assertEqual(manager.user_calls[1]["target_actor_display_name"], "王五")
         self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
 

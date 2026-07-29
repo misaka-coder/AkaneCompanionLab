@@ -1111,6 +1111,8 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(record_calls[0]["user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
         self.assertEqual(record_calls[0]["real_user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
         self.assertEqual(record_calls[0]["message"], f"【QQ {QQ_USER_FIXTURE_ID}】今晚七点开会")
+        self.assertEqual(record_calls[0]["message_addressing"]["mode"], "observed")
+        self.assertFalse(record_calls[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(process_calls, [])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
 

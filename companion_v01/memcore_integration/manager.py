@@ -278,6 +278,9 @@ class MemcoreManager:
         character_pack_id: str = "",
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        observed: bool = False,
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
     ) -> dict[str, Any]:
         """Append a message that intentionally has no model-response turn."""
 
@@ -299,6 +302,9 @@ class MemcoreManager:
             character_pack_id=character_pack_id,
             actor_stable_id=actor_stable_id,
             actor_display_name=actor_display_name,
+            observed=observed,
+            target_actor_id=target_actor_id,
+            target_actor_display_name=target_actor_display_name,
         )
 
     def record_voice_projection(
@@ -574,6 +580,8 @@ class MemcoreManager:
         character_pack_id: str = "",
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
         external_event: dict[str, Any] | None = None,
         turn_id: str = "",
     ) -> dict[str, Any]:
@@ -613,6 +621,8 @@ class MemcoreManager:
                 record=record,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
                 turn_role="stimulus",
                 external_event=external_event,
             )
@@ -2464,6 +2474,9 @@ class MemcoreManager:
         character_pack_id: str,
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        observed: bool = False,
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
         legacy_import: bool = False,
     ) -> dict[str, Any]:
         source_id = str((record or {}).get("source_id") or "").strip()
@@ -2484,6 +2497,9 @@ class MemcoreManager:
                 record=record,
                 actor_stable_id=actor_stable_id,
                 actor_display_name=actor_display_name,
+                observed=observed,
+                target_actor_id=target_actor_id,
+                target_actor_display_name=target_actor_display_name,
                 turn_role=None,
                 legacy_import=legacy_import,
             )
@@ -2818,6 +2834,9 @@ class MemcoreManager:
         record: dict[str, Any],
         actor_stable_id: str = "",
         actor_display_name: str = "",
+        observed: bool = False,
+        target_actor_id: str = "",
+        target_actor_display_name: str = "",
         turn_role: str | None,
         external_event: dict[str, Any] | None = None,
         legacy_import: bool = False,
@@ -2854,14 +2873,33 @@ class MemcoreManager:
             content = str(raw.get("content") or "")
             semantic_text = content
             payload = {"text": content}
+            addressing = raw.get("message_addressing")
+            if isinstance(addressing, dict) and addressing:
+                additional_mentions: list[dict[str, str]] = []
+                seen_mentions: set[str] = set()
+                for mention in list(addressing.get("mentions") or [])[:16]:
+                    if not isinstance(mention, dict):
+                        continue
+                    mention_id = str(mention.get("actor_id") or "").strip()[:160]
+                    if not mention_id or mention_id == target_actor_id or mention_id in seen_mentions:
+                        continue
+                    seen_mentions.add(mention_id)
+                    additional_mentions.append(
+                        {
+                            "actor_id": mention_id,
+                            "display_name": str(mention.get("display_name") or "").strip()[:160],
+                        }
+                    )
+                if additional_mentions:
+                    payload["mentioned_actors"] = additional_mentions
             if role == "assistant":
                 kind = "message.assistant" if is_standalone else "message.assistant.intermediate"
                 origin = memcore.EntryOrigin.ASSISTANT
                 compatibility_role = "assistant"
             else:
-                kind = "message.user"
+                kind = "message.user.observed" if observed else "message.user"
                 origin = memcore.EntryOrigin.USER
-                compatibility_role = "user"
+                compatibility_role = "user.observed" if observed else "user"
         has_memory_annotation = self._has_memory_annotation(metadata)
         retrieval_policy = (
             memcore.RetrievalPolicy.NEVER
@@ -2890,6 +2928,7 @@ class MemcoreManager:
             actor=(
                 self._build_actor(actor_stable_id, actor_display_name) if origin is memcore.EntryOrigin.USER else None
             ),
+            target_actor=(self._build_actor(target_actor_id, target_actor_display_name) if target_actor_id else None),
             memory_metadata=metadata,
             annotation_status=(
                 memcore.AnnotationStatus.ACCEPTED_LEGACY
