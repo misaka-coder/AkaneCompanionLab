@@ -19,10 +19,12 @@ Akane 手机 / 其他电脑应急重登
    __FINGERPRINT__
 4. 连接后会出现 1-4 菜单：
    1 查状态；2 个人号；3 金融号；4 两个号。
-5. 如果显示 qr_ready，在 Termius 的 SFTP 中进入 qr 目录，下载 personal.png
+5. 执行结果会停留到你按回车关闭。如果显示 connected，说明账号已经在线，
+   此时不会生成二维码，SFTP 中的 qr 目录为空是正常的。
+6. 如果显示 qr_ready，在 Termius 的 SFTP 中进入 qr 目录，下载 personal.png
    或 finance.png 到手机相册。
-6. 打开 QQ 的“扫一扫”，选择“相册”，识别刚下载的二维码。
-7. 二维码 10 分钟后自动删除。扫完重新连接，选 1 检查 connected。
+7. 打开 QQ 的“扫一扫”，选择“相册”，识别刚下载的二维码。
+8. 二维码 10 分钟后自动删除。扫完重新连接，选 1 检查 connected。
 
 二、其他 Windows 电脑
 

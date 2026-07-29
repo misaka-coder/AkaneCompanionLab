@@ -14,8 +14,10 @@ case "$original_command" in
 esac
 
 action=""
+interactive_session=0
 case "$original_command" in
     "")
+        interactive_session=1
         echo "Akane Bot emergency recovery"
         echo "  1. Check status"
         echo "  2. Personal Bot QR"
@@ -44,4 +46,30 @@ case "$original_command" in
         ;;
 esac
 
-exec sudo -n "$ROOT_HELPER" "$action"
+if [[ "$interactive_session" -eq 0 ]]; then
+    exec sudo -n "$ROOT_HELPER" "$action"
+fi
+
+echo
+echo "Checking login state. Creating a fresh QR can take up to 60 seconds..."
+set +e
+result="$(sudo -n "$ROOT_HELPER" "$action" 2>&1)"
+exit_code=$?
+set -e
+printf '%s\n' "$result"
+echo
+
+if [[ "$exit_code" -ne 0 ]]; then
+    echo "Recovery did not complete. Keep this result visible and report the AKANE_STATE line."
+elif grep -q '^AKANE_FILE=' <<<"$result"; then
+    echo "QR image created."
+    echo "Open this Host's SFTP / Files page, refresh the current qr directory,"
+    echo "then download personal.png or finance.png within 10 minutes."
+elif grep -Eq '^AKANE_STATE=(connected|connected_after_restart)$' <<<"$result"; then
+    echo "All requested Bots are already connected. No QR image is needed or created."
+fi
+
+echo
+printf 'Press Enter to close this result...'
+IFS= read -r _ || true
+exit "$exit_code"
