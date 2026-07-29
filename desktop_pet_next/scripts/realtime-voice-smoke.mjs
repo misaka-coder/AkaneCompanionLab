@@ -597,6 +597,7 @@ class FakeWebSocket {
   constructor() {
     this.listeners = new Map();
     this.readyState = 0;
+    this.sent = [];
     FakeWebSocket.latest = this;
   }
 
@@ -606,13 +607,17 @@ class FakeWebSocket {
     this.listeners.set(type, listeners);
   }
 
-  send() {}
+  send(payload) {
+    this.sent.push(payload);
+  }
 
   close() {
     this.readyState = 3;
   }
 
   emit(type, payload = {}) {
+    if (type === "open") this.readyState = 1;
+    if (type === "close") this.readyState = 3;
     for (const listener of this.listeners.get(type) || []) listener(payload);
   }
 }
@@ -646,6 +651,111 @@ assert.equal(transportFailures.length, 1);
 assert.equal(transportFailures[0].terminal, true);
 assert.equal(transportFailures[0].retryable, true);
 assert.equal(transportFailures[0].committed, false);
+
+const slowReadyEvents = [];
+const slowReadyFailures = [];
+const slowReadySession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  callbacks: {
+    onTransportOpen: () => slowReadyEvents.push("transport"),
+    onReady: () => slowReadyEvents.push("provider"),
+    onFailure: (failure) => slowReadyFailures.push(failure)
+  },
+  scope: {
+    WebSocket: FakeWebSocket,
+    setTimeout,
+    clearTimeout,
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:slow-ready",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 6500 }
+  }
+});
+slowReadySession.startCapture = async () => {
+  slowReadySession.captureSampleRate = 16000;
+};
+slowReadySession.flushAndStopCapture = async () => {};
+const slowReadyStartTask = slowReadySession.start();
+await tick();
+const slowReadySocket = FakeWebSocket.latest;
+slowReadySocket.emit("open");
+await slowReadyStartTask;
+assert.deepEqual(slowReadyEvents, ["transport"]);
+assert.equal(slowReadySession.ready, false);
+slowReadySession.acceptPcmFrame(new Float32Array([0.1, 0.2]).buffer, 2);
+assert.equal(slowReadySession.pendingFrames.length, 1);
+const slowReadyFinishTask = slowReadySession.finishInput();
+await tick();
+const beforeProviderReady = slowReadySocket.sent
+  .filter((payload) => typeof payload === "string")
+  .map((payload) => JSON.parse(payload).type);
+assert.deepEqual(beforeProviderReady, ["client.open"]);
+slowReadySession.handleServerEvent({ type: "server.ready" });
+await slowReadyFinishTask;
+assert.deepEqual(slowReadyEvents, ["transport", "provider"]);
+assert.deepEqual(slowReadyFailures, []);
+const afterProviderReady = slowReadySocket.sent
+  .filter((payload) => typeof payload === "string")
+  .map((payload) => JSON.parse(payload).type);
+assert.deepEqual(afterProviderReady, ["client.open", "client.audio", "client.endpoint"]);
+slowReadySession.dispose("test_complete");
+
+const providerReadyTimers = new Map();
+let nextProviderReadyTimer = 1;
+const providerReadyTimeoutFailures = [];
+const providerReadyTimeoutSession = new RealtimeVoiceSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  mediaStream: null,
+  audioElement: new FakeAudioElement(),
+  openPayload: {},
+  workletModuleUrl: "voice-worklet.js",
+  readyTimeoutMs: 25,
+  callbacks: {
+    onFailure: (failure) => providerReadyTimeoutFailures.push(failure)
+  },
+  scope: {
+    WebSocket: FakeWebSocket,
+    setTimeout: (callback) => {
+      const timer = nextProviderReadyTimer;
+      nextProviderReadyTimer += 1;
+      providerReadyTimers.set(timer, callback);
+      return timer;
+    },
+    clearTimeout: (timer) => providerReadyTimers.delete(timer),
+    Blob: FakeBlob,
+    URL: {
+      createObjectURL: () => "blob:provider-ready-timeout",
+      revokeObjectURL: () => {}
+    },
+    performance: { now: () => 6750 }
+  }
+});
+providerReadyTimeoutSession.startCapture = async () => {
+  providerReadyTimeoutSession.captureSampleRate = 16000;
+};
+providerReadyTimeoutSession.flushAndStopCapture = async () => {};
+const providerReadyTimeoutStartTask = providerReadyTimeoutSession.start();
+await tick();
+FakeWebSocket.latest.emit("open");
+await providerReadyTimeoutStartTask;
+const providerReadyTimeoutFinishTask = providerReadyTimeoutSession.finishInput();
+await tick();
+assert.equal(providerReadyTimers.size, 1);
+for (const callback of [...providerReadyTimers.values()]) callback();
+await assert.rejects(providerReadyTimeoutFinishTask, /voice_realtime_not_ready/);
+assert.equal(providerReadyTimeoutFailures.length, 1);
+assert.equal(
+  providerReadyTimeoutFailures[0].reason,
+  "voice_realtime_provider_ready_timeout"
+);
+assert.equal(providerReadyTimeoutFailures[0].terminal, true);
+assert.equal(providerReadyTimeoutFailures[0].retryable, true);
 
 const cancelMessages = [];
 const cancelTimers = new Map();

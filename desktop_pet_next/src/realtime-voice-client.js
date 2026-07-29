@@ -1,6 +1,7 @@
 const VOICE_REALTIME_PROTOCOL_VERSION = 1;
 const VOICE_PLAYBACK_OUTPUT_MODE = "binary_audio_ack_v1";
-const DEFAULT_READY_TIMEOUT_MS = 5000;
+const DEFAULT_SOCKET_OPEN_TIMEOUT_MS = 5000;
+const DEFAULT_PROVIDER_READY_TIMEOUT_MS = 30000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 750;
 const DEFAULT_DUCK_VOLUME_FACTOR = 0.24;
 const DEFAULT_IDLE_PRE_ROLL_MS = 800;
@@ -689,7 +690,8 @@ export class RealtimeVoiceSession {
     endpointDetector = null,
     getVolume = () => 1,
     callbacks = {},
-    readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    socketOpenTimeoutMs = DEFAULT_SOCKET_OPEN_TIMEOUT_MS,
+    readyTimeoutMs = DEFAULT_PROVIDER_READY_TIMEOUT_MS,
     fallbackPcmMaxMs = DEFAULT_FALLBACK_PCM_MAX_MS,
     scope = globalThis
   }) {
@@ -702,6 +704,7 @@ export class RealtimeVoiceSession {
     this.endpointDetector = endpointDetector;
     this.getVolume = getVolume;
     this.callbacks = callbacks;
+    this.socketOpenTimeoutMs = socketOpenTimeoutMs;
     this.readyTimeoutMs = readyTimeoutMs;
     this.fallbackPcmMaxMs = Math.max(
       1000,
@@ -717,6 +720,7 @@ export class RealtimeVoiceSession {
     this.muteGain = null;
     this.playbackQueue = null;
     this.ready = false;
+    this.transportOpen = false;
     this.failed = false;
     this.closed = false;
     this.endpointSent = false;
@@ -736,6 +740,8 @@ export class RealtimeVoiceSession {
     this.cancelResolver = null;
     this.cancelTimeoutId = 0;
     this.startPromise = null;
+    this.readyTimeoutId = 0;
+    this.readyWaiters = new Set();
   }
 
   start() {
@@ -812,14 +818,18 @@ export class RealtimeVoiceSession {
       const timeoutId = this.scope.setTimeout(() => {
         if (settled) return;
         settled = true;
-        this.fail("voice_realtime_ready_timeout", {
+        this.fail("voice_realtime_websocket_open_timeout", {
           terminal: true,
           retryable: true
         });
-        reject(new Error("voice_realtime_ready_timeout"));
-      }, this.readyTimeoutMs);
+        reject(new Error("voice_realtime_websocket_open_timeout"));
+      }, this.socketOpenTimeoutMs);
 
       socket.addEventListener("open", () => {
+        if (settled || this.closed) return;
+        settled = true;
+        this.transportOpen = true;
+        this.scope.clearTimeout(timeoutId);
         this.sendJson({
           ...this.openPayload,
           type: "client.open",
@@ -831,6 +841,9 @@ export class RealtimeVoiceSession {
           },
           output: { mode: VOICE_PLAYBACK_OUTPUT_MODE }
         });
+        this.armProviderReadyTimeout();
+        this.notify("onTransportOpen");
+        resolve(this);
       });
       socket.addEventListener("message", (event) => {
         void this.handleSocketMessage(event?.data);
@@ -848,10 +861,11 @@ export class RealtimeVoiceSession {
       });
       socket.addEventListener("close", () => {
         this.scope.clearTimeout(timeoutId);
-        if (!settled && !this.ready) {
+        if (!settled) {
           settled = true;
           reject(new Error("voice_realtime_closed_before_ready"));
         }
+        this.settleReadyWaiters(false);
         if (!this.closed && !this.responseTerminal) {
           this.fail("voice_realtime_connection_closed", {
             terminal: true,
@@ -859,18 +873,15 @@ export class RealtimeVoiceSession {
           });
         }
       });
-      this.resolveReady = () => {
-        if (settled) return;
-        settled = true;
-        this.scope.clearTimeout(timeoutId);
-        resolve(this);
-      };
     });
   }
 
   async finishInput() {
     await this.flushAndStopCapture();
     await this.start();
+    if (!this.ready && !(await this.waitUntilReady())) {
+      throw new Error("voice_realtime_not_ready");
+    }
     if (this.failed || !this.ready) throw new Error("voice_realtime_not_ready");
     if (!this.endpointSent) {
       this.endpointSent = true;
@@ -939,6 +950,8 @@ export class RealtimeVoiceSession {
   dispose(reason = "client_closed") {
     if (this.closed) return;
     this.closed = true;
+    this.clearProviderReadyTimeout();
+    this.settleReadyWaiters(false);
     this.resolveCancel(false);
     this.playbackQueue?.close(reason);
     void this.stopCapture();
@@ -1080,6 +1093,8 @@ export class RealtimeVoiceSession {
     const type = String(payload?.type || "");
     if (type === "server.ready") {
       this.ready = true;
+      this.clearProviderReadyTimeout();
+      this.settleReadyWaiters(true);
       const playbackQueueOptions = {
         sendJson: (message) => this.sendJson(message),
         getVolume: this.getVolume,
@@ -1100,7 +1115,6 @@ export class RealtimeVoiceSession {
       }
       for (const frame of this.pendingFrames.splice(0)) this.sendPcmFrame(frame);
       this.notify("onReady", payload);
-      this.resolveReady?.();
       return;
     }
     if (type === "server.partial" || type === "server.checkpoint") {
@@ -1209,6 +1223,39 @@ export class RealtimeVoiceSession {
       committed: this.serverFinalCommitted
     });
     if (terminal) this.dispose(reason);
+  }
+
+  armProviderReadyTimeout() {
+    this.clearProviderReadyTimeout();
+    if (this.ready || this.closed) return;
+    this.readyTimeoutId = this.scope.setTimeout(() => {
+      this.readyTimeoutId = 0;
+      if (this.ready || this.closed) return;
+      this.fail("voice_realtime_provider_ready_timeout", {
+        terminal: true,
+        retryable: true
+      });
+    }, this.readyTimeoutMs);
+  }
+
+  clearProviderReadyTimeout() {
+    if (!this.readyTimeoutId) return;
+    this.scope.clearTimeout(this.readyTimeoutId);
+    this.readyTimeoutId = 0;
+  }
+
+  waitUntilReady() {
+    if (this.ready) return Promise.resolve(true);
+    if (this.failed || this.closed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      this.readyWaiters.add(resolve);
+    });
+  }
+
+  settleReadyWaiters(ready) {
+    if (!this.readyWaiters.size) return;
+    for (const resolve of this.readyWaiters) resolve(Boolean(ready));
+    this.readyWaiters.clear();
   }
 
   sendJson(payload) {

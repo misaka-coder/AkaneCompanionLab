@@ -778,6 +778,13 @@ VoiceCore durable command
 音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，桌宠
 主入口也已复用它；每轮安全录音仍独立收口，不能跨轮拼接。
 
+客户端明确区分 WebSocket 传输已连接与 ASR provider 已就绪。WebSocket `open`
+后通话即取得传输连接并继续采集；`server.ready` 之前的 PCM 按原顺序暂存在当前
+Input Turn，provider 就绪后先补送音频，再允许发送 `client.endpoint`。因此远端
+ASR 冷启动慢时不会被短连接超时误判成“实时语音未接通”，也不会要求用户等待
+某个提示后才敢开口。WebSocket 本身和 provider 准备分别有结构化超时；provider
+始终未就绪时才释放等待者并进入既有的有界重连/安全录音降级路径。
+
 客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
 判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR
 `partial/checkpoint` 组合起来：稳定 checkpoint 后允许较短静音收尾，只有 partial

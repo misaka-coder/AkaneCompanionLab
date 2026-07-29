@@ -3117,10 +3117,12 @@ async function startRealtimeVoiceCall() {
     setPetEmotion("listening", { persist: false });
     setPetMotion("thinking");
     showBubbleText(
-      tookOverReply ? "上一轮已停下，通话已接通。正在听你说……" : "通话已接通。正在听你说……",
+      tookOverReply
+        ? "上一轮已停下，麦克风已打开。正在接通语音，你现在说话也会保留……"
+        : "麦克风已打开。正在接通语音，你现在说话也会保留……",
       { transient: false, kind: "status" }
     );
-    setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
+    setRuntimeStatus("语音通话中 · 正在接通", { mode: "listening" });
     updateActivityControls();
     scheduleSettingsSnapshot();
 
@@ -3175,6 +3177,7 @@ async function openRealtimeVoiceCallTurn(call) {
     recorderChunks: [],
     recorderStopTask: null,
     ready: false,
+    transportOpen: false,
     endpointAccepted: false,
     endpointTask: null,
     committed: false,
@@ -3235,8 +3238,14 @@ async function openRealtimeVoiceCallTurn(call) {
     call.standbySpeechPending = false;
     await turn.session.start();
     if (!isActiveRealtimeCallTurn(turn) || call.inputTurn !== turn) return false;
-    turn.ready = true;
-    setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
+    turn.transportOpen = true;
+    if (!turn.ready) {
+      showBubbleText("通话链路已连接，识别服务准备中；已经开始听你说……", {
+        transient: false,
+        kind: "status"
+      });
+      setRuntimeStatus("语音通话中 · 识别服务准备中", { mode: "listening" });
+    }
     return true;
   } catch (error) {
     await markRealtimeVoiceCallFailure(turn, {
