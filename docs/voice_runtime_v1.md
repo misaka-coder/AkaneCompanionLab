@@ -787,7 +787,7 @@ Agent，也不设置固定的单句最长时限。检测器现已由主入口为
 实例化，自动 endpoint 只结束当前发言，不结束整场通话。
 
 这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
-全链路人工验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
+基础链路验证，但连续抢话的人体时序验收尚未通过。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能
 停在输入框或静默等待。服务端同时提供 finalize/input inactivity 超时与结构化
 失败原因。
@@ -855,6 +855,13 @@ ASR；正式提交后的回复失败会明确提示，并继续下一轮。这�
 或立即接管。若声学活动最终没有形成任何 ASR 文本，取消输入轮时会追加
 `voice.interruption.false_positive` 并驱动 resume，不能把回复永久留在低音量。
 没有真实播放单元时，协议返回 `server.interruption.skipped`，不会 fake duck。
+
+真实人体时序验收曾暴露一项必须修复的失败边界：WebSocket 在回复交付中途终止
+时，即使传输层已经进入 terminal，也必须关闭尚未终态的 delivery channel，并
+把未完成的播放命令归约成失败/中断事件。否则旧 `enqueue_playback` 会永久占据
+Host 的 pending command 队列，使后续正常输入被误报为
+`voice_command_drive_deferred`，并诱发多个回复回合并发。传输异常日志只记录
+阶段、异常类型和计数，不记录转写、音频或密钥。
 
 这仍不是 native speech-to-speech provider 意义上的完全全双工：
 `prepare_candidate/prepare_backchannel` 推测式回复尚未启用，semantic pulse 的

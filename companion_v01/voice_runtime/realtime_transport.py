@@ -184,7 +184,8 @@ class VoiceRealtimeWebSocketSession:
             cancelled = exc
         except RuntimeError:
             pass
-        except Exception:
+        except Exception as exc:
+            self._log_transport_exception(exc)
             await self._send_failed("voice_realtime_transport_failed", retryable=True, terminal=True)
         finally:
             with anyio.CancelScope(shield=True):
@@ -194,11 +195,7 @@ class VoiceRealtimeWebSocketSession:
                 if self.delivery_task is not None and not self.delivery_task.done():
                     self.delivery_task.cancel()
                     await asyncio.gather(self.delivery_task, return_exceptions=True)
-                if not self.terminal and self.delivery_channel is not None:
-                    try:
-                        self.delivery_channel.close(reason="client_disconnected")
-                    except Exception:
-                        pass
+                self._close_unfinished_delivery_channel()
                 if not self.terminal and self.coordinator is not None:
                     try:
                         await self.coordinator.cancel(reason="client_disconnected")
@@ -214,6 +211,39 @@ class VoiceRealtimeWebSocketSession:
                 )
         if cancelled is not None:
             raise cancelled
+
+    def _close_unfinished_delivery_channel(self) -> None:
+        channel = self.delivery_channel
+        if channel is None:
+            return
+        try:
+            outcome = channel.response_outcome()
+            if bool(getattr(outcome, "response_terminal", False)):
+                return
+        except Exception:
+            pass
+        reason = self._terminal_reason or (
+            "client_disconnected" if not self.terminal else "voice_realtime_transport_closed"
+        )
+        try:
+            channel.close(reason=reason)
+        except Exception:
+            pass
+
+    def _log_transport_exception(self, exc: Exception) -> None:
+        try:
+            self.log_event(
+                "asr_realtime_transport_exception",
+                error_type=type(exc).__name__[:96],
+                opened=self.open_request is not None,
+                provider=self.provider_id,
+                final_sent=self.final_sent,
+                delivery_attached=self.delivery_channel is not None,
+                input_frames=self.input_frames,
+                input_bytes=self.input_bytes,
+            )
+        except Exception:
+            pass
 
     async def _handle_text(self, raw: str) -> None:
         try:

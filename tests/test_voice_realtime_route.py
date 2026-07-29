@@ -46,6 +46,7 @@ class _RouteDeliveryChannel:
         self._control_request: Any | None = None
         self._control_taken = False
         self._control_sent = False
+        self.close_reason = ""
 
     async def wait_activity(self) -> None:
         if self.notified or self.state == "terminal":
@@ -180,6 +181,7 @@ class _RouteDeliveryChannel:
         )
 
     def close(self, *, reason: str) -> Any:
+        self.close_reason = str(reason or "")
         self.state = "terminal"
         return self.response_outcome()
 
@@ -603,7 +605,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
 
         with TestClient(self._app(factory=factory, metrics=metrics, logs=logs)) as client:
             with client.websocket_connect("/voice/realtime") as websocket:
-                websocket.send_json(_open_payload())
+                websocket.send_json(_open_payload(output={"mode": VOICE_PLAYBACK_OUTPUT_MODE}))
                 websocket.receive_json()
                 websocket.send_json({"type": "client.audio", "sequence": 0, "audio_clock_ms": 0})
                 websocket.send_bytes(b"\x01\x00" * 160)
@@ -620,6 +622,10 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         self.assertEqual(failed["delivery_status"], "not_started")
         self.assertEqual(metrics.observed, [("asr_realtime", False)])
         self.assertEqual(logs[0]["reason"], "voice_response_start_failed")
+        self.assertEqual(
+            factory.delivery_channels[0].close_reason,
+            "voice_response_start_failed",
+        )
 
     def test_invalid_or_out_of_order_messages_fail_structurally_without_fake_audio(self) -> None:
         factory = _CoordinatorFactory()
