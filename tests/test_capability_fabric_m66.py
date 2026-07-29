@@ -455,6 +455,8 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertIn("gpt_sovits_reverse_tunnel.pid", source)
         self.assertIn("Get-AkaneGptSoVitsApi", source)
         self.assertIn("Get-AkaneRemoteGptSoVitsApi", source)
+        self.assertIn("Invoke-AkaneCloudGptSoVitsHealthCheck", source)
+        self.assertIn("cloud_gpt_sovits_health_refresh_failed", source)
         self.assertIn('"/tts"', source)
         self.assertIn("Get-CimInstance Win32_Process", source)
         self.assertIn("Stop-Process -Id $storedProcessId -Force", source)

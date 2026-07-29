@@ -340,6 +340,28 @@ function Wait-AkaneCloudHealth {
     return $null
 }
 
+function Invoke-AkaneCloudGptSoVitsHealthCheck {
+    param([string]$BaseUrl)
+    try {
+        $result = Invoke-RestMethod `
+            -Method Post `
+            -Uri (
+                $BaseUrl.TrimEnd("/") +
+                "/capabilities/providers/provider.tts.gpt_sovits.local/health-check" +
+                "?user_id=desktop&real_user_id=master"
+            ) `
+            -ContentType "application/json" `
+            -Body "{}" `
+            -TimeoutSec 10
+        if ([bool]$result.ok -and [string]$result.status -eq "ready") {
+            return $result
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
 function Wait-AkaneSatelliteOffers {
     param(
         [string]$BaseUrl,
@@ -514,6 +536,13 @@ if (Test-AkaneCloudHealth -Health $health -ExpectedInstanceId $InstanceId) {
 
 Write-Host "[INFO] Cloud instance verified: $InstanceId"
 Write-Host "[INFO] Satellite credential source: $tokenSource"
+if (-not $SkipGptSoVits) {
+    $providerHealth = Invoke-AkaneCloudGptSoVitsHealthCheck -BaseUrl $backendUrl
+    if ($null -eq $providerHealth) {
+        throw "cloud_gpt_sovits_health_refresh_failed"
+    }
+    Write-Host "[OK] Cloud character voice provider state is ready."
+}
 
 $launchArgs = @{
     CloudSatellite = $true

@@ -109,7 +109,8 @@ start_akane_cloud_personal.bat
    loopback-only `api_v2.py`，并用 OpenAPI 中真实存在的 `/tts` 做就绪判断；
 3. 建立 GPT-SoVITS 到云端 loopback 的反向隧道，并从云端再次验证 `/tts`；
 4. 建立或复用 `akane-vps` 到云端 personal 后端的加密 SSH 隧道；
-5. 精确核对 `/health` 的 `personal / ok / valid`；
+5. 精确核对 `/health` 的 `personal / ok / valid`，并刷新云端 GPT-SoVITS
+   provider 健康状态，避免沿用上次断线留下的 `unreachable`；
 6. 以 `-CloudSatellite` 调用正式桌宠启动器；
 7. 等待 `open_browser`、`desktop_context_snapshot`、`system_media_snapshot`、`system_media_control` 四项能力在云端目录中变为 `ready`。
 
