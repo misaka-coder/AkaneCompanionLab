@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -15,6 +16,9 @@ from urllib.parse import urlparse
 import requests
 
 from .image_materials import ResolvedImageMaterial, SessionImageMaterialResolver
+
+
+logger = logging.getLogger("akane.image_generation")
 
 
 IMAGE_SIZE_RE = re.compile(r"^(\d{3,4})x(\d{3,4})$")
@@ -429,13 +433,31 @@ class PinAIImageProvider:
     def _decode_response_images(self, response: Any, *, requested_count: int) -> list[GeneratedImageBytes]:
         content_type = str(getattr(response, "headers", {}).get("Content-Type") or "").lower()
         payloads: list[Any] = []
-        if "text/event-stream" in content_type:
-            payloads.extend(self._iter_sse_payloads(response))
-        else:
-            try:
-                payloads.append(response.json())
-            except Exception:
-                payloads.extend(self._iter_sse_payloads(response))
+        try:
+            if "text/event-stream" in content_type:
+                payloads.extend(
+                    self._iter_sse_payloads(
+                        response,
+                        requested_count=requested_count,
+                    )
+                )
+            else:
+                try:
+                    payloads.append(response.json())
+                except Exception:
+                    payloads.extend(
+                        self._iter_sse_payloads(
+                            response,
+                            requested_count=requested_count,
+                        )
+                    )
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
         encoded = self._select_final_base64_images(payloads, requested_count=requested_count)
         if not encoded:
             raise ImageGenerationError("provider_returned_no_image")
@@ -451,8 +473,14 @@ class PinAIImageProvider:
             decoded.append(GeneratedImageBytes(data=image_bytes, output_format=detected_format, media_type=media_type))
         return decoded
 
-    def _iter_sse_payloads(self, response: Any) -> list[Any]:
+    def _iter_sse_payloads(
+        self,
+        response: Any,
+        *,
+        requested_count: int = 1,
+    ) -> list[Any]:
         payloads: list[Any] = []
+        completed_payloads: list[Any] = []
         try:
             lines = response.iter_lines(decode_unicode=True)
         except Exception as exc:
@@ -466,10 +494,35 @@ class PinAIImageProvider:
             if line == "[DONE]":
                 break
             try:
-                payloads.append(json.loads(line))
+                payload = json.loads(line)
             except (TypeError, ValueError):
                 continue
+            payloads.append(payload)
+            if not self._payload_marks_image_completion(payload):
+                continue
+            completed_payloads.append(payload)
+            completed_images = self._select_final_base64_images(
+                completed_payloads,
+                requested_count=max(1, int(requested_count or 1)),
+            )
+            if len(completed_images) >= max(1, int(requested_count or 1)):
+                # Some compatible relays keep an already-completed SSE
+                # connection alive for minutes. Once the requested final
+                # images are present, waiting for a later [DONE] adds latency
+                # without adding evidence.
+                break
         return payloads
+
+    @staticmethod
+    def _payload_marks_image_completion(value: Any) -> bool:
+        if isinstance(value, dict):
+            event_type = str(value.get("type") or "").strip().lower()
+            if event_type == "completed" or event_type.endswith(".completed"):
+                return True
+            return any(PinAIImageProvider._payload_marks_image_completion(item) for item in value.values())
+        if isinstance(value, list):
+            return any(PinAIImageProvider._payload_marks_image_completion(item) for item in value)
+        return False
 
     def _select_final_base64_images(self, payloads: list[Any], *, requested_count: int) -> list[str]:
         indexed: dict[int, str] = {}
@@ -665,6 +718,7 @@ class ImageGenerationService:
                 return self._failure("mask_image_unavailable")
 
         requested_count = max(1, min(self.max_output_images, int(n or 1)))
+        provider_started_at = time.monotonic()
         try:
             outputs = self.provider.generate(
                 prompt=prompt,
@@ -680,6 +734,13 @@ class ImageGenerationService:
             )
         except ImageGenerationError as exc:
             return self._failure(exc.code, retryable=exc.retryable)
+        provider_duration_ms = (time.monotonic() - provider_started_at) * 1000
+        logger.info(
+            "image_generation_provider_completed model=%s output_count=%s duration_ms=%.1f",
+            self.provider.model,
+            len(outputs),
+            provider_duration_ms,
+        )
 
         source_ids = [item.source_id for item in references]
         if mask is not None and mask.source_id not in source_ids:
@@ -736,6 +797,14 @@ class ImageGenerationService:
         handles = [
             str(item.get("generated_handle") or item.get("generated_id") or "").strip() for item in generated_items
         ]
+        logger.info(
+            "image_generation_artifacts_ready model=%s output_count=%s provider_duration_ms=%.1f "
+            "total_duration_ms=%.1f",
+            self.provider.model,
+            len(generated_items),
+            provider_duration_ms,
+            (time.monotonic() - provider_started_at) * 1000,
+        )
         return {
             "ok": True,
             "status": "ready",

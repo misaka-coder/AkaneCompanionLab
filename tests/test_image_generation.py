@@ -33,12 +33,16 @@ class FakeResponse:
         self.headers = {"Content-Type": content_type}
         self.status_code = status_code
         self.lines = list(lines or [])
+        self.closed = False
 
     def json(self):
         return self.payload
 
     def iter_lines(self, decode_unicode: bool = True):
         return iter(self.lines)
+
+    def close(self):
+        self.closed = True
 
 
 class FakeSession:
@@ -238,6 +242,37 @@ class ImageGenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(outputs[0].data, PNG_BYTES)
+
+    def test_pinai_sse_stops_after_complete_image_without_waiting_for_done(self) -> None:
+        final = base64.b64encode(PNG_BYTES).decode("ascii")
+
+        class ResponseThatStaysOpen(FakeResponse):
+            def iter_lines(self, decode_unicode: bool = True):
+                yield (f'data: {{"type":"image_generation.completed","output_index":0,"b64_json":"{final}"}}')
+                raise AssertionError("completed image stream should not be consumed further")
+
+        response = ResponseThatStaysOpen(
+            {},
+            content_type="text/event-stream; charset=utf-8",
+        )
+        provider = PinAIImageProvider(
+            base_url="https://us.pinai-cn.com/v1",
+            api_key="secret-key",
+            session=FakeSession([response]),
+        )
+
+        outputs = provider.generate(
+            prompt="完成后仍保持连接的流",
+            size="1024x1024",
+            quality="low",
+            background="auto",
+            output_format="png",
+            compression=90,
+            n=1,
+        )
+
+        self.assertEqual(outputs[0].data, PNG_BYTES)
+        self.assertTrue(response.closed)
 
     def test_pinai_forbidden_response_is_structured_without_body_or_key(self) -> None:
         session = FakeSession([FakeResponse({"secret": "must-not-leak"}, status_code=403)])

@@ -6450,6 +6450,11 @@ class AkaneMemoryEngine:
             [],
             [result for _call, result, _shaped, _workspace in history_items],
         )
+        chat_model_override = str((request_context or {}).get("chat_model_override") or "").strip()
+        native_vision_status = self.native_chat_vision_status(
+            chat_model_override=chat_model_override,
+        )
+        projection_model_images = batch_model_images if bool(native_vision_status.get("enabled")) else []
         media_source_ids = self._record_memcore_tool_media_input(
             model_image_inputs=batch_model_images,
             related_source_ids=trace_source_ids,
@@ -6468,7 +6473,7 @@ class AkaneMemoryEngine:
             items=history_items,
             trace_source_ids=trace_source_ids,
             media_source_ids=media_source_ids,
-            model_image_inputs=batch_model_images,
+            model_image_inputs=projection_model_images,
             provider_output_raw=provider_output_raw,
             profile_user_id=profile_user_id,
             session_id=session_id,

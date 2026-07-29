@@ -121,9 +121,7 @@ class _NativeToolProjectionManager:
             "ok": True,
             "status": "ok",
             "provider_profile": self.provider,
-            "messages": [
-                {"payload": payload, "source_ids": ids} for payload, ids in zip(payloads, source_ids)
-            ],
+            "messages": [{"payload": payload, "source_ids": ids} for payload, ids in zip(payloads, source_ids)],
         }
 
     def assert_provider(self, provider: str) -> None:
@@ -197,6 +195,69 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["attachment_handle"], "img_002")
         self.assertNotIn("base64", loaded.followup_context)
+
+    def test_engine_keeps_tool_image_in_memcore_but_not_text_only_model_projection(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        image_input = {
+            "attachment_id": "generated-image-1",
+            "attachment_handle": "gen_001",
+            "data_url": "data:image/png;base64,AAAA",
+        }
+        engine._execute_tool_call = lambda **_kwargs: ToolExecutionResult(
+            tool_type="generate_image",
+            followup_context="图片生成完成，得到 gen_001。",
+            model_image_inputs=[image_input],
+        )
+        engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+        engine._record_memcore_tool_batch = lambda **_kwargs: (
+            ["tool-use-1", "tool-result-1"],
+            None,
+        )
+        recorded_media: list[list[dict]] = []
+        engine._record_memcore_tool_media_input = lambda **kwargs: (
+            recorded_media.append(list(kwargs["model_image_inputs"])) or ["tool-media-1"]
+        )
+        projected_images: list[list[dict]] = []
+        engine._append_tool_history_batch = lambda **kwargs: (
+            projected_images.append(list(kwargs["model_image_inputs"])) or {"ok": True, "status": "projected"}
+        )
+        engine.native_chat_vision_status = lambda **_kwargs: {
+            "enabled": False,
+            "reason": "chat_vision_model_mismatch",
+        }
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.SCENE_STATIC,
+            effective_mode=ClientMode.SCENE_STATIC,
+        )
+
+        engine._execute_and_record_tool_batch(
+            tool_calls=[
+                {
+                    "type": "generate_image",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call-image",
+                }
+            ],
+            final_output={"speech": "", "tool_call": None},
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="",
+            now_ts=100,
+            current_user_source_id="user:1",
+            client_context=client_context,
+            memory_exclude_source_ids=[],
+            request_context={"chat_model_override": "deepseek-v4-flash"},
+            tool_history_turns=[],
+            memcore_turn_id="turn-image",
+        )
+
+        self.assertEqual(recorded_media, [[image_input]])
+        self.assertEqual(projected_images, [[]])
 
     def test_native_web_search_schema_respects_global_disable(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)
@@ -366,9 +427,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
-            config.NATIVE_TOOL_DECISION_ALLOWLIST = (
-                "inspect_media_info,separate_audio_stems,cover_song,send_file"
-            )
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "inspect_media_info,separate_audio_stems,cover_song,send_file"
             plan = tool_orchestration_engine.build_native_tool_decision_plan(
                 {
                     name: FakeNativeHandler(name)
