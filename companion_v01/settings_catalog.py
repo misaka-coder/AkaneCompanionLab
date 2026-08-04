@@ -192,22 +192,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("AUX_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "AUX 模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("AUX_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "AUX 协议", managed_in=MANAGED_MODEL_SERVICE),
     _s(
-        "AUX_FAILOVER_API_KEY",
-        _LLM,
-        SCOPE_RESTART_CLIENT,
-        "AUX 故障降级 API Key",
-        sensitive=True,
-    ),
-    _s("AUX_FAILOVER_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级 base_url"),
-    _s("AUX_FAILOVER_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级模型名"),
-    _s("AUX_FAILOVER_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "AUX 故障降级协议"),
-    _s(
-        "LLM_AUX_FAILOVER_ENABLED",
-        _LLM,
-        SCOPE_RESTART_CLIENT,
-        "AUX 主提供者失败时使用独立备用提供者重试一次",
-    ),
-    _s(
         "CHAT_API_KEY",
         _LLM,
         SCOPE_RESTART_CLIENT,
@@ -219,12 +203,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("CHAT_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "CHAT 主模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("CHAT_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "CHAT 协议", managed_in=MANAGED_MODEL_SERVICE),
     _s("LLM_THINKING_MODE", _LLM, SCOPE_RUNTIME, "OpenAI 兼容思考模式：default/disabled/enabled"),
-    _s(
-        "LLM_CHAT_FAILOVER_TO_AUX_ENABLED",
-        _LLM,
-        SCOPE_RESTART_CLIENT,
-        "CHAT 主提供者失败时使用 AUX 提供者重试一次",
-    ),
     # 视觉 / 图像理解（接入由模型服务页管理，行为开关本目录）
     _s("VISION_API_KEY", _VIS, SCOPE_RUNTIME, "视觉 API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
     _s("VISION_BASE_URL", _VIS, SCOPE_RUNTIME, "视觉 base_url", managed_in=MANAGED_MODEL_SERVICE),

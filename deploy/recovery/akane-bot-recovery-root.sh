@@ -11,9 +11,6 @@ readonly RECOVERY_USER="akane-recovery"
 readonly RECOVERY_GROUP="akane-recovery"
 readonly QR_DIR="/home/akane-recovery/qr"
 readonly QR_LIFETIME="10m"
-readonly FINANCE_STANDBY_HELPER="/usr/local/sbin/akane-personal-finance-standby"
-readonly AKANE_PYTHON="/opt/akane/AkaneCompanionLab/.venv/bin/python"
-readonly AKANE_HOST_URL="http://127.0.0.1:10001"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "AKANE_RESULT=DENIED"
@@ -197,69 +194,6 @@ prepare_qr() {
     return 37
 }
 
-wait_personal_host_ready() {
-    local deadline payload
-    deadline=$(( $(date +%s) + 60 ))
-    while [[ "$(date +%s)" -lt "$deadline" ]]; do
-        payload=""
-        if systemctl is-active --quiet akane-host.service; then
-            payload="$(curl -sS --max-time 3 "$AKANE_HOST_URL/api/bots" 2>/dev/null || true)"
-            if printf '%s' "$payload" | jq -e '
-                .ok == true
-                and any(
-                    .bots[]?;
-                    (.botId == "personal" or .botId == "akane-personal")
-                    and .available == true
-                    and .state == "online"
-                    and .status == "active"
-                )
-            ' >/dev/null 2>&1; then
-                return 0
-            fi
-        fi
-        sleep 1
-    done
-    return 1
-}
-
-toggle_personal_finance() {
-    local mode="$1" helper_output expected_state
-    if [[ ! -x "$AKANE_PYTHON" || ! -r "$FINANCE_STANDBY_HELPER" ]]; then
-        echo "AKANE_STATE=personal_finance_helper_missing"
-        return 40
-    fi
-    if ! helper_output="$("$AKANE_PYTHON" "$FINANCE_STANDBY_HELPER" "$mode" 2>&1)"; then
-        printf '%s\n' "$helper_output"
-        echo "AKANE_STATE=personal_finance_config_failed"
-        return 41
-    fi
-    logger -t akane-recovery "action=personal_finance_$mode status=restart_requested"
-    if ! systemctl restart akane-host.service; then
-        printf '%s\n' "$helper_output"
-        echo "AKANE_STATE=personal_finance_host_restart_failed"
-        return 42
-    fi
-    if ! wait_personal_host_ready; then
-        printf '%s\n' "$helper_output"
-        echo "AKANE_STATE=personal_finance_host_unhealthy"
-        return 43
-    fi
-
-    expected_state="disabled"
-    if [[ "$mode" == "enable" ]]; then
-        expected_state="enabled"
-    fi
-    if ! "$AKANE_PYTHON" "$FINANCE_STANDBY_HELPER" status \
-        | grep -q "^AKANE_PERSONAL_FINANCE_STANDBY=${expected_state}$"; then
-        echo "AKANE_STATE=personal_finance_verify_failed"
-        return 44
-    fi
-    echo "AKANE_STATE=personal_finance_${expected_state}"
-    echo "AKANE_RESULT=PERSONAL_FINANCE_${expected_state^^}"
-    logger -t akane-recovery "action=personal_finance_$mode status=ok"
-    return 0
-}
-
 action="${1:-}"
 case "$action" in
     status)
@@ -299,20 +233,6 @@ case "$action" in
             echo "AKANE_RESULT=NO_QR_NEEDED"
         fi
         exit 0
-        ;;
-    personal-finance-enable)
-        if toggle_personal_finance enable; then
-            exit 0
-        fi
-        echo "AKANE_RESULT=PERSONAL_FINANCE_TOGGLE_FAILED"
-        exit 4
-        ;;
-    personal-finance-disable)
-        if toggle_personal_finance disable; then
-            exit 0
-        fi
-        echo "AKANE_RESULT=PERSONAL_FINANCE_TOGGLE_FAILED"
-        exit 4
         ;;
     *)
         echo "AKANE_RESULT=INVALID_ACTION"

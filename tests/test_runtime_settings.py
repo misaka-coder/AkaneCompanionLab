@@ -56,10 +56,6 @@ class BotSettingsViewTests(unittest.TestCase):
             AUX_BASE_URL="https://aux.example/v1",
             AUX_MODEL_NAME="aux-model",
             AUX_API_PROTOCOL="responses",
-            AUX_FAILOVER_API_KEY="aux-failover-secret",
-            AUX_FAILOVER_BASE_URL="https://aux-failover.example/v1",
-            AUX_FAILOVER_MODEL_NAME="aux-failover-model",
-            AUX_FAILOVER_API_PROTOCOL="openai",
             CHAT_API_KEY="chat-secret",
             CHAT_BASE_URL="https://chat.example/v1",
             CHAT_MODEL_NAME="chat-model",
@@ -89,8 +85,6 @@ class BotSettingsViewTests(unittest.TestCase):
             LLM_REASONING_EFFORT="medium",
             LLM_AUX_REASONING_EFFORT="low",
             LLM_CHAT_REASONING_EFFORT="high",
-            LLM_AUX_FAILOVER_ENABLED=True,
-            LLM_CHAT_FAILOVER_TO_AUX_ENABLED=True,
         )
 
         view = BotSettingsView.from_config(config_module)
@@ -98,7 +92,6 @@ class BotSettingsViewTests(unittest.TestCase):
 
         self.assertEqual(view.chat_model_name, "chat-model")
         self.assertEqual(view.aux_api_protocol, "responses")
-        self.assertEqual(view.aux_failover_model_name, "aux-failover-model")
         self.assertEqual(view.vision_model_name, "vision-model")
         self.assertFalse(view.vision_auto_scene_observe)
         self.assertTrue(view.image_generation_enabled)
@@ -109,16 +102,9 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(view.llm_context_window, 12000)
         self.assertEqual(view.llm_thinking_mode, "enabled")
         self.assertEqual(view.llm_chat_reasoning_effort, "high")
-        self.assertTrue(view.llm_chat_failover_to_aux_enabled)
-        self.assertTrue(view.llm_aux_failover_enabled)
-        self.assertTrue(public["failover"]["aux_enabled"])
-        self.assertTrue(public["failover"]["chat_to_aux_enabled"])
         self.assertNotIn("secret", repr(view))
         self.assertNotIn("api_key", public["chat"])
         self.assertNotIn("vision-secret", repr(view))
-        self.assertNotIn("aux-failover-secret", repr(view))
-        self.assertNotIn("api_key", public["aux_failover"])
-        self.assertTrue(public["aux_failover"]["configured"])
         self.assertTrue(public["vision"]["configured"])
         self.assertEqual(public["context"]["auto_compact_token_limit"], 9000)
         self.assertEqual(public["reasoning"]["thinking_mode"], "enabled")
@@ -151,8 +137,6 @@ class BotSettingsViewTests(unittest.TestCase):
                 "llm_context_window": 4096,
                 "llm_thinking_mode": "enabled",
                 "llm_chat_reasoning_effort": "medium",
-                "llm_aux_failover_enabled": True,
-                "llm_chat_failover_to_aux_enabled": True,
             }
         )
         self.assertFalse(vision_override.vision_enabled)
@@ -161,8 +145,6 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(vision_override.llm_context_window, 4096)
         self.assertEqual(vision_override.llm_thinking_mode, "enabled")
         self.assertEqual(vision_override.llm_chat_reasoning_effort, "medium")
-        self.assertTrue(vision_override.llm_aux_failover_enabled)
-        self.assertTrue(vision_override.llm_chat_failover_to_aux_enabled)
         with self.assertRaisesRegex(ValueError, "bot_settings_reasoning_effort_invalid"):
             base.overlay({"llm_chat_reasoning_effort": "ultra"})
         with self.assertRaisesRegex(ValueError, "bot_settings_thinking_mode_invalid"):
@@ -247,11 +229,6 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
             aux_base_url="https://aux-a.example/v1",
             aux_model_name="aux-a-model",
             aux_api_protocol="openai",
-            aux_failover_api_key="aux-a-fallback",
-            aux_failover_base_url="https://aux-a-fallback.example/v1",
-            aux_failover_model_name="aux-a-fallback-model",
-            aux_failover_api_protocol="openai",
-            llm_aux_failover_enabled=True,
             chat_api_key="chat-a",
             chat_base_url="https://chat-a.example/v1",
             chat_model_name="chat-a-model",
@@ -290,7 +267,6 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
             [(call["api_key"], call["base_url"], call["protocol"]) for call in calls],
             [
                 ("aux-a", "https://aux-a.example/v1", "openai"),
-                ("aux-a-fallback", "https://aux-a-fallback.example/v1", "openai"),
                 ("chat-a", "https://chat-a.example/v1", "responses"),
                 ("aux-b", "https://aux-b.example/v1", "anthropic"),
                 ("chat-b", "https://chat-b.example/v1", "openai"),
@@ -300,8 +276,6 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
         self.assertEqual(runtime_b.chat.model, "chat-b-model")
         self.assertEqual(runtime_a.aux.model, "aux-a-model")
         self.assertEqual(runtime_b.aux.model, "aux-b-model")
-        self.assertEqual(runtime_a.aux_failover.model, "aux-a-fallback-model")
-        self.assertIsNone(runtime_b.aux_failover)
 
 
 class VisionSettingsIsolationTests(unittest.TestCase):

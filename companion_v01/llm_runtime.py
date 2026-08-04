@@ -605,7 +605,6 @@ class LLMRuntime:
         )
         self._bundle_lock = threading.RLock()
         self.aux = self._build_aux_bundle()
-        self.aux_failover = self._build_aux_failover_bundle()
         self.chat = self._build_chat_bundle()
         self._metrics_lock = threading.RLock()
         self._metrics = {
@@ -633,12 +632,6 @@ class LLMRuntime:
             "plugin_proactive_cache_usage_calls": 0,
             "plugin_proactive_cache_hit_calls": 0,
             "chat_json_fallbacks": 0,
-            "chat_provider_failovers": 0,
-            "chat_provider_failover_successes": 0,
-            "chat_provider_failover_failures": 0,
-            "aux_provider_failovers": 0,
-            "aux_provider_failover_successes": 0,
-            "aux_provider_failover_failures": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
             "native_tool_call_extracted": 0,
@@ -654,16 +647,13 @@ class LLMRuntime:
     def reload_from_config(self, *, settings: BotSettingsView | None = None) -> dict[str, str]:
         self.settings = settings or BotSettingsView.from_config(self._config_module)
         aux = self._build_aux_bundle()
-        aux_failover = self._build_aux_failover_bundle()
         chat = self._build_chat_bundle()
         with self._bundle_lock:
             self.aux = aux
-            self.aux_failover = aux_failover
             self.chat = chat
         return {
             "status": "reloaded",
             "auxModel": aux.model,
-            "auxFailoverModel": aux_failover.model if aux_failover is not None else "",
             "chatModel": chat.model,
         }
 
@@ -678,27 +668,6 @@ class LLMRuntime:
         )
         setattr(client, "_akane_bundle_role", "aux")
         return ModelBundle(client=client, model=settings.aux_model_name)
-
-    def _build_aux_failover_bundle(self) -> ModelBundle | None:
-        settings = self._settings_view()
-        protocol = str(settings.aux_failover_api_protocol or "auto").strip().lower()
-        configured = bool(
-            settings.llm_aux_failover_enabled
-            and settings.aux_failover_base_url
-            and settings.aux_failover_model_name
-            and (protocol == "ollama" or settings.aux_failover_api_key)
-        )
-        if not configured:
-            return None
-        client = build_llm_client(
-            api_key=settings.aux_failover_api_key,
-            base_url=settings.aux_failover_base_url,
-            protocol=settings.aux_failover_api_protocol,
-            timeout=90.0,
-            max_retries=0,
-        )
-        setattr(client, "_akane_bundle_role", "aux_failover")
-        return ModelBundle(client=client, model=settings.aux_failover_model_name)
 
     def _build_chat_bundle(self) -> ModelBundle:
         settings = self._settings_view()
@@ -734,74 +703,6 @@ class LLMRuntime:
             self._chat_bundle_for_override(chat_model_override)
         )
 
-    def _chat_failover_bundle(
-        self,
-        *,
-        primary: ModelBundle,
-        chat_model_override: str = "",
-    ) -> ModelBundle | None:
-        if chat_model_override or not self._settings_view().llm_chat_failover_to_aux_enabled:
-            return None
-        with self._bundle_lock:
-            dedicated_fallback = getattr(self, "aux_failover", None)
-            legacy_fallback = getattr(self, "aux", None)
-        primary_identity = self._bundle_route_identity(primary)
-        if isinstance(dedicated_fallback, ModelBundle):
-            fallback_identity = self._bundle_route_identity(dedicated_fallback)
-            if not all(fallback_identity) or primary_identity == fallback_identity:
-                return None
-            return dedicated_fallback
-        if not isinstance(legacy_fallback, ModelBundle):
-            return None
-        fallback_identity = self._bundle_route_identity(legacy_fallback)
-        if not all(fallback_identity) or primary_identity == fallback_identity:
-            return None
-        return legacy_fallback
-
-    def _aux_failover_bundle(self, *, primary: ModelBundle) -> ModelBundle | None:
-        if not self._settings_view().llm_aux_failover_enabled:
-            return None
-        with self._bundle_lock:
-            fallback = getattr(self, "aux_failover", None)
-        if not isinstance(fallback, ModelBundle):
-            return None
-        primary_identity = self._bundle_route_identity(primary)
-        fallback_identity = self._bundle_route_identity(fallback)
-        if not all(fallback_identity) or primary_identity == fallback_identity:
-            return None
-        return fallback
-
-    def _bundle_route_identity(self, bundle: ModelBundle) -> tuple[str, str, str]:
-        client = getattr(bundle, "client", bundle)
-        protocol = str(
-            getattr(client, "_akane_protocol", getattr(client, "protocol", "")) or ""
-        ).strip().lower()
-        return (
-            protocol,
-            self._bundle_base_host(bundle),
-            str(getattr(bundle, "model", "") or "").strip().lower(),
-        )
-
-    def _log_provider_failover(
-        self,
-        *,
-        phase: str,
-        primary: ModelBundle,
-        fallback: ModelBundle,
-        reason: str,
-    ) -> None:
-        logger.warning(
-            "llm provider failover phase=%s instance=%s primary_host=%s primary_model=%s "
-            "fallback_host=%s fallback_model=%s reason=%s",
-            phase,
-            str(getattr(self, "instance_id", "") or "unknown"),
-            self._bundle_base_host(primary) or "unknown",
-            primary.model,
-            self._bundle_base_host(fallback) or "unknown",
-            fallback.model,
-            self._sanitize_error_message(reason or "unknown"),
-        )
-
     def call_aux_json(
         self,
         *,
@@ -812,43 +713,14 @@ class LLMRuntime:
         prompt_cache_key: str = "",
     ) -> dict[str, Any]:
         self._record_metric("aux_json_calls")
-        with self._bundle_lock:
-            primary_bundle = self.aux
-        primary_result = self._call_json_result(
-            bundle=primary_bundle,
+        return self._call_json(
+            bundle=self.aux,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,
             temperature=temperature,
             prompt_cache_key=prompt_cache_key,
         )
-        if not primary_result.fallback_used:
-            return primary_result.parsed
-
-        failover_bundle = self._aux_failover_bundle(primary=primary_bundle)
-        if failover_bundle is None:
-            return primary_result.parsed
-
-        self._record_metric("aux_provider_failovers")
-        self._log_provider_failover(
-            phase="aux_json",
-            primary=primary_bundle,
-            fallback=failover_bundle,
-            reason=primary_result.error or "invalid_json",
-        )
-        failover_result = self._call_json_result(
-            bundle=failover_bundle,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            fallback=fallback,
-            temperature=temperature,
-            prompt_cache_key=prompt_cache_key,
-        )
-        if not failover_result.fallback_used:
-            self._record_metric("aux_provider_failover_successes")
-            return failover_result.parsed
-        self._record_metric("aux_provider_failover_failures")
-        return primary_result.parsed
 
     def call_chat_json(
         self,
@@ -907,50 +779,8 @@ class LLMRuntime:
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
     ) -> ChatJSONResult:
         self._record_metric("chat_json_calls")
-        primary_bundle = self._chat_bundle_for_override(chat_model_override)
-        request_kwargs = {
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
-            "fallback": fallback,
-            "temperature": temperature,
-            "prompt_cache_key": prompt_cache_key,
-            "user_images": user_images,
-            "native_tools": native_tools,
-            "native_tool_choice": native_tool_choice,
-            "system_extra_blocks": system_extra_blocks,
-            "history_turns": history_turns,
-            "ephemeral_turns": ephemeral_turns,
-            "post_user_turns": post_user_turns,
-            "prompt_audit_sections": prompt_audit_sections,
-            "request_observer": request_observer,
-        }
-        primary_result = self._call_json_result(
-            bundle=primary_bundle,
-            **request_kwargs,
-        )
-        if not primary_result.fallback_used:
-            return primary_result
-
-        failover_bundle = self._chat_failover_bundle(
-            primary=primary_bundle,
-            chat_model_override=chat_model_override,
-        )
-        if failover_bundle is None:
-            return primary_result
-
-        self._record_metric("chat_provider_failovers")
-        logger.warning(
-            "llm chat provider failover instance=%s primary_host=%s primary_model=%s "
-            "fallback_host=%s fallback_model=%s reason=%s",
-            str(getattr(self, "instance_id", "") or "unknown"),
-            self._bundle_base_host(primary_bundle) or "unknown",
-            primary_bundle.model,
-            self._bundle_base_host(failover_bundle) or "unknown",
-            failover_bundle.model,
-            self._sanitize_error_message(primary_result.error or "invalid_json"),
-        )
-        failover_result = self._call_json_result(
-            bundle=failover_bundle,
+        return self._call_json_result(
+            bundle=self._chat_bundle_for_override(chat_model_override),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,
@@ -966,11 +796,6 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
         )
-        if not failover_result.fallback_used:
-            self._record_metric("chat_provider_failover_successes")
-            return failover_result
-        self._record_metric("chat_provider_failover_failures")
-        return primary_result
 
     def chat_supports_native_tools(self, *, chat_model_override: str = "") -> bool:
         bundle = self._chat_bundle_for_override(chat_model_override)
@@ -1003,43 +828,14 @@ class LLMRuntime:
         prompt_cache_key: str = "",
     ) -> NDJSONCallResult:
         self._record_metric("aux_ndjson_calls")
-        with self._bundle_lock:
-            primary_bundle = self.aux
-        primary_result = self._call_ndjson(
-            bundle=primary_bundle,
+        return self._call_ndjson(
+            bundle=self.aux,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             on_event=on_event,
             temperature=temperature,
             prompt_cache_key=prompt_cache_key,
         )
-        if primary_result.events:
-            return primary_result
-
-        failover_bundle = self._aux_failover_bundle(primary=primary_bundle)
-        if failover_bundle is None:
-            return primary_result
-
-        self._record_metric("aux_provider_failovers")
-        self._log_provider_failover(
-            phase="aux_ndjson",
-            primary=primary_bundle,
-            fallback=failover_bundle,
-            reason=primary_result.error or "empty_ndjson",
-        )
-        failover_result = self._call_ndjson(
-            bundle=failover_bundle,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            on_event=on_event,
-            temperature=temperature,
-            prompt_cache_key=prompt_cache_key,
-        )
-        if not failover_result.error and failover_result.events:
-            self._record_metric("aux_provider_failover_successes")
-            return failover_result
-        self._record_metric("aux_provider_failover_failures")
-        return primary_result
 
     def stream_chat_json(
         self,
@@ -2608,7 +2404,6 @@ class LLMRuntime:
         settings = self._settings_view()
         role_value = {
             "aux": settings.llm_aux_reasoning_effort,
-            "aux_failover": settings.llm_aux_reasoning_effort,
             "chat": settings.llm_chat_reasoning_effort,
         }.get(role, "")
         return normalize_reasoning_effort(role_value or settings.llm_reasoning_effort)

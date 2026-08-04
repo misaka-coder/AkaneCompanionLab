@@ -43,10 +43,6 @@ class BotSettingsView:
     aux_base_url: str = ""
     aux_model_name: str = "deepseek-chat"
     aux_api_protocol: str = "auto"
-    aux_failover_api_key: str = field(default="", repr=False)
-    aux_failover_base_url: str = ""
-    aux_failover_model_name: str = ""
-    aux_failover_api_protocol: str = "auto"
     chat_api_key: str = field(default="", repr=False)
     chat_base_url: str = ""
     chat_model_name: str = ""
@@ -77,8 +73,6 @@ class BotSettingsView:
     llm_aux_reasoning_effort: str = ""
     llm_chat_reasoning_effort: str = ""
     llm_chat_max_output_tokens: int = 0
-    llm_aux_failover_enabled: bool = False
-    llm_chat_failover_to_aux_enabled: bool = False
 
     # Voice/runtime settings.  These belong to a BotRuntime rather than the
     # process-wide config module so multiple Bots can use different voices and
@@ -130,13 +124,6 @@ class BotSettingsView:
             aux_base_url=_text(getattr(config_module, "AUX_BASE_URL", "")),
             aux_model_name=_text(getattr(config_module, "AUX_MODEL_NAME", "deepseek-chat")) or "deepseek-chat",
             aux_api_protocol=_text(getattr(config_module, "AUX_API_PROTOCOL", "auto")) or "auto",
-            aux_failover_api_key=_text(getattr(config_module, "AUX_FAILOVER_API_KEY", "")),
-            aux_failover_base_url=_text(getattr(config_module, "AUX_FAILOVER_BASE_URL", "")),
-            aux_failover_model_name=_text(getattr(config_module, "AUX_FAILOVER_MODEL_NAME", "")),
-            aux_failover_api_protocol=_text(
-                getattr(config_module, "AUX_FAILOVER_API_PROTOCOL", "auto")
-            )
-            or "auto",
             chat_api_key=_text(getattr(config_module, "CHAT_API_KEY", "")),
             chat_base_url=_text(getattr(config_module, "CHAT_BASE_URL", "")),
             chat_model_name=_text(getattr(config_module, "CHAT_MODEL_NAME", "")),
@@ -188,12 +175,6 @@ class BotSettingsView:
             llm_chat_max_output_tokens=max(
                 0,
                 int(getattr(config_module, "LLM_CHAT_MAX_OUTPUT_TOKENS", 0) or 0),
-            ),
-            llm_aux_failover_enabled=bool(
-                getattr(config_module, "LLM_AUX_FAILOVER_ENABLED", False)
-            ),
-            llm_chat_failover_to_aux_enabled=bool(
-                getattr(config_module, "LLM_CHAT_FAILOVER_TO_AUX_ENABLED", False)
             ),
             tts_voice=_text(getattr(config_module, "TTS_VOICE", "zh-CN-XiaoxiaoNeural"))
             or "zh-CN-XiaoxiaoNeural",
@@ -278,10 +259,6 @@ class BotSettingsView:
             "aux_base_url",
             "aux_model_name",
             "aux_api_protocol",
-            "aux_failover_api_key",
-            "aux_failover_base_url",
-            "aux_failover_model_name",
-            "aux_failover_api_protocol",
             "chat_api_key",
             "chat_base_url",
             "chat_model_name",
@@ -312,8 +289,6 @@ class BotSettingsView:
             "llm_aux_reasoning_effort",
             "llm_chat_reasoning_effort",
             "llm_chat_max_output_tokens",
-            "llm_aux_failover_enabled",
-            "llm_chat_failover_to_aux_enabled",
             "tts_voice",
             "tts_rate",
             "tts_volume",
@@ -434,17 +409,6 @@ class BotSettingsView:
                     self.aux_api_protocol,
                 ),
             },
-            "aux_failover": {
-                "base_url": self.aux_failover_base_url,
-                "model": self.aux_failover_model_name,
-                "protocol": self.aux_failover_api_protocol,
-                "configured": _configured(
-                    self.aux_failover_api_key,
-                    self.aux_failover_base_url,
-                    self.aux_failover_model_name,
-                    self.aux_failover_api_protocol,
-                ),
-            },
             "chat": {
                 "base_url": self.chat_base_url,
                 "model": self.chat_model_name,
@@ -490,10 +454,6 @@ class BotSettingsView:
                 "window": self.llm_context_window,
                 "auto_compact_token_limit": self.llm_auto_compact_token_limit,
                 "chat_max_output_tokens": self.llm_chat_max_output_tokens,
-            },
-            "failover": {
-                "aux_enabled": self.llm_aux_failover_enabled,
-                "chat_to_aux_enabled": self.llm_chat_failover_to_aux_enabled,
             },
             "reasoning": {
                 "thinking_mode": self.llm_thinking_mode,
@@ -562,8 +522,6 @@ def _overlay_value(key: str, value: Any) -> Any:
         "image_generation_enabled",
         "prompt_cache_hints_enabled",
         "prompt_cache_hints_force",
-        "llm_aux_failover_enabled",
-        "llm_chat_failover_to_aux_enabled",
         "streaming_tts_enabled",
         "gpt_sovits_streaming_mode",
         "asr_vad_filter",

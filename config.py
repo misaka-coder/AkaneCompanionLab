@@ -77,10 +77,6 @@ class Settings(BaseSettings):
     LLM_DISABLE_RESPONSE_STORAGE: bool = True
     LLM_CONTEXT_WINDOW: int = 0
     LLM_AUTO_COMPACT_TOKEN_LIMIT: int = 0
-    # Primary CHAT provider failure can retry once through the separately
-    # configured AUX provider. Disabled by default; cloud deployments may use
-    # an official AUX route as an emergency fallback for a relay CHAT route.
-    LLM_CHAT_FAILOVER_TO_AUX_ENABLED: bool = False
     # 记录最终回复 prompt section 的长度/hash 审计日志（不记录原文）
     LLM_PROMPT_AUDIT_ENABLED: bool = False
     # 开启后也记录辅助 LLM 调用；默认只记录 chat:final，避免日志噪声
@@ -155,12 +151,6 @@ class Settings(BaseSettings):
     AUX_BASE_URL: str = ""
     AUX_MODEL_NAME: str = "deepseek-chat"
     AUX_API_PROTOCOL: str = "auto"
-    # --- AUX failover（AUX 请求失败时的一次备用重试）---
-    AUX_FAILOVER_API_KEY: str = ""
-    AUX_FAILOVER_BASE_URL: str = ""
-    AUX_FAILOVER_MODEL_NAME: str = ""
-    AUX_FAILOVER_API_PROTOCOL: str = "auto"
-    LLM_AUX_FAILOVER_ENABLED: bool = False
 
     # --- CHAT（聊天对话，缺失回退 TEXT）---
     CHAT_API_KEY: str = ""
@@ -535,13 +525,11 @@ def _apply_settings(s: Settings) -> None:
     # ---- global declarations (one batch, kept in sync with the body) ----
     global TEXT_API_KEY, TEXT_BASE_URL, TEXT_MODEL_NAME, TEXT_API_PROTOCOL
     global AUX_API_KEY, AUX_BASE_URL, AUX_MODEL_NAME, AUX_API_PROTOCOL
-    global AUX_FAILOVER_API_KEY, AUX_FAILOVER_BASE_URL, AUX_FAILOVER_MODEL_NAME, AUX_FAILOVER_API_PROTOCOL
-    global LLM_AUX_FAILOVER_ENABLED
     global CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME, CHAT_API_PROTOCOL
     global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
     global LLM_THINKING_MODE, LLM_REASONING_EFFORT, LLM_AUX_REASONING_EFFORT, LLM_CHAT_REASONING_EFFORT
     global LLM_DISABLE_RESPONSE_STORAGE
-    global LLM_CONTEXT_WINDOW, LLM_AUTO_COMPACT_TOKEN_LIMIT, LLM_CHAT_FAILOVER_TO_AUX_ENABLED
+    global LLM_CONTEXT_WINDOW, LLM_AUTO_COMPACT_TOKEN_LIMIT
     global VISION_ENABLED, VISION_REQUEST_TIMEOUT, VISION_PROMPT_VERSION
     global VISION_AUTO_SCENE_OBSERVE, VISION_AUTO_GIFT_OBSERVE, VISION_AUTO_OUTFIT_OBSERVE, VISION_MAX_IMAGE_BYTES
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_BASE_URL, IMAGE_GENERATION_API_KEY, IMAGE_GENERATION_MODEL
@@ -628,12 +616,6 @@ def _apply_settings(s: Settings) -> None:
     AUX_MODEL_NAME = s.AUX_MODEL_NAME or "deepseek-chat"
     AUX_API_PROTOCOL = s.AUX_API_PROTOCOL or TEXT_API_PROTOCOL
 
-    AUX_FAILOVER_API_KEY = s.AUX_FAILOVER_API_KEY or ""
-    AUX_FAILOVER_BASE_URL = s.AUX_FAILOVER_BASE_URL or ""
-    AUX_FAILOVER_MODEL_NAME = s.AUX_FAILOVER_MODEL_NAME or ""
-    AUX_FAILOVER_API_PROTOCOL = s.AUX_FAILOVER_API_PROTOCOL or "auto"
-    LLM_AUX_FAILOVER_ENABLED = bool(s.LLM_AUX_FAILOVER_ENABLED)
-
     CHAT_API_KEY = s.CHAT_API_KEY or TEXT_API_KEY
     CHAT_BASE_URL = s.CHAT_BASE_URL or TEXT_BASE_URL
     CHAT_MODEL_NAME = s.CHAT_MODEL_NAME or TEXT_MODEL_NAME
@@ -645,7 +627,6 @@ def _apply_settings(s: Settings) -> None:
     LLM_DISABLE_RESPONSE_STORAGE = bool(s.LLM_DISABLE_RESPONSE_STORAGE)
     LLM_CONTEXT_WINDOW = max(0, int(s.LLM_CONTEXT_WINDOW or 0))
     LLM_AUTO_COMPACT_TOKEN_LIMIT = max(0, int(s.LLM_AUTO_COMPACT_TOKEN_LIMIT or 0))
-    LLM_CHAT_FAILOVER_TO_AUX_ENABLED = bool(s.LLM_CHAT_FAILOVER_TO_AUX_ENABLED)
 
     VISION_API_KEY = s.VISION_API_KEY or ""
     VISION_BASE_URL = s.VISION_BASE_URL or ""
