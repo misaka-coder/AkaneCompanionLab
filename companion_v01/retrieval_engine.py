@@ -262,8 +262,8 @@ def execute_retrieve_memory_tool(
                     about_roles=about_roles,
                     memcore_payload=memcore_read_payload,
                 ),
-                verifier_output=_build_memcore_verifier_output(snippets),
-                verifier_timing={"mode": "memcore", "attempts": [], "selected_attempt": None},
+                verifier_output=_memcore_owned_verifier_state(),
+                verifier_timing={"mode": "memcore_owned", "attempts": [], "selected_attempt": None},
                 retrieval_backend="memcore",
                 memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
             )
@@ -284,8 +284,8 @@ def execute_retrieve_memory_tool(
                 about_roles=about_roles,
                 memcore_payload=memcore_read_payload,
             ),
-            verifier_output=_build_memcore_verifier_output([]),
-            verifier_timing={"mode": "memcore", "attempts": [], "selected_attempt": None},
+            verifier_output=_memcore_owned_verifier_state(),
+            verifier_timing={"mode": "memcore_owned", "attempts": [], "selected_attempt": None},
             retrieval_backend="memcore",
             memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
         )
@@ -571,16 +571,10 @@ def _build_memcore_retrieval_result(
     }
 
 
-def _build_memcore_verifier_output(snippets: list[str]) -> dict[str, Any]:
+def _memcore_owned_verifier_state() -> dict[str, Any]:
     return {
-        "match_result": "match" if snippets else "no_match",
-        "match_score": 1.0 if snippets else 0.0,
-        "need_retry": False,
-        "selected_indexes": list(range(1, len(snippets) + 1)),
-        "retry_query": "",
-        "retry_keywords": [],
-        "retry_time_hint": None,
-        "reason": "memcore_retrieve_for_turn",
+        "status": "memcore_owned",
+        "reason": "host_verifier_state_not_synthesized",
     }
 
 

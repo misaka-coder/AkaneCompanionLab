@@ -14,6 +14,7 @@ from .tool_runtime import (
     CheckInventoryToolHandler,
     InspectMediaInfoToolHandler,
     ListRemindersToolHandler,
+    ReadMemoryEntryToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
     ToolExecutionContext,
@@ -573,11 +574,27 @@ class _StubTimelineService:
     def render_tool_context(self, result: dict[str, Any]) -> str:
         return f"[dry_run] read_memory_timeline status={str((result or {}).get('status') or '')}"
 
+    def read_entry(self, **kwargs: Any) -> dict[str, Any]:
+        source_id = str(kwargs.get("source_id") or "")
+        detail = str(kwargs.get("detail") or "full")
+        return {
+            "status": "ok",
+            "reason": "",
+            "source_id": source_id,
+            "detail": detail,
+            "entry": {"source_id": source_id, "content": "[dry_run] raw evidence"},
+            "text": "[dry_run] raw evidence",
+        }
+
+    def render_entry_context(self, result: dict[str, Any]) -> str:
+        return f"[dry_run] read_memory_entry source_id={str((result or {}).get('source_id') or '')}"
+
 
 def _build_dry_run_memory_handlers() -> dict[str, Any]:
     return {
         "retrieve_memory": RetrieveMemoryToolHandler(retrieve_fn=_dry_run_retrieve_memory),
         "read_memory_timeline": ReadMemoryTimelineToolHandler(timeline_service=_StubTimelineService()),
+        "read_memory_entry": ReadMemoryEntryToolHandler(timeline_service=_StubTimelineService()),
     }
 
 
@@ -700,7 +717,12 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
         lines.append(
             "read_memory_timeline 只用于用户明确要求查看某一天、日期范围或上午/下午/夜晚/凌晨的原始逐句对话。"
         )
-    if {"retrieve_memory", "read_memory_timeline"} & names:
+    if "read_memory_entry" in names:
+        lines.append(
+            "read_memory_entry 只展开 read_memory_timeline 明确返回的 raw source_id；"
+            "正文已足够或与答案无关时不要调用。"
+        )
+    if {"retrieve_memory", "read_memory_timeline", "read_memory_entry"} & names:
         lines.append("不要为了普通闲聊、稳定常识、情绪陪伴、或当前上下文已经足够的问题调用记忆工具。")
     if "list_reminders" in names:
         lines.append(

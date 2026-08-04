@@ -2084,6 +2084,7 @@ class MemcoreManager:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
+        time_range: dict[str, Any] | None = None,
         date_from: str = "",
         date_to: str = "",
         time_periods: list[str] | None = None,
@@ -2092,6 +2093,9 @@ class MemcoreManager:
         after_turns: int = 0,
         exclude_source_ids: list[str] | None = None,
         cross_conversation: bool = False,
+        projection: str = "conversation",
+        page_token_budget: int = 0,
+        cursor: str = "",
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
             operation="read_memory_timeline",
@@ -2108,6 +2112,8 @@ class MemcoreManager:
                 "anchor_source_id": str(anchor_source_id or ""),
                 "before_turns": int(before_turns or 0),
                 "after_turns": int(after_turns or 0),
+                "projection": str(projection or "conversation"),
+                "coverage": {},
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
@@ -2117,6 +2123,7 @@ class MemcoreManager:
 
         try:
             result = system.read_timeline(
+                time_range=dict(time_range or {}) or None,
                 date_from=str(date_from or ""),
                 date_to=str(date_to or ""),
                 time_periods=list(time_periods or []),
@@ -2124,6 +2131,9 @@ class MemcoreManager:
                 before_turns=before_turns,
                 after_turns=after_turns,
                 cross_conversation=bool(cross_conversation),
+                projection=str(projection or "conversation"),
+                page_token_budget=page_token_budget,
+                cursor=str(cursor or ""),
             )
             return self._project_timeline_result(
                 system=system,
@@ -2143,12 +2153,66 @@ class MemcoreManager:
                 "anchor_source_id": str(anchor_source_id or ""),
                 "before_turns": int(before_turns or 0),
                 "after_turns": int(after_turns or 0),
+                "projection": str(projection or "conversation"),
+                "coverage": {},
                 "active_dates": [],
                 "message_count": 0,
                 "messages": [],
                 "text": "",
                 "backend": "memcore",
             }
+
+    def read_memory_entry(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        source_id: str,
+        detail: str = "full",
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation="read_memory_entry",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return {
+                **self._status("read_memory_entry", False, "unavailable", reason=self._reason),
+                "source_id": str(source_id or ""),
+                "detail": str(detail or "full"),
+                "entry": None,
+                "text": "",
+                "backend": "memcore",
+            }
+        try:
+            result = system.read_entry(source_id=str(source_id or ""), detail=str(detail or "full"))
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore entry read failed: %s", reason)
+            return {
+                **self._status("read_memory_entry", False, "failed", reason=reason),
+                "source_id": str(source_id or ""),
+                "detail": str(detail or "full"),
+                "entry": None,
+                "text": "",
+                "backend": "memcore",
+            }
+        payload = dict(result if isinstance(result, dict) else {})
+        status = str(payload.get("status") or "failed")
+        reason = str(payload.get("reason") or "")
+        return {
+            "operation": "read_memory_entry",
+            "ok": status in {"ok", "empty"},
+            "status": status,
+            "reason": reason,
+            "source_id": str(payload.get("source_id") or source_id or ""),
+            "detail": str(payload.get("detail") or detail or "full"),
+            "entry": payload.get("entry") if isinstance(payload.get("entry"), dict) else None,
+            "text": str(payload.get("text") or ""),
+            "backend": "memcore",
+        }
 
     def shadow_retrieve_memory(
         self,
@@ -3590,15 +3654,20 @@ class MemcoreManager:
             reason = "invalid_filter"
         messages = list(payload.get("messages") or [])
         excluded = {str(item or "").strip() for item in (exclude_source_ids or []) if str(item or "").strip()}
+        before_exclusion_count = len(messages)
         if excluded:
             messages = [item for item in messages if str(item.get("source_id") or "").strip() not in excluded]
         if status in {"ok", "empty"}:
             status = "ok" if messages else "empty"
-            reason = "" if messages else "no_activity"
+            reason = "" if messages else (reason or "no_activity")
         active_dates = sorted(
             {str(item.get("date_label") or "") for item in messages if str(item.get("date_label") or "")}
         )
         text = render_timeline(messages, tz=str(getattr(system, "timezone", "") or "Asia/Shanghai")) if messages else ""
+        coverage = dict(payload.get("coverage") or {})
+        if coverage:
+            coverage["entry_count"] = len(messages)
+            coverage["host_excluded_source_count"] = max(0, before_exclusion_count - len(messages))
         return {
             "operation": "read_memory_timeline",
             "ok": status in {"ok", "empty"},
@@ -3607,9 +3676,13 @@ class MemcoreManager:
             "date_from": str(payload.get("date_from") or date_from or ""),
             "date_to": str(payload.get("date_to") or date_to or date_from or ""),
             "time_periods": list(payload.get("time_periods") or []),
+            "selector_mode": str(payload.get("selector_mode") or ""),
+            "time_range": dict(payload.get("time_range") or {}),
             "anchor_source_id": str(payload.get("anchor_source_id") or ""),
             "before_turns": int(payload.get("before_turns") or 0),
             "after_turns": int(payload.get("after_turns") or 0),
+            "projection": str(payload.get("projection") or "conversation"),
+            "coverage": coverage,
             "active_dates": active_dates,
             "message_count": len(messages),
             "messages": messages,

@@ -6,7 +6,11 @@ import unittest
 from memcore import build_native_memory_tool_specs
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
-from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
+from companion_v01.capability_registry import (
+    READ_MEMORY_ENTRY_TOOL_SPEC,
+    READ_MEMORY_TIMELINE_TOOL_SPEC,
+    RETRIEVE_MEMORY_TOOL_SPEC,
+)
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.generated_files_media import separate_audio_stems as separate_audio_stems_service
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
@@ -118,23 +122,53 @@ class NativeToolSchemaTests(unittest.TestCase):
         )
 
     def test_memory_capability_properties_are_package_owned(self) -> None:
-        package_spec = next(
-            item
+        aliases = {
+            "retrieve_for_turn": "retrieve_memory",
+            "read_timeline": "read_memory_timeline",
+            "read_entry": "read_memory_entry",
+        }
+
+        def project_names(value):
+            if isinstance(value, dict):
+                return {key: project_names(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [project_names(item) for item in value]
+            if isinstance(value, str):
+                for source_name, target_name in aliases.items():
+                    value = value.replace(source_name, target_name)
+            return value
+
+        package_specs = {
+            item["name"]: item
             for item in build_native_memory_tool_specs(
                 tool_format="plain",
                 include_material_tool=False,
             )
-            if item["name"] == "retrieve_for_turn"
-        )
-
-        self.assertEqual(
-            RETRIEVE_MEMORY_TOOL_SPEC.input_schema["properties"],
-            package_spec["parameters"]["properties"],
-        )
-        self.assertEqual(
-            RETRIEVE_MEMORY_TOOL_SPEC.input_schema["required"],
-            package_spec["parameters"]["required"],
-        )
+        }
+        for product_spec, package_name in (
+            (RETRIEVE_MEMORY_TOOL_SPEC, "retrieve_for_turn"),
+            (READ_MEMORY_TIMELINE_TOOL_SPEC, "read_timeline"),
+            (READ_MEMORY_ENTRY_TOOL_SPEC, "read_entry"),
+        ):
+            with self.subTest(package_name=package_name):
+                package_spec = package_specs[package_name]
+                self.assertEqual(
+                    product_spec.input_schema["properties"],
+                    project_names(package_spec["parameters"]["properties"]),
+                )
+                self.assertEqual(
+                    product_spec.input_schema["required"],
+                    package_spec["parameters"]["required"],
+                )
+                rendered_contract = repr(
+                    {
+                        "description": product_spec.description,
+                        "schema": product_spec.input_schema,
+                    }
+                )
+                self.assertNotIn("retrieve_for_turn", rendered_contract)
+                self.assertNotIn("read_timeline", rendered_contract)
+                self.assertNotIn("read_entry", rendered_contract)
 
     def test_adapter_capability_native_schema_uses_capcore_projection(self) -> None:
         descriptor = CapabilityDescriptor(

@@ -131,7 +131,10 @@ class ToolDecisionEvalTests(unittest.TestCase):
         )
         summary = summarize_tool_decision_eval_results(results)
 
-        self.assertFalse(results[0].normalized_ok)
+        # Known tools preserve malformed arguments as an invocation so the
+        # validator can return an observable bad_args result instead of
+        # silently dropping the attempted call during normalization.
+        self.assertTrue(results[0].normalized_ok)
         self.assertFalse(results[0].validation_ok)
         self.assertEqual(results[0].error_code, "bad_args")
         self.assertEqual(summary["modes"]["legacy"]["validation_errors"], {"bad_args": 1})
@@ -320,7 +323,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertTrue(response.native_extracted)
         self.assertEqual(
             [item["function"]["name"] for item in runtime.calls[0]["native_tools"]],
-            ["retrieve_memory", "read_memory_timeline"],
+            ["retrieve_memory", "read_memory_timeline", "read_memory_entry"],
         )
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("provider native tool_calls", runtime.calls[0]["system_prompt"])

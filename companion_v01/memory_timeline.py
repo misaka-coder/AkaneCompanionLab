@@ -126,12 +126,33 @@ class MemoryTimelineService:
         date_from: str = "",
         date_to: str = "",
         time_periods: Iterable[str] | None = None,
+        time_range: dict[str, Any] | None = None,
         anchor_source_id: str = "",
         before_turns: int = 0,
         after_turns: int = 0,
+        projection: str = "conversation",
+        page_token_budget: int | None = None,
+        cursor: str = "",
         exclude_source_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         _ = (session_id, before_turns, after_turns)
+        precise_requested = bool(time_range) or bool(str(cursor or "").strip())
+        precise_requested = precise_requested or str(projection or "conversation") != "conversation"
+        precise_requested = precise_requested or int(page_token_budget or 0) > 0
+        if precise_requested:
+            return {
+                "status": "unavailable",
+                "reason": "precise_timeline_requires_memcore",
+                "projection": str(projection or "conversation"),
+                "coverage": {
+                    "complete": False,
+                    "entry_count": 0,
+                    "estimated_tokens": 0,
+                    "next_cursor": None,
+                },
+                "messages": [],
+                "message_count": 0,
+            }
         if str(anchor_source_id or "").strip():
             return {
                 "status": "unavailable",

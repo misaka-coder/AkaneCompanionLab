@@ -34,6 +34,7 @@ LOCAL_DISCOVERY_PATH = "users_data/_local/capabilities/discovery.json"
 TOOL_GROUPS: dict[str, str] = {
     "retrieve_memory": "memory",
     "read_memory_timeline": "memory",
+    "read_memory_entry": "memory",
     "load_character_context": "character_context",
     "set_reminder": "reminders",
     "list_reminders": "reminders",

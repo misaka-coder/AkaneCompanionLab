@@ -16,7 +16,12 @@ from companion_v01.tool_invocation import (
     legacy_tool_call_to_invocation,
     round_trip_legacy_tool_call,
 )
-from companion_v01.tool_runtime import TOOL_METADATA_BY_TYPE, ToolExecutionResult, ToolMetadata
+from companion_v01.tool_runtime import (
+    TOOL_METADATA_BY_TYPE,
+    ToolExecutionResult,
+    ToolFollowupEnvelope,
+    ToolMetadata,
+)
 
 
 class ToolInvocationTests(unittest.TestCase):
@@ -369,6 +374,38 @@ class ShapeToolFollowupTests(unittest.TestCase):
         )
         # limit is floored at 500, so we keep a usable preview, not 10 chars.
         self.assertGreater(len(shaped), 400)
+
+    def test_producer_bounded_envelope_is_not_truncated_again(self) -> None:
+        content = "完整逻辑单元\n" + ("证据" * 6000)
+        envelope = ToolFollowupEnvelope(
+            content=content,
+            producer_bounded=True,
+            complete=False,
+            continuation={"cursor": "timeline-v1:next"},
+            diagnostics={"projection": "conversation"},
+        )
+
+        shaped = tool_orchestration_engine.shape_tool_followup(
+            envelope,
+            tool_type="read_memory_timeline",
+            max_chars=1000,
+        )
+
+        self.assertEqual(shaped, content)
+        self.assertNotIn("已截断", shaped)
+
+    def test_unbounded_envelope_keeps_legacy_safety_shaping(self) -> None:
+        content = "x" * 5000
+        envelope = ToolFollowupEnvelope(content=content)
+
+        shaped = tool_orchestration_engine.shape_tool_followup(
+            envelope,
+            tool_type="web_search",
+            max_chars=1000,
+        )
+
+        self.assertLess(len(shaped), len(content))
+        self.assertIn("已截断", shaped)
 
     def test_generated_file_event_adds_handle_receipt_only_when_missing(self) -> None:
         events = [

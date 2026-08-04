@@ -85,7 +85,13 @@ Chat Output Adapter 同时返回 `metadata_status` 与 `metadata_present`，把�
 - 宿主显式请求相应 kind/category 时，工具与材料轨迹仍可读取。
 - 检索扩展和 token budget 以完整关系组为单位，不拆散 stimulus/final 或 action/observation。
 - 压缩只处理 closed turn，并保留 summary/semantic lineage。
-- `read_timeline()` 按日期和时间段精确读取原始时间线；`retrieve_*()` 负责语义检索，二者职责分开。
+- `read_timeline()` 可按本地日期/粗时段或 `time_range.start_at/end_at` 精确到小时和分钟读取；
+  `retrieve_*()` 负责语义检索，二者职责分开。
+- 时间线按完整 turn/关系单元和 token 预算分页，返回 `coverage.complete` 与不可改写的
+  `next_cursor`；继续读取时只传 cursor，不重复或重算原选择器。
+- 默认 `conversation` projection 保留对话/事件正文，并把大型工具、skill、operation、材料轨迹
+  投影成带 raw `source_id` 的紧凑证据；确有需要时用 `read_entry()` 在当前授权会话展开单条正文。
+- 宿主把这种“生产者已限界”的结果原样交给下一轮模型，不再做第二次字符截断；脱敏仍然执行。
 
 ### 6. 隔离、安全与可诊断降级
 
@@ -112,7 +118,7 @@ flowchart LR
 | --- | --- |
 | timeline、turn/relation、projection ledger | 调用具体聊天模型并取得真实 raw |
 | staged annotation、原子完成/中止 | 解析最终业务 JSON、决定 UI/TTS/动作 |
-| compaction、retrieval、timeline read | 执行工具、审批高风险动作 |
+| compaction、retrieval、timeline read/entry projection 与分页 cursor | 执行工具、审批高风险动作 |
 | Namespace/Actor 契约与安全清洗 | 文件本体、OCR/视觉结果、密钥和路径 |
 | 结构化状态和审计 hash | 产品 fallback、重试和用户可见错误 |
 

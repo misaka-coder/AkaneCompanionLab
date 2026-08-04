@@ -59,6 +59,7 @@ from .capability_registry import (
     OPEN_MUSIC_SEARCH_TOOL_SPEC,
     PREPARE_VOICE_DATASET_TOOL_SPEC,
     READ_ATTACHMENT_SECTION_TOOL_SPEC,
+    READ_MEMORY_ENTRY_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
     READ_WORKSPACE_TOOL_SPEC,
     REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
@@ -98,11 +99,32 @@ class ToolExecutionContext:
 
 
 @dataclass
+class ToolFollowupEnvelope:
+    """Model-facing tool evidence whose producer owns completeness and continuation."""
+
+    content: str
+    producer_bounded: bool = False
+    complete: bool = True
+    continuation: Mapping[str, Any] | None = None
+    diagnostics: Mapping[str, Any] | None = None
+
+    def with_content(self, content: Any) -> "ToolFollowupEnvelope":
+        return ToolFollowupEnvelope(
+            content=str(content or ""),
+            producer_bounded=bool(self.producer_bounded),
+            complete=bool(self.complete),
+            continuation=dict(self.continuation or {}) or None,
+            diagnostics=dict(self.diagnostics or {}) or None,
+        )
+
+
+@dataclass
 class ToolExecutionResult:
     tool_type: str
     raw_turns: list[dict[str, Any]] = field(default_factory=list)
     stream_events: list[dict[str, Any]] = field(default_factory=list)
     followup_context: str = ""
+    followup_envelope: ToolFollowupEnvelope | None = None
     state_updates: dict[str, Any] = field(default_factory=dict)
     # Internal-only provider image blocks. Never copy this field into prompt
     # text, stream events, logs, memcore, or public final output.
@@ -594,6 +616,13 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=READ_MEMORY_TIMELINE_TOOL_SPEC.input_schema,
     ),
+    "read_memory_entry": ToolMetadata(
+        family="memory",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=READ_MEMORY_ENTRY_TOOL_SPEC.input_schema,
+    ),
     "load_character_context": ToolMetadata(
         family="character_context",
         operation="read",
@@ -785,6 +814,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
 TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "retrieve_memory": RETRIEVE_MEMORY_TOOL_SPEC,
     "read_memory_timeline": READ_MEMORY_TIMELINE_TOOL_SPEC,
+    "read_memory_entry": READ_MEMORY_ENTRY_TOOL_SPEC,
     "load_character_context": LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
     "set_reminder": SET_REMINDER_TOOL_SPEC,
     "list_reminders": LIST_REMINDERS_TOOL_SPEC,
@@ -1437,9 +1467,11 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             f"- read_memory_timeline：{READ_MEMORY_TIMELINE_TOOL_SPEC.description} "
-            "已知日期时使用 date_from/date_to；retrieve_memory 已命中 raw 但一条内容不完整时，"
+            "已知具体时刻时优先使用 time_range.start_at/end_at，已知整日时使用 date_from/date_to；"
+            "retrieve_memory 已命中 raw 但一条内容不完整时，"
             "使用 anchor_source_id 和 before_turns/after_turns 读取附近完整 turn。"
-            "日期与 anchor 两种模式不能混用，summary/semantic_summary 的 source_id 不能作为 anchor。"
+            "时间、anchor、cursor 三种模式不能混用；coverage.complete=false 时只用 next_cursor 继续，"
+            "不要重复选择器；summary/semantic_summary 的 source_id 不能作为 anchor。"
             "这是内部时间线读取，不要先在 speech 里宣布。"
         )
 
@@ -1449,11 +1481,48 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
 
+        cursor = str(value.get("cursor") or "").strip()
+        raw_time_range = value.get("time_range")
+        time_range: dict[str, str] | None = None
+        if isinstance(raw_time_range, Mapping):
+            start_at = str(raw_time_range.get("start_at") or "").strip()
+            end_at = str(raw_time_range.get("end_at") or "").strip()
+            if not start_at or not end_at:
+                return None
+            time_range = {"start_at": start_at, "end_at": end_at}
+        elif raw_time_range not in (None, ""):
+            return None
+
         date_from = str(value.get("date_from") or "").strip()
         date_to = str(value.get("date_to") or "").strip()
         anchor_source_id = str(value.get("anchor_source_id") or "").strip()
-        if not anchor_source_id and not date_from:
+        has_date = bool(date_from or date_to or value.get("time_periods") or value.get("periods") or value.get("time_of_day"))
+        selector_count = int(time_range is not None) + int(has_date) + int(bool(anchor_source_id)) + int(bool(cursor))
+        if selector_count != 1:
             return None
+        if cursor:
+            if any(
+                (
+                    value.get("projection") not in (None, "", "conversation"),
+                    value.get("page_token_budget") not in (None, "", 0),
+                    value.get("before_turns") not in (None, "", 0),
+                    value.get("after_turns") not in (None, "", 0),
+                )
+            ):
+                return None
+            return {
+                "type": self.tool_type,
+                "time_range": None,
+                "date_from": "",
+                "date_to": "",
+                "time_periods": [],
+                "anchor_source_id": "",
+                "before_turns": 0,
+                "after_turns": 0,
+                "projection": "conversation",
+                "page_token_budget": 0,
+                "cursor": cursor,
+            }
         if date_from and self._parse_date(date_from) is None:
             return None
         if date_to and self._parse_date(date_to) is None:
@@ -1471,16 +1540,27 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         periods = self.timeline_service.normalize_time_periods(period_values)
         before_turns = self._coerce_nonnegative_int(value.get("before_turns"))
         after_turns = self._coerce_nonnegative_int(value.get("after_turns"))
-        if before_turns is None or after_turns is None:
+        page_token_budget = self._coerce_nonnegative_int(value.get("page_token_budget"))
+        projection = str(value.get("projection") or "conversation").strip().lower()
+        if (
+            before_turns is None
+            or after_turns is None
+            or page_token_budget is None
+            or projection not in {"conversation", "full", "tools"}
+        ):
             return None
         return {
             "type": self.tool_type,
+            "time_range": time_range,
             "date_from": date_from,
             "date_to": date_to,
             "time_periods": periods,
             "anchor_source_id": anchor_source_id,
             "before_turns": before_turns,
             "after_turns": after_turns,
+            "projection": projection,
+            "page_token_budget": page_token_budget,
+            "cursor": "",
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -1488,17 +1568,36 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
             character_pack_id=context.character_pack_id,
+            time_range=dict(call.get("time_range") or {}) or None,
             date_from=str(call.get("date_from") or ""),
             date_to=str(call.get("date_to") or ""),
             time_periods=list(call.get("time_periods") or []),
             anchor_source_id=str(call.get("anchor_source_id") or ""),
             before_turns=int(call.get("before_turns") or 0),
             after_turns=int(call.get("after_turns") or 0),
+            projection=str(call.get("projection") or "conversation"),
+            page_token_budget=int(call.get("page_token_budget") or 0),
+            cursor=str(call.get("cursor") or ""),
             exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
         )
+        coverage = dict(result.get("coverage") or {})
+        complete = bool(coverage.get("complete", True))
+        next_cursor = str(coverage.get("next_cursor") or "").strip()
+        continuation = {"cursor": next_cursor} if next_cursor else None
+        followup_context = self.timeline_service.render_tool_context(result)
         return ToolExecutionResult(
             tool_type=self.tool_type,
-            followup_context=self.timeline_service.render_tool_context(result),
+            followup_context=followup_context,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup_context,
+                producer_bounded=bool(result.get("ok")) and (complete or continuation is not None),
+                complete=complete,
+                continuation=continuation,
+                diagnostics={
+                    "projection": str(result.get("projection") or "conversation"),
+                    "coverage": coverage,
+                },
+            ),
             state_updates={
                 "memory_timeline": {
                     "backend": str(result.get("backend") or ""),
@@ -1510,6 +1609,8 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
                     "anchor_source_id": str(result.get("anchor_source_id") or ""),
                     "before_turns": int(result.get("before_turns") or 0),
                     "after_turns": int(result.get("after_turns") or 0),
+                    "projection": str(result.get("projection") or "conversation"),
+                    "coverage": coverage,
                     "active_dates": list(result.get("active_dates") or []),
                     "message_count": int(result.get("message_count") or 0),
                 }
@@ -1532,6 +1633,65 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         except (TypeError, ValueError):
             return None
         return number if number >= 0 else None
+
+
+class ReadMemoryEntryToolHandler(BaseToolHandler):
+    tool_type = "read_memory_entry"
+
+    def __init__(self, *, timeline_service: Any) -> None:
+        self.timeline_service = timeline_service
+
+    def tool_spec(self):
+        return READ_MEMORY_ENTRY_TOOL_SPEC
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            f"- read_memory_entry：{READ_MEMORY_ENTRY_TOOL_SPEC.description} "
+            "只使用时间线结果明确给出的 raw source_id；正文已经可见或与回答无关时不要重复展开。"
+            "这是内部证据读取，不要先在 speech 里宣布。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        source_id = str(value.get("source_id") or "").strip()
+        detail = str(value.get("detail") or "full").strip().lower()
+        if not source_id or detail not in {"full", "compact"}:
+            return None
+        return {"type": self.tool_type, "source_id": source_id, "detail": detail}
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.timeline_service.read_entry(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            character_pack_id=context.character_pack_id,
+            source_id=str(call.get("source_id") or ""),
+            detail=str(call.get("detail") or "full"),
+        )
+        followup_context = self.timeline_service.render_entry_context(result)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            followup_context=followup_context,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup_context,
+                producer_bounded=bool(result.get("ok")),
+                complete=True,
+                diagnostics={
+                    "source_id": str(result.get("source_id") or ""),
+                    "detail": str(result.get("detail") or ""),
+                    "status": str(result.get("status") or ""),
+                },
+            ),
+            state_updates={
+                "memory_entry": {
+                    "backend": str(result.get("backend") or ""),
+                    "status": str(result.get("status") or ""),
+                    "reason": str(result.get("reason") or ""),
+                    "source_id": str(result.get("source_id") or ""),
+                    "detail": str(result.get("detail") or ""),
+                }
+            },
+        )
 
 
 class LoadCharacterContextToolHandler(BaseToolHandler):

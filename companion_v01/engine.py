@@ -129,6 +129,7 @@ from .tool_runtime import (
     OpenMusicSearchToolHandler,
     PrepareVoiceDatasetToolHandler,
     ReadAttachmentSectionToolHandler,
+    ReadMemoryEntryToolHandler,
     ReadMemoryTimelineToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
@@ -6192,6 +6193,7 @@ class AkaneMemoryEngine:
         return str(tool_call.get("type") or "") not in {
             "retrieve_memory",
             "read_memory_timeline",
+            "read_memory_entry",
             "load_character_context",
         }
 
@@ -6572,7 +6574,11 @@ class AkaneMemoryEngine:
             stream_events=tool_result.stream_events,
         )
         shaped_followup = tool_orchestration_engine.shape_tool_followup(
-            result_followup,
+            (
+                tool_result.followup_envelope.with_content(result_followup)
+                if tool_result.followup_envelope is not None
+                else result_followup
+            ),
             tool_type=tool_result.tool_type,
         )
         if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:
@@ -6929,7 +6935,13 @@ class AkaneMemoryEngine:
                     "tool_name": str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip() or tool_type,
                     "tool_call_id": call_id,
                     "tool_input": self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call)),
-                    "result": self._sanitize_tool_trace_text(feedback),
+                    "result": self._sanitize_tool_trace_text(
+                        feedback,
+                        producer_bounded=bool(
+                            tool_result.followup_envelope is not None
+                            and tool_result.followup_envelope.producer_bounded
+                        ),
+                    ),
                     "source": str(tool_call.get(TOOL_SOURCE_FIELD) or tool_result.tool_type or tool_type),
                     "timestamp": max(now_ts, int(time.time())),
                     "source_id_prefix": (
@@ -7023,7 +7035,7 @@ class AkaneMemoryEngine:
         )
 
     @staticmethod
-    def _sanitize_tool_trace_text(value: str) -> str:
+    def _sanitize_tool_trace_text(value: str, *, producer_bounded: bool = False) -> str:
         text = str(value or "")
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         text = re.sub(
@@ -7037,10 +7049,14 @@ class AkaneMemoryEngine:
             text,
         )
         text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
-        max_chars = max(1000, min(100000, int(getattr(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 12000) or 12000)))
-        if len(text) > max_chars:
-            omitted = len(text) - max_chars
-            text = f"{text[:max_chars]}\n[tool_trace_truncated omitted_chars={omitted}]"
+        if not producer_bounded:
+            max_chars = max(
+                1000,
+                min(100000, int(getattr(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 12000) or 12000)),
+            )
+            if len(text) > max_chars:
+                omitted = len(text) - max_chars
+                text = f"{text[:max_chars]}\n[tool_trace_truncated omitted_chars={omitted}]"
         return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:
@@ -7314,6 +7330,9 @@ class AkaneMemoryEngine:
                 retrieve_fn=self._execute_retrieve_memory_tool,
             ),
             "read_memory_timeline": ReadMemoryTimelineToolHandler(
+                timeline_service=self._build_memory_timeline_tool_service(),
+            ),
+            "read_memory_entry": ReadMemoryEntryToolHandler(
                 timeline_service=self._build_memory_timeline_tool_service(),
             ),
             "load_character_context": LoadCharacterContextToolHandler(

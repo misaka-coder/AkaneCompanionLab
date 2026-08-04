@@ -22,7 +22,7 @@ from .tool_invocation import ValidationResult
 from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
-from .tool_runtime import ToolExecutionContext, ToolExecutionResult
+from .tool_runtime import ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 from .desktop_satellite_specs import desktop_satellite_spec
 
@@ -312,24 +312,36 @@ def shape_tool_followup(
 ) -> str:
     """Discipline the tool result text fed back to the model (Claude Code-aligned).
 
-    Two rules, applied at the single point where a tool result becomes
-    model-facing feedback:
+    Rules applied at the single point where a tool result becomes model-facing
+    feedback:
     - empty-but-successful -> stable placeholder, never an empty tool result
       (mirrors Claude Code's empty tool_result guard; an empty result tail can
       make some models end the turn with no output).
-    - over-size -> truncate at a newline boundary with an honest marker that
+    - producer-bounded envelope -> preserve the producer's complete logical
+      units and continuation cursor instead of applying another character cut.
+    - otherwise over-size -> truncate at a newline boundary with an honest marker that
       reports the full size and how much was omitted, so a huge result can't
       blow up the next round's context AND the model can gauge how far to narrow
       its next call (showing chars-only, without the total, left it guessing).
 
-    Only the tool's own text is bounded here; no paths are introduced. True
-    persist-to-workspace offloading (instead of truncation) is a later step and
-    must use a workspace-relative handle, never an absolute path (CLAUDE.md §3).
+    Only the tool's own text is bounded here; no paths are introduced. A
+    producer-bounded result is trusted only for sizing/continuation ownership;
+    storage-boundary secret/path sanitization still runs independently.
     """
     tool_name = str(tool_type or "tool").strip() or "tool"
-    text = str(followup_context or "").strip()
+    envelope = followup_context if isinstance(followup_context, ToolFollowupEnvelope) else None
+    text = str(envelope.content if envelope is not None else followup_context or "").strip()
     if not text:
         return f"（{tool_name} 执行成功，但没有返回可展示的内容。）"
+    if envelope is not None and envelope.producer_bounded:
+        if not envelope.complete and not dict(envelope.continuation or {}):
+            text = (
+                f"{text}\n"
+                "（该工具声明结果尚未完整，但没有提供可执行 continuation；"
+                "这次读取链路不完整，请勿假装已经读完。）"
+            )
+        else:
+            return text
     limit = (
         int(max_chars)
         if max_chars
@@ -1290,7 +1302,16 @@ def tool_execution_result_to_envelope(
             model_feedback="<tool_use_error>工具执行没有返回结果。</tool_use_error>",
             data={"code": "empty_result", "tool": str(invocation.name or "")},
         )
-    followup = str(getattr(result, "followup_context", "") or "").strip()
+    followup_envelope = getattr(result, "followup_envelope", None)
+    followup = str(getattr(followup_envelope, "content", "") or getattr(result, "followup_context", "") or "").strip()
+    followup_data: dict[str, Any] = {}
+    if isinstance(followup_envelope, ToolFollowupEnvelope):
+        followup_data = {
+            "producer_bounded": bool(followup_envelope.producer_bounded),
+            "complete": bool(followup_envelope.complete),
+            "continuation": dict(followup_envelope.continuation or {}),
+            "diagnostics": dict(followup_envelope.diagnostics or {}),
+        }
     return ToolResultEnvelope(
         invocation_id=invocation.id,
         status="ok",
@@ -1298,6 +1319,7 @@ def tool_execution_result_to_envelope(
         data={
             "tool_type": str(getattr(result, "tool_type", "") or invocation.name),
             "state_updates": dict(getattr(result, "state_updates", {}) or {}),
+            **({"followup": followup_data} if followup_data else {}),
         },
         events=list(getattr(result, "stream_events", []) or []),
     )
