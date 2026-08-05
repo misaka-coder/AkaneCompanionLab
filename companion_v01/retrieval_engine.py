@@ -6,7 +6,7 @@ import config
 
 from .retrieval_types import RetrievalPipelineResult
 from .text_utils import detect_time_of_day_from_text, normalize_text
-from .tool_runtime import ToolExecutionResult
+from .tool_runtime import ToolExecutionResult, ToolFollowupEnvelope
 from .memcore_integration.diagnostics import build_shadow_payload
 
 
@@ -206,6 +206,7 @@ def execute_retrieve_memory_tool(
     source_layers = [str(item).strip() for item in list(call.get("source_layers") or []) if str(item).strip()]
     memory_facets = [str(item).strip() for item in list(call.get("memory_facets") or []) if str(item).strip()]
     about_roles = [str(item).strip() for item in list(call.get("about_roles") or []) if str(item).strip()]
+    within_memory_id = str(call.get("within_memory_id") or "").strip()
     include_explicit = call.get("include_explicit") is True
     kind_patterns = [str(item).strip() for item in list(call.get("kind_patterns") or []) if str(item).strip()]
     current_user_record = (
@@ -239,6 +240,7 @@ def execute_retrieve_memory_tool(
             source_layers=source_layers,
             memory_facets=memory_facets,
             about_roles=about_roles,
+            within_memory_id=within_memory_id,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
@@ -253,6 +255,7 @@ def execute_retrieve_memory_tool(
                 source_layers=source_layers,
                 memory_facets=memory_facets,
                 about_roles=about_roles,
+                within_memory_id=within_memory_id,
                 snippets=snippets,
                 retrieval_result=_build_memcore_retrieval_result(
                     snippets=snippets,
@@ -274,6 +277,7 @@ def execute_retrieve_memory_tool(
             source_layers=source_layers,
             memory_facets=memory_facets,
             about_roles=about_roles,
+            within_memory_id=within_memory_id,
             snippets=[],
             retrieval_result=_build_memcore_retrieval_result(
                 snippets=[],
@@ -362,6 +366,7 @@ def execute_retrieve_memory_tool(
         source_layers=source_layers,
         memory_facets=memory_facets,
         about_roles=about_roles,
+        within_memory_id=within_memory_id,
         snippets=snippets,
         retrieval_result=pipeline.retrieval_result,
         verifier_output=pipeline.verifier_output,
@@ -382,6 +387,7 @@ def execute_retrieve_memory_tool(
         source_layers=source_layers,
         memory_facets=memory_facets,
         about_roles=about_roles,
+        within_memory_id=within_memory_id,
         exclude_source_ids=exclude_source_ids,
         legacy_snippets=snippets,
     )
@@ -399,6 +405,7 @@ def _build_retrieve_memory_tool_result(
     source_layers: list[str],
     memory_facets: list[str],
     about_roles: list[str],
+    within_memory_id: str,
     snippets: list[str],
     retrieval_result: dict[str, Any],
     retrieval_backend: str,
@@ -416,17 +423,41 @@ def _build_retrieve_memory_tool_result(
             continue
         if match_index > 0:
             navigation_by_index[match_index] = item
-    raw_anchors = [
-        {
-            "source_id": str(match.get("source_id") or "").strip(),
-            "turn_id": str(match.get("turn_id") or "").strip(),
-            "timestamp": int(match.get("timestamp") or 0),
-        }
-        for match in list((memcore_read or {}).get("matches") or [])
-        if isinstance(match, dict)
-        and str(match.get("layer") or "") == "raw"
-        and str(match.get("source_id") or "").strip()
+    read_payload = memcore_read if isinstance(memcore_read, dict) else {}
+    raw_anchors = [item for item in navigation if str(item.get("layer") or "") == "raw"]
+    retrieval_status = str(read_payload.get("retrieval_status") or "").strip()
+    if not retrieval_status:
+        retrieval_status = (
+            "found" if snippets else ("empty" if read_payload.get("ok") else str(read_payload.get("status") or ""))
+        )
+    candidate_counts = {
+        str(key): int(value or 0) for key, value in dict(read_payload.get("candidate_counts") or {}).items()
+    }
+    candidate_text = ", ".join(f"{key}={value}" for key, value in candidate_counts.items()) or "未提供"
+    lineage_scope = dict(read_payload.get("lineage_scope") or {})
+    scoped_memory_id = str(lineage_scope.get("within_memory_id") or within_memory_id or "").strip()
+    if scoped_memory_id:
+        scope_text = (
+            f"仅限 memory_id={scoped_memory_id} 的精确来源；"
+            f"scope_status={str(lineage_scope.get('status') or 'requested')}；"
+            f"source_candidates={int(lineage_scope.get('candidate_source_count') or 0)}"
+        )
+    else:
+        scope_text = "当前授权记忆范围（未限定 within_memory_id）"
+    truncated = bool(read_payload.get("truncated"))
+    omitted_match_count = int(read_payload.get("omitted_match_count") or 0)
+    status_lines = [
+        "【MemCore 语义检索状态】",
+        f"- status={retrieval_status or 'unknown'}；returned={len(snippets)}",
+        f"- scope={scope_text}",
+        f"- pre-score candidates: {candidate_text}",
     ]
+    if bool(read_payload.get("entity_filter_relaxed")):
+        status_lines.append("- entity filter: 严格实体候选为零后，仅实体条件被显式放宽；其余过滤仍生效。")
+    if truncated:
+        status_lines.append(f"- result coverage: partial；omitted_match_count={omitted_match_count}")
+    elif snippets:
+        status_lines.append("- result coverage: 本次返回 raw-first 排名靠前的完整命中单元，不代表全库只有这些记录。")
     if snippets:
         rendered_hits: list[str] = []
         for index, snippet in enumerate(snippets, start=1):
@@ -434,37 +465,60 @@ def _build_retrieve_memory_tool_result(
             layer = str(nav.get("layer") or "").strip()
             memory_id = str(nav.get("memory_id") or "").strip()
             source_id = str(nav.get("source_id") or "").strip()
+            attributes = [f"命中 {index}", layer or "layer=unknown"]
             if memory_id:
-                heading = f"【命中 {index}｜{layer or 'summary'}｜memory_id={memory_id}】"
+                attributes.append(f"memory_id={memory_id}")
             elif source_id:
-                heading = f"【命中 {index}｜raw｜source_id={source_id}】"
-            else:
-                heading = f"【命中 {index}】"
+                attributes.append(f"source_id={source_id}")
+            time_label = _memory_navigation_time_label(nav)
+            if time_label:
+                attributes.append(f"time={time_label}")
+            heading = "【" + "｜".join(attributes) + "】"
             rendered_hits.append(f"{heading}\n{snippet}")
         followup_context = (
-            "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
+            "\n".join(status_lines)
+            + "\n\n下面是可能回答当前问题的真实记忆片段：\n"
             + "\n\n".join(rendered_hits)
             + (
-                "\n\n可能用于 read_memory_timeline 附近完整 turn 扩窗的 raw 锚点：\n"
+                "\n\n可用于 read_memory_timeline 邻近完整 turn 扩窗的 raw 锚点：\n"
                 + "\n".join(
-                    f"- source_id={item['source_id']} turn_id={item['turn_id'] or '-'} timestamp={item['timestamp']}"
+                    "- "
+                    + " ".join(
+                        part
+                        for part in (
+                            f"source_id={str(item.get('source_id') or '')}",
+                            f"turn_id={str(item.get('turn_id') or '-')}",
+                            f"time={_memory_navigation_time_label(item) or str(item.get('timestamp') or '-')}",
+                        )
+                        if part
+                    )
                     for item in raw_anchors
                 )
                 if raw_anchors
                 else ""
             )
-            + "\n\n使用规则：片段足够就直接自然回答。命中 summary/semantic_summary 时，"
-            "需要完整摘要用对应 memory_id 调 open_memory(view=content)；用户明确要原话、原始证据或摘要不足时，"
-            "用对应 memory_id 调 open_memory(view=sources)。只有 raw 结果缺少相邻对话时才扩窗。"
-            "raw 锚点只允许读取当前会话；若锚点因跨会话不可用，改用命中片段中已经显示的时间调用精确 time_range，"
-            "仍找不到就如实说明，不要猜。已有有效命中后，不要只换同义词反复调用 retrieve_memory；"
-            "只有获得新的已知实体、时间线索或检索目标实质变化时才再次检索。不要声称系统绝对证明了这些记忆。"
+            + "\n\n可按实际缺口任选下一步，不要机械走固定流程：\n"
+            "- 当前片段已足够：直接自然回答。\n"
+            "- summary/semantic_summary 只缺完整摘要正文：open_memory(view=content)。\n"
+            "- 摘要主题正确、只缺某个具体细节：用该 memory_id 再调用 retrieve_memory，"
+            '传 within_memory_id=<memory_id> 与 source_layers=["raw"]，只在它的精确来源内搜。\n'
+            "- 确实需要整棵原始来源或逐条原证据：open_memory(view=sources)。\n"
+            "- raw 已命中但缺相邻话轮：用 source_id 调 read_memory_timeline；跨会话锚点不可用时，"
+            "改用命中给出的可读时间调用精确 time_range。\n"
+            "- 已知精确时间直接用 read_memory_timeline；宽泛多日概览才用 browse_memory。\n"
+            "已有有效命中后不要只换同义词反复检索；仍无明确证据就如实说明，不要猜。"
         )
     else:
-        followup_context = (
-            "你刚刚主动检索了长期记忆，但这次没有找到足以回答主人问题的相关记忆。"
-            "请自然说明自己没有想起可靠线索，不要编造。"
-        )
+        if read_payload and not bool(read_payload.get("ok")):
+            reason = str(read_payload.get("reason") or "memory_read_failed")
+            followup_context = (
+                "\n".join(status_lines) + f"\n\n这次记忆读取没有成功完成，reason={reason}。"
+                "这是读取失败，不等于历史中没有记录；请说明目前无法可靠核实，不要编造。"
+            )
+        else:
+            followup_context = (
+                "\n".join(status_lines) + "\n\n本次有效检索没有找到匹配证据。请自然说明没有想起可靠线索，不要编造。"
+            )
     memory_retrieval_state = {
         "tool_call": {
             "query": query,
@@ -474,6 +528,7 @@ def _build_retrieve_memory_tool_result(
             "source_layers": source_layers,
             "memory_facets": memory_facets,
             "about_roles": about_roles,
+            "within_memory_id": within_memory_id,
         },
         "retrieval_result": retrieval_result,
         "retrieval_backend": retrieval_backend,
@@ -487,11 +542,33 @@ def _build_retrieve_memory_tool_result(
         memory_retrieval_state["verifier_timing"] = verifier_timing
     if memcore_read is not None:
         memory_retrieval_state["memcore_read"] = memcore_read
+    followup_envelope = None
+    if retrieval_backend == "memcore" and memcore_read is not None:
+        followup_envelope = ToolFollowupEnvelope(
+            content=followup_context,
+            producer_bounded=True,
+            complete=not truncated,
+            continuation=(
+                {
+                    "action": "refine_retrieve_memory",
+                    "omitted_match_count": omitted_match_count,
+                }
+                if truncated
+                else None
+            ),
+            diagnostics={
+                "retrieval_status": retrieval_status,
+                "returned_match_count": len(snippets),
+                "candidate_counts": candidate_counts,
+                "lineage_scope": lineage_scope,
+            },
+        )
     return ToolExecutionResult(
         tool_type="retrieve_memory",
         raw_turns=[],
         stream_events=[],
         followup_context=followup_context,
+        followup_envelope=followup_envelope,
         state_updates={"memory_retrieval": memory_retrieval_state},
         trace_receipt=(
             dict((memcore_read or {}).get("receipt") or {})
@@ -531,8 +608,29 @@ def _memcore_retrieval_navigation(payload: dict[str, Any] | None) -> list[dict[s
                 timestamp = 0
             if timestamp > 0:
                 item["timestamp"] = timestamp
+        time_metadata = match.get("time")
+        if isinstance(time_metadata, dict) and time_metadata:
+            item["time"] = dict(time_metadata)
         out.append(item)
     return out
+
+
+def _memory_navigation_time_label(item: dict[str, Any]) -> str:
+    time_metadata = item.get("time") if isinstance(item.get("time"), dict) else {}
+    at = str(time_metadata.get("at") or "").strip()
+    if at:
+        return at
+    start_at = str(time_metadata.get("start_at") or "").strip()
+    end_at = str(time_metadata.get("end_at") or "").strip()
+    if start_at and end_at:
+        return f"{start_at} -> {end_at}"
+    if start_at or end_at:
+        return start_at or end_at
+    timestamp = item.get("timestamp")
+    try:
+        return str(int(timestamp)) if int(timestamp or 0) > 0 else ""
+    except (TypeError, ValueError):
+        return ""
 
 
 def _memory_backend() -> str:
@@ -552,6 +650,7 @@ def execute_memcore_retrieve_memory(
     source_layers: list[str],
     memory_facets: list[str],
     about_roles: list[str],
+    within_memory_id: str,
     exclude_source_ids: list[str],
     include_explicit: bool = False,
     kind_patterns: list[str] | None = None,
@@ -591,6 +690,7 @@ def execute_memcore_retrieve_memory(
             source_layers=source_layers,
             memory_facets=memory_facets,
             about_roles=about_roles,
+            within_memory_id=within_memory_id,
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=list(kind_patterns or []),
@@ -625,9 +725,13 @@ def _build_memcore_retrieval_result(
     memcore_payload: dict[str, Any],
 ) -> dict[str, Any]:
     hint = time_hint if isinstance(time_hint, dict) else {}
+    candidate_counts = {
+        str(key): int(value or 0) for key, value in dict(memcore_payload.get("candidate_counts") or {}).items()
+    }
     return {
         "backend": "memcore",
-        "filtered_candidate_count": int(memcore_payload.get("snippet_count") or len(snippets)),
+        "filtered_candidate_count": sum(value for key, value in candidate_counts.items() if key.endswith("_effective")),
+        "returned_match_count": len(snippets),
         "time_filter": {
             "date_label": hint.get("date_label"),
             "time_of_day": hint.get("time_of_day"),
@@ -639,8 +743,9 @@ def _build_memcore_retrieval_result(
             "memory_facets": list(memory_facets),
             "about_roles": list(about_roles),
             "effective_filters": dict(memcore_payload.get("effective_filters") or {}),
-            "candidate_counts": dict(memcore_payload.get("candidate_counts") or {}),
+            "candidate_counts": candidate_counts,
             "entity_filter_relaxed": bool(memcore_payload.get("entity_filter_relaxed")),
+            "lineage_scope": dict(memcore_payload.get("lineage_scope") or {}),
         },
         "fused_hits": list(memcore_payload.get("matches") or []),
         "memory_snippets": list(snippets),
@@ -652,6 +757,8 @@ def _build_memcore_retrieval_diagnostics(payload: dict[str, Any]) -> dict[str, A
         "retrieval_status": str(payload.get("retrieval_status") or payload.get("status") or ""),
         "effective_filters": dict(payload.get("effective_filters") or {}),
         "candidate_counts": dict(payload.get("candidate_counts") or {}),
+        "lineage_scope": dict(payload.get("lineage_scope") or {}),
+        "returned_match_count": int(payload.get("returned_match_count") or payload.get("snippet_count") or 0),
         "entity_filter_relaxed": bool(payload.get("entity_filter_relaxed")),
         "relaxation_steps": list(payload.get("relaxation_steps") or []),
         "truncated": bool(payload.get("truncated")),
@@ -673,6 +780,7 @@ def execute_memcore_shadow_retrieve(
     source_layers: list[str],
     memory_facets: list[str],
     about_roles: list[str],
+    within_memory_id: str,
     exclude_source_ids: list[str],
     legacy_snippets: list[str],
 ) -> dict[str, Any] | None:
@@ -717,6 +825,7 @@ def execute_memcore_shadow_retrieve(
             source_layers=source_layers,
             memory_facets=memory_facets,
             about_roles=about_roles,
+            within_memory_id=within_memory_id,
             exclude_source_ids=exclude_source_ids,
         )
     except Exception as exc:

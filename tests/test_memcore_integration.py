@@ -5235,6 +5235,55 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertTrue(result["receipt"]["returned_source_ids"])
             manager.close()
 
+    def test_manager_forwards_within_memory_id_to_memcore_facade(self) -> None:
+        class _EmptyRetrieval:
+            status = "empty"
+            reason = "no_match"
+            rendered_texts: tuple[str, ...] = ()
+
+            def to_dict(self) -> dict[str, object]:
+                return {
+                    "status": "empty",
+                    "matches": [],
+                    "navigation": [],
+                    "suggested_next_actions": [],
+                    "effective_filters": {"within_memory_id": "episode-scoped"},
+                    "candidate_counts": {},
+                    "lineage_scope": {
+                        "status": "resolved",
+                        "within_memory_id": "episode-scoped",
+                        "candidate_source_count": 3,
+                    },
+                }
+
+        class _CaptureSystem:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def retrieve_for_turn_structured(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return _EmptyRetrieval()
+
+        system = _CaptureSystem()
+        manager = MemcoreManager.__new__(MemcoreManager)
+        manager._memcore_module = None
+        manager._reason = ""
+        manager._get_system_or_none = lambda **_kwargs: system
+
+        result = manager.retrieve_memory(
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+            current_user_record={"source_id": "current", "timestamp": 100},
+            query="早茶同行者",
+            within_memory_id="episode-scoped",
+            source_layers=["raw"],
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(system.calls[0]["within_memory_id"], "episode-scoped")
+        self.assertEqual(result["lineage_scope"]["within_memory_id"], "episode-scoped")
+
     def test_exact_time_retrieval_recalls_unknown_companion_without_answer_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -5530,6 +5579,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "operation": "retrieve_memory",
                 "ok": True,
                 "status": "ok",
+                "retrieval_status": "found",
                 "snippet_count": 1,
                 "snippet_hashes": ["hash-1"],
                 "latency_ms": 2,
@@ -5540,8 +5590,36 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "turn_id": "turn-cola-1",
                         "timestamp": 1785727800,
                         "layer": "raw",
+                        "time": {
+                            "timestamp": 1785727800,
+                            "at": "2026-08-03T11:30:00+08:00",
+                        },
                     }
                 ],
+                "navigation": [
+                    {
+                        "match_index": 1,
+                        "layer": "raw",
+                        "source_id": "raw-cola-1",
+                        "turn_id": "turn-cola-1",
+                        "timestamp": 1785727800,
+                        "time": {
+                            "timestamp": 1785727800,
+                            "at": "2026-08-03T11:30:00+08:00",
+                        },
+                    }
+                ],
+                "candidate_counts": {
+                    "raw_strict": 12,
+                    "raw_effective": 12,
+                    "derived_strict": 4,
+                    "derived_effective": 4,
+                },
+                "lineage_scope": {
+                    "status": "resolved",
+                    "within_memory_id": "episode-cola",
+                    "candidate_source_count": 8,
+                },
                 "receipt": {
                     "receipt_schema_version": 1,
                     "operation": "retrieve_for_turn",
@@ -5565,6 +5643,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     },
                     "memory_facets": ["preference"],
                     "about_roles": ["user"],
+                    "within_memory_id": "episode-cola",
                     "include_explicit": True,
                     "kind_patterns": ["event.finance.*"],
                 },
@@ -5574,7 +5653,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("memcore snippet about cola", result.followup_context)
         self.assertIn("source_id=raw-cola-1", result.followup_context)
         self.assertIn("turn_id=turn-cola-1", result.followup_context)
-        self.assertIn("跨会话不可用", result.followup_context)
+        self.assertIn("time=2026-08-03T11:30:00+08:00", result.followup_context)
+        self.assertIn("raw_effective=12", result.followup_context)
+        self.assertIn("仅限 memory_id=episode-cola", result.followup_context)
+        self.assertIn("跨会话锚点不可用", result.followup_context)
         self.assertEqual(retrieval_service.calls, [])
         self.assertEqual(len(memcore_manager.calls), 1)
         call = memcore_manager.calls[0]
@@ -5590,6 +5672,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(call["memory_facets"], ["preference"])
         self.assertEqual(call["about_roles"], ["user"])
+        self.assertEqual(call["within_memory_id"], "episode-cola")
         self.assertNotIn("limit", call)
         self.assertTrue(call["include_explicit"])
         self.assertEqual(call["kind_patterns"], ["event.finance.*"])
@@ -5602,8 +5685,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("snippets", state["memcore_read"])
         self.assertNotIn("verifier_output", state)
         self.assertNotIn("verifier_timing", state)
-        self.assertEqual(state["retrieval_diagnostics"]["retrieval_status"], "ok")
+        self.assertEqual(state["retrieval_diagnostics"]["retrieval_status"], "found")
+        self.assertEqual(state["retrieval_diagnostics"]["lineage_scope"]["within_memory_id"], "episode-cola")
         self.assertFalse(state["retrieval_diagnostics"]["truncated"])
+        self.assertIsNotNone(result.followup_envelope)
+        self.assertTrue(result.followup_envelope.producer_bounded)
+        self.assertTrue(result.followup_envelope.complete)
         self.assertEqual(result.trace_receipt["operation"], "retrieve_for_turn")
 
     def test_retrieve_memory_summary_hit_exposes_openable_id_and_original_evidence_route(self) -> None:
@@ -5623,7 +5710,17 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "source_ids": ["raw-a", "raw-b"],
                     }
                 ],
-                "navigation": [{"match_index": 1, "layer": "summary", "memory_id": "episode-fable"}],
+                "navigation": [
+                    {
+                        "match_index": 1,
+                        "layer": "summary",
+                        "memory_id": "episode-fable",
+                        "time": {
+                            "start_at": "2026-07-31T17:32:00+08:00",
+                            "end_at": "2026-07-31T17:36:00+08:00",
+                        },
+                    }
+                ],
             }
         )
         engine = _ToolFakeEngine(memcore_manager=memcore_manager)
@@ -5638,7 +5735,67 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("memory_id=episode-fable", result.followup_context)
         self.assertIn("open_memory(view=content)", result.followup_context)
         self.assertIn("open_memory(view=sources)", result.followup_context)
-        self.assertIn("不要只换同义词反复调用 retrieve_memory", result.followup_context)
+        self.assertIn("within_memory_id=<memory_id>", result.followup_context)
+        self.assertIn('source_layers=["raw"]', result.followup_context)
+        self.assertIn("不要只换同义词反复检索", result.followup_context)
+
+    def test_long_memcore_retrieval_result_reaches_model_without_host_8000_char_cut(self) -> None:
+        evidence = "完整原始证据" * 2200
+        memcore_manager = _ToolFakeMemcoreManager(
+            {
+                "operation": "retrieve_memory",
+                "ok": True,
+                "status": "ok",
+                "retrieval_status": "found",
+                "snippet_count": 1,
+                "snippet_hashes": ["hash-long"],
+                "snippets": [evidence],
+                "matches": [
+                    {
+                        "source_id": "raw-long-1",
+                        "turn_id": "turn-long-1",
+                        "timestamp": 1785727800,
+                        "layer": "raw",
+                    }
+                ],
+                "navigation": [
+                    {
+                        "match_index": 1,
+                        "layer": "raw",
+                        "source_id": "raw-long-1",
+                        "turn_id": "turn-long-1",
+                        "timestamp": 1785727800,
+                    }
+                ],
+                "candidate_counts": {"raw_strict": 1, "raw_effective": 1},
+                "truncated": False,
+            }
+        )
+        tool_result = retrieval_engine.execute_retrieve_memory_tool(
+            _ToolFakeEngine(memcore_manager=memcore_manager),
+            call={"query": "完整证据"},
+            context=_tool_context(),
+        )
+        recording_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        recording_engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
+
+        _, shaped, _ = recording_engine._record_tool_round_result(
+            tool_call={"type": "retrieve_memory"},
+            tool_result=tool_result,
+            tool_results=[],
+            tool_events=[],
+            tool_followups=[],
+            tool_turns=[],
+            recent_raw_for_turn=[],
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+            now_ts=100,
+        )
+
+        self.assertGreater(len(shaped), 8000)
+        self.assertIn(evidence, shaped)
+        self.assertNotIn("已截断", shaped)
 
     def test_retrieve_memory_tool_memcore_no_hit_keeps_no_hit_followup(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(
@@ -5662,7 +5819,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 context=_tool_context(),
             )
 
-        self.assertIn("没有找到足以回答主人问题", result.followup_context)
+        self.assertIn("本次有效检索没有找到匹配证据", result.followup_context)
         self.assertEqual(retrieval_service.calls, [])
         state = result.state_updates["memory_retrieval"]
         self.assertEqual(state["retrieval_backend"], "memcore")
@@ -5694,7 +5851,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 context=_tool_context(),
             )
 
-        self.assertIn("没有找到足以回答主人问题", result.followup_context)
+        self.assertIn("这次记忆读取没有成功完成", result.followup_context)
+        self.assertIn("不等于历史中没有记录", result.followup_context)
         self.assertEqual(retrieval_service.calls, [])
         state = result.state_updates["memory_retrieval"]
         self.assertEqual(state["retrieval_backend"], "memcore")

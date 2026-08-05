@@ -108,17 +108,24 @@ Each tool handler should:
 ## Current Tool
 
 - `retrieve_memory`
-  - performs semantic recall across the existing raw, episodic-summary, and long-term memory pipeline
+  - performs raw-first semantic/BM25 recall across raw, episodic-summary, and long-term memory
   - is for people, events, preferences, agreements, and other content-based recall
-  - is not used to dump an explicitly dated original transcript
+  - returns ranked complete match units with layer, reloadable ID, local ISO time, pre-score candidate counts, and lineage scope
+  - accepts `within_memory_id` plus `source_layers=["raw"]` to search for one detail only inside a selected summary/card lineage
+  - is not used to dump an explicitly dated transcript; exact time uses `read_memory_timeline`
 - `read_memory_timeline`
-  - reads raw dialogue only by an exact `date_from` / `date_to` range and optional time periods
+  - reads raw dialogue by exact `time_range.start_at/end_at`, date/coarse-period selectors, or a raw `source_id` anchor
   - does not run vector search and does not read episodic summaries or long-term semantic memory
   - is scoped by the current profile and character pack; model-supplied user or character ids are ignored
   - excludes the current query message from tool results while keeping it in the local daily transcript
   - for installed character packs, shares its renderer with the rebuildable local Markdown mirror under `desktop_pet_creator_kit/characters/<pack_id>/_local/memory/`
   - raw records without an installed character-pack owner remain under the compatibility mirror in `users_data/akane_memory_v01/memory/`
   - daily files keep readable dialogue, actual message time, available memory mood tags, and new assistant response emotion metadata; SQLite remains the source of truth
+- `browse_memory`
+  - returns compact chronological cards and stored-history coverage for broad/high-density time ranges
+- `open_memory`
+  - opens selected raw/summary nodes as card/content, or follows one node's exact source tree with `sources`
+  - supports batch `memory_ids` for card/content; sources remains single-ID because each tree owns its cursor
 - `call_npc`
   - asks a temporary NPC for one short reply
   - streams an `npc_turn` event to the frontend

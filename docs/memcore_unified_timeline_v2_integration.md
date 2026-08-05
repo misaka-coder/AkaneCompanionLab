@@ -501,6 +501,19 @@ MemCore package 的权威接口在 `memcore.MemorySystem`、`memcore.timeline`�
 - `retrieve_for_turn` receipt 只保存摘要根 `memory_id` 或 raw 顶层 `source_id`，不复制完整 lineage；
   完整命中、lineage 和模型可见正文仍保留在真实工具结果与 Timeline 中，不提高 4 KiB retention
   anchor 上限，也不截断真实证据。
+
+### 2026-08-05 检索闭环 repair pass（本地实现）
+
+- 修复 Akane handler → retrieval engine → `MemcoreManager` → `MemorySystem` 之间遗漏
+  `within_memory_id` 的假接通；摘要主题正确但只缺一个细节时，可用同一把
+  `retrieve_memory(within_memory_id=..., source_layers=["raw"])` 在精确 lineage 内继续找。
+- MemCore 命中与 navigation 统一返回本地 ISO 时间；目录卡片同时返回
+  `period_start_at/period_end_at`，模型不再只看到 epoch 或从摘要正文猜时间。
+- 模型可见 followup 明确展示返回数、评分前候选数、lineage scope、实体放宽和截断状态；命中被说明为
+  raw-first 排名靠前结果，而不是“全库只有这些”。有效空结果与读取失败使用不同反馈。
+- `retrieve_memory` 的 MemCore 结果使用 producer-owned envelope，完整逻辑单元不再被宿主通用 8000 字符
+  上限二次静默裁剪；package 自己若显式报告 partial/truncated，仍保留该状态和后续收窄动作。
+- 该段是实现记录，不是云端部署记录；上线状态必须以之后的 release/健康检查记录为准。
 - 本地 MemCore 408 项测试通过（5 skip），Akane 聚焦 266 项通过；云端新 release 切换前同组 266
   项通过。personal/finance 两份活动 MemCore 已用 SQLite online backup 保存并通过
   `PRAGMA quick_check`，备份标识为 `pre-memory-nav-c3e3173-5bef12e-20260805`。

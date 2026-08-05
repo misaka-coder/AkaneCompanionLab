@@ -32,18 +32,12 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
 
         instruction = handler.build_prompt_instruction()
 
+        self.assertIn(handler.tool_spec().description, instruction)
         self.assertIn("entity_anchors", instruction)
-        self.assertIn("topic_terms", instruction)
-        self.assertIn("memory_facets/about_roles", instruction)
-        self.assertIn("未知人物或答案不能猜进锚点", instruction)
         self.assertIn("time_hint.start_at/end_at", instruction)
-        self.assertIn("raw 命中", instruction)
-        self.assertIn("source_id", instruction)
-        self.assertIn("跨会话锚点不可用", instruction)
-        self.assertIn("精确 time_range", instruction)
-        self.assertIn("open_memory(view=content)", instruction)
-        self.assertIn("open_memory(view=sources)", instruction)
-        self.assertIn("不要只改写同义词连续检索", instruction)
+        self.assertIn("within_memory_id", instruction)
+        self.assertIn("top raw-first ranked", instruction)
+        self.assertTrue(instruction.endswith("这是内部记忆读取，不要先在 speech 里宣布。"))
 
     def test_normalize_call_accepts_canonical_raw_first_filters_without_hidden_limits(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
@@ -57,6 +51,7 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
                 "source_layers": ["raw", "semantic_summary"],
                 "memory_facets": ["preference", "decision"],
                 "about_roles": ["user", "external"],
+                "within_memory_id": " episode-cola ",
             }
         )
 
@@ -67,8 +62,22 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertEqual(call["source_layers"], ["raw", "semantic_summary"])
         self.assertEqual(call["memory_facets"], ["preference", "decision"])
         self.assertEqual(call["about_roles"], ["user", "external"])
+        self.assertEqual(call["within_memory_id"], "episode-cola")
         self.assertNotIn("limit", call)
         self.assertNotIn("importance_min", call)
+
+    def test_normalize_call_rejects_non_string_within_memory_id_instead_of_broadening(self) -> None:
+        handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
+
+        self.assertIsNone(
+            handler.normalize_call(
+                {
+                    "type": "retrieve_memory",
+                    "query": "早茶同行者",
+                    "within_memory_id": ["episode-1"],
+                }
+            )
+        )
 
     def test_normalize_call_preserves_package_owned_exact_time_hint(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)

@@ -1382,20 +1382,7 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         return RETRIEVE_MEMORY_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
-        return (
-            f"- retrieve_memory：{RETRIEVE_MEMORY_TOOL_SPEC.description} "
-            "query 始终保留用户真正想找的历史内容；entity_anchors 只放当前已经知道的准确名称，"
-            "用户正在追问的未知人物或答案不能猜进锚点；topic_terms 放动作或主题短词。"
-            "知道具体时间范围时用 time_hint.start_at/end_at，按已知时间先缩小原始证据范围。"
-            "memory_facets/about_roles 不确定就省略，不能拿当前问句的 memory_query 代替目标历史内容。"
-            "普通对话不打开 include_explicit；确实要找工具、事件、skill 或材料轨迹时，才同时给出精确 kind_patterns。"
-            "raw 命中通常已经带当前刺激和最终回复；仍缺前后语境时，才把 raw source_id 交给 read_memory_timeline 扩窗。"
-            "raw 锚点只能读取当前会话；跨会话锚点不可用时，改用命中片段里已显示的时间调用精确 time_range。"
-            "检索结果会给每条命中的可用导航 ID：片段够用就直接回答；summary/semantic_summary 需要完整摘要时"
-            "用 memory_id 调 open_memory(view=content)，用户要原话或原始证据时用 open_memory(view=sources)。"
-            "拿到有效命中后不要只改写同义词连续检索；只有新增已知实体、时间线索或检索目标实质变化时才再次检索。"
-            "这是内部记忆读取，不要先在 speech 里宣布。"
-        )
+        return f"- retrieve_memory：{RETRIEVE_MEMORY_TOOL_SPEC.description} 这是内部记忆读取，不要先在 speech 里宣布。"
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
@@ -1428,6 +1415,10 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         source_layers = self._normalize_string_list(value.get("source_layers"), lowercase=True)
         memory_facets = self._normalize_string_list(value.get("memory_facets"), lowercase=True)
         about_roles = self._normalize_string_list(value.get("about_roles"), lowercase=True)
+        raw_within_memory_id = value.get("within_memory_id")
+        if raw_within_memory_id is not None and not isinstance(raw_within_memory_id, str):
+            return None
+        within_memory_id = normalize_text(raw_within_memory_id or "").strip()
         include_explicit = value.get("include_explicit") is True
         kind_patterns = self._normalize_string_list(value.get("kind_patterns"), lowercase=True)
 
@@ -1440,6 +1431,7 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "source_layers": source_layers,
             "memory_facets": memory_facets,
             "about_roles": about_roles,
+            "within_memory_id": within_memory_id,
             "include_explicit": include_explicit,
             "kind_patterns": kind_patterns,
         }
