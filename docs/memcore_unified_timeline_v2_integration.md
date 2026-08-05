@@ -1,10 +1,10 @@
 # MemCore Unified Timeline V2：亮点与接入指南
 
-> 适用版本：MemCore `0.1.0`（`d84fbbe`）、AkaneCompanionLab `c48df77`。
+> 适用版本：MemCore `0.1.0`（`5bef12e`）、AkaneCompanionLab `c3e3173`。
 >
 > 当前状态：Akane 本地与统一云端 Host 已经完成 Unified Timeline V2 写链、读链、provider projection、
 > 同步/流式真实 provider raw-result 和旧 prompt 权威清理。本文只描述已经接通并有自动化验证的能力；
-> 完整模型可见工具结果跨轮保留与 `open_memory` 批量读取已于 2026-08-05 部署。
+> 完整模型可见工具结果跨轮保留、`open_memory` 批量读取和检索导航闭环已于 2026-08-05 部署。
 
 ## 一句话定位
 
@@ -487,6 +487,26 @@ MemCore package 的权威接口在 `memcore.MemorySystem`、`memcore.timeline`�
 - `provider_output_raw` 是内部持久化数据，应按对话数据的隐私等级保护。
 - 当前版本为 `0.1.0`，授权边界以 MemCore 仓库的 `LICENSE` 为准。
 - 真实云配置、密钥与数据路径不写入本文；线上变更仍需独立备份、回滚和真实表现验收。
+
+## 2026-08-05 检索导航闭环与延迟修复部署记录
+
+- 云端不可变 release 为 `c3e3173-5bef12e-memory-nav`，对应 Akane `c3e3173` 与 MemCore
+  `5bef12e`；上一版 `c48df77-d84fbbe-tool-evidence` 保留为直接回滚点。
+- 实际慢请求不是单次 MemCore 读取慢，而是摘要命中的顶层 ID 没进入 Akane 的 model-visible
+  followup，模型只能连续同义改写 `retrieve_memory`；同轮累计结果又放大 prompt 和 provider 往返。
+- 语义检索现在把 package 返回的顶层导航 ID 与每条 snippet 一起交给聊天模型：摘要命中可直接
+  `open_memory(content/sources)`，raw 命中只在缺相邻语境时按 `source_id` 扩窗；拿到有效命中后不再
+  仅靠同义改写反复检索。跨会话检索返回的 opaque memory ID 由宿主按相同 user hard namespace
+  直接打开，不把 scope 选择负担推给模型。
+- `retrieve_for_turn` receipt 只保存摘要根 `memory_id` 或 raw 顶层 `source_id`，不复制完整 lineage；
+  完整命中、lineage 和模型可见正文仍保留在真实工具结果与 Timeline 中，不提高 4 KiB retention
+  anchor 上限，也不截断真实证据。
+- 本地 MemCore 408 项测试通过（5 skip），Akane 聚焦 266 项通过；云端新 release 切换前同组 266
+  项通过。personal/finance 两份活动 MemCore 已用 SQLite online backup 保存并通过
+  `PRAGMA quick_check`，备份标识为 `pre-memory-nav-c3e3173-5bef12e-20260805`。
+- 切换后 `/health` 为 `ok`、root binding 有效，personal/finance QQ self-check 均为 `connected`，
+  `akane-host.service` 为 `active/running` 且 `NRestarts=0`；启动窗口没有 traceback、import error、
+  `operation_retention_anchor_too_large` 或 compaction failure。
 
 ## 2026-08-05 完整工具证据与批量读取部署记录
 
