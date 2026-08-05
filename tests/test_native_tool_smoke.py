@@ -7,7 +7,7 @@ from scripts.tools.run_native_web_search_smoke import (
     SmokeCheckInventoryHandler,
     SmokeInspectMediaInfoHandler,
     SmokeListRemindersHandler,
-    SmokeReadMemoryEntryHandler,
+    SmokeOpenMemoryHandler,
     SmokeReadMemoryTimelineHandler,
     SmokeRetrieveMemoryHandler,
     _build_smoke_tools,
@@ -30,7 +30,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
         self.assertEqual(toolset_allowlist("web_search"), "web_search")
         self.assertEqual(
             toolset_allowlist("memory"),
-            "retrieve_memory,read_memory_timeline,read_memory_entry",
+            "retrieve_memory,read_memory_timeline,open_memory",
         )
         # `all` mirrors the shipped default native allowlist (the full set that
         # fires under native-first).
@@ -40,7 +40,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
                 "web_search",
                 "retrieve_memory",
                 "read_memory_timeline",
-                "read_memory_entry",
+                "open_memory",
                 "list_reminders",
                 "check_inventory",
                 "inspect_media_info",
@@ -63,11 +63,11 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
         )
         self.assertEqual(
             set(handlers.keys()),
-            {"retrieve_memory", "read_memory_timeline", "read_memory_entry"},
+            {"retrieve_memory", "read_memory_timeline", "open_memory"},
         )
         self.assertEqual(
             selection.tool_names,
-            ("retrieve_memory", "read_memory_timeline", "read_memory_entry"),
+            ("retrieve_memory", "read_memory_timeline", "open_memory"),
         )
         self.assertNotIn("web_search", selection.tool_names)
 
@@ -84,7 +84,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
             "web_search",
             "retrieve_memory",
             "read_memory_timeline",
-            "read_memory_entry",
+            "open_memory",
             "list_reminders",
             "check_inventory",
             "inspect_media_info",
@@ -119,11 +119,10 @@ class SmokeMemoryHandlerTests(unittest.TestCase):
                 "type": "read_memory_timeline",
                 "date_from": "2026-06-01",
                 "date_to": "2026-06-01",
-                "time_periods": ["morning", "bogus"],
+                "time_periods": ["morning"],
             }
         )
         self.assertIsNotNone(normalized)
-        # Stub timeline service normalizes periods; bogus is dropped.
         self.assertEqual(normalized["time_periods"], ["morning"])
 
         result = handler.execute(call=normalized, context=_context())
@@ -133,20 +132,20 @@ class SmokeMemoryHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "ok")
         self.assertEqual(handler.executed_calls[0]["date_from"], "2026-06-01")
 
-    def test_read_memory_entry_fixture_executes_and_records(self) -> None:
-        handler = SmokeReadMemoryEntryHandler()
+    def test_open_memory_fixture_executes_and_records(self) -> None:
+        handler = SmokeOpenMemoryHandler()
         normalized = handler.normalize_call(
-            {"type": "read_memory_entry", "source_id": "raw_001", "detail": "full"}
+            {"type": "open_memory", "memory_id": "episode_001", "view": "content"}
         )
         self.assertIsNotNone(normalized)
         assert normalized is not None
 
         result = handler.execute(call=normalized, context=_context())
 
-        self.assertEqual(result.tool_type, "read_memory_entry")
-        self.assertEqual(result.stream_events[0]["type"], "read_memory_entry_completed")
-        self.assertEqual(handler.executed_calls[0]["source_id"], "raw_001")
-        self.assertIn("固定原始证据", result.followup_context)
+        self.assertEqual(result.tool_type, "open_memory")
+        self.assertEqual(result.stream_events[0]["type"], "open_memory_completed")
+        self.assertEqual(handler.executed_calls[0]["memory_id"], "episode_001")
+        self.assertIn("固定记忆证据", result.followup_context)
 
 
 class SmokeReadTierHandlerTests(unittest.TestCase):

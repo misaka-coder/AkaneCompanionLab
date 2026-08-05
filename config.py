@@ -124,6 +124,8 @@ class Settings(BaseSettings):
     MEMCORE_RAW_TOKEN_BATCH_RATIO: float = 0.67
     # 单次结构化检索结果可回填给模型的 token 预算；0 表示不设预算
     MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET: int = 0
+    # 原生时间线单页 token 上限；MemCore 按完整逻辑单元分页，0/省略模型参数使用此值
+    MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET: int = 12000
     # 后台压缩全局 worker 数；与用户聊天/工具并行度无关
     MEMCORE_COMPACTION_WORKERS: int = 1
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
@@ -271,7 +273,7 @@ class Settings(BaseSettings):
     ENABLE_NATIVE_TOOL_DECISION: bool = True
     # native tool 允许列表，逗号分隔。除低风险只读工具外，受管生成、媒体处理和文件交付
     # 也走同一 provider-native 工具环；它们只接受会话 handle，不接受本机绝对路径。
-    # web_search（3d live gate）、retrieve_memory / read_memory_timeline / read_memory_entry
+    # web_search（3d live gate）、retrieve_memory / read_memory_timeline / open_memory
     #（记忆原始证据读取链）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
     # native 链路已由 memory 5d 证明，未单独跑 live smoke）。
@@ -284,7 +286,7 @@ class Settings(BaseSettings):
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
-        "web_search,retrieve_memory,read_memory_timeline,read_memory_entry,"
+        "web_search,retrieve_memory,read_memory_timeline,open_memory,"
         "list_reminders,check_inventory,inspect_media_info,"
         "load_character_context,inspect_attachment,load_material,read_attachment_section,"
         "list_workspace,read_workspace,inspect_generated_file,generate_image,"
@@ -601,6 +603,7 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_RAW_TOKEN_TRIGGER, \
         MEMCORE_RAW_TOKEN_BATCH_RATIO, \
         MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET, \
+        MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET, \
         MEMCORE_COMPACTION_WORKERS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
     global MEMCORE_TOOL_TRACE_MAX_CHARS
@@ -878,6 +881,10 @@ def _apply_settings(s: Settings) -> None:
     MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET = max(
         0,
         min(200000, int(s.MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET or 0)),
+    )
+    MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET = max(
+        1,
+        min(200000, int(s.MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET or 12000)),
     )
     MEMCORE_COMPACTION_WORKERS = max(1, min(8, int(s.MEMCORE_COMPACTION_WORKERS or 1)))
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS = max(

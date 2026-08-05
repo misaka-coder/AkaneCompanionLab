@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Mapping
 
 import config
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
@@ -129,7 +129,7 @@ from .tool_runtime import (
     OpenMusicSearchToolHandler,
     PrepareVoiceDatasetToolHandler,
     ReadAttachmentSectionToolHandler,
-    ReadMemoryEntryToolHandler,
+    OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
@@ -6193,7 +6193,7 @@ class AkaneMemoryEngine:
         return str(tool_call.get("type") or "") not in {
             "retrieve_memory",
             "read_memory_timeline",
-            "read_memory_entry",
+            "open_memory",
             "load_character_context",
         }
 
@@ -6928,6 +6928,19 @@ class AkaneMemoryEngine:
             feedback = "\n\n".join(
                 part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
             )
+            trace_receipt = getattr(tool_result, "trace_receipt", None)
+            if isinstance(trace_receipt, Mapping) and trace_receipt:
+                stored_result: Any = self._sanitize_tool_trace_value(
+                    {"receipt": dict(trace_receipt)}
+                )
+            else:
+                stored_result = self._sanitize_tool_trace_text(
+                    feedback,
+                    producer_bounded=bool(
+                        tool_result.followup_envelope is not None
+                        and tool_result.followup_envelope.producer_bounded
+                    ),
+                )
             result_status = self._tool_result_trace_status(tool_result)
             source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
             exchanges.append(
@@ -6935,13 +6948,7 @@ class AkaneMemoryEngine:
                     "tool_name": str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip() or tool_type,
                     "tool_call_id": call_id,
                     "tool_input": self._sanitize_tool_trace_value(self._tool_call_model_arguments(tool_call)),
-                    "result": self._sanitize_tool_trace_text(
-                        feedback,
-                        producer_bounded=bool(
-                            tool_result.followup_envelope is not None
-                            and tool_result.followup_envelope.producer_bounded
-                        ),
-                    ),
+                    "result": stored_result,
                     "source": str(tool_call.get(TOOL_SOURCE_FIELD) or tool_result.tool_type or tool_type),
                     "timestamp": max(now_ts, int(time.time())),
                     "source_id_prefix": (
@@ -7332,7 +7339,7 @@ class AkaneMemoryEngine:
             "read_memory_timeline": ReadMemoryTimelineToolHandler(
                 timeline_service=self._build_memory_timeline_tool_service(),
             ),
-            "read_memory_entry": ReadMemoryEntryToolHandler(
+            "open_memory": OpenMemoryToolHandler(
                 timeline_service=self._build_memory_timeline_tool_service(),
             ),
             "load_character_context": LoadCharacterContextToolHandler(

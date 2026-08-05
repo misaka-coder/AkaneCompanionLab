@@ -1,21 +1,16 @@
-"""Timeline adapter that lets Akane's existing tool handler read from memcore."""
+"""Thin Akane product adapter for MemCore's native evidence tools."""
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import config
 
 
 logger = logging.getLogger("akane.memcore.timeline")
 
-TIME_PERIOD_LABELS = {
-    "morning": "上午",
-    "afternoon": "下午",
-    "night": "夜晚",
-    "midnight": "凌晨",
-}
 TIME_PERIOD_ORDER = ("midnight", "morning", "afternoon", "night")
 TIME_PERIOD_ALIASES = {
     "morning": "morning",
@@ -39,11 +34,14 @@ def _memory_backend() -> str:
 
 
 class MemcoreTimelineToolService:
-    """A MemoryTimelineService-compatible facade for the read_memory_timeline tool.
+    """Expose MemCore native reads through Akane product/session policy.
 
-    In memcore mode the precise read path does not need the legacy timeline
-    mirror. Legacy timeline remains an optional fallback for legacy/dual modes.
+    MemCore owns argument validation, finite native paging, evidence rendering,
+    coverage, cursors and operation receipts. Akane only chooses the authorized
+    namespace and projects the result into its tool runtime.
     """
+
+    package_native_dispatch = True
 
     def __init__(self, *, legacy_service: Any | None, memcore_manager: Any | None) -> None:
         self.legacy_service = legacy_service
@@ -80,108 +78,63 @@ class MemcoreTimelineToolService:
         projection: str = "conversation",
         page_token_budget: int = 0,
         cursor: str = "",
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         manager = self.memcore_manager
+        native_arguments = dict(arguments) if isinstance(arguments, Mapping) else None
+        if native_arguments is not None:
+            anchor_source_id = native_arguments.get("anchor_source_id", "")
+            cursor = native_arguments.get("cursor", "")
         anchor_id = str(anchor_source_id or "").strip()
         if _memory_backend() == "memcore":
             if manager is not None and getattr(manager, "enabled", False) and getattr(manager, "available", False):
                 try:
+                    if native_arguments is None:
+                        native_arguments = self._timeline_arguments(
+                            time_range=time_range,
+                            date_from=date_from,
+                            date_to=date_to,
+                            time_periods=time_periods,
+                            anchor_source_id=anchor_id,
+                            before_turns=before_turns,
+                            after_turns=after_turns,
+                            projection=projection,
+                            page_token_budget=page_token_budget,
+                            cursor=cursor,
+                        )
+                    if not str(native_arguments.get("cursor") or "").strip() and not anchor_id:
+                        native_arguments.setdefault("cross_conversation", True)
                     result = manager.read_memory_timeline(
                         profile_user_id=profile_user_id,
-                        # Date lookup is profile-wide. Raw anchors are deliberately
-                        # constrained to the current conversation by MemCore.
-                        session_id=str(session_id or profile_user_id) if anchor_id else profile_user_id,
+                        # The cursor remains scoped to the active conversation
+                        # namespace. Date/range reads cross only this user's
+                        # authorized conversations via explicit host policy.
+                        session_id=str(session_id or profile_user_id),
                         character_pack_id=character_pack_id,
-                        time_range=dict(time_range or {}) or None,
-                        date_from=date_from,
-                        date_to=date_to,
-                        time_periods=list(time_periods or []),
-                        anchor_source_id=anchor_id,
-                        before_turns=before_turns,
-                        after_turns=after_turns,
-                        projection=str(projection or "conversation"),
-                        page_token_budget=int(page_token_budget or 0),
-                        cursor=str(cursor or ""),
-                        exclude_source_ids=[str(item) for item in (exclude_source_ids or [])],
-                        cross_conversation=not bool(anchor_id),
+                        arguments=native_arguments,
                     )
                 except Exception as exc:
-                    logger.warning("memcore timeline adapter failed: %s", str(exc) or exc.__class__.__name__)
+                    logger.warning("memcore timeline adapter failed: %s", type(exc).__name__)
                 else:
                     if isinstance(result, dict):
-                        if not result.get("ok"):
-                            logger.warning(
-                                "memcore timeline adapter returned %s: %s",
-                                str(result.get("status") or "failed"),
-                                str(result.get("reason") or "unknown"),
-                            )
                         return result
-            else:
-                logger.warning("memcore timeline adapter unavailable: manager_not_available")
-            return {
-                "ok": False,
-                "status": "unavailable",
-                "reason": "memcore_timeline_unavailable",
-                "date_from": str(date_from or ""),
-                "date_to": str(date_to or ""),
-                "time_periods": list(time_periods or []),
-                "anchor_source_id": anchor_id,
-                "before_turns": int(before_turns or 0),
-                "after_turns": int(after_turns or 0),
-                "projection": str(projection or "conversation"),
-                "coverage": {},
-                "active_dates": [],
-                "message_count": 0,
-                "messages": [],
-                "text": "",
-                "backend": "memcore",
-            }
+            return self._unavailable("read_memory_timeline", "memcore_timeline_unavailable")
+
         legacy_service = self.legacy_service
         if legacy_service is None:
-            return {
-                "ok": False,
-                "status": "unavailable",
-                "reason": "legacy_timeline_unavailable",
-                "date_from": str(date_from or ""),
-                "date_to": str(date_to or ""),
-                "time_periods": list(time_periods or []),
-                "anchor_source_id": anchor_id,
-                "before_turns": int(before_turns or 0),
-                "after_turns": int(after_turns or 0),
-                "projection": str(projection or "conversation"),
-                "coverage": {},
-                "active_dates": [],
-                "message_count": 0,
-                "messages": [],
-                "text": "",
-                "backend": "legacy",
-            }
+            return self._unavailable("read_memory_timeline", "legacy_timeline_unavailable", backend="legacy")
         if time_range or cursor or str(projection or "conversation") != "conversation" or int(page_token_budget or 0):
-            return {
-                "ok": False,
-                "status": "unavailable",
-                "reason": "precise_timeline_requires_memcore",
-                "projection": str(projection or "conversation"),
-                "coverage": {},
-                "message_count": 0,
-                "messages": [],
-                "text": "",
-                "backend": "legacy",
-            }
+            return self._unavailable(
+                "read_memory_timeline",
+                "precise_timeline_requires_memcore",
+                backend="legacy",
+            )
         if anchor_id:
-            return {
-                "ok": False,
-                "status": "unavailable",
-                "reason": "raw_anchor_requires_memcore",
-                "anchor_source_id": anchor_id,
-                "before_turns": int(before_turns or 0),
-                "after_turns": int(after_turns or 0),
-                "active_dates": [],
-                "message_count": 0,
-                "messages": [],
-                "text": "",
-                "backend": "legacy",
-            }
+            return self._unavailable(
+                "read_memory_timeline",
+                "raw_anchor_requires_memcore",
+                backend="legacy",
+            )
         return legacy_service.read(
             profile_user_id=profile_user_id,
             character_pack_id=character_pack_id,
@@ -191,46 +144,72 @@ class MemcoreTimelineToolService:
             exclude_source_ids=exclude_source_ids,
         )
 
-    def read_entry(
+    @staticmethod
+    def _timeline_arguments(
+        *,
+        time_range: dict[str, Any] | None,
+        date_from: str,
+        date_to: str,
+        time_periods: Iterable[str] | None,
+        anchor_source_id: str,
+        before_turns: int,
+        after_turns: int,
+        projection: str,
+        page_token_budget: int,
+        cursor: str,
+    ) -> dict[str, Any]:
+        resolved_cursor = str(cursor or "").strip()
+        if resolved_cursor:
+            return {"cursor": resolved_cursor}
+        arguments: dict[str, Any] = {}
+        if time_range:
+            arguments["time_range"] = dict(time_range)
+        if str(date_from or "").strip():
+            arguments["date_from"] = str(date_from).strip()
+        if str(date_to or "").strip():
+            arguments["date_to"] = str(date_to).strip()
+        if time_periods:
+            arguments["time_periods"] = list(time_periods)
+        if str(anchor_source_id or "").strip():
+            arguments["anchor_source_id"] = str(anchor_source_id).strip()
+        if int(before_turns or 0):
+            arguments["before_turns"] = int(before_turns)
+        if int(after_turns or 0):
+            arguments["after_turns"] = int(after_turns)
+        if str(projection or "conversation") != "conversation":
+            arguments["projection"] = str(projection)
+        if int(page_token_budget or 0) > 0:
+            arguments["page_token_budget"] = int(page_token_budget)
+        return arguments
+
+    def open_memory(
         self,
         *,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
-        source_id: str,
-        detail: str = "full",
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         manager = self.memcore_manager
         if (
-            _memory_backend() == "memcore"
+            _memory_backend() in {"memcore", "dual"}
             and manager is not None
             and getattr(manager, "enabled", False)
             and getattr(manager, "available", False)
         ):
             try:
-                result = manager.read_memory_entry(
+                result = manager.open_memory(
                     profile_user_id=profile_user_id,
                     session_id=str(session_id or profile_user_id),
                     character_pack_id=character_pack_id,
-                    source_id=str(source_id or ""),
-                    detail=str(detail or "full"),
+                    arguments=dict(arguments or {}),
                 )
             except Exception as exc:
-                logger.warning("memcore entry adapter failed: %s", str(exc) or exc.__class__.__name__)
+                logger.warning("memcore open-memory adapter failed: %s", type(exc).__name__)
             else:
                 if isinstance(result, dict):
                     return result
-        return {
-            "operation": "read_memory_entry",
-            "ok": False,
-            "status": "unavailable",
-            "reason": "memcore_entry_unavailable",
-            "source_id": str(source_id or ""),
-            "detail": str(detail or "full"),
-            "entry": None,
-            "text": "",
-            "backend": "memcore",
-        }
+        return self._unavailable("open_memory", "memcore_open_memory_unavailable")
 
     def render_tool_context(self, result: dict[str, Any]) -> str:
         legacy_service = self.legacy_service
@@ -238,130 +217,36 @@ class MemcoreTimelineToolService:
             if legacy_service is not None:
                 return legacy_service.render_tool_context(result)
             return "原始对话时间线读取失败：当前记忆时间线服务不可用。"
-        status = str(result.get("status") or "")
-        reason = str(result.get("reason") or "")
-        anchor_source_id = str(result.get("anchor_source_id") or "")
-        coverage = dict(result.get("coverage") or {})
-        complete = bool(coverage.get("complete", True))
-        next_cursor = str(coverage.get("next_cursor") or "").strip()
-        if status in {"invalid_filter", "invalid_range"}:
-            labels = {
-                "timeline_modes_are_mutually_exclusive": "日期模式和 raw 锚点模式不能同时使用。",
-                "timeline_selector_required": "需要给出日期或 raw 检索结果的 source_id。",
-                "cursor_options_are_embedded": "继续读取时只传 next_cursor，不要重复日期、范围、投影或页面预算。",
-                "invalid_cursor": "这个时间线游标无效或已被改动。",
-                "invalid_cursor_scope": "这个时间线游标不属于当前授权会话。",
-                "raw_anchor_required": "这个 source_id 不是 raw 原始记录，不能用来扩展附近对话。",
-                "raw_anchor_requires_current_conversation": "raw 锚点只能在当前会话中读取。",
-                "date_must_be_YYYY-MM-DD": "日期必须使用 YYYY-MM-DD。",
-                "date_from_after_date_to": "date_from 不能晚于 date_to。",
-            }
-            return f"原始对话时间线读取失败：{labels.get(reason, reason or '参数无效')}"
-        if status in {"failed", "unavailable"}:
-            return f"原始对话时间线暂时不可用：{reason or 'memory_timeline_unavailable'}"
-        continuation_lines: list[str] = []
-        if not complete:
-            if next_cursor:
-                continuation_lines.extend(
-                    [
-                        "本次只返回了完整逻辑单元组成的一页，后面仍有原始证据。",
-                        f"继续读取时只调用 read_memory_timeline(cursor={next_cursor})，不要重复或修改原选择器。",
-                    ]
-                )
-            else:
-                continuation_lines.append(
-                    "时间线报告仍有未返回证据，但没有提供可执行游标；请明确说明读取链路不完整，不要猜测。"
-                )
-        if anchor_source_id:
-            text = str(result.get("text") or "").strip()
-            if status == "empty" or not text:
-                return "\n".join(
-                    [
-                        "这个 raw 记忆锚点附近本页没有可读取的原始对话。",
-                        *continuation_lines,
-                    ]
-                )
-            return "\n".join(
-                [
-                    "【raw 记忆锚点附近的完整对话 turn】",
-                    "下面是由 MemCore 按 raw source_id 读取的前后完整 turn；工具并行调用不会被截成半轮。",
-                    text,
-                    *continuation_lines,
-                    "请综合这些原始记录回答；缺失的细节不要猜。",
-                ]
-            )
-        selector_mode = str(result.get("selector_mode") or "")
-        time_range = dict(result.get("time_range") or {})
-        if selector_mode == "time_range" or (time_range and not result.get("date_from")):
-            start_at = str(time_range.get("start_at") or "")
-            end_at = str(time_range.get("end_at") or "")
-            text = str(result.get("text") or "").strip()
-            range_label = f"{start_at} 至 {end_at}（终点不包含）"
-            if status == "empty" or not text:
-                return "\n".join(
-                    [
-                        f"原始对话时间线：{range_label} 本页没有留下可读取的对话记录。",
-                        *continuation_lines,
-                    ]
-                )
-            return "\n".join(
-                [
-                    f"【原始对话时间线：{range_label}】",
-                    "下面是由 MemCore 按数据库时间精确读取的原始记录，不是摘要或长期语义记忆。",
-                    text,
-                    *continuation_lines,
-                    "请只根据这些已加载的原始记录回答；缺失的细节不要凭印象补写。",
-                ]
-            )
-        date_from = str(result.get("date_from") or "")
-        date_to = str(result.get("date_to") or "")
-        periods = list(result.get("time_periods") or [])
-        range_label = date_from if date_from == date_to else f"{date_from} 至 {date_to}"
-        period_label = "、".join(TIME_PERIOD_LABELS.get(str(item), str(item)) for item in periods) or "全天"
-        if status == "empty":
-            return "\n".join(
-                [
-                    f"原始对话时间线：{range_label}（{period_label}）本页没有留下可读取的对话记录。",
-                    *continuation_lines,
-                ]
-            )
-        text = str(result.get("text") or "").strip()
-        if not text:
-            return "\n".join(
-                [
-                    f"原始对话时间线：{range_label}（{period_label}）本页没有留下可读取的对话记录。",
-                    *continuation_lines,
-                ]
-            )
-        return "\n".join(
-            [
-                f"【原始对话时间线：{range_label}（{period_label}）】",
-                "下面是由 memcore 按数据库时间精确读取的原始对话，不是摘要或长期语义记忆。",
-                text,
-                *continuation_lines,
-                "请只根据这些已加载的原始记录回答；缺失的细节不要凭印象补写。",
-            ]
-        )
+        return self._render_native_result("MemCore 原始时间线", result)
 
-    def render_entry_context(self, result: dict[str, Any]) -> str:
-        status = str((result or {}).get("status") or "")
-        reason = str((result or {}).get("reason") or "")
-        source_id = str((result or {}).get("source_id") or "")
-        if status in {"failed", "unavailable", "invalid_filter"}:
-            return f"原始记忆条目读取失败：{reason or 'memory_entry_unavailable'}"
-        text = str((result or {}).get("text") or "").strip()
-        if status == "empty" or not text:
-            return (
-                f"原始记忆条目 {source_id or 'unknown'} 在当前授权会话中不可用；"
-                "不要把它当作已读取证据，也不要猜测正文。"
-            )
-        return "\n".join(
-            [
-                f"【原始记忆条目：{source_id}】",
-                text,
-                "这是 MemCore 返回的当前会话原始证据；请结合问题回答，不要重复展开同一 source_id。",
-            ]
-        )
+    def render_open_memory_context(self, result: dict[str, Any]) -> str:
+        return self._render_native_result("MemCore 记忆证据", result)
+
+    @staticmethod
+    def _render_native_result(label: str, result: Mapping[str, Any] | None) -> str:
+        """Serialize package-owned navigation metadata without reinterpreting it."""
+
+        payload = dict(result or {})
+        evidence_text = str(payload.pop("text", "") or "").strip()
+        for internal_key in ("operation", "backend", "ok", "receipt"):
+            payload.pop(internal_key, None)
+        metadata = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        parts = [f"【{label}】", metadata]
+        if evidence_text:
+            parts.extend(("【本页证据正文】", evidence_text))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _unavailable(operation: str, reason: str, *, backend: str = "memcore") -> dict[str, Any]:
+        return {
+            "operation": operation,
+            "ok": False,
+            "status": "unavailable",
+            "reason": reason,
+            "coverage": {},
+            "text": "",
+            "backend": backend,
+        }
 
     def build_acquaintance_prompt(self, **kwargs: Any) -> str:
         manager = self.memcore_manager

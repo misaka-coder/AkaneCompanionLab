@@ -67,7 +67,7 @@ companion_v01/memcore_integration/
   __init__.py
   adapters.py          # AkaneLLMClient / AkaneEmbeddingProvider / 可选 TokenCounter
   manager.py           # MemcoreManager: namespace 构造、MemorySystem 缓存、双写门面
-  timeline.py          # retrieve_memory / read_memory_timeline / read_memory_entry 的宿主包装
+  timeline.py          # read_memory_timeline / open_memory 的产品与 namespace 薄适配
   diagnostics.py       # 影子对比、状态上报，可后置
 ```
 
@@ -100,6 +100,7 @@ MemCore 只使用 token/ratio planner：
 raw_token_trigger              <- MEMCORE_RAW_TOKEN_TRIGGER
 raw_token_batch_ratio          <- MEMCORE_RAW_TOKEN_BATCH_RATIO
 retrieval_result_token_budget  <- MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET
+native_timeline_page_token_budget <- MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET
 episodic_visible_max           <- EPISODIC_VISIBLE_MAX
 episodic_compact_trigger_count <- EPISODIC_COMPACT_TRIGGER_COUNT
 episodic_compact_batch_size    <- EPISODIC_COMPACT_BATCH_SIZE
@@ -346,16 +347,21 @@ MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 第一阶段完成后，至少满足:
 
 - 默认 `MEMORY_BACKEND=memcore` 时，模型 prompt、retrieve_memory、read_memory_timeline、
-  read_memory_entry、压缩都不走旧记忆主链路。
+  open_memory、压缩都不走旧记忆主链路。
 - `MEMORY_BACKEND=legacy` 时旧兼容模式仍可显式运行。
 - `MEMORY_BACKEND=dual` 时一轮对话会在 legacy 和 memcore 中写入相同 source_id 的 user / assistant raw。
 - final output 的 `memory_metadata` 能回写到 memcore user raw，并更新索引状态或 pending 状态。
 - `retrieve_memory` 的既有 schema 保持兼容；`read_memory_timeline` 在原有日期/anchor 模式之外增加
   精确 `time_range`、完整逻辑单元分页、`coverage/next_cursor` 与 projection；
-  `read_memory_entry` 用时间线返回的 raw `source_id` 展开当前授权会话中的完整证据。
+  `open_memory` 用记忆工具返回的通用 `memory_id` 展开 card/content/sources 证据。
 - `retrieve_memory` 的 raw 命中携带 `source_id/turn_id/timestamp` 并默认按真实关系扩成完整问答组；只有上下文仍不足时才扩窗。raw 锚点只能读取当前会话，跨会话命中改用片段时间做精确 `time_range`。
-- `read_memory_timeline` 未设置正数 `page_token_budget` 时直接返回所选范围的完整原始对话，不是只返回 ID；只有紧凑 operation/material 证据需再用 `read_memory_entry`，显式分页则按 `next_cursor` 无损继续。
+- `read_memory_timeline` 的模型工具调用始终使用 MemCore 配置的有限完整逻辑单元页；省略或传 0
+  不代表无限读取，正数只能缩小而不能突破宿主上限。`status=partial` 时模型根据 selected / returned /
+  remaining 体量决定只传 `next_cursor` 无损继续，或等待 `browse_memory` 目录能力获取概览；紧凑
+  operation/material 证据用 `open_memory` 展开。
 - MemCore 已按逻辑单元和 token 预算完成分页时，宿主不得再按字符数二次截断；普通未声明边界的
   工具结果仍保留通用安全整形。所有结果照常执行密钥和本地路径脱敏。
+- 当前工具轮仍把完整页正文与结构化状态交给模型；写回 MemCore 的 operation observation 只保存包生成的
+  receipt（selector、IDs、coverage、cursor、hash），不得重复持久化正文。
 - memcore 失败返回结构化空/失败状态，不把旧记忆静默塞回 prompt/tools。
 - `git diff --check` 通过。

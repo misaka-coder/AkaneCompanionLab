@@ -323,7 +323,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertTrue(response.native_extracted)
         self.assertEqual(
             [item["function"]["name"] for item in runtime.calls[0]["native_tools"]],
-            ["retrieve_memory", "read_memory_timeline", "read_memory_entry"],
+            ["retrieve_memory", "read_memory_timeline", "open_memory"],
         )
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("provider native tool_calls", runtime.calls[0]["system_prompt"])

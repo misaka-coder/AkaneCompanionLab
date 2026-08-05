@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from unittest.mock import patch
 
 from memcore import build_native_memory_tool_specs
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
+from companion_v01 import capability_registry
 from companion_v01.capability_registry import (
-    READ_MEMORY_ENTRY_TOOL_SPEC,
+    OPEN_MEMORY_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
 )
@@ -32,6 +34,18 @@ from companion_v01.tool_runtime import (
 
 
 class NativeToolSchemaTests(unittest.TestCase):
+    def test_missing_memcore_native_contract_has_actionable_error(self) -> None:
+        with patch.object(
+            capability_registry,
+            "build_native_memory_tool_specs",
+            return_value=[{"name": "retrieve_for_turn"}],
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"^memcore_native_tool_contract_missing:open_memory$",
+            ):
+                capability_registry._memcore_tool_contract("open_memory", "open_memory")
+
     def test_build_openai_native_tool_specs_from_handlers(self) -> None:
         class FakeHandler:
             tool_type = "web_search"
@@ -125,7 +139,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         aliases = {
             "retrieve_for_turn": "retrieve_memory",
             "read_timeline": "read_memory_timeline",
-            "read_entry": "read_memory_entry",
         }
 
         def project_names(value):
@@ -148,7 +161,7 @@ class NativeToolSchemaTests(unittest.TestCase):
         for product_spec, package_name in (
             (RETRIEVE_MEMORY_TOOL_SPEC, "retrieve_for_turn"),
             (READ_MEMORY_TIMELINE_TOOL_SPEC, "read_timeline"),
-            (READ_MEMORY_ENTRY_TOOL_SPEC, "read_entry"),
+            (OPEN_MEMORY_TOOL_SPEC, "open_memory"),
         ):
             with self.subTest(package_name=package_name):
                 package_spec = package_specs[package_name]
@@ -168,7 +181,8 @@ class NativeToolSchemaTests(unittest.TestCase):
                 )
                 self.assertNotIn("retrieve_for_turn", rendered_contract)
                 self.assertNotIn("read_timeline", rendered_contract)
-                self.assertNotIn("read_entry", rendered_contract)
+                if package_name != "open_memory":
+                    self.assertNotIn(package_name, rendered_contract)
 
     def test_retrieve_memory_schema_exposes_exact_time_without_unknown_answer_anchor(self) -> None:
         time_hint = RETRIEVE_MEMORY_TOOL_SPEC.input_schema["properties"]["time_hint"]

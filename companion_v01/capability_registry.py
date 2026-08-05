@@ -61,11 +61,15 @@ def _memcore_tool_contract(package_name: str, product_name: str) -> tuple[str, d
     """Project the package-owned memory schema into an Akane capability name."""
 
     specs = build_native_memory_tool_specs(tool_format="plain", include_material_tool=False)
-    spec = next(item for item in specs if str(item.get("name") or "") == package_name)
+    spec = next(
+        (item for item in specs if str(item.get("name") or "") == package_name),
+        None,
+    )
+    if spec is None:
+        raise RuntimeError(f"memcore_native_tool_contract_missing:{package_name}")
     name_projection = {
         "retrieve_for_turn": "retrieve_memory",
         "read_timeline": "read_memory_timeline",
-        "read_entry": "read_memory_entry",
         package_name: product_name,
     }
 
@@ -92,9 +96,9 @@ _READ_MEMORY_TIMELINE_DESCRIPTION, _READ_MEMORY_TIMELINE_SCHEMA = _memcore_tool_
     "read_timeline",
     "read_memory_timeline",
 )
-_READ_MEMORY_ENTRY_DESCRIPTION, _READ_MEMORY_ENTRY_SCHEMA = _memcore_tool_contract(
-    "read_entry",
-    "read_memory_entry",
+_OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA = _memcore_tool_contract(
+    "open_memory",
+    "open_memory",
 )
 
 COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
@@ -104,7 +108,7 @@ CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 COMMON_TOOL_NAMES = (
     "retrieve_memory",
     "read_memory_timeline",
-    "read_memory_entry",
+    "open_memory",
     "load_character_context",
     "set_reminder",
     "list_reminders",
@@ -331,11 +335,11 @@ READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=16384,
 )
 
-READ_MEMORY_ENTRY_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="read_memory_entry",
-    display_name="Read memory entry",
-    description=_READ_MEMORY_ENTRY_DESCRIPTION,
-    input_schema=_READ_MEMORY_ENTRY_SCHEMA,
+OPEN_MEMORY_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="open_memory",
+    display_name="Open memory evidence",
+    description=_OPEN_MEMORY_DESCRIPTION,
+    input_schema=_OPEN_MEMORY_SCHEMA,
     risk="low",
     confirm="never",
     effects=(),
@@ -2532,7 +2536,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；需要具体时间原始记录时用 read_memory_timeline；时间线返回紧凑证据且正文确实相关时用 read_memory_entry 展开。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
+                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；需要具体时间原始记录时用 read_memory_timeline；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
                 trigger=_always,
             ),
             CapabilityModule(

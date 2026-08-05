@@ -31,7 +31,7 @@ from companion_v01 import retrieval_engine
 from companion_v01.store import MemoryStore
 from companion_v01.tool_invocation import NATIVE_OPENAI, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
 from companion_v01.tool_runtime import (
-    ReadMemoryEntryToolHandler,
+    OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
@@ -375,43 +375,59 @@ class _TimelineMemcoreManager:
         self.calls: list[dict[str, object]] = []
 
     def read_memory_timeline(self, **kwargs) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
+        arguments = dict(kwargs.get("arguments") or {})
+        self.calls.append({**dict(kwargs), **arguments})
         return {
             "operation": "read_memory_timeline",
             "ok": True,
-            "status": "ok",
-            "reason": "",
-            "date_from": str(kwargs.get("date_from") or ""),
-            "date_to": str(kwargs.get("date_to") or ""),
-            "time_periods": list(kwargs.get("time_periods") or []),
-            "anchor_source_id": str(kwargs.get("anchor_source_id") or ""),
-            "before_turns": int(kwargs.get("before_turns") or 0),
-            "after_turns": int(kwargs.get("after_turns") or 0),
+            "status": "partial",
+            "reason": "page_boundary",
+            "date_from": str(arguments.get("date_from") or ""),
+            "date_to": str(arguments.get("date_to") or ""),
+            "time_periods": list(arguments.get("time_periods") or []),
+            "anchor_source_id": str(arguments.get("anchor_source_id") or ""),
+            "before_turns": int(arguments.get("before_turns") or 0),
+            "after_turns": int(arguments.get("after_turns") or 0),
             "active_dates": ["2026-06-13"],
             "message_count": 1,
-            "messages": [{"source_id": "m1", "content": "MEMCORE TIMELINE"}],
             "text": "MEMCORE TIMELINE",
-            "projection": str(kwargs.get("projection") or "conversation"),
+            "projection": str(arguments.get("projection") or "conversation"),
+            "coverage_complete": False,
+            "next_cursor": "timeline-v1:next",
+            "selected_logical_unit_count": 3,
+            "returned_logical_unit_count": 1,
+            "remaining_logical_unit_count": 2,
             "coverage": {
                 "complete": False,
                 "next_cursor": "timeline-v1:next",
-                "logical_unit_count": 1,
-                "entry_count": 1,
+                "selected_logical_unit_count": 3,
+                "returned_logical_unit_count": 1,
+                "remaining_logical_unit_count": 2,
+            },
+            "receipt": {
+                "receipt_schema_version": 1,
+                "operation": "read_timeline",
+                "returned_logical_unit_ids": ["turn-1"],
             },
             "backend": "memcore",
         }
 
-    def read_memory_entry(self, **kwargs) -> dict[str, object]:
-        self.calls.append(dict(kwargs))
+    def open_memory(self, **kwargs) -> dict[str, object]:
+        arguments = dict(kwargs.get("arguments") or {})
+        self.calls.append({**dict(kwargs), **arguments})
         return {
-            "operation": "read_memory_entry",
+            "operation": "open_memory",
             "ok": True,
             "status": "ok",
             "reason": "",
-            "source_id": str(kwargs.get("source_id") or ""),
-            "detail": str(kwargs.get("detail") or "full"),
-            "entry": {"source_id": str(kwargs.get("source_id") or ""), "content": "完整工具正文"},
-            "text": "完整工具正文",
+            "memory_id": str(arguments.get("memory_id") or ""),
+            "view": str(arguments.get("view") or "content"),
+            "result": {"content": "完整工具正文"},
+            "receipt": {
+                "receipt_schema_version": 1,
+                "operation": "open_memory",
+                "returned_memory_ids": [str(arguments.get("memory_id") or "")],
+            },
             "backend": "memcore",
         }
 
@@ -617,11 +633,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
             patch.object(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000, create=True),
             patch.object(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67, create=True),
             patch.object(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 3200, create=True),
+            patch.object(config, "MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET", 7600, create=True),
         ):
             memory_config = manager._build_memory_config(fake_memcore)
         self.assertEqual(memory_config.raw_token_trigger, 24000)
         self.assertEqual(memory_config.raw_token_batch_ratio, 0.67)
         self.assertEqual(memory_config.retrieval_result_token_budget, 3200)
+        self.assertEqual(memory_config.native_timeline_page_token_budget, 7600)
         self.assertFalse(hasattr(memory_config, "raw_trigger_count"))
         self.assertFalse(hasattr(memory_config, "summary_batch_size"))
 
@@ -654,6 +672,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 self.assertEqual(
                     system.config.retrieval_result_token_budget,
                     config.MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET,
+                )
+                self.assertEqual(
+                    system.config.native_timeline_page_token_budget,
+                    config.MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET,
                 )
                 self.assertFalse(hasattr(system.config, "raw_trigger_count"))
                 self.assertFalse(hasattr(system.config, "summary_batch_size"))
@@ -4597,7 +4619,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertFalse(hasattr(manager, "update_turn_metadata"))
             manager.close()
 
-    def test_read_memory_timeline_returns_memcore_raw_and_excludes_current_turn(self) -> None:
+    def test_read_memory_timeline_returns_native_rendering_without_duplicate_messages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",
@@ -4645,15 +4667,16 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 date_from="2026-06-13",
                 date_to="2026-06-13",
                 time_periods=["morning"],
-                exclude_source_ids=["current-query"],
                 cross_conversation=True,
             )
 
             self.assertTrue(result["ok"], result)
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["message_count"], 1)
+            self.assertEqual(result["message_count"], 2)
             self.assertIn("上午讨论了角色提示词", result["text"])
-            self.assertNotIn("请读取今天上午", result["text"])
+            self.assertIn("请读取今天上午", result["text"])
+            self.assertNotIn("messages", result)
+            self.assertEqual(result["receipt"]["operation"], "read_timeline")
             manager.close()
 
     def test_manager_preserves_exact_timeline_coverage_and_expands_raw_entry(self) -> None:
@@ -4699,12 +4722,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 time_range={"start_at": "2026-08-03 11:40", "end_at": "2026-08-03 11:50"},
                 projection="conversation",
             )
-            expanded = manager.read_memory_entry(
+            expanded = manager.open_memory(
                 profile_user_id="u1",
                 session_id="group:42",
                 character_pack_id="char",
-                source_id="exact-1147",
-                detail="full",
+                arguments={"memory_id": "exact-1147", "view": "content"},
             )
             first_page = manager.read_memory_timeline(
                 profile_user_id="u1",
@@ -4727,18 +4749,98 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(timeline["coverage"]["next_cursor"], "")
             self.assertIn("李嘉图", timeline["text"])
             self.assertTrue(expanded["ok"], expanded)
-            self.assertIn("李嘉图", expanded["text"])
+            self.assertIn("李嘉图", json.dumps(expanded.get("result"), ensure_ascii=False))
             self.assertFalse(first_page["coverage"]["complete"])
             self.assertTrue(first_page["coverage"]["next_cursor"].startswith("timeline-v1:"))
             self.assertTrue(second_page["coverage"]["complete"])
             self.assertEqual(second_page["coverage"]["next_cursor"], "")
-            paged_source_ids = [
-                str(item.get("source_id") or "")
-                for page in (first_page, second_page)
-                for item in page["messages"]
-            ]
-            self.assertEqual(paged_source_ids, ["exact-1147", "exact-1148"])
+            first_unit_ids = set(first_page["receipt"]["returned_logical_unit_ids"])
+            second_unit_ids = set(second_page["receipt"]["returned_logical_unit_ids"])
+            self.assertTrue(first_unit_ids)
+            self.assertTrue(second_unit_ids)
+            self.assertFalse(first_unit_ids & second_unit_ids)
             manager.close()
+
+    def test_akane_native_timeline_omitted_and_zero_budget_use_finite_memcore_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                manager._memory_config.native_timeline_page_token_budget = 200
+                for index in range(12):
+                    manager.append_standalone_message(
+                        {
+                            "source_id": f"busy-{index:02d}",
+                            "content": f"群聊第 {index} 条 " + ("上下文证据" * 80),
+                            "timestamp": _ts(2026, 8, 3, 11, index),
+                            "memory_metadata": {},
+                        },
+                        role="user",
+                        profile_user_id="u1",
+                        session_id="group:42",
+                        character_pack_id="char",
+                    )
+
+                service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=manager)
+                base_arguments = {
+                    "time_range": {
+                        "start_at": "2026-08-03 11:00",
+                        "end_at": "2026-08-03 12:00",
+                    }
+                }
+                omitted = service.read(
+                    profile_user_id="u1",
+                    session_id="group:42",
+                    character_pack_id="char",
+                    arguments=base_arguments,
+                )
+                zero = service.read(
+                    profile_user_id="u1",
+                    session_id="group:42",
+                    character_pack_id="char",
+                    arguments={**base_arguments, "page_token_budget": 0},
+                )
+
+                for result in (omitted, zero):
+                    self.assertTrue(result["ok"], result)
+                    self.assertEqual(result["status"], "partial")
+                    self.assertEqual(result["reason"], "page_boundary")
+                    self.assertEqual(result["coverage"]["page_token_budget"], 200)
+                    self.assertGreater(
+                        result["selected_projected_token_count"],
+                        result["returned_projected_token_count"],
+                    )
+                    self.assertTrue(result["next_cursor"])
+                    self.assertNotIn("messages", result)
+                    self.assertEqual(result["receipt"]["operation"], "read_timeline")
+
+                handler = ReadMemoryTimelineToolHandler(timeline_service=service)
+                tool_result = handler.execute(
+                    call={"type": "read_memory_timeline", **base_arguments},
+                    context=ToolExecutionContext(
+                        profile_user_id="u1",
+                        session_id="group:42",
+                        character_pack_id="char",
+                        now_ts=0,
+                        visual_payload={},
+                    ),
+                )
+                self.assertIn("selected_projected_token_count", tool_result.followup_context)
+                self.assertIn("next_cursor", tool_result.followup_context)
+                self.assertIn("群聊第", tool_result.followup_context)
+                self.assertTrue(tool_result.followup_envelope.producer_bounded)
+                self.assertFalse(tool_result.followup_envelope.complete)
+                self.assertEqual(tool_result.trace_receipt["operation"], "read_timeline")
+                self.assertNotIn("群聊第", json.dumps(tool_result.trace_receipt, ensure_ascii=False))
+            finally:
+                manager.close()
 
     def test_dual_write_rejects_cross_namespace_metadata_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -6381,15 +6483,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertIn("MEMCORE TIMELINE", result.followup_context)
-        self.assertIn("memcore", result.followup_context)
+        self.assertIn("MemCore", result.followup_context)
         self.assertEqual(legacy.read_calls, [])
         self.assertEqual(memcore_manager.calls[0]["profile_user_id"], "u1")
-        self.assertEqual(memcore_manager.calls[0]["session_id"], "u1")
+        self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
-        self.assertEqual(memcore_manager.calls[0]["time_periods"], ["morning"])
-        self.assertEqual(memcore_manager.calls[0]["exclude_source_ids"], ["current-query"])
+        self.assertEqual(memcore_manager.calls[0]["time_periods"], ["上午"])
         self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
-        self.assertEqual(result.state_updates["memory_timeline"]["status"], "ok")
+        self.assertEqual(result.state_updates["memory_timeline"]["status"], "partial")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
         self.assertFalse(result.state_updates["memory_timeline"]["coverage"]["complete"])
         self.assertEqual(
@@ -6432,14 +6533,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(memcore_manager.calls[0]["page_token_budget"], 12000)
         self.assertEqual(memcore_manager.calls[1]["cursor"], "timeline-v1:next")
-        self.assertEqual(memcore_manager.calls[1]["session_id"], "u1")
+        self.assertEqual(memcore_manager.calls[1]["session_id"], "group:42")
 
-    def test_read_memory_entry_uses_current_conversation_and_returns_producer_envelope(self) -> None:
+    def test_open_memory_uses_current_conversation_and_returns_producer_envelope(self) -> None:
         memcore_manager = _TimelineMemcoreManager()
         service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=memcore_manager)
-        handler = ReadMemoryEntryToolHandler(timeline_service=service)
+        handler = OpenMemoryToolHandler(timeline_service=service)
         call = handler.normalize_call(
-            {"type": "read_memory_entry", "source_id": "tool-result-1", "detail": "full"}
+            {"type": "open_memory", "memory_id": "tool-result-1", "view": "content"}
         )
 
         self.assertIsNotNone(call)
@@ -6451,10 +6552,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(memcore_manager.calls[0]["session_id"], "group:42")
-        self.assertEqual(memcore_manager.calls[0]["source_id"], "tool-result-1")
+        self.assertEqual(memcore_manager.calls[0]["memory_id"], "tool-result-1")
         self.assertIn("完整工具正文", result.followup_context)
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)
+        self.assertEqual(result.trace_receipt["operation"], "open_memory")
 
     def test_read_memory_timeline_raw_anchor_stays_in_current_conversation(self) -> None:
         memcore_manager = _TimelineMemcoreManager()
@@ -6489,8 +6591,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(forwarded["anchor_source_id"], "raw-hit-1")
         self.assertEqual(forwarded["before_turns"], 3)
         self.assertEqual(forwarded["after_turns"], 5)
-        self.assertFalse(forwarded["cross_conversation"])
-        self.assertIn("完整对话 turn", result.followup_context)
+        self.assertFalse(bool(forwarded.get("cross_conversation")))
+        self.assertIn("MEMCORE TIMELINE", result.followup_context)
 
     def test_read_memory_timeline_keeps_structured_invalid_mode_error(self) -> None:
         manager = SimpleNamespace(
@@ -6528,7 +6630,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "invalid_filter")
         self.assertEqual(result["reason"], "timeline_modes_are_mutually_exclusive")
-        self.assertIn("不能同时使用", service.render_tool_context(result))
+        rendered = service.render_tool_context(result)
+        self.assertIn("timeline_modes_are_mutually_exclusive", rendered)
+        self.assertIn('"status": "invalid_filter"', rendered)
 
     def test_empty_projected_page_still_exposes_lossless_continuation(self) -> None:
         service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=None)
@@ -6550,8 +6654,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("本页没有", rendered)
-        self.assertIn("read_memory_timeline(cursor=timeline-v1:next-page)", rendered)
+        self.assertIn('"status": "empty"', rendered)
+        self.assertIn('"next_cursor": "timeline-v1:next-page"', rendered)
 
     def test_read_memory_timeline_adapter_does_not_need_legacy_service_in_memcore_mode(self) -> None:
         memcore_manager = _TimelineMemcoreManager()
@@ -6570,10 +6674,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
             rendered = service.render_tool_context(result)
 
         self.assertEqual(periods, ["midnight", "morning", "night"])
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "partial")
         self.assertIn("MEMCORE TIMELINE", rendered)
         self.assertEqual(service.build_acquaintance_prompt(profile_user_id="u1", now_ts=100), "")
-        self.assertEqual(memcore_manager.calls[0]["exclude_source_ids"], ["current-query"])
+        self.assertNotIn("exclude_source_ids", memcore_manager.calls[0])
 
     def test_read_memory_timeline_tool_does_not_fallback_to_legacy_when_memcore_unavailable(self) -> None:
         legacy = _TimelineLegacyService()
@@ -6624,7 +6728,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("tool_trace_truncated", result)
         self.assertIn("完整证据" * 4000, result)
 
-    def test_producer_bounded_tool_trace_reaches_memcore_batch_without_second_truncation(self) -> None:
+    def test_memory_receipt_reaches_memcore_batch_without_copying_evidence_body(self) -> None:
         class _CaptureManager:
             enabled = True
 
@@ -6647,6 +6751,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 producer_bounded=True,
                 complete=True,
             ),
+            trace_receipt={
+                "receipt_schema_version": 1,
+                "operation": "read_timeline",
+                "returned_logical_unit_ids": ["turn-1"],
+                "result_hash": "a" * 64,
+            },
         )
 
         with patch.object(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 1000):
@@ -6674,7 +6784,49 @@ class MemcoreIntegrationTests(unittest.TestCase):
         stored = str(manager.exchanges[0]["result"])
         self.assertNotIn("secret-value", stored)
         self.assertNotIn("tool_trace_truncated", stored)
-        self.assertIn("完整证据" * 4000, stored)
+        self.assertNotIn("完整证据", stored)
+        self.assertIn("returned_logical_unit_ids", stored)
+        self.assertIn("turn-1", stored)
+        self.assertIn("a" * 64, stored)
+
+    def test_non_memory_tool_without_receipt_keeps_existing_trace_result(self) -> None:
+        class _CaptureManager:
+            enabled = True
+
+            def __init__(self) -> None:
+                self.exchanges: list[dict[str, object]] = []
+
+            def record_tool_batch(self, **kwargs) -> dict[str, object]:
+                self.exchanges = list(kwargs.get("exchanges") or [])
+                return {"ok": True, "status": "completed", "exchanges": []}
+
+        manager = _CaptureManager()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = manager
+        result = ToolExecutionResult(
+            tool_type="web_search",
+            followup_context="普通工具的真实结果",
+        )
+
+        engine._record_memcore_tool_batch(
+            items=[
+                (
+                    {"type": "web_search", TOOL_INVOCATION_ID_FIELD: "call_search_1"},
+                    result,
+                    result.followup_context,
+                    "",
+                )
+            ],
+            profile_user_id="u1",
+            session_id="group:42",
+            character_pack_id="char",
+            now_ts=100,
+            current_user_source_id="current-query",
+            memcore_turn_id="turn-1",
+            recorded_tool_call_ids=set(),
+        )
+
+        self.assertEqual(manager.exchanges[0]["result"], "普通工具的真实结果")
 
     def test_prompt_layer_high_water_trimming_makes_monotonic_progress(self) -> None:
         value = "\n".join(f"line-{index}" for index in range(20))

@@ -173,14 +173,14 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5d 已完成**：真实 engine smoke / acceptance gate 从 `web_search` 泛化到 `memory`，验证全链路（native 决策 → `_native_tool_call` → `ToolInvocation(source=native)` → execute → 最终表现回复）。`run_native_web_search_smoke.py --toolset memory` 用确定性 fixture handler（`SmokeRetrieveMemoryHandler` / `SmokeReadMemoryTimelineHandler`，罐头记忆、不读真实记忆库、不写盘）跑真实 `AkaneMemoryEngine` 一个回合；`run_native_web_search_acceptance.py --toolset memory` 复用同一 gate（`native_tool_call_extracted>0`、`tool_event>0`、流式有 `assistant_working`、fallback=0、最终回复非空 speech）。`web_search` 默认行为不变。新增 `tests/test_native_tool_smoke.py` 覆盖 toolset 映射 / fixture 执行的确定性部分；live `--smoke` 需真实模型，由人触发。
 
-- **5g 已完成（MemCore 精确证据读取）**：记忆工具族新增 package-owned `read_memory_entry`，
-  `read_memory_timeline` 原样透传精确 `time_range`、projection、token 页预算和 opaque cursor。
-  时间线返回 `coverage.complete=false` 时，模型只用 `next_cursor` 继续；大型 operation/material 证据
-  先以紧凑 raw `source_id` 出现，正文确实影响答案时再按当前会话权限展开。宿主新增通用
-  `ToolFollowupEnvelope`：生产者已按完整逻辑单元限界的结果不再被 8K/12K 字符层二次截断，
-  但密钥和本地路径脱敏继续生效；未声明边界的普通工具仍走原安全整形。memory smoke 已同时覆盖
-  `retrieve_memory / read_memory_timeline / read_memory_entry`。宿主也不再根据“有没有 snippet”伪造
-  MemCore 结构化检索 diagnostics；不再伪造 `memcore_owned` verifier 状态，也不追加 `match/no_match` 模型调用。
+- **5g 已完成并由 MemCore Catalog Slice E1 替换旧展开入口**：`read_memory_timeline` 与
+  `open_memory` 的描述和 input schema 直接投影自 package native specs；模型可见的旧
+  `read_memory_entry` 已删除。时间线精确 `time_range`、projection、opaque cursor、有限 token 页、
+  `partial/page_boundary`、selected/returned/remaining 体量和建议动作均由 MemCore dispatcher 权威返回，
+  Akane 不再过滤 messages、重渲染正文或重新解释分页。当前工具轮仍看到完整本页证据；
+  `ToolExecutionResult.trace_receipt` 让跨轮 MemCore observation 只保存 selector、IDs、coverage、cursor
+  和 hash，不再复制大段结果正文。普通未提供 receipt 的工具维持原记录和安全整形。memory smoke
+  现覆盖 `retrieve_memory / read_memory_timeline / open_memory`；`browse_memory` 留在后续目录浏览切片。
 
 - **5f 已完成（接入 capcore-provider-openai）**：Akane 的 `native_tool_schema.py` 不再手写 OpenAI Chat Completions function-tool envelope，而是把 handler metadata/input_schema 投影为 `CapabilityToolSpec` 后交给 `capcore-provider-openai.build_openai_chat_tool_set()`。`llm_runtime.py` 的非流式与流式 `tool_calls` 解析改用 `capcore-provider-openai` parser，再映射回 Akane 的原始 tool/capability id。对于 `mcp.demo.echo` 这类 OpenAI 不允许的 dotted id，schema 内部携带 `_akane_capability_id`，provider payload 只发送 provider-safe name，回填时再还原成原始 capability id；该内部字段不得进入 provider payload 或公开最终 payload。
 

@@ -339,9 +339,9 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
             self.assertIn("date_from/date_to", instruction)
             self.assertIn("anchor_source_id", instruction)
             self.assertIn("附近完整 turn", instruction)
-            self.assertIn("完整原始对话", instruction)
-            self.assertIn("read_memory_entry", instruction)
-            self.assertIn("不能混用", instruction)
+            self.assertIn("finite complete-unit page", instruction)
+            self.assertIn("open_memory", instruction)
+            self.assertIn("status=partial", instruction)
 
 
 if __name__ == "__main__":

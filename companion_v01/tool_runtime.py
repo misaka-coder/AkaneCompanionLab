@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import hashlib
 import ipaddress
 import inspect
@@ -59,7 +59,7 @@ from .capability_registry import (
     OPEN_MUSIC_SEARCH_TOOL_SPEC,
     PREPARE_VOICE_DATASET_TOOL_SPEC,
     READ_ATTACHMENT_SECTION_TOOL_SPEC,
-    READ_MEMORY_ENTRY_TOOL_SPEC,
+    OPEN_MEMORY_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
     READ_WORKSPACE_TOOL_SPEC,
     REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
@@ -126,6 +126,10 @@ class ToolExecutionResult:
     followup_context: str = ""
     followup_envelope: ToolFollowupEnvelope | None = None
     state_updates: dict[str, Any] = field(default_factory=dict)
+    # Optional compact cross-round record chosen by the tool producer. The
+    # current model round still receives followup_context in full; MemCore may
+    # persist this receipt instead of duplicating a large evidence body.
+    trace_receipt: Mapping[str, Any] | None = None
     # Internal-only provider image blocks. Never copy this field into prompt
     # text, stream events, logs, memcore, or public final output.
     model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
@@ -616,12 +620,12 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=READ_MEMORY_TIMELINE_TOOL_SPEC.input_schema,
     ),
-    "read_memory_entry": ToolMetadata(
+    "open_memory": ToolMetadata(
         family="memory",
         operation="read",
         risk="low",
         default_round_budget=3,
-        input_schema=READ_MEMORY_ENTRY_TOOL_SPEC.input_schema,
+        input_schema=OPEN_MEMORY_TOOL_SPEC.input_schema,
     ),
     "load_character_context": ToolMetadata(
         family="character_context",
@@ -814,7 +818,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
 TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "retrieve_memory": RETRIEVE_MEMORY_TOOL_SPEC,
     "read_memory_timeline": READ_MEMORY_TIMELINE_TOOL_SPEC,
-    "read_memory_entry": READ_MEMORY_ENTRY_TOOL_SPEC,
+    "open_memory": OPEN_MEMORY_TOOL_SPEC,
     "load_character_context": LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
     "set_reminder": SET_REMINDER_TOOL_SPEC,
     "list_reminders": LIST_REMINDERS_TOOL_SPEC,
@@ -1464,126 +1468,59 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             f"- read_memory_timeline：{READ_MEMORY_TIMELINE_TOOL_SPEC.description} "
-            "已知具体时刻时优先使用 time_range.start_at/end_at，已知整日时使用 date_from/date_to；"
-            "retrieve_memory 已命中 raw 但一条内容不完整时，"
-            "使用 anchor_source_id 和 before_turns/after_turns 读取附近完整 turn。"
-            "不传 page_token_budget 时会返回所选范围的完整原始对话，不是只返回 ID；"
-            "只有工具/材料等紧凑证据块需要拿返回的 source_id 调 read_memory_entry 展开。"
-            "时间、anchor、cursor 三种模式不能混用；coverage.complete=false 时只用 next_cursor 继续，"
-            "不要重复选择器；summary/semantic_summary 的 source_id 不能作为 anchor。"
+            "整日或粗时段使用 date_from/date_to；retrieve_memory 返回 raw source_id 且需要附近完整 turn 时，"
+            "使用 anchor_source_id 和 before_turns/after_turns。status=partial 时只传 next_cursor 继续，"
+            "不要重复原选择器。"
             "这是内部时间线读取，不要先在 speech 里宣布。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-
-        cursor = str(value.get("cursor") or "").strip()
-        raw_time_range = value.get("time_range")
-        time_range: dict[str, str] | None = None
-        if isinstance(raw_time_range, Mapping):
-            start_at = str(raw_time_range.get("start_at") or "").strip()
-            end_at = str(raw_time_range.get("end_at") or "").strip()
-            if not start_at or not end_at:
-                return None
-            time_range = {"start_at": start_at, "end_at": end_at}
-        elif raw_time_range not in (None, ""):
-            return None
-
-        date_from = str(value.get("date_from") or "").strip()
-        date_to = str(value.get("date_to") or "").strip()
-        anchor_source_id = str(value.get("anchor_source_id") or "").strip()
-        has_date = bool(
-            date_from or date_to or value.get("time_periods") or value.get("periods") or value.get("time_of_day")
-        )
-        selector_count = int(time_range is not None) + int(has_date) + int(bool(anchor_source_id)) + int(bool(cursor))
-        if selector_count != 1:
-            return None
-        if cursor:
-            if any(
-                (
-                    value.get("projection") not in (None, "", "conversation"),
-                    value.get("page_token_budget") not in (None, "", 0),
-                    value.get("before_turns") not in (None, "", 0),
-                    value.get("after_turns") not in (None, "", 0),
-                )
-            ):
-                return None
-            return {
-                "type": self.tool_type,
-                "time_range": None,
-                "date_from": "",
-                "date_to": "",
-                "time_periods": [],
-                "anchor_source_id": "",
-                "before_turns": 0,
-                "after_turns": 0,
-                "projection": "conversation",
-                "page_token_budget": 0,
-                "cursor": cursor,
-            }
-        if date_from and self._parse_date(date_from) is None:
-            return None
-        if date_to and self._parse_date(date_to) is None:
-            return None
-
-        raw_periods = value.get("time_periods")
-        if raw_periods is None:
-            raw_periods = value.get("periods") or value.get("time_of_day")
-        if isinstance(raw_periods, str):
-            period_values = [item for item in re.split(r"[,，;；|、\s]+", raw_periods) if item]
-        elif isinstance(raw_periods, list):
-            period_values = [str(item or "") for item in raw_periods]
-        else:
-            period_values = []
-        periods = self.timeline_service.normalize_time_periods(period_values)
-        before_turns = self._coerce_nonnegative_int(value.get("before_turns"))
-        after_turns = self._coerce_nonnegative_int(value.get("after_turns"))
-        page_token_budget = self._coerce_nonnegative_int(value.get("page_token_budget"))
-        projection = str(value.get("projection") or "conversation").strip().lower()
-        if (
-            before_turns is None
-            or after_turns is None
-            or page_token_budget is None
-            or projection not in {"conversation", "full", "tools"}
-        ):
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
         return {
             "type": self.tool_type,
-            "time_range": time_range,
-            "date_from": date_from,
-            "date_to": date_to,
-            "time_periods": periods,
-            "anchor_source_id": anchor_source_id,
-            "before_turns": before_turns,
-            "after_turns": after_turns,
-            "projection": projection,
-            "page_token_budget": page_token_budget,
-            "cursor": "",
+            **{
+                str(key): item
+                for key, item in value.items()
+                if key != "type" and not str(key).startswith("_tool_")
+            },
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.timeline_service.read(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            character_pack_id=context.character_pack_id,
-            time_range=dict(call.get("time_range") or {}) or None,
-            date_from=str(call.get("date_from") or ""),
-            date_to=str(call.get("date_to") or ""),
-            time_periods=list(call.get("time_periods") or []),
-            anchor_source_id=str(call.get("anchor_source_id") or ""),
-            before_turns=int(call.get("before_turns") or 0),
-            after_turns=int(call.get("after_turns") or 0),
-            projection=str(call.get("projection") or "conversation"),
-            page_token_budget=int(call.get("page_token_budget") or 0),
-            cursor=str(call.get("cursor") or ""),
-            exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
-        )
+        if bool(getattr(self.timeline_service, "package_native_dispatch", False)):
+            result = self.timeline_service.read(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                character_pack_id=context.character_pack_id,
+                arguments={key: item for key, item in call.items() if key != "type"},
+            )
+        else:
+            raw_periods = call.get("time_periods")
+            period_values = list(raw_periods) if isinstance(raw_periods, list) else []
+            result = self.timeline_service.read(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                character_pack_id=context.character_pack_id,
+                time_range=dict(call.get("time_range") or {}) or None,
+                date_from=str(call.get("date_from") or ""),
+                date_to=str(call.get("date_to") or ""),
+                time_periods=self.timeline_service.normalize_time_periods(period_values),
+                anchor_source_id=str(call.get("anchor_source_id") or ""),
+                before_turns=int(call.get("before_turns") or 0),
+                after_turns=int(call.get("after_turns") or 0),
+                projection=str(call.get("projection") or "conversation"),
+                page_token_budget=int(call.get("page_token_budget") or 0),
+                cursor=str(call.get("cursor") or ""),
+                exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
+            )
         coverage = dict(result.get("coverage") or {})
-        complete = bool(coverage.get("complete", True))
-        next_cursor = str(coverage.get("next_cursor") or "").strip()
+        complete = bool(
+            result.get(
+                "coverage_complete",
+                coverage.get("complete", str(result.get("status") or "") != "partial"),
+            )
+        )
+        next_cursor = str(result.get("next_cursor") or coverage.get("next_cursor") or "").strip()
         continuation = {"cursor": next_cursor} if next_cursor else None
         followup_context = self.timeline_service.render_tool_context(result)
         return ToolExecutionResult(
@@ -1616,82 +1553,73 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
                     "message_count": int(result.get("message_count") or 0),
                 }
             },
+            trace_receipt=dict(result.get("receipt") or {}) or None,
         )
 
-    @staticmethod
-    def _parse_date(value: Any) -> date | None:
-        try:
-            return date.fromisoformat(str(value or "").strip())
-        except ValueError:
-            return None
 
-    @staticmethod
-    def _coerce_nonnegative_int(value: Any) -> int | None:
-        if value in (None, ""):
-            return 0
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            return None
-        return number if number >= 0 else None
-
-
-class ReadMemoryEntryToolHandler(BaseToolHandler):
-    tool_type = "read_memory_entry"
+class OpenMemoryToolHandler(BaseToolHandler):
+    tool_type = "open_memory"
 
     def __init__(self, *, timeline_service: Any) -> None:
         self.timeline_service = timeline_service
 
     def tool_spec(self):
-        return READ_MEMORY_ENTRY_TOOL_SPEC
+        return OPEN_MEMORY_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
         return (
-            f"- read_memory_entry：{READ_MEMORY_ENTRY_TOOL_SPEC.description} "
-            "只使用时间线结果明确给出的 raw source_id；正文已经可见或与回答无关时不要重复展开。"
+            f"- open_memory：{OPEN_MEMORY_TOOL_SPEC.description} "
             "这是内部证据读取，不要先在 speech 里宣布。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
-        source_id = str(value.get("source_id") or "").strip()
-        detail = str(value.get("detail") or "full").strip().lower()
-        if not source_id or detail not in {"full", "compact"}:
-            return None
-        return {"type": self.tool_type, "source_id": source_id, "detail": detail}
+        return {
+            "type": self.tool_type,
+            **{
+                str(key): item
+                for key, item in value.items()
+                if key != "type" and not str(key).startswith("_tool_")
+            },
+        }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.timeline_service.read_entry(
+        result = self.timeline_service.open_memory(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
             character_pack_id=context.character_pack_id,
-            source_id=str(call.get("source_id") or ""),
-            detail=str(call.get("detail") or "full"),
+            arguments={key: item for key, item in call.items() if key != "type"},
         )
-        followup_context = self.timeline_service.render_entry_context(result)
+        followup_context = self.timeline_service.render_open_memory_context(result)
         return ToolExecutionResult(
             tool_type=self.tool_type,
             followup_context=followup_context,
             followup_envelope=ToolFollowupEnvelope(
                 content=followup_context,
                 producer_bounded=bool(result.get("ok")),
-                complete=True,
+                complete=bool(result.get("page_complete", True)),
+                continuation=(
+                    {"cursor": str(result.get("next_cursor") or "")}
+                    if str(result.get("next_cursor") or "").strip()
+                    else None
+                ),
                 diagnostics={
-                    "source_id": str(result.get("source_id") or ""),
-                    "detail": str(result.get("detail") or ""),
+                    "memory_id": str(result.get("memory_id") or ""),
+                    "view": str(result.get("view") or ""),
                     "status": str(result.get("status") or ""),
                 },
             ),
             state_updates={
-                "memory_entry": {
+                "open_memory": {
                     "backend": str(result.get("backend") or ""),
                     "status": str(result.get("status") or ""),
                     "reason": str(result.get("reason") or ""),
-                    "source_id": str(result.get("source_id") or ""),
-                    "detail": str(result.get("detail") or ""),
+                    "memory_id": str(result.get("memory_id") or ""),
+                    "view": str(result.get("view") or ""),
                 }
             },
+            trace_receipt=dict(result.get("receipt") or {}) or None,
         )
 
 
