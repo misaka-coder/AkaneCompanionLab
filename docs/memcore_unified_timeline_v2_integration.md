@@ -1,10 +1,10 @@
 # MemCore Unified Timeline V2：亮点与接入指南
 
-> 适用版本：MemCore `0.1.0`、AkaneCompanionLab 2026-07-21 本地主线。
+> 适用版本：MemCore `0.1.0`（`d84fbbe`）、AkaneCompanionLab `c48df77`。
 >
-> 当前状态：Akane 本地运行时已经完成 Unified Timeline V2 写链、读链、provider projection、
+> 当前状态：Akane 本地与统一云端 Host 已经完成 Unified Timeline V2 写链、读链、provider projection、
 > 同步/流式真实 provider raw-result 和旧 prompt 权威清理。本文只描述已经接通并有自动化验证的能力；
-> 尚未执行云端部署。
+> 完整模型可见工具结果跨轮保留与 `open_memory` 批量读取已于 2026-08-05 部署。
 
 ## 一句话定位
 
@@ -486,7 +486,25 @@ MemCore package 的权威接口在 `memcore.MemorySystem`、`memcore.timeline`�
 - MemCore 不保存文件本体，不执行工具，不管理桌宠 UI/TTS/音乐。
 - `provider_output_raw` 是内部持久化数据，应按对话数据的隐私等级保护。
 - 当前版本为 `0.1.0`，授权边界以 MemCore 仓库的 `LICENSE` 为准。
-- 本文对应本地已验收代码；云端部署、真实云配置和线上回滚窗口需要单独批准与执行。
+- 真实云配置、密钥与数据路径不写入本文；线上变更仍需独立备份、回滚和真实表现验收。
+
+## 2026-08-05 完整工具证据与批量读取部署记录
+
+- 云端不可变 release 为 `c48df77-d84fbbe-tool-evidence`，对应 Akane `c48df77` 与 MemCore
+  `d84fbbe`；运行时从该 release 的 `.packages/memcore` 加载，不依赖同目录源码回退。
+- 模型实际看到的完整工具结果与调用一起进入同一开放 turn，并按统一 raw token 生命周期跨轮可见；
+  receipt 只作为 retention anchor，不再替代正文。结构化工具结果只投影一次，不重复附带
+  `data.output`。
+- `open_memory` 已支持 `memory_ids` 批量打开 `card/content`，保持请求顺序并逐项返回
+  `status/reason`；`sources` 继续使用单个 ID 和各自独立 cursor。
+- 切换前使用 SQLite online backup 保存 personal/finance 两份活动 MemCore，备份与切换后的在线库
+  `PRAGMA quick_check` 均为 `ok`。回滚备份标识为
+  `tool-evidence-c48df77-d84fbbe-20260805T133954Z`。
+- 云端新 release 运行 265 项 Akane 聚焦回归通过；切换后 `/health` 为 `ok`、root binding 有效，
+  personal/finance 均为 `online / active`，两条 QQ self-check 均为 `connected`，`NRestarts=0`，
+  启动窗口未出现 traceback、import error 或 MemCore compaction failure。
+- 已删除云端唯一废弃配置 `MEMCORE_TOOL_TRACE_MAX_CHARS`；模型路由、QQ 账号、NapCat 登录态、角色包、
+  其他 MemCore 阈值和两份数据根均未修改。真实追问体验与缓存 usage 仍以部署后的 QQ 对话为准。
 
 ## 2026-07-21 本地验收记录
 
