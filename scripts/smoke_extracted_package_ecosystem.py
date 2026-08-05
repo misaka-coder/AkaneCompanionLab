@@ -150,7 +150,7 @@ def _build_memory_context(temp_root: Path) -> tuple[str, MemorySystem, SQLiteMem
         store=store,
         index=index,
         embedding=embedding,
-        config=MemoryConfig(enable_verifier=False),
+        config=MemoryConfig(),
     )
     mem.record_user_turn(
         "我喜欢稳定的 prompt 前缀和清晰的工具反馈。",

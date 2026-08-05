@@ -334,13 +334,13 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
                 store=MemoryStore(Path(temp_dir)),
                 root_dir=Path(temp_dir) / "memory",
             )
-            instruction = ReadMemoryTimelineToolHandler(
-                timeline_service=service
-            ).build_prompt_instruction()
+            instruction = ReadMemoryTimelineToolHandler(timeline_service=service).build_prompt_instruction()
 
             self.assertIn("date_from/date_to", instruction)
             self.assertIn("anchor_source_id", instruction)
             self.assertIn("附近完整 turn", instruction)
+            self.assertIn("完整原始对话", instruction)
+            self.assertIn("read_memory_entry", instruction)
             self.assertIn("不能混用", instruction)
 
 

@@ -262,10 +262,9 @@ def execute_retrieve_memory_tool(
                     about_roles=about_roles,
                     memcore_payload=memcore_read_payload,
                 ),
-                verifier_output=_memcore_owned_verifier_state(),
-                verifier_timing={"mode": "memcore_owned", "attempts": [], "selected_attempt": None},
                 retrieval_backend="memcore",
                 memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+                retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
             )
         return _build_retrieve_memory_tool_result(
             query=query,
@@ -284,10 +283,9 @@ def execute_retrieve_memory_tool(
                 about_roles=about_roles,
                 memcore_payload=memcore_read_payload,
             ),
-            verifier_output=_memcore_owned_verifier_state(),
-            verifier_timing={"mode": "memcore_owned", "attempts": [], "selected_attempt": None},
             retrieval_backend="memcore",
             memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+            retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
         )
     # Legacy/dual migration adapter. The model-facing contract remains the
     # MemCore schema; old retrieval receives only a conservative projection.
@@ -403,13 +401,18 @@ def _build_retrieve_memory_tool_result(
     about_roles: list[str],
     snippets: list[str],
     retrieval_result: dict[str, Any],
-    verifier_output: dict[str, Any],
-    verifier_timing: dict[str, Any],
     retrieval_backend: str,
     memcore_read: dict[str, Any] | None = None,
+    retrieval_diagnostics: dict[str, Any] | None = None,
+    verifier_output: dict[str, Any] | None = None,
+    verifier_timing: dict[str, Any] | None = None,
 ) -> ToolExecutionResult:
-    raw_anchor_ids = [
-        str(match.get("source_id") or "").strip()
+    raw_anchors = [
+        {
+            "source_id": str(match.get("source_id") or "").strip(),
+            "turn_id": str(match.get("turn_id") or "").strip(),
+            "timestamp": int(match.get("timestamp") or 0),
+        }
         for match in list((memcore_read or {}).get("matches") or [])
         if isinstance(match, dict)
         and str(match.get("layer") or "") == "raw"
@@ -420,12 +423,17 @@ def _build_retrieve_memory_tool_result(
             "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
             + "\n\n".join(snippets)
             + (
-                "\n\n可用于 read_memory_timeline 附近完整 turn 扩窗的 raw source_id：\n"
-                + "\n".join(f"- {source_id}" for source_id in raw_anchor_ids)
-                if raw_anchor_ids
+                "\n\n可能用于 read_memory_timeline 附近完整 turn 扩窗的 raw 锚点：\n"
+                + "\n".join(
+                    f"- source_id={item['source_id']} turn_id={item['turn_id'] or '-'} timestamp={item['timestamp']}"
+                    for item in raw_anchors
+                )
+                if raw_anchors
                 else ""
             )
-            + "\n\n内容够用就直接自然回答；只有 raw 结果缺少前后语境时才扩窗，不要声称系统绝对证明了这些记忆。"
+            + "\n\n内容够用就直接自然回答；只有 raw 结果缺少前后语境时才扩窗。"
+            "raw 锚点只允许读取当前会话；若锚点因跨会话不可用，改用命中片段中已经显示的时间调用精确 time_range，"
+            "仍找不到就如实说明，不要猜。不要声称系统绝对证明了这些记忆。"
         )
     else:
         followup_context = (
@@ -444,10 +452,14 @@ def _build_retrieve_memory_tool_result(
         },
         "retrieval_result": retrieval_result,
         "retrieval_backend": retrieval_backend,
-        "verifier_output": verifier_output,
-        "verifier_timing": verifier_timing,
         "confirmed_snippets": snippets,
     }
+    if retrieval_diagnostics is not None:
+        memory_retrieval_state["retrieval_diagnostics"] = retrieval_diagnostics
+    if verifier_output is not None:
+        memory_retrieval_state["verifier_output"] = verifier_output
+    if verifier_timing is not None:
+        memory_retrieval_state["verifier_timing"] = verifier_timing
     if memcore_read is not None:
         memory_retrieval_state["memcore_read"] = memcore_read
     return ToolExecutionResult(
@@ -571,10 +583,16 @@ def _build_memcore_retrieval_result(
     }
 
 
-def _memcore_owned_verifier_state() -> dict[str, Any]:
+def _build_memcore_retrieval_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        "status": "memcore_owned",
-        "reason": "host_verifier_state_not_synthesized",
+        "retrieval_status": str(payload.get("retrieval_status") or payload.get("status") or ""),
+        "effective_filters": dict(payload.get("effective_filters") or {}),
+        "candidate_counts": dict(payload.get("candidate_counts") or {}),
+        "entity_filter_relaxed": bool(payload.get("entity_filter_relaxed")),
+        "relaxation_steps": list(payload.get("relaxation_steps") or []),
+        "truncated": bool(payload.get("truncated")),
+        "omitted_match_count": int(payload.get("omitted_match_count") or 0),
+        "latency_ms": int(payload.get("latency_ms") or 0),
     }
 
 

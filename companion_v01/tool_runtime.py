@@ -1376,7 +1376,8 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "知道具体时间范围时用 time_hint.start_at/end_at，按已知时间先缩小原始证据范围。"
             "memory_facets/about_roles 不确定就省略，不能拿当前问句的 memory_query 代替目标历史内容。"
             "普通对话不打开 include_explicit；确实要找工具、事件、skill 或材料轨迹时，才同时给出精确 kind_patterns。"
-            "raw 结果若只够定位但上下文不足，可把它的 source_id 交给 read_memory_timeline 做附近完整 turn 扩窗。"
+            "raw 命中通常已经带当前刺激和最终回复；仍缺前后语境时，才把 raw source_id 交给 read_memory_timeline 扩窗。"
+            "raw 锚点只能读取当前会话；跨会话锚点不可用时，改用命中片段里已显示的时间调用精确 time_range。"
             "这是内部记忆读取，不要先在 speech 里宣布。"
         )
 
@@ -1466,6 +1467,8 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
             "已知具体时刻时优先使用 time_range.start_at/end_at，已知整日时使用 date_from/date_to；"
             "retrieve_memory 已命中 raw 但一条内容不完整时，"
             "使用 anchor_source_id 和 before_turns/after_turns 读取附近完整 turn。"
+            "不传 page_token_budget 时会返回所选范围的完整原始对话，不是只返回 ID；"
+            "只有工具/材料等紧凑证据块需要拿返回的 source_id 调 read_memory_entry 展开。"
             "时间、anchor、cursor 三种模式不能混用；coverage.complete=false 时只用 next_cursor 继续，"
             "不要重复选择器；summary/semantic_summary 的 source_id 不能作为 anchor。"
             "这是内部时间线读取，不要先在 speech 里宣布。"
@@ -1492,7 +1495,9 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         date_from = str(value.get("date_from") or "").strip()
         date_to = str(value.get("date_to") or "").strip()
         anchor_source_id = str(value.get("anchor_source_id") or "").strip()
-        has_date = bool(date_from or date_to or value.get("time_periods") or value.get("periods") or value.get("time_of_day"))
+        has_date = bool(
+            date_from or date_to or value.get("time_periods") or value.get("periods") or value.get("time_of_day")
+        )
         selector_count = int(time_range is not None) + int(has_date) + int(bool(anchor_source_id)) + int(bool(cursor))
         if selector_count != 1:
             return None

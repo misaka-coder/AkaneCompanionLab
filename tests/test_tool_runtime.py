@@ -37,8 +37,10 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertIn("memory_facets/about_roles", instruction)
         self.assertIn("未知人物或答案不能猜进锚点", instruction)
         self.assertIn("time_hint.start_at/end_at", instruction)
-        self.assertIn("raw 结果", instruction)
+        self.assertIn("raw 命中", instruction)
         self.assertIn("source_id", instruction)
+        self.assertIn("跨会话锚点不可用", instruction)
+        self.assertIn("精确 time_range", instruction)
 
     def test_normalize_call_accepts_canonical_raw_first_filters_without_hidden_limits(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)

@@ -5239,6 +5239,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "snippet_hashes": ["hash-1"],
                 "latency_ms": 2,
                 "snippets": ["memcore snippet about cola"],
+                "matches": [
+                    {
+                        "source_id": "raw-cola-1",
+                        "turn_id": "turn-cola-1",
+                        "timestamp": 1785727800,
+                        "layer": "raw",
+                    }
+                ],
             }
         )
         retrieval_service = _ToolFakeRetrievalService()
@@ -5264,6 +5272,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertIn("memcore snippet about cola", result.followup_context)
+        self.assertIn("source_id=raw-cola-1", result.followup_context)
+        self.assertIn("turn_id=turn-cola-1", result.followup_context)
+        self.assertIn("跨会话不可用", result.followup_context)
         self.assertEqual(retrieval_service.calls, [])
         self.assertEqual(len(memcore_manager.calls), 1)
         call = memcore_manager.calls[0]
@@ -5289,8 +5300,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(state["confirmed_snippets"], ["memcore snippet about cola"])
         self.assertEqual(state["memcore_read"]["snippet_count"], 1)
         self.assertNotIn("snippets", state["memcore_read"])
-        self.assertEqual(state["verifier_output"]["status"], "memcore_owned")
-        self.assertNotIn("match_result", state["verifier_output"])
+        self.assertNotIn("verifier_output", state)
+        self.assertNotIn("verifier_timing", state)
+        self.assertEqual(state["retrieval_diagnostics"]["retrieval_status"], "ok")
+        self.assertFalse(state["retrieval_diagnostics"]["truncated"])
 
     def test_retrieve_memory_tool_memcore_no_hit_keeps_no_hit_followup(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(
@@ -5319,9 +5332,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         state = result.state_updates["memory_retrieval"]
         self.assertEqual(state["retrieval_backend"], "memcore")
         self.assertEqual(state["confirmed_snippets"], [])
-        self.assertEqual(state["verifier_output"]["status"], "memcore_owned")
-        self.assertNotIn("match_result", state["verifier_output"])
-        self.assertEqual(state["verifier_timing"]["mode"], "memcore_owned")
+        self.assertNotIn("verifier_output", state)
+        self.assertNotIn("verifier_timing", state)
+        self.assertEqual(state["retrieval_diagnostics"]["retrieval_status"], "ok")
 
     def test_retrieve_memory_tool_does_not_fallback_to_legacy_when_memcore_fails(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(

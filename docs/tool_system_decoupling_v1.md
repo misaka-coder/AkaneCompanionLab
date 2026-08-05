@@ -180,7 +180,7 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
   `ToolFollowupEnvelope`：生产者已按完整逻辑单元限界的结果不再被 8K/12K 字符层二次截断，
   但密钥和本地路径脱敏继续生效；未声明边界的普通工具仍走原安全整形。memory smoke 已同时覆盖
   `retrieve_memory / read_memory_timeline / read_memory_entry`。宿主也不再根据“有没有 snippet”伪造
-  `match/no_match` verifier 结论；当前只记录 `memcore_owned`，真实 verifier 诊断由后续 package 透传。
+  MemCore 结构化检索 diagnostics；不再伪造 `memcore_owned` verifier 状态，也不追加 `match/no_match` 模型调用。
 
 - **5f 已完成（接入 capcore-provider-openai）**：Akane 的 `native_tool_schema.py` 不再手写 OpenAI Chat Completions function-tool envelope，而是把 handler metadata/input_schema 投影为 `CapabilityToolSpec` 后交给 `capcore-provider-openai.build_openai_chat_tool_set()`。`llm_runtime.py` 的非流式与流式 `tool_calls` 解析改用 `capcore-provider-openai` parser，再映射回 Akane 的原始 tool/capability id。对于 `mcp.demo.echo` 这类 OpenAI 不允许的 dotted id，schema 内部携带 `_akane_capability_id`，provider payload 只发送 provider-safe name，回填时再还原成原始 capability id；该内部字段不得进入 provider payload 或公开最终 payload。
 

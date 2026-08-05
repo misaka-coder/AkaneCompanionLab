@@ -161,7 +161,7 @@ async def _run_smoke() -> dict[str, Any]:
             store=store,
             index=index,
             embedding=embedding,
-            config=MemoryConfig(enable_verifier=False),
+            config=MemoryConfig(),
         )
 
         adapter = PythonCapabilityAdapter(

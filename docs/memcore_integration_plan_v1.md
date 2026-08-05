@@ -80,7 +80,7 @@ companion_v01/memcore_integration/
 memcore 要求注入 `memcore.LLMClient`。Akane 现有 `LLMRuntime` 可包装:
 
 - `TaskType.SUMMARY` / `SEMANTIC` / `REINFORCEMENT`: 调 `llm.call_aux_json(system_prompt, user_prompt, fallback, temperature, prompt_cache_key=...)`。
-- `TaskType.VERIFIER` + `ResponseFormat.NDJSON`: 调 `llm.call_aux_ndjson(...)`，把 `NDJSONCallResult.events` 填进 `LLMResult.data`。
+- MemCore 的 `LLMClient` 只承接 summary / semantic / reinforcement 三类 JSON 压缩任务；检索由包内确定性排序、硬过滤、关系完整性与 diagnostics 完成，不追加 verifier 模型调用。
 - 任何异常都返回 `LLMResult(ok=False, data=request.fallback, error=...)`，不要抛裸异常。
 - `LLMResult.attempts`、`latency_ms` 可以先粗略填，后面再精细化。
 
@@ -218,7 +218,7 @@ MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 - 在 `retrieval_engine.execute_retrieve_memory_tool()` 或新 wrapper 中按 `MEMORY_BACKEND` 分流。
 - memcore 路径调用:
   - 当前轮 user record 从 manager 取或按 source_id 查 memcore。
-  - `retrieve_for_turn(current=current_record, query=query, keywords=..., time_hint=..., source_layers=..., subject_scopes=..., categories=..., importance_min=..., limit=...)`
+  - `retrieve_for_turn_structured(current=..., query=..., entity_anchors=..., topic_terms=..., time_hint=..., source_layers=..., memory_facets=..., about_roles=...)`；模型不控制隐藏 limit，包默认最多返回 6 个命中组。
 - followup 文案保持 Akane 当前文案，减少模型行为变化。
 - state_updates 仍输出 `memory_retrieval`，字段名尽量兼容前端/debug。
 - `MEMORY_BACKEND=memcore` 且 memcore read 成功时，`retrieve_memory` 的 followup 使用 memcore snippets，`retrieval_backend="memcore"`，不再调用 legacy retrieval。
@@ -353,6 +353,8 @@ MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 - `retrieve_memory` 的既有 schema 保持兼容；`read_memory_timeline` 在原有日期/anchor 模式之外增加
   精确 `time_range`、完整逻辑单元分页、`coverage/next_cursor` 与 projection；
   `read_memory_entry` 用时间线返回的 raw `source_id` 展开当前授权会话中的完整证据。
+- `retrieve_memory` 的 raw 命中携带 `source_id/turn_id/timestamp` 并默认按真实关系扩成完整问答组；只有上下文仍不足时才扩窗。raw 锚点只能读取当前会话，跨会话命中改用片段时间做精确 `time_range`。
+- `read_memory_timeline` 未设置正数 `page_token_budget` 时直接返回所选范围的完整原始对话，不是只返回 ID；只有紧凑 operation/material 证据需再用 `read_memory_entry`，显式分页则按 `next_cursor` 无损继续。
 - MemCore 已按逻辑单元和 token 预算完成分页时，宿主不得再按字符数二次截断；普通未声明边界的
   工具结果仍保留通用安全整形。所有结果照常执行密钥和本地路径脱敏。
 - memcore 失败返回结构化空/失败状态，不把旧记忆静默塞回 prompt/tools。
