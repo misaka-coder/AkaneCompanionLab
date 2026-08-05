@@ -1276,6 +1276,110 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         self.assertEqual(next_projection["payloads"][:3], actual_second_history)
 
+    def test_memory_tool_body_and_receipt_remain_visible_on_following_user_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "memory-user-1", "content": "打开七月的摘要", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                evidence = "【MemCore 记忆证据】\n七月确认了统一事件流与完整工具结果。"
+                receipt = {
+                    "receipt_schema_version": 1,
+                    "operation": "open_memory",
+                    "status": "ok",
+                    "returned_memory_ids": ["episode-july"],
+                    "result_hash": "b" * 64,
+                }
+                batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "open_memory",
+                            "tool_call_id": "call-open-july",
+                            "tool_input": {"memory_id": "episode-july", "view": "content"},
+                            "result": evidence,
+                            "retention_anchor": receipt,
+                            "source": "memcore",
+                            "timestamp": 101,
+                            "source_id_prefix": "memory-open-july",
+                            "result_status": "success",
+                        }
+                    ],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(batch["ok"], batch)
+                result_source_id = batch["exchanges"][0]["tool_result_source_id"]
+
+                active = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                active_turn = [
+                    message["payload"]
+                    for message in active["messages"]
+                    if message.get("turn_id") == opened["turn_id"]
+                ]
+                active_tool = next(message for message in active_turn if message.get("role") == "tool")
+                self.assertEqual(active_tool["content"], evidence)
+                self.assertEqual(active_tool["content"].count("七月确认了统一事件流"), 1)
+                self.assertNotIn("data.output", active_tool["content"])
+                stored = manager._store.get_record_by_source_id(result_source_id)
+                self.assertEqual(stored["trace_metadata"]["retention_anchor"], receipt)
+
+                completed = manager.complete_input_turn(
+                    turn_id=str(opened["turn_id"]),
+                    assistant_record={
+                        "source_id": "memory-final-1",
+                        "content": "七月的方案已经确认。",
+                        "timestamp": 102,
+                    },
+                    memory_metadata={"memory_facets": ["decision"], "entity_anchors": ["MemCore"]},
+                    provider_output_raw='{"speech":"七月的方案已经确认。"}',
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(completed["ok"], completed)
+                manager.begin_input_turn(
+                    {"source_id": "memory-user-2", "content": "接着说", "timestamp": 103},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                following = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        prior_turn = [
+            message["payload"]
+            for message in following["messages"]
+            if message.get("turn_id") == opened["turn_id"]
+        ]
+        prior_tool = next(message for message in prior_turn if message.get("role") == "tool")
+        self.assertEqual(prior_tool["content"], evidence)
+        self.assertEqual(prior_tool["content"].count("七月确认了统一事件流"), 1)
+
     def test_final_completion_failure_preserves_reply_and_aborts_open_turn(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         completion_calls: list[dict[str, object]] = []
@@ -6829,28 +6933,26 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result.state_updates["memory_timeline"]["backend"], "memcore")
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "unavailable")
 
-    def test_tool_trace_text_is_sanitized_and_bounded_before_memcore_write(self) -> None:
+    def test_tool_trace_text_is_sanitized_without_storage_side_truncation(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         source = "api_key=secret-value " + ("证据" * 900)
-        with patch.object(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 1000):
-            result = engine._sanitize_tool_trace_text(source)
-
-        self.assertNotIn("secret-value", result)
-        self.assertIn("tool_trace_truncated", result)
-        self.assertLess(len(result), 1100)
-
-    def test_producer_bounded_tool_trace_is_sanitized_without_second_truncation(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        source = "api_key=secret-value\n" + ("完整证据" * 5000)
-
-        with patch.object(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 1000):
-            result = engine._sanitize_tool_trace_text(source, producer_bounded=True)
+        result = engine._sanitize_tool_trace_text(source)
 
         self.assertNotIn("secret-value", result)
         self.assertNotIn("tool_trace_truncated", result)
-        self.assertIn("完整证据" * 4000, result)
+        self.assertIn("证据" * 800, result)
 
-    def test_memory_receipt_reaches_memcore_batch_without_copying_evidence_body(self) -> None:
+    def test_large_tool_trace_keeps_complete_model_visible_result(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        source = "api_key=secret-value\n" + ("完整证据" * 5000)
+
+        result = engine._sanitize_tool_trace_text(source)
+
+        self.assertNotIn("secret-value", result)
+        self.assertNotIn("tool_trace_truncated", result)
+        self.assertTrue(result.endswith("完整证据" * 5000))
+
+    def test_memory_result_and_receipt_reach_memcore_batch_as_body_and_anchor(self) -> None:
         class _CaptureManager:
             enabled = True
 
@@ -6881,35 +6983,40 @@ class MemcoreIntegrationTests(unittest.TestCase):
             },
         )
 
-        with patch.object(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 1000):
-            engine._record_memcore_tool_batch(
-                items=[
-                    (
-                        {
-                            "type": "read_memory_timeline",
-                            TOOL_INVOCATION_ID_FIELD: "call_timeline_1",
-                        },
-                        tool_result,
-                        evidence,
-                        "",
-                    )
-                ],
-                profile_user_id="u1",
-                session_id="group:42",
-                character_pack_id="char",
-                now_ts=100,
-                current_user_source_id="current-query",
-                memcore_turn_id="turn-1",
-                recorded_tool_call_ids=set(),
-            )
+        engine._record_memcore_tool_batch(
+            items=[
+                (
+                    {
+                        "type": "read_memory_timeline",
+                        TOOL_INVOCATION_ID_FIELD: "call_timeline_1",
+                    },
+                    tool_result,
+                    evidence,
+                    "",
+                )
+            ],
+            profile_user_id="u1",
+            session_id="group:42",
+            character_pack_id="char",
+            now_ts=100,
+            current_user_source_id="current-query",
+            memcore_turn_id="turn-1",
+            recorded_tool_call_ids=set(),
+        )
 
         stored = str(manager.exchanges[0]["result"])
         self.assertNotIn("secret-value", stored)
         self.assertNotIn("tool_trace_truncated", stored)
-        self.assertNotIn("完整证据", stored)
-        self.assertIn("returned_logical_unit_ids", stored)
-        self.assertIn("turn-1", stored)
-        self.assertIn("a" * 64, stored)
+        self.assertIn("完整证据" * 4000, stored)
+        self.assertEqual(
+            manager.exchanges[0]["retention_anchor"],
+            {
+                "receipt_schema_version": 1,
+                "operation": "read_timeline",
+                "returned_logical_unit_ids": ["turn-1"],
+                "result_hash": "a" * 64,
+            },
+        )
 
     def test_non_memory_tool_without_receipt_keeps_existing_trace_result(self) -> None:
         class _CaptureManager:

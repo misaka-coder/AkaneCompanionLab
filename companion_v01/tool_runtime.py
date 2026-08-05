@@ -127,9 +127,9 @@ class ToolExecutionResult:
     followup_context: str = ""
     followup_envelope: ToolFollowupEnvelope | None = None
     state_updates: dict[str, Any] = field(default_factory=dict)
-    # Optional compact cross-round record chosen by the tool producer. The
-    # current model round still receives followup_context in full; MemCore may
-    # persist this receipt instead of duplicating a large evidence body.
+    # Optional compact navigation/retention record chosen by the producer.
+    # MemCore stores it beside, never instead of, the complete model-visible
+    # followup_context so the same observation remains available across turns.
     trace_receipt: Mapping[str, Any] | None = None
     # Internal-only provider image blocks. Never copy this field into prompt
     # text, stream events, logs, memcore, or public final output.
@@ -1684,6 +1684,7 @@ class OpenMemoryToolHandler(BaseToolHandler):
                 ),
                 diagnostics={
                     "memory_id": str(result.get("memory_id") or ""),
+                    "memory_ids": list(result.get("memory_ids") or []),
                     "view": str(result.get("view") or ""),
                     "status": str(result.get("status") or ""),
                 },
@@ -1694,6 +1695,7 @@ class OpenMemoryToolHandler(BaseToolHandler):
                     "status": str(result.get("status") or ""),
                     "reason": str(result.get("reason") or ""),
                     "memory_id": str(result.get("memory_id") or ""),
+                    "memory_ids": list(result.get("memory_ids") or []),
                     "view": str(result.get("view") or ""),
                 }
             },

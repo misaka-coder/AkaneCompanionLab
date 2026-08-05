@@ -3064,6 +3064,7 @@ class MemcoreManager:
             )
         tool_input = exchange.get("tool_input")
         result = exchange.get("result")
+        retention_anchor = exchange.get("retention_anchor")
         source = str(exchange.get("source") or "").strip()
         common = {
             "correlation_id": correlation_id,
@@ -3084,6 +3085,12 @@ class MemcoreManager:
             compatibility_role=f"assistant.tool_call {tool} {correlation_id}",
             **common,
         )
+        observation_trace = {
+            "tool_name": tool_name,
+            "status": str(exchange.get("result_status") or "success"),
+        }
+        if isinstance(retention_anchor, dict) and retention_anchor:
+            observation_trace["retention_anchor"] = dict(retention_anchor)
         observation = memcore.TimelineEntryInput(
             source_id=f"{prefix}:tool_result" if prefix else "",
             kind=f"tool.{tool}.result",
@@ -3092,10 +3099,7 @@ class MemcoreManager:
             semantic_text=memcore.render_tool_result_text(result=result, source=source),
             timestamp=effective_ts + 1,
             payload={"output": result, "source": source},
-            trace_metadata={
-                "tool_name": tool_name,
-                "status": str(exchange.get("result_status") or "success"),
-            },
+            trace_metadata=observation_trace,
             compatibility_role=f"tool.{tool} {correlation_id}",
             **common,
         )

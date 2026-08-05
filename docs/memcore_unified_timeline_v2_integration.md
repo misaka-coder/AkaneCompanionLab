@@ -373,8 +373,8 @@ MEMCORE_ENABLE_FLAVOR=true
 MEMCORE_SHADOW_COMPARE=false
 MEMCORE_RAW_TOKEN_TRIGGER=48000
 MEMCORE_RAW_TOKEN_BATCH_RATIO=0.67
-MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
-MEMCORE_TOOL_TRACE_MAX_CHARS=12000
+MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=0
+MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET=12000
 ```
 
 - `MEMCORE_STORAGE_PATH` 留空时使用当前 Akane 实例数据目录中的 `memcore_v01.db`。
@@ -386,6 +386,9 @@ MEMCORE_TOOL_TRACE_MAX_CHARS=12000
   `SUMMARY_TRIGGER_COUNT/SUMMARY_BATCH_SIZE` 传给 MemCore；这两个字段只属于仍可显式启动的 legacy backend。
 - `MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET` 限制一次结构化检索回填的 token；
   `0` 表示不设预算。它不参与 raw 压缩规划。
+- 工具调用与模型实际看到的完整结果写入同一开放 turn，后续回合继续可见，
+  直到上述统一 raw token 差值压缩处理该 turn。Akane 不再对持久化结果做第二次
+  字符截断；工具生产者自己的分页/结构化 partial 状态仍然保留。
 - Akane 注入与自身 prompt audit 相同公式的 `TokenCounter`，并明确报告
   `quality=estimated`；不会把多 provider 共用估算伪装成精确 tokenizer。
 - 新接入应使用 `memcore`。`legacy/dual` 只用于明确的迁移窗口，不应继续扩展旧权威。

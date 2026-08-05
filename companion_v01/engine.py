@@ -6930,19 +6930,13 @@ class AkaneMemoryEngine:
             feedback = "\n\n".join(
                 part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
             )
+            stored_result: Any = self._sanitize_tool_trace_text(feedback)
             trace_receipt = getattr(tool_result, "trace_receipt", None)
-            if isinstance(trace_receipt, Mapping) and trace_receipt:
-                stored_result: Any = self._sanitize_tool_trace_value(
-                    {"receipt": dict(trace_receipt)}
-                )
-            else:
-                stored_result = self._sanitize_tool_trace_text(
-                    feedback,
-                    producer_bounded=bool(
-                        tool_result.followup_envelope is not None
-                        and tool_result.followup_envelope.producer_bounded
-                    ),
-                )
+            retention_anchor = (
+                self._sanitize_tool_trace_value(dict(trace_receipt))
+                if isinstance(trace_receipt, Mapping) and trace_receipt
+                else None
+            )
             result_status = self._tool_result_trace_status(tool_result)
             source_material = f"{current_user_source_id}|{session_id}|{call_id}|{tool_type}"
             exchanges.append(
@@ -6957,6 +6951,7 @@ class AkaneMemoryEngine:
                         "tooltrace:" + hashlib.sha256(source_material.encode("utf-8")).hexdigest()[:32]
                     ),
                     "result_status": result_status,
+                    "retention_anchor": retention_anchor,
                 }
             )
         if not exchanges:
@@ -7044,7 +7039,7 @@ class AkaneMemoryEngine:
         )
 
     @staticmethod
-    def _sanitize_tool_trace_text(value: str, *, producer_bounded: bool = False) -> str:
+    def _sanitize_tool_trace_text(value: str) -> str:
         text = str(value or "")
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         text = re.sub(
@@ -7058,14 +7053,6 @@ class AkaneMemoryEngine:
             text,
         )
         text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
-        if not producer_bounded:
-            max_chars = max(
-                1000,
-                min(100000, int(getattr(config, "MEMCORE_TOOL_TRACE_MAX_CHARS", 12000) or 12000)),
-            )
-            if len(text) > max_chars:
-                omitted = len(text) - max_chars
-                text = f"{text[:max_chars]}\n[tool_trace_truncated omitted_chars={omitted}]"
         return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:

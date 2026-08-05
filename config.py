@@ -130,10 +130,6 @@ class Settings(BaseSettings):
     MEMCORE_COMPACTION_WORKERS: int = 1
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
-    # Bound one persisted tool result so a large provider payload cannot keep
-    # inflating the visible raw timeline before normal MemCore compaction runs.
-    MEMCORE_TOOL_TRACE_MAX_CHARS: int = 12000
-
     # === LLM 密钥 & 接入 ===
     # 键位角色：
     #   TEXT   = 辅助任务（路由判断、记忆总结、时间解析等）[必填，至少有一个 key]
@@ -606,7 +602,6 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET, \
         MEMCORE_COMPACTION_WORKERS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
-    global MEMCORE_TOOL_TRACE_MAX_CHARS
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
 
@@ -891,8 +886,6 @@ def _apply_settings(s: Settings) -> None:
         0.0,
         min(3600.0, float(s.MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS or 0.0)),
     )
-    MEMCORE_TOOL_TRACE_MAX_CHARS = max(1000, min(100000, int(s.MEMCORE_TOOL_TRACE_MAX_CHARS or 12000)))
-
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 
     # === host / port / qq ===
