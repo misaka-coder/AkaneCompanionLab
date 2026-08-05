@@ -1391,6 +1391,9 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "普通对话不打开 include_explicit；确实要找工具、事件、skill 或材料轨迹时，才同时给出精确 kind_patterns。"
             "raw 命中通常已经带当前刺激和最终回复；仍缺前后语境时，才把 raw source_id 交给 read_memory_timeline 扩窗。"
             "raw 锚点只能读取当前会话；跨会话锚点不可用时，改用命中片段里已显示的时间调用精确 time_range。"
+            "检索结果会给每条命中的可用导航 ID：片段够用就直接回答；summary/semantic_summary 需要完整摘要时"
+            "用 memory_id 调 open_memory(view=content)，用户要原话或原始证据时用 open_memory(view=sources)。"
+            "拿到有效命中后不要只改写同义词连续检索；只有新增已知实体、时间线索或检索目标实质变化时才再次检索。"
             "这是内部记忆读取，不要先在 speech 里宣布。"
         )
 

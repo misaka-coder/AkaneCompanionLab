@@ -2419,6 +2419,8 @@ class MemcoreManager:
                 "retrieval_status": retrieval_status,
                 "snippet_count": len(snippets),
                 "snippet_hashes": snippet_hashes(snippets),
+                "navigation": list(structured.get("navigation") or []),
+                "suggested_next_actions": list(structured.get("suggested_next_actions") or []),
                 "effective_filters": dict(structured.get("effective_filters") or {}),
                 "candidate_counts": dict(structured.get("candidate_counts") or {}),
                 "entity_filter_relaxed": bool(structured.get("entity_filter_relaxed")),
@@ -2430,6 +2432,27 @@ class MemcoreManager:
             if include_snippets:
                 payload["snippets"] = snippets
                 payload["matches"] = list(structured.get("matches") or [])
+                if self._memcore_module is not None:
+                    receipt_arguments = {
+                        "query": str(query or ""),
+                        "entity_anchors": [str(item).strip() for item in (entity_anchors or []) if str(item).strip()],
+                        "topic_terms": [str(item).strip() for item in (topic_terms or []) if str(item).strip()],
+                        "source_layers": [str(item).strip() for item in (source_layers or []) if str(item).strip()],
+                        "memory_facets": [str(item).strip() for item in (memory_facets or []) if str(item).strip()],
+                        "about_roles": [str(item).strip() for item in (about_roles or []) if str(item).strip()],
+                        "time_hint": dict(time_hint or {}) if isinstance(time_hint, dict) else {},
+                        "include_explicit": bool(include_explicit),
+                        "kind_patterns": list(explicit_patterns),
+                    }
+                    payload["receipt"] = self._memcore_module.build_memory_operation_receipt(
+                        "retrieve_for_turn",
+                        receipt_arguments,
+                        {
+                            "ok": True,
+                            "status": "ok",
+                            "result": {**structured, "snippets": snippets},
+                        },
+                    )
             return payload
         except ValueError as exc:
             reason = str(exc) or "invalid_filter"

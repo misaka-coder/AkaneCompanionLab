@@ -5231,6 +5231,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(result["snippet_count"], 2)
             self.assertEqual(len(result["snippets"]), 2)
             self.assertTrue(all("可乐" in snippet for snippet in result["snippets"]))
+            self.assertEqual(result["receipt"]["operation"], "retrieve_for_turn")
+            self.assertTrue(result["receipt"]["returned_source_ids"])
             manager.close()
 
     def test_exact_time_retrieval_recalls_unknown_companion_without_answer_anchor(self) -> None:
@@ -5540,6 +5542,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "layer": "raw",
                     }
                 ],
+                "receipt": {
+                    "receipt_schema_version": 1,
+                    "operation": "retrieve_for_turn",
+                    "returned_source_ids": ["raw-cola-1"],
+                },
             }
         )
         retrieval_service = _ToolFakeRetrievalService()
@@ -5597,6 +5604,41 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("verifier_timing", state)
         self.assertEqual(state["retrieval_diagnostics"]["retrieval_status"], "ok")
         self.assertFalse(state["retrieval_diagnostics"]["truncated"])
+        self.assertEqual(result.trace_receipt["operation"], "retrieve_for_turn")
+
+    def test_retrieve_memory_summary_hit_exposes_openable_id_and_original_evidence_route(self) -> None:
+        memcore_manager = _ToolFakeMemcoreManager(
+            {
+                "operation": "retrieve_memory",
+                "ok": True,
+                "status": "ok",
+                "snippet_count": 1,
+                "snippet_hashes": ["hash-summary"],
+                "latency_ms": 2,
+                "snippets": ["Fable 相关阶段摘要"],
+                "matches": [
+                    {
+                        "source_id": "episode-fable",
+                        "layer": "summary",
+                        "source_ids": ["raw-a", "raw-b"],
+                    }
+                ],
+                "navigation": [{"match_index": 1, "layer": "summary", "memory_id": "episode-fable"}],
+            }
+        )
+        engine = _ToolFakeEngine(memcore_manager=memcore_manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"), patch.object(config, "MEMCORE_SHADOW_COMPARE", False):
+            result = retrieval_engine.execute_retrieve_memory_tool(
+                engine,
+                call={"query": "Fable 把雅可比证伪"},
+                context=_tool_context(),
+            )
+
+        self.assertIn("memory_id=episode-fable", result.followup_context)
+        self.assertIn("open_memory(view=content)", result.followup_context)
+        self.assertIn("open_memory(view=sources)", result.followup_context)
+        self.assertIn("不要只换同义词反复调用 retrieve_memory", result.followup_context)
 
     def test_retrieve_memory_tool_memcore_no_hit_keeps_no_hit_followup(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(
@@ -6744,6 +6786,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         self.assertEqual(memcore_manager.calls[0]["session_id"], "group:42")
         self.assertEqual(memcore_manager.calls[0]["memory_id"], "tool-result-1")
+        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
         self.assertIn("完整工具正文", result.followup_context)
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)

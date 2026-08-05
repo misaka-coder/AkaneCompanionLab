@@ -197,12 +197,19 @@ class MemcoreTimelineToolService:
             and getattr(manager, "enabled", False)
             and getattr(manager, "available", False)
         ):
+            native_arguments = dict(arguments or {})
+            if not str(native_arguments.get("cursor") or "").strip():
+                # Retrieval and catalog reads may return a memory owned by an
+                # older conversation in the same hard user namespace.  The
+                # returned opaque ID must remain directly openable; making the
+                # model rediscover this host policy breaks the read loop.
+                native_arguments.setdefault("cross_conversation", True)
             try:
                 result = manager.open_memory(
                     profile_user_id=profile_user_id,
                     session_id=str(session_id or profile_user_id),
                     character_pack_id=character_pack_id,
-                    arguments=dict(arguments or {}),
+                    arguments=native_arguments,
                 )
             except Exception as exc:
                 logger.warning("memcore open-memory adapter failed: %s", type(exc).__name__)

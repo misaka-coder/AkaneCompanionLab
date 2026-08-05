@@ -407,6 +407,15 @@ def _build_retrieve_memory_tool_result(
     verifier_output: dict[str, Any] | None = None,
     verifier_timing: dict[str, Any] | None = None,
 ) -> ToolExecutionResult:
+    navigation = _memcore_retrieval_navigation(memcore_read)
+    navigation_by_index: dict[int, dict[str, Any]] = {}
+    for item in navigation:
+        try:
+            match_index = int(item.get("match_index") or 0)
+        except (TypeError, ValueError):
+            continue
+        if match_index > 0:
+            navigation_by_index[match_index] = item
     raw_anchors = [
         {
             "source_id": str(match.get("source_id") or "").strip(),
@@ -419,9 +428,22 @@ def _build_retrieve_memory_tool_result(
         and str(match.get("source_id") or "").strip()
     ]
     if snippets:
+        rendered_hits: list[str] = []
+        for index, snippet in enumerate(snippets, start=1):
+            nav = navigation_by_index.get(index, {})
+            layer = str(nav.get("layer") or "").strip()
+            memory_id = str(nav.get("memory_id") or "").strip()
+            source_id = str(nav.get("source_id") or "").strip()
+            if memory_id:
+                heading = f"【命中 {index}｜{layer or 'summary'}｜memory_id={memory_id}】"
+            elif source_id:
+                heading = f"【命中 {index}｜raw｜source_id={source_id}】"
+            else:
+                heading = f"【命中 {index}】"
+            rendered_hits.append(f"{heading}\n{snippet}")
         followup_context = (
             "你刚刚主动检索了长期记忆。下面是可能回答主人问题的参考记忆：\n"
-            + "\n\n".join(snippets)
+            + "\n\n".join(rendered_hits)
             + (
                 "\n\n可能用于 read_memory_timeline 附近完整 turn 扩窗的 raw 锚点：\n"
                 + "\n".join(
@@ -431,9 +453,12 @@ def _build_retrieve_memory_tool_result(
                 if raw_anchors
                 else ""
             )
-            + "\n\n内容够用就直接自然回答；只有 raw 结果缺少前后语境时才扩窗。"
+            + "\n\n使用规则：片段足够就直接自然回答。命中 summary/semantic_summary 时，"
+            "需要完整摘要用对应 memory_id 调 open_memory(view=content)；用户明确要原话、原始证据或摘要不足时，"
+            "用对应 memory_id 调 open_memory(view=sources)。只有 raw 结果缺少相邻对话时才扩窗。"
             "raw 锚点只允许读取当前会话；若锚点因跨会话不可用，改用命中片段中已经显示的时间调用精确 time_range，"
-            "仍找不到就如实说明，不要猜。不要声称系统绝对证明了这些记忆。"
+            "仍找不到就如实说明，不要猜。已有有效命中后，不要只换同义词反复调用 retrieve_memory；"
+            "只有获得新的已知实体、时间线索或检索目标实质变化时才再次检索。不要声称系统绝对证明了这些记忆。"
         )
     else:
         followup_context = (
@@ -468,7 +493,46 @@ def _build_retrieve_memory_tool_result(
         stream_events=[],
         followup_context=followup_context,
         state_updates={"memory_retrieval": memory_retrieval_state},
+        trace_receipt=(
+            dict((memcore_read or {}).get("receipt") or {})
+            if isinstance((memcore_read or {}).get("receipt"), dict)
+            else None
+        ),
     )
+
+
+def _memcore_retrieval_navigation(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Preserve package navigation, with a compatibility projection for older payloads."""
+
+    if not isinstance(payload, dict):
+        return []
+    provided = [dict(item) for item in list(payload.get("navigation") or []) if isinstance(item, dict)]
+    if provided:
+        return provided
+    out: list[dict[str, Any]] = []
+    for index, match in enumerate(list(payload.get("matches") or []), start=1):
+        if not isinstance(match, dict):
+            continue
+        source_id = str(match.get("source_id") or "").strip()
+        if not source_id:
+            continue
+        layer = str(match.get("layer") or "raw").strip() or "raw"
+        item: dict[str, Any] = {"match_index": index, "layer": layer}
+        if layer in {"summary", "semantic_summary"}:
+            item["memory_id"] = source_id
+        else:
+            item["source_id"] = source_id
+            turn_id = str(match.get("turn_id") or "").strip()
+            if turn_id:
+                item["turn_id"] = turn_id
+            try:
+                timestamp = int(match.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                timestamp = 0
+            if timestamp > 0:
+                item["timestamp"] = timestamp
+        out.append(item)
+    return out
 
 
 def _memory_backend() -> str:
