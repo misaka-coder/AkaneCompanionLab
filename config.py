@@ -273,7 +273,7 @@ class Settings(BaseSettings):
     ENABLE_NATIVE_TOOL_DECISION: bool = True
     # native tool 允许列表，逗号分隔。除低风险只读工具外，受管生成、媒体处理和文件交付
     # 也走同一 provider-native 工具环；它们只接受会话 handle，不接受本机绝对路径。
-    # web_search（3d live gate）、retrieve_memory / read_memory_timeline / open_memory
+    # web_search（3d live gate）、retrieve_memory / browse_memory / read_memory_timeline / open_memory
     #（记忆原始证据读取链）、
     # list_reminders / check_inventory / inspect_media_info（6b：确定性 dry-run 量尺，
     # native 链路已由 memory 5d 证明，未单独跑 live smoke）。
@@ -286,7 +286,7 @@ class Settings(BaseSettings):
     # sync_attachment_workspace 虽是 operation="read" 但有文件同步副作用，暂不加入。
     # 注意：这只是"允许"，是否真的走 native 仍取决于总开关和 provider/model 能力档案。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = (
-        "web_search,retrieve_memory,read_memory_timeline,open_memory,"
+        "web_search,retrieve_memory,browse_memory,read_memory_timeline,open_memory,"
         "list_reminders,check_inventory,inspect_media_info,"
         "load_character_context,inspect_attachment,load_material,read_attachment_section,"
         "list_workspace,read_workspace,inspect_generated_file,generate_image,"

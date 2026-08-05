@@ -31,6 +31,7 @@ from companion_v01 import retrieval_engine
 from companion_v01.store import MemoryStore
 from companion_v01.tool_invocation import NATIVE_OPENAI, TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
 from companion_v01.tool_runtime import (
+    BrowseMemoryToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     ToolExecutionContext,
@@ -427,6 +428,36 @@ class _TimelineMemcoreManager:
                 "receipt_schema_version": 1,
                 "operation": "open_memory",
                 "returned_memory_ids": [str(arguments.get("memory_id") or "")],
+            },
+            "backend": "memcore",
+        }
+
+    def browse_memory(self, **kwargs) -> dict[str, object]:
+        arguments = dict(kwargs.get("arguments") or {})
+        self.calls.append({**dict(kwargs), **arguments})
+        return {
+            "operation": "browse_memory",
+            "ok": True,
+            "status": "ok",
+            "reason": "",
+            "node_types": ["episodic"],
+            "cards": [
+                {
+                    "memory_id": "episode-1",
+                    "memory_title": "早茶与同行者",
+                    "catalog_hint": "可回答早茶同行者。",
+                }
+            ],
+            "matched_card_count": 2,
+            "returned_card_count": 1,
+            "remaining_card_count": 1,
+            "page_complete": False,
+            "next_cursor": "memory-v1:next",
+            "coverage": {"complete": True, "live_source_count": 4, "gap_source_count": 0},
+            "receipt": {
+                "receipt_schema_version": 1,
+                "operation": "browse_memory",
+                "returned_memory_ids": ["episode-1"],
             },
             "backend": "memcore",
         }
@@ -4761,6 +4792,60 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertFalse(first_unit_ids & second_unit_ids)
             manager.close()
 
+    def test_manager_dispatches_native_memory_catalog_without_host_reimplementation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                system = manager._get_system(
+                    profile_user_id="u1",
+                    session_id="group:42",
+                    character_pack_id="char",
+                )
+                timestamp = _ts(2026, 7, 22, 11, 0)
+                system.record_user_turn(
+                    "那天聊了扬州早茶和同行的人。",
+                    timestamp=timestamp,
+                    source_id="catalog-raw-1",
+                )
+                system.store.add_summary(
+                    namespace=system.namespace,
+                    record={
+                        "summary_id": "episode-catalog-1",
+                        "timestamp": timestamp,
+                        "period_start_ts": timestamp,
+                        "period_end_ts": timestamp + 60,
+                        "memory_title": "扬州早茶同行者",
+                        "catalog_hint": "可回答早茶同行人员。",
+                        "diary_summary": "在扬州吃早茶并聊到同行的人。",
+                        "source_ids": ["catalog-raw-1"],
+                    },
+                )
+                system.store.mark_messages_summarized(["catalog-raw-1"], "episode-catalog-1")
+
+                result = manager.browse_memory(
+                    profile_user_id="u1",
+                    session_id="group:42",
+                    character_pack_id="char",
+                    arguments={"date_from": "2026-07-22", "date_to": "2026-07-22"},
+                )
+
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["cards"][0]["memory_id"], "episode-catalog-1")
+                self.assertEqual(result["cards"][0]["memory_title"], "扬州早茶同行者")
+                self.assertTrue(result["page_complete"])
+                self.assertEqual(result["receipt"]["operation"], "browse_memory")
+            finally:
+                manager.close()
+
     def test_akane_native_timeline_omitted_and_zero_budget_use_finite_memcore_page(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -6557,6 +6642,41 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertEqual(result.trace_receipt["operation"], "open_memory")
+
+    def test_browse_memory_exposes_cards_coverage_cursor_and_receipt(self) -> None:
+        memcore_manager = _TimelineMemcoreManager()
+        service = MemcoreTimelineToolService(legacy_service=None, memcore_manager=memcore_manager)
+        handler = BrowseMemoryToolHandler(timeline_service=service)
+        call = handler.normalize_call(
+            {"type": "browse_memory", "date_from": "2026-07-20", "date_to": "2026-07-24"}
+        )
+
+        self.assertIsNotNone(call)
+        assert call is not None
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = handler.execute(
+                call=call,
+                context=ToolExecutionContext("u1", "group:42", 0, {}),
+            )
+            continued = handler.execute(
+                call={"type": "browse_memory", "cursor": "memory-v1:next"},
+                context=ToolExecutionContext("u1", "group:42", 0, {}),
+            )
+
+        forwarded = memcore_manager.calls[0]
+        self.assertEqual(forwarded["session_id"], "group:42")
+        self.assertTrue(forwarded["cross_conversation"])
+        self.assertIn("episode-1", result.followup_context)
+        self.assertIn("早茶与同行者", result.followup_context)
+        self.assertIn("live_source_count", result.followup_context)
+        self.assertFalse(result.followup_envelope.complete)
+        self.assertEqual(result.followup_envelope.continuation, {"cursor": "memory-v1:next"})
+        self.assertEqual(result.trace_receipt["operation"], "browse_memory")
+        self.assertNotIn("早茶与同行者", json.dumps(result.trace_receipt, ensure_ascii=False))
+        self.assertEqual(memcore_manager.calls[1]["cursor"], "memory-v1:next")
+        self.assertEqual(memcore_manager.calls[1]["session_id"], "group:42")
+        self.assertNotIn("cross_conversation", memcore_manager.calls[1])
+        self.assertEqual(continued.followup_envelope.continuation, {"cursor": "memory-v1:next"})
 
     def test_read_memory_timeline_raw_anchor_stays_in_current_conversation(self) -> None:
         memcore_manager = _TimelineMemcoreManager()

@@ -31,6 +31,7 @@ from .capability_adapters import CapabilityProtocolError, InvocationContext
 from .capability_registry import (
     APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     BROWSER_PAGE_TOOL_SPEC,
+    BROWSE_MEMORY_TOOL_SPEC,
     CALL_NPC_TOOL_SPEC,
     CANCEL_REMINDER_TOOL_SPEC,
     CHECK_INVENTORY_TOOL_SPEC,
@@ -620,6 +621,13 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=READ_MEMORY_TIMELINE_TOOL_SPEC.input_schema,
     ),
+    "browse_memory": ToolMetadata(
+        family="memory",
+        operation="read",
+        risk="low",
+        default_round_budget=3,
+        input_schema=BROWSE_MEMORY_TOOL_SPEC.input_schema,
+    ),
     "open_memory": ToolMetadata(
         family="memory",
         operation="read",
@@ -818,6 +826,7 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
 TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "retrieve_memory": RETRIEVE_MEMORY_TOOL_SPEC,
     "read_memory_timeline": READ_MEMORY_TIMELINE_TOOL_SPEC,
+    "browse_memory": BROWSE_MEMORY_TOOL_SPEC,
     "open_memory": OPEN_MEMORY_TOOL_SPEC,
     "load_character_context": LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
     "set_reminder": SET_REMINDER_TOOL_SPEC,
@@ -1551,6 +1560,75 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
                     "coverage": coverage,
                     "active_dates": list(result.get("active_dates") or []),
                     "message_count": int(result.get("message_count") or 0),
+                }
+            },
+            trace_receipt=dict(result.get("receipt") or {}) or None,
+        )
+
+
+class BrowseMemoryToolHandler(BaseToolHandler):
+    tool_type = "browse_memory"
+
+    def __init__(self, *, timeline_service: Any) -> None:
+        self.timeline_service = timeline_service
+
+    def tool_spec(self):
+        return BROWSE_MEMORY_TOOL_SPEC
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            f"- browse_memory：{BROWSE_MEMORY_TOOL_SPEC.description} "
+            "这是内部目录读取，不要先在 speech 里宣布。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        return {
+            "type": self.tool_type,
+            **{
+                str(key): item
+                for key, item in value.items()
+                if key != "type" and not str(key).startswith("_tool_")
+            },
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.timeline_service.browse_memory(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            character_pack_id=context.character_pack_id,
+            arguments={key: item for key, item in call.items() if key != "type"},
+        )
+        complete = bool(result.get("page_complete", True))
+        next_cursor = str(result.get("next_cursor") or "").strip()
+        continuation = {"cursor": next_cursor} if next_cursor else None
+        coverage = dict(result.get("coverage") or {})
+        followup_context = self.timeline_service.render_browse_memory_context(result)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            followup_context=followup_context,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup_context,
+                producer_bounded=bool(result.get("ok")) and (complete or continuation is not None),
+                complete=complete,
+                continuation=continuation,
+                diagnostics={
+                    "coverage": coverage,
+                    "matched_card_count": int(result.get("matched_card_count") or 0),
+                    "returned_card_count": int(result.get("returned_card_count") or 0),
+                },
+            ),
+            state_updates={
+                "memory_catalog": {
+                    "backend": str(result.get("backend") or ""),
+                    "status": str(result.get("status") or ""),
+                    "reason": str(result.get("reason") or ""),
+                    "node_types": list(result.get("node_types") or []),
+                    "coverage": coverage,
+                    "matched_card_count": int(result.get("matched_card_count") or 0),
+                    "returned_card_count": int(result.get("returned_card_count") or 0),
+                    "remaining_card_count": int(result.get("remaining_card_count") or 0),
                 }
             },
             trace_receipt=dict(result.get("receipt") or {}) or None,

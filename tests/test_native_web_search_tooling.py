@@ -397,6 +397,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             {
                 "web_search",
                 "retrieve_memory",
+                "browse_memory",
                 "read_memory_timeline",
                 "open_memory",
                 "list_reminders",

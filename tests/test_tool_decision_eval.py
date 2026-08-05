@@ -55,7 +55,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
         summary = summarize_tool_decision_eval_results(results)
 
         self.assertEqual(len(results), len(DEFAULT_MEMORY_EVAL_CASES) * 2)
-        # Both memory tools normalize/validate/execute cleanly in both channels.
+        # The memory tool family normalizes/validates/executes cleanly in both channels.
         self.assertEqual(summary["modes"]["legacy"]["expectation_match_rate"], 1.0)
         self.assertEqual(summary["modes"]["native"]["expectation_match_rate"], 1.0)
         self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
@@ -72,7 +72,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
             for result in results
             if result.mode == "native" and result.called_tool
         }
-        self.assertEqual(native_names, {"retrieve_memory", "read_memory_timeline"})
+        self.assertEqual(native_names, {"retrieve_memory", "browse_memory", "read_memory_timeline"})
 
     def test_read_tier_suite_runs_native_and_legacy_through_real_handlers(self) -> None:
         # N3-prep: list_reminders / check_inventory / inspect_media_info were added
@@ -323,7 +323,7 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertTrue(response.native_extracted)
         self.assertEqual(
             [item["function"]["name"] for item in runtime.calls[0]["native_tools"]],
-            ["retrieve_memory", "read_memory_timeline", "open_memory"],
+            ["retrieve_memory", "read_memory_timeline", "browse_memory", "open_memory"],
         )
         self.assertIn("retrieve_memory", runtime.calls[0]["system_prompt"])
         self.assertIn("provider native tool_calls", runtime.calls[0]["system_prompt"])

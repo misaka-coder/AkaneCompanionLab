@@ -109,6 +109,7 @@ from .tool_runtime import (
     ClearAttachmentFocusToolHandler,
     ComposeFileToolHandler,
     ConvertMediaFileToolHandler,
+    BrowseMemoryToolHandler,
     DesktopSatelliteToolHandler,
     FetchMediaFromUrlToolHandler,
     FocusWorkspaceToolHandler,
@@ -6192,6 +6193,7 @@ class AkaneMemoryEngine:
     def _tool_call_allows_assistant_preface(tool_call: dict[str, Any]) -> bool:
         return str(tool_call.get("type") or "") not in {
             "retrieve_memory",
+            "browse_memory",
             "read_memory_timeline",
             "open_memory",
             "load_character_context",
@@ -7332,15 +7334,19 @@ class AkaneMemoryEngine:
             return getattr(self, "memory_timeline_service", None)
 
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
+        memory_timeline_service = self._build_memory_timeline_tool_service()
         handlers: dict[str, BaseToolHandler] = {
             "retrieve_memory": RetrieveMemoryToolHandler(
                 retrieve_fn=self._execute_retrieve_memory_tool,
             ),
             "read_memory_timeline": ReadMemoryTimelineToolHandler(
-                timeline_service=self._build_memory_timeline_tool_service(),
+                timeline_service=memory_timeline_service,
+            ),
+            "browse_memory": BrowseMemoryToolHandler(
+                timeline_service=memory_timeline_service,
             ),
             "open_memory": OpenMemoryToolHandler(
-                timeline_service=self._build_memory_timeline_tool_service(),
+                timeline_service=memory_timeline_service,
             ),
             "load_character_context": LoadCharacterContextToolHandler(
                 context_library_service=getattr(

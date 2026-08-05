@@ -9,6 +9,7 @@ from memcore import build_native_memory_tool_specs
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01 import capability_registry
 from companion_v01.capability_registry import (
+    BROWSE_MEMORY_TOOL_SPEC,
     OPEN_MEMORY_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
@@ -40,11 +41,13 @@ class NativeToolSchemaTests(unittest.TestCase):
             "build_native_memory_tool_specs",
             return_value=[{"name": "retrieve_for_turn"}],
         ):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                r"^memcore_native_tool_contract_missing:open_memory$",
-            ):
-                capability_registry._memcore_tool_contract("open_memory", "open_memory")
+            for tool_name in ("browse_memory", "open_memory"):
+                with self.subTest(tool_name=tool_name):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        rf"^memcore_native_tool_contract_missing:{tool_name}$",
+                    ):
+                        capability_registry._memcore_tool_contract(tool_name, tool_name)
 
     def test_build_openai_native_tool_specs_from_handlers(self) -> None:
         class FakeHandler:
@@ -161,6 +164,7 @@ class NativeToolSchemaTests(unittest.TestCase):
         for product_spec, package_name in (
             (RETRIEVE_MEMORY_TOOL_SPEC, "retrieve_for_turn"),
             (READ_MEMORY_TIMELINE_TOOL_SPEC, "read_timeline"),
+            (BROWSE_MEMORY_TOOL_SPEC, "browse_memory"),
             (OPEN_MEMORY_TOOL_SPEC, "open_memory"),
         ):
             with self.subTest(package_name=package_name):
@@ -181,7 +185,7 @@ class NativeToolSchemaTests(unittest.TestCase):
                 )
                 self.assertNotIn("retrieve_for_turn", rendered_contract)
                 self.assertNotIn("read_timeline", rendered_contract)
-                if package_name != "open_memory":
+                if package_name not in {"browse_memory", "open_memory"}:
                     self.assertNotIn(package_name, rendered_contract)
 
     def test_retrieve_memory_schema_exposes_exact_time_without_unknown_answer_anchor(self) -> None:

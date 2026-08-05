@@ -2177,6 +2177,43 @@ class MemcoreManager:
                 "backend": "memcore",
             }
 
+    def browse_memory(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        system = self._get_system_or_none(
+            operation="browse_memory",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None or self._memcore_module is None:
+            return {
+                **self._status("browse_memory", False, "unavailable", reason=self._reason),
+                "backend": "memcore",
+            }
+        try:
+            dispatched = self._memcore_module.dispatch_native_memory_tool(
+                "browse_memory",
+                dict(arguments or {}),
+                mem=system,
+            )
+            return self._project_native_memory_dispatch(
+                operation="browse_memory",
+                dispatched=dispatched,
+            )
+        except Exception as exc:
+            reason = f"exception_{type(exc).__name__}"
+            logger.warning("memcore catalog browse failed: %s", type(exc).__name__)
+            return {
+                **self._status("browse_memory", False, "failed", reason=reason),
+                "backend": "memcore",
+            }
+
     def open_memory(
         self,
         *,

@@ -4,6 +4,7 @@ import unittest
 
 from companion_v01.tool_runtime import ToolExecutionContext
 from scripts.tools.run_native_web_search_smoke import (
+    SmokeBrowseMemoryHandler,
     SmokeCheckInventoryHandler,
     SmokeInspectMediaInfoHandler,
     SmokeListRemindersHandler,
@@ -30,7 +31,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
         self.assertEqual(toolset_allowlist("web_search"), "web_search")
         self.assertEqual(
             toolset_allowlist("memory"),
-            "retrieve_memory,read_memory_timeline,open_memory",
+            "retrieve_memory,browse_memory,read_memory_timeline,open_memory",
         )
         # `all` mirrors the shipped default native allowlist (the full set that
         # fires under native-first).
@@ -39,6 +40,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
             {
                 "web_search",
                 "retrieve_memory",
+                "browse_memory",
                 "read_memory_timeline",
                 "open_memory",
                 "list_reminders",
@@ -63,11 +65,11 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
         )
         self.assertEqual(
             set(handlers.keys()),
-            {"retrieve_memory", "read_memory_timeline", "open_memory"},
+            {"retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"},
         )
         self.assertEqual(
             selection.tool_names,
-            ("retrieve_memory", "read_memory_timeline", "open_memory"),
+            ("retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"),
         )
         self.assertNotIn("web_search", selection.tool_names)
 
@@ -83,6 +85,7 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
         expected = {
             "web_search",
             "retrieve_memory",
+            "browse_memory",
             "read_memory_timeline",
             "open_memory",
             "list_reminders",
@@ -146,6 +149,21 @@ class SmokeMemoryHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["type"], "open_memory_completed")
         self.assertEqual(handler.executed_calls[0]["memory_id"], "episode_001")
         self.assertIn("固定记忆证据", result.followup_context)
+
+    def test_browse_memory_fixture_executes_and_records(self) -> None:
+        handler = SmokeBrowseMemoryHandler()
+        normalized = handler.normalize_call(
+            {"type": "browse_memory", "date_from": "2026-07-20", "date_to": "2026-07-24"}
+        )
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+
+        result = handler.execute(call=normalized, context=_context())
+
+        self.assertEqual(result.tool_type, "browse_memory")
+        self.assertEqual(result.stream_events[0]["type"], "browse_memory_completed")
+        self.assertEqual(handler.executed_calls[0]["date_from"], "2026-07-20")
+        self.assertIn("episode_001", result.followup_context)
 
 
 class SmokeReadTierHandlerTests(unittest.TestCase):

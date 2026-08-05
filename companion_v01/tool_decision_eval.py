@@ -11,6 +11,7 @@ from .tool_orchestration_engine import validate_legacy_tool_call, validate_tool_
 from .llm_runtime import LLMRuntime
 from .tool_runtime import (
     BaseToolHandler,
+    BrowseMemoryToolHandler,
     CheckInventoryToolHandler,
     InspectMediaInfoToolHandler,
     ListRemindersToolHandler,
@@ -192,6 +193,17 @@ DEFAULT_MEMORY_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
             "time_periods": ["morning"],
         },
         category="timeline_read",
+    ),
+    ToolDecisionEvalCase(
+        eval_id="browse_busy_multi_day_history",
+        user_prompt="先帮我看看 2026-07-20 到 2026-07-24 这几天我们主要聊过哪些事情。",
+        expect_tool=True,
+        expected_tool_name="browse_memory",
+        expected_arguments={
+            "date_from": "2026-07-20",
+            "date_to": "2026-07-24",
+        },
+        category="memory_catalog",
     ),
     ToolDecisionEvalCase(
         eval_id="casual_no_memory",
@@ -591,11 +603,32 @@ class _StubTimelineService:
     def render_open_memory_context(self, result: dict[str, Any]) -> str:
         return f"[dry_run] open_memory memory_id={str((result or {}).get('memory_id') or '')}"
 
+    def browse_memory(self, **kwargs: Any) -> dict[str, Any]:
+        arguments = dict(kwargs.get("arguments") or {})
+        return {
+            "ok": True,
+            "status": "ok",
+            "reason": "",
+            "node_types": list(arguments.get("node_types") or ["episodic"]),
+            "cards": [{"memory_id": "episode-dry-run", "memory_title": "dry-run"}],
+            "matched_card_count": 1,
+            "returned_card_count": 1,
+            "remaining_card_count": 0,
+            "page_complete": True,
+            "next_cursor": "",
+            "coverage": {"complete": True},
+            "backend": "memcore",
+        }
+
+    def render_browse_memory_context(self, result: dict[str, Any]) -> str:
+        return f"[dry_run] browse_memory cards={int((result or {}).get('returned_card_count') or 0)}"
+
 
 def _build_dry_run_memory_handlers() -> dict[str, Any]:
     return {
         "retrieve_memory": RetrieveMemoryToolHandler(retrieve_fn=_dry_run_retrieve_memory),
         "read_memory_timeline": ReadMemoryTimelineToolHandler(timeline_service=_StubTimelineService()),
+        "browse_memory": BrowseMemoryToolHandler(timeline_service=_StubTimelineService()),
         "open_memory": OpenMemoryToolHandler(timeline_service=_StubTimelineService()),
     }
 
@@ -717,13 +750,18 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
         )
     if "read_memory_timeline" in names:
         lines.append(
-            "read_memory_timeline 只用于用户明确要求查看某一天、日期范围或上午/下午/夜晚/凌晨的原始逐句对话。"
+            "已知具体时刻/时段，或用户明确要原始逐句证据时 -> read_memory_timeline。"
+        )
+    if "browse_memory" in names:
+        lines.append(
+            "跨多日回顾或时间范围内记录很多、直接拉原文会嘈杂时 -> browse_memory 先看记忆目录卡片；"
+            "选中 memory_id 后再按需 open_memory。"
         )
     if "open_memory" in names:
         lines.append(
             "open_memory 只展开记忆工具明确返回的 memory_id；正文已足够或与答案无关时不要调用。"
         )
-    if {"retrieve_memory", "read_memory_timeline", "open_memory"} & names:
+    if {"retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"} & names:
         lines.append("不要为了普通闲聊、稳定常识、情绪陪伴、或当前上下文已经足够的问题调用记忆工具。")
     if "list_reminders" in names:
         lines.append(

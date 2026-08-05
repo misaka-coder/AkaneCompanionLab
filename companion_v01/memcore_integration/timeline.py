@@ -211,6 +211,38 @@ class MemcoreTimelineToolService:
                     return result
         return self._unavailable("open_memory", "memcore_open_memory_unavailable")
 
+    def browse_memory(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        manager = self.memcore_manager
+        if (
+            _memory_backend() in {"memcore", "dual"}
+            and manager is not None
+            and getattr(manager, "enabled", False)
+            and getattr(manager, "available", False)
+        ):
+            native_arguments = dict(arguments or {})
+            if not str(native_arguments.get("cursor") or "").strip():
+                native_arguments.setdefault("cross_conversation", True)
+            try:
+                result = manager.browse_memory(
+                    profile_user_id=profile_user_id,
+                    session_id=str(session_id or profile_user_id),
+                    character_pack_id=character_pack_id,
+                    arguments=native_arguments,
+                )
+            except Exception as exc:
+                logger.warning("memcore catalog adapter failed: %s", type(exc).__name__)
+            else:
+                if isinstance(result, dict):
+                    return result
+        return self._unavailable("browse_memory", "memcore_browse_memory_unavailable")
+
     def render_tool_context(self, result: dict[str, Any]) -> str:
         legacy_service = self.legacy_service
         if str((result or {}).get("backend") or "") != "memcore":
@@ -221,6 +253,9 @@ class MemcoreTimelineToolService:
 
     def render_open_memory_context(self, result: dict[str, Any]) -> str:
         return self._render_native_result("MemCore 记忆证据", result)
+
+    def render_browse_memory_context(self, result: dict[str, Any]) -> str:
+        return self._render_native_result("MemCore 记忆目录", result)
 
     @staticmethod
     def _render_native_result(label: str, result: Mapping[str, Any] | None) -> str:

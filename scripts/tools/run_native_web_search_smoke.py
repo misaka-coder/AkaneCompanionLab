@@ -16,6 +16,7 @@ import config  # noqa: E402
 from companion_v01.capability_registry import CapabilitySelection  # noqa: E402
 from companion_v01.engine import AkaneMemoryEngine  # noqa: E402
 from companion_v01.tool_runtime import (  # noqa: E402
+    BrowseMemoryToolHandler,
     CheckInventoryToolHandler,
     InspectMediaInfoToolHandler,
     ListRemindersToolHandler,
@@ -35,12 +36,12 @@ DEFAULT_MEMORY_MESSAGE = "你还记得我之前跟你说过我最喜欢喝什么
 def toolset_allowlist(toolset: str) -> str:
     normalized = str(toolset or "web_search").strip().lower()
     if normalized == "memory":
-        return "retrieve_memory,read_memory_timeline,open_memory"
+        return "retrieve_memory,browse_memory,read_memory_timeline,open_memory"
     if normalized == "all":
         # Mirror the shipped default native allowlist (the full set that fires
         # under native-first), so `all` is a real full-toolset smoke.
         return (
-            "web_search,retrieve_memory,read_memory_timeline,open_memory,"
+            "web_search,retrieve_memory,browse_memory,read_memory_timeline,open_memory,"
             "list_reminders,check_inventory,inspect_media_info"
         )
     return "web_search"
@@ -174,6 +175,34 @@ class SmokeReadMemoryTimelineHandler(ReadMemoryTimelineToolHandler):
         )
 
 
+class SmokeBrowseMemoryHandler(BrowseMemoryToolHandler):
+    """Deterministic browse_memory executor: canned catalog, no DB."""
+
+    def __init__(self) -> None:
+        super().__init__(timeline_service=_SmokeTimelineService())
+        self.executed_calls: list[dict[str, Any]] = []
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        self.executed_calls.append(
+            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "browse_memory_completed",
+                    "provider": "smoke_fixture",
+                    "status": "ok",
+                }
+            ],
+            followup_context=(
+                "【smoke browse_memory 结果】\n"
+                "目录卡片：episode_001（咖啡偏好），可用 open_memory 展开。"
+            ),
+            state_updates={"memory_catalog_status": "ok", "memory_catalog_smoke": True},
+        )
+
+
 class SmokeOpenMemoryHandler(OpenMemoryToolHandler):
     """Deterministic open_memory executor: canned evidence, no DB."""
 
@@ -296,15 +325,16 @@ def _build_smoke_tools(
     if normalized == "memory":
         handlers: dict[str, Any] = {
             "retrieve_memory": SmokeRetrieveMemoryHandler(),
+            "browse_memory": SmokeBrowseMemoryHandler(),
             "read_memory_timeline": SmokeReadMemoryTimelineHandler(),
             "open_memory": SmokeOpenMemoryHandler(),
         }
         selection = CapabilitySelection(
             light_hints=(
-                "本轮 smoke 只暴露 retrieve_memory / read_memory_timeline / open_memory，"
+                "本轮 smoke 只暴露 retrieve_memory / browse_memory / read_memory_timeline / open_memory，"
                 "用于验证 native 记忆工具轮。",
             ),
-            tool_names=("retrieve_memory", "read_memory_timeline", "open_memory"),
+            tool_names=("retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"),
             module_names=("native_memory_smoke",),
             layer_names=("memory",),
         )
@@ -321,6 +351,7 @@ def _build_smoke_tools(
         all_handlers: dict[str, Any] = {
             "web_search": all_web_search,
             "retrieve_memory": SmokeRetrieveMemoryHandler(),
+            "browse_memory": SmokeBrowseMemoryHandler(),
             "read_memory_timeline": SmokeReadMemoryTimelineHandler(),
             "open_memory": SmokeOpenMemoryHandler(),
             "list_reminders": SmokeListRemindersHandler(),

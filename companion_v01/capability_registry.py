@@ -96,6 +96,10 @@ _READ_MEMORY_TIMELINE_DESCRIPTION, _READ_MEMORY_TIMELINE_SCHEMA = _memcore_tool_
     "read_timeline",
     "read_memory_timeline",
 )
+_BROWSE_MEMORY_DESCRIPTION, _BROWSE_MEMORY_SCHEMA = _memcore_tool_contract(
+    "browse_memory",
+    "browse_memory",
+)
 _OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA = _memcore_tool_contract(
     "open_memory",
     "open_memory",
@@ -108,6 +112,7 @@ CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 COMMON_TOOL_NAMES = (
     "retrieve_memory",
     "read_memory_timeline",
+    "browse_memory",
     "open_memory",
     "load_character_context",
     "set_reminder",
@@ -333,6 +338,22 @@ READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=16384,
+)
+
+BROWSE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="browse_memory",
+    display_name="Browse memory catalog",
+    description=_BROWSE_MEMORY_DESCRIPTION,
+    input_schema=_BROWSE_MEMORY_SCHEMA,
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq", "web"),
+    spec_version="2.0.0",
+    schema_version=2,
+    execution_class="sync",
+    idempotency="read_only",
+    max_result_bytes=65536,
 )
 
 OPEN_MEMORY_TOOL_SPEC = CapabilityToolSpec(
@@ -2536,7 +2557,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；需要具体时间原始记录时用 read_memory_timeline；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
+                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；跨多日或群聊记录很多时用 browse_memory 先看目录；已知具体时段时用 read_memory_timeline 读原文；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
                 trigger=_always,
             ),
             CapabilityModule(
