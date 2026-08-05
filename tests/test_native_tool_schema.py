@@ -170,6 +170,15 @@ class NativeToolSchemaTests(unittest.TestCase):
                 self.assertNotIn("read_timeline", rendered_contract)
                 self.assertNotIn("read_entry", rendered_contract)
 
+    def test_retrieve_memory_schema_exposes_exact_time_without_unknown_answer_anchor(self) -> None:
+        time_hint = RETRIEVE_MEMORY_TOOL_SPEC.input_schema["properties"]["time_hint"]
+
+        self.assertIn("start_at", time_hint["properties"])
+        self.assertIn("end_at", time_hint["properties"])
+        self.assertIn("inclusive", time_hint["description"])
+        self.assertIn("exclusive", time_hint["description"])
+        self.assertIn("must not be guessed", RETRIEVE_MEMORY_TOOL_SPEC.description)
+
     def test_adapter_capability_native_schema_uses_capcore_projection(self) -> None:
         descriptor = CapabilityDescriptor(
             id="mcp_demo_echo",

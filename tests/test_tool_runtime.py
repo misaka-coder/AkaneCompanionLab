@@ -35,6 +35,8 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertIn("entity_anchors", instruction)
         self.assertIn("topic_terms", instruction)
         self.assertIn("memory_facets/about_roles", instruction)
+        self.assertIn("未知人物或答案不能猜进锚点", instruction)
+        self.assertIn("time_hint.start_at/end_at", instruction)
         self.assertIn("raw 结果", instruction)
         self.assertIn("source_id", instruction)
 
@@ -62,6 +64,62 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertEqual(call["about_roles"], ["user", "external"])
         self.assertNotIn("limit", call)
         self.assertNotIn("importance_min", call)
+
+    def test_normalize_call_preserves_package_owned_exact_time_hint(self) -> None:
+        handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
+
+        call = handler.normalize_call(
+            {
+                "type": "retrieve_memory",
+                "query": "和 misaka 一起来玩的另一个人是谁",
+                "entity_anchors": ["misaka"],
+                "topic_terms": ["一起来玩", "同行"],
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+                "time_hint": {
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                },
+            }
+        )
+
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(
+            call["time_hint"],
+            {
+                "start_at": "2026-08-03 11:00",
+                "end_at": "2026-08-03 12:00",
+            },
+        )
+        self.assertEqual(call["entity_anchors"], ["misaka"])
+        self.assertNotIn("李嘉图", repr(call))
+
+    def test_normalize_call_does_not_hide_mixed_time_modes_from_memcore_validation(self) -> None:
+        handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
+
+        call = handler.normalize_call(
+            {
+                "type": "retrieve_memory",
+                "query": "昨天上午的同行是谁",
+                "time_hint": {
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                    "date_label": "2026-08-03",
+                },
+            }
+        )
+
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(
+            call["time_hint"],
+            {
+                "start_at": "2026-08-03 11:00",
+                "end_at": "2026-08-03 12:00",
+                "date_label": "2026-08-03",
+            },
+        )
 
     def test_normalize_call_preserves_explicit_kind_request_for_host_authorization(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)

@@ -1371,7 +1371,9 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             f"- retrieve_memory：{RETRIEVE_MEMORY_TOOL_SPEC.description} "
-            "query 始终保留用户真正想找的历史内容；entity_anchors 只放准确名称，topic_terms 放动作或主题短词。"
+            "query 始终保留用户真正想找的历史内容；entity_anchors 只放当前已经知道的准确名称，"
+            "用户正在追问的未知人物或答案不能猜进锚点；topic_terms 放动作或主题短词。"
+            "知道具体时间范围时用 time_hint.start_at/end_at，按已知时间先缩小原始证据范围。"
             "memory_facets/about_roles 不确定就省略，不能拿当前问句的 memory_query 代替目标历史内容。"
             "普通对话不打开 include_explicit；确实要找工具、事件、skill 或材料轨迹时，才同时给出精确 kind_patterns。"
             "raw 结果若只够定位但上下文不足，可把它的 source_id 交给 read_memory_timeline 做附近完整 turn 扩窗。"
@@ -1394,21 +1396,15 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         time_hint: dict[str, Any] = {}
         raw_time_hint = value.get("time_hint")
         if isinstance(raw_time_hint, dict):
-            for key in ("date_label", "time_of_day", "start_ts", "end_ts"):
-                if key not in raw_time_hint:
-                    continue
-                item = raw_time_hint.get(key)
-                if item is None:
-                    continue
-                if key in {"start_ts", "end_ts"}:
-                    try:
-                        time_hint[key] = int(item)
-                    except Exception:
-                        continue
-                else:
-                    text = str(item or "").strip()
-                    if text:
-                        time_hint[key] = text
+            time_hint_schema = (
+                RETRIEVE_MEMORY_TOOL_SPEC.input_schema.get("properties", {}).get("time_hint", {}).get("properties", {})
+            )
+            allowed_time_keys = set(time_hint_schema)
+            time_hint = {
+                str(key): item
+                for key, item in raw_time_hint.items()
+                if str(key) in allowed_time_keys and item is not None
+            }
 
         entity_anchors = self._normalize_string_list(value.get("entity_anchors"))
         topic_terms = self._normalize_string_list(value.get("topic_terms"))

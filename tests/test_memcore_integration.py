@@ -4940,6 +4940,116 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertTrue(all("可乐" in snippet for snippet in result["snippets"]))
             manager.close()
 
+    def test_exact_time_retrieval_recalls_unknown_companion_without_answer_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            memories = (
+                ("before", "上午 misaka 和王五一起来玩。", _ts(2026, 8, 3, 10, 30), "王五"),
+                ("target", "11点47分，misaka 和李嘉图一起来玩。", _ts(2026, 8, 3, 11, 47), "李嘉图"),
+                ("exclusive-end", "中午 misaka 和赵六一起来玩。", _ts(2026, 8, 3, 12, 0), "赵六"),
+            )
+            for source_id, content, timestamp, companion in memories:
+                manager.append_standalone_message(
+                    {
+                        "source_id": source_id,
+                        "content": content,
+                        "timestamp": timestamp,
+                        "memory_metadata": {
+                            "memory_facets": ["relationship"],
+                            "about_roles": ["third_party"],
+                            "entity_anchors": ["misaka", companion],
+                            "topic_terms": ["一起来玩", "同行"],
+                            "retrieval_priority": "high",
+                        },
+                    },
+                    role="user",
+                    profile_user_id="u1",
+                    session_id=f"archive:{source_id}",
+                    character_pack_id="char",
+                )
+            current = {
+                "source_id": "current-unknown-companion",
+                "content": "那天和 misaka 一起来玩的另一个人是谁？",
+                "timestamp": _ts(2026, 8, 5, 9, 0),
+                "memory_metadata": {},
+            }
+            manager.append_standalone_message(
+                current,
+                role="user",
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+            )
+
+            result = manager.retrieve_memory(
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+                current_user_record=current,
+                query="和 misaka 一起来玩的另一个人是谁",
+                entity_anchors=["misaka"],
+                topic_terms=["一起来玩", "同行"],
+                time_hint={
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                },
+                source_layers=["raw"],
+                memory_facets=["relationship"],
+                about_roles=["third_party"],
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["snippet_count"], 1)
+            self.assertIn("李嘉图", result["snippets"][0])
+            self.assertNotIn("王五", repr(result["snippets"]))
+            self.assertNotIn("赵六", repr(result["snippets"]))
+            self.assertNotIn("李嘉图", repr(result["effective_filters"].get("entity_anchors", [])))
+            manager.close()
+
+    def test_mixed_time_modes_fail_closed_instead_of_broadening_retrieval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="user",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            result = manager.retrieve_memory(
+                profile_user_id="u1",
+                session_id="current-session",
+                character_pack_id="char",
+                current_user_record={
+                    "source_id": "current-mixed-time",
+                    "content": "昨天上午的同行是谁？",
+                    "timestamp": _ts(2026, 8, 5, 9, 0),
+                },
+                query="昨天上午的同行是谁",
+                time_hint={
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                    "date_label": "2026-08-03",
+                },
+                source_layers=["raw"],
+            )
+
+            manager.close()
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["status"], "invalid")
+            self.assertEqual(result["snippet_count"], 0)
+            self.assertEqual(result["snippets"], [])
+
     def test_explicit_event_retrieval_is_host_authorized_and_message_kind_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -5141,6 +5251,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "query": "可乐",
                     "entity_anchors": ["可乐"],
                     "topic_terms": ["饮料"],
+                    "time_hint": {
+                        "start_at": "2026-08-03 11:00",
+                        "end_at": "2026-08-03 12:00",
+                    },
                     "memory_facets": ["preference"],
                     "about_roles": ["user"],
                     "include_explicit": True,
@@ -5156,6 +5270,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(call["query"], "可乐")
         self.assertEqual(call["entity_anchors"], ["可乐"])
         self.assertEqual(call["topic_terms"], ["饮料"])
+        self.assertEqual(
+            call["time_hint"],
+            {
+                "start_at": "2026-08-03 11:00",
+                "end_at": "2026-08-03 12:00",
+            },
+        )
         self.assertEqual(call["memory_facets"], ["preference"])
         self.assertEqual(call["about_roles"], ["user"])
         self.assertNotIn("limit", call)
