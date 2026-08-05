@@ -354,7 +354,9 @@ MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
 - `retrieve_memory` 的既有 schema 保持兼容；`read_memory_timeline` 在原有日期/anchor 模式之外增加
   精确 `time_range`、完整逻辑单元分页、`coverage/next_cursor` 与 projection；
   `browse_memory` 用确定性时间目录返回紧凑卡片、存量覆盖和无损游标；
-  `open_memory` 用记忆工具返回的通用 `memory_id` 展开 card/content/sources 证据。
+  `open_memory` 用记忆工具返回的通用 `memory_id` 展开 card/content/sources 证据；sources 默认完整展示
+  对话/事件并压紧 operation/Skill/tool/material 正文，只在模型显式选择 full/tools 或打开单条 raw content
+  时恢复完整工具证据。
 - `retrieve_memory` 的 raw 命中携带 `source_id/turn_id/timestamp` 并默认按真实关系扩成完整问答组；只有上下文仍不足时才扩窗。raw 锚点只能读取当前会话，跨会话命中改用片段时间做精确 `time_range`。
 - `read_memory_timeline` 的模型工具调用始终使用 MemCore 配置的有限完整逻辑单元页；省略或传 0
   不代表无限读取，正数只能缩小而不能突破宿主上限。`status=partial` 时模型根据 selected / returned /
@@ -362,7 +364,8 @@ MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET=2000
   operation/material 证据用 `open_memory` 展开。
 - MemCore 已按逻辑单元和 token 预算完成分页时，宿主不得再按字符数二次截断；普通未声明边界的
   工具结果仍保留通用安全整形。所有结果照常执行密钥和本地路径脱敏。
-- 当前工具轮仍把完整页正文与结构化状态交给模型；写回 MemCore 的 operation observation 只保存包生成的
+- 当前工具轮仍把完整页正文与结构化状态交给模型，但等价的结构化 entries 与渲染 text 只发送一份正文；
+  写回 MemCore 的 operation observation 只保存包生成的
   receipt（selector、IDs、coverage、cursor、hash），不得重复持久化正文。
 - memcore 失败返回结构化空/失败状态，不把旧记忆静默塞回 prompt/tools。
 - `git diff --check` 通过。

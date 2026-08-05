@@ -177,7 +177,10 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
   `browse_memory` 与 `open_memory` 的描述和 input schema 直接投影自 package native specs；模型可见的旧
   `read_memory_entry` 已删除。时间线精确 `time_range`、projection、opaque cursor、有限 token 页、
   `partial/page_boundary`、selected/returned/remaining 体量和建议动作均由 MemCore dispatcher 权威返回，
-  Akane 不再过滤 messages、重渲染正文或重新解释分页。当前工具轮仍看到完整本页证据；
+  Akane 不再过滤 messages、重渲染正文或重新解释分页。`open_memory(sources)` 默认采用 package 的
+  conversation 投影：对话/事件完整，operation/Skill/tool/material 仅保留可重载轨迹；完整工具正文由模型
+  显式打开单条 source 或选择 full/tools。当前工具轮只收到一份渲染正文与导航元数据，不再同时复制等价
+  structured entries；
   `ToolExecutionResult.trace_receipt` 让跨轮 MemCore observation 只保存 selector、IDs、coverage、cursor
   和 hash，不再复制大段结果正文。普通未提供 receipt 的工具维持原记录和安全整形。memory smoke
   现覆盖 `retrieve_memory / browse_memory / read_memory_timeline / open_memory`。目录页把完整卡片、coverage、
