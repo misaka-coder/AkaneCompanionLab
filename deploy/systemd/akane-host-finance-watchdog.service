@@ -1,0 +1,12 @@
+[Unit]
+Description=Akane Host finance push job watchdog
+After=akane-host.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/akane/ops/akane-host-finance-watchdog.py
+StateDirectory=akane-host-finance-watchdog
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
