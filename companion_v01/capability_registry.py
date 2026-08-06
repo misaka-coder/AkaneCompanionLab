@@ -105,6 +105,41 @@ _OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA = _memcore_tool_contract(
     "open_memory",
 )
 
+
+def _clarify_explicit_kind_contract(schema: dict[str, Any]) -> dict[str, Any]:
+    """State the include_explicit/kind_patterns coupling the package schema omits.
+
+    Passing include_explicit=true without kind_patterns (or the reverse) is
+    rejected by validation, which historically turned whole retrievals into
+    empty results. The descriptions are patched Akane-side so the fix reaches
+    the model without a memcore wheel change.
+    """
+    properties = dict(schema.get("properties") or {})
+    if "include_explicit" in properties:
+        properties["include_explicit"] = {
+            **properties["include_explicit"],
+            "description": (
+                "Whether this query intentionally needs explicit trace/event/material records. "
+                "IMPORTANT: setting true REQUIRES kind_patterns to name the explicit kinds to include "
+                '(for example ["tool.*"] or ["material.*"]); true without kind_patterns is rejected '
+                "and the whole retrieval returns nothing. Leave false for ordinary chat messages; "
+                "most memory questions never need explicit records."
+            ),
+        }
+    if "kind_patterns" in properties:
+        properties["kind_patterns"] = {
+            **properties["kind_patterns"],
+            "description": (
+                'Exact kinds or trailing-wildcard prefixes (e.g. "tool.*", "material.*") of the explicit '
+                "trace/event/material records to include. Only valid together with include_explicit=true; "
+                "omit both unless tool/material traces are specifically needed."
+            ),
+        }
+    return {**schema, "properties": properties}
+
+
+_RETRIEVE_MEMORY_SCHEMA = _clarify_explicit_kind_contract(_RETRIEVE_MEMORY_SCHEMA)
+
 COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 WEB_SCENE_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D)
 CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
