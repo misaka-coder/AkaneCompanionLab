@@ -498,6 +498,8 @@ def _build_retrieve_memory_tool_result(
                 else ""
             )
             + "\n\n可按实际缺口任选下一步，不要机械走固定流程：\n"
+            "- 用户点名了具体日期/时段，或需要逐字核对原话时：优先用 read_memory_timeline 按日期精确读取原始对话核对，"
+            "不要只凭检索命中的转述或片段下结论。\n"
             "- 当前片段已足够：直接自然回答。\n"
             "- summary/semantic_summary 只缺完整摘要正文：open_memory(view=content)。\n"
             "- 摘要主题正确、只缺某个具体细节：用该 memory_id 再调用 retrieve_memory，"
@@ -507,6 +509,8 @@ def _build_retrieve_memory_tool_result(
             "改用命中给出的可读时间调用精确 time_range。\n"
             "- 已知精确时间直接用 read_memory_timeline；宽泛多日概览才用 browse_memory。\n"
             "已有有效命中后不要只换同义词反复检索；仍无明确证据就如实说明，不要猜。"
+            "注意：命中不代表全库只有这些记录——角色标注等过滤条件可能把相关原文挡在候选池外；"
+            "命中与用户说法明显对不上且手上有时间线索时，用 read_memory_timeline 兜底核对。"
         )
     else:
         if read_payload and not bool(read_payload.get("ok")):
@@ -517,7 +521,10 @@ def _build_retrieve_memory_tool_result(
             )
         else:
             followup_context = (
-                "\n".join(status_lines) + "\n\n本次有效检索没有找到匹配证据。请自然说明没有想起可靠线索，不要编造。"
+                "\n".join(status_lines)
+                + "\n\n本次有效检索没有找到匹配证据。请自然说明没有想起可靠线索，不要编造。"
+                "若问题带明确日期/时段线索，先改用 read_memory_timeline 按日期精确读取原始对话核对"
+                "（检索的过滤条件可能因角色标注等原因漏掉原文），仍无结果再如实说明。"
             )
     memory_retrieval_state = {
         "tool_call": {

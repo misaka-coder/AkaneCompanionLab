@@ -5738,6 +5738,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("within_memory_id=<memory_id>", result.followup_context)
         self.assertIn('source_layers=["raw"]', result.followup_context)
         self.assertIn("不要只换同义词反复检索", result.followup_context)
+        self.assertIn("read_memory_timeline 兜底核对", result.followup_context)
+        self.assertIn("用户点名了具体日期", result.followup_context)
 
     def test_long_memcore_retrieval_result_reaches_model_without_host_8000_char_cut(self) -> None:
         evidence = "完整原始证据" * 2200
@@ -5820,6 +5822,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertIn("本次有效检索没有找到匹配证据", result.followup_context)
+        self.assertIn("read_memory_timeline", result.followup_context)
+        self.assertIn("角色标注", result.followup_context)
         self.assertEqual(retrieval_service.calls, [])
         state = result.state_updates["memory_retrieval"]
         self.assertEqual(state["retrieval_backend"], "memcore")
