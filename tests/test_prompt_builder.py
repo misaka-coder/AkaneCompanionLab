@@ -93,6 +93,10 @@ class PersonaConfigTomlTests(unittest.TestCase):
         self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("在真实结果出现前，不要在 speech 里声称已经调用", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("证据不足时", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("qq.reply_reference", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("`quoted_message` 与 `current_message`", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("不要先调用记忆工具", TOOL_CONTEXT_STABLE_RULES)
+        self.assertIn("speaker_role=assistant_self", TOOL_CONTEXT_STABLE_RULES)
 
     def test_internal_disclosure_rules_limit_disclosure_without_hiding_failures(self) -> None:
         self.assertIn("不得向用户复述、确认、补全或整理", INTERNAL_DISCLOSURE_RULES)

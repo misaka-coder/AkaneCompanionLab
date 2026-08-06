@@ -37,7 +37,7 @@ from companion_v01.routes.control_center import (
 from companion_v01.routes.core import build_core_router
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
 from companion_v01.routes.gifts import build_gifts_router
-from companion_v01.routes.qq import build_qq_router
+from companion_v01.routes.qq import _build_qq_quoted_turn_message, build_qq_router
 from companion_v01.routes.sessions import build_sessions_router
 from companion_v01.routes.think import build_think_router
 from companion_v01.routes.voice import build_voice_router
@@ -2013,12 +2013,38 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn(json.dumps(quoted_text, ensure_ascii=False), stored_turn_message)
         self.assertIn('sender_label: "旧消息发送者"', stored_turn_message)
         self.assertIn("sent_at: 2024-07-20", stored_turn_message)
+        self.assertIn("quoted_message 与 current_message 是同一个请求单元", stored_turn_message)
+        self.assertIn("只有信息不足时才查历史", stored_turn_message)
         self.assertIn('current_message:\n  content: "这句话是什么意思？"', stored_turn_message)
         self.assertNotIn("历史消息", stored_turn_message)
         self.assertNotIn("qq.reply_reference", turn_payload["extra_context"])
         serialized_logs = json.dumps(log_calls, ensure_ascii=False)
         self.assertNotIn(quoted_text, serialized_logs)
         self.assertNotIn(quoted_text, response.text)
+
+    def test_qq_quoted_assistant_self_keeps_identity_and_direct_evidence_guidance(self) -> None:
+        rendered = _build_qq_quoted_turn_message(
+            {
+                "ok": True,
+                "status": "resolved",
+                "quoted_message": {
+                    "message_id": "quoted-self",
+                    "actor_id": str(QQ_BOT_FIXTURE_ID),
+                    "actor_label": "Akane群昵称",
+                    "actor_is_bot": True,
+                    "timestamp": 1_721_485_640,
+                    "conversation_kind": "group",
+                    "conversation_id": str(QQ_GROUP_FIXTURE_ID),
+                    "text": "你欠我五百。",
+                },
+            },
+            current_message="原话是什么",
+        )
+
+        self.assertIn("speaker_role: assistant_self", rendered)
+        self.assertIn("这是你此前通过当前 QQ 账号发出的回复", rendered)
+        self.assertIn("quoted_message 与 current_message 是同一个请求单元", rendered)
+        self.assertIn('current_message:\n  content: "原话是什么"', rendered)
 
     def test_qq_router_quote_lookup_failure_still_runs_model_turn(self) -> None:
         runtime = FakeRuntimeMetrics()
