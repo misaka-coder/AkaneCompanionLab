@@ -72,6 +72,48 @@ class PackageIndependenceContractTests(unittest.TestCase):
         self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
         self.assertEqual(errors, ["memcore:runtime_contract_missing:memory_metadata_has_signal"])
 
+    def test_packaged_speech_audit_rejects_pre_call_scoped_adapter(self) -> None:
+        spec = check_packaged_dependencies.PackageSpec(
+            "capcore-adapter-speech",
+            "capcore_adapter_speech",
+            ("NormalizedASRSession",),
+        )
+        artifact = SimpleNamespace(version=VERSION, ok=True, reason="")
+        legacy_session = type("LegacyNormalizedASRSession", (), {})
+        with (
+            mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
+            mock.patch.object(
+                check_packaged_dependencies.importlib.metadata,
+                "distribution",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                check_packaged_dependencies,
+                "audit_distribution_artifact",
+                return_value=artifact,
+            ),
+            mock.patch.object(
+                check_packaged_dependencies.importlib,
+                "import_module",
+                return_value=SimpleNamespace(NormalizedASRSession=legacy_session),
+            ),
+        ):
+            installed, errors = check_packaged_dependencies.audit_installed_packages()
+
+        self.assertEqual(
+            [entry["distribution"] for entry in installed],
+            ["capcore-adapter-speech"],
+        )
+        self.assertEqual(
+            errors,
+            [
+                "capcore-adapter-speech:runtime_contract_missing:"
+                "NormalizedASRSession.supports_turn_commit,"
+                "NormalizedASRSession.commit_turn,"
+                "NormalizedASRSession.finish_call"
+            ],
+        )
+
     def test_python_package_manifests_have_no_sibling_source_overrides(self) -> None:
         for name in PYTHON_PACKAGES:
             root = AKANE_PARENT / name

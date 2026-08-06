@@ -136,6 +136,19 @@ export class RealtimeVoiceCallFlow {
     return true;
   }
 
+  resumeListening(turn) {
+    if (
+      !this.active ||
+      this.currentTurn !== turn ||
+      turn.phase !== "discarding"
+    ) {
+      return false;
+    }
+    turn.endpointAccepted = false;
+    turn.phase = "listening";
+    return true;
+  }
+
   allowOverlapListening(turn) {
     if (
       !this.active ||

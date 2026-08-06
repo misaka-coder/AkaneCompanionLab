@@ -97,6 +97,19 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
         )
         if missing_attributes:
             errors.append(f"{spec.distribution}:runtime_contract_missing:{','.join(missing_attributes)}")
+        if spec.distribution == "capcore-adapter-speech":
+            normalized_session = getattr(module, "NormalizedASRSession", None)
+            missing_session_methods = tuple(
+                attribute
+                for attribute in ("supports_turn_commit", "commit_turn", "finish_call")
+                if not hasattr(normalized_session, attribute)
+            )
+            if missing_session_methods:
+                errors.append(
+                    "capcore-adapter-speech:runtime_contract_missing:"
+                    "NormalizedASRSession."
+                    + ",NormalizedASRSession.".join(missing_session_methods)
+                )
 
         installed.append(
             {

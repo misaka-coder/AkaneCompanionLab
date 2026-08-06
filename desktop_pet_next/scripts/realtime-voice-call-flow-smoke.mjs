@@ -44,6 +44,10 @@ assert.equal(flow.complete(firstTurn), false);
 
 assert.equal(flow.acceptEndpoint(overlapTurn, "discard"), true);
 assert.equal(overlapTurn.phase, "discarding");
+assert.equal(flow.resumeListening(overlapTurn), true);
+assert.equal(overlapTurn.phase, "listening");
+assert.equal(overlapTurn.endpointAccepted, false);
+assert.equal(flow.acceptEndpoint(overlapTurn, "discard"), true);
 assert.equal(flow.complete(overlapTurn, { requestNext: false }), true);
 assert.equal(scheduled.length, 0);
 assert.equal(flow.requestNextListeningTurn(), true);

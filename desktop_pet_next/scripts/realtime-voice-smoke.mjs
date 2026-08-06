@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   RealtimeVoiceCallResources,
+  RealtimeVoiceCallSession,
   RealtimeVoicePlaybackQueue,
   RealtimeVoiceSession,
   buildVoiceWebSocketUrl,
@@ -808,5 +809,154 @@ assert.equal(await cancelTask, true);
 assert.equal(cancelTimers.size, 0);
 assert.deepEqual(cancelEvents, ["cancelled"]);
 assert.equal(cancelSession.closed, true);
+
+const callScopedTrack = {
+  stopCalls: 0,
+  stop() {
+    this.stopCalls += 1;
+  }
+};
+const callScopedResources = new RealtimeVoiceCallResources({
+  mediaStream: { getTracks: () => [callScopedTrack] },
+  audioElement: new FakeAudioElement()
+});
+const callScopedFakes = buildFakeCaptureScope();
+const callScopedEvents = [];
+const callScopedSession = new RealtimeVoiceCallSession({
+  websocketUrl: "wss://example.test/voice/realtime",
+  callResources: callScopedResources,
+  openPayload: {
+    profile_user_id: "master",
+    conversation_id: "call-conversation",
+    session_id: "call-session",
+    character_pack_id: "reimu",
+    language: "zh",
+    disposition: "message"
+  },
+  workletModuleUrl: "voice-worklet.js",
+  callbacks: {
+    onTransportOpen: () => callScopedEvents.push("transport"),
+    onReady: () => callScopedEvents.push("call-ready")
+  },
+  scope: {
+    ...callScopedFakes.scope,
+    WebSocket: FakeWebSocket,
+    clearTimeout
+  }
+});
+const firstCallTurnEvents = [];
+const firstCallTurn = callScopedSession.createTurn({
+  voiceTurnId: "call-turn-1",
+  audioStreamId: "call-audio-1",
+  endpointDetector: { acceptPcmFrame() {}, observeTranscript() {} },
+  callbacks: {
+    onReady: () => firstCallTurnEvents.push("ready"),
+    onFinal: () => firstCallTurnEvents.push("final")
+  }
+});
+const firstCallTurnStart = firstCallTurn.start();
+await tick();
+const callSocket = FakeWebSocket.latest;
+callSocket.emit("open");
+await tick();
+assert.equal(
+  JSON.parse(callSocket.sent.find((payload) => typeof payload === "string")).type,
+  "client.call.open"
+);
+callScopedFakes.workletNodes[0].port.emitPcm([0.1, 0.2, 0.3]);
+assert.equal(firstCallTurn.pendingFrames.length, 1);
+callSocket.emit("message", {
+  data: JSON.stringify({ type: "server.call.ready", protocol_version: 2 })
+});
+await tick();
+assert.equal(
+  callSocket.sent
+    .filter((payload) => typeof payload === "string")
+    .map((payload) => JSON.parse(payload).type)
+    .includes("client.turn.start"),
+  true
+);
+callSocket.emit("message", {
+  data: JSON.stringify({
+    type: "server.turn.ready",
+    protocol_version: 2,
+    voice_turn_id: "call-turn-1"
+  })
+});
+await firstCallTurnStart;
+assert.deepEqual(callScopedEvents, ["transport", "call-ready"]);
+assert.deepEqual(firstCallTurnEvents, ["ready"]);
+assert.equal(firstCallTurn.pendingFrames.length, 0);
+assert.equal(
+  callSocket.sent
+    .filter((payload) => typeof payload === "string")
+    .map((payload) => JSON.parse(payload).type)
+    .includes("client.audio"),
+  true
+);
+await firstCallTurn.flushAndStopCapture();
+await firstCallTurn.finishInput();
+assert.equal(
+  callSocket.sent
+    .filter((payload) => typeof payload === "string")
+    .map((payload) => JSON.parse(payload).type)
+    .includes("client.turn.endpoint"),
+  true
+);
+callSocket.emit("message", {
+  data: JSON.stringify({
+    type: "server.turn.final",
+    protocol_version: 2,
+    voice_turn_id: "call-turn-1",
+    text: "第一轮"
+  })
+});
+assert.deepEqual(firstCallTurnEvents, ["ready", "final"]);
+
+const secondCallTurn = callScopedSession.createTurn({
+  voiceTurnId: "call-turn-startup-failure",
+  audioStreamId: "call-audio-startup-failure",
+  endpointDetector: { acceptPcmFrame() {}, observeTranscript() {} }
+});
+const failedCallTurnStart = secondCallTurn.start();
+await tick();
+callSocket.emit("message", {
+  data: JSON.stringify({
+    type: "server.failed",
+    protocol_version: 2,
+    reason: "turn_start_rejected",
+    terminal: false,
+    retryable: false,
+    message: "这一轮没有接通。"
+  })
+});
+await assert.rejects(failedCallTurnStart, /voice_call_turn_not_ready/);
+
+const thirdCallTurn = callScopedSession.createTurn({
+  voiceTurnId: "call-turn-2",
+  audioStreamId: "call-audio-2",
+  endpointDetector: { acceptPcmFrame() {}, observeTranscript() {} }
+});
+const secondCallTurnStart = thirdCallTurn.start();
+await tick();
+assert.equal(FakeWebSocket.latest, callSocket);
+callSocket.emit("message", {
+  data: JSON.stringify({
+    type: "server.turn.ready",
+    protocol_version: 2,
+    voice_turn_id: "call-turn-2"
+  })
+});
+await secondCallTurnStart;
+assert.equal(
+  callSocket.sent
+    .filter((payload) => typeof payload === "string")
+    .map((payload) => JSON.parse(payload).type)
+    .filter((type) => type === "client.call.open").length,
+  1
+);
+await callScopedSession.close("test_complete");
+await callScopedResources.close("test_complete");
+assert.equal(callScopedTrack.stopCalls, 1);
 
 console.log("realtime voice playback smoke: ok");

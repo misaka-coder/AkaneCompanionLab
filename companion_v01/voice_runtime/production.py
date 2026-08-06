@@ -254,6 +254,7 @@ class AkaneVoiceRuntimeCall:
         self.voice_session_id = str(voice_session_id or "")
         self.provider_id = str(getattr(context.provider, "provider_id", "") or "")
         self._active_coordinator: VoiceASRRealtimeTurnCoordinator | None = None
+        self._turn_coordinators: dict[str, VoiceASRRealtimeTurnCoordinator] = {}
         self._used_voice_turn_ids: set[str] = set()
         self._used_audio_stream_ids: set[str] = set()
         self._closed = False
@@ -294,9 +295,25 @@ class AkaneVoiceRuntimeCall:
         )
         if resolved.ready:
             self._active_coordinator = resolved.coordinator
+            self._turn_coordinators[request.voice_turn_id] = resolved.coordinator
             self._used_voice_turn_ids.add(request.voice_turn_id)
             self._used_audio_stream_ids.add(request.audio_stream_id)
         return resolved
+
+    def cancel_response(self, *, voice_turn_id: str, reason: str) -> Any:
+        coordinator = self._turn_coordinators.get(str(voice_turn_id or ""))
+        if coordinator is None:
+            return VoiceRealtimeCoordinatorResolution.failed(
+                "voice_realtime_call_turn_unknown",
+                status="not_found",
+            )
+        return coordinator.cancel_response(reason=str(reason or "client_cancelled"))
+
+    def release_response(self, voice_turn_id: str) -> None:
+        """Drop the delivery lookup after the response is durably terminal."""
+
+        turn_id = str(voice_turn_id or "")
+        self._turn_coordinators.pop(turn_id, None)
 
     async def finish(self) -> ASRSessionUpdate:
         if self._closed:
@@ -309,6 +326,8 @@ class AkaneVoiceRuntimeCall:
         result = await self.provider_session.finish_call()
         if result.ok:
             self._closed = True
+            self._turn_coordinators.clear()
+            self._active_coordinator = None
         return result
 
     async def cancel(self) -> ASRSessionUpdate:
@@ -317,6 +336,8 @@ class AkaneVoiceRuntimeCall:
         result = await self.provider_session.cancel()
         if result.status in {"cancelled", "duplicate"}:
             self._closed = True
+            self._turn_coordinators.clear()
+            self._active_coordinator = None
         return result
 
     def _same_call_identity(self, request: VoiceRealtimeOpenRequest) -> bool:
@@ -433,7 +454,7 @@ class AkaneVoiceRuntimeService:
                 retryable=bool(getattr(opened, "retryable", False)),
                 safe_public_summary=str(getattr(opened, "safe_public_summary", "") or ""),
             )
-        if not opened.session.supports_turn_commit:
+        if not bool(getattr(opened.session, "supports_turn_commit", False)):
             await opened.session.cancel()
             return VoiceRuntimeCallOpenResult.failed(
                 "asr_provider_commit_turn_unsupported",

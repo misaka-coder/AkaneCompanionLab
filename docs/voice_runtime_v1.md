@@ -765,10 +765,11 @@ VoiceCore durable command
 的语音轮。语音输出关闭或 WebView 不支持 AudioWorklet 时仍保持旧听写体验。
 
 客户端库现已增加通话级资源所有权：`RealtimeVoiceCallResources` 持有一场通话
-唯一的麦克风流和播放器。当前迁移窗口中，不同语音轮仍各自保留 WebSocket/ACK
-通道，音频交付由通话级仲裁器串行取得播放器所有权；这一“共享设备、逐轮建链”
-形态只作为兼容旧协议的过渡实现，不再继续扩展。结束单轮只注销该轮播放队列，
-不停止麦克风轨道；只有结束整场通话才停止轨道并清空播放器。
+唯一的麦克风流和播放器，`RealtimeVoiceCallSession` 持有整场通话唯一的 V2
+WebSocket。不同语音轮只创建轻量的 turn 句柄和独立播放队列，音频交付由通话级
+仲裁器串行取得播放器所有权。结束单轮只注销该轮播放队列，不停止麦克风轨道，
+也不重建 provider；只有结束整场通话才停止轨道、关闭 call transport 并清空
+播放器。旧 `RealtimeVoiceSession` 只保留给单次听写兼容入口，不再承载连续通话。
 
 通话资源路径也已持有唯一 AudioContext/AudioWorklet。每个
 `RealtimeVoiceSession` 只取得当前 Input Turn 的 PCM sink 租约：开始前先用
@@ -779,12 +780,13 @@ VoiceCore durable command
 音频当成成功。该路径已有连续多轮、残帧隔离、立即换轮与回执超时测试，桌宠
 主入口也已复用它；每轮安全录音仍独立收口，不能跨轮拼接。
 
-客户端明确区分 WebSocket 传输已连接与 ASR provider 已就绪。WebSocket `open`
-后通话即取得传输连接并继续采集；`server.ready` 之前的 PCM 按原顺序暂存在当前
-Input Turn，provider 就绪后先补送音频，再允许发送 `client.endpoint`。因此远端
-ASR 冷启动慢时不会被短连接超时误判成“实时语音未接通”，也不会要求用户等待
-某个提示后才敢开口。WebSocket 本身和 provider 准备分别有结构化超时；provider
-始终未就绪时才释放等待者并进入既有的有界重连/安全录音降级路径。
+客户端明确区分麦克风已打开、WebSocket 已连接与 ASR provider 已就绪。用户授权
+麦克风后立即进入通话并开始保留 PCM；`server.call.ready` / `server.turn.ready`
+之前的音频按原顺序暂存在当前 Input Turn，ready 后先补送，再允许 endpoint。
+首次 provider 在 8 秒内仍未就绪时，客户端结构化结束等待并保留安全录音降级
+条件，不继续用“正在听”掩盖未接通状态。只有一场已经成功 ready 过的通话发生
+被动断线时才自动重建 call transport；首次接通失败直接向用户说明，不进行多轮
+假重连。
 
 ### 2026-07-29：Call-scoped 连续会话修正
 
@@ -861,8 +863,12 @@ WebSocket 内复用 `AkaneVoiceRuntimeCall`，每个 `client.turn.start` 只新�
 VoiceCore turn coordinator；上一轮仍在播放时，下一轮可以开始收音，播放
 ACK 通过 `delivery_id` / `control_id` 回到原交付 channel，不会被当前输入轮
 覆盖。断线会取消活动输入轮和 provider，会话正常挂断才调用 `finish_call()`。
-桌宠客户端尚未切到协议版本 2，因此这一里程碑只代表服务端传输和宿主能力已
-接通，不代表用户界面已经完成连续通话验收。
+桌宠连续通话主入口现已切到协议版本 2：点击一次麦克风后创建一个
+`RealtimeVoiceCallSession`，后续发言只发送新的 `client.turn.start`，不再为每句
+重建 WebSocket 和 Fun-ASR task。协议版本 1 只服务明确的单次听写兼容入口。
+回复气泡按 `ordinal` 累积完整 speech unit，播放过程中跟随最新段落，回复完成后
+回到正文开头并按全文长度保留 6—30 秒；重叠收音的转写状态不能覆盖正在播放的
+助手正文。
 
 客户端还增加了独立的 `RealtimeVoiceEndpointDetector`。它不按关键词或固定回复
 判断语义，而是把自适应噪声底、短时 RMS/迟滞、有效发声时长与 ASR
@@ -879,8 +885,11 @@ Agent，也不设置固定的单句最长时限。检测器现已由主入口为
 避免把思考停顿直接当成不可逆的句末；确认窗口只处理声学迟滞，不按关键词猜测
 用户语义，也不设置整句最长时限。
 
-这一客户端切片已部署云端并完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS
-基础链路验证，但连续抢话的人体时序验收尚未通过。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
+早期客户端切片已完成真实 Tauri/WebView2 麦克风、Fun-ASR、TTS 基础链路验证；
+V2 客户端与新版 `capcore-adapter-speech` 必须作为同一个发布切片上线，部署产物若
+仍携带不支持 `commit_turn()` / `finish_call()` 的旧 speech adapter，会返回明确的
+`asr_provider_commit_turn_unsupported`，不能伪装成通话成功。连续抢话的人体时序
+仍需在该组合发布后验收。实时 final 有界等待；超时或实时链路失败时，客户端会保留的
 MediaRecorder 音频改走普通 ASR，并把成功转写自动提交给 Thinking Agent，不能
 停在输入框或静默等待。服务端同时提供 finalize/input inactivity 超时与结构化
 失败原因。

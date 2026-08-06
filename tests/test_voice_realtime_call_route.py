@@ -229,6 +229,7 @@ class _CallRuntime:
         self.host = _ReducerHost(self.factory)
         self.requests: list[Any] = []
         self.delivery_channels: dict[str, _CallDeliveryChannel] = {}
+        self.cancelled_responses: list[tuple[str, str]] = []
 
     def create_turn(self, request: Any) -> VoiceRealtimeCoordinatorResolution:
         self.requests.append(request)
@@ -265,6 +266,12 @@ class _CallRuntime:
             voice_session_id=self.voice_session_id,
             delivery_channel=delivery_channel,
         )
+
+    def cancel_response(self, *, voice_turn_id: str, reason: str) -> Any:
+        if voice_turn_id not in self.delivery_channels:
+            return SimpleNamespace(status="failed", reason="voice_turn_unknown")
+        self.cancelled_responses.append((voice_turn_id, reason))
+        return SimpleNamespace(status="accepted", reason="")
 
     async def finish(self) -> ASRSessionUpdate:
         return await self.provider_session.finish_call()
@@ -548,6 +555,55 @@ class VoiceRealtimeCallRouteTests(unittest.TestCase):
             InputTurnStatus.CANCELLED,
         )
         self.assertEqual(metrics.observed, [("asr_realtime_call", False)])
+
+    def test_response_cancel_keeps_call_open_and_closes_only_target_delivery(self) -> None:
+        factory = _CallFactory()
+        with TestClient(self._app(factory=factory)) as client:
+            with client.websocket_connect("/voice/realtime") as websocket:
+                websocket.send_json(
+                    _call_open_payload(output_mode=VOICE_PLAYBACK_OUTPUT_MODE)
+                )
+                websocket.receive_json()
+                self._complete_text_turn(websocket, 1)
+                speech = websocket.receive_json()
+                websocket.receive_bytes()
+                self.assertEqual(speech["type"], "server.speech")
+
+                websocket.send_json(
+                    {
+                        "type": "client.response.cancel",
+                        "protocol_version": 2,
+                        "voice_turn_id": "voice-turn-call-route-1",
+                        "reason": "new_voice_turn_committed",
+                    }
+                )
+                cancelled = websocket.receive_json()
+                self.assertEqual(cancelled["type"], "server.response.cancelled")
+                self.assertEqual(cancelled["voice_turn_id"], "voice-turn-call-route-1")
+
+                websocket.send_json(
+                    _turn_start_payload(2)
+                )
+                next_ready = websocket.receive_json()
+                self.assertEqual(next_ready["type"], "server.turn.ready")
+                websocket.send_json(
+                    {
+                        "type": "client.call.close",
+                        "reason": "test_complete",
+                    }
+                )
+                closed = websocket.receive_json()
+
+        self.assertEqual(closed["type"], "server.call.closed")
+        call = factory.calls[0]
+        self.assertEqual(
+            call.cancelled_responses,
+            [("voice-turn-call-route-1", "new_voice_turn_committed")],
+        )
+        self.assertEqual(
+            call.delivery_channels["voice-turn-call-route-1"].close_reason,
+            "new_voice_turn_committed",
+        )
 
 
 if __name__ == "__main__":

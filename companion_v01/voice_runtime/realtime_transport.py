@@ -1111,6 +1111,9 @@ class VoiceRealtimeCallWebSocketSession:
         if message_type == "client.turn.endpoint":
             await self._handle_turn_endpoint(payload)
             return
+        if message_type == "client.response.cancel":
+            await self._handle_response_cancel(payload)
+            return
         if message_type == "client.audio":
             await self._handle_audio_header(payload)
             return
@@ -1148,7 +1151,14 @@ class VoiceRealtimeCallWebSocketSession:
             resolution = self.call_factory(parsed)
             if inspect.isawaitable(resolution):
                 resolution = await resolution
-        except Exception:
+        except Exception as exc:
+            try:
+                self.log_event(
+                    "asr_realtime_call_factory_exception",
+                    error_type=type(exc).__name__[:96],
+                )
+            except Exception:
+                pass
             await self._send_failed(
                 "voice_realtime_call_factory_failed",
                 retryable=True,
@@ -1523,6 +1533,54 @@ class VoiceRealtimeCallWebSocketSession:
                 "voice_turn_id": self.current_request.voice_turn_id,
                 "status": status or "duplicate",
                 "reason": str(getattr(result, "reason", "") or "")[:128],
+            }
+        )
+
+    async def _handle_response_cancel(
+        self,
+        payload: Mapping[str, Any],
+    ) -> None:
+        voice_turn_id = str(payload.get("voice_turn_id") or "")
+        reason = str(payload.get("reason") or "client_cancelled")[:96]
+        if not voice_turn_id or voice_turn_id not in self.delivery_channels:
+            await self._send_failed(
+                "voice_playback_delivery_unknown",
+                terminal=False,
+            )
+            return
+        cancel_response = getattr(self.call, "cancel_response", None)
+        if not callable(cancel_response):
+            await self._send_failed(
+                "voice_response_cancel_unavailable",
+                retryable=True,
+                terminal=False,
+            )
+            return
+        try:
+            result = cancel_response(
+                voice_turn_id=voice_turn_id,
+                reason=reason,
+            )
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            await self._send_failed(
+                "voice_response_cancel_failed",
+                retryable=True,
+                terminal=False,
+            )
+            return
+        if str(getattr(result, "status", "") or "") == "failed":
+            await self._send_result_failure(result, terminal=False)
+            return
+        self._close_delivery_channel(voice_turn_id, reason=reason)
+        await self.websocket.send_json(
+            {
+                "type": "server.response.cancelled",
+                "protocol_version": VOICE_REALTIME_CALL_PROTOCOL_VERSION,
+                "voice_turn_id": voice_turn_id,
+                "status": str(getattr(result, "status", "") or "accepted"),
+                "reason": reason,
             }
         )
 
@@ -1942,6 +2000,12 @@ class VoiceRealtimeCallWebSocketSession:
 
     def _remove_delivery_channel(self, voice_turn_id: str) -> None:
         self.delivery_channels.pop(voice_turn_id, None)
+        release_response = getattr(self.call, "release_response", None)
+        if callable(release_response):
+            try:
+                release_response(voice_turn_id)
+            except Exception:
+                pass
         self.delivery_owners = {key: owner for key, owner in self.delivery_owners.items() if owner != voice_turn_id}
         self.control_owners = {key: owner for key, owner in self.control_owners.items() if owner != voice_turn_id}
         for task, owner in tuple(self.delivery_tasks.items()):

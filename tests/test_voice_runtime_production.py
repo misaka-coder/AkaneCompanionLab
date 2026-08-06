@@ -186,6 +186,30 @@ class _CallAdapter:
         )
 
 
+class _LegacyNormalizedSession:
+    """Shape shipped by the pre call-scoped speech adapter."""
+
+    mode = ASRSessionMode.STREAMING
+
+    def __init__(self) -> None:
+        self.cancel_count = 0
+
+    async def cancel(self) -> None:
+        self.cancel_count += 1
+
+
+class _LegacyCallAdapter:
+    def __init__(self) -> None:
+        self.session = _LegacyNormalizedSession()
+
+    async def open_session(self, **_kwargs: Any) -> ASRSessionOpenResult:
+        return ASRSessionOpenResult(
+            status="succeeded",
+            mode=ASRSessionMode.STREAMING,
+            session=self.session,
+        )
+
+
 class _ThinkingEngine:
     def __init__(self, manager: MemcoreManager, *, fail: bool = False) -> None:
         self.memcore_manager = manager
@@ -433,6 +457,9 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                     first_settled = await _commit_realtime_turn(first.coordinator)
                     self.assertEqual(first_settled.response_status, "started")
                     self.assertTrue(service.wait_idle(timeout=5.0))
+                    self.assertIn(first_request.voice_turn_id, opened.call._turn_coordinators)
+                    opened.call.release_response(first_request.voice_turn_id)
+                    self.assertNotIn(first_request.voice_turn_id, opened.call._turn_coordinators)
                     reused = opened.call.create_turn(first_request)
                     self.assertEqual(reused.status, "conflict")
                     self.assertEqual(
@@ -470,6 +497,34 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                         after_finish.reason,
                         "voice_realtime_call_closed",
                     )
+                finally:
+                    service.close()
+                    manager.close()
+
+        asyncio.run(exercise())
+
+    def test_call_scoped_asr_rejects_legacy_session_without_capability_attribute(self) -> None:
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                manager = self._manager(root)
+                adapter = _LegacyCallAdapter()
+                service = self._service(
+                    root=root,
+                    manager=manager,
+                    adapter=adapter,
+                )
+                try:
+                    opened = await service.open_call(
+                        _open_request(voice_turn_id="voice-turn-legacy-call")
+                    )
+                    self.assertFalse(opened.ready)
+                    self.assertEqual(opened.status, "unsupported")
+                    self.assertEqual(
+                        opened.reason,
+                        "asr_provider_commit_turn_unsupported",
+                    )
+                    self.assertEqual(adapter.session.cancel_count, 1)
                 finally:
                     service.close()
                     manager.close()
