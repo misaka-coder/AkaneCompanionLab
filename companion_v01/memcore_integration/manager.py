@@ -790,7 +790,11 @@ class MemcoreManager:
         if system is None:
             return {**self._status(operation, False, "unavailable", reason=self._reason), "exchanges": []}
         try:
+            # Construct every exchange first: a schema problem in any one of them
+            # (including an oversized retention_anchor) must abort the whole batch
+            # before a single append, so no action/observation half-record survives.
             prepared = [self._build_tool_entry_pair(item) for item in normalized]
+            self._validate_tool_batch_prepared(prepared, operation=operation)
             stored_actions = [system.append_entry(action, turn_id=resolved_turn_id) for action, _ in prepared]
             stored_observations = [
                 system.append_entry(observation, turn_id=resolved_turn_id) for _, observation in prepared
@@ -3138,6 +3142,29 @@ class MemcoreManager:
             **common,
         )
         return action, observation
+
+    @staticmethod
+    def _validate_tool_batch_prepared(prepared: list[tuple[Any, Any]], *, operation: str) -> None:
+        """Reject whole-batch violations before any entry is appended.
+
+        Appends are per-entry in the store; duplicate correlation/source ids would
+        only fail on the second append, leaving a partial batch behind. Validating
+        up front keeps the batch all-or-nothing for construction-visible problems.
+        """
+        action_by_correlation: dict[str, str] = {}
+        source_ids: set[str] = set()
+        for action, observation in prepared:
+            correlation = str(getattr(action, "correlation_id", "") or "").strip()
+            if correlation:
+                if correlation in action_by_correlation:
+                    raise ValueError("duplicate_tool_call_id_in_batch")
+                action_by_correlation[correlation] = str(action.source_id or "")
+            for entry in (action, observation):
+                source_id = str(getattr(entry, "source_id", "") or "").strip()
+                if source_id and source_id in source_ids:
+                    raise ValueError("duplicate_tool_entry_source_id_in_batch")
+                if source_id:
+                    source_ids.add(source_id)
 
     @staticmethod
     def _stable_turn_id(source_id: str) -> str:
