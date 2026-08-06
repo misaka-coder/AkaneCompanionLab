@@ -790,8 +790,8 @@ class MemcoreManager:
         if system is None:
             return {**self._status(operation, False, "unavailable", reason=self._reason), "exchanges": []}
         try:
-            # Construct every exchange first: a schema problem in any one of them
-            # (including an oversized retention_anchor) must abort the whole batch
+            # Construct every exchange first: a construction-visible schema or
+            # identity problem in any one of them must abort the whole batch
             # before a single append, so no action/observation half-record survives.
             prepared = [self._build_tool_entry_pair(item) for item in normalized]
             self._validate_tool_batch_prepared(prepared, operation=operation)
