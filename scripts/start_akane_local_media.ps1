@@ -245,8 +245,7 @@ if (
         [string]$health.asr.model -ne $resolvedWhisperModel -or
         [string]$health.asr.device -ne $resolvedAsrDevice -or
         [string]$health.asr.compute_type -ne $resolvedAsrComputeType -or
-        -not [bool]$health.separation.ready -or
-        [string]$health.separation.executor -notlike "isolated_*"
+        -not [bool]$health.separation.ready
     )
 ) {
     Write-Host "[INFO] Restarting local media host to apply capability configuration."

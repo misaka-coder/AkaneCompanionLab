@@ -136,8 +136,17 @@ function Test-AkaneTrackedProcess {
     if ($null -eq $process) {
         return $false
     }
-    $actualExecutable = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
-    $expectedPath = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    $actualExecutableValue = ([string]$process.ExecutablePath).Trim()
+    $expectedExecutableValue = ([string]$ExpectedExecutable).Trim()
+    if (-not $actualExecutableValue -or -not $expectedExecutableValue) {
+        return $false
+    }
+    try {
+        $actualExecutable = [System.IO.Path]::GetFullPath($actualExecutableValue)
+        $expectedPath = [System.IO.Path]::GetFullPath($expectedExecutableValue)
+    } catch {
+        return $false
+    }
     return (
         $actualExecutable.Equals($expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -and
         [string]$process.CommandLine -like "*$ExpectedCommandFragment*"

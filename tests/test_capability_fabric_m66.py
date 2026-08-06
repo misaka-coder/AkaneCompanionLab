@@ -459,6 +459,9 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertIn("cloud_gpt_sovits_health_refresh_failed", source)
         self.assertIn('"/tts"', source)
         self.assertIn("Get-CimInstance Win32_Process", source)
+        self.assertIn("$actualExecutableValue = ([string]$process.ExecutablePath).Trim()", source)
+        self.assertIn("if (-not $actualExecutableValue -or -not $expectedExecutableValue)", source)
+        self.assertIn("catch {", source)
         self.assertIn("Stop-Process -Id $storedProcessId -Force", source)
         self.assertIn("Import-AkanePersonalSatelliteToken", source)
         self.assertIn("AKANE_DESKTOP_SATELLITE_TOKEN_$suffix", source)
@@ -471,6 +474,12 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertNotIn("AKANE_ADMIN_TOKEN", source)
         self.assertNotRegex(source, r"AKANE_DESKTOP_SATELLITE_TOKEN\s*=\s*[\"'][^\"']{16,}")
         self.assertIn("start_akane_cloud_personal.ps1", batch)
+
+    def test_local_media_launcher_accepts_ready_in_process_demucs(self) -> None:
+        source = (ROOT / "scripts" / "start_akane_local_media.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("-not [bool]$health.separation.ready", source)
+        self.assertNotIn('$health.separation.executor -notlike "isolated_*"', source)
 
     def test_personal_cloud_launcher_reuses_verified_loopback_tunnel(self) -> None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
