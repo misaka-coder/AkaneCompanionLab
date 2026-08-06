@@ -119,19 +119,18 @@ def _clarify_explicit_kind_contract(schema: dict[str, Any]) -> dict[str, Any]:
         properties["include_explicit"] = {
             **properties["include_explicit"],
             "description": (
-                "Whether this query intentionally needs explicit trace/event/material records. "
-                "IMPORTANT: setting true REQUIRES kind_patterns to name the explicit kinds to include "
-                '(for example ["tool.*"] or ["material.*"]); true without kind_patterns is rejected '
-                "and the whole retrieval returns nothing. Leave false for ordinary chat messages; "
-                "most memory questions never need explicit records."
+                "Whether this query needs explicit trace/event/material records. "
+                "Set true only WITH kind_patterns "
+                '(e.g. ["tool.*"]); true without kind_patterns is rejected '
+                "and returns nothing. Leave false for ordinary chat."
             ),
         }
     if "kind_patterns" in properties:
         properties["kind_patterns"] = {
             **properties["kind_patterns"],
             "description": (
-                'Exact kinds or trailing-wildcard prefixes (e.g. "tool.*", "material.*") of the explicit '
-                "trace/event/material records to include. Only valid together with include_explicit=true; "
+                'Kinds of explicit trace/event/material records to include (e.g. "tool.*"). '
+                "Only valid together with include_explicit=true; "
                 "omit both unless tool/material traces are specifically needed."
             ),
         }

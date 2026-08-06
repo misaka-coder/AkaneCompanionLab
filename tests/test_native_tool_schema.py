@@ -114,7 +114,7 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertIn("kind_patterns", function["parameters"]["properties"])
         explicit_description = function["parameters"]["properties"]["include_explicit"]["description"]
         kind_description = function["parameters"]["properties"]["kind_patterns"]["description"]
-        self.assertIn("REQUIRES kind_patterns", explicit_description)
+        self.assertIn("WITH kind_patterns", explicit_description)
         self.assertIn("true without kind_patterns is rejected", explicit_description)
         self.assertIn("Only valid together with include_explicit=true", kind_description)
         self.assertIn("entity_anchors", function["parameters"]["properties"])
