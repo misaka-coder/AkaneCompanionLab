@@ -149,8 +149,50 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertTrue(enabled["enabled"])
         self.assertEqual(enabled["protocol"], "anthropic")
-        self.assertFalse(mismatched["enabled"])
-        self.assertEqual(mismatched["reason"], "chat_vision_model_mismatch")
+        # The hard equality between the chat and vision routes was removed: a
+        # configured VISION_* route alone makes real images routable, even when
+        # the chat override points at a different model.
+        self.assertTrue(mismatched["enabled"])
+        self.assertEqual(mismatched["reason"], "vision_configured")
+
+    def test_engine_native_chat_vision_unavailable_without_any_image_model(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        with patch.multiple(
+            config,
+            VISION_ENABLED=True,
+            VISION_API_KEY="",
+            VISION_BASE_URL="",
+            VISION_MODEL_NAME="",
+            CHAT_API_KEY="chat-key",
+            CHAT_BASE_URL="https://api.example.test",
+            CHAT_API_PROTOCOL="openai",
+            CHAT_MODEL_NAME="text-model",
+            CHAT_SUPPORTS_IMAGES=False,
+        ):
+            status = engine.native_chat_vision_status()
+
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["reason"], "multimodal_model_unavailable")
+
+    def test_engine_native_chat_vision_uses_chat_when_explicitly_image_capable(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        with patch.multiple(
+            config,
+            VISION_ENABLED=True,
+            VISION_API_KEY="",
+            VISION_BASE_URL="",
+            VISION_MODEL_NAME="",
+            CHAT_API_KEY="chat-key",
+            CHAT_BASE_URL="https://api.example.test",
+            CHAT_API_PROTOCOL="openai",
+            CHAT_MODEL_NAME="multimodal-chat",
+            CHAT_SUPPORTS_IMAGES=True,
+        ):
+            status = engine.native_chat_vision_status()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["reason"], "chat_supports_images")
+        self.assertEqual(status["model"], "multimodal-chat")
 
     def test_engine_native_user_image_context_keeps_only_handles_out_of_prompt(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

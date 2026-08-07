@@ -49,6 +49,7 @@ def prepare_context(
     final_debug_enabled: bool | None = None,
     enable_native_tools: bool = False,
     chat_model_override: str = "",
+    execution_target: Any = None,
     post_user_turns: list[dict[str, Any]] | None = None,
     prompt_exclude_source_ids: list[str] | None = None,
     domain_profile_id: str = "",
@@ -130,6 +131,7 @@ def prepare_context(
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
         chat_model_override=chat_model_override,
+        execution_target=execution_target,
         exclude_source_ids=list(excluded_prompt_sources),
     )
     projection_read_active = bool(provider_projection.get("ok"))
@@ -488,10 +490,16 @@ def prepare_context(
         }
         try:
             provider_supports_native_tools = engine.llm.chat_supports_native_tools(
-                chat_model_override=chat_model_override
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
             )
         except TypeError:
-            provider_supports_native_tools = engine.llm.chat_supports_native_tools()
+            try:
+                provider_supports_native_tools = engine.llm.chat_supports_native_tools(
+                    chat_model_override=chat_model_override
+                )
+            except TypeError:
+                provider_supports_native_tools = engine.llm.chat_supports_native_tools()
         native_plan = _toe.build_native_tool_decision_plan(
             schema_handlers or ready_handlers,
             allow_tool_call=tool_capability_available,
@@ -778,6 +786,7 @@ def prepare_context(
             character_pack_id=character_pack_id,
             current_source_id=current_source_id,
             chat_model_override=chat_model_override,
+            execution_target=execution_target,
         )
     )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
@@ -815,6 +824,7 @@ def _compare_memcore_projection_shadow(
     character_pack_id: str,
     current_source_id: str,
     chat_model_override: str,
+    execution_target: Any = None,
 ) -> dict[str, Any]:
     if not bool(getattr(mod_config, "MEMCORE_SHADOW_COMPARE", False)):
         return {"ok": True, "status": "disabled", "reason": "shadow_compare_disabled"}
@@ -826,12 +836,19 @@ def _compare_memcore_projection_shadow(
     if not callable(compare) or not callable(protocol_getter) or not callable(history_normalizer):
         return {"ok": False, "status": "unavailable", "reason": "projection_shadow_dependencies_unavailable"}
     try:
-        protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
+        protocol = str(
+            protocol_getter(
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+            )
+            or ""
+        ).strip().lower()
         history_turns = list(generation_context.get("history_turns") or [])
         history_start = max(0, int(generation_context.get("memcore_history_start_index") or 0))
         actual_history = history_normalizer(
             history_turns[history_start:],
             chat_model_override=chat_model_override,
+            execution_target=execution_target,
         )
         result = compare(
             provider_profile=protocol,
@@ -898,6 +915,7 @@ def _build_memcore_provider_history(
     character_pack_id: str,
     current_source_id: str,
     chat_model_override: str,
+    execution_target: Any = None,
     exclude_source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if _memory_backend() != "memcore":
@@ -911,7 +929,13 @@ def _build_memcore_provider_history(
     if not str(current_source_id or "").strip():
         return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
     try:
-        protocol = str(protocol_getter(chat_model_override=chat_model_override) or "").strip().lower()
+        protocol = str(
+            protocol_getter(
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+            )
+            or ""
+        ).strip().lower()
         projection: dict[str, Any] = {}
         for _attempt in range(2):
             candidate = build_projection(

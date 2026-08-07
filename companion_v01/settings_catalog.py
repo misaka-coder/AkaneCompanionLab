@@ -202,6 +202,12 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("CHAT_BASE_URL", _LLM, SCOPE_RESTART_CLIENT, "CHAT base_url", managed_in=MANAGED_MODEL_SERVICE),
     _s("CHAT_MODEL_NAME", _LLM, SCOPE_RESTART_CLIENT, "CHAT 主模型名", managed_in=MANAGED_MODEL_SERVICE),
     _s("CHAT_API_PROTOCOL", _LLM, SCOPE_RESTART_CLIENT, "CHAT 协议", managed_in=MANAGED_MODEL_SERVICE),
+    _s(
+        "CHAT_SUPPORTS_IMAGES",
+        _LLM,
+        SCOPE_RESTART_CLIENT,
+        "聊天模型明确支持图片输入（仅当未配置独立视觉模型时作为回落）",
+    ),
     _s("LLM_THINKING_MODE", _LLM, SCOPE_RUNTIME, "OpenAI 兼容思考模式：default/disabled/enabled"),
     # 视觉 / 图像理解（接入由模型服务页管理，行为开关本目录）
     _s("VISION_API_KEY", _VIS, SCOPE_RUNTIME, "视觉 API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),

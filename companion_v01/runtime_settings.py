@@ -47,6 +47,7 @@ class BotSettingsView:
     chat_base_url: str = ""
     chat_model_name: str = ""
     chat_api_protocol: str = "auto"
+    chat_supports_images: bool = False
     vision_api_key: str = field(default="", repr=False)
     vision_base_url: str = ""
     vision_model_name: str = ""
@@ -128,6 +129,7 @@ class BotSettingsView:
             chat_base_url=_text(getattr(config_module, "CHAT_BASE_URL", "")),
             chat_model_name=_text(getattr(config_module, "CHAT_MODEL_NAME", "")),
             chat_api_protocol=_text(getattr(config_module, "CHAT_API_PROTOCOL", "auto")) or "auto",
+            chat_supports_images=bool(getattr(config_module, "CHAT_SUPPORTS_IMAGES", False)),
             vision_api_key=_text(getattr(config_module, "VISION_API_KEY", "")),
             vision_base_url=_text(getattr(config_module, "VISION_BASE_URL", "")),
             vision_model_name=_text(getattr(config_module, "VISION_MODEL_NAME", "")),
@@ -263,6 +265,7 @@ class BotSettingsView:
             "chat_base_url",
             "chat_model_name",
             "chat_api_protocol",
+            "chat_supports_images",
             "vision_api_key",
             "vision_base_url",
             "vision_model_name",
@@ -419,6 +422,7 @@ class BotSettingsView:
                     self.chat_model_name,
                     self.chat_api_protocol,
                 ),
+                "supports_images": self.chat_supports_images,
             },
             "vision": {
                 "enabled": self.vision_enabled,
@@ -526,6 +530,7 @@ def _overlay_value(key: str, value: Any) -> Any:
         "gpt_sovits_streaming_mode",
         "asr_vad_filter",
         "fun_asr_realtime_enabled",
+        "chat_supports_images",
     }:
         if not isinstance(value, bool):
             raise ValueError(f"bot_settings_boolean_required:{key}")

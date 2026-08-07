@@ -1128,7 +1128,16 @@ class AkaneMemoryEngine:
             logger.warning("memcore intermediate append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
-    def _chat_provider_protocol_for_memcore(self, *, chat_model_override: str = "") -> str:
+    def _chat_provider_protocol_for_memcore(
+        self,
+        *,
+        chat_model_override: str = "",
+        execution_target: Any = None,
+    ) -> str:
+        if execution_target is not None:
+            protocol = str(getattr(execution_target, "protocol", "") or "").strip()
+            if protocol:
+                return protocol
         runtime = getattr(self, "llm", None)
         protocol_getter = getattr(runtime, "chat_provider_protocol", None)
         if not callable(protocol_getter):
@@ -1147,6 +1156,7 @@ class AkaneMemoryEngine:
         memory_metadata: dict[str, Any] | None,
         provider_output_raw: str,
         chat_model_override: str = "",
+        execution_target: Any = None,
         annotation_status: str = "",
         profile_user_id: str,
         session_id: str,
@@ -1159,7 +1169,10 @@ class AkaneMemoryEngine:
             provider_profile = ""
             provider_projection: dict[str, Any] | None = None
             if str(provider_output_raw or ""):
-                provider_profile = self._chat_provider_protocol_for_memcore(chat_model_override=chat_model_override)
+                provider_profile = self._chat_provider_protocol_for_memcore(
+                    chat_model_override=chat_model_override,
+                    execution_target=execution_target,
+                )
                 if provider_profile:
                     provider_projection = {
                         "role": "assistant",
@@ -1195,6 +1208,7 @@ class AkaneMemoryEngine:
         memory_metadata: dict[str, Any] | None,
         provider_output_raw: str,
         chat_model_override: str,
+        execution_target: Any = None,
         annotation_status: str,
         profile_user_id: str,
         session_id: str,
@@ -1219,6 +1233,7 @@ class AkaneMemoryEngine:
                 memory_metadata=memory_metadata,
                 provider_output_raw=provider_output_raw,
                 chat_model_override=chat_model_override,
+                execution_target=execution_target,
                 annotation_status=annotation_status,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -3393,24 +3408,58 @@ class AkaneMemoryEngine:
         )
 
     def native_chat_vision_status(self, *, chat_model_override: str = "") -> dict[str, Any]:
+        """Whether real images can be sent to a chat-capable target this turn.
+
+        This no longer requires the chat and vision routes to be byte-identical.
+        A separately configured VISION_* bundle is itself a usable image target;
+        a chat bundle explicitly declared image-capable (CHAT_SUPPORTS_IMAGES)
+        is the fallback.  Real image parsing still happens independently, so a
+        present image marker without parsed bytes never routes as "seen".
+        """
         settings = self._runtime_settings_view()
         if not settings.vision_enabled:
             return {"enabled": False, "reason": "vision_disabled"}
-        chat_key = settings.chat_api_key
-        vision_key = settings.vision_api_key
-        chat_base = settings.chat_base_url.rstrip("/")
-        vision_base = settings.vision_base_url.rstrip("/")
-        chat_protocol = settings.chat_api_protocol.lower()
-        vision_protocol = settings.vision_api_protocol.lower()
-        chat_model = str(chat_model_override or settings.chat_model_name).strip()
-        vision_model = settings.vision_model_name
-        if not all((chat_key, vision_key, chat_base, vision_base, chat_model, vision_model)):
-            return {"enabled": False, "reason": "native_vision_not_configured"}
-        if chat_key != vision_key or chat_base.lower() != vision_base.lower() or chat_protocol != vision_protocol:
-            return {"enabled": False, "reason": "chat_vision_provider_mismatch"}
-        if chat_model.lower() != vision_model.lower():
-            return {"enabled": False, "reason": "chat_vision_model_mismatch"}
-        return {"enabled": True, "reason": "configured", "model": chat_model, "protocol": chat_protocol}
+        vision_configured = bool(
+            settings.vision_api_key and settings.vision_base_url and settings.vision_model_name
+        )
+        if vision_configured:
+            return {
+                "enabled": True,
+                "reason": "vision_configured",
+                "model": settings.vision_model_name,
+                "protocol": settings.vision_api_protocol,
+            }
+        if settings.chat_supports_images:
+            chat_model = str(chat_model_override or settings.chat_model_name).strip()
+            return {
+                "enabled": True,
+                "reason": "chat_supports_images",
+                "model": chat_model,
+                "protocol": settings.chat_api_protocol,
+            }
+        return {"enabled": False, "reason": "multimodal_model_unavailable"}
+
+    def _resolve_turn_execution_target(
+        self,
+        *,
+        has_real_images: bool,
+        tool_image_upgrade: bool = False,
+        chat_model_override: str = "",
+    ) -> Any:
+        """Resolve the immutable per-turn model target through the runtime.
+
+        Falls back to ``None`` for lightweight engines without a routing
+        resolver so existing test harnesses keep the legacy override path.
+        """
+        runtime = getattr(self, "llm", None)
+        resolver = getattr(runtime, "resolve_turn_execution_target", None)
+        if callable(resolver):
+            return resolver(
+                has_real_images=has_real_images,
+                tool_image_upgrade=tool_image_upgrade,
+                chat_model_override=chat_model_override,
+            )
+        return None
 
     def prepare_qq_native_image_inputs(
         self,
@@ -3535,6 +3584,10 @@ class AkaneMemoryEngine:
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
+        turn_execution_target = self._resolve_turn_execution_target(
+            has_real_images=bool(turn_user_images),
+            chat_model_override=chat_model_override,
+        )
         transient_user_turn = self._is_transient_user_turn(payload)
         persist_assistant_turn = self._should_persist_assistant_turn(payload)
         external_event_turn = plugin_external_event is not None
@@ -3651,6 +3704,7 @@ class AkaneMemoryEngine:
             user_images=turn_user_images,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            execution_target=turn_execution_target,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
@@ -3753,6 +3807,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -3793,6 +3848,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -3842,6 +3898,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -3921,6 +3978,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=True,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
+                execution_target=turn_execution_target,
                 post_user_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
@@ -4019,6 +4077,7 @@ class AkaneMemoryEngine:
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -4264,6 +4323,10 @@ class AkaneMemoryEngine:
                 self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
             )
         turn_user_images = [*native_user_images, *desktop_screen_images][:5]
+        turn_execution_target = self._resolve_turn_execution_target(
+            has_real_images=bool(turn_user_images),
+            chat_model_override=chat_model_override,
+        )
         transient_user_turn = self._is_transient_user_turn(payload) or externally_managed_memcore_turn
         persist_assistant_turn = self._should_persist_assistant_turn(payload) and not externally_managed_memcore_turn
         external_event_turn = plugin_external_event is not None
@@ -4502,6 +4565,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=False,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -4553,6 +4617,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -4602,6 +4667,7 @@ class AkaneMemoryEngine:
                     allow_tool_call=allow_retry,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     post_user_turns=tool_history_turns,
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
@@ -4694,6 +4760,7 @@ class AkaneMemoryEngine:
                 allow_tool_call=True,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
+                execution_target=turn_execution_target,
                 post_user_turns=tool_history_turns,
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
@@ -4794,6 +4861,7 @@ class AkaneMemoryEngine:
                     memory_metadata=memory_metadata,
                     provider_output_raw=provider_output_raw,
                     chat_model_override=chat_model_override,
+                    execution_target=turn_execution_target,
                     annotation_status=memory_annotation_status,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -5003,11 +5071,16 @@ class AkaneMemoryEngine:
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
+        execution_target: Any = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
     ) -> dict[str, Any]:
+        if self._is_multimodal_unavailable_target(execution_target):
+            return self._multimodal_unavailable_output(
+                str(execution_target.get("reason") or "multimodal_model_unavailable")
+            )
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
             user_message=user_message,
@@ -5027,6 +5100,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
             chat_model_override=chat_model_override,
+            execution_target=execution_target,
             post_user_turns=post_user_turns,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
@@ -5070,6 +5144,7 @@ class AkaneMemoryEngine:
                 "native_tools": generation_context.get("native_tools"),
                 "native_tool_choice": generation_context.get("native_tool_choice", ""),
                 "chat_model_override": chat_model_override,
+                "execution_target": execution_target,
             }
             if request_observer is not None:
                 request_kwargs["request_observer"] = request_observer
@@ -5313,11 +5388,16 @@ class AkaneMemoryEngine:
         allow_tool_call: bool = True,
         final_debug_enabled: bool | None = None,
         chat_model_override: str = "",
+        execution_target: Any = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        if self._is_multimodal_unavailable_target(execution_target):
+            return self._multimodal_unavailable_output(
+                str(execution_target.get("reason") or "multimodal_model_unavailable")
+            )
         generation_context = self._prepare_final_response_context(
             session_id=session_id,
             user_message=user_message,
@@ -5337,6 +5417,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=True,
             chat_model_override=chat_model_override,
+            execution_target=execution_target,
             post_user_turns=post_user_turns,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
@@ -5394,6 +5475,7 @@ class AkaneMemoryEngine:
                 "post_user_turns": generation_context.get("post_user_turns"),
                 "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
                 "chat_model_override": chat_model_override,
+                "execution_target": execution_target,
             }
             if request_observer is not None:
                 request_kwargs["request_observer"] = request_observer
@@ -5668,6 +5750,7 @@ class AkaneMemoryEngine:
         final_debug_enabled: bool | None = None,
         enable_native_tools: bool = False,
         chat_model_override: str = "",
+        execution_target: Any = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
@@ -5695,6 +5778,7 @@ class AkaneMemoryEngine:
             final_debug_enabled=final_debug_enabled,
             enable_native_tools=enable_native_tools,
             chat_model_override=chat_model_override,
+            execution_target=execution_target,
             post_user_turns=post_user_turns,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
@@ -5720,6 +5804,32 @@ class AkaneMemoryEngine:
                 ),
             },
         }
+
+    @staticmethod
+    def _multimodal_unavailable_output(reason: str = "") -> dict[str, Any]:
+        """Structured non-guessing reply when real images exist but no model
+        can consume them.
+
+        Deliberately not a text-model guess: the assistant states the limitation
+        instead of pretending to see the image.  The reason stays out of the
+        user-facing speech and is only carried in the audit field.
+        """
+        normalized_reason = str(reason or "multimodal_model_unavailable").strip()
+        return {
+            "emotion": "neutral",
+            "speech": "我这边暂时没有可用的识图模型，直接看不了这张图。你可以先用文字描述一下，或者等识图模型配置好后再发一次。",
+            "tool_call": None,
+            "memory_metadata": {},
+            "_multimodal_unavailable": {
+                "status": "unavailable",
+                "reason": normalized_reason or "multimodal_model_unavailable",
+                "required_modalities": ["image"],
+            },
+        }
+
+    @staticmethod
+    def _is_multimodal_unavailable_target(target: Any) -> bool:
+        return isinstance(target, dict) and str(target.get("status") or "") == "unavailable"
 
     def _build_memcore_request_observer(
         self,

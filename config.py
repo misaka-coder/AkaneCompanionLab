@@ -158,6 +158,10 @@ class Settings(BaseSettings):
     # DeepSeek 等 OpenAI 兼容模型的思考模式控制：
     # default/空 = 不传参数，沿用服务商默认；disabled = 关闭；enabled = 开启。
     LLM_THINKING_MODE: str = "disabled"
+    # 聊天模型是否明确支持图片输入。默认关闭（fail-closed）；只有确认该模型
+    # 能接收 image content block 时才应开启。已配置 VISION_* 时优先使用视觉模型，
+    # 本开关仅用于“未配置视觉模型但聊天模型本身可看图”的场景。
+    CHAT_SUPPORTS_IMAGES: bool = False
 
     # === 视觉 / 图像理解 ===
     VISION_API_KEY: str = ""
@@ -526,6 +530,7 @@ def _apply_settings(s: Settings) -> None:
     global TEXT_API_KEY, TEXT_BASE_URL, TEXT_MODEL_NAME, TEXT_API_PROTOCOL
     global AUX_API_KEY, AUX_BASE_URL, AUX_MODEL_NAME, AUX_API_PROTOCOL
     global CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME, CHAT_API_PROTOCOL
+    global CHAT_SUPPORTS_IMAGES
     global VISION_API_KEY, VISION_BASE_URL, VISION_MODEL_NAME, VISION_API_PROTOCOL
     global LLM_THINKING_MODE, LLM_REASONING_EFFORT, LLM_AUX_REASONING_EFFORT, LLM_CHAT_REASONING_EFFORT
     global LLM_DISABLE_RESPONSE_STORAGE
@@ -620,6 +625,7 @@ def _apply_settings(s: Settings) -> None:
     CHAT_BASE_URL = s.CHAT_BASE_URL or TEXT_BASE_URL
     CHAT_MODEL_NAME = s.CHAT_MODEL_NAME or TEXT_MODEL_NAME
     CHAT_API_PROTOCOL = s.CHAT_API_PROTOCOL or TEXT_API_PROTOCOL
+    CHAT_SUPPORTS_IMAGES = bool(s.CHAT_SUPPORTS_IMAGES)
     LLM_THINKING_MODE = str(s.LLM_THINKING_MODE or "disabled").strip().lower()
     LLM_REASONING_EFFORT = str(s.LLM_REASONING_EFFORT or "").strip().lower()
     LLM_AUX_REASONING_EFFORT = str(s.LLM_AUX_REASONING_EFFORT or "").strip().lower()
