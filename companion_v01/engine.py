@@ -3976,6 +3976,7 @@ class AkaneMemoryEngine:
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
                 memcore_turn_id=memcore_turn_id,
+                execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
@@ -4761,6 +4762,7 @@ class AkaneMemoryEngine:
                 recorded_tool_call_ids=recorded_tool_call_ids,
                 domain_profile_id=turn_domain_profile_id,
                 memcore_turn_id=memcore_turn_id,
+                execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
             for stream_event in current_events:
@@ -6426,6 +6428,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         memcore_turn_id: str = "",
+        execution_target: Any = None,
     ) -> tuple[ToolExecutionResult | None, list[dict[str, Any]]]:
         results, current_events = self._execute_and_record_tool_batch(
             tool_calls=[tool_call],
@@ -6447,6 +6450,7 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             memcore_turn_id=memcore_turn_id,
+            execution_target=execution_target,
         )
         return (results[-1] if results else None), current_events
 
@@ -6474,6 +6478,7 @@ class AkaneMemoryEngine:
         recorded_tool_call_ids: set[str] | None = None,
         domain_profile_id: str = "",
         memcore_turn_id: str = "",
+        execution_target: Any = None,
     ) -> tuple[list[ToolExecutionResult], list[dict[str, Any]]]:
         calls = [dict(call) for call in tool_calls if isinstance(call, dict) and call]
         if not calls:
@@ -6602,10 +6607,27 @@ class AkaneMemoryEngine:
             [result for _call, result, _shaped, _workspace in history_items],
         )
         chat_model_override = str((request_context or {}).get("chat_model_override") or "").strip()
-        native_vision_status = self.native_chat_vision_status(
-            chat_model_override=chat_model_override,
-        )
-        projection_model_images = batch_model_images if bool(native_vision_status.get("enabled")) else []
+        # The next request may be sent to a different provider when this batch
+        # produced real image inputs.  Build the temporary tool-history
+        # projection for that next target, rather than inheriting the provider
+        # shape that happened to emit the previous tool call.  MemCore itself
+        # stores provider-neutral entries; this is only the active-turn wire
+        # projection.
+        projection_target = execution_target
+        if batch_model_images and str(getattr(execution_target, "role", "") or "") != "vision":
+            projection_target = self._resolve_turn_execution_target(
+                has_real_images=False,
+                tool_image_upgrade=True,
+                chat_model_override=chat_model_override,
+            )
+        projection_provider_profile = str(getattr(projection_target, "protocol", "") or "").strip().lower()
+        if projection_provider_profile:
+            projection_model_images = batch_model_images
+        else:
+            native_vision_status = self.native_chat_vision_status(
+                chat_model_override=chat_model_override,
+            )
+            projection_model_images = batch_model_images if bool(native_vision_status.get("enabled")) else []
         media_source_ids = self._record_memcore_tool_media_input(
             model_image_inputs=batch_model_images,
             related_source_ids=trace_source_ids,
@@ -6626,6 +6648,7 @@ class AkaneMemoryEngine:
             media_source_ids=media_source_ids,
             model_image_inputs=projection_model_images,
             provider_output_raw=provider_output_raw,
+            provider_profile=projection_provider_profile,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
@@ -6800,6 +6823,7 @@ class AkaneMemoryEngine:
         media_source_ids: list[str] | None = None,
         model_image_inputs: list[dict[str, Any]] | None = None,
         provider_output_raw: str = "",
+        provider_profile: str = "",
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -6833,7 +6857,9 @@ class AkaneMemoryEngine:
         )
         if not callable(build_projection) or not selected_ids:
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
-        provider_profile = next(iter(sources), "")
+        provider_profile = str(provider_profile or "").strip().lower()
+        if not provider_profile:
+            provider_profile = next(iter(sources), "")
         if not provider_profile:
             runtime = getattr(self, "llm", None)
             protocol_getter = getattr(runtime, "chat_provider_protocol", None)

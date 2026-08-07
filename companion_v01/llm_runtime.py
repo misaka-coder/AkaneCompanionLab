@@ -678,7 +678,7 @@ class LLMRuntime:
         self.settings = settings or BotSettingsView.from_config(self._config_module)
         aux = self._build_aux_bundle()
         chat = self._build_chat_bundle()
-        vision = self._build_vision_bundle()
+        vision = self._build_vision_bundle(chat_bundle=chat)
         with self._bundle_lock:
             self.aux = aux
             self.chat = chat
@@ -713,7 +713,7 @@ class LLMRuntime:
         setattr(client, "_akane_bundle_role", "chat")
         return ModelBundle(client=client, model=settings.chat_model_name)
 
-    def _build_vision_bundle(self) -> ModelBundle | None:
+    def _build_vision_bundle(self, *, chat_bundle: ModelBundle | None = None) -> ModelBundle | None:
         settings = self._settings_view()
         if not settings.vision_enabled:
             return None
@@ -737,7 +737,7 @@ class LLMRuntime:
             and vision_protocol.lower() == chat_protocol.lower()
             and vision_model == chat_model
         ):
-            return self.chat
+            return chat_bundle if chat_bundle is not None else self.chat
         try:
             client = build_llm_client(
                 api_key=vision_key,
@@ -817,6 +817,12 @@ class LLMRuntime:
                 model=bundle.model,
                 reason="text_only",
             )
+        if not self._settings_view().vision_enabled:
+            return {
+                "status": "unavailable",
+                "reason": "vision_disabled",
+                "required_modalities": ["image"],
+            }
         vision_bundle = self.vision_bundle()
         if vision_bundle is not None:
             return ModelExecutionTarget(
@@ -1688,7 +1694,8 @@ class LLMRuntime:
             "messages": messages,
         }
         if (
-            str(getattr(bundle.client, "_akane_bundle_role", "") or "").strip().lower() == "chat"
+            str(getattr(bundle.client, "_akane_bundle_role", "") or "").strip().lower()
+            in {"chat", "vision"}
             and self._settings_view().llm_chat_max_output_tokens > 0
         ):
             payload["max_tokens"] = int(self._settings_view().llm_chat_max_output_tokens)

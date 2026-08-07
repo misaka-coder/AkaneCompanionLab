@@ -37,6 +37,7 @@ def _runtime(
     chat_api_key: str = "chat-key",
     chat_protocol: str = "openai",
     chat_supports_images: bool = False,
+    chat_max_output_tokens: int = 0,
 ) -> LLMRuntime:
     runtime = LLMRuntime.__new__(LLMRuntime)
     runtime._config_module = __import__("config")
@@ -56,10 +57,18 @@ def _runtime(
         chat_model_name=chat_model_name,
         chat_api_protocol=chat_protocol,
         chat_supports_images=chat_supports_images,
+        llm_chat_max_output_tokens=chat_max_output_tokens,
     )
-    runtime.chat = ModelBundle(client=_chat_client(), model=chat_model_name)
+    chat_client = _chat_client(protocol=chat_protocol)
+    chat_client._akane_bundle_role = "chat"
+    runtime.chat = ModelBundle(client=chat_client, model=chat_model_name)
     if vision_enabled and vision_api_key and vision_base_url and vision_model_name:
-        runtime.vision = ModelBundle(client=_vision_client(), model=vision_model_name)
+        vision_client = _vision_client(protocol=vision_protocol)
+        vision_client._akane_bundle_role = "vision"
+        runtime.vision = ModelBundle(
+            client=vision_client,
+            model=vision_model_name,
+        )
     else:
         runtime.vision = None
     return runtime
@@ -107,6 +116,21 @@ class ModelExecutionTargetResolutionTests(unittest.TestCase):
         self.assertIs(bundle, runtime.chat)
         self.assertEqual(built, [])
 
+    def test_same_route_reload_reuses_new_chat_bundle(self) -> None:
+        runtime = _runtime(
+            vision_api_key="chat-key",
+            vision_base_url="https://chat.example/v1",
+            vision_model_name="deepseek-v4-flash",
+            vision_protocol="openai",
+        )
+        new_client = _chat_client(host="chat.example", protocol="openai")
+        new_client._akane_bundle_role = "chat"
+        new_chat = ModelBundle(client=new_client, model="deepseek-v4-flash")
+        with patch("companion_v01.llm_runtime.build_llm_client") as builder:
+            bundle = runtime._build_vision_bundle(chat_bundle=new_chat)
+        self.assertIs(bundle, new_chat)
+        builder.assert_not_called()
+
     def test_build_vision_bundle_uses_independent_endpoint(self) -> None:
         runtime = _runtime()
         built: list[dict] = []
@@ -132,6 +156,19 @@ class ModelExecutionTargetResolutionTests(unittest.TestCase):
         self.assertIsInstance(target, ModelExecutionTarget)
         self.assertEqual(target.role, "chat")
         self.assertEqual(target.reason, "chat_supports_images")
+
+    def test_vision_master_switch_blocks_image_capable_chat(self) -> None:
+        runtime = _runtime(
+            vision_enabled=False,
+            vision_api_key="",
+            vision_base_url="",
+            vision_model_name="",
+            chat_supports_images=True,
+        )
+        target = runtime.resolve_turn_execution_target(has_real_images=True)
+        self.assertIsInstance(target, dict)
+        self.assertEqual(target.get("status"), "unavailable")
+        self.assertEqual(target.get("reason"), "vision_disabled")
 
     def test_image_with_no_image_model_returns_structured_unavailable(self) -> None:
         runtime = _runtime(vision_api_key="", vision_base_url="", vision_model_name="", chat_supports_images=False)
@@ -245,6 +282,19 @@ class ExecutionTargetThreadingTests(unittest.TestCase):
         )
         self.assertEqual(used_models, ["gemini-2.5-flash"])
 
+    def test_vision_request_keeps_final_chat_output_limit(self) -> None:
+        runtime = _runtime(chat_max_output_tokens=4096)
+        target = runtime.resolve_turn_execution_target(has_real_images=True)
+        payload = runtime._build_completion_kwargs(
+            bundle=target.bundle,
+            system_prompt="stable persona",
+            user_prompt="describe this image",
+            temperature=0.7,
+            json_mode=True,
+            user_images=[{"data_url": "data:image/png;base64,AAAA"}],
+        )
+        self.assertEqual(payload.get("max_tokens"), 4096)
+
 
 class EngineOneWayUpgradeTests(unittest.TestCase):
     def _engine(self, *, vision_enabled: bool = True) -> AkaneMemoryEngine:
@@ -319,6 +369,68 @@ class EngineOneWayUpgradeTests(unittest.TestCase):
         )
         self.assertIsInstance(recomputed, dict)
         self.assertEqual(recomputed.get("status"), "unavailable")
+
+    def test_tool_history_projection_uses_next_target_protocol(self) -> None:
+        class ProjectionManager:
+            def __init__(self) -> None:
+                self.profiles: list[str] = []
+
+            def build_context_projection(self, **kwargs):
+                self.profiles.append(str(kwargs.get("provider_profile") or ""))
+                return {
+                    "ok": True,
+                    "provider_profile": str(kwargs.get("provider_profile") or ""),
+                    "messages": [
+                        {
+                            "turn_id": "",
+                            "source_ids": ["tool-action"],
+                            "payload": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {"name": "load_material", "arguments": "{}"},
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "turn_id": "",
+                            "source_ids": ["tool-observation"],
+                            "payload": {
+                                "role": "tool",
+                                "tool_call_id": "call-1",
+                                "content": "loaded",
+                            },
+                        },
+                    ],
+                }
+
+        engine = self._engine()
+        manager = ProjectionManager()
+        engine.memcore_manager = manager
+        turns: list[dict] = []
+        result = engine._append_tool_history_batch(
+            tool_history_turns=turns,
+            items=[
+                (
+                    {"type": "load_material", "_tool_source": "native_anthropic"},
+                    self._image_result(),
+                    "loaded",
+                    "",
+                )
+            ],
+            trace_source_ids=["tool-action", "tool-observation"],
+            provider_profile="gemini",
+            profile_user_id="u",
+            session_id="s",
+            character_pack_id="c",
+        )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(manager.profiles, ["gemini"])
+        self.assertEqual(turns[0].get("role"), "assistant")
+        self.assertEqual(turns[1].get("role"), "tool")
 
 
 class EngineUnavailableShortCircuitTests(unittest.TestCase):
