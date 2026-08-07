@@ -162,6 +162,12 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RUNTIME,
         "memcore 压缩重试失败后的同 namespace 冷却秒数",
     ),
+    _s(
+        "MEMCORE_OPERATION_PROJECTION_POLICY",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "工具结果终局紧凑投影策略（部署级开关）",
+    ),
     # LLM 密钥 & 接入（密钥/接入由模型服务页管理）
     _s(
         "TEXT_API_KEY",

@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     MEMCORE_COMPACTION_WORKERS: int = 1
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
+    # 工具结果终局紧凑投影策略（部署级开关，不属角色人格能力）：
+    #   full_until_raw_compaction = 完整结果直到 raw compaction（默认，零行为差异）
+    #   compact_after_terminal    = 终局后长工具结果改为可回读紧凑回执
+    # 允许值仅上述两个稳定 wire value；非法值在配置加载阶段直接报错，不静默回退。
+    MEMCORE_OPERATION_PROJECTION_POLICY: str = "full_until_raw_compaction"
     # === LLM 密钥 & 接入 ===
     # 键位角色：
     #   TEXT   = 辅助任务（路由判断、记忆总结、时间解析等）[必填，至少有一个 key]
@@ -607,6 +612,7 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET, \
         MEMCORE_COMPACTION_WORKERS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
+    global MEMCORE_OPERATION_PROJECTION_POLICY
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
 
@@ -892,6 +898,19 @@ def _apply_settings(s: Settings) -> None:
         0.0,
         min(3600.0, float(s.MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS or 0.0)),
     )
+    raw_operation_projection_policy = str(
+        s.MEMCORE_OPERATION_PROJECTION_POLICY or "full_until_raw_compaction"
+    ).strip().lower()
+    if raw_operation_projection_policy not in {
+        "full_until_raw_compaction",
+        "compact_after_terminal",
+    }:
+        raise RuntimeError(
+            "invalid MEMCORE_OPERATION_PROJECTION_POLICY: "
+            f"got {raw_operation_projection_policy!r}, expected one of "
+            "{'full_until_raw_compaction', 'compact_after_terminal'}"
+        )
+    MEMCORE_OPERATION_PROJECTION_POLICY = raw_operation_projection_policy
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 
     # === host / port / qq ===

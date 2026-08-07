@@ -1878,6 +1878,7 @@ class MemcoreManager:
                 "projection_version": int(projection.projection_version),
                 "compaction_generation": int(projection.compaction_generation),
                 "projection_generation": int(projection.projection_generation),
+                "has_compact_history": bool(getattr(projection, "has_compact_history", False)),
             }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
@@ -2604,6 +2605,10 @@ class MemcoreManager:
             ),
             visible_memory_scope=self.visible_scope,
             enable_flavor=self.enable_flavor,
+            operation_projection_policy=str(
+                getattr(config, "MEMCORE_OPERATION_PROJECTION_POLICY", "full_until_raw_compaction") or ""
+            )
+            or "full_until_raw_compaction",
         )
 
     def _append_standalone_turn(
