@@ -3461,6 +3461,32 @@ class AkaneMemoryEngine:
             )
         return None
 
+    def _recompute_turn_execution_target(
+        self,
+        *,
+        current_target: Any,
+        tool_results: list[ToolExecutionResult],
+        chat_model_override: str = "",
+    ) -> Any:
+        """Re-resolve the model target after a tool batch, one-way only.
+
+        - a vision target never downgrades back to chat;
+        - a chat target upgrades to vision only when the tool batch produced
+          real ``data:image/...`` model inputs (not OCR text, summaries or plain
+          tool feedback);
+        - image loading failures produce no upgrade and the batch never guesses.
+        """
+        if current_target is not None and str(getattr(current_target, "role", "") or "") == "vision":
+            return current_target
+        tool_images = self._merge_tool_model_image_inputs([], list(tool_results or []))
+        if not tool_images:
+            return current_target
+        return self._resolve_turn_execution_target(
+            has_real_images=False,
+            tool_image_upgrade=True,
+            chat_model_override=chat_model_override,
+        )
+
     def prepare_qq_native_image_inputs(
         self,
         *,
@@ -3955,6 +3981,11 @@ class AkaneMemoryEngine:
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
+            turn_execution_target = self._recompute_turn_execution_target(
+                current_target=turn_execution_target,
+                tool_results=batch_results,
+                chat_model_override=chat_model_override,
+            )
 
             final_output = self._build_final_response(
                 session_id=session_id,
@@ -4737,6 +4768,11 @@ class AkaneMemoryEngine:
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
+            turn_execution_target = self._recompute_turn_execution_target(
+                current_target=turn_execution_target,
+                tool_results=batch_results,
+                chat_model_override=chat_model_override,
+            )
 
             final_output = yield from self._stream_final_response(
                 session_id=session_id,

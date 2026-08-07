@@ -246,6 +246,81 @@ class ExecutionTargetThreadingTests(unittest.TestCase):
         self.assertEqual(used_models, ["gemini-2.5-flash"])
 
 
+class EngineOneWayUpgradeTests(unittest.TestCase):
+    def _engine(self, *, vision_enabled: bool = True) -> AkaneMemoryEngine:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        runtime = _runtime(vision_enabled=vision_enabled)
+        engine.llm = runtime
+        return engine
+
+    @staticmethod
+    def _text_result() -> SimpleNamespace:
+        return SimpleNamespace(followup_context="", tool_type="read_attachment", model_image_inputs=[])
+
+    @staticmethod
+    def _image_result() -> SimpleNamespace:
+        return SimpleNamespace(
+            followup_context="已加载图片。",
+            tool_type="load_material",
+            model_image_inputs=[
+                {
+                    "attachment_id": "a-1",
+                    "attachment_handle": "img_001",
+                    "data_url": "data:image/png;base64,AAAA",
+                }
+            ],
+        )
+
+    def test_text_tool_result_does_not_upgrade(self) -> None:
+        engine = self._engine()
+        current = engine.llm.resolve_turn_execution_target(has_real_images=False)
+        recomputed = engine._recompute_turn_execution_target(
+            current_target=current,
+            tool_results=[self._text_result()],
+            chat_model_override="",
+        )
+        self.assertIsInstance(recomputed, ModelExecutionTarget)
+        self.assertEqual(recomputed.role, "chat")
+
+    def test_real_tool_image_upgrades_chat_to_vision(self) -> None:
+        engine = self._engine()
+        current = engine.llm.resolve_turn_execution_target(has_real_images=False)
+        recomputed = engine._recompute_turn_execution_target(
+            current_target=current,
+            tool_results=[self._image_result()],
+            chat_model_override="",
+        )
+        self.assertIsInstance(recomputed, ModelExecutionTarget)
+        self.assertEqual(recomputed.role, "vision")
+        self.assertEqual(recomputed.reason, "tool_image_upgrade")
+
+    def test_vision_target_never_downgrades_on_later_text_results(self) -> None:
+        engine = self._engine()
+        current = engine.llm.resolve_turn_execution_target(has_real_images=True)
+        self.assertEqual(current.role, "vision")
+        recomputed = engine._recompute_turn_execution_target(
+            current_target=current,
+            tool_results=[self._text_result()],
+            chat_model_override="",
+        )
+        self.assertIs(recomputed, current)
+        self.assertEqual(recomputed.role, "vision")
+
+    def test_tool_image_without_any_image_model_returns_structured_unavailable(self) -> None:
+        engine = self._engine(vision_enabled=False)
+        runtime = engine.llm
+        runtime.vision = None
+        runtime.chat_supports_images = lambda: False
+        current = runtime.resolve_turn_execution_target(has_real_images=False)
+        recomputed = engine._recompute_turn_execution_target(
+            current_target=current,
+            tool_results=[self._image_result()],
+            chat_model_override="",
+        )
+        self.assertIsInstance(recomputed, dict)
+        self.assertEqual(recomputed.get("status"), "unavailable")
+
+
 class EngineUnavailableShortCircuitTests(unittest.TestCase):
     def test_build_final_response_short_circuits_on_unavailable_target(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
