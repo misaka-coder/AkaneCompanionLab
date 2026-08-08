@@ -3543,7 +3543,14 @@ class AkaneMemoryEngine:
         guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
         exit_reason = "turn_scope_exited_open"
         try:
-            return self._process_turn_impl(payload)
+            generator = self._run_turn_core(payload, mode="sync")
+            while True:
+                try:
+                    event = next(generator)
+                except StopIteration as stop:
+                    return stop.value
+                generator.close()
+                raise RuntimeError("turn_sync_path_emitted_stream_event")
         except BaseException:
             exit_reason = "turn_processing_exception"
             raise
@@ -3551,740 +3558,20 @@ class AkaneMemoryEngine:
             self._abort_open_memcore_turn_guard(reason=exit_reason)
             _MEMCORE_OPEN_TURN_GUARD.reset(guard_token)
 
-    def _process_turn_impl(self, payload: dict[str, Any]) -> dict[str, Any]:
-        client_context = self._resolve_client_protocol_context(payload)
-        turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
-        actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
-        turn_domain_profile_id = self._resolve_turn_domain_profile(payload)
-        payload = dict(payload)
-        message_addressing = self._normalize_message_addressing(
-            payload,
-            fallback_mode="current_request",
-        )
-        payload.pop("finance_mode", None)
-        payload.pop("prompt_scope", None)
-        payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = (
-            "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
-        )
-        plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
-        if prompt_scope != "plugin_proactive":
-            plugin_stable_system_context = ""
-        plugin_external_event = self._pop_plugin_external_event(payload, prompt_scope=prompt_scope)
-        turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
-        chat_model_override = str(payload.get("chat_model_override") or "").strip()
-        trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")
-        session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
-        profile_user_id = str(payload.get("real_user_id") or session_id)
-        user_memory_source_id = self._pop_user_memory_source_id(
-            payload,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=turn_character_pack_id,
-            memory_role=(
-                f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"
-            ),
-        )
-        user_message = str(payload.get("message") or "").strip()
-        now_ts = int(payload.get("timestamp") or time.time())
-        payload = self._prepare_care_context_for_turn(
-            payload,
-            client_context,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            now_ts=now_ts,
-        )
-        date_label = timestamp_to_date_label(now_ts)
-        time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
-        turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
-        native_user_images = self._extract_native_user_images(payload)
-        if native_user_images:
-            turn_extra_user_context = self._merge_extra_user_context(
-                turn_extra_user_context,
-                self._build_native_user_image_prompt_context(native_user_images),
-            )
-        desktop_screen_images = self._extract_desktop_screen_frame_images(payload)
-        if desktop_screen_images:
-            turn_extra_user_context = self._merge_extra_user_context(
-                turn_extra_user_context,
-                self._build_desktop_screen_frame_prompt_context(desktop_screen_images),
-            )
-        turn_user_images = [*native_user_images, *desktop_screen_images][:5]
-        turn_execution_target = self._resolve_turn_execution_target(
-            has_real_images=bool(turn_user_images),
-            chat_model_override=chat_model_override,
-        )
-        transient_user_turn = self._is_transient_user_turn(payload)
-        persist_assistant_turn = self._should_persist_assistant_turn(payload)
-        external_event_turn = plugin_external_event is not None
-
-        self.consume_due_reminders(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            now_ts=now_ts,
-            current_visual_payload=payload.get("current_visual"),
-        )
-
-        if transient_user_turn:
-            user_record = self._build_transient_user_record(
-                user_message=user_message,
-                now_ts=now_ts,
-                date_label=date_label,
-                time_of_day=time_of_day,
-            )
-        else:
-            user_record = self.store.add_message(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                role=(f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"),
-                content=user_message,
-                timestamp=now_ts,
-                date_label=date_label,
-                time_of_day=time_of_day,
-                semantic_tags=extract_semantic_tags(user_message),
-                memory_metadata=(
-                    self._external_event_memory_metadata(plugin_external_event)
-                    if plugin_external_event is not None
-                    else {"message_addressing": message_addressing}
-                    if message_addressing
-                    else None
-                ),
-                source_id=user_memory_source_id,
-            )
-            if not self._memcore_owns_compaction():
-                self._schedule_summary_cycle(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                )
-
-        target_actor_id, target_actor_display_name = self._apply_message_addressing(
-            user_record,
-            message_addressing,
-        )
-        recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
-            session_id=session_id,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            user_record=user_record,
-            include_transient_user_record=transient_user_turn,
-        )
-        verifier_debug_enabled = self._coerce_bool(payload.get("verifier_debug"))
-        final_debug_enabled = self._coerce_bool(payload.get("final_debug"))
-        retrieval_pipeline = self._run_pre_retrieval_pipeline(
-            payload=payload,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            user_message=user_message,
-            now_ts=now_ts,
-            recent_raw=recent_raw,
-            recent_episodic_summaries=recent_episodic_summaries,
-            recent_semantic_summaries=recent_semantic_summaries,
-            current_user_source_id=str(user_record.get("source_id") or ""),
-            verifier_debug_enabled=verifier_debug_enabled,
-        )
-        router_output = retrieval_pipeline.router_output
-        router_timing = retrieval_pipeline.router_timing
-        retrieval_result = retrieval_pipeline.retrieval_result
-        verifier_output = retrieval_pipeline.verifier_output
-        confirmed_snippets = retrieval_pipeline.confirmed_snippets
-        verifier_timing = retrieval_pipeline.verifier_timing
-        memcore_turn_id = ""
-        turn_memcore_failure: dict[str, Any] | None = None
-        if not transient_user_turn:
-            user_record = self._apply_user_vector_index_policy(
-                user_record=user_record,
-                router_output=router_output,
-            )
-            self._upsert_raw_record(user_record)
-            memcore_open = self._begin_memcore_input_turn(
-                user_record=user_record,
-                external_event=plugin_external_event,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                actor_stable_id=actor_stable_id,
-                actor_display_name=actor_display_name,
-                target_actor_id=target_actor_id,
-                target_actor_display_name=target_actor_display_name,
-            )
-            memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
-            turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
-
-        prompt_exclude_source_ids: list[str] = []
-        final_output = self._build_final_response(
-            session_id=session_id,
-            profile_user_id=profile_user_id,
-            user_message=user_message,
-            recent_raw=recent_raw,
-            recent_episodic_summaries=recent_episodic_summaries,
-            recent_semantic_summaries=recent_semantic_summaries,
-            confirmed_snippets=confirmed_snippets,
-            now_ts=now_ts,
-            current_visual_payload=payload.get("current_visual"),
-            extra_user_context=turn_extra_user_context,
-            client_context=client_context,
-            resource_manifest=turn_resource_manifest,
-            character_pack_id=turn_character_pack_id,
-            user_images=turn_user_images,
-            final_debug_enabled=final_debug_enabled,
-            chat_model_override=chat_model_override,
-            execution_target=turn_execution_target,
-            prompt_exclude_source_ids=prompt_exclude_source_ids,
-            domain_profile_id=turn_domain_profile_id,
-            prompt_scope=prompt_scope,
-            stable_system_context=plugin_stable_system_context,
-        )
-        recent_raw_for_turn = list(recent_raw)
-        tool_turns: list[dict[str, Any]] = []
-        preface_turns: list[dict[str, str]] = []
-        tool_result: ToolExecutionResult | None = None
-        tool_results: list[ToolExecutionResult] = []
-        tool_events: list[dict[str, Any]] = []
-        tool_followups: list[str] = []
-        tool_history_turns: list[dict[str, Any]] = []
-        seen_tool_calls: set[str] = set()
-        recorded_tool_call_ids: set[str] = set()
-        max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
-        emergency_tool_rounds = self._max_tool_emergency_rounds(
-            domain_profile_id=turn_domain_profile_id,
-            current_budget=max_tool_rounds,
-        )
-        tool_round_index = 0
-        provider_output_raw = ""
-        memory_exclude_source_ids = [
-            str(hit.get("source_id") or "").strip()
-            for hit in retrieval_result.get("fused_hits", [])
-            if str(hit.get("source_id") or "").strip()
-        ]
-        # ``max_tool_rounds`` is a soft budget. A chain that keeps asking for
-        # new, non-repeated work may grow one round at a time without changing
-        # the provider request shape. Only the universal emergency ceiling
-        # forces ``tool_choice=none``.
-        while tool_round_index <= emergency_tool_rounds:
-            provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
-            final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
-                final_output=final_output,
-                user_message=user_message,
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=turn_domain_profile_id,
-            )
-            for tool_call in tool_calls:
-                max_tool_rounds = self._resolve_tool_round_budget(
-                    current_budget=max_tool_rounds,
-                    tool_call=tool_call,
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    domain_profile_id=turn_domain_profile_id,
-                )
-            emergency_tool_rounds = max(emergency_tool_rounds, max_tool_rounds)
-            previous_tool_budget = max_tool_rounds
-            max_tool_rounds, emergency_stop = self._extend_tool_round_budget_for_progress(
-                current_budget=max_tool_rounds,
-                emergency_limit=emergency_tool_rounds,
-                tool_round_index=tool_round_index,
-                tool_calls=tool_calls,
-                seen_signatures=seen_tool_calls,
-            )
-            if max_tool_rounds > previous_tool_budget:
-                logger.info(
-                    "tool_round_budget_extended session=%s previous=%s next=%s emergency=%s",
-                    session_id,
-                    previous_tool_budget,
-                    max_tool_rounds,
-                    emergency_tool_rounds,
-                )
-            if tool_calls and emergency_stop:
-                blocked_calls = "；".join(self._describe_tool_call_for_prompt(tool_call) for tool_call in tool_calls)
-                tool_followups.append(
-                    f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
-                    "这些额外调用没有执行；请基于已有真实结果完成答复。"
-                )
-                logger.warning(
-                    "tool_round_emergency_limit session=%s rounds=%s blocked=%s",
-                    session_id,
-                    tool_round_index,
-                    len(tool_calls),
-                )
-                final_output = self._build_final_response(
-                    session_id=session_id,
-                    profile_user_id=profile_user_id,
-                    user_message=user_message,
-                    recent_raw=recent_raw_for_turn,
-                    recent_episodic_summaries=recent_episodic_summaries,
-                    recent_semantic_summaries=recent_semantic_summaries,
-                    confirmed_snippets=confirmed_snippets,
-                    now_ts=now_ts,
-                    current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_tool_round_extra_context(
-                        turn_extra_user_context=turn_extra_user_context,
-                        tool_followups=tool_followups,
-                        allow_more=False,
-                        stop_reason="tool_budget_exhausted",
-                    ),
-                    client_context=client_context,
-                    resource_manifest=turn_resource_manifest,
-                    character_pack_id=turn_character_pack_id,
-                    user_images=turn_user_images,
-                    allow_tool_call=False,
-                    final_debug_enabled=final_debug_enabled,
-                    chat_model_override=chat_model_override,
-                    execution_target=turn_execution_target,
-                    post_user_turns=tool_history_turns,
-                    prompt_exclude_source_ids=prompt_exclude_source_ids,
-                    domain_profile_id=turn_domain_profile_id,
-                    prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
-                )
-                break
-            if not tool_calls:
-                if not rejections:
-                    break
-                allow_retry = self._record_tool_call_rejection(
-                    final_output=final_output,
-                    rejection="\n".join(rejections),
-                    tool_followups=tool_followups,
-                    session_id=session_id,
-                    tool_round_index=tool_round_index,
-                    max_tool_rounds=max_tool_rounds,
-                )
-                final_output = self._build_final_response(
-                    session_id=session_id,
-                    profile_user_id=profile_user_id,
-                    user_message=user_message,
-                    recent_raw=recent_raw_for_turn,
-                    recent_episodic_summaries=recent_episodic_summaries,
-                    recent_semantic_summaries=recent_semantic_summaries,
-                    confirmed_snippets=confirmed_snippets,
-                    now_ts=now_ts,
-                    current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_tool_round_extra_context(
-                        turn_extra_user_context=turn_extra_user_context,
-                        tool_followups=tool_followups,
-                        allow_more=allow_retry,
-                    ),
-                    client_context=client_context,
-                    resource_manifest=turn_resource_manifest,
-                    character_pack_id=turn_character_pack_id,
-                    user_images=turn_user_images,
-                    allow_tool_call=allow_retry,
-                    final_debug_enabled=final_debug_enabled,
-                    chat_model_override=chat_model_override,
-                    execution_target=turn_execution_target,
-                    post_user_turns=tool_history_turns,
-                    prompt_exclude_source_ids=prompt_exclude_source_ids,
-                    domain_profile_id=turn_domain_profile_id,
-                    prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
-                )
-                tool_round_index += 1
-                if allow_retry:
-                    continue
-                break
-            if rejections:
-                tool_followups.extend(rejections)
-            executable_calls: list[dict[str, Any]] = []
-            for tool_call in tool_calls:
-                tool_signature = self._tool_call_signature(tool_call)
-                if tool_signature in seen_tool_calls:
-                    tool_followups.append(
-                        f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
-                        "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
-                    )
-                    continue
-                seen_tool_calls.add(tool_signature)
-                executable_calls.append(tool_call)
-            if not executable_calls:
-                tool_round_index += 1
-                allow_retry = tool_round_index < max_tool_rounds
-                final_output = self._build_final_response(
-                    session_id=session_id,
-                    profile_user_id=profile_user_id,
-                    user_message=user_message,
-                    recent_raw=recent_raw_for_turn,
-                    recent_episodic_summaries=recent_episodic_summaries,
-                    recent_semantic_summaries=recent_semantic_summaries,
-                    confirmed_snippets=confirmed_snippets,
-                    now_ts=now_ts,
-                    current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_tool_round_extra_context(
-                        turn_extra_user_context=turn_extra_user_context,
-                        tool_followups=tool_followups,
-                        allow_more=allow_retry,
-                        stop_reason="" if allow_retry else "tool_budget_exhausted",
-                    ),
-                    client_context=client_context,
-                    resource_manifest=turn_resource_manifest,
-                    character_pack_id=turn_character_pack_id,
-                    user_images=turn_user_images,
-                    allow_tool_call=allow_retry,
-                    final_debug_enabled=final_debug_enabled,
-                    chat_model_override=chat_model_override,
-                    execution_target=turn_execution_target,
-                    post_user_turns=tool_history_turns,
-                    prompt_exclude_source_ids=prompt_exclude_source_ids,
-                    domain_profile_id=turn_domain_profile_id,
-                    prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
-                )
-                if allow_retry:
-                    continue
-                break
-
-            preface_source_id = self._record_assistant_preface_for_tool_call(
-                tool_call=executable_calls[0],
-                final_output=final_output,
-                preface_turns=preface_turns,
-                recent_raw_for_turn=recent_raw_for_turn,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                now_ts=now_ts,
-                date_label=date_label,
-                time_of_day=time_of_day,
-                memcore_turn_id=memcore_turn_id,
-            )
-            if (
-                preface_source_id
-                and self._tool_call_uses_native_history(executable_calls[0])
-                and preface_source_id not in prompt_exclude_source_ids
-            ):
-                prompt_exclude_source_ids.append(preface_source_id)
-            batch_results, _current_events = self._execute_and_record_tool_batch(
-                tool_calls=executable_calls,
-                final_output=final_output,
-                provider_output_raw=provider_output_raw,
-                tool_results=tool_results,
-                tool_events=tool_events,
-                tool_followups=tool_followups,
-                tool_turns=tool_turns,
-                recent_raw_for_turn=recent_raw_for_turn,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                now_ts=now_ts,
-                current_user_source_id=str(user_record.get("source_id") or ""),
-                client_context=client_context,
-                memory_exclude_source_ids=memory_exclude_source_ids,
-                request_context=payload,
-                tool_history_turns=tool_history_turns,
-                prompt_exclude_source_ids=prompt_exclude_source_ids,
-                recorded_tool_call_ids=recorded_tool_call_ids,
-                domain_profile_id=turn_domain_profile_id,
-                memcore_turn_id=memcore_turn_id,
-                execution_target=turn_execution_target,
-            )
-            tool_result = batch_results[-1] if batch_results else None
-            batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
-            if batch_memcore_failure is not None:
-                turn_memcore_failure = batch_memcore_failure
-            turn_execution_target = self._recompute_turn_execution_target(
-                current_target=turn_execution_target,
-                tool_results=batch_results,
-                chat_model_override=chat_model_override,
-            )
-
-            final_output = self._build_final_response(
-                session_id=session_id,
-                profile_user_id=profile_user_id,
-                user_message=user_message,
-                recent_raw=recent_raw_for_turn,
-                recent_episodic_summaries=recent_episodic_summaries,
-                recent_semantic_summaries=recent_semantic_summaries,
-                confirmed_snippets=confirmed_snippets,
-                now_ts=now_ts,
-                current_visual_payload=payload.get("current_visual"),
-                extra_user_context=self._build_tool_round_extra_context(
-                    turn_extra_user_context=turn_extra_user_context,
-                    tool_followups=tool_followups,
-                    allow_more=True,
-                ),
-                client_context=client_context,
-                resource_manifest=turn_resource_manifest,
-                character_pack_id=turn_character_pack_id,
-                user_images=turn_user_images,
-                allow_tool_call=True,
-                final_debug_enabled=final_debug_enabled,
-                chat_model_override=chat_model_override,
-                execution_target=turn_execution_target,
-                post_user_turns=tool_history_turns,
-                prompt_exclude_source_ids=prompt_exclude_source_ids,
-                domain_profile_id=turn_domain_profile_id,
-                prompt_scope=prompt_scope,
-                stable_system_context=plugin_stable_system_context,
-            )
-            tool_round_index += 1
-
-        final_output = self._apply_persona_state_to_final_output(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            final_output=final_output,
-            now_ts=now_ts,
-            source_id=str(user_record.get("source_id") or ""),
-            tool_result=tool_result,
-        )
-        self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
-        final_output["tool_events"] = tool_events
-        final_output["npc_turns"] = tool_turns
-        final_output["dialogue_turns"] = self._build_dialogue_turns(
-            preface_turn=preface_turns,
-            npc_turns=tool_turns,
-            final_speech=final_output.get("speech"),
-            final_speech_segments=final_output.get("speech_segments"),
-            speaker_name=self._resolve_turn_speaker_identity(
-                client_context,
-                turn_character_pack_id,
-            )["assistant_name"],
-        )
-        self._apply_care_state_request(
-            final_output,
-            client_context,
-            profile_user_id=profile_user_id,
-            character_pack_id=turn_character_pack_id,
-            payload=payload,
-            now_ts=now_ts,
-        )
-        provider_output_raw = str(final_output.pop("_provider_output_raw", provider_output_raw) or "")
-        memory_annotation_status = self._pop_memory_annotation_status(final_output)
-        memory_tags = final_output_engine.extract_memory_search_terms(final_output)
-        memory_metadata = final_output.get("memory_metadata")
-        if not isinstance(memory_metadata, dict):
-            memory_metadata = final_output_engine.normalize_memory_metadata(self, None)
-        else:
-            memory_metadata = dict(memory_metadata)
-        final_output["memory_metadata"] = memory_metadata
-        final_output.pop("memory_tags", None)
-        if not transient_user_turn and not external_event_turn:
-            user_record = self._apply_memory_metadata_to_user_record(
-                user_record=user_record,
-                memory_metadata=memory_metadata,
-            )
-        if memcore_turn_id:
-            self._stage_memcore_turn_metadata(
-                source_id=str(user_record.get("source_id") or ""),
-                memory_metadata=memory_metadata,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                actor_stable_id="" if external_event_turn else actor_stable_id,
-                actor_display_name="" if external_event_turn else actor_display_name,
-            )
-        if memory_tags and not transient_user_turn and not external_event_turn:
-            user_record = self._apply_memory_tags_to_user_record(
-                user_record=user_record,
-                memory_tags=memory_tags,
-            )
-        if client_context.effective_mode != ClientMode.DESKTOP_PET:
-            self._schedule_visual_observations_for_payload(
-                payload=final_output,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-
-        persist_assistant_turn = self._should_persist_completed_assistant(
-            persist_assistant_turn,
-            final_output,
-        )
-        if persist_assistant_turn:
-            assistant_record = self.store.add_message(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-                role="assistant",
-                content=final_output.get("speech", ""),
-                timestamp=int(time.time()),
-                semantic_tags=extract_semantic_tags(final_output.get("speech", "")),
-                memory_metadata=self._build_assistant_timeline_metadata(final_output),
-            )
-            self._upsert_raw_record(assistant_record)
-            if not transient_user_turn:
-                if self._finalize_memcore_input_turn_for_delivery(
-                    final_output=final_output,
-                    turn_id=memcore_turn_id,
-                    assistant_record=assistant_record,
-                    memory_metadata=memory_metadata,
-                    provider_output_raw=provider_output_raw,
-                    chat_model_override=chat_model_override,
-                    execution_target=turn_execution_target,
-                    annotation_status=memory_annotation_status,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    character_pack_id=turn_character_pack_id,
-                ):
-                    self._schedule_memcore_compaction(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        character_pack_id=turn_character_pack_id,
-                        chat_model_override=chat_model_override,
-                    )
-        elif memcore_turn_id:
-            self._abort_memcore_input_turn(
-                turn_id=memcore_turn_id,
-                reason="assistant_turn_not_persisted",
-                chat_model_override=chat_model_override,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
-        if not self._memcore_owns_compaction():
-            self._schedule_summary_cycle(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                character_pack_id=turn_character_pack_id,
-            )
-
-        if persist_assistant_turn:
-            self.store.append_eval_turn(
-                trace_id=trace_id,
-                session_id=session_id,
-                profile_user_id=profile_user_id,
-                character_pack_id=turn_character_pack_id,
-                user_message=user_message,
-                router_json=router_output,
-                verifier_json=verifier_output,
-                final_json=final_output,
-            )
-
-        final_output["trace_id"] = trace_id
-        debug_payload = self._build_retrieval_debug_payload(
-            router_output=router_output,
-            router_timing=router_timing,
-            retrieval_result=retrieval_result,
-            verifier_output=verifier_output,
-            verifier_timing=verifier_timing,
-            confirmed_snippets=confirmed_snippets,
-        )
-        memory_tool_updates = [
-            result.state_updates.get("memory_retrieval")
-            for result in tool_results
-            if isinstance(result.state_updates, dict) and result.state_updates.get("memory_retrieval")
-        ]
-        if memory_tool_updates:
-            debug_payload["memory_tool"] = memory_tool_updates[-1]
-            debug_payload["memory_tool_rounds"] = memory_tool_updates
-        character_context_debug = self._build_character_context_debug_payload(
-            character_pack_id=turn_character_pack_id,
-            user_message=user_message,
-            tool_results=tool_results,
-        )
-        if character_context_debug:
-            debug_payload["character_context"] = character_context_debug
-        final_output["_debug"] = debug_payload
-        return final_output
-
-    def process_voice_turn_stream(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str,
-        source_id: str,
-        memcore_turn_id: str,
-        voice_turn_id: str,
-        message: str,
-        timestamp: int,
-    ) -> Generator[dict[str, Any], None, None]:
-        """Run the normal Thinking Agent over an already committed voice turn."""
-
-        normalized_source_id = str(source_id or "").strip()
-        normalized_turn_id = str(memcore_turn_id or "").strip()
-        normalized_voice_turn_id = str(voice_turn_id or "").strip()
-        normalized_message = str(message or "").strip()
-        if not normalized_source_id or not normalized_turn_id or not normalized_voice_turn_id or not normalized_message:
-            raise ValueError("voice_precommitted_turn_invalid")
-        return self.process_turn_stream(
-            {
-                "message": normalized_message,
-                "user_id": str(session_id or ""),
-                "real_user_id": str(profile_user_id or ""),
-                "character_pack_id": str(character_pack_id or ""),
-                "timestamp": int(timestamp or time.time()),
-                "client_mode": "desktop_pet",
-                "transient_user_message": True,
-                "transient_assistant_message": True,
-            },
-            _precommitted_memcore_turn={
-                "source_id": normalized_source_id,
-                "turn_id": normalized_turn_id,
-                "voice_turn_id": normalized_voice_turn_id,
-            },
-        )
-
-    def process_voice_candidate_stream(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        character_pack_id: str,
-        voice_turn_id: str,
-        message: str,
-        timestamp: int,
-    ) -> Generator[dict[str, Any], None, None]:
-        """Generate a non-persistent, tool-free candidate from provisional ASR text."""
-
-        normalized_voice_turn_id = str(voice_turn_id or "").strip()
-        normalized_message = str(message or "").strip()
-        if not normalized_voice_turn_id or not normalized_message:
-            raise ValueError("voice_candidate_turn_invalid")
-        return self.process_turn_stream(
-            {
-                "message": normalized_message,
-                "user_id": str(session_id or ""),
-                "real_user_id": str(profile_user_id or ""),
-                "character_pack_id": str(character_pack_id or ""),
-                "timestamp": int(timestamp or time.time()),
-                "client_mode": "desktop_pet",
-                "transient_user_message": True,
-                "transient_assistant_message": True,
-                "voice_speculative_candidate": True,
-            }
-        )
-
-    def process_turn_stream(
+    def _run_turn_core(
         self,
         payload: dict[str, Any],
         *,
+        mode: str,
         _precommitted_memcore_turn: dict[str, str] | None = None,
-    ) -> _ContextBoundGenerator:
-        return _ContextBoundGenerator(
-            self._process_turn_stream_scoped(
-                payload,
-                _precommitted_memcore_turn=_precommitted_memcore_turn,
-            )
-        )
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        """Single authoritative turn mainline shared by sync and stream entries.
 
-    def _process_turn_stream_scoped(
-        self,
-        payload: dict[str, Any],
-        *,
-        _precommitted_memcore_turn: dict[str, str] | None = None,
-    ) -> Generator[dict[str, Any], None, None]:
-        guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
-        exit_reason = "turn_stream_scope_exited_open"
-        try:
-            yield from self._process_turn_stream_impl(
-                payload,
-                _precommitted_memcore_turn=_precommitted_memcore_turn,
-            )
-        except GeneratorExit:
-            raise
-        except BaseException:
-            exit_reason = "turn_stream_processing_exception"
-            raise
-        finally:
-            self._abort_open_memcore_turn_guard(reason=exit_reason)
-            _MEMCORE_OPEN_TURN_GUARD.reset(guard_token)
-
-    def _process_turn_stream_impl(
-        self,
-        payload: dict[str, Any],
-        *,
-        _precommitted_memcore_turn: dict[str, str] | None = None,
-    ) -> Generator[dict[str, Any], None, None]:
+        ``process_turn`` drains this generator and returns its value; the
+        streaming entry forwards every yielded event and returns the same value.
+        Only streaming mode emits user-visible events; sync mode must never
+        yield (the sync drain raises if that invariant breaks).
+        """
         precommitted_memcore_turn = (
             dict(_precommitted_memcore_turn) if isinstance(_precommitted_memcore_turn, dict) else {}
         )
@@ -4296,6 +3583,7 @@ class AkaneMemoryEngine:
             not precommitted_source_id or not precommitted_turn_id or not precommitted_voice_turn_id
         ):
             raise ValueError("voice_precommitted_turn_invalid")
+        streaming = str(mode or "").strip() == "stream"
         client_context = self._resolve_client_protocol_context(payload)
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
@@ -4475,7 +3763,8 @@ class AkaneMemoryEngine:
             turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
 
         prompt_exclude_source_ids: list[str] = []
-        final_output = yield from self._stream_final_response(
+        final_output = yield from self._generate_round(
+            mode=mode,
             session_id=session_id,
             profile_user_id=profile_user_id,
             user_message=user_message,
@@ -4490,13 +3779,14 @@ class AkaneMemoryEngine:
             resource_manifest=turn_resource_manifest,
             character_pack_id=turn_character_pack_id,
             user_images=turn_user_images,
+            allow_tool_call=not speculative_voice_candidate,
             final_debug_enabled=final_debug_enabled,
             chat_model_override=chat_model_override,
+            execution_target=turn_execution_target,
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
             stable_system_context=plugin_stable_system_context,
-            allow_tool_call=not speculative_voice_candidate,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -4524,8 +3814,10 @@ class AkaneMemoryEngine:
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        # See the synchronous path above: progressing calls extend the soft
-        # budget without changing the native tool schema or tool_choice.
+        # ``max_tool_rounds`` is a soft budget. A chain that keeps asking for
+        # new, non-repeated work may grow one round at a time without changing
+        # the provider request shape. Only the universal emergency ceiling
+        # forces ``tool_choice=none``.
         while tool_round_index <= emergency_tool_rounds:
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
@@ -4574,7 +3866,8 @@ class AkaneMemoryEngine:
                     tool_round_index,
                     len(tool_calls),
                 )
-                final_output = yield from self._stream_final_response(
+                final_output = yield from self._generate_round(
+                    mode=mode,
                     session_id=session_id,
                     profile_user_id=profile_user_id,
                     user_message=user_message,
@@ -4605,17 +3898,18 @@ class AkaneMemoryEngine:
                     stable_system_context=plugin_stable_system_context,
                 )
                 break
-            native_preface_text = str(final_output.pop("_native_preface_text", "") or "").strip()
-            if native_preface_text and tool_calls and self._tool_call_allows_assistant_preface(tool_calls[0]):
-                yield {"type": "speech_segment", "index": 0, "text": native_preface_text}
-            yield {
-                "type": "assistant_stage_decision",
-                "has_tool_call": bool(tool_calls),
-                "tool_type": str((tool_calls[0] if tool_calls else {}).get("type") or ""),
-                "tool_types": [str(call.get("type") or "") for call in tool_calls],
-                "tool_count": len(tool_calls),
-                "rejected_tool_call": bool(rejections),
-            }
+            if streaming:
+                native_preface_text = str(final_output.pop("_native_preface_text", "") or "").strip()
+                if native_preface_text and tool_calls and self._tool_call_allows_assistant_preface(tool_calls[0]):
+                    yield {"type": "speech_segment", "index": 0, "text": native_preface_text}
+                yield {
+                    "type": "assistant_stage_decision",
+                    "has_tool_call": bool(tool_calls),
+                    "tool_type": str((tool_calls[0] if tool_calls else {}).get("type") or ""),
+                    "tool_types": [str(call.get("type") or "") for call in tool_calls],
+                    "tool_count": len(tool_calls),
+                    "rejected_tool_call": bool(rejections),
+                }
             if not tool_calls:
                 if not rejections:
                     break
@@ -4627,7 +3921,8 @@ class AkaneMemoryEngine:
                     tool_round_index=tool_round_index,
                     max_tool_rounds=max_tool_rounds,
                 )
-                final_output = yield from self._stream_final_response(
+                final_output = yield from self._generate_round(
+                    mode=mode,
                     session_id=session_id,
                     profile_user_id=profile_user_id,
                     user_message=user_message,
@@ -4676,7 +3971,8 @@ class AkaneMemoryEngine:
             if not executable_calls:
                 tool_round_index += 1
                 allow_retry = tool_round_index < max_tool_rounds
-                final_output = yield from self._stream_final_response(
+                final_output = yield from self._generate_round(
+                    mode=mode,
                     session_id=session_id,
                     profile_user_id=profile_user_id,
                     user_message=user_message,
@@ -4729,17 +4025,18 @@ class AkaneMemoryEngine:
                 and preface_source_id not in prompt_exclude_source_ids
             ):
                 prompt_exclude_source_ids.append(preface_source_id)
-            working_event = self._build_tool_working_stream_event(executable_calls[0])
-            if len(executable_calls) > 1:
-                working_event.update(
-                    {
-                        "phase": "tool_batch",
-                        "tool_count": len(executable_calls),
-                        "tool_types": [str(call.get("type") or "") for call in executable_calls],
-                        "message": "我一起查一下。",
-                    }
-                )
-            yield working_event
+            if streaming:
+                working_event = self._build_tool_working_stream_event(executable_calls[0])
+                if len(executable_calls) > 1:
+                    working_event.update(
+                        {
+                            "phase": "tool_batch",
+                            "tool_count": len(executable_calls),
+                            "tool_types": [str(call.get("type") or "") for call in executable_calls],
+                            "message": "我一起查一下。",
+                        }
+                    )
+                yield working_event
             batch_results, current_events = self._execute_and_record_tool_batch(
                 tool_calls=executable_calls,
                 final_output=final_output,
@@ -4765,8 +4062,9 @@ class AkaneMemoryEngine:
                 execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
-            for stream_event in current_events:
-                yield stream_event
+            if streaming:
+                for stream_event in current_events:
+                    yield stream_event
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
@@ -4776,7 +4074,8 @@ class AkaneMemoryEngine:
                 chat_model_override=chat_model_override,
             )
 
-            final_output = yield from self._stream_final_response(
+            final_output = yield from self._generate_round(
+                mode=mode,
                 session_id=session_id,
                 profile_user_id=profile_user_id,
                 user_message=user_message,
@@ -4939,8 +4238,9 @@ class AkaneMemoryEngine:
                 final_json=final_output,
             )
 
-        ui_final_payload = dict(final_output)
-        yield {"type": "final_ui", "payload": ui_final_payload}
+        if streaming:
+            ui_final_payload = dict(final_output)
+            yield {"type": "final_ui", "payload": ui_final_payload}
 
         final_output["trace_id"] = trace_id
         debug_payload = self._build_retrieval_debug_payload(
@@ -4967,7 +4267,200 @@ class AkaneMemoryEngine:
         if character_context_debug:
             debug_payload["character_context"] = character_context_debug
         final_output["_debug"] = debug_payload
-        yield {"type": "final", "payload": final_output}
+        if streaming:
+            yield {"type": "final", "payload": final_output}
+        return final_output
+
+    def _generate_round(
+        self,
+        *,
+        mode: str,
+        session_id: str,
+        profile_user_id: str,
+        user_message: str,
+        recent_raw: list[dict[str, Any]],
+        recent_episodic_summaries: list[dict[str, Any]],
+        recent_semantic_summaries: list[dict[str, Any]],
+        confirmed_snippets: list[str],
+        now_ts: int,
+        current_visual_payload: Any = None,
+        extra_user_context: str = "",
+        stable_system_context: str = "",
+        client_context: ClientProtocolContext | None = None,
+        resource_manifest: ResourceManifest | None = None,
+        character_pack_id: str = "",
+        user_images: list[dict[str, Any]] | None = None,
+        allow_tool_call: bool = True,
+        final_debug_enabled: bool | None = None,
+        chat_model_override: str = "",
+        execution_target: Any = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_exclude_source_ids: list[str] | None = None,
+        domain_profile_id: str = "",
+        prompt_scope: str = "",
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        """Dispatch one model generation to the transport implementation.
+
+        The transport pair stays intentionally separate: non-streaming
+        ``call_chat_json`` and streaming ``stream_chat_json`` (with its own
+        stream→non-stream→uncached degrade chain) are two legitimate transports,
+        not a duplicated state machine. This is the single branch point the turn
+        mainline uses for every generation round.
+        """
+        if str(mode or "").strip() == "stream":
+            return (yield from self._stream_final_response(
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                user_message=user_message,
+                recent_raw=recent_raw,
+                recent_episodic_summaries=recent_episodic_summaries,
+                recent_semantic_summaries=recent_semantic_summaries,
+                confirmed_snippets=confirmed_snippets,
+                now_ts=now_ts,
+                current_visual_payload=current_visual_payload,
+                extra_user_context=extra_user_context,
+                stable_system_context=stable_system_context,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                character_pack_id=character_pack_id,
+                user_images=user_images,
+                allow_tool_call=allow_tool_call,
+                final_debug_enabled=final_debug_enabled,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                post_user_turns=post_user_turns,
+                prompt_exclude_source_ids=prompt_exclude_source_ids,
+                domain_profile_id=domain_profile_id,
+                prompt_scope=prompt_scope,
+            ))
+        return self._build_final_response(
+            session_id=session_id,
+            profile_user_id=profile_user_id,
+            user_message=user_message,
+            recent_raw=recent_raw,
+            recent_episodic_summaries=recent_episodic_summaries,
+            recent_semantic_summaries=recent_semantic_summaries,
+            confirmed_snippets=confirmed_snippets,
+            now_ts=now_ts,
+            current_visual_payload=current_visual_payload,
+            extra_user_context=extra_user_context,
+            stable_system_context=stable_system_context,
+            client_context=client_context,
+            resource_manifest=resource_manifest,
+            character_pack_id=character_pack_id,
+            user_images=user_images,
+            allow_tool_call=allow_tool_call,
+            final_debug_enabled=final_debug_enabled,
+            chat_model_override=chat_model_override,
+            execution_target=execution_target,
+            post_user_turns=post_user_turns,
+            prompt_exclude_source_ids=prompt_exclude_source_ids,
+            domain_profile_id=domain_profile_id,
+            prompt_scope=prompt_scope,
+        )
+    def process_voice_turn_stream(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        source_id: str,
+        memcore_turn_id: str,
+        voice_turn_id: str,
+        message: str,
+        timestamp: int,
+    ) -> Generator[dict[str, Any], None, None]:
+        """Run the normal Thinking Agent over an already committed voice turn."""
+
+        normalized_source_id = str(source_id or "").strip()
+        normalized_turn_id = str(memcore_turn_id or "").strip()
+        normalized_voice_turn_id = str(voice_turn_id or "").strip()
+        normalized_message = str(message or "").strip()
+        if not normalized_source_id or not normalized_turn_id or not normalized_voice_turn_id or not normalized_message:
+            raise ValueError("voice_precommitted_turn_invalid")
+        return self.process_turn_stream(
+            {
+                "message": normalized_message,
+                "user_id": str(session_id or ""),
+                "real_user_id": str(profile_user_id or ""),
+                "character_pack_id": str(character_pack_id or ""),
+                "timestamp": int(timestamp or time.time()),
+                "client_mode": "desktop_pet",
+                "transient_user_message": True,
+                "transient_assistant_message": True,
+            },
+            _precommitted_memcore_turn={
+                "source_id": normalized_source_id,
+                "turn_id": normalized_turn_id,
+                "voice_turn_id": normalized_voice_turn_id,
+            },
+        )
+
+    def process_voice_candidate_stream(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        voice_turn_id: str,
+        message: str,
+        timestamp: int,
+    ) -> Generator[dict[str, Any], None, None]:
+        """Generate a non-persistent, tool-free candidate from provisional ASR text."""
+
+        normalized_voice_turn_id = str(voice_turn_id or "").strip()
+        normalized_message = str(message or "").strip()
+        if not normalized_voice_turn_id or not normalized_message:
+            raise ValueError("voice_candidate_turn_invalid")
+        return self.process_turn_stream(
+            {
+                "message": normalized_message,
+                "user_id": str(session_id or ""),
+                "real_user_id": str(profile_user_id or ""),
+                "character_pack_id": str(character_pack_id or ""),
+                "timestamp": int(timestamp or time.time()),
+                "client_mode": "desktop_pet",
+                "transient_user_message": True,
+                "transient_assistant_message": True,
+                "voice_speculative_candidate": True,
+            }
+        )
+
+    def process_turn_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        _precommitted_memcore_turn: dict[str, str] | None = None,
+    ) -> _ContextBoundGenerator:
+        return _ContextBoundGenerator(
+            self._process_turn_stream_scoped(
+                payload,
+                _precommitted_memcore_turn=_precommitted_memcore_turn,
+            )
+        )
+
+    def _process_turn_stream_scoped(
+        self,
+        payload: dict[str, Any],
+        *,
+        _precommitted_memcore_turn: dict[str, str] | None = None,
+    ) -> Generator[dict[str, Any], None, None]:
+        guard_token = _MEMCORE_OPEN_TURN_GUARD.set({})
+        exit_reason = "turn_stream_scope_exited_open"
+        try:
+            yield from self._run_turn_core(
+                payload,
+                mode="stream",
+                _precommitted_memcore_turn=_precommitted_memcore_turn,
+            )
+        except GeneratorExit:
+            raise
+        except BaseException:
+            exit_reason = "turn_stream_processing_exception"
+            raise
+        finally:
+            self._abort_open_memcore_turn_guard(reason=exit_reason)
+            _MEMCORE_OPEN_TURN_GUARD.reset(guard_token)
 
     def _build_character_context_debug_payload(
         self,

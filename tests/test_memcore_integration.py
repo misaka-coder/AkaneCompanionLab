@@ -783,7 +783,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         abort_calls: list[dict[str, object]] = []
 
-        def process_impl(_payload: dict[str, object]) -> dict[str, object]:
+        def core_impl(
+            _payload: dict[str, object],
+            *,
+            mode: str,
+            _precommitted_memcore_turn: dict[str, str] | None = None,
+        ) -> dict[str, object]:
+            del mode, _precommitted_memcore_turn
             engine._track_open_memcore_turn_for_guard(
                 turn_id="turn-sync-failed",
                 profile_user_id="u1",
@@ -792,7 +798,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
             raise ValueError("model_failed")
 
-        engine._process_turn_impl = process_impl
+        engine._run_turn_core = core_impl
         engine._abort_memcore_input_turn = lambda **kwargs: (
             abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
         )
@@ -808,12 +814,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         abort_calls: list[dict[str, object]] = []
 
-        def stream_impl(
+        def core_impl(
             _payload: dict[str, object],
             *,
+            mode: str,
             _precommitted_memcore_turn: dict[str, str] | None = None,
         ):
-            _ = _precommitted_memcore_turn
+            del mode, _precommitted_memcore_turn
             engine._track_open_memcore_turn_for_guard(
                 turn_id="turn-stream-failed",
                 profile_user_id="u1",
@@ -823,7 +830,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             yield {"type": "partial"}
             raise RuntimeError("stream_failed")
 
-        engine._process_turn_stream_impl = stream_impl
+        engine._run_turn_core = core_impl
         engine._abort_memcore_input_turn = lambda **kwargs: (
             abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
         )
@@ -839,12 +846,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         abort_calls: list[dict[str, object]] = []
 
-        def stream_impl(
+        def core_impl(
             _payload: dict[str, object],
             *,
+            mode: str,
             _precommitted_memcore_turn: dict[str, str] | None = None,
         ):
-            _ = _precommitted_memcore_turn
+            del mode, _precommitted_memcore_turn
             engine._track_open_memcore_turn_for_guard(
                 turn_id="turn-cross-context",
                 profile_user_id="u1",
@@ -854,7 +862,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             yield {"type": "partial"}
             yield {"type": "unreached"}
 
-        engine._process_turn_stream_impl = stream_impl
+        engine._run_turn_core = core_impl
         engine._abort_memcore_input_turn = lambda **kwargs: (
             abort_calls.append(dict(kwargs)) or {"ok": True, "status": "aborted"}
         )
