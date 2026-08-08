@@ -6986,140 +6986,39 @@ class AkaneMemoryEngine:
             return getattr(self, "memory_timeline_service", None)
 
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
-        memory_timeline_service = self._build_memory_timeline_tool_service()
-        handlers: dict[str, BaseToolHandler] = {
-            "retrieve_memory": RetrieveMemoryToolHandler(
-                retrieve_fn=self._execute_retrieve_memory_tool,
-            ),
-            "read_memory_timeline": ReadMemoryTimelineToolHandler(
-                timeline_service=memory_timeline_service,
-            ),
-            "browse_memory": BrowseMemoryToolHandler(
-                timeline_service=memory_timeline_service,
-            ),
-            "open_memory": OpenMemoryToolHandler(
-                timeline_service=memory_timeline_service,
-            ),
-            "load_character_context": LoadCharacterContextToolHandler(
-                context_library_service=getattr(
+        from .tool_handlers.catalog import build_builtin_tool_handlers
+
+        return build_builtin_tool_handlers(
+            {
+                "store": self.store,
+                "npc_runtime": self.npc_runtime,
+                "gift_service": self.gift_service,
+                "artifact_service": self.artifact_service,
+                "persona_card_service": self.persona_card_service,
+                "sticker_assets": self.sticker_assets,
+                "capability_offer_source": self.capability_offer_source,
+                "capability_config_base_dir": self.capability_config_base_dir,
+                "memory_timeline_service": self._build_memory_timeline_tool_service(),
+                "context_libraries": getattr(
                     self.desktop_pet_character_resources,
                     "context_libraries",
                     None,
                 ),
-            ),
-            "call_npc": CallNPCToolHandler(
-                npc_runtime=self.npc_runtime,
-                describe_scene=self._describe_tool_scene_context,
-                build_followup_context=self._build_npc_followup_context,
-            ),
-            "set_reminder": SetReminderToolHandler(store=self.store),
-            "list_reminders": ListRemindersToolHandler(store=self.store),
-            "cancel_reminder": CancelReminderToolHandler(store=self.store),
-            "check_inventory": CheckInventoryToolHandler(gift_service=self.gift_service),
-            "inspect_attachment": InspectAttachmentToolHandler(attachment_service=self._get_attachment_inbox_service()),
-            "load_material": LoadMaterialToolHandler(image_material_resolver=self._get_image_material_resolver()),
-            "read_attachment_section": ReadAttachmentSectionToolHandler(
-                attachment_service=self._get_attachment_inbox_service()
-            ),
-            "sync_attachment_workspace": SyncAttachmentWorkspaceToolHandler(
-                attachment_service=self._get_attachment_inbox_service()
-            ),
-            "clear_attachment_focus": ClearAttachmentFocusToolHandler(
-                attachment_service=self._get_attachment_inbox_service(),
-                task_workspace_service=self._get_task_workspace_service(),
-            ),
-            "list_workspace": ListWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
-            "read_workspace": ReadWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
-            "focus_workspace": FocusWorkspaceToolHandler(workspace_service=self._get_workspace_file_service()),
-            "register_workspace_items": RegisterWorkspaceItemsToolHandler(
-                workspace_service=self._get_workspace_file_service(),
-                attachment_ingest_service=self._get_attachment_ingest_service(),
-            ),
-            "retry_attachment": RetryAttachmentToolHandler(
-                attachment_ingest_service=self._get_attachment_ingest_service()
-            ),
-            "fetch_media_from_url": FetchMediaFromUrlToolHandler(
-                attachment_ingest_service=self._get_attachment_ingest_service()
-            ),
-            "compose_file": ComposeFileToolHandler(generated_file_service=self._get_generated_file_service()),
-            "revise_generated_file": ReviseGeneratedFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "apply_style_to_existing_file": ApplyStyleToExistingFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "inspect_media_info": InspectMediaInfoToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "separate_audio_stems": SeparateAudioStemsToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "clean_voice_track": CleanVoiceTrackToolHandler(generated_file_service=self._get_generated_file_service()),
-            "transcribe_media": TranscribeMediaToolHandler(generated_file_service=self._get_generated_file_service()),
-            "prepare_voice_dataset": PrepareVoiceDatasetToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "inspect_generated_file": InspectGeneratedFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "send_file": SendFileToolHandler(generated_file_service=self._get_generated_file_service()),
-            "convert_media_file": ConvertMediaFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "send_generated_file": SendGeneratedFileToolHandler(
-                generated_file_service=self._get_generated_file_service()
-            ),
-            "send_sticker": SendStickerToolHandler(
-                sticker_service=self.sticker_assets,
-            ),
-            "manage_generated_file": ManageGeneratedFileToolHandler(
-                generated_file_service=self._get_generated_file_service(),
-                task_workspace_service=self._get_task_workspace_service(),
-            ),
-            "manage_gift": ManageGiftToolHandler(
-                gift_service=self.gift_service,
-                observe_image_fn=self.observe_gift_image_once,
-            ),
-            "manage_artifact": ManageArtifactToolHandler(
-                artifact_service=self.artifact_service,
-            ),
-            "manage_persona": ManagePersonaToolHandler(
-                persona_service=self.persona_card_service,
-            ),
-            "manage_task_workspace": ManageTaskWorkspaceToolHandler(
-                task_workspace_service=self._get_task_workspace_service(),
-            ),
-            "delegate_task": DelegateTaskToolHandler(
-                task_worker_service=self._get_task_worker_service(),
-            ),
-            "web_search": WebSearchToolHandler(
-                config_base_dir=self.capability_config_base_dir,
-            ),
-            "open_browser": OpenBrowserToolHandler(),
-            "desktop_context_snapshot": DesktopSatelliteToolHandler(
-                tool_id="desktop_context_snapshot",
-                offer_source=self.capability_offer_source,
-            ),
-            "system_media_snapshot": DesktopSatelliteToolHandler(
-                tool_id="system_media_snapshot",
-                offer_source=self.capability_offer_source,
-            ),
-            "system_media_control": DesktopSatelliteToolHandler(
-                tool_id="system_media_control",
-                offer_source=self.capability_offer_source,
-            ),
-            "open_music_search": OpenMusicSearchToolHandler(),
-            "browser_page": BrowserPageToolHandler(),
-        }
-        image_generation_service = self._get_image_generation_service()
-        if image_generation_service is not None:
-            handlers["generate_image"] = GenerateImageToolHandler(
-                image_generation_service=image_generation_service,
-            )
-        cover_song_service = self._get_cover_song_service()
-        if cover_song_service is not None:
-            handlers["cover_song"] = CoverSongToolHandler(cover_song_service=cover_song_service)
-        return handlers
+                "attachment_service": self._get_attachment_inbox_service(),
+                "image_material_resolver": self._get_image_material_resolver(),
+                "task_workspace_service": self._get_task_workspace_service(),
+                "workspace_file_service": self._get_workspace_file_service(),
+                "attachment_ingest_service": self._get_attachment_ingest_service(),
+                "generated_file_service": self._get_generated_file_service(),
+                "image_generation_service": self._get_image_generation_service(),
+                "cover_song_service": self._get_cover_song_service(),
+                "task_worker_service": self._get_task_worker_service(),
+                "retrieve_fn": self._execute_retrieve_memory_tool,
+                "describe_scene": self._describe_tool_scene_context,
+                "build_npc_followup_context": self._build_npc_followup_context,
+                "observe_gift_image_fn": self.observe_gift_image_once,
+            }
+        )
 
     def _resolve_tool_handlers(
         self,
