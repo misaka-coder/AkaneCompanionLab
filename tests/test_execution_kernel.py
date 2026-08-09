@@ -426,6 +426,22 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(mapped.event_status, EXEC_STATUS_RUNNING)
         self.assertIn("exec_status", mapped.model_feedback)
 
+    def test_model_feedback_redacts_host_paths_and_secret_assignments(self) -> None:
+        run_id = new_run_id()
+        mapped = map_exec_run_outcome(
+            ExecRunStart(
+                status=EXEC_STATUS_COMPLETED,
+                run_id=run_id,
+                exit_code=0,
+                stdout="cwd=C:\\Users\\alice\\private\\key.txt\nTOKEN=secret-value\n/tmp/private.txt",
+            )
+        )
+        self.assertNotIn("C:\\Users\\alice", mapped.model_feedback)
+        self.assertNotIn("/tmp/private.txt", mapped.model_feedback)
+        self.assertNotIn("secret-value", mapped.model_feedback)
+        self.assertIn("[local_path]", mapped.model_feedback)
+        self.assertIn("TOKEN=[redacted]", mapped.model_feedback)
+
     def test_run_normalizes_and_forwards_bounded_arguments(self) -> None:
         provider = _FakeExecutionProvider(self._store())
         execute_exec_run(

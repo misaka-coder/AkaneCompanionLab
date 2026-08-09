@@ -507,6 +507,7 @@ def build_capability_snapshot(
         has_image_workspace_file=bool(workspace_inventory.get("has_image_file")),
         has_cover_song_cache=has_cover_song_cache,
         has_pending_gift=False,
+        execution_enabled=bool(getattr(engine, "execution_provider", None)),
     )
 
 

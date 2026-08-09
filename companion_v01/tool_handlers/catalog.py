@@ -21,6 +21,7 @@ from .attachments import (
     RetryAttachmentToolHandler,
     SyncAttachmentWorkspaceToolHandler,
 )
+from .execution import ExecCancelToolHandler, ExecRunToolHandler, ExecStatusToolHandler
 from .character_world import (
     CallNPCToolHandler,
     CancelReminderToolHandler,
@@ -97,6 +98,8 @@ def build_builtin_tool_handlers(
     describe_scene: Any,
     build_npc_followup_context: Any,
     observe_gift_image_fn: Any,
+    execution_provider: Any | None = None,
+    approval_store: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
@@ -228,6 +231,22 @@ def build_builtin_tool_handlers(
         "open_music_search": OpenMusicSearchToolHandler(),
         "browser_page": BrowserPageToolHandler(),
     }
+    if execution_provider is not None:
+        handlers["exec_run"] = ExecRunToolHandler(
+            execution_provider=execution_provider,
+            config_base_dir=capability_config_base_dir,
+            approval_store=approval_store,
+        )
+        handlers["exec_status"] = ExecStatusToolHandler(
+            execution_provider=execution_provider,
+            config_base_dir=capability_config_base_dir,
+            approval_store=approval_store,
+        )
+        handlers["exec_cancel"] = ExecCancelToolHandler(
+            execution_provider=execution_provider,
+            config_base_dir=capability_config_base_dir,
+            approval_store=approval_store,
+        )
     if image_generation_service is not None:
         handlers["generate_image"] = GenerateImageToolHandler(
             image_generation_service=image_generation_service,

@@ -93,7 +93,15 @@ def build_capabilities_router(
             pass
     workflow_jobs: dict[str, dict[str, Any]] = {}
     workflow_jobs_lock = threading.RLock()
-    approval_store = CapabilityApprovalStore()
+    # Share the engine-owned approval store so exec-handler-created requests and
+    # their grants (redemption) live in the same instance the routes resolve.
+    approval_store = getattr(engine, "approval_store", None)
+    if approval_store is None:
+        approval_store = CapabilityApprovalStore()
+        try:
+            setattr(engine, "approval_store", approval_store)
+        except Exception:
+            pass
     provider_config_base_dir = _resolve_provider_config_base_dir(
         capability_config_base_dir=capability_config_base_dir,
         config_module=config_module,

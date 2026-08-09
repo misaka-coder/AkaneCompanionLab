@@ -6736,7 +6736,6 @@ class AkaneMemoryEngine:
                 "unavailable_before_dispatch",
                 "execution_unknown",
                 "rejected",
-                "running",
                 "denied",
                 "blocked",
                 "canceled",
@@ -6985,6 +6984,58 @@ class AkaneMemoryEngine:
             logger.warning("memcore timeline tool adapter disabled: %s", exc)
             return getattr(self, "memory_timeline_service", None)
 
+    def _get_approval_store(self) -> Any:
+        store = getattr(self, "approval_store", None)
+        if store is not None:
+            return store
+        from .capability_approval import CapabilityApprovalStore
+
+        store = CapabilityApprovalStore()
+        try:
+            setattr(self, "approval_store", store)
+        except Exception:
+            pass
+        return store
+
+    def _build_execution_provider(self) -> Any | None:
+        """Host-bound execution provider, or None when execution is disabled.
+
+        Driven by the host config surface (``EXECUTION_ENABLED`` + paths), which
+        is frozen at startup — the model can never select a provider. None keeps
+        the exec tools out of the schema entirely; a configured-but-unavailable
+        provider degrades to a structured ``capability_unavailable`` result and
+        a ``capability_status()`` unavailable disclosure instead.
+        """
+        provider = getattr(self, "execution_provider", None)
+        if provider is not None:
+            return provider
+        if not bool(getattr(config, "EXECUTION_ENABLED", False)):
+            return None
+        try:
+            from pathlib import Path
+
+            from .execution_local import TrustedLocalExecutor
+
+            data_root = Path(getattr(config, "DATA_ROOT", "users_data"))
+            state_dir = Path(getattr(config, "STATE_DIR", "users_data"))
+            workspace_root = Path(getattr(config, "EXECUTION_WORKSPACE_ROOT", "") or (data_root / "execution_workspace"))
+            run_log_dir = Path(getattr(config, "EXECUTION_RUN_LOG_DIR", "") or (state_dir / "execution_runlogs"))
+            allowed_raw = str(getattr(config, "EXECUTION_ALLOWED_ENV_NAMES", "") or "").strip()
+            allowed_names = [name.strip() for name in allowed_raw.split(",") if name.strip()] or None
+            provider = TrustedLocalExecutor(
+                workspace_root=workspace_root,
+                run_log_dir=run_log_dir,
+                allowed_env_names=allowed_names,
+            )
+        except Exception as exc:
+            logger.warning("execution provider disabled: %s", exc)
+            return None
+        try:
+            setattr(self, "execution_provider", provider)
+        except Exception:
+            pass
+        return provider
+
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         from .tool_handlers.catalog import build_builtin_tool_handlers
 
@@ -7016,6 +7067,8 @@ class AkaneMemoryEngine:
             describe_scene=self._describe_tool_scene_context,
             build_npc_followup_context=self._build_npc_followup_context,
             observe_gift_image_fn=self.observe_gift_image_once,
+            execution_provider=self._build_execution_provider(),
+            approval_store=self._get_approval_store(),
         )
 
     def _resolve_tool_handlers(

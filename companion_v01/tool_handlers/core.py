@@ -58,6 +58,7 @@ from ..capability_registry import (
     TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
+from ..execution_specs import EXEC_CANCEL_TOOL_SPEC, EXEC_RUN_TOOL_SPEC, EXEC_STATUS_TOOL_SPEC
 
 
 @dataclass(frozen=True)
@@ -790,6 +791,22 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         background=True,
         requires_confirmation=True,
     ),
+    "exec_run": ToolMetadata(
+        family="execution",
+        operation="control",
+        default_round_budget=4,
+        background=True,
+    ),
+    "exec_status": ToolMetadata(
+        family="execution",
+        operation="read",
+        default_round_budget=4,
+    ),
+    "exec_cancel": ToolMetadata(
+        family="execution",
+        operation="control",
+        default_round_budget=3,
+    ),
 }
 
 
@@ -842,6 +859,9 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "prepare_voice_dataset": PREPARE_VOICE_DATASET_TOOL_SPEC,
     "convert_media_file": CONVERT_MEDIA_FILE_TOOL_SPEC,
     "cover_song": COVER_SONG_TOOL_SPEC,
+    "exec_run": EXEC_RUN_TOOL_SPEC,
+    "exec_status": EXEC_STATUS_TOOL_SPEC,
+    "exec_cancel": EXEC_CANCEL_TOOL_SPEC,
 }
 
 

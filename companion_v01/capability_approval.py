@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 import uuid
@@ -28,6 +30,28 @@ APPROVAL_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 LOCAL_PATH_RE = re.compile(r"(?i)([A-Z]:[\\/][^\s,;]+|\\\\[^\s,;]+|/(?:users|home|root|var|tmp|mnt|Volumes)/[^\s,;]+)")
 
 
+def build_approval_request_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Deterministic fingerprint of the requested action, bound to the grant.
+
+    Two calls with identical normalized arguments produce the same fingerprint,
+    so a grant approved for one command never silently covers a different one.
+    """
+    canonical = json.dumps(
+        dict(payload or {}),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _safe_binding(value: Any, *, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[\x00-\x1f\x7f]", "", text)
+    return text[: max(0, int(limit))]
+
+
 class CapabilityApprovalStore:
     def __init__(self, *, now_func: Callable[[], datetime] | None = None) -> None:
         self._now_func = now_func or (lambda: datetime.now(timezone.utc))
@@ -50,6 +74,9 @@ class CapabilityApprovalStore:
         entry = {
             "_profileUserId": str(profile_user_id or ""),
             "_sessionId": str(session_id or ""),
+            "_fingerprint": str(normalized.get("requestFingerprint") or ""),
+            "_resource": str(normalized.get("resource") or ""),
+            "_device": str(normalized.get("deviceId") or ""),
             "requestId": request_id,
             "kind": "capability_approval_request",
             "status": "pending",
@@ -188,6 +215,68 @@ class CapabilityApprovalStore:
             }
         return result
 
+    def resolve_grant(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        capability_id: str,
+        action_id: str,
+        resource: str = "",
+        device: str = "",
+        fingerprint: str = "",
+    ) -> dict[str, Any] | None:
+        """Validate a previously approved grant against the current execution.
+
+        This closes the ``request -> decide -> grant -> execute`` loop: a grant
+        only redeems when profile, session, capability, action, resource,
+        device and request fingerprint all match and the grant is unexpired.
+        A caller-supplied binding must also exist on the stored request and
+        match exactly. Successful redemption consumes the grant atomically.
+        """
+        with self._lock:
+            now = self._now()
+            self._expire_pending_locked(now)
+            for entry in self._requests.values():
+                if entry.get("status") != "approved":
+                    continue
+                grant_id = str(entry.get("grantId") or "")
+                if not grant_id:
+                    continue
+                grant_expires_at = _parse_iso(entry.get("grantExpiresAt"))
+                if grant_expires_at and grant_expires_at <= now:
+                    continue
+                if str(entry.get("_profileUserId") or "") != str(profile_user_id or ""):
+                    continue
+                if str(entry.get("_sessionId") or "") != str(session_id or ""):
+                    continue
+                if str(entry.get("capabilityId") or "") != str(capability_id or ""):
+                    continue
+                if str(entry.get("actionId") or "") != str(action_id or ""):
+                    continue
+                stored_resource = str(entry.get("_resource") or "")
+                if resource and stored_resource != str(resource or ""):
+                    continue
+                stored_device = str(entry.get("_device") or "")
+                if device and stored_device != str(device or ""):
+                    continue
+                stored_fingerprint = str(entry.get("_fingerprint") or "")
+                if fingerprint and stored_fingerprint != str(fingerprint or ""):
+                    continue
+                # Effectful execution grants are one-shot. Mark redemption
+                # while holding the store lock so concurrent retries cannot
+                # execute the same approved command twice.
+                entry["status"] = "redeemed"
+                entry["updatedAt"] = _iso(now)
+                return {
+                    "grantId": grant_id,
+                    "requestId": str(entry.get("requestId") or ""),
+                    "capabilityId": str(entry.get("capabilityId") or ""),
+                    "actionId": str(entry.get("actionId") or ""),
+                    "expiresAt": str(entry.get("grantExpiresAt") or ""),
+                }
+        return None
+
     def _expire_pending_locked(self, now: datetime) -> None:
         for entry in self._requests.values():
             if entry.get("status") != "pending":
@@ -240,6 +329,12 @@ def normalize_approval_request_payload(payload: Mapping[str, Any]) -> dict[str, 
         "requestedBy": requested_by,
         "payloadPreview": _safe_payload_preview(payload.get("payloadPreview") or payload.get("payload_preview")),
         "expiresInSec": ttl,
+        # Grant redemption bindings: the grant only redeems when the execution
+        # matches these, so an approved command cannot silently cover a
+        # different command, resource, device or session.
+        "requestFingerprint": _safe_binding(payload.get("requestFingerprint") or payload.get("request_fingerprint"), limit=64),
+        "resource": _safe_binding(payload.get("resource") or payload.get("resourcePath") or payload.get("resource_path")),
+        "deviceId": _safe_binding(payload.get("deviceId") or payload.get("device") or payload.get("device_id")),
     }
 
 

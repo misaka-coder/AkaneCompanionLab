@@ -42,6 +42,13 @@ MANAGED_DEPLOYMENT = "deployment"
 EXCLUDED_KEYS: frozenset[str] = frozenset(
     {
         "AKANE_INSTANCE_ID",
+        # TrustedLocalExecutor is a host-startup security boundary. These
+        # values must be supplied by deployment configuration, never surfaced
+        # as control-center settings or live runtime overrides.
+        "EXECUTION_ENABLED",
+        "EXECUTION_WORKSPACE_ROOT",
+        "EXECUTION_RUN_LOG_DIR",
+        "EXECUTION_ALLOWED_ENV_NAMES",
         # Accepted only to return an actionable deprecation error. Remote media
         # fetches must never import an entire browser cookie database.
         "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",

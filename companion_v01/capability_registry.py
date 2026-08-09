@@ -158,6 +158,7 @@ COMMON_TOOL_NAMES = (
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
+EXEC_TOOL_NAMES = ("exec_run", "exec_status", "exec_cancel")
 DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
@@ -2083,6 +2084,8 @@ class CapabilitySnapshot:
     has_image_workspace_file: bool = False
     has_cover_song_cache: bool = False
     has_pending_gift: bool = False
+    # Host-frozen execution provider present (host config, not transient readiness).
+    execution_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -2176,6 +2179,10 @@ def _has_media_context(snapshot: CapabilitySnapshot) -> bool:
 
 def _has_cover_song_context(snapshot: CapabilitySnapshot) -> bool:
     return _has_media_context(snapshot) or snapshot.has_cover_song_cache
+
+
+def _execution_enabled(snapshot: CapabilitySnapshot) -> bool:
+    return snapshot.execution_enabled
 
 
 def _has_image_context(snapshot: CapabilitySnapshot) -> bool:
@@ -2603,6 +2610,22 @@ class CapabilityRegistry:
                 trigger=_always,
                 unavailable_reason="联网搜索服务当前正在检测，或没有通过所在网络节点的可用性检查。",
                 recovery_hint="网络或搜索服务恢复后会自动重新开放；当前不要假装已经查到实时结果。",
+            ),
+            CapabilityModule(
+                name="execution",
+                layer="execution",
+                modes=(ClientMode.DESKTOP_PET,),
+                tools=EXEC_TOOL_NAMES,
+                light_hint=(
+                    "桌宠本机模式下，当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
+                    "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
+                    "只有宿主在本机启用执行时这项能力才会出现。"
+                ),
+                trigger=_execution_enabled,
+                latent_reason="当前宿主没有启用本机命令执行。",
+                activation_hint="宿主在本机启用命令执行后会自动开放。",
+                unavailable_reason="本机执行提供者当前没有通过可用性检查。",
+                recovery_hint="执行工作区或提供者恢复后会自动重新开放；当前不要假装已经执行命令。",
             ),
             CapabilityModule(
                 name="desktop_managed_browser",

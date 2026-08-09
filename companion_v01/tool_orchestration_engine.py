@@ -25,6 +25,7 @@ from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_na
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 from .desktop_satellite_specs import desktop_satellite_spec
+from .execution_specs import EXEC_TOOL_SPEC_BY_ID
 
 
 @dataclass(frozen=True)
@@ -1148,7 +1149,50 @@ def execute_tool_invocation(
             data={"code": reason, "tool": invocation.name, "status": broker_result.status},
             events=[event],
         )
-    return result, tool_execution_result_to_envelope(invocation=invocation, result=result)
+    return result, _final_exec_envelope(invocation=invocation, result=result)
+
+
+def _final_exec_envelope(
+    *,
+    invocation: ToolInvocation,
+    result: ToolExecutionResult,
+) -> ToolResultEnvelope:
+    """Build the execution envelope with an honest status mapping.
+
+    The generic builder labels every non-None result ``ok``; for the execution
+    tools the command's own outcome (failed / timed_out / cancelled /
+    execution_unknown) and the approval / unavailable cases must surface on the
+    envelope so nothing downstream mistakes a failed command for success.
+    """
+    base = tool_execution_result_to_envelope(invocation=invocation, result=result)
+    if str(invocation.name or "").strip() not in EXEC_TOOL_SPEC_BY_ID:
+        return base
+    status = "ok"
+    for event in result.stream_events:
+        if not isinstance(event, Mapping):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "capability_approval_required":
+            status = "ask"
+            break
+        if event_type == "capability_execution_result":
+            inner = str(event.get("status") or "").strip()
+            if inner == "unavailable":
+                status = "unavailable"
+            elif inner in {"completed", "running"}:
+                status = "ok"
+            elif str(invocation.name or "").strip() == "exec_cancel" and inner in {"cancelled", "already_ended"}:
+                status = "ok"
+            else:
+                status = "error"
+            break
+    return ToolResultEnvelope(
+        invocation_id=base.invocation_id,
+        status=status,
+        model_feedback=base.model_feedback,
+        data=dict(base.data or {}),
+        events=list(base.events or []),
+    )
 
 
 def _execute_open_browser_with_broker(

@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     PROMPT_CACHE_NAMESPACE: str = "akane"
     # 缓存保留策略：空=默认  ephemeral=短期  persistent=长期
     PROMPT_CACHE_RETENTION: str = ""
+
+    # === 本地通用执行（TrustedLocalExecutor，Phase 3.3）===
+    # 宿主冻结的开关与路径。默认全部关闭：未启用时 exec_run/exec_status/
+    # exec_cancel 完全不进入模型 schema。这些不是部署模式枚举，只是本地
+    # 执行提供者的宿主配置面；云端/群聊等画像约束由能力模块 modes 决定。
+    EXECUTION_ENABLED: bool = False
+    # 命令 cwd 根目录；空= DATA_ROOT/execution_workspace
+    EXECUTION_WORKSPACE_ROOT: str = ""
+    # 完整输出日志目录；空= STATE_DIR/execution_runlogs
+    EXECUTION_RUN_LOG_DIR: str = ""
+    # 允许继承到子进程的宿主环境变量名，逗号分隔；空=保守默认集
+    EXECUTION_ALLOWED_ENV_NAMES: str = ""
     # Responses API controls. These are deliberately separate from the legacy
     # DeepSeek thinking switch because they have different wire semantics.
     LLM_REASONING_EFFORT: str = ""
@@ -599,6 +611,7 @@ def _apply_settings(s: Settings) -> None:
     global EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
     global ENABLE_SEMANTIC_MEMORY, ENABLE_SEMANTIC_REINFORCEMENT, PRE_RETRIEVAL_DEFAULT_ENABLED
     global PROMPT_CACHE_HINTS_ENABLED, PROMPT_CACHE_HINTS_FORCE, PROMPT_CACHE_NAMESPACE, PROMPT_CACHE_RETENTION
+    global EXECUTION_ENABLED, EXECUTION_WORKSPACE_ROOT, EXECUTION_RUN_LOG_DIR, EXECUTION_ALLOWED_ENV_NAMES
     global LLM_PROMPT_AUDIT_ENABLED, LLM_PROMPT_AUDIT_INCLUDE_AUX
     global ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
@@ -856,6 +869,10 @@ def _apply_settings(s: Settings) -> None:
     PROMPT_CACHE_HINTS_FORCE = bool(s.PROMPT_CACHE_HINTS_FORCE)
     PROMPT_CACHE_NAMESPACE = str(s.PROMPT_CACHE_NAMESPACE or "akane").strip()
     PROMPT_CACHE_RETENTION = str(s.PROMPT_CACHE_RETENTION or "").strip().lower()
+    EXECUTION_ENABLED = bool(s.EXECUTION_ENABLED)
+    EXECUTION_WORKSPACE_ROOT = str(s.EXECUTION_WORKSPACE_ROOT or "").strip()
+    EXECUTION_RUN_LOG_DIR = str(s.EXECUTION_RUN_LOG_DIR or "").strip()
+    EXECUTION_ALLOWED_ENV_NAMES = str(s.EXECUTION_ALLOWED_ENV_NAMES or "").strip()
     LLM_PROMPT_AUDIT_ENABLED = bool(s.LLM_PROMPT_AUDIT_ENABLED)
     LLM_PROMPT_AUDIT_INCLUDE_AUX = bool(s.LLM_PROMPT_AUDIT_INCLUDE_AUX)
     ROUTER_DEBUG = bool(s.ROUTER_DEBUG)
