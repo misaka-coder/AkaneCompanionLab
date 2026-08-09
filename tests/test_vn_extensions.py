@@ -1195,7 +1195,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "inspect_generated_file",
                     "convert_media_file",
                     "send_file",
-                    "send_generated_file",
                     "manage_generated_file",
                 ]
             }
@@ -1381,7 +1380,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "inspect_generated_file",
                     "convert_media_file",
                     "send_file",
-                    "send_generated_file",
                     "manage_generated_file",
                 ]
             }

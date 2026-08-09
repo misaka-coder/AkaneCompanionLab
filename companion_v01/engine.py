@@ -139,7 +139,6 @@ from .tool_runtime import (
     ReviseGeneratedFileToolHandler,
     RetryAttachmentToolHandler,
     SendFileToolHandler,
-    SendGeneratedFileToolHandler,
     SendStickerToolHandler,
     SeparateAudioStemsToolHandler,
     SetReminderToolHandler,

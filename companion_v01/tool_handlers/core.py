@@ -50,7 +50,6 @@ from ..capability_registry import (
     RETRY_ATTACHMENT_TOOL_SPEC,
     REVISE_GENERATED_FILE_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
-    SEND_GENERATED_FILE_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
     SEPARATE_AUDIO_STEMS_TOOL_SPEC,
     SET_REMINDER_TOOL_SPEC,
@@ -732,9 +731,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "send_file": ToolMetadata(
         family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
     ),
-    "send_generated_file": ToolMetadata(
-        family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
-    ),
     "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
     "inspect_media_info": ToolMetadata(
         family="media_workbench",
@@ -850,7 +846,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "inspect_generated_file": INSPECT_GENERATED_FILE_TOOL_SPEC,
     "manage_generated_file": MANAGE_GENERATED_FILE_TOOL_SPEC,
     "send_file": SEND_FILE_TOOL_SPEC,
-    "send_generated_file": SEND_GENERATED_FILE_TOOL_SPEC,
     "send_sticker": SEND_STICKER_TOOL_SPEC,
     "inspect_media_info": INSPECT_MEDIA_INFO_TOOL_SPEC,
     "separate_audio_stems": SEPARATE_AUDIO_STEMS_TOOL_SPEC,

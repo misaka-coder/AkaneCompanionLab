@@ -346,30 +346,23 @@ LLM 输出中间结构，后端生成文件。
 - QQ 端会把 `file_ready` 事件走同一条上传文件通道。
 - 如果来源是生成物，会标记 delivery 为 `pending`，发送后由客户端回写 sent/failed。
 
-### 6.6b 兼容工具：`send_generated_file`
+### 6.6b 兼容工具：`send_generated_file`（已退役）
 
-把生成文件交给当前客户端。
+`send_generated_file` 曾经是 `send_file` 的旧格式别名，仅用于重发 `gen_*` 生成物。
+它从未进入任何 capability selection（`FILE_HANDOFF_TOOL_NAMES` 只含 `send_file`），
+也没有进入 native schema 或 legacy Prompt。
 
-```json
-{
-  "type": "send_generated_file",
-  "target": "gen_002"
-}
-```
+该 handler、独立 ToolSpec、catalog 装配项与 service 层重复实现已于工具退役审计中删除。
+当前唯一权威入口是 `send_file`，它完整覆盖：
 
-不同客户端使用不同 delivery adapter：
+- 单文件与批量发送（`target` / `targets`）；
+- `gen_*` 生成物、`file_*`/`img_*`/`audio_*` 附件；
+- QQ 文件发送（`file_ready` 事件走同一条上传通道）；
+- 桌宠 delivery actions（open / reveal / save_desktop / copy_path）；
+- 结构化 delivery event。
 
-- QQ：OneBot `send_file` / 上传文件接口。
-- Web：返回下载链接。
-- Desktop：打开文件、复制路径或显示在本地文件夹。
-
-当前实现状态：
-
-- 已接入 `send_generated_file`。
-- 保留为兼容旧调用；新提示词优先使用 `send_file`。
-- 用于“再发一次”“把刚才那个文件发我”“发送 gen_002”这类请求。
-- 只重发已有生成物，不重新生成、不修改内容。
-- 如果本地文件本体已经丢失，会清晰失败；生成记录不会被删除。
+历史会话中已有的 `tool.send_generated_file.*` MemCore 记录仍按 kind 正常投影，
+读取历史轨迹不要求旧 handler 存在。
 
 ### 6.6c 当前工具：`inspect_generated_file`
 

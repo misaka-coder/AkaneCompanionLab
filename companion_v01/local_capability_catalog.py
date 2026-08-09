@@ -67,7 +67,6 @@ TOOL_GROUPS: dict[str, str] = {
     "convert_media_file": "media",
     "inspect_generated_file": "generated_files",
     "send_file": "file_handoff",
-    "send_generated_file": "file_handoff",
     "send_sticker": "stickers",
     "manage_generated_file": "generated_files",
     "web_search": "web",

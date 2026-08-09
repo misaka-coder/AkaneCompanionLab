@@ -255,12 +255,31 @@ Each tool handler should:
   - accepts `target`, batch `targets`, handles, titles, or `latest`
   - does not modify, regenerate, transcode, archive, or delete anything
   - emits `file_ready`; QQ currently uploads this through the same delivery path used by generated files
-- `send_generated_file`
-  - legacy compatibility handler for resending generated files only
-  - kept so older tool calls do not break, but new prompts should prefer `send_file`
 - `manage_generated_file`
   - manages generated files such as `gen_001`, not temporary attachments such as `file_001/img_001`
   - accepts `action: archive|delete|purge` and batch `targets`
   - `archive` hides the generated file from the workbench; `delete` also removes the local generated file; `purge` additionally clears the generated content card
   - never deletes the user's original attachment sources
   - emits `generated_files_managed` for clients that want to update UI state
+
+## 工具保留与退役裁决
+
+工具退役硬标准：只有"Shell 技术上能做"不等于可以退役。只有同时满足以下条件才允许删除：
+无独有用户可感知能力、无独有审批/安全/设备路由边界、不承担句柄生命周期、
+不承担表现层交付、无仍在使用的宿主调用方、删除后模型信息不变、
+且无需第二套兼容实现。
+
+- **永久保留（不能被 Shell 粗暴替代）**：MemCore 记忆工具（`retrieve_memory` 等）、
+  提醒/人格/NPC/礼物/世界状态工具、`send_file`/`send_sticker` 等表现层交付、
+  Desktop Satellite 系统能力、`open_browser`、`web_search`、审批与任务委派、
+  安全工作区/附件句柄工具、仍承担生成物生命周期的文档和媒体工具。
+- **可 Skill 化但暂不退役**：`inspect_media_info`、`convert_media_file`、
+  批量重命名、文本/数据处理等未来小能力。它们依赖 `workspace:/`→执行输入的
+  安全映射、Shell 产物自动登记、MIME/格式识别、`gen_*` 生命周期、文件交付、
+  脱敏、云端/本地执行位置与结构化失败。在 exec artifact bridge 落地前，媒体和
+  文档专用工具继续保留。
+- **已退役**：`send_generated_file`（旧格式兼容入口，`send_file` 已完整覆盖，
+  从未进入 capability selection / native schema / legacy prompt）。
+
+历史 MemCore 中的 `tool.send_generated_file.*` 记录只作为历史轨迹读取，按 kind
+投影，不要求旧 handler 存在；因此删除 handler 不影响历史记录展示。

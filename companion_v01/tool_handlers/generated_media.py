@@ -1661,54 +1661,6 @@ class SendFileToolHandler(BaseToolHandler):
         return ""
 
 
-class SendGeneratedFileToolHandler(SendFileToolHandler):
-    tool_type = "send_generated_file"
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- send_generated_file：兼容旧格式；当用户要重新发送已生成的 gen_001 文件时可用。"
-            "优先使用 send_file；只有需要兼容旧调用时才使用本工具。"
-            '格式为 {"type":"send_generated_file","targets":["gen_001","gen_002"]}。'
-        )
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.send_generated_file(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            target=str(call.get("target") or "latest"),
-            targets=list(call.get("targets") or []),
-            timestamp=context.now_ts,
-        )
-        events = []
-        generated_files = result.get("generated_files") if isinstance(result, dict) else None
-        delivery_action = self._normalize_delivery_action(call.get("delivery_action"))
-        allow_desktop_delivery = str(context.client_mode or "").strip() == "desktop_pet"
-        if bool(result.get("ok")) and isinstance(generated_files, list):
-            for generated in generated_files:
-                if not isinstance(generated, dict):
-                    continue
-                event = {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": True,
-                    "client_mode": context.client_mode,
-                }
-                if delivery_action and allow_desktop_delivery:
-                    event["delivery_action"] = delivery_action
-                    event["desktop_delivery"] = {
-                        "action": delivery_action,
-                        # M66-D: path removed; use handle + /content route for byte transfer.
-                        "name": str(generated.get("output_title") or generated.get("generated_handle") or ""),
-                        "handle": str(generated.get("generated_handle") or ""),
-                    }
-                events.append(event)
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-
 class SendStickerToolHandler(BaseToolHandler):
     tool_type = "send_sticker"
 

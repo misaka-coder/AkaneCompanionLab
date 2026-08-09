@@ -1390,30 +1390,6 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=4096,
 )
 
-SEND_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="send_generated_file",
-    display_name="Send generated file",
-    description="Send a previously generated file to the user. Alias for send_file focused on gen_* handles.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "Generated file handle (gen_*) or 'latest'."},
-            "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 10, "description": "Multiple generated file handles."},
-        },
-        "required": [],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_delivery",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=4096,
-)
-
 SEND_STICKER_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_sticker",
     display_name="Send sticker",

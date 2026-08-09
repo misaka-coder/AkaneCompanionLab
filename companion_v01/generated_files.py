@@ -917,24 +917,6 @@ class GeneratedFileService:
             updated_at=timestamp,
         )
 
-    def send_generated_file(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        target: str = "latest",
-        targets: list[str] | tuple[str, ...] | None = None,
-        timestamp: int | None = None,
-    ) -> dict[str, Any]:
-        return generated_files_delivery.send_generated_file(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=target,
-            targets=targets,
-            timestamp=timestamp,
-        )
-
     def send_file(
         self,
         *,
@@ -2184,41 +2166,6 @@ class GeneratedFileService:
             self,
             source=source,
             media_info=media_info,
-        )
-
-    def _build_send_followup(self, *, generated: dict[str, Any]) -> str:
-        return generated_files_cards.build_send_followup(self, generated=generated)
-
-    def _build_send_followup_batch(
-        self,
-        *,
-        generated_files: list[dict[str, Any]],
-        unresolved: list[str],
-        missing_on_disk: list[str],
-        ambiguous_targets: list[str] | None = None,
-    ) -> str:
-        return generated_files_cards.build_send_followup_batch(
-            self,
-            generated_files=generated_files,
-            unresolved=unresolved,
-            missing_on_disk=missing_on_disk,
-            ambiguous_targets=ambiguous_targets,
-        )
-
-    def _build_send_followup_missing(
-        self,
-        *,
-        requested_targets: list[str],
-        unresolved: list[str],
-        missing_on_disk: list[str],
-        ambiguous_targets: list[str] | None = None,
-    ) -> str:
-        return generated_files_cards.build_send_followup_missing(
-            self,
-            requested_targets=requested_targets,
-            unresolved=unresolved,
-            missing_on_disk=missing_on_disk,
-            ambiguous_targets=ambiguous_targets,
         )
 
     def _build_send_file_followup_batch(

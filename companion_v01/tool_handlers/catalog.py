@@ -47,7 +47,6 @@ from .generated_media import (
     PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
-    SendGeneratedFileToolHandler,
     SendStickerToolHandler,
     SeparateAudioStemsToolHandler,
     TranscribeMediaToolHandler,
@@ -184,9 +183,6 @@ def build_builtin_tool_handlers(
         ),
         "send_file": SendFileToolHandler(generated_file_service=generated_file_service),
         "convert_media_file": ConvertMediaFileToolHandler(
-            generated_file_service=generated_file_service
-        ),
-        "send_generated_file": SendGeneratedFileToolHandler(
             generated_file_service=generated_file_service
         ),
         "send_sticker": SendStickerToolHandler(
