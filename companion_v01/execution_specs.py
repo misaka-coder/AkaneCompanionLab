@@ -78,9 +78,16 @@ EXEC_MAX_INITIAL_WAIT_SECONDS = 10
 EXEC_DEFAULT_RUN_RETENTION_SECONDS = 600
 EXEC_DEFAULT_MAX_RUNS = 128
 EXEC_DEFAULT_MAX_LOG_BYTES = 64 * 1024
-EXEC_OUTPUT_PAGE_BYTES = 8 * 1024
-EXEC_RUN_RESULT_MAX_BYTES = 16 * 1024
-EXEC_STATUS_RESULT_MAX_BYTES = 16 * 1024
+# The initial result is intentionally generous: most commands should be usable
+# without a mechanical follow-up. Status reads are smaller incremental views.
+EXEC_INITIAL_OUTPUT_MAX_BYTES = 50 * 1024
+EXEC_INITIAL_OUTPUT_MAX_LINES = 2000
+EXEC_STATUS_OUTPUT_MAX_BYTES = 32 * 1024
+EXEC_STATUS_OUTPUT_MAX_LINES = 1000
+# Leave room for JSON escaping, status metadata, and model feedback around the
+# bounded text. These are envelope budgets, not additional visible output.
+EXEC_RUN_RESULT_MAX_BYTES = 128 * 1024
+EXEC_STATUS_RESULT_MAX_BYTES = 96 * 1024
 EXEC_CANCEL_RESULT_MAX_BYTES = 4 * 1024
 
 EXEC_COMMAND_MAX_CHARS = 8192
@@ -150,7 +157,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "只能使用工作区相对路径或已配置的挂载别名，但命令本身仍可能访问该用户有权访问的其他资源。"
         "环境变量由宿主执行器按白名单注入，本工具不接受环境变量。短命令在本轮直接返回最终状态；"
         "超过初始等待窗口仍存活的命令返回 run_id 与 running 状态，之后用 exec_status 查询进度、"
-        "exec_cancel 停止。执行失败、超时或取消都会明确返回对应状态，不会声称成功。"
+        "exec_cancel 停止。普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
+        "按需续读。执行失败、超时或取消都会明确返回对应状态，不会声称成功。"
     ),
     input_schema={
         "type": "object",
@@ -191,6 +199,11 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
             "stdout": {"type": "string"},
             "stderr": {"type": "string"},
             "next_cursor": {"type": _null_or_string(), "maxLength": EXEC_CURSOR_MAX_CHARS},
+            "output_ref": {
+                "type": _null_or_string(),
+                "maxLength": EXEC_RUN_ID_MAX_CHARS + 16,
+                "description": "完整输出已真实保存时返回的不透明引用；绝不包含宿主绝对路径。",
+            },
             "reason": {"type": "string"},
         },
         "required": ["status"],
@@ -212,7 +225,8 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出。每次返回自 cursor 之后的新输出"
         "片段和 next_cursor；任务终止后仍可逐页读完剩余输出，全部读完后 next_cursor 才为 null。"
-        "终态结果保留一段可读时间，之后返回 unknown。"
+        "cursor 用于超长输出或运行中增量观察，普通命令不需要机械翻页。终态结果保留一段可读时间，"
+        "之后返回 unknown。"
     ),
     input_schema={
         "type": "object",
@@ -235,6 +249,11 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
             "exit_code": {"type": _null_or_integer()},
             "tail": {"type": "string", "description": "自 cursor 之后的新输出片段。"},
             "next_cursor": {"type": _null_or_string(), "maxLength": EXEC_CURSOR_MAX_CHARS},
+            "output_ref": {
+                "type": _null_or_string(),
+                "maxLength": EXEC_RUN_ID_MAX_CHARS + 16,
+                "description": "完整输出已真实保存时返回的不透明引用。",
+            },
             "reason": {"type": "string"},
         },
         "required": ["status", "run_id"],

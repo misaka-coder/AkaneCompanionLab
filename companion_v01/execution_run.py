@@ -22,9 +22,12 @@ from .execution_specs import (
     EXEC_DEFAULT_RUN_RETENTION_SECONDS,
     EXEC_MAX_INITIAL_WAIT_SECONDS,
     EXEC_MAX_TIMEOUT_SECONDS,
-    EXEC_OUTPUT_PAGE_BYTES,
+    EXEC_INITIAL_OUTPUT_MAX_BYTES,
+    EXEC_INITIAL_OUTPUT_MAX_LINES,
     EXEC_RUN_TOOL_NAME,
     EXEC_STATUS_TOOL_NAME,
+    EXEC_STATUS_OUTPUT_MAX_BYTES,
+    EXEC_STATUS_OUTPUT_MAX_LINES,
     EXEC_CANCEL_TOOL_NAME,
     EXEC_CURSOR_MAX_CHARS,
     EXEC_RUN_ID_MAX_CHARS,
@@ -106,6 +109,7 @@ class ExecRunStart:
     stdout: str = ""
     stderr: str = ""
     next_cursor: str | None = None
+    output_ref: str | None = None
     reason: str = ""
 
 
@@ -116,6 +120,7 @@ class ExecRunStatus:
     exit_code: int | None = None
     tail: str = ""
     next_cursor: str | None = None
+    output_ref: str | None = None
     reason: str = ""
 
 
@@ -172,6 +177,7 @@ class _OutputSegment:
 class _RunRecord:
     run_id: str
     owner: ExecutionRunOwner
+    output_ref: str | None = None
     status: str = EXEC_STATUS_RUNNING
     exit_code: int | None = None
     reason: str = ""
@@ -191,20 +197,32 @@ class ExecutionRunStore:
         self,
         *,
         max_log_bytes: int = EXEC_DEFAULT_MAX_LOG_BYTES,
-        output_page_bytes: int = EXEC_OUTPUT_PAGE_BYTES,
+        initial_output_bytes: int = EXEC_INITIAL_OUTPUT_MAX_BYTES,
+        initial_output_lines: int = EXEC_INITIAL_OUTPUT_MAX_LINES,
+        status_output_bytes: int = EXEC_STATUS_OUTPUT_MAX_BYTES,
+        status_output_lines: int = EXEC_STATUS_OUTPUT_MAX_LINES,
         run_retention_seconds: int = EXEC_DEFAULT_RUN_RETENTION_SECONDS,
         max_runs: int = EXEC_DEFAULT_MAX_RUNS,
         now: Any = None,
     ) -> None:
         self.max_log_bytes = max(1024, int(max_log_bytes))
-        self.output_page_bytes = max(256, min(self.max_log_bytes, int(output_page_bytes)))
+        self.initial_output_bytes = max(256, min(self.max_log_bytes, int(initial_output_bytes)))
+        self.initial_output_lines = max(1, int(initial_output_lines))
+        self.status_output_bytes = max(256, min(self.max_log_bytes, int(status_output_bytes)))
+        self.status_output_lines = max(1, int(status_output_lines))
         self.retention_seconds = max(1, int(run_retention_seconds))
         self.max_runs = max(1, int(max_runs))
         self._now = now or time.time
         self._lock = threading.RLock()
         self._runs: dict[str, _RunRecord] = {}
 
-    def register(self, run_id: str, *, owner: ExecutionRunOwner) -> None:
+    def register(
+        self,
+        run_id: str,
+        *,
+        owner: ExecutionRunOwner,
+        output_ref: str | None = None,
+    ) -> None:
         clean_id = str(run_id or "").strip()
         if not _RUN_ID_RE.fullmatch(clean_id):
             raise ValueError("invalid_run_id")
@@ -224,7 +242,13 @@ class ExecutionRunStore:
                     del self._runs[terminal[0].run_id]
             if len(self._runs) >= self.max_runs:
                 raise RuntimeError("execution_run_capacity_reached")
-            self._runs[clean_id] = _RunRecord(run_id=clean_id, owner=owner, created_at=now, updated_at=now)
+            self._runs[clean_id] = _RunRecord(
+                run_id=clean_id,
+                owner=owner,
+                output_ref=_normalize_output_ref(output_ref, run_id=clean_id),
+                created_at=now,
+                updated_at=now,
+            )
 
     def append_output(self, run_id: str, stream: str, text: str, *, owner: ExecutionRunOwner) -> None:
         data = str(text or "").encode("utf-8")
@@ -304,7 +328,12 @@ class ExecutionRunStore:
             record = self._owned_record_locked(run_id, owner)
             if record is None or self._evict_if_expired_locked(record):
                 return None
-            stdout, stderr, _tail, page_end = self._page_locked(record, record.window_start_bytes)
+            stdout, stderr, _tail, page_end = self._page_locked(
+                record,
+                record.window_start_bytes,
+                max_bytes=self.initial_output_bytes,
+                max_lines=self.initial_output_lines,
+            )
             next_cursor = self._next_cursor_locked(record, page_end)
             return ExecRunStart(
                 status=record.status,
@@ -313,6 +342,7 @@ class ExecutionRunStore:
                 stdout=stdout,
                 stderr=stderr,
                 next_cursor=next_cursor,
+                output_ref=record.output_ref,
                 reason="output_compacted" if record.window_start_bytes else record.reason,
             )
 
@@ -340,7 +370,12 @@ class ExecutionRunStore:
                 requested = record.absolute_end_bytes
                 invalid_cursor = True
 
-            _stdout, _stderr, tail, page_end = self._page_locked(record, requested)
+            _stdout, _stderr, tail, page_end = self._page_locked(
+                record,
+                requested,
+                max_bytes=self.status_output_bytes,
+                max_lines=self.status_output_lines,
+            )
             reason = "invalid_cursor" if invalid_cursor else "output_compacted" if compacted else record.reason
             return ExecRunStatus(
                 status=record.status,
@@ -348,6 +383,7 @@ class ExecutionRunStore:
                 exit_code=record.exit_code,
                 tail=tail,
                 next_cursor=self._next_cursor_locked(record, page_end),
+                output_ref=record.output_ref,
                 reason=reason,
             )
 
@@ -390,10 +426,18 @@ class ExecutionRunStore:
             record.retained_bytes -= dropped
             over = record.retained_bytes - self.max_log_bytes
 
-    def _page_locked(self, record: _RunRecord, absolute_offset: int) -> tuple[str, str, str, int]:
+    def _page_locked(
+        self,
+        record: _RunRecord,
+        absolute_offset: int,
+        *,
+        max_bytes: int,
+        max_lines: int,
+    ) -> tuple[str, str, str, int]:
         local_skip = max(0, absolute_offset - record.window_start_bytes)
         absolute_position = record.window_start_bytes
-        remaining = self.output_page_bytes
+        remaining_bytes = max(1, int(max_bytes))
+        remaining_lines = max(1, int(max_lines))
         stdout: list[bytes] = []
         stderr: list[bytes] = []
         ordered: list[bytes] = []
@@ -406,16 +450,18 @@ class ExecutionRunStore:
                 continue
             start = _utf8_boundary_at_or_after(segment.data, local_skip)
             available = segment.data[start:]
-            take = _utf8_prefix_at_most(available, remaining)
+            take = _utf8_prefix_at_most(available, remaining_bytes)
+            take = min(take, _prefix_through_newlines(available[:take], remaining_lines))
             if take <= 0:
                 break
             target = stdout if segment.stream == "stdout" else stderr
             target.append(available[:take])
             ordered.append(available[:take])
             absolute_position += start + take
-            remaining -= take
+            remaining_bytes -= take
+            remaining_lines -= available[:take].count(b"\n")
             local_skip = 0
-            if take < len(available) or remaining <= 0:
+            if take < len(available) or remaining_bytes <= 0 or remaining_lines <= 0:
                 break
 
         return (
@@ -455,8 +501,32 @@ def _utf8_prefix_at_least(data: bytes, minimum: int) -> int:
     return end
 
 
+def _prefix_through_newlines(data: bytes, max_newlines: int) -> int:
+    """Return a prefix containing at most ``max_newlines`` line endings."""
+
+    if max_newlines <= 0:
+        return 0
+    position = -1
+    for _ in range(max_newlines):
+        position = data.find(b"\n", position + 1)
+        if position < 0:
+            return len(data)
+    next_newline = data.find(b"\n", position + 1)
+    return len(data) if next_newline < 0 else position + 1
+
+
 def _unknown_status(run_id: str) -> ExecRunStatus:
     return ExecRunStatus(status=EXEC_STATUS_UNKNOWN, run_id=run_id, reason="run_not_found")
+
+
+def _normalize_output_ref(value: str | None, *, run_id: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    expected = f"runlog:{run_id}"
+    if text != expected:
+        raise ValueError("invalid_execution_output_ref")
+    return expected
 
 
 def _preview(text: str, *, limit: int = 800) -> str:
@@ -465,15 +535,17 @@ def _preview(text: str, *, limit: int = 800) -> str:
 
 
 def _unknown_mapped(reason: str, *, run_start: ExecRunStart | None = None) -> ExecMappedResult:
-    run_id = str(getattr(run_start, "run_id", "") or "")
+    candidate_run_id = str(getattr(run_start, "run_id", "") or "").strip()
+    run_id = candidate_run_id if _RUN_ID_RE.fullmatch(candidate_run_id) else ""
     clean_reason = str(reason or "execution_unknown")
     data = {
         "status": EXEC_STATUS_EXECUTION_UNKNOWN,
         "run_id": run_id,
         "exit_code": getattr(run_start, "exit_code", None),
-        "stdout": str(getattr(run_start, "stdout", "") or ""),
-        "stderr": str(getattr(run_start, "stderr", "") or ""),
-        "next_cursor": getattr(run_start, "next_cursor", None),
+        "stdout": "",
+        "stderr": "",
+        "next_cursor": None,
+        "output_ref": None,
         "reason": clean_reason,
     }
     return ExecMappedResult(
@@ -513,10 +585,15 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
     output_bytes = len(str(run_start.stdout or "").encode("utf-8")) + len(
         str(run_start.stderr or "").encode("utf-8")
     )
-    if output_bytes > EXEC_OUTPUT_PAGE_BYTES:
+    output_lines = str(run_start.stdout or "").count("\n") + str(run_start.stderr or "").count("\n")
+    if output_bytes > EXEC_INITIAL_OUTPUT_MAX_BYTES or output_lines > EXEC_INITIAL_OUTPUT_MAX_LINES:
         return _unknown_mapped("execution_output_page_too_large", run_start=run_start)
     if run_start.next_cursor is not None and parse_cursor(run_start.next_cursor, run_id=run_id) is None:
         return _unknown_mapped("invalid_execution_cursor", run_start=run_start)
+    try:
+        output_ref = _normalize_output_ref(run_start.output_ref, run_id=run_id)
+    except ValueError:
+        return _unknown_mapped("invalid_execution_output_ref", run_start=run_start)
     if status == EXEC_STATUS_RUNNING and run_start.next_cursor is None:
         return _unknown_mapped("running_cursor_required", run_start=run_start)
 
@@ -527,13 +604,20 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
         "stdout": str(run_start.stdout or ""),
         "stderr": str(run_start.stderr or ""),
         "next_cursor": run_start.next_cursor,
+        "output_ref": output_ref,
         "reason": reason,
     }
     event = {"type": "capability_execution_result", "tool_type": EXEC_RUN_TOOL_NAME, "status": status}
 
     if status == EXEC_STATUS_COMPLETED:
         followup = "输出尚未读完，请按 next_cursor 调用 exec_status 继续读取。" if run_start.next_cursor else ""
-        compacted = "较早输出已压缩丢弃。" if reason == "output_compacted" else ""
+        compacted = (
+            "较早输出不在当前内存窗口，可按 output_ref 重新读取完整日志。"
+            if reason == "output_compacted" and output_ref
+            else "较早输出已不在当前可读窗口。"
+            if reason == "output_compacted"
+            else ""
+        )
         feedback = f"命令已执行完成（exit_code=0）。{_preview(run_start.stdout)}{compacted}{followup}"
         return ExecMappedResult("ok", status, reason, feedback, data, event)
     if status == EXEC_STATUS_RUNNING:
@@ -643,10 +727,18 @@ def execute_exec_status(
         EXEC_STATUS_UNKNOWN,
     }:
         return _status_unknown_result(clean_run_id, "invalid_status_value", execution_unknown=True)
-    if len(str(status_result.tail or "").encode("utf-8")) > EXEC_OUTPUT_PAGE_BYTES:
+    status_tail = str(status_result.tail or "")
+    if (
+        len(status_tail.encode("utf-8")) > EXEC_STATUS_OUTPUT_MAX_BYTES
+        or status_tail.count("\n") > EXEC_STATUS_OUTPUT_MAX_LINES
+    ):
         return _status_unknown_result(clean_run_id, "status_output_page_too_large", execution_unknown=True)
     if status_result.next_cursor is not None and parse_cursor(status_result.next_cursor, run_id=clean_run_id) is None:
         return _status_unknown_result(clean_run_id, "invalid_status_cursor", execution_unknown=True)
+    try:
+        output_ref = _normalize_output_ref(status_result.output_ref, run_id=clean_run_id)
+    except ValueError:
+        return _status_unknown_result(clean_run_id, "invalid_status_output_ref", execution_unknown=True)
     if status == EXEC_STATUS_RUNNING and status_result.next_cursor is None:
         return _status_unknown_result(clean_run_id, "running_cursor_required", execution_unknown=True)
     if status == EXEC_STATUS_COMPLETED and status_result.exit_code != 0:
@@ -658,6 +750,7 @@ def execute_exec_status(
         "exit_code": status_result.exit_code,
         "tail": str(status_result.tail or ""),
         "next_cursor": status_result.next_cursor,
+        "output_ref": output_ref,
         "reason": str(status_result.reason or ""),
     }
     event = {"type": "capability_execution_result", "tool_type": EXEC_STATUS_TOOL_NAME, "status": status}
@@ -720,7 +813,15 @@ def execute_exec_cancel(
 
 def _status_unknown_result(run_id: str, reason: str, *, execution_unknown: bool = False) -> ExecMappedResult:
     status = EXEC_STATUS_EXECUTION_UNKNOWN if execution_unknown else EXEC_STATUS_UNKNOWN
-    data = {"status": status, "run_id": run_id, "exit_code": None, "tail": "", "next_cursor": None, "reason": reason}
+    data = {
+        "status": status,
+        "run_id": run_id,
+        "exit_code": None,
+        "tail": "",
+        "next_cursor": None,
+        "output_ref": None,
+        "reason": reason,
+    }
     return ExecMappedResult(
         "error",
         status,

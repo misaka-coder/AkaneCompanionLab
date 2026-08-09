@@ -25,7 +25,8 @@ from companion_v01.execution_run import (
 from companion_v01.execution_specs import (
     EXEC_CANCEL_RESULT_MAX_BYTES,
     EXEC_CANCEL_TOOL_SPEC,
-    EXEC_OUTPUT_PAGE_BYTES,
+    EXEC_INITIAL_OUTPUT_MAX_BYTES,
+    EXEC_INITIAL_OUTPUT_MAX_LINES,
     EXEC_RUN_RESULT_MAX_BYTES,
     EXEC_RUN_TOOL_SPEC,
     EXEC_STATUS_CANCELLED,
@@ -33,6 +34,8 @@ from companion_v01.execution_specs import (
     EXEC_STATUS_EXECUTION_UNKNOWN,
     EXEC_STATUS_FAILED,
     EXEC_STATUS_RESULT_MAX_BYTES,
+    EXEC_STATUS_OUTPUT_MAX_BYTES,
+    EXEC_STATUS_OUTPUT_MAX_LINES,
     EXEC_STATUS_RUNNING,
     EXEC_STATUS_TIMED_OUT,
     EXEC_STATUS_UNAVAILABLE,
@@ -110,10 +113,23 @@ class ExecutionSpecsTests(unittest.TestCase):
 
 
 class ExecutionRunStoreTests(unittest.TestCase):
-    def _store(self, *, max_log_bytes=64 * 1024, page_bytes=EXEC_OUTPUT_PAGE_BYTES, retention=600, clock=None):
+    def _store(
+        self,
+        *,
+        max_log_bytes=64 * 1024,
+        initial_bytes=EXEC_INITIAL_OUTPUT_MAX_BYTES,
+        initial_lines=EXEC_INITIAL_OUTPUT_MAX_LINES,
+        status_bytes=EXEC_STATUS_OUTPUT_MAX_BYTES,
+        status_lines=EXEC_STATUS_OUTPUT_MAX_LINES,
+        retention=600,
+        clock=None,
+    ):
         return ExecutionRunStore(
             max_log_bytes=max_log_bytes,
-            output_page_bytes=page_bytes,
+            initial_output_bytes=initial_bytes,
+            initial_output_lines=initial_lines,
+            status_output_bytes=status_bytes,
+            status_output_lines=status_lines,
             run_retention_seconds=retention,
             now=clock or time.time,
         )
@@ -159,7 +175,7 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertEqual(store.read(run_id, owner=OWNER).status, EXEC_STATUS_CANCELLED)
 
     def test_incremental_cursor_is_run_bound(self) -> None:
-        store = self._store(page_bytes=1024)
+        store = self._store(status_bytes=1024)
         first_run, second_run = new_run_id(), new_run_id()
         store.register(first_run, owner=OWNER)
         store.register(second_run, owner=OWNER)
@@ -173,7 +189,7 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertEqual(wrong.tail, "two")
 
     def test_repeated_compaction_uses_monotonic_absolute_cursor(self) -> None:
-        store = self._store(max_log_bytes=1024, page_bytes=1024)
+        store = self._store(max_log_bytes=1024, status_bytes=1024)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
         store.append_output(run_id, "stdout", "A" * 512, owner=OWNER)
@@ -193,7 +209,7 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertEqual(parse_cursor(first.next_cursor, run_id=run_id), 3072)
 
     def test_unicode_paging_and_compaction_never_split_utf8(self) -> None:
-        store = self._store(max_log_bytes=1024, page_bytes=257)
+        store = self._store(max_log_bytes=1024, status_bytes=257)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
         store.append_output(run_id, "stdout", "你" * 500, owner=OWNER)
@@ -214,7 +230,7 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertLessEqual(len(retained.encode("utf-8")), 1024)
 
     def test_terminal_keeps_cursor_until_all_pages_are_read(self) -> None:
-        store = self._store(max_log_bytes=4096, page_bytes=512)
+        store = self._store(max_log_bytes=4096, status_bytes=512)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
         store.append_output(run_id, "stdout", "X" * 1300, owner=OWNER)
@@ -235,7 +251,7 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertIsNone(cursors[-1])
 
     def test_short_terminal_output_larger_than_window_is_not_silent(self) -> None:
-        store = self._store(max_log_bytes=1024, page_bytes=512)
+        store = self._store(max_log_bytes=1024, initial_bytes=512, status_bytes=512)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
         store.append_output(run_id, "stdout", "A" * 2048, owner=OWNER)
@@ -249,13 +265,68 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertIsNotNone(first.next_cursor)
 
     def test_output_order_is_preserved_across_streams(self) -> None:
-        store = self._store(page_bytes=1024)
+        store = self._store(status_bytes=1024)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
         store.append_output(run_id, "stdout", "out1\n", owner=OWNER)
         store.append_output(run_id, "stderr", "err1\n", owner=OWNER)
         store.append_output(run_id, "stdout", "out2\n", owner=OWNER)
         self.assertEqual(store.read(run_id, owner=OWNER).tail, "out1\nerr1\nout2\n")
+
+    def test_ordinary_40k_result_is_returned_once_without_cursor(self) -> None:
+        store = self._store()
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        expected = "X" * (40 * 1024)
+        store.append_output(run_id, "stdout", expected, owner=OWNER)
+        store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
+        snapshot = store.window_snapshot(run_id, owner=OWNER)
+        self.assertEqual(snapshot.stdout, expected)
+        self.assertIsNone(snapshot.next_cursor)
+
+    def test_result_over_50k_gets_large_preview_then_cursor(self) -> None:
+        store = self._store()
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        store.append_output(run_id, "stdout", "X" * (55 * 1024), owner=OWNER)
+        store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
+        snapshot = store.window_snapshot(run_id, owner=OWNER)
+        self.assertEqual(len(snapshot.stdout.encode("utf-8")), EXEC_INITIAL_OUTPUT_MAX_BYTES)
+        self.assertIsNotNone(snapshot.next_cursor)
+        remainder = store.read(run_id, cursor=snapshot.next_cursor, owner=OWNER)
+        self.assertEqual(len(remainder.tail.encode("utf-8")), 5 * 1024)
+        self.assertIsNone(remainder.next_cursor)
+
+    def test_line_limit_triggers_cursor_even_when_bytes_are_small(self) -> None:
+        store = self._store()
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        store.append_output(run_id, "stdout", "x\n" * (EXEC_INITIAL_OUTPUT_MAX_LINES + 1), owner=OWNER)
+        store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
+        snapshot = store.window_snapshot(run_id, owner=OWNER)
+        self.assertEqual(snapshot.stdout.count("\n"), EXEC_INITIAL_OUTPUT_MAX_LINES)
+        self.assertIsNotNone(snapshot.next_cursor)
+
+    def test_output_ref_is_opaque_and_only_present_when_provider_registered_it(self) -> None:
+        store = self._store(max_log_bytes=1024, initial_bytes=512)
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER, output_ref=f"runlog:{run_id}")
+        store.append_output(run_id, "stdout", "X" * 2048, owner=OWNER)
+        snapshot = store.window_snapshot(run_id, owner=OWNER)
+        self.assertEqual(snapshot.output_ref, f"runlog:{run_id}")
+        self.assertNotIn("\\", snapshot.output_ref)
+        self.assertNotIn("/", snapshot.output_ref)
+        with self.assertRaises(ValueError):
+            store.register(new_run_id(), owner=OWNER, output_ref="C:\\private\\run.log")
+
+    def test_compaction_without_output_ref_does_not_claim_recovery(self) -> None:
+        store = self._store(max_log_bytes=1024, initial_bytes=512)
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        store.append_output(run_id, "stdout", "X" * 2048, owner=OWNER)
+        snapshot = store.window_snapshot(run_id, owner=OWNER)
+        self.assertEqual(snapshot.reason, "output_compacted")
+        self.assertIsNone(snapshot.output_ref)
 
     def test_store_capacity_evicts_terminal_before_rejecting_running(self) -> None:
         store = ExecutionRunStore(max_runs=2)
@@ -335,6 +406,18 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(mapped.event_status, EXEC_STATUS_COMPLETED)
         self.assertEqual(mapped.data["stdout"], "done")
 
+    def test_full_initial_budget_survives_result_mapping(self) -> None:
+        store = self._store()
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        expected = ("line\n" * 1000) + ("X" * (EXEC_INITIAL_OUTPUT_MAX_BYTES - 5000))
+        store.append_output(run_id, "stdout", expected, owner=OWNER)
+        store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
+        mapped = map_exec_run_outcome(store.window_snapshot(run_id, owner=OWNER))
+        self.assertEqual(mapped.envelope_status, "ok")
+        self.assertEqual(mapped.data["stdout"], expected)
+        self.assertIsNone(mapped.data["next_cursor"])
+
     def test_long_command_returns_running_with_cursor(self) -> None:
         run_id = new_run_id()
         start = ExecRunStart(status=EXEC_STATUS_RUNNING, run_id=run_id, next_cursor=make_cursor(run_id, 0))
@@ -398,7 +481,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(store.read(run_id, owner=OWNER).status, EXEC_STATUS_CANCELLED)
 
     def test_status_wrapper_preserves_pages_and_structures_unknown(self) -> None:
-        store = ExecutionRunStore(output_page_bytes=512)
+        store = ExecutionRunStore(status_output_bytes=512)
         provider = _FakeExecutionProvider(store)
         run_id = new_run_id()
         store.register(run_id, owner=OWNER)
@@ -426,10 +509,22 @@ class ExecOrchestrationTests(unittest.TestCase):
 
         class Oversized(_FakeExecutionProvider):
             def status(self, **_kwargs):
-                return ExecRunStatus(EXEC_STATUS_RUNNING, run_id, tail="X" * (EXEC_OUTPUT_PAGE_BYTES + 1))
+                return ExecRunStatus(EXEC_STATUS_RUNNING, run_id, tail="X" * (EXEC_STATUS_OUTPUT_MAX_BYTES + 1))
 
         oversized = execute_exec_status(Oversized(self._store()), owner=OWNER, run_id=run_id)
         self.assertEqual(oversized.event_status, EXEC_STATUS_EXECUTION_UNKNOWN)
+
+        class TooManyLines(_FakeExecutionProvider):
+            def status(self, **_kwargs):
+                return ExecRunStatus(
+                    EXEC_STATUS_RUNNING,
+                    run_id,
+                    tail="x\n" * (EXEC_STATUS_OUTPUT_MAX_LINES + 1),
+                    next_cursor=make_cursor(run_id, 0),
+                )
+
+        too_many_lines = execute_exec_status(TooManyLines(self._store()), owner=OWNER, run_id=run_id)
+        self.assertEqual(too_many_lines.event_status, EXEC_STATUS_EXECUTION_UNKNOWN)
 
     def test_cancel_wrapper_only_accepts_confirmed_success(self) -> None:
         store = self._store()
@@ -489,7 +584,12 @@ class ExecOrchestrationTests(unittest.TestCase):
             ExecRunStart(EXEC_STATUS_RUNNING, ""),
             ExecRunStart(EXEC_STATUS_RUNNING, run_id),
             ExecRunStart(EXEC_STATUS_COMPLETED, run_id, exit_code=9),
-            ExecRunStart(EXEC_STATUS_COMPLETED, run_id, exit_code=0, stdout="X" * (EXEC_OUTPUT_PAGE_BYTES + 1)),
+            ExecRunStart(
+                EXEC_STATUS_COMPLETED,
+                run_id,
+                exit_code=0,
+                stdout="X" * (EXEC_INITIAL_OUTPUT_MAX_BYTES + 1),
+            ),
             ExecRunStart(EXEC_STATUS_RUNNING, run_id, next_cursor="bad"),
         )
         for start in cases:
