@@ -355,6 +355,49 @@ class TrustedLocalExecutorTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
 
+    def test_utf8_multibyte_output_survives_read_chunk_boundaries(self) -> None:
+        executor = self._executor()
+        unit = "中文你好-😀"
+        command = 'python -c "import sys; sys.stdout.write(\'\\u4e2d\\u6587\\u4f60\\u597d-\\U0001f600\' * 5000)"'
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIsNotNone(start.next_cursor)
+        recovered = start.stdout
+        cursor = start.next_cursor
+        while cursor is not None:
+            page = executor.status(owner=self.owner, run_id=start.run_id, cursor=cursor)
+            recovered += page.tail
+            cursor = page.next_cursor
+        self.assertEqual(recovered, unit * 5000)
+        log_path = self.run_log_dir / f"{start.run_id}.log"
+        raw = log_path.read_bytes()
+        self.assertEqual(raw, (unit * 5000).encode("utf-8"))
+        self.assertNotIn(b"\xef\xbf\xbd", raw)
+
+    def test_secret_and_path_are_redacted_for_model_but_kept_in_private_log(self) -> None:
+        executor = self._executor()
+        command = (
+            'python -c "import sys; print(\'api_key=supersecret123\'); '
+            "print('C:\\\\Users\\\\alice\\\\private.txt')"
+            '"'
+        )
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertNotIn("supersecret123", mapped.model_feedback)
+        self.assertNotIn("C:\\Users\\alice", mapped.model_feedback)
+        self.assertNotIn("supersecret123", str(mapped.data))
+        log = (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("supersecret123", log)
+        self.assertIn("private.txt", log)
+        # The run is terminal; the watcher closes its log handle shortly after.
+        # Wait so the tempdir cleanup never races an open handle on Windows.
+        deadline = time.monotonic() + 5
+        while start.run_id in executor._logs and time.monotonic() < deadline:
+            time.sleep(0.01)
+
     def test_log_pruning_never_removes_an_active_run_log(self) -> None:
         executor = self._executor(run_log_retention_seconds=1)
         start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)

@@ -7349,5 +7349,292 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
 
+class _CaptureBatchManager:
+    """Stub MemcoreManager that records exactly what the engine projects."""
+
+    enabled = True
+
+    def __init__(self) -> None:
+        self.exchanges: list[dict[str, object]] = []
+
+    def record_tool_batch(self, **kwargs) -> dict[str, object]:
+        self.exchanges = list(kwargs.get("exchanges") or [])
+        return {"ok": True, "status": "completed", "exchanges": []}
+
+
+def _exec_trace_result(status: str, *, followup: str, tool_type: str = "exec_run") -> ToolExecutionResult:
+    return ToolExecutionResult(
+        tool_type=tool_type,
+        stream_events=[
+            {
+                "type": "capability_execution_result",
+                "tool_type": tool_type,
+                "status": status,
+            }
+        ],
+        followup_context=followup,
+        state_updates={
+            "capability_execution": {
+                "tool_type": tool_type,
+                "status": status,
+                "run_id": "execrun_" + "1" * 32,
+                "output_ref": "runlog:execrun_" + "1" * 32,
+            }
+        },
+    )
+
+
+class MemcoreExecClosedLoopTests(unittest.TestCase):
+    """Phase 5.4: exec_run exchanges settle through the same MemCore path as any tool."""
+
+    def _record(
+        self,
+        manager: Any,
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        *,
+        call_id: str = "call_exec_1",
+    ) -> list[dict[str, object]]:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = manager
+        engine._record_memcore_tool_batch(
+            items=items,
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+            now_ts=100,
+            current_user_source_id="current-query",
+            memcore_turn_id="turn-1",
+            recorded_tool_call_ids=set(),
+        )
+        return manager.exchanges
+
+    def _exec_item(
+        self,
+        tool_result: ToolExecutionResult,
+        *,
+        tool_call: dict[str, Any] | None = None,
+        shaped: str = "",
+    ) -> tuple[dict[str, Any], ToolExecutionResult, str, str]:
+        call = tool_call or {
+            "type": "exec_run",
+            "command": "echo hi",
+            TOOL_INVOCATION_ID_FIELD: "call_exec_1",
+        }
+        return (
+            call,
+            tool_result,
+            shaped or str(tool_result.followup_context or ""),
+            "",
+        )
+
+    def test_completed_exec_run_enters_batch_with_real_result(self) -> None:
+        manager = _CaptureBatchManager()
+        followup = "命令已执行完成（exit_code=0）。\nstdout：\nhi"
+        exchanges = self._record(
+            manager,
+            [self._exec_item(_exec_trace_result("completed", followup=followup))],
+        )
+        self.assertEqual(len(exchanges), 1)
+        exchange = exchanges[0]
+        self.assertEqual(exchange["tool_name"], "exec_run")
+        self.assertEqual(exchange["result"], followup)
+        self.assertEqual(exchange["result_status"], "success")
+
+    def test_running_exec_run_is_not_projected_as_error(self) -> None:
+        manager = _CaptureBatchManager()
+        exchanges = self._record(
+            manager,
+            [
+                self._exec_item(
+                    _exec_trace_result(
+                        "running",
+                        followup="命令仍在执行中（run_id=execrun_...），尚未完成。",
+                    )
+                )
+            ],
+        )
+        self.assertEqual(exchanges[0]["result_status"], "success")
+
+    def test_exec_terminal_statuses_are_preserved_in_memcore_observation(self) -> None:
+        cases = {
+            "failed": "命令执行失败（exit_code=7）。请明确说明这次没有完成。",
+            "timed_out": "命令执行超时，执行器报告进程组已终止。",
+            "cancelled": "命令已被执行器确认取消。",
+            "execution_unknown": "命令执行结果无法确认。",
+        }
+        for status, followup in cases.items():
+            with self.subTest(status=status):
+                manager = _CaptureBatchManager()
+                exchanges = self._record(
+                    manager,
+                    [self._exec_item(_exec_trace_result(status, followup=followup))],
+                )
+                self.assertEqual(exchanges[0]["result_status"], status)
+                self.assertIn(followup, str(exchanges[0]["result"]))
+
+    def test_completed_exec_run_keeps_real_state_after_assistant_final(self) -> None:
+        """After settlement the observation still carries the exec terminal status."""
+
+        from memcore import memory_system
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(config, "MEMCORE_OPERATION_PROJECTION_POLICY", "compact_after_terminal"):
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "exec.sqlite3",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                )
+                try:
+                    opened = manager.begin_input_turn(
+                        {"source_id": "user-exec", "content": "跑个命令", "timestamp": 100},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    turn_id = str(opened.get("turn_id") or "")
+                    batch = manager.record_tool_batch(
+                        exchanges=[
+                            {
+                                "tool_name": "exec_run",
+                                "tool_call_id": "call-exec-1",
+                                "tool_input": {"command": "echo hi"},
+                                "result": "命令已执行完成（exit_code=0）。\nstdout：\nhi",
+                                "source": "exec_run",
+                                "timestamp": 101,
+                                "source_id_prefix": "tooltrace-exec",
+                                "result_status": "success",
+                            }
+                        ],
+                        turn_id=turn_id,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    self.assertTrue(batch["ok"], batch)
+                    observation_sid = str(batch["exchanges"][0]["tool_result_source_id"] or "")
+                    manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    completed = manager.complete_input_turn(
+                        turn_id=turn_id,
+                        assistant_record={"source_id": "assistant-final", "content": "完成了。", "timestamp": 102},
+                        memory_metadata={},
+                        provider_output_raw="完成了。",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        provider_profile="openai",
+                        provider_projection={"role": "assistant", "content": "完成了。"},
+                    )
+                    self.assertTrue(completed["ok"], completed)
+                    system = manager._get_system(
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    entries = manager._store.get_turn_entries(namespace=system.namespace, turn_id=turn_id)
+                    observation = next(
+                        (entry for entry in entries if str(getattr(entry, "source_id", "") or "") == observation_sid),
+                        None,
+                    )
+                    self.assertIsNotNone(observation)
+                    self.assertEqual(str(observation.kind or ""), "tool.exec_run.result")
+                    self.assertEqual(
+                        str((observation.trace_metadata or {}).get("status") or ""),
+                        "success",
+                    )
+                    self.assertNotIn("C:\\", json.dumps(dict(observation.payload or {}), ensure_ascii=False))
+                    self.assertNotIn("secret", json.dumps(dict(observation.payload or {}), ensure_ascii=False))
+                finally:
+                    manager.close()
+
+    def test_long_exec_run_result_becomes_reloadable_card_after_assistant_final(self) -> None:
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        long_output = "BEGIN|" + ("x" * 1200) + "|END"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(config, "MEMCORE_OPERATION_PROJECTION_POLICY", "compact_after_terminal"):
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "exec_card.sqlite3",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                )
+                try:
+                    opened = manager.begin_input_turn(
+                        {"source_id": "user-exec-long", "content": "跑一个长命令", "timestamp": 100},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    turn_id = str(opened.get("turn_id") or "")
+                    batch = manager.record_tool_batch(
+                        exchanges=[
+                            {
+                                "tool_name": "exec_run",
+                                "tool_call_id": "call-exec-long",
+                                "tool_input": {"command": "gen"},
+                                "result": f"命令已执行完成（exit_code=0）。\nstdout：\n{long_output}",
+                                "source": "exec_run",
+                                "timestamp": 101,
+                                "source_id_prefix": "tooltrace-exec-long",
+                                "result_status": "success",
+                            }
+                        ],
+                        turn_id=turn_id,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    self.assertTrue(batch["ok"], batch)
+                    manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    completed = manager.complete_input_turn(
+                        turn_id=turn_id,
+                        assistant_record={"source_id": "assistant-long", "content": "跑完了。", "timestamp": 102},
+                        memory_metadata={},
+                        provider_output_raw="跑完了。",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        provider_profile="openai",
+                        provider_projection={"role": "assistant", "content": "跑完了。"},
+                    )
+                    self.assertTrue(completed["ok"], completed)
+                    projection = manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    tool_payloads = [m for m in projection.get("payloads") or [] if m.get("role") == "tool"]
+                    self.assertEqual(len(tool_payloads), 1)
+                    content = str(tool_payloads[0].get("content") or "")
+                    self.assertIn("[compact_reloadable]", content)
+                    self.assertIn("tool: exec_run", content)
+                    self.assertIn("status: success", content)
+                    self.assertIn("call_id: call-exec-long", content)
+                    self.assertIn("reload: open_memory(memory_id=", content)
+                    self.assertNotIn(long_output, content)
+                    self.assertNotIn("BEGIN|", content)
+                finally:
+                    manager.close()
+
+
 if __name__ == "__main__":
     unittest.main()

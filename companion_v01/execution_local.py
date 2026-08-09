@@ -35,6 +35,7 @@ temporary workspace.
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import signal
@@ -567,14 +568,23 @@ class TrustedLocalExecutor(ExecutionProvider):
         return not any(reader.is_alive() for reader in readers)
 
     def _read_pipe(self, run_id: str, owner: ExecutionRunOwner, pipe: Any, stream: str) -> None:
+        # Decode with an incremental UTF-8 decoder so a multi-byte character
+        # split across two read chunks is never replaced by U+FFFD (the decoder
+        # buffers incomplete sequences internally). The store and the run log
+        # must keep the same byte stream, otherwise cursor offsets and the
+        # persisted output_ref diverge from the visible text.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
             while True:
                 chunk = pipe.read(_READ_CHUNK_BYTES)
                 if not chunk:
                     break
-                text = chunk.decode("utf-8", errors="replace")
+                text = decoder.decode(chunk, final=False)
                 if text:
                     self._record_output(run_id, owner, stream, text)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                self._record_output(run_id, owner, stream, tail)
         except Exception:
             with self._lock:
                 self._capture_failures.add(run_id)

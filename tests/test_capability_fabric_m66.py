@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import shutil
 import socket
@@ -423,6 +424,61 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                     worker.join(timeout=5)
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(result_box["result"].status, expected_status)
+
+    def test_satellite_native_schema_is_byte_identical_across_offline_online_reconnect(self) -> None:
+        """Same ClientMode keeps an identical tools schema regardless of readiness.
+
+        Offline, online, disconnect and reconnect must project the same native
+        tool JSON (order + bytes). Only execution receipts / readiness change.
+        """
+        from companion_v01.tool_handlers.adapters import DesktopSatelliteToolHandler
+
+        clock = MutableClock()
+        service = DesktopSatelliteService(
+            instance_id="instance-a",
+            token="device-secret",
+            clock=clock,
+        )
+        handlers = {
+            tool_id: DesktopSatelliteToolHandler(
+                tool_id=tool_id,
+                offer_source=service,
+            )
+            for tool_id in (spec.capability_id for spec in DESKTOP_SATELLITE_TOOL_SPECS)
+        }
+        tool_ids = tuple(spec.capability_id for spec in DESKTOP_SATELLITE_TOOL_SPECS)
+
+        def schema_dump() -> str:
+            specs = build_openai_native_tool_specs(handlers, allowed_tool_names=set(tool_ids))
+            return json.dumps([dict(spec) for spec in specs], ensure_ascii=False, sort_keys=False)
+
+        offline = schema_dump()
+        self.assertTrue(offline)
+
+        with TestClient(self._app(service)) as client:
+            with client.websocket_connect(
+                "/capabilities/satellite/ws",
+                headers={"Authorization": "Bearer device-secret"},
+            ) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("instance-a"))
+                websocket.receive_json()
+                online = schema_dump()
+                self.assertEqual(online, offline)
+
+            # Disconnect: readiness drops, schema must stay identical.
+            self.assertEqual(service.diagnostics()["status"], "offline")
+            self.assertEqual(schema_dump(), offline)
+
+            # Reconnect: schema still byte-identical.
+            with client.websocket_connect(
+                "/capabilities/satellite/ws",
+                headers={"Authorization": "Bearer device-secret"},
+            ) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("instance-a"))
+                websocket.receive_json()
+                self.assertEqual(schema_dump(), offline)
 
     def test_device_secret_is_deployment_managed_and_not_a_public_setting(self) -> None:
         spec = get_spec("AKANE_DESKTOP_SATELLITE_TOKEN")

@@ -57,6 +57,7 @@ from .memory_compaction_service import MemoryCompactionService
 from .memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from .memory_timeline import MemoryTimelineService
 from .client_protocol import ClientCapability, ClientMode, ClientProtocolContext
+from .execution_specs import EXEC_TOOL_SPEC_BY_ID
 from .care_runtime import CareModulePort, normalize_desktop_care_config
 from .desktop_pet_character_resources import load_character_care_config
 from .desktop_music_timeline import DesktopMusicTimelineService
@@ -6745,12 +6746,22 @@ class AkaneMemoryEngine:
         return False
 
     def _tool_result_trace_status(self, tool_result: ToolExecutionResult) -> str:
+        tool_type = str(getattr(tool_result, "tool_type", "") or "").strip()
         for event in getattr(tool_result, "stream_events", []) or []:
             if not isinstance(event, dict):
                 continue
             status = str(event.get("status") or event.get("state") or "").strip().lower()
             if status in {"canceled", "cancelled"}:
                 return "cancelled"
+            # Preserve the exec command's real terminal state in the MemCore
+            # observation instead of collapsing it to a generic error/success,
+            # so a timed-out or unconfirmed command is never remembered as done.
+            if (
+                tool_type in EXEC_TOOL_SPEC_BY_ID
+                and str(event.get("type") or "").strip() == "capability_execution_result"
+                and status in {"failed", "timed_out", "execution_unknown"}
+            ):
+                return status
         return "error" if self._tool_result_is_error(tool_result) else "success"
 
     def _record_tool_result_artifacts_in_task_workspace(
@@ -7018,7 +7029,19 @@ class AkaneMemoryEngine:
 
             data_root = Path(getattr(config, "DATA_ROOT", "users_data"))
             state_dir = Path(getattr(config, "STATE_DIR", "users_data"))
-            workspace_root = Path(getattr(config, "EXECUTION_WORKSPACE_ROOT", "") or (data_root / "execution_workspace"))
+            configured_workspace = str(getattr(config, "EXECUTION_WORKSPACE_ROOT", "") or "").strip()
+            if configured_workspace:
+                workspace_root = Path(configured_workspace)
+            else:
+                # Default workspace inside the Akane data root. Auto-created only
+                # in this host-owned default; an explicitly configured path is
+                # never created here so a misspelled host setting fails closed
+                # as workspace_missing instead of appearing silently elsewhere.
+                workspace_root = data_root / "execution_workspace"
+                try:
+                    workspace_root.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
             run_log_dir = Path(getattr(config, "EXECUTION_RUN_LOG_DIR", "") or (state_dir / "execution_runlogs"))
             allowed_raw = str(getattr(config, "EXECUTION_ALLOWED_ENV_NAMES", "") or "").strip()
             allowed_names = [name.strip() for name in allowed_raw.split(",") if name.strip()] or None
