@@ -7635,6 +7635,106 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                 finally:
                     manager.close()
 
+    def test_exec_run_resource_result_survives_settlement_and_is_reloadable(self) -> None:
+        """The exec resource loop's run_id + gen_* stay in the stored observation,
+        and the settled card keeps the reload path by source_id."""
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        long_output = "命令已执行完成（exit_code=0，run_id=execrun_abcd）。\nstdout：\n" + ("x" * 1200)
+        long_output += "\n已登记生成资源：gen_001(result.txt)。需要交付时调用 send_file(targets=[...])，不要自动替用户发送。"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(config, "MEMCORE_OPERATION_PROJECTION_POLICY", "compact_after_terminal"):
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "exec_resource.sqlite3",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                )
+                try:
+                    opened = manager.begin_input_turn(
+                        {"source_id": "user-exec-res", "content": "跑个命令并生成文件", "timestamp": 100},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    turn_id = str(opened.get("turn_id") or "")
+                    batch = manager.record_tool_batch(
+                        exchanges=[
+                            {
+                                "tool_name": "exec_run",
+                                "tool_call_id": "call-exec-res",
+                                "tool_input": {
+                                    "command": "gen",
+                                    "input_resources": [{"handle": "file_001", "as": "inputs/s.txt"}],
+                                    "output_globs": ["result.txt"],
+                                },
+                                "result": long_output,
+                                "source": "exec_run",
+                                "timestamp": 101,
+                                "source_id_prefix": "tooltrace-exec-res",
+                                "result_status": "success",
+                            }
+                        ],
+                        turn_id=turn_id,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    self.assertTrue(batch["ok"], batch)
+                    observation_sid = str(batch["exchanges"][0]["tool_result_source_id"] or "")
+                    manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    manager.complete_input_turn(
+                        turn_id=turn_id,
+                        assistant_record={"source_id": "assistant-res", "content": "做完了。", "timestamp": 102},
+                        memory_metadata={},
+                        provider_output_raw="做完了。",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        provider_profile="openai",
+                        provider_projection={"role": "assistant", "content": "做完了。"},
+                    )
+                    projection = manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    tool_payloads = [m for m in projection.get("payloads") or [] if m.get("role") == "tool"]
+                    self.assertEqual(len(tool_payloads), 1)
+                    card = str(tool_payloads[0].get("content") or "")
+                    self.assertIn("[compact_reloadable]", card)
+                    self.assertIn(f"source_id: {observation_sid}", card)
+                    self.assertIn(f"call_id: call-exec-res", card)
+                    # The full content (run_id + gen_*) is preserved on the
+                    # observation and reachable through the card's reload key.
+                    system = manager._get_system(
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    entries = manager._store.get_turn_entries(namespace=system.namespace, turn_id=turn_id)
+                    observation = next(
+                        (entry for entry in entries if str(getattr(entry, "source_id", "") or "") == observation_sid),
+                        None,
+                    )
+                    self.assertIsNotNone(observation)
+                    stored = str(dict(observation.payload or {}).get("output") or "")
+                    self.assertIn("run_id=execrun_abcd", stored)
+                    self.assertIn("gen_001", stored)
+                    self.assertIn("send_file", stored)
+                    self.assertNotIn("C:\\", stored)
+                finally:
+                    manager.close()
+
 
 if __name__ == "__main__":
     unittest.main()

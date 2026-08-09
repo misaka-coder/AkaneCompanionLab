@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # exec_cancel 完全不进入模型 schema。这些不是部署模式枚举，只是本地
     # 执行提供者的宿主配置面；云端/群聊等画像约束由能力模块 modes 决定。
     EXECUTION_ENABLED: bool = False
+    # QQ 主账号（MASTER_QQ 私聊）是否允许进入执行批准链。默认关闭；开启后
+    # 仍需 EXECUTION_ENABLED=true 且当前身份通过宿主既有执行策略。普通私聊
+    # 与群聊始终禁用，不凭昵称/展示名判断 master。
+    EXECUTION_QQ_ENABLED: bool = False
     # 命令 cwd 根目录；空= DATA_ROOT/execution_workspace
     EXECUTION_WORKSPACE_ROOT: str = ""
     # 完整输出日志目录；空= STATE_DIR/execution_runlogs
@@ -870,6 +874,7 @@ def _apply_settings(s: Settings) -> None:
     PROMPT_CACHE_NAMESPACE = str(s.PROMPT_CACHE_NAMESPACE or "akane").strip()
     PROMPT_CACHE_RETENTION = str(s.PROMPT_CACHE_RETENTION or "").strip().lower()
     EXECUTION_ENABLED = bool(s.EXECUTION_ENABLED)
+    EXECUTION_QQ_ENABLED = bool(s.EXECUTION_QQ_ENABLED)
     EXECUTION_WORKSPACE_ROOT = str(s.EXECUTION_WORKSPACE_ROOT or "").strip()
     EXECUTION_RUN_LOG_DIR = str(s.EXECUTION_RUN_LOG_DIR or "").strip()
     EXECUTION_ALLOWED_ENV_NAMES = str(s.EXECUTION_ALLOWED_ENV_NAMES or "").strip()

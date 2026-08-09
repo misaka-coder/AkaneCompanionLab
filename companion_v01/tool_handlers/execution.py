@@ -23,6 +23,7 @@ profile/session/provider that started the run and do not ask.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import config
@@ -35,11 +36,17 @@ from ..capcore_runtime import (
     resolve_permission_for_profile,
 )
 from ..capability_approval import build_approval_request_fingerprint
+from ..execution_resources import (
+    ARTIFACT_STATUS_NOT_REQUESTED,
+    ARTIFACT_STATUS_REGISTRATION_FAILED,
+    ExecutionResourceBridge,
+)
 from ..execution_run import (
     ExecutionRunOwner,
     execute_exec_cancel,
     execute_exec_run,
     execute_exec_status,
+    new_run_id,
 )
 from ..execution_specs import (
     EXEC_CANCEL_TOOL_SPEC,
@@ -52,10 +59,18 @@ from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, To
 class _ExecToolHandlerBase(BaseToolHandler):
     """Shared provider / owner / result plumbing for the three exec tools."""
 
-    def __init__(self, *, execution_provider: Any, config_base_dir: Any = None, approval_store: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        execution_provider: Any,
+        config_base_dir: Any = None,
+        approval_store: Any = None,
+        resource_bridge: ExecutionResourceBridge | None = None,
+    ) -> None:
         self.execution_provider = execution_provider
         self.config_base_dir = config_base_dir
         self.approval_store = approval_store
+        self.resource_bridge = resource_bridge
 
     def _owner(self, context: ToolExecutionContext) -> ExecutionRunOwner:
         provider = self.execution_provider
@@ -115,6 +130,23 @@ class _ExecToolHandlerBase(BaseToolHandler):
             if next_cursor
             else None
         )
+        state_updates: dict[str, Any] = {
+            "capability_execution": {
+                "tool_type": self.tool_type,
+                "status": str(mapped.event_status or ""),
+                "reason": str(mapped.reason or ""),
+                "run_id": str(data.get("run_id") or ""),
+                "exit_code": data.get("exit_code"),
+                "next_cursor": next_cursor,
+                "output_ref": str(data.get("output_ref") or "") or None,
+            }
+        }
+        if data.get("generated_resources"):
+            state_updates["capability_execution"]["generated_resources"] = list(data.get("generated_resources") or [])
+        if data.get("artifact_status"):
+            state_updates["capability_execution"]["artifact_status"] = str(data.get("artifact_status") or "")
+        if data.get("next_action"):
+            state_updates["capability_execution"]["next_action"] = dict(data.get("next_action") or {})
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[dict(mapped.event)],
@@ -125,17 +157,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 complete=next_cursor is None,
                 continuation=continuation,
             ),
-            state_updates={
-                "capability_execution": {
-                    "tool_type": self.tool_type,
-                    "status": str(mapped.event_status or ""),
-                    "reason": str(mapped.reason or ""),
-                    "run_id": str(data.get("run_id") or ""),
-                    "exit_code": data.get("exit_code"),
-                    "next_cursor": next_cursor,
-                    "output_ref": str(data.get("output_ref") or "") or None,
-                }
-            },
+            state_updates=state_updates,
         )
 
     def _approval_required(
@@ -197,6 +219,56 @@ class _ExecToolHandlerBase(BaseToolHandler):
             },
         )
 
+    def _resource_rejected(self, reason: str) -> ToolExecutionResult:
+        clean_reason = str(reason or "execution_resources_rejected")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "capability_execution_result",
+                    "tool_type": self.tool_type,
+                    "status": "blocked",
+                    "reason": clean_reason,
+                }
+            ],
+            followup_context=(
+                f"这次命令没有执行：资源暂存被拒绝（{clean_reason}）。请检查资源句柄、目标相对路径与输出声明后调整，"
+                "不要声称命令已经执行或文件已经生成。"
+            ),
+            state_updates={
+                "capability_execution": {
+                    "tool_type": self.tool_type,
+                    "status": "blocked",
+                    "reason": clean_reason,
+                }
+            },
+        )
+
+    def _enrich_resources(self, mapped: Any, registration: dict[str, Any]) -> Any:
+        if not isinstance(registration, dict):
+            return mapped
+        resources = list(registration.get("generated_resources") or [])
+        artifact_status = str(registration.get("artifact_status") or ARTIFACT_STATUS_NOT_REQUESTED)
+        data = dict(mapped.data or {})
+        data["generated_resources"] = resources
+        data["artifact_status"] = artifact_status
+        feedback = str(mapped.model_feedback or "")
+        if resources:
+            labels = "、".join(f"{item.get('handle')}({item.get('name')})" for item in resources[:6])
+            targets = [item.get("handle") for item in resources[:16]]
+            data["next_action"] = {"tool": "send_file", "targets": targets}
+            feedback = (
+                f"{feedback}\n已登记生成资源：{labels}。需要交付时调用 send_file(targets=[...])，"
+                "不要自动替用户发送。"
+            )
+        elif artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
+            reason = str(registration.get("reason") or "unknown")
+            feedback = (
+                f"{feedback}\n命令已完成，但输出登记失败（{reason}）。请调整输出声明或告知用户交付失败，"
+                "不要声称文件已经生成或已经交付。"
+            )
+        return replace(mapped, data=data, model_feedback=feedback)
+
 
 class ExecRunToolHandler(_ExecToolHandlerBase):
     """``exec_run``: run a command in the trusted execution workspace."""
@@ -211,7 +283,10 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本。cwd 只能用工作区相对路径或挂载别名，"
             "不接受绝对路径；环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
-            "输出超过限额时通过 next_cursor 增量读取。高风险命令会按当前用户策略请求确认。"
+            "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
+            "（如 file_001 / audio_001 / gen_001）与命令工作区内相对路径 as，输入会复制进本次运行的独立工作区；"
+            "需要命令产出文件时，用 output_globs 声明输出相对路径，命令完成后会自动登记为 gen_*，"
+            "然后用 send_file 交付。高风险命令会按当前用户策略请求确认。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -237,6 +312,47 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 normalized["initial_wait_seconds"] = int(value.get("initial_wait_seconds"))
             except (TypeError, ValueError):
                 return None
+        input_resources = self._normalize_input_resources(value.get("input_resources"))
+        output_globs = self._normalize_output_globs(value.get("output_globs"))
+        if value.get("input_resources") is not None and input_resources is None:
+            return None
+        if value.get("output_globs") is not None and output_globs is None:
+            return None
+        if input_resources:
+            normalized["input_resources"] = input_resources
+        if output_globs:
+            normalized["output_globs"] = output_globs
+        return normalized
+
+    @staticmethod
+    def _normalize_input_resources(value: Any) -> list[dict[str, Any]] | None:
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > 8:
+            return None
+        normalized: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                return None
+            handle = str(item.get("handle") or "").strip()
+            target = str(item.get("as") or "").strip()
+            if not handle or not target or len(handle) > 120 or len(target) > 512:
+                return None
+            normalized.append({"handle": handle, "as": target})
+        return normalized
+
+    @staticmethod
+    def _normalize_output_globs(value: Any) -> list[str] | None:
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > 32:
+            return None
+        normalized: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if not text or len(text) > 1024:
+                return None
+            normalized.append(text)
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -245,7 +361,14 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return self._unavailable_result("execution_provider_unconfigured")
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
-        decision = self._permission_decision(context, {"command": command, "cwd": cwd})
+        input_resources = call.get("input_resources")
+        output_globs = call.get("output_globs")
+        args_preview = {"command": command, "cwd": cwd}
+        if input_resources:
+            args_preview["input_resources"] = input_resources
+        if output_globs:
+            args_preview["output_globs"] = output_globs
+        decision = self._permission_decision(context, args_preview)
         if not decision.allowed:
             if decision.requires_user_decision:
                 return self._ask_or_redeem(context, decision, call)
@@ -253,14 +376,38 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return self._execute_command(provider, call, context)
 
     def _execute_command(self, provider: Any, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        command = str(call.get("command") or "").strip()
+        cwd = str(call.get("cwd") or "").strip()
+        input_resources = call.get("input_resources") or []
+        output_globs = call.get("output_globs") or []
+        bridge = self.resource_bridge
+        staged = None
+        run_id = ""
+        if input_resources or output_globs:
+            if bridge is None:
+                return self._resource_rejected("execution_resources_unconfigured")
+            run_id = new_run_id()
+            staged = bridge.stage_inputs(
+                run_id=run_id,
+                owner=self._owner(context),
+                input_resources=input_resources,
+                output_globs=output_globs,
+            )
+            if not bool(staged.get("ok")):
+                return self._resource_rejected(str(staged.get("reason") or "execution_resources_staging_failed"))
+            cwd = str(staged.get("cwd_relpath") or cwd)
         mapped = execute_exec_run(
             provider,
             owner=self._owner(context),
-            command=str(call.get("command") or "").strip(),
-            cwd=str(call.get("cwd") or "").strip(),
+            command=command,
+            cwd=cwd,
             timeout_seconds=call.get("timeout_seconds"),
             initial_wait_seconds=call.get("initial_wait_seconds"),
+            run_id=run_id,
         )
+        if staged is not None and run_id and mapped.event_status == "completed":
+            registration = bridge.register_outputs(run_id=run_id, owner=self._owner(context))
+            mapped = self._enrich_resources(mapped, registration)
         return self._mapped_result(mapped)
 
     def _ask_or_redeem(
@@ -294,11 +441,14 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return self._approval_required(context, decision, request_id=request_id, fingerprint=fingerprint)
 
     def _fingerprint(self, call: dict[str, Any]) -> str:
-        arguments = {
-            key: call.get(key)
-            for key in ("command", "cwd", "timeout_seconds", "initial_wait_seconds")
-            if call.get(key) is not None
-        }
+        arguments: dict[str, Any] = {}
+        for key in ("command", "cwd", "timeout_seconds", "initial_wait_seconds"):
+            if call.get(key) is not None:
+                arguments[key] = call.get(key)
+        if call.get("input_resources") is not None:
+            arguments["input_resources"] = call.get("input_resources")
+        if call.get("output_globs") is not None:
+            arguments["output_globs"] = call.get("output_globs")
         return build_approval_request_fingerprint(arguments)
 
     def _create_approval_request(
@@ -385,12 +535,17 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
         provider = self.execution_provider
         if provider is None:
             return self._unavailable_result("execution_provider_unconfigured")
+        run_id = str(call.get("run_id") or "").strip()
         mapped = execute_exec_status(
             provider,
             owner=self._owner(context),
-            run_id=str(call.get("run_id") or "").strip(),
+            run_id=run_id,
             cursor=str(call.get("cursor") or "").strip() or None,
         )
+        bridge = self.resource_bridge
+        if bridge is not None and run_id and mapped.event_status == "completed":
+            registration = bridge.register_outputs(run_id=run_id, owner=self._owner(context))
+            mapped = self._enrich_resources(mapped, registration)
         return self._mapped_result(mapped)
 
 

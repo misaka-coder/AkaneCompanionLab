@@ -78,6 +78,10 @@ def new_run_id() -> str:
     return f"{_RUN_ID_PREFIX}{uuid.uuid4().hex}"
 
 
+def is_valid_run_id(value: Any) -> bool:
+    return _RUN_ID_RE.fullmatch(str(value or "").strip()) is not None
+
+
 def _run_cursor_tag(run_id: str) -> str:
     return hashlib.sha256(str(run_id or "").encode("utf-8")).hexdigest()[:16]
 
@@ -178,6 +182,7 @@ class ExecutionProvider(Protocol):
         cwd: str = "",
         timeout_seconds: int = EXEC_MAX_TIMEOUT_SECONDS,
         initial_wait_seconds: int = EXEC_MAX_INITIAL_WAIT_SECONDS,
+        run_id: str = "",
     ) -> ExecRunStart: ...
 
     def status(
@@ -647,7 +652,7 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
             else ""
         )
         output = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"])
-        feedback = f"命令已执行完成（exit_code=0）。{output}{compacted}{followup}"
+        feedback = f"命令已执行完成（exit_code=0，run_id={run_id}）。{output}{compacted}{followup}"
         return ExecMappedResult("ok", status, reason, feedback, data, event)
     if status == EXEC_STATUS_RUNNING:
         output = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"])
@@ -695,13 +700,17 @@ def execute_exec_run(
     cwd: str = "",
     timeout_seconds: Any = None,
     initial_wait_seconds: Any = None,
+    run_id: str = "",
 ) -> ExecMappedResult:
     clean_command = str(command or "").strip()
     clean_cwd = str(cwd or "").strip()
+    clean_run_id = str(run_id or "").strip()
     if not isinstance(owner, ExecutionRunOwner):
         return _unknown_mapped("execution_owner_required")
     if not clean_command or len(clean_command) > EXEC_COMMAND_MAX_CHARS or len(clean_cwd) > EXEC_CWD_MAX_CHARS:
         return _unknown_mapped("execution_request_invalid")
+    if clean_run_id and not _RUN_ID_RE.fullmatch(clean_run_id):
+        return _unknown_mapped("invalid_execution_run_id")
     try:
         availability = provider.availability()
     except Exception:
@@ -712,13 +721,16 @@ def execute_exec_run(
     if not availability.enabled or availability_status not in _READY_AVAILABILITY_STATUSES:
         return _unavailable_mapped(str(availability.reason or availability_status or "execution_unavailable"))
     try:
-        run_start = provider.run(
-            owner=owner,
-            command=clean_command,
-            cwd=clean_cwd,
-            timeout_seconds=normalize_timeout_seconds(timeout_seconds),
-            initial_wait_seconds=normalize_initial_wait_seconds(initial_wait_seconds),
-        )
+        run_kwargs: dict[str, Any] = {
+            "owner": owner,
+            "command": clean_command,
+            "cwd": clean_cwd,
+            "timeout_seconds": normalize_timeout_seconds(timeout_seconds),
+            "initial_wait_seconds": normalize_initial_wait_seconds(initial_wait_seconds),
+        }
+        if clean_run_id:
+            run_kwargs["run_id"] = clean_run_id
+        run_start = provider.run(**run_kwargs)
     except Exception:
         return _unknown_mapped("provider_run_failed")
     return map_exec_run_outcome(run_start)

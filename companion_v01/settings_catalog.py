@@ -46,6 +46,7 @@ EXCLUDED_KEYS: frozenset[str] = frozenset(
         # values must be supplied by deployment configuration, never surfaced
         # as control-center settings or live runtime overrides.
         "EXECUTION_ENABLED",
+        "EXECUTION_QQ_ENABLED",
         "EXECUTION_WORKSPACE_ROOT",
         "EXECUTION_RUN_LOG_DIR",
         "EXECUTION_ALLOWED_ENV_NAMES",

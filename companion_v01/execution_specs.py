@@ -99,6 +99,14 @@ EXEC_CWD_MAX_CHARS = 512
 EXEC_RUN_ID_MAX_CHARS = 96
 EXEC_CURSOR_MAX_CHARS = 160
 
+# Output-artifact registration states, orthogonal to the command's own status.
+# ``registered`` is the only success; everything else is a structured reason
+# for the model to act on without pretending the file was delivered.
+ARTIFACT_STATUS_REGISTERED = "registered"
+ARTIFACT_STATUS_REGISTRATION_FAILED = "registration_failed"
+ARTIFACT_STATUS_NOT_REGISTERED = "not_registered"
+ARTIFACT_STATUS_NOT_REQUESTED = "not_requested"
+
 
 def normalize_timeout_seconds(value: Any) -> int:
     try:
@@ -162,7 +170,10 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "环境变量由宿主执行器按白名单注入，本工具不接受环境变量。短命令在本轮直接返回最终状态；"
         "超过初始等待窗口仍存活的命令返回 run_id 与 running 状态，之后用 exec_status 查询进度、"
         "exec_cancel 停止。普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
-        "按需续读。执行失败、超时或取消都会明确返回对应状态，不会声称成功。"
+        "按需续读。需要命令读取已有材料时用 input_resources 声明句柄与命令工作区内的 as 相对路径，"
+        "输入会复制进本次运行的独立工作区；需要命令产出文件时用 output_globs 声明输出，命令完成后"
+        "只登记明确声明的输出为 gen_*，再用 send_file 交付。执行失败、超时或取消都会明确返回对应状态，"
+        "不会声称成功；登记失败也会与命令成功明确区分。"
     ),
     input_schema={
         "type": "object",
@@ -190,6 +201,34 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "maximum": EXEC_MAX_INITIAL_WAIT_SECONDS,
                 "description": "本轮最多等待秒数；窗口内未结束的命令转为 running 并返回 run_id。",
             },
+            "input_resources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "handle": {
+                            "type": "string",
+                            "maxLength": 120,
+                            "description": "当前会话可用的资源句柄，如 file_001 / img_001 / audio_001 / gen_001。",
+                        },
+                        "as": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "description": "命令工作区内的安全相对路径，如 inputs/source.wav；拒绝绝对路径、.. 与盘符。",
+                        },
+                    },
+                    "required": ["handle", "as"],
+                    "additionalProperties": False,
+                },
+                "maxItems": 8,
+                "description": "可选：要暂存进执行工作区的现有资源。输入会复制到本次运行的独立工作区，模型只使用 as 相对路径。",
+            },
+            "output_globs": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 1024},
+                "maxItems": 32,
+                "description": "可选：命令完成后要登记为 gen_* 的输出路径 glob，全部展开并去重，只登记明确声明的输出。",
+            },
         },
         "required": ["command"],
         "additionalProperties": False,
@@ -209,6 +248,30 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "description": "完整输出已真实保存时返回的不透明引用；绝不包含宿主绝对路径。",
             },
             "reason": {"type": "string"},
+            "generated_resources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "handle": {"type": "string"},
+                        "name": {"type": "string"},
+                        "media_type": {"type": "string"},
+                        "size_bytes": {"type": "integer"},
+                    },
+                    "required": ["handle"],
+                    "additionalProperties": False,
+                },
+                "description": "命令完成后按 output_globs 登记的 gen_* 资源，不含绝对路径。",
+            },
+            "artifact_status": {
+                "type": "string",
+                "enum": [
+                    ARTIFACT_STATUS_REGISTERED,
+                    ARTIFACT_STATUS_REGISTRATION_FAILED,
+                    ARTIFACT_STATUS_NOT_REGISTERED,
+                    ARTIFACT_STATUS_NOT_REQUESTED,
+                ],
+            },
         },
         "required": ["status"],
         "additionalProperties": False,
@@ -259,6 +322,30 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                 "description": "完整输出已真实保存时返回的不透明引用。",
             },
             "reason": {"type": "string"},
+            "generated_resources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "handle": {"type": "string"},
+                        "name": {"type": "string"},
+                        "media_type": {"type": "string"},
+                        "size_bytes": {"type": "integer"},
+                    },
+                    "required": ["handle"],
+                    "additionalProperties": False,
+                },
+                "description": "该 run 按 output_globs 登记且幂等返回的 gen_* 资源，不含绝对路径。",
+            },
+            "artifact_status": {
+                "type": "string",
+                "enum": [
+                    ARTIFACT_STATUS_REGISTERED,
+                    ARTIFACT_STATUS_REGISTRATION_FAILED,
+                    ARTIFACT_STATUS_NOT_REGISTERED,
+                    ARTIFACT_STATUS_NOT_REQUESTED,
+                ],
+            },
         },
         "required": ["status", "run_id"],
         "additionalProperties": False,

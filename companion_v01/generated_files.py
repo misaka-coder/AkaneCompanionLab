@@ -1187,6 +1187,36 @@ class GeneratedFileService:
             timestamp=timestamp,
         )
 
+    def resolve_input_resource(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        target: str,
+        timestamp: int | None,
+    ) -> dict[str, Any] | None:
+        """Resolve a workspace handle (``file_*``/``img_*``/``audio_*``/``gen_*``)
+        to a physical file for staging by the execution resource bridge.
+
+        Returns a host-only file ref with ``absolute_path`` for copying; the
+        model never sees this path.  Resolution is scoped to the current user
+        and session exactly like ``send_file`` resolution.
+        """
+        file_ref, _error = self._resolve_sendable_file(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            target=str(target or "").strip(),
+            timestamp=timestamp,
+        )
+        if not isinstance(file_ref, dict) or not str(file_ref.get("absolute_path") or "").strip():
+            return None
+        return {
+            "absolute_path": str(file_ref.get("absolute_path") or "").strip(),
+            "source_type": str(file_ref.get("source_type") or "").strip(),
+            "handle": str(file_ref.get("handle") or "").strip(),
+            "name": str(file_ref.get("name") or "").strip(),
+        }
+
     def _resolve_latest_sendable_file(
         self,
         *,

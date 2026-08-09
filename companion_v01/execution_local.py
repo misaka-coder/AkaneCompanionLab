@@ -54,6 +54,7 @@ from .execution_run import (
     ExecCancelResult,
     ExecRunStart,
     ExecRunStatus,
+    is_valid_run_id,
     make_cursor,
     new_run_id,
     parse_cursor,
@@ -168,6 +169,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         cwd: str = "",
         timeout_seconds: int = 300,
         initial_wait_seconds: int = EXEC_MAX_INITIAL_WAIT_SECONDS,
+        run_id: str = "",
     ) -> ExecRunStart:
         if not self._owner_matches(owner):
             return ExecRunStart(status=EXEC_STATUS_EXECUTION_UNKNOWN, reason="execution_provider_mismatch")
@@ -180,7 +182,8 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecRunStart(status=EXEC_STATUS_FAILED, reason=f"invalid_execution_cwd:{exc}")
 
         self.prune_run_logs()
-        run_id = new_run_id()
+        clean_run_id = str(run_id or "").strip()
+        run_id = clean_run_id if is_valid_run_id(clean_run_id) else new_run_id()
         output_ref = self._open_run_log(run_id)
         try:
             self.store.register(run_id, owner=owner, output_ref=output_ref)

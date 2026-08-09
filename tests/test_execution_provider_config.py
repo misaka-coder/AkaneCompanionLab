@@ -22,6 +22,14 @@ def _desktop_snapshot(*, execution_enabled: bool) -> CapabilitySnapshot:
     return CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET, execution_enabled=execution_enabled)
 
 
+def _qq_snapshot(*, execution_enabled: bool, execution_qq_enabled: bool = False) -> CapabilitySnapshot:
+    return CapabilitySnapshot(
+        client_mode=ClientMode.QQ_TEXT,
+        execution_enabled=execution_enabled,
+        execution_qq_enabled=execution_qq_enabled,
+    )
+
+
 class ExecCapabilityModuleTests(unittest.TestCase):
     def test_exec_tools_selected_when_enabled_in_desktop_mode(self) -> None:
         selection = CapabilityRegistry().select(_desktop_snapshot(execution_enabled=True))
@@ -39,6 +47,33 @@ class ExecCapabilityModuleTests(unittest.TestCase):
             CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT, execution_enabled=True)
         )
         self.assertNotIn("exec_run", selection.tool_names)
+        self.assertNotIn("exec_run", selection.schema_tool_names)
+
+    def test_exec_tools_absent_in_qq_mode_without_host_gate(self) -> None:
+        # EXECUTION_QQ_ENABLED=false must keep QQ free of any exec tool/placeholder,
+        # even when the provider is present.
+        selection = CapabilityRegistry().select(_qq_snapshot(execution_enabled=True))
+        self.assertNotIn("exec_run", selection.tool_names)
+        self.assertNotIn("exec_run", selection.schema_tool_names)
+        self.assertNotIn("exec_status", selection.schema_tool_names)
+        self.assertNotIn("exec_cancel", selection.schema_tool_names)
+        exec_disclosures = [d for d in selection.disclosures if "exec_run" in d.tool_names]
+        self.assertEqual(exec_disclosures, [])
+        self.assertFalse(any("exec_run" in hint for hint in selection.light_hints))
+
+    def test_exec_tools_selected_for_qq_master_when_host_gate_on(self) -> None:
+        selection = CapabilityRegistry().select(_qq_snapshot(execution_enabled=True, execution_qq_enabled=True))
+        self.assertIn("exec_run", selection.tool_names)
+        self.assertIn("exec_status", selection.schema_tool_names)
+        self.assertIn("exec_cancel", selection.tool_names)
+        qq_hints = [hint for hint in selection.light_hints if "exec_run" in hint]
+        self.assertTrue(qq_hints)
+        self.assertIn("QQ 主账号", qq_hints[0])
+        self.assertIn("QQ Bot 后端所在机器", qq_hints[0])
+
+    def test_exec_tools_absent_for_qq_master_when_execution_disabled(self) -> None:
+        selection = CapabilityRegistry().select(_qq_snapshot(execution_enabled=False, execution_qq_enabled=False))
+        self.assertNotIn("exec_run", selection.schema_tool_names)
 
     def test_provider_unavailable_stays_in_schema_with_unavailable_disclosure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

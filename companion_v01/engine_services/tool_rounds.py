@@ -36,6 +36,7 @@ from .. import tool_orchestration_engine
 from ..local_capability_config import load_capability_config
 # M66-E: ToolReadinessGate deleted; readiness is now gated via
 # ServerLocalOfferIndex inside CapabilityRegistry.select().
+import config as _host_config
 
 
 logger = logging.getLogger("akane.tool_rounds")
@@ -491,6 +492,13 @@ def build_capability_snapshot(
             has_cover_song_cache = bool(cache_status_fn(profile_user_id=profile_user_id))
         except Exception:
             has_cover_song_cache = False
+    execution_provider_present = bool(getattr(engine, "execution_provider", None))
+    execution_qq_enabled = (
+        execution_provider_present
+        and bool(getattr(_host_config, "EXECUTION_QQ_ENABLED", False))
+        and client_context.effective_mode == ClientMode.QQ_TEXT
+        and str(profile_user_id or "").strip() == "master"
+    )
     return CapabilitySnapshot(
         client_mode=client_context.effective_mode,
         has_any_attachment=bool(attachments),
@@ -507,7 +515,8 @@ def build_capability_snapshot(
         has_image_workspace_file=bool(workspace_inventory.get("has_image_file")),
         has_cover_song_cache=has_cover_song_cache,
         has_pending_gift=False,
-        execution_enabled=bool(getattr(engine, "execution_provider", None)),
+        execution_enabled=execution_provider_present,
+        execution_qq_enabled=execution_qq_enabled,
     )
 
 

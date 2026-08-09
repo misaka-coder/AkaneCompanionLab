@@ -240,20 +240,32 @@ def build_builtin_tool_handlers(
         "browser_page": BrowserPageToolHandler(),
     }
     if execution_provider is not None:
+        resource_bridge = None
+        workspace_root = getattr(execution_provider, "workspace_root", None)
+        if generated_file_service is not None and workspace_root is not None:
+            from ..execution_resources import ExecutionResourceBridge
+
+            resource_bridge = ExecutionResourceBridge(
+                generated_file_service=generated_file_service,
+                workspace_root=workspace_root,
+            )
         handlers["exec_run"] = ExecRunToolHandler(
             execution_provider=execution_provider,
             config_base_dir=capability_config_base_dir,
             approval_store=approval_store,
+            resource_bridge=resource_bridge,
         )
         handlers["exec_status"] = ExecStatusToolHandler(
             execution_provider=execution_provider,
             config_base_dir=capability_config_base_dir,
             approval_store=approval_store,
+            resource_bridge=resource_bridge,
         )
         handlers["exec_cancel"] = ExecCancelToolHandler(
             execution_provider=execution_provider,
             config_base_dir=capability_config_base_dir,
             approval_store=approval_store,
+            resource_bridge=resource_bridge,
         )
     if image_generation_service is not None:
         handlers["generate_image"] = GenerateImageToolHandler(

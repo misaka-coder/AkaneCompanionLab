@@ -246,20 +246,29 @@ exec_status(run_id="execrun_...", cursor="c1....")
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `EXECUTION_ENABLED` | `false` | 宿主冻结的启用开关；不在 control-center 暴露 |
+| `EXECUTION_QQ_ENABLED` | `false` | QQ 主账号私聊是否允许进入执行批准链；默认关闭 |
 | `EXECUTION_WORKSPACE_ROOT` | `""` | 空 = `DATA_ROOT/execution_workspace`（自动创建） |
 | `EXECUTION_RUN_LOG_DIR` | `""` | 空 = `STATE_DIR/execution_runlogs`（自动创建） |
 | `EXECUTION_ALLOWED_ENV_NAMES` | `""` | 空 = 保守默认集；逗号分隔覆盖 |
 
-`settings_catalog.py` 将 `EXECUTION_ENABLED` / `EXECUTION_WORKSPACE_ROOT` /
-`EXECUTION_RUN_LOG_DIR` / `EXECUTION_ALLOWED_ENV_NAMES` 列为 `EXCLUDED_KEYS`：
-它们是 host-startup 安全边界，只能由部署配置提供，绝不作为 control-center 设置
-或 live runtime override 暴露。
+`settings_catalog.py` 将 `EXECUTION_ENABLED` / `EXECUTION_QQ_ENABLED` /
+`EXECUTION_WORKSPACE_ROOT` / `EXECUTION_RUN_LOG_DIR` / `EXECUTION_ALLOWED_ENV_NAMES`
+列为 `EXCLUDED_KEYS`：它们是 host-startup 安全边界，只能由部署配置提供，绝不作为
+control-center 设置或 live runtime override 暴露。
+
+## 13.1 资源闭环与 QQ 开放
+
+`exec_run` 支持 `input_resources`（暂存已有 `file_*` / `img_*` / `audio_*` /
+`gen_*` 到运行工作区）与 `output_globs`（命令完成后把明确声明的输出登记为
+`gen_*`，再经 `send_file` 交付）；QQ 主账号可通过 `EXECUTION_QQ_ENABLED` 进入
+执行批准链。详见 `docs/akane_execution_resource_loop_v1.md`。
 
 ## 14. 相关代码入口
 
 - `companion_v01/execution_specs.py`：三个 ToolSpec 的唯一契约来源
 - `companion_v01/execution_run.py`：run store、cursor/output_ref、结果映射
 - `companion_v01/execution_local.py`：`TrustedLocalExecutor` 真实进程执行
+- `companion_v01/execution_resources.py`：`ExecutionResourceBridge`（暂存/登记）
 - `companion_v01/tool_handlers/execution.py`：exec 三个工具 handler 与审批
 - `companion_v01/tool_orchestration_engine.py`：invocation 校验、envelope、broker
 - `companion_v01/capability_registry.py`：execution capability module 与 schema 选择
