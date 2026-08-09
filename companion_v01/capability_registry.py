@@ -2626,8 +2626,6 @@ class CapabilityRegistry:
                     "只有宿主在本机启用执行时这项能力才会出现。"
                 ),
                 trigger=_execution_enabled,
-                latent_reason="当前宿主没有启用本机命令执行。",
-                activation_hint="宿主在本机启用命令执行后会自动开放。",
                 unavailable_reason="本机执行提供者当前没有通过可用性检查。",
                 recovery_hint="执行工作区或提供者恢复后会自动重新开放；当前不要假装已经执行命令。",
             ),

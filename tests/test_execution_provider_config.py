@@ -197,23 +197,33 @@ class ExecEngineProviderTests(unittest.TestCase):
                 self.assertEqual(self._native_schema_dump(provider), first)
 
     def test_pure_text_request_has_no_exec_placeholder_when_disabled(self) -> None:
-        """EXECUTION_ENABLED=false must not make exec tools executable or schema-visible.
-
-        The execution module's fixed latent disclosure (unchanged from the
-        Phase 5 baseline) stays a text-only activation hint: no exec schema, no
-        callable tools, and no future-only capability state enters the request.
-        """
-        selection = CapabilityRegistry().select(_desktop_snapshot(execution_enabled=False))
+        """Disabled execution must be absent from both tools and model-visible hints."""
+        registry = CapabilityRegistry()
+        snapshot = _desktop_snapshot(execution_enabled=False)
+        selection = registry.select(snapshot)
+        baseline_without_execution_module = CapabilityRegistry(
+            modules=tuple(module for module in registry.modules if module.name != "execution")
+        ).select(snapshot)
+        self.assertEqual(selection, baseline_without_execution_module)
         self.assertNotIn("exec_run", selection.schema_tool_names)
         self.assertNotIn("exec_run", selection.tool_names)
         self.assertNotIn("exec_status", selection.tool_names)
         self.assertNotIn("exec_cancel", selection.tool_names)
         exec_disclosures = [d for d in selection.disclosures if "exec_run" in d.tool_names]
-        self.assertEqual(len(exec_disclosures), 1)
-        disclosure = exec_disclosures[0]
-        self.assertEqual(disclosure.state, "latent")
-        self.assertIn("宿主在本机启用命令执行后会自动开放", disclosure.activation)
-        self.assertIn("当前宿主没有启用本机命令执行", disclosure.reason)
+        self.assertEqual(exec_disclosures, [])
+        self.assertFalse(any("exec_run" in hint for hint in selection.light_hints))
+
+        engine = object.__new__(AkaneMemoryEngine)
+        engine._resolve_tool_handlers = lambda **_kwargs: {}
+        prompt_context = engine._build_tool_prompt_context(
+            allow_tool_call=True,
+            capability_selection=selection,
+        )
+        self.assertNotIn("exec_run", prompt_context)
+        self.assertNotIn("exec_status", prompt_context)
+        self.assertNotIn("exec_cancel", prompt_context)
+        self.assertNotIn("本机命令执行", prompt_context)
+        self.assertNotIn("宿主在本机启用", prompt_context)
 
 
 

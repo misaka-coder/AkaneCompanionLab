@@ -24,7 +24,7 @@ Scope: Phase 5 最终收口 —— 真实调用链验收、首次启用体验、
 
 ## 1. 能力定位
 
-通用系统执行能力让模型可以在宿主用户的机器上运行命令，用于查文件、处理数据、
+通用系统执行能力让模型可以在后端宿主主机上运行命令，用于查文件、处理数据、
 跑脚本或做批量操作。它面向桌面宠物本机模式，只在宿主启用时出现在 schema 中。
 
 边界：
@@ -119,7 +119,6 @@ exec_status(run_id="execrun_...", cursor="c1....")
 - 不创建任何目录。
 - 三个 exec 工具不进入 schema。
 - 请求体与未启用执行时逐字节一致，不注入空占位提示或 future-only 状态。
-  （执行模块的固定 latent 披露文案保持不变，但不会有任何可调用工具。）
 
 ### 4.2 EXECUTION_ENABLED=true，未显式设置 EXECUTION_WORKSPACE_ROOT
 
@@ -155,7 +154,8 @@ exec_status(run_id="execrun_...", cursor="c1....")
   TEMP、TMP、USERPROFILE、HOME；宿主可用 `EXECUTION_ALLOWED_ENV_NAMES`
   覆盖）。
 - 宿主完整 env、API key、token 不得进入模型结果。
-- 私有 run output store 保留命令原始输出；模型可见的 Prompt、MemCore、
+- 私有 run output store 对合法 UTF-8 保留完整文本；真正非法的字节序列会替换为
+  U+FFFD。模型可见的 Prompt、MemCore、
   stream event、审计摘要统一使用脱敏投影（secret/path 会被替换）。
 - run log 的真实磁盘路径绝不返回给模型。
 
