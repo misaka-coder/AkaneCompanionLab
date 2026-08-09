@@ -760,6 +760,7 @@ def execute_exec_status(
         EXEC_STATUS_TIMED_OUT,
         EXEC_STATUS_CANCELLED,
         EXEC_STATUS_UNAVAILABLE,
+        EXEC_STATUS_EXECUTION_UNKNOWN,
         EXEC_STATUS_UNKNOWN,
     }:
         return _status_unknown_result(clean_run_id, "invalid_status_value", execution_unknown=True)
@@ -815,6 +816,15 @@ def execute_exec_status(
         return ExecMappedResult("ok", status, safe_reason, feedback, data, event)
     if status == EXEC_STATUS_UNKNOWN:
         return _status_unknown_result(clean_run_id, safe_reason or "run_not_found")
+    if status == EXEC_STATUS_EXECUTION_UNKNOWN:
+        return ExecMappedResult(
+            "error",
+            status,
+            safe_reason or "termination_unconfirmed",
+            "无法确认该命令是否仍在执行；不要声称命令已完成或已停止。",
+            data,
+            {**event, "reason": safe_reason or "termination_unconfirmed"},
+        )
     if status == EXEC_STATUS_UNAVAILABLE:
         clean_reason = safe_reason or "execution_unavailable"
         return ExecMappedResult(

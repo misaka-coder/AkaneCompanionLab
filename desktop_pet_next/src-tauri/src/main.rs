@@ -26,9 +26,16 @@ use windows::Media::Control::{
 };
 #[cfg(windows)]
 use windows::Win32::{
-    Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM},
-    System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WAIT_OBJECT_0, WPARAM},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        Threading::{
+            OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        },
     },
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
@@ -92,6 +99,30 @@ const SYSTEM_MEDIA_CONTROL_SPEC_VERSION: &str = "1.0.0";
 const SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION: u64 = 1;
 const SYSTEM_MEDIA_CONTROL_SCHEMA_HASH: &str =
     "sha256:70f940d83faeabbf820e2794ee3effa95015eb8f632490521ab26c24662c4906";
+const SYSTEM_PROCESS_SNAPSHOT_TOOL_ID: &str = "system_process_snapshot";
+const SYSTEM_PROCESS_SNAPSHOT_SPEC_VERSION: &str = "1.0.0";
+const SYSTEM_PROCESS_SNAPSHOT_SCHEMA_VERSION: u64 = 1;
+const SYSTEM_PROCESS_SNAPSHOT_SCHEMA_HASH: &str =
+    "sha256:e3402a073c89ef4da6d7783fbd7c28eabbbfb8baf1a44ad5a221ff172baa5875";
+const SYSTEM_PROCESS_TERMINATE_TOOL_ID: &str = "system_process_terminate";
+const SYSTEM_PROCESS_TERMINATE_SPEC_VERSION: &str = "1.0.0";
+const SYSTEM_PROCESS_TERMINATE_SCHEMA_VERSION: u64 = 1;
+const SYSTEM_PROCESS_TERMINATE_SCHEMA_HASH: &str =
+    "sha256:5b121827fe5365b1c75611cb34a73ab0fe3fdeca2cd3bc50ea165d81835aab75";
+const SYSTEM_VOLUME_TOOL_ID: &str = "system_volume";
+const SYSTEM_VOLUME_SPEC_VERSION: &str = "1.0.0";
+const SYSTEM_VOLUME_SCHEMA_VERSION: u64 = 1;
+const SYSTEM_VOLUME_SCHEMA_HASH: &str =
+    "sha256:af6c04d18e548326eaa141b2041c0e1a8f495cd742db1eeead6a62bf4ea158d5";
+const SATELLITE_OFFER_TOOL_IDS: [&str; 7] = [
+    OPEN_BROWSER_TOOL_ID,
+    DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+    SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+    SYSTEM_MEDIA_CONTROL_TOOL_ID,
+    SYSTEM_PROCESS_SNAPSHOT_TOOL_ID,
+    SYSTEM_PROCESS_TERMINATE_TOOL_ID,
+    SYSTEM_VOLUME_TOOL_ID,
+];
 const SATELLITE_LEDGER_LIMIT: usize = 512;
 static SATELLITE_INVOCATION_LEDGER: OnceLock<Mutex<SatelliteInvocationLedger>> = OnceLock::new();
 
@@ -351,6 +382,46 @@ struct SystemMediaControlResult {
     artist: String,
     source_app: String,
     playback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessEntry {
+    pid: u32,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemProcessSnapshot {
+    ok: bool,
+    status: String,
+    reason: String,
+    captured_at: u128,
+    platform: String,
+    processes: Vec<ProcessEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemProcessTerminateResult {
+    ok: bool,
+    status: String,
+    reason: String,
+    pid: u32,
+    platform: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemVolumeResult {
+    ok: bool,
+    status: String,
+    reason: String,
+    action: String,
+    volume: Option<u32>,
+    muted: Option<bool>,
+    platform: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4205,6 +4276,255 @@ fn normalize_system_media_control_action(action: &str) -> String {
     .to_string()
 }
 
+fn system_process_unavailable(reason: &str) -> SystemProcessSnapshot {
+    SystemProcessSnapshot {
+        ok: false,
+        status: "unavailable".to_string(),
+        reason: reason.to_string(),
+        captured_at: current_time_millis(),
+        platform: std::env::consts::OS.to_string(),
+        processes: Vec::new(),
+    }
+}
+
+#[cfg(not(windows))]
+fn read_system_process_snapshot() -> SystemProcessSnapshot {
+    system_process_unavailable("unsupported_platform")
+}
+
+#[cfg(windows)]
+fn read_system_process_snapshot() -> SystemProcessSnapshot {
+    let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+        Ok(snapshot) => snapshot,
+        Err(_) => return system_process_unavailable("process_enumeration_failed"),
+    };
+    let mut entries: Vec<ProcessEntry> = Vec::new();
+    let mut entry = PROCESSENTRY32W::default();
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
+    if next.is_err() {
+        let _ = unsafe { CloseHandle(snapshot) };
+        return system_process_unavailable("process_enumeration_failed");
+    }
+    while next.is_ok() {
+        let name = String::from_utf16_lossy(&entry.szExeFile)
+            .trim_end_matches('\0')
+            .to_string();
+        entries.push(ProcessEntry {
+            pid: entry.th32ProcessID,
+            name: name.chars().take(100).collect(),
+        });
+        if entries.len() >= 128 {
+            break;
+        }
+        next = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+    SystemProcessSnapshot {
+        ok: true,
+        status: "ok".to_string(),
+        reason: String::new(),
+        captured_at: current_time_millis(),
+        platform: std::env::consts::OS.to_string(),
+        processes: entries,
+    }
+}
+
+fn system_process_terminate_unavailable(pid: u32, reason: &str) -> SystemProcessTerminateResult {
+    SystemProcessTerminateResult {
+        ok: false,
+        status: "unavailable".to_string(),
+        reason: reason.to_string(),
+        pid,
+        platform: std::env::consts::OS.to_string(),
+    }
+}
+
+fn system_volume_unavailable(action: &str, reason: &str) -> SystemVolumeResult {
+    SystemVolumeResult {
+        ok: false,
+        status: "unavailable".to_string(),
+        reason: reason.to_string(),
+        action: action.to_string(),
+        volume: None,
+        muted: None,
+        platform: std::env::consts::OS.to_string(),
+    }
+}
+
+#[cfg(not(windows))]
+fn read_system_volume() -> Result<(f32, bool), String> {
+    Err("unsupported_platform".to_string())
+}
+
+#[cfg(windows)]
+fn read_system_volume() -> Result<(f32, bool), String> {
+    let _ = unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        )
+    };
+    let clsid = windows::core::GUID::from_u128(0xbcde0395e52f467c8d3dc4579291692e);
+    let enumerator: windows::Win32::Media::Audio::IMMDeviceEnumerator = unsafe {
+        windows::Win32::System::Com::CoCreateInstance(
+            &clsid,
+            None,
+            windows::Win32::System::Com::CLSCTX_ALL,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let device: windows::Win32::Media::Audio::IMMDevice = unsafe {
+        enumerator.GetDefaultAudioEndpoint(
+            windows::Win32::Media::Audio::eRender,
+            windows::Win32::Media::Audio::eConsole,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let volume: windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume = unsafe {
+        device.Activate::<windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume>(
+            windows::Win32::System::Com::CLSCTX_ALL,
+            None,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let scalar: f32 =
+        unsafe { volume.GetMasterVolumeLevelScalar() }.map_err(|error| error.to_string())?;
+    let muted: windows::core::BOOL =
+        unsafe { volume.GetMute() }.map_err(|error| error.to_string())?;
+    Ok((scalar.clamp(0.0, 1.0), muted.as_bool()))
+}
+
+#[cfg(not(windows))]
+fn set_system_volume(_level: f32) -> Result<(), String> {
+    Err("unsupported_platform".to_string())
+}
+
+#[cfg(windows)]
+fn set_system_volume(level: f32) -> Result<(), String> {
+    let _ = unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        )
+    };
+    let clsid = windows::core::GUID::from_u128(0xbcde0395e52f467c8d3dc4579291692e);
+    let enumerator: windows::Win32::Media::Audio::IMMDeviceEnumerator = unsafe {
+        windows::Win32::System::Com::CoCreateInstance(
+            &clsid,
+            None,
+            windows::Win32::System::Com::CLSCTX_ALL,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let device: windows::Win32::Media::Audio::IMMDevice = unsafe {
+        enumerator.GetDefaultAudioEndpoint(
+            windows::Win32::Media::Audio::eRender,
+            windows::Win32::Media::Audio::eConsole,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let volume: windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume = unsafe {
+        device.Activate::<windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume>(
+            windows::Win32::System::Com::CLSCTX_ALL,
+            None,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    unsafe {
+        volume.SetMasterVolumeLevelScalar(level.clamp(0.0, 1.0), &windows::core::GUID::zeroed())
+    }
+    .map_err(|error| error.to_string())
+}
+
+fn read_system_volume_result(action: &str) -> SystemVolumeResult {
+    match read_system_volume() {
+        Ok((scalar, muted)) => SystemVolumeResult {
+            ok: true,
+            status: "ok".to_string(),
+            reason: String::new(),
+            action: action.to_string(),
+            volume: Some((scalar * 100.0).round() as u32),
+            muted: Some(muted),
+            platform: std::env::consts::OS.to_string(),
+        },
+        Err(reason) => system_volume_unavailable(
+            action,
+            if reason == "unsupported_platform" {
+                "unsupported_platform"
+            } else {
+                "volume_read_failed"
+            },
+        ),
+    }
+}
+
+fn set_system_volume_result(action: &str, value: u32) -> SystemVolumeResult {
+    let level = (value.clamp(0, 100) as f32) / 100.0;
+    match set_system_volume(level) {
+        Ok(()) => match read_system_volume() {
+            Ok((scalar, muted)) => SystemVolumeResult {
+                ok: true,
+                status: "ok".to_string(),
+                reason: String::new(),
+                action: action.to_string(),
+                volume: Some((scalar * 100.0).round() as u32),
+                muted: Some(muted),
+                platform: std::env::consts::OS.to_string(),
+            },
+            Err(_) => system_volume_unavailable(action, "volume_read_failed"),
+        },
+        Err(reason) => system_volume_unavailable(
+            action,
+            if reason == "unsupported_platform" {
+                "unsupported_platform"
+            } else {
+                "volume_set_failed"
+            },
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn terminate_system_process(pid: u32) -> SystemProcessTerminateResult {
+    system_process_terminate_unavailable(pid, "unsupported_platform")
+}
+
+#[cfg(windows)]
+fn terminate_system_process(pid: u32) -> SystemProcessTerminateResult {
+    if pid == 0 {
+        return system_process_terminate_unavailable(pid, "invalid_pid");
+    }
+    if pid == std::process::id() {
+        return system_process_terminate_unavailable(pid, "protected_process");
+    }
+    let handle = match unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
+        Ok(handle) => handle,
+        Err(_) => return system_process_terminate_unavailable(pid, "permission_denied"),
+    };
+    let result = unsafe { TerminateProcess(handle, 1) };
+    let terminated =
+        result.is_ok() && unsafe { WaitForSingleObject(handle, 5_000) } == WAIT_OBJECT_0;
+    let _ = unsafe { CloseHandle(handle) };
+    if !terminated {
+        return system_process_terminate_unavailable(
+            pid,
+            if result.is_err() {
+                "terminate_failed"
+            } else {
+                "termination_unconfirmed"
+            },
+        );
+    }
+    SystemProcessTerminateResult {
+        ok: true,
+        status: "ok".to_string(),
+        reason: String::new(),
+        pid,
+        platform: std::env::consts::OS.to_string(),
+    }
+}
+
 fn system_media_control_unavailable(
     action: &str,
     reason: &str,
@@ -5005,6 +5325,24 @@ async fn run_desktop_satellite_session(
                 "schema_version": SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
                 "schema_hash": SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
             },
+            {
+                "tool_id": SYSTEM_PROCESS_SNAPSHOT_TOOL_ID,
+                "spec_version": SYSTEM_PROCESS_SNAPSHOT_SPEC_VERSION,
+                "schema_version": SYSTEM_PROCESS_SNAPSHOT_SCHEMA_VERSION,
+                "schema_hash": SYSTEM_PROCESS_SNAPSHOT_SCHEMA_HASH,
+            },
+            {
+                "tool_id": SYSTEM_PROCESS_TERMINATE_TOOL_ID,
+                "spec_version": SYSTEM_PROCESS_TERMINATE_SPEC_VERSION,
+                "schema_version": SYSTEM_PROCESS_TERMINATE_SCHEMA_VERSION,
+                "schema_hash": SYSTEM_PROCESS_TERMINATE_SCHEMA_HASH,
+            },
+            {
+                "tool_id": SYSTEM_VOLUME_TOOL_ID,
+                "spec_version": SYSTEM_VOLUME_SPEC_VERSION,
+                "schema_version": SYSTEM_VOLUME_SCHEMA_VERSION,
+                "schema_hash": SYSTEM_VOLUME_SCHEMA_HASH,
+            },
         ],
     });
     socket
@@ -5030,12 +5368,7 @@ async fn run_desktop_satellite_session(
         .and_then(serde_json::Value::as_object)
         .ok_or("satellite_register_mismatch")?;
     let mut offer_ids = HashMap::new();
-    for tool_id in [
-        OPEN_BROWSER_TOOL_ID,
-        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
-        SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
-        SYSTEM_MEDIA_CONTROL_TOOL_ID,
-    ] {
+    for tool_id in SATELLITE_OFFER_TOOL_IDS {
         let offer_id = raw_offer_ids
             .get(tool_id)
             .and_then(serde_json::Value::as_str)
@@ -5218,7 +5551,35 @@ fn validate_satellite_invocation(
                     .and_then(serde_json::Value::as_str)
                     .is_some()
         }
-        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID | SYSTEM_MEDIA_SNAPSHOT_TOOL_ID => arguments.is_empty(),
+        DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID
+        | SYSTEM_MEDIA_SNAPSHOT_TOOL_ID
+        | SYSTEM_PROCESS_SNAPSHOT_TOOL_ID => arguments.is_empty(),
+        SYSTEM_PROCESS_TERMINATE_TOOL_ID => {
+            arguments.len() == 1
+                && arguments
+                    .get("pid")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|pid| pid > 0 && pid <= u32::MAX as u64)
+                    .unwrap_or(false)
+        }
+        SYSTEM_VOLUME_TOOL_ID => {
+            let action = arguments
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if action == "get" {
+                arguments.len() == 1
+            } else if action == "set" {
+                arguments.len() == 2
+                    && arguments
+                        .get("value")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|value| value <= 100)
+                        .unwrap_or(false)
+            } else {
+                false
+            }
+        }
         SYSTEM_MEDIA_CONTROL_TOOL_ID => {
             arguments.len() == 1
                 && arguments
@@ -5260,6 +5621,21 @@ fn satellite_tool_contract(tool_id: &str) -> Option<(&'static str, u64, &'static
             SYSTEM_MEDIA_CONTROL_SPEC_VERSION,
             SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
             SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
+        )),
+        SYSTEM_PROCESS_SNAPSHOT_TOOL_ID => Some((
+            SYSTEM_PROCESS_SNAPSHOT_SPEC_VERSION,
+            SYSTEM_PROCESS_SNAPSHOT_SCHEMA_VERSION,
+            SYSTEM_PROCESS_SNAPSHOT_SCHEMA_HASH,
+        )),
+        SYSTEM_PROCESS_TERMINATE_TOOL_ID => Some((
+            SYSTEM_PROCESS_TERMINATE_SPEC_VERSION,
+            SYSTEM_PROCESS_TERMINATE_SCHEMA_VERSION,
+            SYSTEM_PROCESS_TERMINATE_SCHEMA_HASH,
+        )),
+        SYSTEM_VOLUME_TOOL_ID => Some((
+            SYSTEM_VOLUME_SPEC_VERSION,
+            SYSTEM_VOLUME_SCHEMA_VERSION,
+            SYSTEM_VOLUME_SCHEMA_HASH,
         )),
         _ => None,
     }
@@ -5350,6 +5726,61 @@ async fn execute_satellite_invocation_once(
                     serde_json::Value::Null,
                 ),
             }
+        }
+        SYSTEM_PROCESS_SNAPSHOT_TOOL_ID => {
+            match serde_json::to_value(read_system_process_snapshot()) {
+                Ok(data) => satellite_terminal_result(tool_id, "succeeded", "", data),
+                Err(_) => satellite_terminal_result(
+                    tool_id,
+                    "failed",
+                    "result_serialization_failed",
+                    serde_json::Value::Null,
+                ),
+            }
+        }
+        SYSTEM_PROCESS_TERMINATE_TOOL_ID => {
+            let pid = arguments
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let control = terminate_system_process(pid as u32);
+            let status = if control.ok { "succeeded" } else { "failed" };
+            let reason = if control.ok {
+                String::new()
+            } else if control.reason.trim().is_empty() {
+                "terminate_failed".to_string()
+            } else {
+                control.reason.clone()
+            };
+            let data = serde_json::to_value(&control).unwrap_or(serde_json::Value::Null);
+            satellite_terminal_result(tool_id, status, &reason, data)
+        }
+        SYSTEM_VOLUME_TOOL_ID => {
+            let action = arguments
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let control = if action == "set" {
+                set_system_volume_result(
+                    action,
+                    arguments
+                        .get("value")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as u32,
+                )
+            } else {
+                read_system_volume_result(action)
+            };
+            let status = if control.ok { "succeeded" } else { "failed" };
+            let reason = if control.ok {
+                String::new()
+            } else if control.reason.trim().is_empty() {
+                "volume_control_failed".to_string()
+            } else {
+                control.reason.clone()
+            };
+            let data = serde_json::to_value(&control).unwrap_or(serde_json::Value::Null);
+            satellite_terminal_result(tool_id, status, &reason, data)
         }
         SYSTEM_MEDIA_CONTROL_TOOL_ID => {
             let action = arguments
@@ -6129,6 +6560,33 @@ mod tests {
     }
 
     #[test]
+    fn satellite_offer_id_retention_covers_every_registered_contract() {
+        assert_eq!(SATELLITE_OFFER_TOOL_IDS.len(), 7);
+        for tool_id in [
+            OPEN_BROWSER_TOOL_ID,
+            DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+            SYSTEM_MEDIA_SNAPSHOT_TOOL_ID,
+            SYSTEM_MEDIA_CONTROL_TOOL_ID,
+            SYSTEM_PROCESS_SNAPSHOT_TOOL_ID,
+            SYSTEM_PROCESS_TERMINATE_TOOL_ID,
+            SYSTEM_VOLUME_TOOL_ID,
+        ] {
+            assert!(
+                SATELLITE_OFFER_TOOL_IDS.contains(&tool_id),
+                "missing offer id for {tool_id}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn satellite_refuses_to_terminate_its_own_process() {
+        let result = terminate_system_process(std::process::id());
+        assert!(!result.ok);
+        assert_eq!(result.reason, "protected_process");
+    }
+
+    #[test]
     fn satellite_invocation_validates_all_local_tool_contracts() {
         let cases = [
             (
@@ -6151,6 +6609,27 @@ mod tests {
                 SYSTEM_MEDIA_CONTROL_SCHEMA_VERSION,
                 SYSTEM_MEDIA_CONTROL_SCHEMA_HASH,
                 serde_json::json!({"action": "pause"}),
+            ),
+            (
+                SYSTEM_PROCESS_SNAPSHOT_TOOL_ID,
+                SYSTEM_PROCESS_SNAPSHOT_SPEC_VERSION,
+                SYSTEM_PROCESS_SNAPSHOT_SCHEMA_VERSION,
+                SYSTEM_PROCESS_SNAPSHOT_SCHEMA_HASH,
+                serde_json::json!({}),
+            ),
+            (
+                SYSTEM_PROCESS_TERMINATE_TOOL_ID,
+                SYSTEM_PROCESS_TERMINATE_SPEC_VERSION,
+                SYSTEM_PROCESS_TERMINATE_SCHEMA_VERSION,
+                SYSTEM_PROCESS_TERMINATE_SCHEMA_HASH,
+                serde_json::json!({"pid": 1234}),
+            ),
+            (
+                SYSTEM_VOLUME_TOOL_ID,
+                SYSTEM_VOLUME_SPEC_VERSION,
+                SYSTEM_VOLUME_SCHEMA_VERSION,
+                SYSTEM_VOLUME_SCHEMA_HASH,
+                serde_json::json!({"action": "set", "value": 30}),
             ),
         ];
         for (tool_id, spec_version, schema_version, schema_hash, arguments) in cases {
@@ -6297,11 +6776,12 @@ mod tests {
                 .get("offers")
                 .and_then(serde_json::Value::as_array)
                 .expect("registration should contain offers");
-            assert_eq!(offers.len(), 4);
-            assert!(offers.iter().any(|offer| {
-                offer.get("tool_id").and_then(serde_json::Value::as_str)
-                    == Some(DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID)
-            }));
+            assert_eq!(offers.len(), SATELLITE_OFFER_TOOL_IDS.len());
+            for tool_id in SATELLITE_OFFER_TOOL_IDS {
+                assert!(offers.iter().any(|offer| {
+                    offer.get("tool_id").and_then(serde_json::Value::as_str) == Some(tool_id)
+                }));
+            }
 
             socket
                 .send(Message::Text(
@@ -6315,6 +6795,9 @@ mod tests {
                             DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID: "offer-wire-test",
                             SYSTEM_MEDIA_SNAPSHOT_TOOL_ID: "offer-wire-test",
                             SYSTEM_MEDIA_CONTROL_TOOL_ID: "offer-wire-test",
+                            SYSTEM_PROCESS_SNAPSHOT_TOOL_ID: "offer-wire-test",
+                            SYSTEM_PROCESS_TERMINATE_TOOL_ID: "offer-wire-test",
+                            SYSTEM_VOLUME_TOOL_ID: "offer-wire-test",
                         },
                     })
                     .to_string()

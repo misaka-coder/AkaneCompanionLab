@@ -116,6 +116,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         store: ExecutionRunStore | None = None,
         cancel_confirm_grace_seconds: float = _CANCEL_CONFIRM_GRACE_SECONDS,
         output_drain_grace_seconds: float = _OUTPUT_DRAIN_GRACE_SECONDS,
+        max_kill_attempts: int = 60,
         run_log_retention_seconds: int | None = None,
         now: Any = None,
     ) -> None:
@@ -140,6 +141,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         self.store = store or ExecutionRunStore(now=now)
         self.cancel_confirm_grace_seconds = max(0.1, float(cancel_confirm_grace_seconds))
         self.output_drain_grace_seconds = max(0.1, float(output_drain_grace_seconds))
+        self.max_kill_attempts = max(1, int(max_kill_attempts))
         retention = self.store.retention_seconds if run_log_retention_seconds is None else run_log_retention_seconds
         self.run_log_retention_seconds = max(1, int(retention))
         self._lock = threading.RLock()
@@ -252,10 +254,13 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecCancelResult(ok=True, status=EXEC_STATUS_UNKNOWN, run_id=str(run_id or ""), reason="run_not_found")
         clean_run_id = str(run_id or "")
         requested = self.store.request_cancel(clean_run_id, owner=owner)
-        if requested == "already_ended":
-            return ExecCancelResult(ok=True, status="already_ended", run_id=clean_run_id, reason="already_ended")
         if requested == EXEC_STATUS_UNKNOWN:
             return ExecCancelResult(ok=True, status=EXEC_STATUS_UNKNOWN, run_id=clean_run_id, reason="run_not_found")
+        record = self.store.get(clean_run_id, owner=owner)
+        if record is not None and record.status == EXEC_STATUS_EXECUTION_UNKNOWN:
+            return ExecCancelResult(ok=False, status="cancel_failed", run_id=clean_run_id, reason="termination_unconfirmed")
+        if requested == "already_ended":
+            return ExecCancelResult(ok=True, status="already_ended", run_id=clean_run_id, reason="already_ended")
 
         with self._lock:
             proc = self._procs.get(clean_run_id)
@@ -271,6 +276,8 @@ class TrustedLocalExecutor(ExecutionProvider):
         record = self.store.get(clean_run_id, owner=owner)
         if record is not None and record.status == EXEC_STATUS_CANCELLED:
             return ExecCancelResult(ok=True, status=EXEC_STATUS_CANCELLED, run_id=clean_run_id, reason="")
+        if record is not None and record.status == EXEC_STATUS_EXECUTION_UNKNOWN:
+            return ExecCancelResult(ok=False, status="cancel_failed", run_id=clean_run_id, reason="termination_unconfirmed")
         if record is not None and record.status in EXEC_TERMINAL_STATUSES:
             return ExecCancelResult(ok=True, status="already_ended", run_id=clean_run_id, reason=record.status)
         return ExecCancelResult(ok=False, status="cancel_failed", run_id=clean_run_id, reason="termination_not_confirmed")
@@ -448,6 +455,8 @@ class TrustedLocalExecutor(ExecutionProvider):
         cancellation_triggered = False
         timeout_triggered = False
         record_missing = False
+        gave_up = False
+        kill_attempts = 0
         try:
             while True:
                 if self.store.get(run_id, owner=owner) is None:
@@ -471,6 +480,21 @@ class TrustedLocalExecutor(ExecutionProvider):
                 if cancellation_triggered or timeout_triggered:
                     if self._kill_process_group(proc):
                         continue
+                    kill_attempts += 1
+                    if kill_attempts >= self.max_kill_attempts:
+                        # Honest give-up: never claim cancelled/timed_out without
+                        # confirmation. Record an evictable execution_unknown
+                        # terminal and stop retrying.
+                        gave_up = True
+                        self._set_pending_reason(run_id, "termination_unconfirmed")
+                        if self.store.get(run_id, owner=owner) is not None:
+                            self.store.mark_terminal(
+                                run_id,
+                                EXEC_STATUS_EXECUTION_UNKNOWN,
+                                owner=owner,
+                                reason="termination_unconfirmed",
+                            )
+                        break
                     time.sleep(0.1)
                     continue
                 time.sleep(0.02)
@@ -478,7 +502,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             drain_ok = self._drain_readers(readers, (proc.stdout, proc.stderr))
             capture_failed = self._capture_failed(run_id)
             log_failed = self._log_failed(run_id)
-            if record_missing:
+            if record_missing or gave_up:
                 return
             if timeout_triggered:
                 reason = "execution_timeout"
@@ -528,23 +552,18 @@ class TrustedLocalExecutor(ExecutionProvider):
             else:
                 self._set_pending_reason(run_id, "watcher_failed_termination_not_confirmed")
         finally:
-            if proc.poll() is not None:
+            if proc.poll() is not None or gave_up:
                 self._cleanup(run_id)
 
     def _drain_readers(self, readers: Sequence[threading.Thread], pipes: Sequence[Any]) -> bool:
+        # Never close the pipes from here: a reader blocked in pipe.read() (the
+        # process is still alive, e.g. after an unconfirmed kill) would keep the
+        # close() blocked on Windows and deadlock the watcher. Readers close
+        # their own pipe in their finally once read() hits EOF.
+        del pipes
         deadline = time.monotonic() + self.output_drain_grace_seconds
         for reader in readers:
             reader.join(timeout=max(0.0, deadline - time.monotonic()))
-        alive = [reader for reader in readers if reader.is_alive()]
-        if not alive:
-            return True
-        for pipe in pipes:
-            try:
-                pipe.close()
-            except Exception:
-                pass
-        for reader in alive:
-            reader.join(timeout=0.5)
         return not any(reader.is_alive() for reader in readers)
 
     def _read_pipe(self, run_id: str, owner: ExecutionRunOwner, pipe: Any, stream: str) -> None:

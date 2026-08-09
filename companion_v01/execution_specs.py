@@ -58,6 +58,10 @@ EXEC_TERMINAL_STATUSES: frozenset[str] = frozenset(
         EXEC_STATUS_FAILED,
         EXEC_STATUS_TIMED_OUT,
         EXEC_STATUS_CANCELLED,
+        # Bounded kill-retry fallback: the executor gave up confirming
+        # termination; the run is terminal so it can be evicted, and the
+        # status honestly reports "cannot confirm" instead of fake success.
+        EXEC_STATUS_EXECUTION_UNKNOWN,
     }
 )
 

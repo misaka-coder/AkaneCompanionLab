@@ -736,7 +736,10 @@ def validate_tool_invocation(
         if normalized_candidate is None:
             return ValidationResult.fail("bad_args", "本地能力的参数不符合当前执行器契约。")
         if not invocation.execution_receipt:
-            return ValidationResult.fail("missing_execution_receipt", "这次本地能力没有有效的执行凭据，不能执行。")
+            return ValidationResult.fail(
+                "not_available",
+                "用户绑定的桌面执行器当前不在线或没有提供这项能力，本次没有执行任何本地动作。",
+            )
         return ValidationResult.success()
 
     if tool_type == OPEN_BROWSER_TOOL_SPEC.capability_id:
@@ -751,8 +754,8 @@ def validate_tool_invocation(
             return ValidationResult.fail("bad_args", "打开网页的 URL 或参数不符合公开网页安全约束。")
         if not invocation.execution_receipt:
             return ValidationResult.fail(
-                "missing_execution_receipt",
-                "这次桌面动作没有本轮实例签发的执行凭据，不能执行。",
+                "not_available",
+                "用户绑定的桌面执行器当前不在线或没有提供网页打开能力，本次没有执行任何本地动作。",
             )
         return ValidationResult.success()
 
@@ -1066,6 +1069,8 @@ def execute_tool_invocation(
             invocation=invocation,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            client_context=client_context,
+            request_context=request_context,
         )
     handlers = engine._resolve_tool_handlers(
         client_context=client_context,
@@ -1255,6 +1260,262 @@ def _execute_open_browser_with_broker(
     return result, envelope
 
 
+def _satellite_channel_rejection(
+    spec: Any,
+    invocation: ToolInvocation,
+    request_context: dict[str, Any] | None,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope] | None:
+    """Reject device access outside the configured owner's QQ private chat.
+
+    The QQ delivery context marks group messages with ``is_group``; device
+    control must only run for the owner's private chat (or the desktop pet).
+    Non-QQ clients have no delivery context and pass. QQ requests fail closed
+    unless they are a private message from the configured owner account.
+    """
+    delivery = request_context.get("qq_delivery_context") if isinstance(request_context, dict) else None
+    if not isinstance(delivery, dict):
+        return None
+    is_group = bool(delivery.get("is_group"))
+    owner_qq = str(getattr(config, "MASTER_QQ", "") or "").strip()
+    sender_qq = str(delivery.get("user_id") or "").strip()
+    if not is_group and owner_qq.isdigit() and sender_qq == owner_qq:
+        return None
+    tool_id = spec.capability_id
+    reason = "device_action_requires_owner_private_chat"
+    event = {
+        "type": "capability_execution_result",
+        "tool_type": tool_id,
+        "status": "blocked",
+        "reason": reason,
+    }
+    feedback = (
+        "当前是群聊消息，不能读取或操控你的电脑；请让主人在私聊里提出后再执行，本次没有执行任何操作。"
+        if is_group
+        else "这条私聊消息不是来自已配置的主人账号，不能读取或操控绑定电脑；本次没有执行任何操作。"
+    )
+    result = ToolExecutionResult(
+        tool_type=tool_id,
+        stream_events=[event],
+        followup_context=feedback,
+        state_updates={
+            "capability_execution": {
+                "tool_type": tool_id,
+                "status": "blocked",
+                "reason": reason,
+            }
+        },
+    )
+    envelope = ToolResultEnvelope(
+        invocation_id=invocation.id,
+        status="error",
+        model_feedback=feedback,
+        data={"code": reason, "tool": tool_id, "status": "blocked"},
+        events=[event],
+    )
+    return result, envelope
+
+
+def _satellite_permission_gate(
+    engine: Any,
+    *,
+    spec: Any,
+    invocation: ToolInvocation,
+    profile_user_id: str,
+    session_id: str,
+    client_context: ClientProtocolContext | None,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope] | None:
+    """Return an ask/blocked result for high-risk satellite specs, else None.
+
+    Only high-risk satellite specs (currently ``system_process_terminate``) are
+    gated. The grant is bound to capability/action plus a request fingerprint of
+    the exact arguments and redeemed through the shared engine approval store,
+    so an approved termination never silently covers a different pid.
+    """
+    if str(getattr(spec, "risk", "") or "").strip().lower() != "high":
+        return None
+    from .capability_approval import build_approval_request_fingerprint
+    from .capcore_runtime import manual_permission_request, resolve_permission_for_profile
+
+    client_mode = ""
+    if client_context is not None:
+        client_mode = str(getattr(client_context.effective_mode, "value", client_context.effective_mode) or "")
+    context = ToolExecutionContext(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        now_ts=0,
+        visual_payload={},
+        client_mode=client_mode,
+    )
+    arguments = dict(invocation.arguments or {})
+    request = manual_permission_request(
+        context=context,
+        required=True,
+        capability_id=spec.capability_id,
+        display_name=str(getattr(spec, "display_name", "") or spec.capability_id),
+        risk="high",
+        confirm="always",
+        effects=tuple(getattr(spec, "effects", ()) or ()),
+        reason="high_risk_satellite_requires_confirmation",
+        args_preview=arguments,
+    )
+    base_dir = getattr(engine, "capability_config_base_dir", None) or getattr(config, "DATA_DIR", "users_data")
+    decision = resolve_permission_for_profile(request, base_dir=base_dir, profile_user_id=profile_user_id)
+    if decision.allowed:
+        return None
+    if not decision.requires_user_decision:
+        return _satellite_blocked_result(spec, invocation, str(decision.reason or "capability_disabled_by_policy"))
+
+    fingerprint = build_approval_request_fingerprint(arguments)
+    receipt = invocation.execution_receipt if isinstance(invocation.execution_receipt, Mapping) else {}
+    device_id = str(receipt.get("instance_id") or "").strip()
+    if not device_id:
+        # No live receipt means no device action can be dispatched. Let the
+        # broker return its structured unavailable result without bothering
+        # the user with an approval request that cannot be executed.
+        return None
+    approval_store = getattr(engine, "approval_store", None)
+    if approval_store is not None:
+        grant = approval_store.resolve_grant(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            capability_id=spec.capability_id,
+            action_id=spec.capability_id,
+            resource="",
+            device=device_id,
+            fingerprint=fingerprint,
+        )
+        if grant is not None:
+            return None
+        request_id = _create_satellite_approval_request(
+            approval_store,
+            spec=spec,
+            decision=decision,
+            fingerprint=fingerprint,
+            device_id=device_id,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+        )
+        return _satellite_ask_result(spec, invocation, decision, request_id=request_id, fingerprint=fingerprint)
+    return _satellite_ask_result(spec, invocation, decision, request_id="", fingerprint=fingerprint)
+
+
+def _create_satellite_approval_request(
+    approval_store: Any,
+    *,
+    spec: Any,
+    decision: Any,
+    fingerprint: str,
+    device_id: str,
+    profile_user_id: str,
+    session_id: str,
+) -> str:
+    preview = dict(getattr(getattr(decision, "request", None), "args_preview", None) or {})
+    result = approval_store.create_request(
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        payload={
+            "capabilityId": spec.capability_id,
+            "actionId": spec.capability_id,
+            "risk": "high",
+            "approvalMode": "ask_each_time",
+            "title": f"{getattr(spec, 'display_name', '') or spec.capability_id}需要确认",
+            "summary": f"Akane 想在你的电脑上执行{getattr(spec, 'display_name', '') or spec.capability_id}。",
+            "approvalReason": "high_risk_satellite_requires_confirmation",
+            "payloadPreview": preview,
+            "requestFingerprint": fingerprint,
+            "deviceId": device_id,
+        },
+    )
+    if not result.get("ok"):
+        return ""
+    return str(result.get("requestId") or "")
+
+
+def _satellite_ask_result(
+    spec: Any,
+    invocation: ToolInvocation,
+    decision: Any,
+    *,
+    request_id: str,
+    fingerprint: str,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
+    from .capcore_runtime import approval_required_event
+
+    tool_id = spec.capability_id
+    event = approval_required_event(
+        capability_id=tool_id,
+        action_id=tool_id,
+        title=f"{getattr(spec, 'display_name', '') or tool_id}需要确认",
+        summary=f"Akane 想在你的电脑上执行{getattr(spec, 'display_name', '') or tool_id}。",
+        client_mode="",
+        decision=decision,
+    )
+    if request_id:
+        event["requestId"] = request_id
+    if fingerprint:
+        event["requestFingerprint"] = fingerprint
+    feedback = (
+        f"这个{getattr(spec, 'display_name', '') or tool_id}需要用户确认后才能执行；"
+        "请自然说明需要用户在能力审批中允许后再执行，不要声称已经完成。"
+    )
+    result = ToolExecutionResult(
+        tool_type=tool_id,
+        stream_events=[event],
+        followup_context=feedback,
+        state_updates={
+            "capability_execution": {
+                "tool_type": tool_id,
+                "status": "approval_required",
+                "reason": "requires_user_decision",
+            }
+        },
+    )
+    envelope = ToolResultEnvelope(
+        invocation_id=invocation.id,
+        status="ask",
+        model_feedback=feedback,
+        data={"tool": tool_id, "status": "approval_required"},
+        events=[event],
+    )
+    return result, envelope
+
+
+def _satellite_blocked_result(
+    spec: Any,
+    invocation: ToolInvocation,
+    reason: str,
+) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
+    tool_id = spec.capability_id
+    clean_reason = str(reason or "capability_disabled_by_policy")
+    event = {
+        "type": "capability_execution_result",
+        "tool_type": tool_id,
+        "status": "blocked",
+        "reason": clean_reason,
+    }
+    feedback = f"{getattr(spec, 'display_name', '') or tool_id}已被当前能力策略阻止（{clean_reason}）。请自然说明无法执行，不要假装已经完成。"
+    result = ToolExecutionResult(
+        tool_type=tool_id,
+        stream_events=[event],
+        followup_context=feedback,
+        state_updates={
+            "capability_execution": {
+                "tool_type": tool_id,
+                "status": "blocked",
+                "reason": clean_reason,
+            }
+        },
+    )
+    envelope = ToolResultEnvelope(
+        invocation_id=invocation.id,
+        status="error",
+        model_feedback=feedback,
+        data={"code": clean_reason, "tool": tool_id, "status": "blocked"},
+        events=[event],
+    )
+    return result, envelope
+
+
 def _execute_satellite_with_broker(
     engine: Any,
     *,
@@ -1262,7 +1523,22 @@ def _execute_satellite_with_broker(
     invocation: ToolInvocation,
     profile_user_id: str,
     session_id: str,
+    client_context: ClientProtocolContext | None = None,
+    request_context: dict[str, Any] | None = None,
 ) -> tuple[ToolExecutionResult, ToolResultEnvelope]:
+    rejected = _satellite_channel_rejection(spec, invocation, request_context)
+    if rejected is not None:
+        return rejected
+    gated = _satellite_permission_gate(
+        engine,
+        spec=spec,
+        invocation=invocation,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        client_context=client_context,
+    )
+    if gated is not None:
+        return gated
     broker = getattr(engine, "executor_broker", None)
     broker_result = (
         broker.execute(

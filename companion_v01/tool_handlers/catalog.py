@@ -228,6 +228,18 @@ def build_builtin_tool_handlers(
             tool_id="system_media_control",
             offer_source=capability_offer_source,
         ),
+        "system_process_snapshot": DesktopSatelliteToolHandler(
+            tool_id="system_process_snapshot",
+            offer_source=capability_offer_source,
+        ),
+        "system_process_terminate": DesktopSatelliteToolHandler(
+            tool_id="system_process_terminate",
+            offer_source=capability_offer_source,
+        ),
+        "system_volume": DesktopSatelliteToolHandler(
+            tool_id="system_volume",
+            offer_source=capability_offer_source,
+        ),
         "open_music_search": OpenMusicSearchToolHandler(),
         "browser_page": BrowserPageToolHandler(),
     }

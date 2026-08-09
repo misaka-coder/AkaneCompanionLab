@@ -2479,10 +2479,11 @@ class CapabilityRegistry:
             browser_allowed = "open_browser" not in hidden and (allowed is None or "open_browser" in allowed)
             if self.offer_source is not None and browser_allowed:
                 hint = OPEN_BROWSER_TOOL_SPEC.description
+                if "open_browser" not in seen_schema_tools:
+                    schema_tools.append("open_browser")
+                    seen_schema_tools.add("open_browser")
+                tool_specs.append(OPEN_BROWSER_TOOL_SPEC)
                 if receipt is not None:
-                    if "open_browser" not in seen_schema_tools:
-                        schema_tools.append("open_browser")
-                        seen_schema_tools.add("open_browser")
                     if "desktop_browser_open" not in module_names:
                         module_names.append("desktop_browser_open")
                     if "desktop_browser" not in seen_layers:
@@ -2491,7 +2492,6 @@ class CapabilityRegistry:
                     if hint not in seen_hints:
                         hints.append(hint)
                         seen_hints.add(hint)
-                    tool_specs.append(OPEN_BROWSER_TOOL_SPEC)
                     if "open_browser" not in seen_tools:
                         tools.append("open_browser")
                         seen_tools.add("open_browser")
@@ -2524,17 +2524,21 @@ class CapabilityRegistry:
                 ):
                     continue
                 receipt = self._resolve_offer_receipt(spec)
+                # The configured desktop capability profile owns the schema.
+                # Executor readiness only controls whether a receipt can be
+                # attached for this turn; reconnects must not rewrite the
+                # provider prompt prefix and destroy its cache branch.
+                if tool_name not in seen_schema_tools:
+                    schema_tools.append(tool_name)
+                    seen_schema_tools.add(tool_name)
+                tool_specs.append(spec)
                 if receipt is not None:
-                    if tool_name not in seen_schema_tools:
-                        schema_tools.append(tool_name)
-                        seen_schema_tools.add(tool_name)
                     if spec.capability_id not in seen_layers:
                         layer_names.append(spec.capability_id)
                         seen_layers.add(spec.capability_id)
                     if spec.description not in seen_hints:
                         hints.append(spec.description)
                         seen_hints.add(spec.description)
-                    tool_specs.append(spec)
                     if tool_name not in seen_tools:
                         tools.append(tool_name)
                         seen_tools.add(tool_name)

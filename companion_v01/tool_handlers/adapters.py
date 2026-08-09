@@ -74,13 +74,38 @@ class DesktopSatelliteToolHandler(BaseToolHandler):
             for key, item in value.items()
             if key != "type" and not str(key).startswith("_tool_")
         }
-        if self.tool_type in {"desktop_context_snapshot", "system_media_snapshot"}:
+        if self.tool_type in {"desktop_context_snapshot", "system_media_snapshot", "system_process_snapshot"}:
             return {"type": self.tool_type} if not args else None
         if self.tool_type == "system_media_control":
             action = str(args.get("action") or "").strip().lower()
             if action not in {"play", "pause", "stop", "previous", "next"} or set(args) != {"action"}:
                 return None
             return {"type": self.tool_type, "action": action}
+        if self.tool_type == "system_process_terminate":
+            if set(args) != {"pid"}:
+                return None
+            raw_pid = args.get("pid")
+            if isinstance(raw_pid, bool) or not isinstance(raw_pid, int):
+                return None
+            pid = raw_pid
+            if pid < 1 or pid > 0xFFFFFFFF:
+                return None
+            return {"type": self.tool_type, "pid": pid}
+        if self.tool_type == "system_volume":
+            action = str(args.get("action") or "").strip().lower()
+            if action == "get":
+                return {"type": self.tool_type, "action": "get"} if set(args) == {"action"} else None
+            if action == "set":
+                if set(args) != {"action", "value"}:
+                    return None
+                raw_value = args.get("value")
+                if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+                    return None
+                value = raw_value
+                if value < 0 or value > 100:
+                    return None
+                return {"type": self.tool_type, "action": "set", "value": value}
+            return None
         return None
 
     def capability_status(self, **_kwargs: Any) -> dict[str, Any]:

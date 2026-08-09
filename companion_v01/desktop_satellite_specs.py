@@ -126,10 +126,127 @@ SYSTEM_MEDIA_CONTROL_TOOL_SPEC = CapabilityToolSpec(
 )
 
 
+SYSTEM_PROCESS_SNAPSHOT_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="system_process_snapshot",
+    display_name="Read system process list",
+    description=(
+        "读取绑定电脑当前可见的进程列表摘要（数量有限的 pid 与进程名）。不返回命令行、路径、用户或任何凭据；"
+        "没有在线桌面执行器时返回结构化不可用状态。"
+    ),
+    input_schema=_EMPTY_INPUT,
+    output_schema={
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "status": {"type": "string"},
+            "reason": {"type": "string"},
+            "capturedAt": {"type": "integer"},
+            "platform": {"type": "string"},
+            "processes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pid": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                    "required": ["pid", "name"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["ok", "status", "capturedAt", "platform", "processes"],
+        "additionalProperties": False,
+    },
+    risk="low",
+    confirm="never",
+    effects=("read_system_processes",),
+    visible_in=("desktop", "qq"),
+    idempotency="read_only",
+    max_result_bytes=16 * 1024,
+)
+
+
+SYSTEM_PROCESS_TERMINATE_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="system_process_terminate",
+    display_name="Terminate a system process",
+    description=(
+        "按用户明确要求终止绑定电脑上的指定进程（正整数 pid）。这是高风险操作，需要用户确认后才能执行；"
+        "不返回命令行、路径或凭据。"
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {"pid": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
+        "required": ["pid"],
+        "additionalProperties": False,
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "status": {"type": "string"},
+            "reason": {"type": "string"},
+            "pid": {"type": "integer"},
+            "platform": {"type": "string"},
+        },
+        "required": ["ok", "status", "pid"],
+        "additionalProperties": False,
+    },
+    risk="high",
+    confirm="always",
+    effects=("terminate_system_process",),
+    visible_in=("desktop", "qq"),
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+
+SYSTEM_VOLUME_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="system_volume",
+    display_name="Read or set system volume",
+    description=(
+        "读取或设置绑定电脑的系统音量（0-100）。设置音量是设备级动作，只在私聊主人的请求下执行；"
+        "不返回路径或凭据。"
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["get", "set"]},
+            "value": {"type": "integer", "minimum": 0, "maximum": 100},
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "status": {"type": "string"},
+            "reason": {"type": "string"},
+            "action": {"type": "string"},
+            "volume": {"type": ["integer", "null"]},
+            "muted": {"type": ["boolean", "null"]},
+            "platform": {"type": "string"},
+        },
+        "required": ["ok", "status", "action"],
+        "additionalProperties": False,
+    },
+    risk="medium",
+    confirm="never",
+    effects=("control_system_volume",),
+    visible_in=("desktop", "qq"),
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+
 DESKTOP_SATELLITE_TOOL_SPECS: tuple[CapabilityToolSpec, ...] = (
     DESKTOP_CONTEXT_SNAPSHOT_TOOL_SPEC,
     SYSTEM_MEDIA_SNAPSHOT_TOOL_SPEC,
     SYSTEM_MEDIA_CONTROL_TOOL_SPEC,
+    SYSTEM_PROCESS_SNAPSHOT_TOOL_SPEC,
+    SYSTEM_PROCESS_TERMINATE_TOOL_SPEC,
+    SYSTEM_VOLUME_TOOL_SPEC,
 )
 DESKTOP_SATELLITE_TOOL_SPECS_BY_ID = {spec.capability_id: spec for spec in DESKTOP_SATELLITE_TOOL_SPECS}
 

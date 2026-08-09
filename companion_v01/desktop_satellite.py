@@ -390,20 +390,42 @@ class DesktopSatelliteService:
             normalized = "".join(character for character in str(value).lower() if character.isalnum())
             return not any(normalized == item or normalized.endswith(item) for item in blocked)
 
-        def clean(item: Any, depth: int = 0) -> Any:
+        def clean_text(value: Any) -> str:
+            text = str(value or "")[:1000]
+            text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
+            text = re.sub(
+                r"(?i)\b(api[_-]?key|password|secret|token|authorization)\s*[:=]\s*[^\s,;]+",
+                r"\1=[redacted]",
+                text,
+            )
+            text = re.sub(
+                r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)",
+                "[local_path]",
+                text,
+            )
+            text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
+            text = re.sub(
+                r"(?<![\w/])/(?:users|home|root|var|tmp|mnt|Volumes)/[^\r\n,;|<>\s]+",
+                "[local_path]",
+                text,
+            )
+            return text
+
+        def clean(item: Any, depth: int = 0, field_name: str = "") -> Any:
             if depth > 4:
                 return None
             if isinstance(item, Mapping):
                 return {
-                    str(key): clean(raw, depth + 1)
+                    str(key): clean(raw, depth + 1, str(key))
                     for key, raw in list(item.items())[:64]
                     if safe_key(key)
                 }
             if isinstance(item, list):
-                return [clean(raw, depth + 1) for raw in item[:32]]
+                limit = 128 if field_name == "processes" else 32
+                return [clean(raw, depth + 1) for raw in item[:limit]]
             if isinstance(item, (str, int, float, bool)) or item is None:
-                return item if not isinstance(item, str) else item[:1000]
-            return str(item)[:200]
+                return item if not isinstance(item, str) else clean_text(item)
+            return clean_text(item)[:200]
 
         result = clean(value)
         return result if isinstance(result, dict) else {}
@@ -497,6 +519,13 @@ class DesktopSatelliteService:
             "control_failed",
             "read_failed",
             "join_failed",
+            "process_enumeration_failed",
+            "terminate_failed",
+            "invalid_pid",
+            "protected_process",
+            "termination_unconfirmed",
+            "volume_read_failed",
+            "volume_set_failed",
             "invocation_id_tool_conflict",
             "unknown_tool",
         }:

@@ -94,13 +94,20 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
         )
         return app
 
-    def test_local_tools_are_hidden_offline_and_frozen_online(self) -> None:
+    def test_local_tool_schema_is_stable_while_execution_receipts_follow_readiness(self) -> None:
         service = DesktopSatelliteService(instance_id="instance-a", token="device-secret")
         registry = CapabilityRegistry(offer_source=service)
         expected_ids = {spec.capability_id for spec in DESKTOP_SATELLITE_TOOL_SPECS}
+        expected_schema_ids = expected_ids | {"open_browser"}
 
-        offline = registry.select(CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET))
-        self.assertTrue(expected_ids.isdisjoint(offline.tool_names))
+        offline_by_mode = {
+            mode: registry.select(CapabilitySnapshot(client_mode=mode))
+            for mode in (ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT)
+        }
+        for offline in offline_by_mode.values():
+            self.assertTrue(expected_ids.isdisjoint(offline.tool_names))
+            self.assertTrue(expected_schema_ids.issubset(offline.schema_tool_names))
+            self.assertEqual({spec.capability_id for spec in offline.tool_specs}, expected_schema_ids)
 
         with TestClient(self._app(service)) as client:
             with client.websocket_connect(
@@ -115,9 +122,10 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
                 for mode in (ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT):
                     selection = registry.select(CapabilitySnapshot(client_mode=mode))
                     self.assertTrue(expected_ids.issubset(selection.tool_names))
+                    self.assertEqual(selection.schema_tool_names, offline_by_mode[mode].schema_tool_names)
                     self.assertEqual(
                         {spec.capability_id for spec in selection.tool_specs},
-                        expected_ids,
+                        expected_schema_ids,
                     )
                     for spec in DESKTOP_SATELLITE_TOOL_SPECS:
                         receipt = selection.execution_receipts[spec.capability_id]

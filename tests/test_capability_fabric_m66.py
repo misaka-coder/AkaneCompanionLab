@@ -25,6 +25,7 @@ from companion_v01.capability_registry import (
 from companion_v01.client_protocol import ClientMode
 from companion_v01.deployment_security import AdminWriteAuth
 from companion_v01.desktop_satellite import DesktopSatelliteService
+from companion_v01.desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.routes.satellite import build_satellite_router
@@ -172,6 +173,9 @@ class CapabilityFabricM66Tests(unittest.TestCase):
             intent_text="请用浏览器打开这个网页 https://example.com",
         )
         self.assertNotIn("open_browser", offline.tool_names)
+        stable_offer_schema = {"open_browser", *(spec.capability_id for spec in DESKTOP_SATELLITE_TOOL_SPECS)}
+        self.assertTrue(stable_offer_schema.issubset(offline.schema_tool_names))
+        self.assertEqual({spec.capability_id for spec in offline.tool_specs}, stable_offer_schema)
         self.assertEqual(offline.disclosures[-1].state, "unavailable")
 
         with TestClient(self._app(service)) as client:
@@ -187,7 +191,8 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                 for mode in (ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT):
                     selection = registry.select(CapabilitySnapshot(client_mode=mode))
                     self.assertIn("open_browser", selection.tool_names)
-                    self.assertEqual(selection.tool_specs, (OPEN_BROWSER_TOOL_SPEC,))
+                    self.assertTrue(stable_offer_schema.issubset(selection.schema_tool_names))
+                    self.assertEqual({spec.capability_id for spec in selection.tool_specs}, stable_offer_schema)
                     self.assertEqual(
                         selection.execution_receipts["open_browser"]["instance_id"],
                         "instance-a",
@@ -219,6 +224,11 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertNotIn(
             "open_browser",
             registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT)).tool_names,
+        )
+        self.assertTrue(
+            stable_offer_schema.issubset(
+                registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT)).schema_tool_names
+            )
         )
 
     def test_broker_requires_exact_instance_live_lease_and_real_result(self) -> None:
