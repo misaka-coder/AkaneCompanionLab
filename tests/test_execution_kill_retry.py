@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -11,7 +15,10 @@ from companion_v01.execution_specs import EXEC_STATUS_EXECUTION_UNKNOWN, EXEC_ST
 
 
 def _sleep_command(seconds: int) -> str:
-    return f"python -c \"import time; time.sleep({seconds})\""
+    code = f"import time; time.sleep({seconds})"
+    if os.name == "nt":
+        return subprocess.list2cmdline([sys.executable, "-c", code])
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 class _RefusingKillExecutor(TrustedLocalExecutor):
