@@ -104,6 +104,9 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 - `exec_run` 返回 `running` 时，输入映射与输出声明绑定到 `run_id`。
 - 后续 `exec_status` 读到终态（completed）时**只登记一次**产物。
 - 重复调用 `exec_status` 幂等：返回相同的 `gen_*`，不会重复生成多个 handle。
+- 运行中的任务可在 `exec_status(..., wait_seconds=30)` 内等待新输出或终态；provider
+  会提前返回，不要求模型每隔一轮机械轮询。生产者返回的 continuation 可被同一工具
+  签名消费一次，普通重复工具调用拦截仍然保留。
 - 并发 `exec_status` 也只完成一次登记（host 侧串行化登记临界区并做 owner 校验）；
   不同 run 也不会竞争同一会话的下一个 `gen_*`。
 - `run_id` 过期不影响已经登记的 `gen_*`（gen_* 已存在于 GeneratedFileService）。
@@ -118,6 +121,8 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 ```
 
 - 多个 `gen_*` 可一次批量交付（`targets` 数组）。
+- 登记时保留安全的通用文件格式/后缀（如 `.java`、`.py`）；不会因为不在旧媒体白名单
+  就伪装成 Markdown。危险或非法格式字符串仍降级处理。
 - QQ：`file_ready` 结构化事件 → `qq_gateway.send_generated_files` → OneBot 真实
   上传（`upload_private_file` / `upload_group_file`）。
 - 桌宠：`file_ready` 事件携带 delivery_action，工作台真实打开 / 定位 / 保存。

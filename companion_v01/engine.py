@@ -3797,6 +3797,7 @@ class AkaneMemoryEngine:
         tool_followups: list[str] = []
         tool_history_turns: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
+        allowed_repeat_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         if speculative_voice_candidate:
             max_tool_rounds = -1
@@ -3844,7 +3845,7 @@ class AkaneMemoryEngine:
                 emergency_limit=emergency_tool_rounds,
                 tool_round_index=tool_round_index,
                 tool_calls=tool_calls,
-                seen_signatures=seen_tool_calls,
+                seen_signatures=seen_tool_calls.difference(allowed_repeat_tool_calls),
             )
             if max_tool_rounds > previous_tool_budget:
                 logger.info(
@@ -3961,12 +3962,21 @@ class AkaneMemoryEngine:
             for tool_call in tool_calls:
                 tool_signature = self._tool_call_signature(tool_call)
                 if tool_signature in seen_tool_calls:
-                    tool_followups.append(
-                        f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
-                        "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
-                    )
-                    continue
-                seen_tool_calls.add(tool_signature)
+                    if tool_signature in allowed_repeat_tool_calls:
+                        # A producer-owned continuation is a fresh observation,
+                        # even when its arguments are byte-identical (for
+                        # example polling a still-running command at the same
+                        # cursor). Consume the grant once; the next result may
+                        # issue it again if the observation remains incomplete.
+                        allowed_repeat_tool_calls.discard(tool_signature)
+                    else:
+                        tool_followups.append(
+                            f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
+                            "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
+                        )
+                        continue
+                else:
+                    seen_tool_calls.add(tool_signature)
                 executable_calls.append(tool_call)
             if not executable_calls:
                 tool_round_index += 1
@@ -4062,6 +4072,11 @@ class AkaneMemoryEngine:
                 execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
+            for completed_result in batch_results:
+                envelope = getattr(completed_result, "followup_envelope", None)
+                continuation = getattr(envelope, "continuation", None)
+                if isinstance(continuation, Mapping) and str(continuation.get("type") or "").strip():
+                    allowed_repeat_tool_calls.add(self._tool_call_signature(dict(continuation)))
             if streaming:
                 for stream_event in current_events:
                     yield stream_event

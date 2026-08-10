@@ -205,6 +205,31 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=1)
         self.assertNotIn("s3cr3t_value", start.stdout)
 
+    def test_python_user_site_and_pip_cache_are_isolated_inside_workspace(self) -> None:
+        outside = str(Path(self._tmp.name) / "host-userbase")
+        executor = self._executor(
+            allowed_env_names={"PATH", "PYTHONUSERBASE", "PIP_REQUIRE_VIRTUALENV"},
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONUSERBASE": outside,
+                "PIP_REQUIRE_VIRTUALENV": "1",
+            },
+        )
+        env = executor._build_env()
+        self.assertEqual(Path(env["PYTHONUSERBASE"]), executor.python_user_base)
+        self.assertEqual(Path(env["PIP_CACHE_DIR"]), executor.pip_cache_dir)
+        self.assertEqual(env["PIP_USER"], "1")
+        self.assertNotIn("PIP_REQUIRE_VIRTUALENV", env)
+        self.assertTrue(executor.python_user_base.is_relative_to(self.workspace))
+        self.assertTrue(executor.pip_cache_dir.is_relative_to(self.workspace))
+        start = executor.run(
+            owner=self.owner,
+            command=_python_command("import site; print(site.USER_BASE)"),
+            initial_wait_seconds=1,
+        )
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(Path(start.stdout.strip()), executor.python_user_base)
+
     # -- ownership / provider scope ---------------------------------------------------
 
     def test_cross_session_query_is_unknown(self) -> None:

@@ -52,6 +52,7 @@ from ..execution_specs import (
     EXEC_STATUS_CANCELLED,
     EXEC_STATUS_COMPLETED,
     EXEC_STATUS_FAILED,
+    EXEC_STATUS_RUNNING,
     EXEC_STATUS_TOOL_SPEC,
     EXEC_STATUS_TIMED_OUT,
 )
@@ -134,6 +135,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 "type": "exec_status",
                 "run_id": str(data.get("run_id") or ""),
                 "cursor": next_cursor,
+                **({"wait_seconds": 30} if str(mapped.event_status or "") == EXEC_STATUS_RUNNING else {}),
             }
             if next_cursor
             else None
@@ -147,6 +149,9 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 "exit_code": data.get("exit_code"),
                 "next_cursor": next_cursor,
                 "output_ref": str(data.get("output_ref") or "") or None,
+                "started_at": data.get("started_at"),
+                "finished_at": data.get("finished_at"),
+                "observed_at": data.get("observed_at"),
             }
         }
         if data.get("generated_resources"):
@@ -553,7 +558,8 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
     def build_prompt_instruction(self) -> str:
         return (
             "- exec_status：按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出；"
-            "每次返回自 cursor 之后的新输出和 next_cursor，任务终止且输出读完后 next_cursor 为 null。"
+            "每次返回自 cursor 之后的新输出和 next_cursor，任务终止且输出读完后 next_cursor 为 null；"
+            "运行中暂无新输出时可用 wait_seconds 最多等待 30 秒，有新输出或终态会提前返回。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -568,6 +574,11 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
         cursor = value.get("cursor")
         if cursor is not None:
             normalized["cursor"] = str(cursor).strip()
+        if value.get("wait_seconds") is not None:
+            try:
+                normalized["wait_seconds"] = int(value.get("wait_seconds"))
+            except (TypeError, ValueError):
+                return None
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -580,6 +591,7 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
             owner=self._owner(context),
             run_id=run_id,
             cursor=str(call.get("cursor") or "").strip() or None,
+            wait_seconds=call.get("wait_seconds"),
         )
         bridge = self.resource_bridge
         owner = self._owner(context)

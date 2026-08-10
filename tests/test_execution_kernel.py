@@ -43,6 +43,7 @@ from companion_v01.execution_specs import (
     EXEC_STATUS_TOOL_SPEC,
     EXEC_TOOL_SPECS,
     normalize_initial_wait_seconds,
+    normalize_status_wait_seconds,
     normalize_timeout_seconds,
 )
 from companion_v01.native_tool_schema import build_openai_native_tool_from_spec
@@ -85,6 +86,7 @@ class ExecutionSpecsTests(unittest.TestCase):
         self.assertEqual(EXEC_STATUS_TOOL_SPEC.max_result_bytes, EXEC_STATUS_RESULT_MAX_BYTES)
         self.assertEqual(EXEC_CANCEL_TOOL_SPEC.max_result_bytes, EXEC_CANCEL_RESULT_MAX_BYTES)
         self.assertIn("cancel_failed", EXEC_CANCEL_TOOL_SPEC.output_schema["properties"]["status"]["enum"])
+        self.assertEqual(EXEC_STATUS_TOOL_SPEC.input_schema["properties"]["wait_seconds"]["maximum"], 30)
 
     def test_exec_description_is_honest_about_trusted_not_sandboxed(self) -> None:
         self.assertIn("不是 Shell 沙箱", EXEC_RUN_TOOL_SPEC.description)
@@ -110,6 +112,9 @@ class ExecutionSpecsTests(unittest.TestCase):
         self.assertEqual(normalize_initial_wait_seconds(None), 8)
         self.assertEqual(normalize_initial_wait_seconds(99), 10)
         self.assertEqual(normalize_initial_wait_seconds(0), 1)
+        self.assertEqual(normalize_status_wait_seconds(None), 0)
+        self.assertEqual(normalize_status_wait_seconds(99), 30)
+        self.assertEqual(normalize_status_wait_seconds(-1), 0)
 
 
 class ExecutionRunStoreTests(unittest.TestCase):
@@ -513,6 +518,40 @@ class ExecOrchestrationTests(unittest.TestCase):
         hidden = execute_exec_status(provider, owner=OTHER_OWNER, run_id=run_id)
         self.assertEqual(hidden.event_status, EXEC_STATUS_UNKNOWN)
         self.assertNotIn("owner", json.dumps(hidden.data))
+
+    def test_status_waits_for_terminal_change_without_extra_model_rounds(self) -> None:
+        run_id = new_run_id()
+
+        class AdvancingProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def status(self, *, owner, run_id, cursor=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return ExecRunStatus(
+                        EXEC_STATUS_RUNNING,
+                        run_id,
+                        next_cursor=make_cursor(run_id, 0),
+                        started_at=100.0,
+                    )
+                return ExecRunStatus(
+                    EXEC_STATUS_COMPLETED,
+                    run_id,
+                    exit_code=0,
+                    tail="done",
+                    started_at=100.0,
+                    finished_at=130.0,
+                )
+
+        provider = AdvancingProvider()
+        result = execute_exec_status(provider, owner=OWNER, run_id=run_id, wait_seconds=1)
+        self.assertEqual(result.event_status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(result.data["finished_at"], 130.0)
+        self.assertGreater(result.data["observed_at"], result.data["finished_at"])
+        self.assertIn("任务完成时间=", result.model_feedback)
+        self.assertIn("本次查询时间=", result.model_feedback)
 
     def test_status_wrapper_catches_provider_errors_and_invalid_results(self) -> None:
         class Broken(_FakeExecutionProvider):

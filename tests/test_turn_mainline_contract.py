@@ -6,7 +6,7 @@ import unittest
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
-from companion_v01.tool_runtime import ToolExecutionResult
+from companion_v01.tool_runtime import ToolExecutionResult, ToolFollowupEnvelope
 
 
 def _tool_call(kind: str, call_id: str) -> dict[str, object]:
@@ -320,6 +320,37 @@ class TurnMainlineContractTests(unittest.TestCase):
         roles = [str(message.get("role")) for message in harness.store.messages]
         self.assertEqual(roles, ["user", "assistant", "assistant", "assistant"])
         self.assertEqual(len(harness.store.eval_turns), 1)
+
+    def test_producer_continuation_may_repeat_the_same_observation_call(self) -> None:
+        repeated_call = _tool_call("poll_status", "same-call")
+        harness = _Harness(
+            [
+                _tool_round_output("我等一下。", "poll_status", "same-call"),
+                _tool_round_output("还在运行，我继续等。", "poll_status", "same-call"),
+                _speech_output("任务完成了。"),
+            ]
+        )
+        executions: list[dict[str, object]] = []
+
+        def execute_tool_call(**kwargs: object) -> ToolExecutionResult:
+            tool_call = dict(kwargs["tool_call"])
+            executions.append(tool_call)
+            first = len(executions) == 1
+            return ToolExecutionResult(
+                tool_type="poll_status",
+                followup_context="仍在运行" if first else "已经完成",
+                followup_envelope=ToolFollowupEnvelope(
+                    content="仍在运行" if first else "已经完成",
+                    producer_bounded=True,
+                    complete=not first,
+                    continuation=dict(repeated_call) if first else None,
+                ),
+            )
+
+        harness.engine._execute_tool_call = execute_tool_call
+        result = harness.run_sync(harness.payload())
+        self.assertEqual(len(executions), 2)
+        self.assertEqual(result.get("speech"), "任务完成了。")
 
     def test_stream_event_order_is_locked(self) -> None:
         harness = _Harness(

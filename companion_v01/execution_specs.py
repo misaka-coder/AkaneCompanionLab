@@ -78,6 +78,9 @@ EXEC_MAX_TIMEOUT_SECONDS = 600
 EXEC_DEFAULT_INITIAL_WAIT_SECONDS = 8
 EXEC_MIN_INITIAL_WAIT_SECONDS = 1
 EXEC_MAX_INITIAL_WAIT_SECONDS = 10
+EXEC_DEFAULT_STATUS_WAIT_SECONDS = 0
+EXEC_MIN_STATUS_WAIT_SECONDS = 0
+EXEC_MAX_STATUS_WAIT_SECONDS = 30
 
 EXEC_DEFAULT_RUN_RETENTION_SECONDS = 600
 EXEC_DEFAULT_MAX_RUNS = 128
@@ -124,6 +127,14 @@ def normalize_initial_wait_seconds(value: Any) -> int:
     return max(EXEC_MIN_INITIAL_WAIT_SECONDS, min(EXEC_MAX_INITIAL_WAIT_SECONDS, seconds))
 
 
+def normalize_status_wait_seconds(value: Any) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        seconds = EXEC_DEFAULT_STATUS_WAIT_SECONDS
+    return max(EXEC_MIN_STATUS_WAIT_SECONDS, min(EXEC_MAX_STATUS_WAIT_SECONDS, seconds))
+
+
 _EXEC_RUN_STATUS_ENUM: list[str] = [
     EXEC_STATUS_COMPLETED,
     EXEC_STATUS_FAILED,
@@ -159,6 +170,10 @@ def _null_or_string() -> list[str]:
 
 def _null_or_integer() -> list[str]:
     return ["integer", "null"]
+
+
+def _null_or_number() -> list[str]:
+    return ["number", "null"]
 
 
 EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
@@ -254,6 +269,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "description": "完整输出已真实保存时返回的不透明引用；绝不包含宿主绝对路径。",
             },
             "reason": {"type": "string"},
+            "started_at": {"type": _null_or_number(), "description": "命令启动 epoch 秒。"},
+            "finished_at": {"type": _null_or_number(), "description": "命令进入终态的 epoch 秒。"},
+            "observed_at": {"type": _null_or_number(), "description": "本次工具观察 epoch 秒。"},
             "generated_resources": {
                 "type": "array",
                 "items": {
@@ -298,6 +316,8 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出。每次返回自 cursor 之后的新输出"
         "片段和 next_cursor；任务终止后仍可逐页读完剩余输出，全部读完后 next_cursor 才为 null。"
+        "如果任务仍在运行且暂时没有新输出，可用 wait_seconds 在同一次工具调用内等待状态变化，"
+        "避免为了轮询反复消耗模型回合；有新输出或进入终态会提前返回。"
         "cursor 用于超长输出或运行中增量观察，普通命令不需要机械翻页。终态结果保留一段可读时间，"
         "之后返回 unknown。"
     ),
@@ -309,6 +329,12 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                 "type": _null_or_string(),
                 "maxLength": EXEC_CURSOR_MAX_CHARS,
                 "description": "上一次返回的 next_cursor。",
+            },
+            "wait_seconds": {
+                "type": "integer",
+                "minimum": EXEC_MIN_STATUS_WAIT_SECONDS,
+                "maximum": EXEC_MAX_STATUS_WAIT_SECONDS,
+                "description": "运行中且暂无新输出时最多等待多少秒；默认 0，continuation 通常使用 30。",
             },
         },
         "required": ["run_id"],
@@ -328,6 +354,9 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                 "description": "完整输出已真实保存时返回的不透明引用。",
             },
             "reason": {"type": "string"},
+            "started_at": {"type": _null_or_number(), "description": "命令启动 epoch 秒。"},
+            "finished_at": {"type": _null_or_number(), "description": "命令进入终态的 epoch 秒。"},
+            "observed_at": {"type": _null_or_number(), "description": "本次状态查询 epoch 秒。"},
             "generated_resources": {
                 "type": "array",
                 "items": {

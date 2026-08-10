@@ -43,7 +43,7 @@ Scope: Phase 5 最终收口 —— 真实调用链验收、首次启用体验、
 | 工具 | 职责 | 风险 | 审批 |
 |------|------|------|------|
 | `exec_run` | 在受信任执行工作区启动真实命令 | high | 按用户策略（`confirm=always`，可 allow / ask / deny） |
-| `exec_status` | 按 run_id 查询运行状态，并用 cursor 增量读取输出 | low | 不询问 |
+| `exec_status` | 按 run_id 查询运行状态，可在同一次调用内等待新输出，并用 cursor 增量读取输出 | low | 不询问 |
 | `exec_cancel` | 请求停止指定 run_id 的命令；只有执行器确认进程组终止后才算成功 | medium | 不询问 |
 
 `exec_run` 参数：
@@ -56,6 +56,10 @@ Scope: Phase 5 最终收口 —— 真实调用链验收、首次启用体验、
 
 `exec_run` 不接受环境变量参数（`additionalProperties=false`），环境变量由宿主按
 白名单注入。
+
+`exec_status` 的 `wait_seconds` 可选范围为 0–30 秒，默认 0。等待型任务优先传 30：
+调用会在出现新输出、进入终态或到达等待上限时立即返回，不需要模型连续发起多次
+无结果轮询。它不是后台通知；如果一轮已经结束，Akane 不会在没有新事件时自行醒来。
 
 ### 2.1 短命令与长任务
 
@@ -74,10 +78,10 @@ exec_run(command="echo hi")
 exec_run(command="python run_big_job.py", initial_wait_seconds=8)
 -> { "status": "running", "run_id": "execrun_...", "stdout": "started\n", "next_cursor": "c1...." }
 
-exec_status(run_id="execrun_...", cursor="c1....")
+exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
 -> { "status": "running", "tail": "progress 40%\n", "next_cursor": "c1...." }
 
-exec_status(run_id="execrun_...", cursor="c1....")
+exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
 -> { "status": "completed", "exit_code": 0, "tail": "finished\n", "next_cursor": null }
 ```
 
@@ -103,6 +107,8 @@ exec_status(run_id="execrun_...", cursor="c1....")
 ### 3.3 状态诚实
 
 - `running` 表示命令仍在执行，模型不得声称完成。
+- `started_at` / `finished_at` 是执行器记录的开始与完成时间，`observed_at` 是本次
+  状态查询时间；稍后查询一个已完成任务时，不得把 `observed_at` 说成完成时间。
 - `failed` / `timed_out` / `cancelled` / `execution_unknown` 必须如实说明。
 - `exec_cancel` 只是取消请求；只有执行器确认进程组终止后才返回 `cancelled`。
   kill 重试耗尽后返回 `termination_unconfirmed`（即 `execution_unknown`），
@@ -158,6 +164,16 @@ exec_status(run_id="execrun_...", cursor="c1....")
   U+FFFD。模型可见的 Prompt、MemCore、
   stream event、审计摘要统一使用脱敏投影（secret/path 会被替换）。
 - run log 的真实磁盘路径绝不返回给模型。
+
+### 6.1 Python / pip 持久环境
+
+- 本地执行器为每个执行工作区维护宿主私有的 `.runtime/python_userbase` 与
+  `.runtime/pip_cache`；普通 `python -m pip install ...` 默认安装到这里，并在后续
+  命令与重启后继续可用。
+- 这避免模型安装的 numpy、matplotlib 等依赖污染运行 Akane 后端的宿主用户
+  site-packages。它仍然不是容器或 OS 沙箱；命令显式指定其它路径时，仍受宿主用户
+  权限支配。
+- 这些物理路径只进入子进程环境，不进入 Prompt、stream event 或 MemCore。
 
 ## 7. 部署形态差异
 

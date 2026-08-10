@@ -15,6 +15,8 @@ from capcore import PermissionDecision
 from companion_v01.capability_registry import CapabilitySelection, ExecutorBroker
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.execution_local import TrustedLocalExecutor
+from companion_v01.execution_run import ExecutionAvailability, ExecRunStart, make_cursor, new_run_id
+from companion_v01.execution_specs import EXEC_STATUS_RUNNING
 from companion_v01.capcore_runtime import manual_permission_request, resolve_permission_for_profile
 from companion_v01.local_capability_config import (
     get_approval_policy_config,
@@ -206,6 +208,30 @@ class ExecHandlerPermissionTests(unittest.TestCase):
             context=_context(),
         )
         self.assertEqual(cancel_result.stream_events[0]["status"], "unknown")
+
+    def test_exec_status_normalizes_bounded_wait(self) -> None:
+        handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)
+        self.assertEqual(
+            handler.normalize_call(
+                {
+                    "type": "exec_status",
+                    "run_id": "execrun_" + "0" * 32,
+                    "cursor": "cursor",
+                    "wait_seconds": 30,
+                }
+            ),
+            {
+                "type": "exec_status",
+                "run_id": "execrun_" + "0" * 32,
+                "cursor": "cursor",
+                "wait_seconds": 30,
+            },
+        )
+        self.assertIsNone(
+            handler.normalize_call(
+                {"type": "exec_status", "run_id": "execrun_" + "0" * 32, "wait_seconds": "later"}
+            )
+        )
 
     def test_exec_status_continuation_reads_rest(self) -> None:
         from companion_v01.execution_run import ExecutionRunOwner
@@ -399,6 +425,34 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
         self.assertFalse(followup["complete"])
         self.assertEqual(followup["continuation"]["type"], "exec_status")
         self.assertTrue(followup["continuation"]["cursor"])
+
+    def test_running_continuation_requests_one_bounded_wait(self) -> None:
+        class RunningProvider:
+            provider_id = "local"
+
+            def availability(self):
+                return ExecutionAvailability(enabled=True, status="ready")
+
+            def run(self, **kwargs):
+                del kwargs
+                run_id = new_run_id()
+                return ExecRunStart(
+                    status=EXEC_STATUS_RUNNING,
+                    run_id=run_id,
+                    next_cursor=make_cursor(run_id, 0),
+                )
+
+        self.handlers["exec_run"] = ExecRunToolHandler(
+            execution_provider=RunningProvider(),
+            config_base_dir=self.base_dir,
+        )
+        result, envelope = self._dispatch(
+            self._invocation("exec_run", {"command": "long task", "initial_wait_seconds": 1})
+        )
+        self.assertEqual(result.stream_events[0]["status"], "running")
+        continuation = envelope.data["followup"]["continuation"]
+        self.assertEqual(continuation["type"], "exec_status")
+        self.assertEqual(continuation["wait_seconds"], 30)
 
     def test_envelope_error_for_failed_command(self) -> None:
         result, envelope = self._dispatch(self._invocation("exec_run", {"command": "exit 2", "initial_wait_seconds": 1}))

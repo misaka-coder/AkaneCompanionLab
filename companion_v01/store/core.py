@@ -14,6 +14,7 @@ from typing import Any, Callable
 from ..text_utils import timestamp_to_date_label, infer_time_of_day
 
 CHARACTER_PACK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+GENERATED_FILE_FORMAT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_+-]{0,15}$")
 logger = logging.getLogger("akane.store")
 
 
@@ -5746,6 +5747,14 @@ class MemoryStore:
             "opus",
             "png",
         }:
+            return normalized
+        # ExecutionResourceBridge validates generic artifact formats before
+        # they reach the store.  The store must preserve that stable wire
+        # value instead of silently turning a real .java/.py/.cpp file into
+        # Markdown.  Keep the grammar deliberately filename-safe so direct
+        # legacy callers still cannot smuggle paths or arbitrary labels into
+        # generated-file metadata.
+        if GENERATED_FILE_FORMAT_PATTERN.fullmatch(normalized):
             return normalized
         return "md"
 

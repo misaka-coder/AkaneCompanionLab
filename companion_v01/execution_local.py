@@ -40,6 +40,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -131,6 +132,14 @@ class TrustedLocalExecutor(ExecutionProvider):
         allowed = {str(name or "").strip() for name in (allowed_env_names or DEFAULT_ALLOWED_ENV_NAMES)}
         self.allowed_env_names = {name for name in allowed if name}
         self.host_env = dict(host_env) if host_env is not None else dict(os.environ)
+        # Keep packages installed by model-authored commands away from the
+        # Python user-site used by the Akane host process. This is a durable
+        # execution environment, not a sandbox: commands may still explicitly
+        # access anything the host user can access, but ordinary `pip install`
+        # and subsequent `python` calls stay inside the execution workspace.
+        runtime_root = self.workspace_root / ".runtime"
+        self.python_user_base = runtime_root / "python_userbase"
+        self.pip_cache_dir = runtime_root / "pip_cache"
         self.mounts: dict[str, Path] = {}
         for raw_name, raw_path in (mounts or {}).items():
             name = str(raw_name or "").strip()
@@ -369,6 +378,22 @@ class TrustedLocalExecutor(ExecutionProvider):
                 output_name, value = name, host_values.get(name)
             if value is not None:
                 env[output_name] = str(value)
+        self.python_user_base.mkdir(parents=True, exist_ok=True)
+        self.pip_cache_dir.mkdir(parents=True, exist_ok=True)
+        env["PYTHONUSERBASE"] = str(self.python_user_base)
+        env["PIP_USER"] = "1"
+        env["PIP_CACHE_DIR"] = str(self.pip_cache_dir)
+        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        # PYTHONNOUSERSITE treats even "0" as enabled, so absence is the only
+        # correct value for this managed user-site environment.
+        env.pop("PYTHONNOUSERSITE", None)
+        env.pop("PIP_REQUIRE_VIRTUALENV", None)
+        if os.name == "nt":
+            scripts_dir = self.python_user_base / f"Python{sys.version_info.major}{sys.version_info.minor}" / "Scripts"
+        else:
+            scripts_dir = self.python_user_base / "bin"
+        existing_path = str(env.get("PATH") or "")
+        env["PATH"] = str(scripts_dir) + (os.pathsep + existing_path if existing_path else "")
         return env
 
     def _open_run_log(self, run_id: str) -> str | None:
@@ -646,6 +671,8 @@ class TrustedLocalExecutor(ExecutionProvider):
             ),
             output_ref=record.output_ref,
             reason="output_reloaded",
+            started_at=float(getattr(record, "created_at", 0.0) or 0.0),
+            finished_at=float(getattr(record, "finished_at", 0.0) or 0.0),
         )
 
     def _read_persisted_page(
@@ -759,11 +786,11 @@ class TrustedLocalExecutor(ExecutionProvider):
             handle = self._logs.pop(run_id, None)
             self._pending_reasons.pop(run_id, None)
             self._capture_failures.discard(run_id)
-        if handle is not None:
-            try:
-                handle.close()
-            except Exception:
-                pass
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
 
 
 def _bounded_utf8_prefix(data: bytes, *, max_bytes: int, max_lines: int) -> int:

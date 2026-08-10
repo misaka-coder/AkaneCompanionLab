@@ -41,6 +41,7 @@ from .execution_specs import (
     EXEC_STATUS_UNKNOWN,
     EXEC_TERMINAL_STATUSES,
     normalize_initial_wait_seconds,
+    normalize_status_wait_seconds,
     normalize_timeout_seconds,
 )
 
@@ -139,6 +140,8 @@ class ExecRunStart:
     next_cursor: str | None = None
     output_ref: str | None = None
     reason: str = ""
+    started_at: float = 0.0
+    finished_at: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +153,8 @@ class ExecRunStatus:
     next_cursor: str | None = None
     output_ref: str | None = None
     reason: str = ""
+    started_at: float = 0.0
+    finished_at: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +222,7 @@ class _RunRecord:
     absolute_end_bytes: int = 0
     created_at: float = 0.0
     updated_at: float = 0.0
+    finished_at: float = 0.0
 
 
 class ExecutionRunStore:
@@ -312,6 +318,7 @@ class ExecutionRunStore:
             record.exit_code = exit_code
             record.reason = str(reason or "")
             record.updated_at = self._now()
+            record.finished_at = record.updated_at
             return True
 
     def request_cancel(self, run_id: str, *, owner: ExecutionRunOwner) -> str:
@@ -340,6 +347,7 @@ class ExecutionRunStore:
             record.status = EXEC_STATUS_CANCELLED
             record.reason = "cancelled"
             record.updated_at = self._now()
+            record.finished_at = record.updated_at
             return True
 
     def get(self, run_id: str, *, owner: ExecutionRunOwner) -> _RunRecord | None:
@@ -373,6 +381,8 @@ class ExecutionRunStore:
                 next_cursor=next_cursor,
                 output_ref=record.output_ref,
                 reason="output_compacted" if record.window_start_bytes else record.reason,
+                started_at=record.created_at,
+                finished_at=record.finished_at,
             )
 
     def read(
@@ -414,6 +424,8 @@ class ExecutionRunStore:
                 next_cursor=self._next_cursor_locked(record, page_end),
                 output_ref=record.output_ref,
                 reason=reason,
+                started_at=record.created_at,
+                finished_at=record.finished_at,
             )
 
     def evict_expired(self) -> int:
@@ -635,12 +647,16 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
         "next_cursor": run_start.next_cursor,
         "output_ref": output_ref,
         "reason": reason,
+        "started_at": max(0.0, float(run_start.started_at or 0.0)) or None,
+        "finished_at": max(0.0, float(run_start.finished_at or 0.0)) or None,
+        "observed_at": time.time(),
     }
     event = {"type": "capability_execution_result", "tool_type": EXEC_RUN_TOOL_NAME, "status": status}
 
     if status == EXEC_STATUS_COMPLETED:
         followup = (
-            f"输出尚未读完，请调用 exec_status(run_id={run_id}, cursor={run_start.next_cursor}) 继续读取。"
+            f"输出尚未读完，请调用 exec_status(run_id={run_id}, cursor={run_start.next_cursor}, "
+            "wait_seconds=30) 继续读取。"
             if run_start.next_cursor
             else ""
         )
@@ -664,6 +680,7 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
         output_ref_hint = f"完整日志引用：output_ref={output_ref}。" if output_ref else ""
         feedback = (
             f"命令仍在执行中（run_id={run_id}），尚未完成。请用 exec_status 查询进度、exec_cancel 停止；"
+            f"等待型任务优先用 wait_seconds=30 在同一次状态调用内等待，避免频繁轮询；"
             f"不要声称命令已经完成。{continuation}{output_ref_hint}{output}"
         )
         return ExecMappedResult("ok", status, reason, feedback, data, event)
@@ -741,17 +758,27 @@ def _unavailable_mapped(reason: str) -> ExecMappedResult:
     return map_exec_run_outcome(ExecRunStart(status=EXEC_STATUS_UNAVAILABLE, reason=clean_reason))
 
 
+def _execution_status_timing_text(*, finished_at: float, observed_at: float) -> str:
+    if finished_at <= 0:
+        return ""
+    finished_label = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(finished_at))
+    observed_label = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(observed_at))
+    return f"任务完成时间={finished_label}；本次查询时间={observed_label}；"
+
+
 def execute_exec_status(
     provider: ExecutionProvider,
     *,
     owner: ExecutionRunOwner,
     run_id: str,
     cursor: str | None = None,
+    wait_seconds: Any = None,
 ) -> ExecMappedResult:
-    """Read one bounded output page without leaking ownership information."""
+    """Read one bounded output page, optionally waiting for a new observation."""
 
     clean_run_id = str(run_id or "").strip()
     clean_cursor = str(cursor or "").strip() or None
+    bounded_wait_seconds = normalize_status_wait_seconds(wait_seconds)
     if (
         not isinstance(owner, ExecutionRunOwner)
         or not _RUN_ID_RE.fullmatch(clean_run_id)
@@ -760,6 +787,17 @@ def execute_exec_status(
         return _status_unknown_result(clean_run_id, "run_not_found")
     try:
         status_result = provider.status(owner=owner, run_id=clean_run_id, cursor=clean_cursor)
+        if bounded_wait_seconds > 0:
+            deadline = time.monotonic() + bounded_wait_seconds
+            while (
+                isinstance(status_result, ExecRunStatus)
+                and status_result.run_id == clean_run_id
+                and status_result.status == EXEC_STATUS_RUNNING
+                and not str(status_result.tail or "")
+                and time.monotonic() < deadline
+            ):
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                status_result = provider.status(owner=owner, run_id=clean_run_id, cursor=clean_cursor)
     except Exception:
         return _status_unknown_result(clean_run_id, "status_query_failed", execution_unknown=True)
     if not isinstance(status_result, ExecRunStatus) or status_result.run_id != clean_run_id:
@@ -795,6 +833,9 @@ def execute_exec_status(
 
     safe_tail = _sanitize_model_text(status_result.tail)
     safe_reason = _sanitize_model_text(str(status_result.reason or ""))
+    observed_at = time.time()
+    started_at = max(0.0, float(status_result.started_at or 0.0))
+    finished_at = max(0.0, float(status_result.finished_at or 0.0))
     data = {
         "status": status,
         "run_id": clean_run_id,
@@ -803,12 +844,16 @@ def execute_exec_status(
         "next_cursor": status_result.next_cursor,
         "output_ref": output_ref,
         "reason": safe_reason,
+        "started_at": started_at or None,
+        "finished_at": finished_at or None,
+        "observed_at": observed_at,
     }
     event = {"type": "capability_execution_result", "tool_type": EXEC_STATUS_TOOL_NAME, "status": status}
     if status == EXEC_STATUS_RUNNING:
         output = f"\n本次增量输出：\n{safe_tail}" if safe_tail else ""
         continuation = (
-            f"\n输出尚未读完，请调用 exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor}) 继续读取。"
+            f"\n输出尚未读完，请调用 exec_status(run_id={clean_run_id}, "
+            f"cursor={status_result.next_cursor}, wait_seconds=30) 等待新输出或终态。"
             if status_result.next_cursor
             else ""
         )
@@ -824,7 +869,8 @@ def execute_exec_status(
             else ""
         )
         output_ref_hint = f"\n完整日志引用：output_ref={output_ref}。" if output_ref else ""
-        feedback = f"命令已完成（exit_code=0）；{output_ref_hint}{output}{continuation}\n{followup}"
+        timing = _execution_status_timing_text(finished_at=finished_at, observed_at=observed_at)
+        feedback = f"命令已完成（exit_code=0）；{timing}{output_ref_hint}{output}{continuation}\n{followup}"
         return ExecMappedResult("ok", status, safe_reason, feedback, data, event)
     if status == EXEC_STATUS_UNKNOWN:
         return _status_unknown_result(clean_run_id, safe_reason or "run_not_found")

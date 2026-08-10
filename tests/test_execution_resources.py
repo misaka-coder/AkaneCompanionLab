@@ -227,17 +227,34 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
             run_id=run_id,
             owner=OWNER,
             input_resources=[],
-            output_globs=["photo.jpg", "clip.mp4", "slides.pptx"],
+            output_globs=["photo.jpg", "clip.mp4", "slides.pptx", "Main.java", "script.py"],
         )
         run_dir = self.harness.workspace / self.harness.bridge.run_cwd_relpath(run_id)
-        for name in ("photo.jpg", "clip.mp4", "slides.pptx"):
+        for name in ("photo.jpg", "clip.mp4", "slides.pptx", "Main.java", "script.py"):
             (run_dir / name).write_bytes(b"not-empty")
         result = self.harness.bridge.register_outputs(run_id=run_id, owner=OWNER)
         self.assertEqual(result["artifact_status"], "registered", result)
         self.assertEqual(
             {item["name"] for item in result["generated_resources"]},
-            {"photo.jpg", "clip.mp4", "slides.pptx"},
+            {"photo.jpg", "clip.mp4", "slides.pptx", "Main.java", "script.py"},
         )
+        stored = self.harness.store.list_generated_files(
+            profile_user_id="alice",
+            session_id="s1",
+            statuses=["ready"],
+            limit=20,
+        )
+        by_ext = {str(item.get("file_ext")): item for item in stored}
+        self.assertEqual(by_ext["java"]["output_format"], "java")
+        self.assertEqual(by_ext["py"]["output_format"], "py")
+        delivery = self.harness.generated_service.send_file(
+            profile_user_id="alice",
+            session_id="s1",
+            target=str(by_ext["java"]["generated_handle"]),
+        )
+        self.assertTrue(delivery["ok"], delivery)
+        self.assertEqual(delivery["files"][0]["name"], "Main.java")
+        self.assertEqual(delivery["files"][0]["file_ext"], "java")
 
     def test_output_limit_is_not_silently_partial_and_workspace_is_cleaned(self) -> None:
         bridge = ExecutionResourceBridge(
