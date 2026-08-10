@@ -1207,6 +1207,8 @@ def _process_qq_turn_streaming(
     stream_send_results: list[dict[str, Any]] = []
     streamed_delivery_events: list[dict[str, Any]] = []
     frame: dict[str, Any] = {}
+    final_frame_received = False
+    tool_preface_delivered = False
     delivery_hint = ""
     active_reply_mode = (
         _normalize_reply_medium(getattr(context, "reply_mode", ""))
@@ -1261,6 +1263,7 @@ def _process_qq_turn_streaming(
             # Do not irreversibly send those provisional pieces to QQ.
             if not has_tool_call:
                 continue
+            streamed_before = len(streamed_messages)
             pending_stage_messages = _send_pending_stage_messages(
                 qq_gateway=qq_gateway,
                 context=context,
@@ -1269,9 +1272,12 @@ def _process_qq_turn_streaming(
                 stream_send_results=stream_send_results,
                 max_streamed=max_streamed,
             )
+            if len(streamed_messages) > streamed_before:
+                tool_preface_delivered = True
             continue
         if event_type == "final_ui" and isinstance(stream_event.get("payload"), dict):
             frame = dict(stream_event.get("payload") or {})
+            final_frame_received = True
             if (
                 pending_stage_messages
                 and bool(frame.get("_transient_final_failure"))
@@ -1306,6 +1312,7 @@ def _process_qq_turn_streaming(
 
     if not frame and not streamed_messages:
         frame = engine.process_turn(turn_payload)
+        final_frame_received = bool(frame)
 
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
     retained_frame_events = [
@@ -1397,10 +1404,20 @@ def _process_qq_turn_streaming(
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
-    if not visible_text_delivered and not visible_file_delivered:
-        # A streamed emotion is not a reply.  If JSON/tool orchestration
-        # failed before any text or file reached QQ, surface a transport-level
-        # status instead of leaving the user with only a mood sticker.
+    if (
+        (not visible_text_delivered and not visible_file_delivered)
+        or (not final_frame_received and not visible_file_delivered)
+        or (
+            bool(frame.get("_transient_final_failure"))
+            and tool_preface_delivered
+            and not visible_file_delivered
+        )
+    ):
+        # A streamed tool preface or emotion is not an authoritative final
+        # reply.  If the turn ends without a final frame or delivered file,
+        # surface a transport-level status instead of silently treating the
+        # provisional text as completion.  Do not rerun the turn here: a tool
+        # may already have produced irreversible side effects.
         final_failure_notice = (
             "这次没有形成可交付的文字结果，刚才的处理没有完整结束。请再试一次。"
         )
@@ -1431,6 +1448,7 @@ def _process_qq_turn_streaming(
             "delivery": send_result.get("delivery"),
             "text_result": send_result.get("text_result"),
             "voice_result": send_result.get("voice_result"),
+            "final_failure_notice": bool(send_result.get("final_failure_notice")),
         }
 
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}

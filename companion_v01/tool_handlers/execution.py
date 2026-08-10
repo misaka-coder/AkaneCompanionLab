@@ -61,6 +61,12 @@ from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, To
 class _ExecToolHandlerBase(BaseToolHandler):
     """Shared provider / owner / result plumbing for the three exec tools."""
 
+    # The execution specs are complete canonical schemas.  Advertising them
+    # through the provider's native tool channel keeps argument validation at
+    # the protocol boundary instead of asking the model to reproduce the
+    # compatibility JSON shape from prose.
+    policy_accepted_native_tool = True
+
     def __init__(
         self,
         *,
@@ -289,7 +295,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本。cwd 只能用工作区相对路径或挂载别名，"
+            "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本；命令参数字段名是 command（不是 cmd）。"
+            "cwd 只能用工作区相对路径或挂载别名，"
             "不接受绝对路径；环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
@@ -304,7 +311,15 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
-        command = str(value.get("command") or "").strip()
+        # ``command`` is the canonical persisted/wire field.  Accept the
+        # widespread ``cmd`` spelling only at the compatibility JSON ingress,
+        # then immediately canonicalize it so approval fingerprints, traces
+        # and every downstream component still have one representation.
+        canonical_command = str(value.get("command") or "").strip()
+        compatibility_command = str(value.get("cmd") or "").strip()
+        if canonical_command and compatibility_command and canonical_command != compatibility_command:
+            return None
+        command = canonical_command or compatibility_command
         if not command:
             return None
         normalized: dict[str, Any] = {

@@ -182,7 +182,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "minLength": 1,
                 "maxLength": EXEC_COMMAND_MAX_CHARS,
-                "description": "要执行的命令或脚本。",
+                "description": "要执行的命令或脚本。参数字段名必须是 command（不是 cmd）。",
             },
             "cwd": {
                 "type": "string",

@@ -671,6 +671,80 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertIn("没有形成可交付的文字结果", gateway.text_sends[0][0])
         self.assertTrue(result["final_failure_notice_result"]["ok"])
 
+    def test_tool_preface_without_final_frame_is_not_treated_as_completed_reply(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "我先检查一下。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": True}
+
+            def process_turn(self, payload: dict):
+                raise AssertionError("a missing final frame must not rerun a turn with possible side effects")
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_missing_final",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "检查 shell"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends[0], ["我先检查一下。"])
+        self.assertIn("没有形成可交付的文字结果", gateway.text_sends[1][0])
+        self.assertTrue(result["send_result"].get("final_failure_notice"))
+        self.assertTrue(result["final_failure_notice_result"]["ok"])
+
+    def test_tool_preface_before_transient_final_failure_gets_terminal_notice(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": "我先检查一下。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": True}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "speech": "我在认真听你说，要不要再多告诉我一点？",
+                        "speech_segments": ["我在认真听你说，要不要再多告诉我一点？"],
+                        "tool_events": [],
+                        "_transient_final_failure": True,
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_transient_after_tool",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "检查 shell"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends[0], ["我先检查一下。"])
+        self.assertIn("没有形成可交付的文字结果", gateway.text_sends[1][0])
+        self.assertTrue(result["send_result"].get("final_failure_notice"))
+        self.assertTrue(result["final_failure_notice_result"]["ok"])
+
     def test_group_voice_uses_owner_tts_profile_scope(self) -> None:
         captured_payload: dict = {}
         captured_base_dir: list[Path] = []

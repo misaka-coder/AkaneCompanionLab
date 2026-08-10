@@ -23,7 +23,7 @@ from companion_v01.tool_handlers.execution import (
     ExecStatusToolHandler,
 )
 from companion_v01.tool_invocation import ToolInvocation
-from companion_v01.tool_orchestration_engine import execute_tool_invocation
+from companion_v01.tool_orchestration_engine import build_native_tool_decision_plan, execute_tool_invocation
 from companion_v01.tool_runtime import ToolExecutionContext
 
 
@@ -121,6 +121,13 @@ class ExecHandlerPermissionTests(unittest.TestCase):
     def test_exec_run_normalize_call(self) -> None:
         handler = self._handler()
         self.assertIsNotNone(handler.normalize_call({"type": "exec_run", "command": "echo hi"}))
+        self.assertEqual(
+            handler.normalize_call({"type": "exec_run", "cmd": "echo hi"}),
+            {"type": "exec_run", "command": "echo hi", "cwd": ""},
+        )
+        self.assertIsNone(
+            handler.normalize_call({"type": "exec_run", "command": "echo safe", "cmd": "echo different"})
+        )
         self.assertIsNone(handler.normalize_call({"type": "exec_run"}))
         self.assertIsNone(handler.normalize_call({"type": "other", "command": "echo hi"}))
         normalized = handler.normalize_call(
@@ -204,6 +211,9 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             self.assertTrue(handlers["exec_run"].tool_metadata().requires_confirmation)
             self.assertTrue(handlers["exec_status"].tool_metadata().is_read_only)
             self.assertFalse(handlers["exec_cancel"].tool_metadata().is_read_only)
+            self.assertTrue(handlers["exec_run"].policy_accepted_native_tool)
+            self.assertTrue(handlers["exec_status"].policy_accepted_native_tool)
+            self.assertTrue(handlers["exec_cancel"].policy_accepted_native_tool)
 
     def test_catalog_omits_exec_handlers_without_provider(self) -> None:
         handlers = build_builtin_tool_handlers(
@@ -234,6 +244,26 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
         self.assertNotIn("exec_run", handlers)
         self.assertNotIn("exec_status", handlers)
         self.assertNotIn("exec_cancel", handlers)
+
+    def test_exec_handlers_are_advertised_through_the_native_schema(self) -> None:
+        handlers = {
+            "exec_run": ExecRunToolHandler(execution_provider=object()),
+            "exec_status": ExecStatusToolHandler(execution_provider=object()),
+            "exec_cancel": ExecCancelToolHandler(execution_provider=object()),
+        }
+        with patch("companion_v01.tool_orchestration_engine.config.ENABLE_NATIVE_TOOL_DECISION", True):
+            plan = build_native_tool_decision_plan(
+                handlers,
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+                allowed_tool_names=handlers,
+            )
+
+        self.assertEqual(plan.status, "enabled")
+        schemas = {item["function"]["name"]: item["function"] for item in plan.tools}
+        self.assertEqual(set(schemas), set(handlers))
+        self.assertEqual(schemas["exec_run"]["parameters"]["required"], ["command"])
+        self.assertIn("不是 cmd", schemas["exec_run"]["parameters"]["properties"]["command"]["description"])
 
 
 class ExecDispatchEnvelopeTests(unittest.TestCase):
