@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +24,12 @@ from companion_v01.tool_runtime import ToolExecutionContext
 
 
 OWNER = ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local")
+
+
+def _python_command(code: str) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline([sys.executable, "-c", code])
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 def _context(*, profile_user_id: str = "alice", session_id: str = "s1", client_mode: str = "qq") -> ToolExecutionContext:
@@ -346,7 +356,7 @@ class ExecRunResourceWiringTests(unittest.TestCase):
     def test_exec_run_with_output_globs_registers_gen(self) -> None:
         call = {
             "type": "exec_run",
-            "command": "python -c \"open('result.txt','w').write('done')\"",
+            "command": _python_command("open('result.txt','w').write('done')"),
             "initial_wait_seconds": 2,
             "output_globs": ["result.txt"],
         }
@@ -391,7 +401,7 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         item = self.harness.register_input(content="PING")
         call = {
             "type": "exec_run",
-            "command": "python -c \"import pathlib;print(pathlib.Path('inputs/source.txt').read_text())\"",
+            "command": _python_command("import pathlib;print(pathlib.Path('inputs/source.txt').read_text())"),
             "initial_wait_seconds": 2,
             "input_resources": [{"handle": item["attachment_handle"], "as": "inputs/source.txt"}],
         }
@@ -460,9 +470,9 @@ class ExecStatusResourceRegistrationTests(unittest.TestCase):
         (run_dir / "out.txt").write_text("slow-done", encoding="utf-8")
         from companion_v01.execution_run import execute_exec_run
 
-        command = (
-            "python -c \"import pathlib,time;time.sleep(0.3);"
-            "pathlib.Path('out.txt').write_text('slow-done')\""
+        command = _python_command(
+            "import pathlib,time;time.sleep(0.3);"
+            "pathlib.Path('out.txt').write_text('slow-done')"
         )
         mapped = execute_exec_run(
             self.provider,

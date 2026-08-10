@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,8 +37,14 @@ def _context(*, profile_user_id: str = "alice", session_id: str = "s1") -> ToolE
     )
 
 
+def _python_command(code: str) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline([sys.executable, "-c", code])
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
 def _sleep_command(seconds: int) -> str:
-    return f"python -c \"import time; time.sleep({seconds})\""
+    return _python_command(f"import time; time.sleep({seconds})")
 
 
 class ExecHandlerPermissionTests(unittest.TestCase):
@@ -139,7 +149,7 @@ class ExecHandlerPermissionTests(unittest.TestCase):
 
         start = self.provider.run(
             owner=ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local"),
-            command='python -c "import sys; sys.stdout.write(\'x\' * 60000)"',
+            command=_python_command("import sys; sys.stdout.write('x' * 60000)"),
             initial_wait_seconds=1,
         )
         self.assertEqual(start.status, "completed")
@@ -291,7 +301,7 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
             self._invocation(
                 "exec_run",
                 {
-                    "command": 'python -c "import sys; sys.stdout.write(\'x\' * 60000)"',
+                    "command": _python_command("import sys; sys.stdout.write('x' * 60000)"),
                     "initial_wait_seconds": 1,
                 },
             )

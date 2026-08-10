@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -21,8 +23,14 @@ from companion_v01.execution_specs import (
 )
 
 
+def _python_command(code: str) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline([sys.executable, "-c", code])
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
 def _sleep_command(seconds: int) -> str:
-    return f"python -c \"import time; time.sleep({seconds})\""
+    return _python_command(f"import time; time.sleep({seconds})")
 
 
 def _echo_env(name: str) -> str:
@@ -223,7 +231,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
     def test_long_output_truncates_initial_result_then_continuation_reads_rest(self) -> None:
         executor = self._executor()
-        command = 'python -c "import sys; sys.stdout.write(\'x\' * 60000)"'
+        command = _python_command("import sys; sys.stdout.write('x' * 60000)")
         start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIsNotNone(start.next_cursor)
@@ -258,7 +266,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
     def test_compacted_output_can_be_reloaded_from_the_same_status_tool(self) -> None:
         executor = self._executor()
-        command = 'python -c "import sys; sys.stdout.write(\'BEGIN|\' + \'x\' * 90000 + \'|END\')"'
+        command = _python_command("import sys; sys.stdout.write('BEGIN|' + 'x' * 90000 + '|END')")
         start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertTrue(start.stdout.startswith("BEGIN|"))
@@ -358,7 +366,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
     def test_utf8_multibyte_output_survives_read_chunk_boundaries(self) -> None:
         executor = self._executor()
         unit = "中文你好-😀"
-        command = 'python -c "import sys; sys.stdout.write(\'\\u4e2d\\u6587\\u4f60\\u597d-\\U0001f600\' * 5000)"'
+        command = _python_command("import sys; sys.stdout.write('中文你好-😀' * 5000)")
         start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIsNotNone(start.next_cursor)
@@ -376,10 +384,9 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
     def test_secret_and_path_are_redacted_for_model_but_kept_in_private_log(self) -> None:
         executor = self._executor()
-        command = (
-            'python -c "import sys; print(\'api_key=supersecret123\'); '
+        command = _python_command(
+            "import sys; print('api_key=supersecret123'); "
             "print('C:\\\\Users\\\\alice\\\\private.txt')"
-            '"'
         )
         start = executor.run(owner=self.owner, command=command, initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
