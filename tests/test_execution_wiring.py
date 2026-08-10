@@ -15,7 +15,12 @@ from capcore import PermissionDecision
 from companion_v01.capability_registry import CapabilitySelection, ExecutorBroker
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.execution_local import TrustedLocalExecutor
-from companion_v01.local_capability_config import save_approval_policy_config
+from companion_v01.capcore_runtime import manual_permission_request, resolve_permission_for_profile
+from companion_v01.local_capability_config import (
+    get_approval_policy_config,
+    save_approval_policy_config,
+    save_capability_approval_mode,
+)
 from companion_v01.tool_handlers.catalog import build_builtin_tool_handlers
 from companion_v01.tool_handlers.execution import (
     ExecCancelToolHandler,
@@ -111,6 +116,57 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertTrue(result.state_updates["capability_execution"]["run_id"].startswith("execrun_"))
         self.assertEqual(result.state_updates["capability_execution"]["output_ref"].startswith("runlog:"), True)
+
+    def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:
+        saved = save_capability_approval_mode(
+            base_dir=self.base_dir,
+            profile_user_id="alice",
+            capability_id="tool.exec_run",
+            mode="trusted_auto_allow",
+        )
+        self.assertTrue(saved.get("ok"), saved)
+        policy = get_approval_policy_config(base_dir=self.base_dir, profile_user_id="alice")["approvalPolicy"]
+        self.assertEqual(policy["defaultMode"], "ask_each_time")
+        self.assertEqual(policy["capabilityModes"], {"exec_run": "trusted_auto_allow"})
+
+        exec_result = self._handler().execute(
+            call={"type": "exec_run", "command": "echo hi", "initial_wait_seconds": 1},
+            context=_context(),
+        )
+        self.assertEqual(exec_result.stream_events[0]["status"], "completed")
+
+        other_request = manual_permission_request(
+            context=_context(),
+            required=True,
+            capability_id="another_high_risk_tool",
+            display_name="Another high risk tool",
+            risk="high",
+            confirm="always",
+            effects=("external_effect",),
+            reason="test",
+        )
+        other_decision = resolve_permission_for_profile(
+            other_request,
+            base_dir=self.base_dir,
+            profile_user_id="alice",
+        )
+        self.assertFalse(other_decision.allowed)
+        self.assertTrue(other_decision.requires_user_decision)
+
+    def test_global_policy_save_preserves_shell_override(self) -> None:
+        save_capability_approval_mode(
+            base_dir=self.base_dir,
+            profile_user_id="alice",
+            capability_id="exec_run",
+            mode="disabled",
+        )
+        saved = save_approval_policy_config(
+            base_dir=self.base_dir,
+            profile_user_id="alice",
+            payload={"defaultMode": "trusted_auto_allow"},
+        )
+        self.assertTrue(saved.get("ok"), saved)
+        self.assertEqual(saved["approvalPolicy"]["capabilityModes"], {"exec_run": "disabled"})
 
     def test_exec_run_unconfigured_provider_is_unavailable(self) -> None:
         handler = ExecRunToolHandler(execution_provider=None, config_base_dir=self.base_dir)

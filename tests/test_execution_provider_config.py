@@ -13,6 +13,7 @@ from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnap
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.execution_local import TrustedLocalExecutor
+from companion_v01.local_capability_config import save_capability_approval_mode
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.tool_handlers.execution import (
     ExecCancelToolHandler,
@@ -39,7 +40,7 @@ class ExecCapabilityModuleTests(unittest.TestCase):
         self.assertTrue(hasattr(config, "EXECUTION_QQ_ENABLED"))
         self.assertEqual(config.EXECUTION_QQ_ENABLED, config.settings.EXECUTION_QQ_ENABLED)
 
-    def test_real_snapshot_only_enables_qq_execution_for_master_profile(self) -> None:
+    def test_real_snapshot_requires_explicit_per_conversation_qq_permission(self) -> None:
         class _Store:
             @staticmethod
             def list_attachment_inbox_items(**_kwargs):
@@ -49,30 +50,48 @@ class ExecCapabilityModuleTests(unittest.TestCase):
             def list_generated_files(**_kwargs):
                 return []
 
-        engine = SimpleNamespace(store=_Store(), execution_provider=object(), tool_handlers={})
-        context = SimpleNamespace(effective_mode=ClientMode.QQ_TEXT)
-        with patch("companion_v01.engine_services.tool_rounds._host_config.EXECUTION_QQ_ENABLED", True):
-            master = build_capability_snapshot(
-                engine,
-                client_context=context,
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = SimpleNamespace(
+                store=_Store(),
+                execution_provider=object(),
+                tool_handlers={},
+                capability_config_base_dir=Path(tmp),
+            )
+            context = SimpleNamespace(effective_mode=ClientMode.QQ_TEXT)
+            save_capability_approval_mode(
+                base_dir=Path(tmp),
                 profile_user_id="master",
-                session_id="master-session",
+                capability_id="exec_run",
+                mode="trusted_auto_allow",
             )
-            ordinary = build_capability_snapshot(
-                engine,
-                client_context=context,
-                profile_user_id="qq_pri_123",
-                session_id="ordinary-session",
-            )
-            group = build_capability_snapshot(
-                engine,
-                client_context=context,
+            save_capability_approval_mode(
+                base_dir=Path(tmp),
                 profile_user_id="qq_group_shared_456",
-                session_id="group-session",
+                capability_id="exec_run",
+                mode="ask_each_time",
             )
-        self.assertTrue(master.execution_qq_enabled)
-        self.assertFalse(ordinary.execution_qq_enabled)
-        self.assertFalse(group.execution_qq_enabled)
+            with patch("companion_v01.engine_services.tool_rounds._host_config.EXECUTION_QQ_ENABLED", True):
+                master = build_capability_snapshot(
+                    engine,
+                    client_context=context,
+                    profile_user_id="master",
+                    session_id="master-session",
+                )
+                ordinary = build_capability_snapshot(
+                    engine,
+                    client_context=context,
+                    profile_user_id="qq_pri_123",
+                    session_id="ordinary-session",
+                )
+                group = build_capability_snapshot(
+                    engine,
+                    client_context=context,
+                    profile_user_id="qq_group_shared_456",
+                    session_id="group-session",
+                )
+            self.assertTrue(master.execution_qq_enabled)
+            self.assertFalse(ordinary.execution_qq_enabled)
+            self.assertTrue(group.execution_qq_enabled)
 
     def test_exec_tools_selected_when_enabled_in_desktop_mode(self) -> None:
         selection = CapabilityRegistry().select(_desktop_snapshot(execution_enabled=True))
@@ -111,7 +130,7 @@ class ExecCapabilityModuleTests(unittest.TestCase):
         self.assertIn("exec_cancel", selection.tool_names)
         qq_hints = [hint for hint in selection.light_hints if "exec_run" in hint]
         self.assertTrue(qq_hints)
-        self.assertIn("QQ 主账号", qq_hints[0])
+        self.assertIn("当前 QQ 会话已由主人开放", qq_hints[0])
         self.assertIn("QQ Bot 后端所在机器", qq_hints[0])
 
     def test_exec_tools_absent_for_qq_master_when_execution_disabled(self) -> None:

@@ -160,22 +160,25 @@ EXECUTION_QQ_ENABLED=false
 ```text
 EXECUTION_ENABLED=true
 AND EXECUTION_QQ_ENABLED=true
-AND 当前身份通过宿主既有执行策略
+AND 主人已在当前私聊或群聊发送 /shell on 或 /shell ask
 ```
 
-首版安全范围：
+会话安全范围：
 
-- **master 私聊**：允许进入执行批准链（仍 `confirm=always`，逐次批准）。
-- **普通私聊用户**：默认禁用。
-- **群聊**：默认禁用。
-- 不凭 QQ 昵称或展示名判断 master，只认 `MASTER_QQ` 数值身份。
-- 不绕过现有 approval redemption；高风险命令仍逐次批准，不复用旧批准。
+- 所有 QQ 私聊和群聊默认关闭，不向模型提供 exec 三工具。
+- 只有 `MASTER_QQ` 数值身份可以用 `/shell on|ask|off` 调节当前会话；不凭昵称、
+  群主或管理员身份放权。`/shell status` 是只读查询，群成员也可使用。
+- `/shell on` 仅对当前会话的 `exec_run` 自动允许，不会放开其他高风险能力。
+- 群聊按群号独立授权；开启后该群成员提出的任务可能在 QQ Bot 后端机器执行。
+- `/shell ask` 继续使用现有一次性 approval redemption，不复用旧批准。
 
 Schema 稳定性：
 
 - Provider 临时不可用时保留 schema，调用返回结构化 `unavailable`。
 - 不因 readiness 探针变化增删工具。
 - `EXECUTION_QQ_ENABLED=false` 时完全不向 QQ 注入工具或占位提示。
+- 主人显式执行 `/shell on|ask|off` 属于能力画像配置变更，会在下一轮相应加入或移除
+  exec schema；同一权限状态下 schema 保持逐字节稳定。
 
 ## 9. 失败场景与下一步
 

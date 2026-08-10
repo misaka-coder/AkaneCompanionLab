@@ -88,7 +88,7 @@ PRIVATE_MCP_SERVER_FIELDS = {
     "lastDiscovery",
     "updatedAt",
 }
-PUBLIC_APPROVAL_POLICY_FIELDS = {"defaultMode", "updatedAt"}
+PUBLIC_APPROVAL_POLICY_FIELDS = {"defaultMode", "capabilityModes", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 VOICE_PROFILE_TEXT_MAX_LENGTH = 300
@@ -204,17 +204,44 @@ def apply_approval_policy_to_entry(
     policy = normalize_approval_policy_config(approval_policy)
     if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
         return public_entry
-    decision = _capcore_permission_decision_from_entry(public_entry, policy_mode=policy["defaultMode"])
+    policy_mode = approval_mode_for_capability(
+        policy,
+        str(public_entry.get("id") or public_entry.get("capabilityId") or ""),
+    )
+    decision = _capcore_permission_decision_from_entry(public_entry, policy_mode=policy_mode)
     request = decision.request
     next_mode = _approval_mode_from_capcore_decision(decision)
-    if request is None or next_mode != APPROVAL_MODE_TRUSTED_AUTO_ALLOW or not request.required:
+    if request is None or not request.required:
         return public_entry
     return {
         **public_entry,
-        "approvalMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-        "approvalReason": str(decision.reason or "user_policy_trusted_auto_allow"),
-        "requiresConfirmation": False,
+        "approvalMode": next_mode,
+        "approvalReason": str(decision.reason or _approval_reason(public_entry, next_mode)),
+        "requiresConfirmation": next_mode == APPROVAL_MODE_ASK_EACH_TIME,
     }
+
+
+def _safe_capability_approval_id(value: Any) -> str:
+    capability_id = str(value or "").strip().lower()
+    if capability_id.startswith("tool."):
+        capability_id = capability_id[5:]
+    if not capability_id or len(capability_id) > 80:
+        return ""
+    if any(character not in PROFILE_ID_SAFE_CHARS for character in capability_id):
+        return ""
+    return capability_id
+
+
+def _normalize_capability_approval_modes(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for raw_capability_id, raw_mode in list(value.items())[:128]:
+        capability_id = _safe_capability_approval_id(raw_capability_id)
+        mode = str(raw_mode or "").strip().lower()
+        if capability_id and mode in APPROVAL_MODES:
+            result[capability_id] = mode
+    return result
 
 
 def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:
@@ -225,8 +252,30 @@ def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:
     updated_at = _safe_short_text(raw.get("updatedAt") or raw.get("updated_at"))
     return {
         "defaultMode": default_mode,
+        "capabilityModes": _normalize_capability_approval_modes(
+            raw.get("capabilityModes") or raw.get("capability_modes")
+        ),
         "updatedAt": updated_at,
     }
+
+
+def approval_mode_override_for_capability(
+    approval_policy: Mapping[str, Any] | None,
+    capability_id: str,
+) -> str:
+    normalized = normalize_approval_policy_config(approval_policy)
+    safe_id = _safe_capability_approval_id(capability_id)
+    if not safe_id:
+        return ""
+    return str(normalized["capabilityModes"].get(safe_id) or "")
+
+
+def approval_mode_for_capability(
+    approval_policy: Mapping[str, Any] | None,
+    capability_id: str,
+) -> str:
+    normalized = normalize_approval_policy_config(approval_policy)
+    return approval_mode_override_for_capability(normalized, capability_id) or str(normalized["defaultMode"])
 
 
 def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -242,6 +291,7 @@ def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, A
         ),
         "requiresConfirmationByDefault": default_mode == APPROVAL_MODE_ASK_EACH_TIME,
         "trustedAutoAllowHighRisk": default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        "capabilityModes": dict(normalized["capabilityModes"]),
         "availableModes": [
             {
                 "id": APPROVAL_MODE_ASK_EACH_TIME,
@@ -425,8 +475,15 @@ def save_approval_policy_config(
             "reason": config.get("reason") or "provider_config_file_invalid",
             "configScope": _public_config_scope(profile_user_id),
         }
+    existing_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
+    capability_modes_supplied = "capabilityModes" in payload or "capability_modes" in payload
     approval_policy = {
         "defaultMode": normalized["defaultMode"],
+        "capabilityModes": (
+            normalized["capabilityModes"]
+            if capability_modes_supplied
+            else existing_policy["capabilityModes"]
+        ),
         "updatedAt": _now_iso(),
     }
     write_capability_config(
@@ -444,6 +501,61 @@ def save_approval_policy_config(
     return {
         "ok": True,
         "status": "saved",
+        "configScope": _public_config_scope(profile_user_id),
+        "approvalPolicy": build_approval_policy_entry(approval_policy),
+        "refresh": True,
+    }
+
+
+def save_capability_approval_mode(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    capability_id: str,
+    mode: str,
+) -> dict[str, Any]:
+    safe_capability_id = _safe_capability_approval_id(capability_id)
+    normalized_mode = str(mode or "").strip().lower()
+    if not safe_capability_id or normalized_mode not in APPROVAL_MODES:
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": "capability_approval_mode_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
+    capability_modes = dict(approval_policy["capabilityModes"])
+    capability_modes[safe_capability_id] = normalized_mode
+    approval_policy = {
+        "defaultMode": approval_policy["defaultMode"],
+        "capabilityModes": capability_modes,
+        "updatedAt": _now_iso(),
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "approvalPolicy": approval_policy,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": config.get("mcpServers", {}),
+        },
+    )
+    return {
+        "ok": True,
+        "status": "saved",
+        "capabilityId": safe_capability_id,
+        "approvalMode": normalized_mode,
         "configScope": _public_config_scope(profile_user_id),
         "approvalPolicy": build_approval_policy_entry(approval_policy),
         "refresh": True,

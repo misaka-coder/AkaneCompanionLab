@@ -2062,7 +2062,7 @@ class CapabilitySnapshot:
     has_pending_gift: bool = False
     # Host-frozen execution provider present (host config, not transient readiness).
     execution_enabled: bool = False
-    # QQ 主账号私聊执行是否允许进入批准链（EXECUTION_QQ_ENABLED + master 身份）。
+    # 当前 QQ 会话是否由主人显式开放执行（另受宿主 EXECUTION_QQ_ENABLED 总闸约束）。
     execution_qq_enabled: bool = False
 
 
@@ -2617,14 +2617,13 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "QQ 主账号模式下，当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
+                    "当前 QQ 会话已由主人开放 Shell；当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
-                    "不会隐式访问你的个人电脑。只有宿主同时启用执行与 QQ 执行，且当前身份为主账号私聊时"
-                    "这项能力才会出现。"
+                    "不会隐式访问聊天成员的个人电脑。主人可用 /shell status 查看本会话权限。"
                 ),
                 trigger=_execution_qq_enabled,
-                unavailable_reason="QQ 主账号执行当前没有通过可用性检查。",
-                recovery_hint="执行提供者或 QQ 执行配置恢复后会自动重新开放；当前不要假装已经执行命令。",
+                unavailable_reason="当前 QQ 会话的 Shell 没有开放，或执行提供者没有通过可用性检查。",
+                recovery_hint="主人可在当前私聊或群聊发送 /shell on；当前不要假装已经执行命令。",
             ),
             CapabilityModule(
                 name="desktop_managed_browser",

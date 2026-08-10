@@ -14,7 +14,7 @@ from capcore import (
 )
 from capcore import resolve_permission as capcore_resolve_permission
 
-from .local_capability_config import get_approval_policy_config
+from .local_capability_config import approval_mode_for_capability, get_approval_policy_config
 
 
 APPROVAL_POLICY_MODES = {"ask_each_time", "trusted_auto_allow", "disabled"}
@@ -53,9 +53,23 @@ def resolve_permission_for_profile(
     base_dir: Path | str | None,
     profile_user_id: str,
 ) -> PermissionDecision:
+    try:
+        payload = get_approval_policy_config(
+            base_dir=base_dir,
+            profile_user_id=profile_user_id,
+        )
+    except Exception:
+        payload = {}
+    policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
+    mode = approval_mode_for_capability(
+        policy,
+        str(getattr(request, "capability_id", "") or ""),
+    )
+    if mode not in APPROVAL_POLICY_MODES:
+        mode = "ask_each_time"
     return capcore_resolve_permission(
         request,
-        approval_policy_for_profile(base_dir=base_dir, profile_user_id=profile_user_id),
+        ApprovalPolicy(default_mode=mode),
     )
 
 

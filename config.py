@@ -75,9 +75,8 @@ class Settings(BaseSettings):
     # exec_cancel 完全不进入模型 schema。这些不是部署模式枚举，只是本地
     # 执行提供者的宿主配置面；云端/群聊等画像约束由能力模块 modes 决定。
     EXECUTION_ENABLED: bool = False
-    # QQ 主账号（MASTER_QQ 私聊）是否允许进入执行批准链。默认关闭；开启后
-    # 仍需 EXECUTION_ENABLED=true 且当前身份通过宿主既有执行策略。普通私聊
-    # 与群聊始终禁用，不凭昵称/展示名判断 master。
+    # QQ 执行宿主总闸。默认关闭；开启后仍需主人在目标私聊/群聊用 /shell
+    # 显式开放该会话。只有 MASTER_QQ 能调节，会话权限默认关闭。
     EXECUTION_QQ_ENABLED: bool = False
     # 命令 cwd 根目录；空= DATA_ROOT/execution_workspace
     EXECUTION_WORKSPACE_ROOT: str = ""

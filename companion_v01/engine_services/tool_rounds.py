@@ -33,7 +33,12 @@ from ..domain_profiles import (
     filter_tool_names,
 )
 from .. import tool_orchestration_engine
-from ..local_capability_config import load_capability_config
+from ..local_capability_config import (
+    APPROVAL_MODE_ASK_EACH_TIME,
+    APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+    approval_mode_override_for_capability,
+    load_capability_config,
+)
 # M66-E: ToolReadinessGate deleted; readiness is now gated via
 # ServerLocalOfferIndex inside CapabilityRegistry.select().
 import config as _host_config
@@ -493,11 +498,22 @@ def build_capability_snapshot(
         except Exception:
             has_cover_song_cache = False
     execution_provider_present = bool(getattr(engine, "execution_provider", None))
+    execution_approval_override = ""
+    if client_context.effective_mode == ClientMode.QQ_TEXT:
+        execution_profile_config = load_capability_config(
+            base_dir=getattr(engine, "capability_config_base_dir", None),
+            profile_user_id=profile_user_id,
+        )
+        execution_approval_override = approval_mode_override_for_capability(
+            execution_profile_config.get("approvalPolicy"),
+            "exec_run",
+        )
     execution_qq_enabled = (
         execution_provider_present
         and bool(getattr(_host_config, "EXECUTION_QQ_ENABLED", False))
         and client_context.effective_mode == ClientMode.QQ_TEXT
-        and str(profile_user_id or "").strip() == "master"
+        and execution_approval_override
+        in {APPROVAL_MODE_ASK_EACH_TIME, APPROVAL_MODE_TRUSTED_AUTO_ALLOW}
     )
     return CapabilitySnapshot(
         client_mode=client_context.effective_mode,

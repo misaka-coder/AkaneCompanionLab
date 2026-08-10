@@ -17,6 +17,11 @@ from fastapi.responses import JSONResponse
 
 from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
 from ..media_bridge_engine import redact_remote_media_urls_for_prompt
+from ..local_capability_config import (
+    approval_mode_override_for_capability,
+    get_approval_policy_config,
+    save_capability_approval_mode,
+)
 from ..model_service_config import (
     effective_settings_from_config,
     effective_settings_from_runtime_settings,
@@ -2125,6 +2130,91 @@ def build_qq_router(
                         "send_result": send_result,
                     }
                 )
+
+            shell_permission_command = qq_gateway.parse_shell_permission_command(context.clean_message)
+            if isinstance(shell_permission_command, dict):
+                capability_config_base_dir = getattr(
+                    engine,
+                    "capability_config_base_dir",
+                    getattr(config_module, "DATA_DIR", None),
+                )
+                policy_payload = get_approval_policy_config(
+                    base_dir=capability_config_base_dir,
+                    profile_user_id=context.profile_user_id,
+                )
+                current_shell_mode = approval_mode_override_for_capability(
+                    policy_payload.get("approvalPolicy"),
+                    "exec_run",
+                ) or "disabled"
+                execution_handler = (getattr(engine, "tool_handlers", {}) or {}).get("exec_run")
+                execution_supported = bool(
+                    getattr(config_module, "EXECUTION_QQ_ENABLED", False)
+                    and getattr(engine, "execution_provider", None) is not None
+                )
+                capability_status = getattr(execution_handler, "capability_status", None)
+                if execution_supported and callable(capability_status):
+                    try:
+                        execution_supported = bool((capability_status() or {}).get("enabled"))
+                    except Exception:
+                        execution_supported = False
+
+                def _save_shell_mode(mode: str) -> str:
+                    saved = save_capability_approval_mode(
+                        base_dir=capability_config_base_dir,
+                        profile_user_id=context.profile_user_id,
+                        capability_id="exec_run",
+                        mode=mode,
+                    )
+                    if not saved.get("ok"):
+                        raise RuntimeError(str(saved.get("reason") or "shell_permission_save_failed"))
+                    return str(saved.get("approvalMode") or "")
+
+                shell_permission_result = qq_gateway.handle_shell_permission_command(
+                    context,
+                    command=shell_permission_command,
+                    current_mode=current_shell_mode,
+                    supported=execution_supported,
+                    apply_mode=_save_shell_mode,
+                )
+                if isinstance(shell_permission_result, dict):
+                    reply = str(shell_permission_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
+                    )
+                    command_ok = bool(shell_permission_result.get("ok"))
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")) and command_ok,
+                    )
+                    log_event(
+                        "qq_shell_permission_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        is_group=bool(context.is_group),
+                        command_status=str(shell_permission_result.get("status") or ""),
+                        command_ok=command_ok,
+                        approval_mode=str(shell_permission_result.get("approval_mode") or ""),
+                        supported=bool(shell_permission_result.get("supported")),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_shell_permission_command",
+                            "command_status": str(shell_permission_result.get("status") or ""),
+                            "command_ok": command_ok,
+                            "approval_mode": str(shell_permission_result.get("approval_mode") or ""),
+                            "supported": bool(shell_permission_result.get("supported")),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "send_result": send_result,
+                        }
+                    )
 
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):

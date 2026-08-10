@@ -1462,6 +1462,76 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(applied, ["enabled"])
         self.assertIn("不会发送温度参数", result["reply"])
 
+    def test_shell_permission_command_is_explicit_and_master_scoped(self) -> None:
+        gateway = NapCatQQGateway()
+        self.assertEqual(gateway.parse_shell_permission_command("/shell"), {"action": "status"})
+        self.assertEqual(gateway.parse_shell_permission_command("／shell 开启"), {"action": "on"})
+        self.assertEqual(gateway.parse_shell_permission_command("/shell ask"), {"action": "ask"})
+        self.assertIsNone(gateway.parse_shell_permission_command("shell on"))
+        self.assertIsNone(gateway.parse_shell_permission_command("现在 shell 开了吗"))
+
+        applied: list[str] = []
+        master_group = QQMessageContext(
+            should_respond=True,
+            reason="qq_shell_permission_command",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            user_id=QQ_MASTER_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            clean_message="/shell on",
+        )
+        result = gateway.handle_shell_permission_command(
+            master_group,
+            current_mode="disabled",
+            supported=True,
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["approval_mode"], "trusted_auto_allow")
+        self.assertIn("本群 Shell 已开启", result["reply"])
+        self.assertEqual(applied, ["trusted_auto_allow"])
+
+        ordinary_group = QQMessageContext(
+            should_respond=True,
+            reason="qq_shell_permission_command",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            user_id=QQ_USER_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            clean_message="/shell off",
+        )
+        denied = gateway.handle_shell_permission_command(
+            ordinary_group,
+            current_mode="trusted_auto_allow",
+            supported=True,
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["status"], "forbidden")
+        self.assertEqual(applied, ["trusted_auto_allow"])
+
+    def test_group_shell_command_bypasses_wake_word_only_for_control_plane(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-shell-control-1",
+                "raw_message": "/shell status",
+                "message": [{"type": "text", "data": {"text": "/shell status"}}],
+            }
+        )
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_shell_permission_command")
+        self.assertEqual(context.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+
     def test_thinking_mode_command_rejects_unsupported_model_without_writing(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
