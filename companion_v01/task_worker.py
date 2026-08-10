@@ -381,6 +381,7 @@ class TaskWorkerService:
                     session_id=session_id,
                     tool_result=tool_result,
                     now_ts=int(time.time()),
+                    task_id=task_id,
                 )
                 followup = str(tool_result.followup_context or "").strip()
                 if followup:

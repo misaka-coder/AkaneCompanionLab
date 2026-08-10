@@ -185,15 +185,28 @@ class TaskWorkspaceService:
         *,
         profile_user_id: str,
         session_id: str,
+        now_ts: int | None = None,
+        max_age_seconds: int = TASK_WORKSPACE_PROMPT_MAX_AGE_SECONDS,
     ) -> str:
         """Render every active task as a short state index for main chat."""
 
-        tasks = self.list_tasks(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            statuses=["running", "waiting_user", "queued"],
-            limit=None,
+        effective_now = int(now_ts or time.time())
+        updated_after_ts = (
+            max(0, effective_now - int(max_age_seconds))
+            if int(max_age_seconds or 0) > 0
+            else 0
         )
+        tasks = [
+            task
+            for task in self.list_tasks(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                statuses=["running", "waiting_user", "queued"],
+                limit=None,
+            )
+            if not updated_after_ts
+            or int(task.get("updated_at") or task.get("created_at") or 0) >= updated_after_ts
+        ]
         task_map = {
             str(task.get("task_id") or "").strip(): task
             for task in tasks
@@ -211,6 +224,8 @@ class TaskWorkspaceService:
                 continue
             task = self.get_task(task_id)
             if not task or str(task.get("status") or "").strip().lower() in {"cleaned", "canceled"}:
+                continue
+            if updated_after_ts and int(task.get("updated_at") or task.get("created_at") or 0) < updated_after_ts:
                 continue
             task_map[task_id] = task
         if not task_map:

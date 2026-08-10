@@ -307,7 +307,9 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
             "（使用材料索引实际显示的 doc_* / img_* / aud_* / vid_* / gen_*）与命令工作区内相对路径 as，"
             "输入会复制进本次运行的独立工作区；"
-            "需要命令产出文件时，用 output_globs 声明输出相对路径，命令完成后会自动登记为 gen_*，"
+            "当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管工作目录，不要 cd 到 /tmp 等外部目录；"
+            "需要命令产出文件时，用 output_globs 声明相对当前目录的输出路径，并直接把产物写在该目录内，"
+            "命令完成后会自动登记为 gen_*，"
             "然后用 send_file 交付。高风险命令会按当前用户策略请求确认。"
         )
 

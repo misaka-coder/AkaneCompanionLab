@@ -186,7 +186,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "超过初始等待窗口仍存活的命令返回 run_id 与 running 状态，之后用 exec_status 查询进度、"
         "exec_cancel 停止。普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
         "按需续读。需要命令读取已有材料时用 input_resources 声明句柄与命令工作区内的 as 相对路径，"
-        "输入会复制进本次运行的独立工作区；需要命令产出文件时用 output_globs 声明输出，命令完成后"
+        "输入会复制进本次运行的独立工作区；当前目录以及 TMPDIR/TMP/TEMP 都指向该次受管工作目录，"
+        "不要切换到 /tmp 等工作区外目录。需要命令产出文件时用 output_globs 声明相对当前目录的输出，命令完成后"
         "只登记明确声明的输出为 gen_*，再用 send_file 交付。执行失败、超时或取消都会明确返回对应状态，"
         "不会声称成功；登记失败也会与命令成功明确区分。"
     ),
@@ -248,7 +249,10 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "type": "array",
                 "items": {"type": "string", "maxLength": 1024},
                 "maxItems": 32,
-                "description": "可选：命令完成后要登记为 gen_* 的输出路径 glob，全部展开并去重，只登记明确声明的输出。",
+                "description": (
+                    "可选：命令完成后要登记为 gen_* 的输出路径 glob。路径相对本次受管当前目录；"
+                    "命令必须把产物写在该目录内，不要写到 /tmp 等外部目录。全部展开并去重，只登记明确声明的输出。"
+                ),
             },
         },
         "required": ["command"],

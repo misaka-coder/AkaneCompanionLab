@@ -205,6 +205,17 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=1)
         self.assertNotIn("s3cr3t_value", start.stdout)
 
+    def test_managed_temp_variables_follow_command_workdir(self) -> None:
+        subdir = self.workspace / "job"
+        subdir.mkdir()
+        executor = self._executor(allowed_env_names={"PATH", "TEMP", "TMP"})
+
+        env = executor._build_env(workdir=subdir)
+
+        self.assertEqual(Path(env["TMPDIR"]), subdir.resolve())
+        self.assertEqual(Path(env["TMP"]), subdir.resolve())
+        self.assertEqual(Path(env["TEMP"]), subdir.resolve())
+
     def test_available_optional_proxy_is_injected_without_allowlisting(self) -> None:
         executor = self._executor(
             allowed_env_names={"PATH"},

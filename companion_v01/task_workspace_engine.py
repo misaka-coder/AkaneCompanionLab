@@ -13,6 +13,7 @@ def record_tool_result_artifacts_in_task_workspace(
     session_id: str,
     tool_result: Any,
     now_ts: int,
+    task_id: str = "",
 ) -> tuple[list[dict[str, Any]], str]:
     tool_type = str(getattr(tool_result, "tool_type", "") or "").strip()
     if not tool_type or tool_type == "manage_task_workspace":
@@ -26,18 +27,24 @@ def record_tool_result_artifacts_in_task_workspace(
     service = engine._get_task_workspace_service()
     if service is None:
         return [], ""
+    explicit_task_id = str(task_id or "").strip()
+    if not explicit_task_id:
+        # Session resources do not implicitly belong to whichever unrelated
+        # task happens to be open. Foreground callers can explicitly use
+        # manage_task_workspace.add_artifact; workers pass their exact task id.
+        return [], ""
     try:
-        tasks = service.list_tasks(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            statuses=["running", "waiting_user", "queued"],
-            limit=1,
-        )
-        if not tasks:
+        task = service.get_task(explicit_task_id)
+        if not isinstance(task, dict):
             return [], ""
-        task = tasks[0]
-        task_id = str(task.get("task_id") or "").strip()
-        if not task_id:
+        if str(task.get("profile_user_id") or "") != str(profile_user_id or ""):
+            return [], ""
+        if str(task.get("session_id") or "") != str(session_id or ""):
+            return [], ""
+        if str(task.get("status") or "").strip().lower() not in {"running", "waiting_user", "queued"}:
+            return [], ""
+        resolved_task_id = str(task.get("task_id") or "").strip()
+        if not resolved_task_id:
             return [], ""
         existing_artifacts = [dict(item) for item in list(task.get("artifacts") or []) if isinstance(item, dict)]
         merged_artifacts, added_artifacts = merge_task_workspace_artifacts(
@@ -48,13 +55,13 @@ def record_tool_result_artifacts_in_task_workspace(
             return [], ""
         status_update = "running" if str(task.get("status") or "") == "queued" else None
         updated = service.update_task(
-            task_id=task_id,
+            task_id=resolved_task_id,
             status=status_update,
             artifacts=merged_artifacts,
             timestamp=now_ts,
         )
         service.append_event(
-            task_id=task_id,
+            task_id=resolved_task_id,
             event_type="tool_artifacts_recorded",
             from_actor=f"tool:{tool_type}",
             message=f"{tool_type} 产出了 {len(added_artifacts)} 个可继续使用的产物。",
@@ -69,7 +76,7 @@ def record_tool_result_artifacts_in_task_workspace(
     compact_task = compact_task_workspace_for_event(updated or task)
     labels = "、".join(str(item.get("id") or item.get("title") or "").strip() for item in added_artifacts[:6])
     followup = (
-        f"系统已把这次工具产物登记到当前任务工作区 {compact_task.get('task_id') or task_id}"
+        f"系统已把这次工具产物登记到当前任务工作区 {compact_task.get('task_id') or resolved_task_id}"
         f"：{labels or '新产物'}。后续可以继续引用这些产物，不需要重复登记。"
     )
     return [

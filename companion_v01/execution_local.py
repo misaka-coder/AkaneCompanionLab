@@ -220,7 +220,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             self._discard_unregistered_log(run_id)
             return ExecRunStart(status=EXEC_STATUS_FAILED, reason=str(exc))
 
-        env = self._build_env()
+        env = self._build_env(workdir=workdir)
         try:
             proc = self._spawn(clean_command, workdir, env)
         except Exception as exc:
@@ -381,7 +381,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             raise ExecutionPathError("cwd_not_found")
         return candidate
 
-    def _build_env(self) -> dict[str, str]:
+    def _build_env(self, *, workdir: Path | None = None) -> dict[str, str]:
         env: dict[str, str] = {}
         host_values = self.host_env
         if os.name == "nt":
@@ -398,6 +398,13 @@ class TrustedLocalExecutor(ExecutionProvider):
                 output_name, value = name, host_values.get(name)
             if value is not None:
                 env[output_name] = str(value)
+        # Keep conventional temporary-directory usage inside the command's
+        # actual managed cwd.  Resource-mode commands can therefore use their
+        # normal temp variables without escaping output_globs registration.
+        managed_tmp = str((workdir or self.workspace_root).resolve())
+        env["TMPDIR"] = managed_tmp
+        env["TMP"] = managed_tmp
+        env["TEMP"] = managed_tmp
         self.python_user_base.mkdir(parents=True, exist_ok=True)
         self.pip_cache_dir.mkdir(parents=True, exist_ok=True)
         env["PYTHONUSERBASE"] = str(self.python_user_base)

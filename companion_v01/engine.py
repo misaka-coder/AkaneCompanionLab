@@ -6785,6 +6785,7 @@ class AkaneMemoryEngine:
         session_id: str,
         tool_result: ToolExecutionResult,
         now_ts: int,
+        task_id: str = "",
     ) -> tuple[list[dict[str, Any]], str]:
         return task_workspace_engine.record_tool_result_artifacts_in_task_workspace(
             self,
@@ -6792,6 +6793,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             tool_result=tool_result,
             now_ts=now_ts,
+            task_id=task_id,
         )
 
     def _extract_task_workspace_artifacts_from_tool_events(

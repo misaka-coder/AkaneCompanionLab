@@ -112,6 +112,7 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             prompt = service.build_activity_prompt_context(
                 profile_user_id="master",
                 session_id="qq-private",
+                now_ts=150,
             )
 
             self.assertIn("task.workspace", prompt)
@@ -124,6 +125,36 @@ class TaskWorkspaceStoreTests(unittest.TestCase):
             self.assertNotIn("F:\\Private", prompt)
             self.assertNotIn("PRIVATE STEP", prompt)
             self.assertNotIn("PRIVATE TITLE", prompt)
+
+    def test_activity_prompt_hides_stale_open_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            stale = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="很久以前的任务",
+                normalized_goal="不应继续污染当前提示词。",
+                status="waiting_user",
+                timestamp=100,
+            )
+            fresh = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="当前任务",
+                normalized_goal="继续当前任务。",
+                timestamp=1_000,
+            )
+
+            prompt = service.build_activity_prompt_context(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=1_000,
+                max_age_seconds=300,
+            )
+
+            self.assertNotIn(stale["task_id"], prompt)
+            self.assertIn(fresh["task_id"], prompt)
 
     def test_store_roundtrip_update_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -654,7 +685,7 @@ class ManageTaskWorkspaceToolHandlerTests(unittest.TestCase):
 
 
 class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
-    def test_engine_records_generated_tool_artifacts_on_latest_open_task(self) -> None:
+    def test_engine_records_generated_tool_artifacts_for_explicit_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
             service = TaskWorkspaceService(store)
@@ -673,6 +704,7 @@ class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
                 profile_user_id="master",
                 session_id="qq-private",
                 now_ts=520,
+                task_id=task["task_id"],
                 tool_result=ToolExecutionResult(
                     tool_type="compose_file",
                     stream_events=[
@@ -710,6 +742,7 @@ class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
                 profile_user_id="master",
                 session_id="qq-private",
                 now_ts=530,
+                task_id=task["task_id"],
                 tool_result=ToolExecutionResult(
                     tool_type="send_file",
                     stream_events=[
@@ -728,6 +761,43 @@ class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
             self.assertEqual(duplicate_events, [])
             self.assertEqual(duplicate_followup, "")
             self.assertEqual(len(service.get_task(task["task_id"])["artifacts"]), 1)
+
+    def test_engine_does_not_attach_ordinary_artifact_to_unrelated_open_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            service = TaskWorkspaceService(store)
+            task = service.create_task(
+                profile_user_id="master",
+                session_id="qq-private",
+                raw_request_text="等待旧任务。",
+                normalized_goal="等待旧任务。",
+                timestamp=100,
+            )
+            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+            engine.store = store
+            engine.task_workspace_service = service
+            events, followup = engine._record_tool_result_artifacts_in_task_workspace(
+                profile_user_id="master",
+                session_id="qq-private",
+                now_ts=520,
+                tool_result=ToolExecutionResult(
+                    tool_type="compose_file",
+                    stream_events=[
+                        {
+                            "type": "generated_file_ready",
+                            "generated_file": {
+                                "generated_id": "generated::unrelated",
+                                "generated_handle": "gen_999",
+                                "status": "ready",
+                            },
+                        }
+                    ],
+                ),
+            )
+
+            self.assertEqual(events, [])
+            self.assertEqual(followup, "")
+            self.assertEqual(service.get_task(task["task_id"])["artifacts"], [])
 
     def test_engine_records_remote_media_attachment_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -748,6 +818,7 @@ class TaskWorkspaceEngineIntegrationTests(unittest.TestCase):
                 profile_user_id="master",
                 session_id="qq-private",
                 now_ts=620,
+                task_id=task["task_id"],
                 tool_result=ToolExecutionResult(
                     tool_type="fetch_media_from_url",
                     stream_events=[
