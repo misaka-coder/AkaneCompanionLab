@@ -248,11 +248,14 @@ class ExecEngineProviderTests(unittest.TestCase):
                 "companion_v01.engine.config.EXECUTION_WORKSPACE_ROOT", str(Path(tmp) / "workspace")
             ), patch("companion_v01.engine.config.EXECUTION_RUN_LOG_DIR", str(Path(tmp) / "runlogs")), patch(
                 "companion_v01.engine.config.EXECUTION_ALLOWED_ENV_NAMES", "PATH,COMSPEC"
+            ), patch(
+                "companion_v01.engine.config.EXECUTION_PROXY_URL", "http://127.0.0.1:17897"
             ):
                 provider = engine._build_execution_provider()
             self.assertIsInstance(provider, TrustedLocalExecutor)
             self.assertEqual(engine._build_execution_provider(), provider)
             self.assertEqual(provider.allowed_env_names, {"PATH", "COMSPEC"})
+            self.assertEqual(provider.proxy_url, "http://127.0.0.1:17897")
 
     def _native_schema_dump(self, provider) -> str:
         handlers = {

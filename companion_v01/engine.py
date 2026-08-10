@@ -7059,10 +7059,12 @@ class AkaneMemoryEngine:
             run_log_dir = Path(getattr(config, "EXECUTION_RUN_LOG_DIR", "") or (state_dir / "execution_runlogs"))
             allowed_raw = str(getattr(config, "EXECUTION_ALLOWED_ENV_NAMES", "") or "").strip()
             allowed_names = [name.strip() for name in allowed_raw.split(",") if name.strip()] or None
+            proxy_url = str(getattr(config, "EXECUTION_PROXY_URL", "") or "").strip()
             provider = TrustedLocalExecutor(
                 workspace_root=workspace_root,
                 run_log_dir=run_log_dir,
                 allowed_env_names=allowed_names,
+                proxy_url=proxy_url,
             )
         except Exception as exc:
             logger.warning("execution provider disabled: %s", exc)

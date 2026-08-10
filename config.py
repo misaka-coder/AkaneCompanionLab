@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     EXECUTION_RUN_LOG_DIR: str = ""
     # 允许继承到子进程的宿主环境变量名，逗号分隔；空=保守默认集
     EXECUTION_ALLOWED_ENV_NAMES: str = ""
+    # 可选的宿主代理。仅在端到端健康探测成功时注入子进程；不可用时保持直连。
+    # 地址和健康状态不会进入模型提示词、工具 schema 或 MemCore。
+    EXECUTION_PROXY_URL: str = ""
     # Responses API controls. These are deliberately separate from the legacy
     # DeepSeek thinking switch because they have different wire semantics.
     LLM_REASONING_EFFORT: str = ""
@@ -615,7 +618,7 @@ def _apply_settings(s: Settings) -> None:
     global ENABLE_SEMANTIC_MEMORY, ENABLE_SEMANTIC_REINFORCEMENT, PRE_RETRIEVAL_DEFAULT_ENABLED
     global PROMPT_CACHE_HINTS_ENABLED, PROMPT_CACHE_HINTS_FORCE, PROMPT_CACHE_NAMESPACE, PROMPT_CACHE_RETENTION
     global EXECUTION_ENABLED, EXECUTION_QQ_ENABLED
-    global EXECUTION_WORKSPACE_ROOT, EXECUTION_RUN_LOG_DIR, EXECUTION_ALLOWED_ENV_NAMES
+    global EXECUTION_WORKSPACE_ROOT, EXECUTION_RUN_LOG_DIR, EXECUTION_ALLOWED_ENV_NAMES, EXECUTION_PROXY_URL
     global LLM_PROMPT_AUDIT_ENABLED, LLM_PROMPT_AUDIT_INCLUDE_AUX
     global ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
@@ -878,6 +881,7 @@ def _apply_settings(s: Settings) -> None:
     EXECUTION_WORKSPACE_ROOT = str(s.EXECUTION_WORKSPACE_ROOT or "").strip()
     EXECUTION_RUN_LOG_DIR = str(s.EXECUTION_RUN_LOG_DIR or "").strip()
     EXECUTION_ALLOWED_ENV_NAMES = str(s.EXECUTION_ALLOWED_ENV_NAMES or "").strip()
+    EXECUTION_PROXY_URL = str(s.EXECUTION_PROXY_URL or "").strip()
     LLM_PROMPT_AUDIT_ENABLED = bool(s.LLM_PROMPT_AUDIT_ENABLED)
     LLM_PROMPT_AUDIT_INCLUDE_AUX = bool(s.LLM_PROMPT_AUDIT_INCLUDE_AUX)
     ROUTER_DEBUG = bool(s.ROUTER_DEBUG)

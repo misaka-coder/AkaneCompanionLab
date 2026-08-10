@@ -39,6 +39,7 @@ import codecs
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -46,6 +47,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from .execution_run import (
     ExecutionAvailability,
@@ -82,6 +84,17 @@ _RUN_LOG_RE = re.compile(r"^execrun_[a-f0-9]{32}\.log$")
 _CANCEL_CONFIRM_GRACE_SECONDS = 3.0
 _OUTPUT_DRAIN_GRACE_SECONDS = 3.0
 _READ_CHUNK_BYTES = 4096
+_PROXY_PROBE_TIMEOUT_SECONDS = 2.0
+_PROXY_PROBE_TTL_SECONDS = 10.0
+_PROXY_CONNECT_TARGET = "example.com:443"
+_PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
 
 # A conservative default: only names a command generally needs to run. Host
 # config supplies the authoritative allowlist; the model never sees these names.
@@ -115,6 +128,8 @@ class TrustedLocalExecutor(ExecutionProvider):
         provider_id: str = "local",
         allowed_env_names: Sequence[str] | None = None,
         host_env: Mapping[str, str] | None = None,
+        proxy_url: str = "",
+        proxy_probe: Any = None,
         mounts: Mapping[str, str | Path] | None = None,
         store: ExecutionRunStore | None = None,
         cancel_confirm_grace_seconds: float = _CANCEL_CONFIRM_GRACE_SECONDS,
@@ -132,6 +147,11 @@ class TrustedLocalExecutor(ExecutionProvider):
         allowed = {str(name or "").strip() for name in (allowed_env_names or DEFAULT_ALLOWED_ENV_NAMES)}
         self.allowed_env_names = {name for name in allowed if name}
         self.host_env = dict(host_env) if host_env is not None else dict(os.environ)
+        self.proxy_url = str(proxy_url or "").strip()
+        self._proxy_probe = proxy_probe or self._probe_http_proxy
+        self._proxy_probe_lock = threading.Lock()
+        self._proxy_probe_at = 0.0
+        self._proxy_probe_result = False
         # Keep packages installed by model-authored commands away from the
         # Python user-site used by the Akane host process. This is a durable
         # execution environment, not a sandbox: commands may still explicitly
@@ -394,7 +414,58 @@ class TrustedLocalExecutor(ExecutionProvider):
             scripts_dir = self.python_user_base / "bin"
         existing_path = str(env.get("PATH") or "")
         env["PATH"] = str(scripts_dir) + (os.pathsep + existing_path if existing_path else "")
+        if self.proxy_url:
+            # A configured optional proxy is host-owned state, not part of the
+            # model tool schema or command arguments. Never leave stale proxy
+            # values inherited from the service environment: use the proxy only
+            # after an end-to-end CONNECT probe succeeds, otherwise preserve the
+            # executor's normal direct network behavior.
+            for name in _PROXY_ENV_NAMES:
+                env.pop(name, None)
+            if self._optional_proxy_available():
+                for name in _PROXY_ENV_NAMES:
+                    env[name] = self.proxy_url
+                env["NO_PROXY"] = "127.0.0.1,localhost,::1"
+                env["no_proxy"] = env["NO_PROXY"]
         return env
+
+    def _optional_proxy_available(self) -> bool:
+        if not self.proxy_url:
+            return False
+        now = time.monotonic()
+        with self._proxy_probe_lock:
+            if now - self._proxy_probe_at < _PROXY_PROBE_TTL_SECONDS:
+                return self._proxy_probe_result
+            try:
+                available = bool(self._proxy_probe(self.proxy_url))
+            except Exception:
+                available = False
+            self._proxy_probe_at = now
+            self._proxy_probe_result = available
+            return available
+
+    @staticmethod
+    def _probe_http_proxy(proxy_url: str) -> bool:
+        parsed = urlsplit(str(proxy_url or ""))
+        if parsed.scheme.lower() != "http" or not parsed.hostname or not parsed.port:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        request = (
+            f"CONNECT {_PROXY_CONNECT_TARGET} HTTP/1.1\r\n"
+            f"Host: {_PROXY_CONNECT_TARGET}\r\n"
+            "Proxy-Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(
+            (parsed.hostname, int(parsed.port)),
+            timeout=_PROXY_PROBE_TIMEOUT_SECONDS,
+        ) as connection:
+            connection.settimeout(_PROXY_PROBE_TIMEOUT_SECONDS)
+            connection.sendall(request)
+            response = connection.recv(256)
+        first_line = response.split(b"\r\n", 1)[0]
+        parts = first_line.split(b" ", 2)
+        return len(parts) >= 2 and parts[0].startswith(b"HTTP/") and parts[1] == b"200"
 
     def _open_run_log(self, run_id: str) -> str | None:
         try:

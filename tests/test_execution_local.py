@@ -205,6 +205,33 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=1)
         self.assertNotIn("s3cr3t_value", start.stdout)
 
+    def test_available_optional_proxy_is_injected_without_allowlisting(self) -> None:
+        executor = self._executor(
+            allowed_env_names={"PATH"},
+            proxy_url="http://127.0.0.1:17897",
+            proxy_probe=lambda _url: True,
+        )
+        env = executor._build_env()
+        self.assertEqual(env["HTTP_PROXY"], "http://127.0.0.1:17897")
+        self.assertEqual(env["https_proxy"], "http://127.0.0.1:17897")
+        self.assertEqual(env["NO_PROXY"], "127.0.0.1,localhost,::1")
+
+    def test_unavailable_optional_proxy_preserves_direct_network(self) -> None:
+        executor = self._executor(
+            allowed_env_names={"PATH", "HTTP_PROXY", "HTTPS_PROXY"},
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HTTP_PROXY": "http://stale.invalid:9999",
+                "HTTPS_PROXY": "http://stale.invalid:9999",
+            },
+            proxy_url="http://127.0.0.1:17897",
+            proxy_probe=lambda _url: False,
+        )
+        env = executor._build_env()
+        self.assertNotIn("HTTP_PROXY", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("ALL_PROXY", env)
+
     def test_python_user_site_and_pip_cache_are_isolated_inside_workspace(self) -> None:
         outside = str(Path(self._tmp.name) / "host-userbase")
         executor = self._executor(
