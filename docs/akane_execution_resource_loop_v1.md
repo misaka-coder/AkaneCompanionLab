@@ -7,8 +7,8 @@ Scope: exec_run 资源暂存与输出登记、send_file 交付、MemCore 轨迹�
 
 ## 0. 文档定位
 
-本文档说明 Akane **通用执行的资源闭环**：如何把已有 `file_*` / `img_*` /
-`audio_*` / `gen_*` 资源安全地传入 `exec_run`，如何声明命令输出并登记为新的
+本文档说明 Akane **通用执行的资源闭环**：如何把材料索引中的 `doc_*` / `img_*` /
+`aud_*` / `vid_*` / `arc_*` 与已有 `gen_*` 资源安全地传入 `exec_run`，如何声明命令输出并登记为新的
 `gen_*`，如何用 `send_file` 交付到 QQ 或桌宠，以及如何在 MemCore 里保存轨迹、
 压卡并按需回看。它建立在通用执行 v1 之上，不改变执行工具的职责边界。
 
@@ -35,7 +35,7 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
   "type": "exec_run",
   "command": "python process.py inputs/source.wav outputs/result.wav",
   "input_resources": [
-    {"handle": "audio_001", "as": "inputs/source.wav"}
+    {"handle": "aud_001", "as": "inputs/source.wav"}
   ],
   "output_globs": ["outputs/result.wav"]
 }
@@ -43,13 +43,16 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 
 ### 2.1 input_resources 规则
 
-- `handle` 必须是当前用户 / 会话作用域内可解析的资源：`file_*`、`img_*`、
-  `audio_*`、`gen_*`。解析逻辑与 `send_file` 相同（owner-scoped）。
+- `handle` 必须是当前用户 / 会话材料索引中**实际显示**的精确句柄（常见为
+  `doc_*`、`img_*`、`aud_*`、`vid_*`、`arc_*`、`gen_*`）。不接受 `latest`
+  等会随时间变化的别名；解析逻辑与 `send_file` 使用相同 owner scope。
 - `as` 必须是命令工作区内的**安全相对路径**。
   - 拒绝绝对路径、`..`、盘符（`C:`）、UNC（`\\`）、冒号段与 symlink 逃逸。
   - 同一目标名冲突时结构化拒绝，不静默覆盖。
 - 输入会**复制**进本次运行的独立工作区，模型只使用自己声明的 `as` 相对路径，
   **不暴露原始存储路径**。
+- 资源模式拥有独立 run 工作目录；使用 `input_resources` 或 `output_globs` 时必须
+  省略 `cwd`，避免批准内容与实际执行目录不一致。
 - 限制：最多 8 个输入；单文件与总大小受宿主限制。
 - 每个 run 的暂存与输出相互隔离，后台任务之间不会因文件名冲突互相污染。
 
@@ -101,7 +104,8 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 - `exec_run` 返回 `running` 时，输入映射与输出声明绑定到 `run_id`。
 - 后续 `exec_status` 读到终态（completed）时**只登记一次**产物。
 - 重复调用 `exec_status` 幂等：返回相同的 `gen_*`，不会重复生成多个 handle。
-- 并发 `exec_status` 也只完成一次登记（host 侧按 run 加锁，owner-scoped）。
+- 并发 `exec_status` 也只完成一次登记（host 侧串行化登记临界区并做 owner 校验）；
+  不同 run 也不会竞争同一会话的下一个 `gen_*`。
 - `run_id` 过期不影响已经登记的 `gen_*`（gen_* 已存在于 GeneratedFileService）。
 
 ## 5. 如何用 send_file 交付
@@ -123,7 +127,7 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 
 | 标识 | 职责 | 谁生成 | 是否模型可见 |
 |------|------|--------|--------------|
-| `file_*` / `img_*` / `audio_*` | 用户上传 / 工作台已有的原始材料 | 附件入库 | 是（handle） |
+| `doc_*` / `img_*` / `aud_*` / `vid_*` / `arc_*` | 用户上传 / 工作台已有的原始材料 | 附件入库 | 是（handle） |
 | `gen_*` | Akane 工具生成的产物 | GeneratedFileService | 是（handle） |
 | `run_id` | 一次 exec_run 的运行身份 | 执行 provider | 是（运行期内） |
 | `call_id` | 一次工具调用身份（MemCore correlation） | 工具调用链 | 是（卡片内） |
@@ -138,9 +142,9 @@ compact card → reload by source_id/call_id`。
 - 当前工具轮模型看到实际命令状态、足量 stdout/stderr、`run_id` 与 cursor（需要
   时）、生成的 `gen_*`、以及明确的 `send_file` 建议；**不自动替模型发送**。
 - MemCore 只在 assistant final 后 settlement；当前工具轮不提前压卡。
-- 压卡后卡片保留：tool name、真实状态、call_id/source_id、run_id（尚有效时）、
-  gen_* 与 reload 提示（`open_memory(memory_id=...)`）。
-- 回看：按卡片里的 `source_id` 重新打开完整历史工具结果（含 run_id 与 gen_*），
+- 压卡后紧凑卡片保留：tool name、真实状态、call_id/source_id 与 reload 提示
+  （`open_memory(memory_id=...)`）；卡片不重复内嵌长结果。
+- 回看：按卡片里的 `source_id` 重新打开完整历史工具结果，其中保留 run_id 与 gen_*，
   之后仍可再次 `send_file`。
 - 不保存：绝对路径、运行日志物理路径、输入资源真实存储路径、环境变量与密钥。
 - `full` 模式保持当前完整工具结果语义。

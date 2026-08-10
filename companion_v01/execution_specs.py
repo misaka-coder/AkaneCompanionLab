@@ -187,7 +187,10 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
             "cwd": {
                 "type": "string",
                 "maxLength": EXEC_CWD_MAX_CHARS,
-                "description": "工作区内相对路径或挂载别名（可选），默认工作区根。",
+                "description": (
+                    "工作区内相对路径或挂载别名（可选），默认工作区根。"
+                    "使用 input_resources 或 output_globs 的隔离资源模式时必须省略 cwd。"
+                ),
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -209,7 +212,10 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                         "handle": {
                             "type": "string",
                             "maxLength": 120,
-                            "description": "当前会话可用的资源句柄，如 file_001 / img_001 / audio_001 / gen_001。",
+                            "description": (
+                                "当前会话材料索引实际显示的精确资源句柄，"
+                                "如 doc_001 / img_001 / aud_001 / vid_001 / gen_001；不接受 latest 等别名。"
+                            ),
                         },
                         "as": {
                             "type": "string",

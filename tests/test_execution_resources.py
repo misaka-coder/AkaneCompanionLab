@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.execution_resources import ExecutionResourceBridge
-from companion_v01.execution_run import ExecutionRunOwner
+from companion_v01.execution_run import ExecRunStatus, ExecutionRunOwner
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.local_capability_config import save_approval_policy_config
 from companion_v01.store import MemoryStore
@@ -88,6 +89,25 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.assertTrue(staged_path.is_file())
         self.assertEqual(staged_path.read_text(encoding="utf-8"), "hello")
 
+    def test_stage_inputs_requires_valid_run_id_and_exact_handle(self) -> None:
+        self.harness.register_input()
+        invalid_run = self.harness.bridge.stage_inputs(
+            run_id="../../escape",
+            owner=OWNER,
+            input_resources=[],
+            output_globs=[],
+        )
+        self.assertFalse(invalid_run["ok"])
+        self.assertEqual(invalid_run["reason"], "invalid_execution_run_id")
+        alias = self.harness.bridge.stage_inputs(
+            run_id="execrun_" + "0" * 32,
+            owner=OWNER,
+            input_resources=[{"handle": "latest", "as": "input.txt"}],
+            output_globs=[],
+        )
+        self.assertFalse(alias["ok"])
+        self.assertIn("input_handle_not_found", alias["reason"])
+
     def test_stage_inputs_rejects_unsafe_as(self) -> None:
         item = self.harness.register_input()
         for unsafe in ["../escape.txt", "/abs/path.txt", "C:/drive.txt", "a:b.txt", "sub/../up.txt"]:
@@ -164,20 +184,117 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.assertEqual(first["generated_resources"], second["generated_resources"])
         self.assertEqual(len(first["generated_resources"]), 1)
 
-    def test_register_outputs_rejects_output_glob_escape(self) -> None:
-        run_id = "execrun_" + "g" * 32
+    def test_register_outputs_is_concurrently_idempotent(self) -> None:
+        run_id = "execrun_" + "1" * 32
         self.harness.bridge.stage_inputs(
+            run_id=run_id,
+            owner=OWNER,
+            input_resources=[],
+            output_globs=["out.txt"],
+        )
+        run_dir = self.harness.workspace / self.harness.bridge.run_cwd_relpath(run_id)
+        (run_dir / "out.txt").write_text("x", encoding="utf-8")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(
+                pool.map(
+                    lambda _index: self.harness.bridge.register_outputs(run_id=run_id, owner=OWNER),
+                    range(4),
+                )
+            )
+        handles = [result["generated_resources"][0]["handle"] for result in results]
+        self.assertEqual(len(set(handles)), 1)
+        stored = self.harness.store.list_generated_files(
+            profile_user_id="alice",
+            session_id="s1",
+            statuses=["ready"],
+            limit=20,
+        )
+        self.assertEqual(len(stored), 1)
+
+    def test_register_outputs_supports_generic_file_types(self) -> None:
+        run_id = "execrun_" + "2" * 32
+        self.harness.bridge.stage_inputs(
+            run_id=run_id,
+            owner=OWNER,
+            input_resources=[],
+            output_globs=["photo.jpg", "clip.mp4", "slides.pptx"],
+        )
+        run_dir = self.harness.workspace / self.harness.bridge.run_cwd_relpath(run_id)
+        for name in ("photo.jpg", "clip.mp4", "slides.pptx"):
+            (run_dir / name).write_bytes(b"not-empty")
+        result = self.harness.bridge.register_outputs(run_id=run_id, owner=OWNER)
+        self.assertEqual(result["artifact_status"], "registered", result)
+        self.assertEqual(
+            {item["name"] for item in result["generated_resources"]},
+            {"photo.jpg", "clip.mp4", "slides.pptx"},
+        )
+
+    def test_output_limit_is_not_silently_partial_and_workspace_is_cleaned(self) -> None:
+        bridge = ExecutionResourceBridge(
+            generated_file_service=self.harness.generated_service,
+            workspace_root=self.harness.workspace,
+            max_outputs=1,
+        )
+        run_id = "execrun_" + "3" * 32
+        staged = bridge.stage_inputs(
+            run_id=run_id,
+            owner=OWNER,
+            input_resources=[],
+            output_globs=["*.txt"],
+        )
+        run_dir = self.harness.workspace / staged["cwd_relpath"]
+        (run_dir / "a.txt").write_text("a", encoding="utf-8")
+        (run_dir / "b.txt").write_text("b", encoding="utf-8")
+        result = bridge.register_outputs(run_id=run_id, owner=OWNER)
+        self.assertEqual(result["artifact_status"], "registration_failed")
+        self.assertEqual(result["reason"], "output_file_limit_exceeded")
+        self.assertEqual(result["generated_resources"], [])
+        self.assertFalse(run_dir.exists())
+
+    def test_no_outputs_and_failed_runs_cleanup_staging(self) -> None:
+        no_output_run = "execrun_" + "4" * 32
+        staged = self.harness.bridge.stage_inputs(
+            run_id=no_output_run,
+            owner=OWNER,
+            input_resources=[],
+            output_globs=[],
+        )
+        run_dir = self.harness.workspace / staged["cwd_relpath"]
+        self.harness.bridge.register_outputs(run_id=no_output_run, owner=OWNER)
+        self.assertFalse(run_dir.exists())
+
+        failed_run = "execrun_" + "5" * 32
+        staged = self.harness.bridge.stage_inputs(
+            run_id=failed_run,
+            owner=OWNER,
+            input_resources=[],
+            output_globs=["out.txt"],
+        )
+        run_dir = self.harness.workspace / staged["cwd_relpath"]
+        result = self.harness.bridge.finalize_without_outputs(
+            run_id=failed_run,
+            owner=OWNER,
+            reason="command_failed",
+        )
+        self.assertEqual(result["artifact_status"], "not_registered")
+        self.assertEqual(result["reason"], "command_failed")
+        self.assertFalse(run_dir.exists())
+
+    def test_register_outputs_rejects_output_glob_escape(self) -> None:
+        run_id = "execrun_" + "7" * 32
+        staged = self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
             input_resources=[],
             output_globs=["../outside.txt"],
         )
+        self.assertFalse(staged["ok"])
         result = self.harness.bridge.register_outputs(run_id=run_id, owner=OWNER)
         self.assertEqual(result["artifact_status"], "not_registered")
         self.assertNotEqual(result["ok"], True)
 
     def test_register_outputs_failure_when_command_never_created_output(self) -> None:
-        run_id = "execrun_" + "h" * 32
+        run_id = "execrun_" + "8" * 32
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
@@ -189,7 +306,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.assertEqual(result["reason"], "output_not_found")
 
     def test_register_outputs_owner_scoped(self) -> None:
-        run_id = "execrun_" + "i" * 32
+        run_id = "execrun_" + "9" * 32
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
@@ -241,6 +358,34 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         state = result.state_updates.get("capability_execution", {})
         self.assertTrue(state.get("generated_resources"))
         self.assertEqual(state.get("artifact_status"), "registered")
+
+    def test_resource_mode_rejects_cwd_instead_of_silently_ignoring_it(self) -> None:
+        normalized = self.handler.normalize_call(
+            {
+                "type": "exec_run",
+                "command": "echo hi",
+                "cwd": "subdir",
+                "output_globs": ["out.txt"],
+            }
+        )
+        self.assertIsNone(normalized)
+
+    def test_failed_command_finalizes_resource_workspace(self) -> None:
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": "exit 2",
+                "initial_wait_seconds": 2,
+                "output_globs": ["out.txt"],
+            },
+            context=_context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["artifact_status"], "not_registered")
+        run_id = str(state["run_id"])
+        run_dir = self.harness.workspace / self.harness.bridge.run_cwd_relpath(run_id)
+        self.assertFalse(run_dir.exists())
 
     def test_exec_run_stages_input_and_command_reads_it(self) -> None:
         item = self.harness.register_input(content="PING")
@@ -366,6 +511,27 @@ class ExecStatusResourceRegistrationTests(unittest.TestCase):
         ]
         self.assertEqual(first_handles, second_handles)
         self.assertEqual(len(first_handles), 1)
+
+    def test_plain_run_status_does_not_claim_unknown_artifact_registration(self) -> None:
+        class _CompletedProvider:
+            provider_id = "local"
+
+            def status(self, *, owner, run_id, cursor=None):
+                return ExecRunStatus(status="completed", run_id=run_id, exit_code=0)
+
+        from companion_v01.tool_handlers.execution import ExecStatusToolHandler
+
+        handler = ExecStatusToolHandler(
+            execution_provider=_CompletedProvider(),
+            resource_bridge=self.harness.bridge,
+        )
+        result = handler.execute(
+            call={"type": "exec_status", "run_id": "execrun_" + "6" * 32},
+            context=_context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertNotIn("artifact_status", state)
+        self.assertNotIn("generated_resources", state)
 
 
 if __name__ == "__main__":

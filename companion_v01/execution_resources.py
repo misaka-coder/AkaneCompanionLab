@@ -21,6 +21,7 @@ Every model-visible result carries ``gen_*`` handles, never absolute paths.
 
 from __future__ import annotations
 
+import mimetypes
 import re
 import shutil
 import threading
@@ -29,7 +30,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .generated_files import REGISTERED_ARTIFACT_FORMATS
+from .execution_run import is_valid_run_id
+from .execution_specs import (
+    ARTIFACT_STATUS_NOT_REGISTERED,
+    ARTIFACT_STATUS_NOT_REQUESTED,
+    ARTIFACT_STATUS_REGISTERED,
+    ARTIFACT_STATUS_REGISTRATION_FAILED,
+)
 
 # Conservative host-side limits.  These guard a single run's declared resource
 # scope; they are not per-command adapters and never scan the whole workspace.
@@ -43,12 +50,6 @@ EXEC_RESOURCE_AS_MAX_CHARS = 512
 EXEC_OUTPUT_GLOB_MAX_CHARS = 1024
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
-
-ARTIFACT_STATUS_REGISTERED = "registered"
-ARTIFACT_STATUS_REGISTRATION_FAILED = "registration_failed"
-ARTIFACT_STATUS_NOT_REGISTERED = "not_registered"
-ARTIFACT_STATUS_NOT_REQUESTED = "not_requested"
-
 
 @dataclass(frozen=True, slots=True)
 class StagedInput:
@@ -137,6 +138,12 @@ class ExecutionResourceBridge:
         self.max_output_total_bytes = max(1, int(max_output_total_bytes))
         self._now = now or time.time
         self._lock = threading.RLock()
+        # Serializes both the per-run idempotence decision and the existing
+        # GeneratedFileService's sequence allocation.  exec_status is a
+        # read-only tool and may run concurrently for multiple runs; without
+        # this lock two callers could both mint artifacts for one run (or race
+        # the same session's next gen_* handle).
+        self._registration_lock = threading.RLock()
         self._bindings: dict[str, _RunBinding] = {}
 
     # -- staging -----------------------------------------------------------------
@@ -155,7 +162,7 @@ class ExecutionResourceBridge:
         rejection with a stable ``reason``.  Nothing is registered here; the
         command has not run yet.
         """
-        if not isinstance(run_id, str) or not run_id.strip():
+        if not is_valid_run_id(run_id):
             return {"ok": False, "reason": "invalid_execution_run_id"}
         inputs = [dict(item) for item in input_resources or [] if isinstance(item, Mapping)]
         globs = [
@@ -168,7 +175,11 @@ class ExecutionResourceBridge:
         if (output_globs and len(globs) != len(list(output_globs))) or (not output_globs and globs):
             return {"ok": False, "reason": "invalid_output_glob"}
 
-        cwd_relpath = self._run_cwd_relpath(run_id)
+        clean_run_id = str(run_id or "").strip()
+        with self._lock:
+            if clean_run_id in self._bindings:
+                return {"ok": False, "reason": "duplicate_execution_run_id"}
+        cwd_relpath = self._run_cwd_relpath(clean_run_id)
         run_dir = self.workspace_root / cwd_relpath
         staged: list[StagedInput] = []
         seen_targets: set[str] = set()
@@ -221,8 +232,8 @@ class ExecutionResourceBridge:
         input_handles = tuple(item.handle for item in staged)
         self._prune_bindings()
         with self._lock:
-            self._bindings[run_id] = _RunBinding(
-                run_id=run_id,
+            self._bindings[clean_run_id] = _RunBinding(
+                run_id=clean_run_id,
                 owner=owner,
                 cwd_relpath=cwd_relpath,
                 output_globs=tuple(globs),
@@ -253,6 +264,12 @@ class ExecutionResourceBridge:
             binding = self._bindings.get(str(run_id or "").strip())
         return tuple(binding.output_globs) if binding is not None else ()
 
+    def has_binding(self, *, run_id: str, owner: Any) -> bool:
+        """Return whether this bridge owns resource state for the run."""
+        with self._lock:
+            binding = self._bindings.get(str(run_id or "").strip())
+        return binding is not None and _same_owner(binding.owner, owner)
+
     # -- registration ------------------------------------------------------------
 
     def register_outputs(self, *, run_id: str, owner: Any) -> dict[str, Any]:
@@ -262,6 +279,10 @@ class ExecutionResourceBridge:
         timed_out / failed runs never register partial artifacts.  Repeated or
         concurrent calls return the same ``gen_*`` handles.
         """
+        with self._registration_lock:
+            return self._register_outputs_once(run_id=run_id, owner=owner)
+
+    def _register_outputs_once(self, *, run_id: str, owner: Any) -> dict[str, Any]:
         clean_run_id = str(run_id or "").strip()
         with self._lock:
             binding = self._bindings.get(clean_run_id)
@@ -290,16 +311,28 @@ class ExecutionResourceBridge:
             with self._lock:
                 binding.artifact_status = ARTIFACT_STATUS_NOT_REQUESTED
                 binding.finalized = True
-            return self._registration_result(binding)
+            result = self._registration_result(binding)
+            self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
+            return result
 
         run_dir = self.workspace_root / binding.cwd_relpath
-        matches = self._collect_output_matches(binding.output_globs, run_dir)
+        matches, overflow = self._collect_output_matches(binding.output_globs, run_dir)
+        if overflow:
+            with self._lock:
+                binding.artifact_status = ARTIFACT_STATUS_REGISTRATION_FAILED
+                binding.artifact_reason = "output_file_limit_exceeded"
+                binding.finalized = True
+            result = self._registration_result(binding)
+            self._cleanup_workspace(run_dir)
+            return result
         if not matches:
             with self._lock:
                 binding.artifact_status = ARTIFACT_STATUS_REGISTRATION_FAILED
                 binding.artifact_reason = "output_not_found"
                 binding.finalized = True
-            return self._registration_result(binding)
+            result = self._registration_result(binding)
+            self._cleanup_workspace(run_dir)
+            return result
 
         registered: list[RegisteredOutput] = []
         failures: list[str] = []
@@ -337,6 +370,43 @@ class ExecutionResourceBridge:
         self._cleanup_workspace(run_dir)
         return self._registration_result(binding)
 
+    def finalize_without_outputs(self, *, run_id: str, owner: Any, reason: str) -> dict[str, Any]:
+        """Close resource state for a run that did not complete successfully.
+
+        This never registers partial files.  It exists so failed, timed-out and
+        cancelled runs do not leave staged inputs or immortal in-memory
+        bindings behind.
+        """
+        clean_run_id = str(run_id or "").strip()
+        with self._registration_lock:
+            with self._lock:
+                binding = self._bindings.get(clean_run_id)
+                if binding is None:
+                    return {
+                        "ok": False,
+                        "artifact_status": ARTIFACT_STATUS_NOT_REGISTERED,
+                        "generated_resources": [],
+                        "reason": "execution_resources_unknown_run",
+                    }
+                if not _same_owner(binding.owner, owner):
+                    return {
+                        "ok": False,
+                        "artifact_status": ARTIFACT_STATUS_NOT_REGISTERED,
+                        "generated_resources": [],
+                        "reason": "execution_resources_owner_mismatch",
+                    }
+                if not binding.finalized:
+                    binding.artifact_status = (
+                        ARTIFACT_STATUS_NOT_REGISTERED
+                        if binding.output_globs
+                        else ARTIFACT_STATUS_NOT_REQUESTED
+                    )
+                    binding.artifact_reason = str(reason or "command_not_completed") if binding.output_globs else ""
+                    binding.finalized = True
+                result = self._registration_result(binding)
+            self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
+            return result
+
     def _registration_result(self, binding: _RunBinding) -> dict[str, Any]:
         resources = [
             {
@@ -357,36 +427,46 @@ class ExecutionResourceBridge:
     # -- helpers -----------------------------------------------------------------
 
     def _prune_bindings(self) -> None:
-        """Evict finalized bindings so the host service never grows unbounded."""
-        with self._lock:
-            stale = [
-                run_id
-                for run_id, binding in self._bindings.items()
-                if binding.finalized and self._now() - binding.created_at > 3600
-            ]
-            for run_id in stale:
-                self._bindings.pop(run_id, None)
+        """Evict old bindings so abandoned provider starts cannot grow forever."""
+        stale_bindings: list[_RunBinding] = []
+        with self._registration_lock:
+            with self._lock:
+                for run_id, binding in list(self._bindings.items()):
+                    if self._now() - binding.created_at > 3600:
+                        stale_bindings.append(binding)
+                        self._bindings.pop(run_id, None)
+            for binding in stale_bindings:
+                self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
 
     def _resolve_input_handle(self, handle: str, owner: Any) -> dict[str, Any] | None:
         service = self.generated_file_service
         resolver = getattr(service, "resolve_input_resource", None)
         if callable(resolver):
-            return resolver(
+            resolved = resolver(
                 profile_user_id=str(getattr(owner, "profile_user_id", "") or ""),
                 session_id=str(getattr(owner, "session_id", "") or ""),
                 target=handle,
                 timestamp=int(self._now()),
             )
+            if not isinstance(resolved, dict):
+                return None
+            # input_resources is an exact-address contract.  Do not let
+            # aliases such as "latest" silently resolve to a different file
+            # after approval.
+            resolved_handle = str(resolved.get("handle") or "").strip()
+            if not resolved_handle or resolved_handle.lower() != str(handle or "").strip().lower():
+                return None
+            return resolved
         return None
 
-    def _collect_output_matches(self, globs: Sequence[str], run_dir: Path) -> list[str]:
+    def _collect_output_matches(self, globs: Sequence[str], run_dir: Path) -> tuple[list[str], bool]:
         matches: dict[str, Path] = {}
         for raw_glob in globs:
             pattern = normalize_output_glob(raw_glob)
             if pattern is None:
                 continue
             try:
-                candidates = list(run_dir.glob(pattern))
+                candidates = run_dir.glob(pattern)
             except (NotImplementedError, ValueError):
                 continue
             for candidate in candidates:
@@ -402,12 +482,14 @@ class ExecutionResourceBridge:
                 relpath = str(resolved.relative_to(run_dir.resolve())).replace("\\", "/")
                 if relpath not in matches:
                     matches[relpath] = resolved
-        return sorted(matches.keys())
+                    if len(matches) > self.max_outputs:
+                        return sorted(matches.keys()), True
+        return sorted(matches.keys()), False
 
     def _register_one_output(self, source: Path, relpath: str, binding: _RunBinding) -> RegisteredOutput | None:
         service = self.generated_file_service
         extension = str(source.suffix or "").lstrip(".").lower()
-        if not extension or extension not in REGISTERED_ARTIFACT_FORMATS:
+        if not extension:
             return None
         title = str(source.stem or "akane_output").strip()[:60] or "akane_output"
         target = service.allocate_output_path(
@@ -416,24 +498,33 @@ class ExecutionResourceBridge:
             title=title,
             output_format=extension,
             timestamp=int(self._now()),
+            allow_generic_format=True,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        mime_type = service._mime_type_for_format(extension)
-        generated = service.register_generated_artifact(
-            profile_user_id=str(getattr(binding.owner, "profile_user_id", "") or ""),
-            session_id=str(getattr(binding.owner, "session_id", "") or ""),
-            output_path=target,
-            output_title=title,
-            output_format=extension,
-            mime_type=mime_type,
-            content_card={},
-            summary=f"exec_run 输出：{title}.{extension}",
-            created_by_tool="exec_run",
-            source_ids=list(binding.input_handles) or None,
-            send_to_user=False,
-            timestamp=int(self._now()),
-        )
+        try:
+            shutil.copy2(source, target)
+            mime_type = mimetypes.guess_type(source.name)[0] or service._mime_type_for_format(extension)
+            generated = service.register_generated_artifact(
+                profile_user_id=str(getattr(binding.owner, "profile_user_id", "") or ""),
+                session_id=str(getattr(binding.owner, "session_id", "") or ""),
+                output_path=target,
+                output_title=title,
+                output_format=extension,
+                mime_type=mime_type,
+                content_card={},
+                summary=f"exec_run 输出：{title}.{extension}",
+                created_by_tool="exec_run",
+                source_ids=list(binding.input_handles) or None,
+                send_to_user=False,
+                timestamp=int(self._now()),
+                allow_generic_format=True,
+            )
+        except Exception:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         handle = str(generated.get("generated_handle") or "").strip()
         if not handle:
             return None

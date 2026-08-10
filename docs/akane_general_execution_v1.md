@@ -258,8 +258,8 @@ control-center 设置或 live runtime override 暴露。
 
 ## 13.1 资源闭环与 QQ 开放
 
-`exec_run` 支持 `input_resources`（暂存已有 `file_*` / `img_*` / `audio_*` /
-`gen_*` 到运行工作区）与 `output_globs`（命令完成后把明确声明的输出登记为
+`exec_run` 支持 `input_resources`（按材料索引实际显示的 `doc_*` / `img_*` / `aud_*` /
+`vid_*` / `arc_*` / `gen_*` 精确句柄暂存到运行工作区）与 `output_globs`（命令完成后把明确声明的输出登记为
 `gen_*`，再经 `send_file` 交付）；QQ 主账号可通过 `EXECUTION_QQ_ENABLED` 进入
 执行批准链。详见 `docs/akane_execution_resource_loop_v1.md`。
 

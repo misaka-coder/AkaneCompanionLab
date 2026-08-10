@@ -36,11 +36,7 @@ from ..capcore_runtime import (
     resolve_permission_for_profile,
 )
 from ..capability_approval import build_approval_request_fingerprint
-from ..execution_resources import (
-    ARTIFACT_STATUS_NOT_REQUESTED,
-    ARTIFACT_STATUS_REGISTRATION_FAILED,
-    ExecutionResourceBridge,
-)
+from ..execution_resources import ExecutionResourceBridge
 from ..execution_run import (
     ExecutionRunOwner,
     execute_exec_cancel,
@@ -49,9 +45,15 @@ from ..execution_run import (
     new_run_id,
 )
 from ..execution_specs import (
+    ARTIFACT_STATUS_NOT_REQUESTED,
+    ARTIFACT_STATUS_REGISTRATION_FAILED,
     EXEC_CANCEL_TOOL_SPEC,
     EXEC_RUN_TOOL_SPEC,
+    EXEC_STATUS_CANCELLED,
+    EXEC_STATUS_COMPLETED,
+    EXEC_STATUS_FAILED,
     EXEC_STATUS_TOOL_SPEC,
+    EXEC_STATUS_TIMED_OUT,
 )
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 
@@ -254,13 +256,20 @@ class _ExecToolHandlerBase(BaseToolHandler):
         data["artifact_status"] = artifact_status
         feedback = str(mapped.model_feedback or "")
         if resources:
-            labels = "、".join(f"{item.get('handle')}({item.get('name')})" for item in resources[:6])
-            targets = [item.get("handle") for item in resources[:16]]
+            labels = "、".join(f"{item.get('handle')}({item.get('name')})" for item in resources)
+            targets = [item.get("handle") for item in resources]
             data["next_action"] = {"tool": "send_file", "targets": targets}
-            feedback = (
-                f"{feedback}\n已登记生成资源：{labels}。需要交付时调用 send_file(targets=[...])，"
-                "不要自动替用户发送。"
-            )
+            if artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
+                reason = str(registration.get("reason") or "output_registration_incomplete")
+                feedback = (
+                    f"{feedback}\n仅部分输出登记成功：{labels}；其余输出登记失败（{reason}）。"
+                    "需要交付已成功登记的文件时调用 send_file(targets=[...])；不要声称全部产物都已生成或交付。"
+                )
+            else:
+                feedback = (
+                    f"{feedback}\n已登记生成资源：{labels}。需要交付时调用 send_file(targets=[...])，"
+                    "不要自动替用户发送。"
+                )
         elif artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
             reason = str(registration.get("reason") or "unknown")
             feedback = (
@@ -284,7 +293,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "不接受绝对路径；环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
-            "（如 file_001 / audio_001 / gen_001）与命令工作区内相对路径 as，输入会复制进本次运行的独立工作区；"
+            "（使用材料索引实际显示的 doc_* / img_* / aud_* / vid_* / gen_*）与命令工作区内相对路径 as，"
+            "输入会复制进本次运行的独立工作区；"
             "需要命令产出文件时，用 output_globs 声明输出相对路径，命令完成后会自动登记为 gen_*，"
             "然后用 send_file 交付。高风险命令会按当前用户策略请求确认。"
         )
@@ -317,6 +327,11 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         if value.get("input_resources") is not None and input_resources is None:
             return None
         if value.get("output_globs") is not None and output_globs is None:
+            return None
+        if str(value.get("cwd") or "").strip() and (input_resources or output_globs):
+            # Resource mode owns an isolated per-run cwd. Silently ignoring a
+            # caller-supplied cwd would make the approved request differ from
+            # the command actually executed.
             return None
         if input_resources:
             normalized["input_resources"] = input_resources
@@ -405,9 +420,18 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             initial_wait_seconds=call.get("initial_wait_seconds"),
             run_id=run_id,
         )
-        if staged is not None and run_id and mapped.event_status == "completed":
-            registration = bridge.register_outputs(run_id=run_id, owner=self._owner(context))
-            mapped = self._enrich_resources(mapped, registration)
+        if staged is not None and run_id:
+            owner = self._owner(context)
+            if mapped.event_status == EXEC_STATUS_COMPLETED:
+                registration = bridge.register_outputs(run_id=run_id, owner=owner)
+                mapped = self._enrich_resources(mapped, registration)
+            elif mapped.event_status in {EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED}:
+                registration = bridge.finalize_without_outputs(
+                    run_id=run_id,
+                    owner=owner,
+                    reason=f"command_{mapped.event_status}",
+                )
+                mapped = self._enrich_resources(mapped, registration)
         return self._mapped_result(mapped)
 
     def _ask_or_redeem(
@@ -543,9 +567,18 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
             cursor=str(call.get("cursor") or "").strip() or None,
         )
         bridge = self.resource_bridge
-        if bridge is not None and run_id and mapped.event_status == "completed":
-            registration = bridge.register_outputs(run_id=run_id, owner=self._owner(context))
-            mapped = self._enrich_resources(mapped, registration)
+        owner = self._owner(context)
+        if bridge is not None and run_id and bridge.has_binding(run_id=run_id, owner=owner):
+            if mapped.event_status == EXEC_STATUS_COMPLETED:
+                registration = bridge.register_outputs(run_id=run_id, owner=owner)
+                mapped = self._enrich_resources(mapped, registration)
+            elif mapped.event_status in {EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED}:
+                registration = bridge.finalize_without_outputs(
+                    run_id=run_id,
+                    owner=owner,
+                    reason=f"command_{mapped.event_status}",
+                )
+                mapped = self._enrich_resources(mapped, registration)
         return self._mapped_result(mapped)
 
 
@@ -574,9 +607,34 @@ class ExecCancelToolHandler(_ExecToolHandlerBase):
         provider = self.execution_provider
         if provider is None:
             return self._unavailable_result("execution_provider_unconfigured")
+        run_id = str(call.get("run_id") or "").strip()
         mapped = execute_exec_cancel(
             provider,
             owner=self._owner(context),
-            run_id=str(call.get("run_id") or "").strip(),
+            run_id=run_id,
         )
+        bridge = self.resource_bridge
+        owner = self._owner(context)
+        if bridge is not None and run_id and bridge.has_binding(run_id=run_id, owner=owner):
+            if mapped.event_status == EXEC_STATUS_CANCELLED:
+                registration = bridge.finalize_without_outputs(
+                    run_id=run_id,
+                    owner=owner,
+                    reason="command_cancelled",
+                )
+                mapped = self._enrich_resources(mapped, registration)
+            elif mapped.event_status == "already_ended" and mapped.reason == EXEC_STATUS_COMPLETED:
+                registration = bridge.register_outputs(run_id=run_id, owner=owner)
+                mapped = self._enrich_resources(mapped, registration)
+            elif mapped.event_status == "already_ended" and mapped.reason in {
+                EXEC_STATUS_FAILED,
+                EXEC_STATUS_TIMED_OUT,
+                EXEC_STATUS_CANCELLED,
+            }:
+                registration = bridge.finalize_without_outputs(
+                    run_id=run_id,
+                    owner=owner,
+                    reason=f"command_{mapped.reason}",
+                )
+                mapped = self._enrich_resources(mapped, registration)
         return self._mapped_result(mapped)

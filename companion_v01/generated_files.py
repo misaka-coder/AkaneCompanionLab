@@ -27,6 +27,7 @@ TRANSCRIPT_OUTPUT_FORMATS = {"md", "txt", "srt", "vtt", "json"}
 REGISTERED_ARTIFACT_FORMATS = (
     SUPPORTED_OUTPUT_FORMATS | MEDIA_OUTPUT_FORMATS | TRANSCRIPT_OUTPUT_FORMATS | {"png", "zip"}
 )
+_GENERIC_ARTIFACT_FORMAT_RE = re.compile(r"^[a-z0-9][a-z0-9_+-]{0,15}$")
 TEXT_INSPECT_FORMATS = {"txt", "md", "json", "csv", "html", "srt", "vtt", "xml", "log", "yaml", "yml"}
 PROTECTED_MEDIA_EXTENSIONS = {"kgm", "ncm", "qmc", "qmc0", "qmc3", "mflac", "mgg", "tkm"}
 VIDEO_MEDIA_EXTENSIONS = {"mp4", "mov", "mkv", "webm", "avi"}
@@ -784,10 +785,13 @@ class GeneratedFileService:
         title: str,
         output_format: str,
         timestamp: int | None = None,
+        allow_generic_format: bool = False,
     ) -> Path:
         """Reserve a safe path inside GeneratedFileStore-managed output storage."""
         normalized_format = str(output_format or "").strip().lower().lstrip(".")
-        if normalized_format not in REGISTERED_ARTIFACT_FORMATS:
+        if normalized_format not in REGISTERED_ARTIFACT_FORMATS and not (
+            allow_generic_format and _GENERIC_ARTIFACT_FORMAT_RE.fullmatch(normalized_format)
+        ):
             raise ValueError("generated output format is invalid")
         return self._build_output_path(
             profile_user_id=profile_user_id,
@@ -812,6 +816,7 @@ class GeneratedFileService:
         source_ids: list[str] | tuple[str, ...] | None = None,
         send_to_user: bool = False,
         timestamp: int | None = None,
+        allow_generic_format: bool = False,
     ) -> dict[str, Any]:
         """Register a non-empty artifact already rendered into managed output storage."""
         target = Path(output_path)
@@ -823,7 +828,9 @@ class GeneratedFileService:
         if file_size <= 0:
             raise RuntimeError("generated artifact is empty")
         normalized_format = str(output_format or target.suffix).strip().lower().lstrip(".")
-        if normalized_format not in REGISTERED_ARTIFACT_FORMATS:
+        if normalized_format not in REGISTERED_ARTIFACT_FORMATS and not (
+            allow_generic_format and _GENERIC_ARTIFACT_FORMAT_RE.fullmatch(normalized_format)
+        ):
             raise RuntimeError("generated artifact format is unsupported")
         if target.suffix.lower() != f".{normalized_format}":
             raise RuntimeError("generated artifact format does not match its file extension")

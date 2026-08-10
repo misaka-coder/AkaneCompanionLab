@@ -7732,6 +7732,15 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                     self.assertIn("gen_001", stored)
                     self.assertIn("send_file", stored)
                     self.assertNotIn("C:\\", stored)
+                    expanded = manager.open_memory(
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        arguments={"memory_id": observation_sid, "view": "content"},
+                    )
+                    self.assertTrue(expanded["ok"], expanded)
+                    self.assertIn("run_id=execrun_abcd", expanded["text"])
+                    self.assertIn("gen_001", expanded["text"])
                 finally:
                     manager.close()
 
