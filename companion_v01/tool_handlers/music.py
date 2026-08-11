@@ -1,7 +1,7 @@
 """QQ native music-card delivery handler (thin product adapter).
 
 The handler never talks to NapCat directly. It validates the model-visible
-``platform``/``track_id`` pair against the provider ID formats and emits a
+``platform``/``track_id`` pair against the supported provider ID format and emits a
 ``music_share_ready`` delivery event that the QQ Gateway turns into a OneBot
 music segment. The OneBot segment itself is constructed by the
 ``channelcore-onebot`` package (M63 thin-adapter boundary).
@@ -17,14 +17,11 @@ from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
 
 MUSIC_PLATFORM_LABELS = {
     "netease_music": "网易云",
-    "qq_music": "QQ音乐",
 }
 
-# netease track ids are pure decimal song ids; qq track ids are the alphanumeric
-# songmid (not the numeric songid) and always contain at least one letter.
+# NetEase track ids are pure decimal song ids.
 MUSIC_TRACK_ID_PATTERNS = {
     "netease_music": re.compile(r"^[0-9]{1,20}$"),
-    "qq_music": re.compile(r"^(?=.*[A-Za-z])[0-9A-Za-z_-]{1,64}$"),
 }
 
 
@@ -47,8 +44,8 @@ class SendMusicCardToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- send_music_card：当用户要在当前 QQ 会话收到网易云/QQ音乐原生音乐卡片时使用。"
-            "platform 为 netease_music（track_id 是纯数字网易云歌曲 ID）或 qq_music（track_id 是 QQ 音乐的 songmid，不是数字 songid）；"
+            "- send_music_card：当用户要在当前 QQ 会话收到网易云原生音乐卡片时使用。"
+            "platform 固定为 netease_music，track_id 是纯数字网易云歌曲 ID；"
             "track_id 必须来自本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
             "它只把卡片送入本轮 QQ 交付队列，不代表传输已经成功。"
         )
@@ -61,19 +58,12 @@ class SendMusicCardToolHandler(BaseToolHandler):
         if label is None:
             return ToolExecutionResult(
                 tool_type=self.tool_type,
-                followup_context=(
-                    "音乐卡片参数无效：platform 只支持 netease_music 或 qq_music。请用搜索结果里的精确平台后重试。"
-                ),
+                followup_context="音乐卡片参数无效：当前只支持 platform=netease_music。",
             )
         if not pattern or not pattern.fullmatch(track_id):
-            hint = (
-                "网易云 track_id 必须是纯数字歌曲 ID，请使用搜索结果里的精确 ID。"
-                if platform == "netease_music"
-                else "QQ音乐 track_id 必须是对应歌曲的 songmid（如 002XWgfo0IKPOH），不是数字 songid。"
-            )
             return ToolExecutionResult(
                 tool_type=self.tool_type,
-                followup_context=hint,
+                followup_context="网易云 track_id 必须是纯数字歌曲 ID，请使用搜索结果里的精确 ID。",
             )
         return ToolExecutionResult(
             tool_type=self.tool_type,

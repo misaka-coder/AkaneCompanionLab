@@ -57,7 +57,6 @@ QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
 # Akane QQ music-card platform -> OneBot music segment type (V1 open set).
 QQ_MUSIC_PLATFORM_TO_ONEBOT = {
     "netease_music": "163",
-    "qq_music": "qq",
 }
 
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")

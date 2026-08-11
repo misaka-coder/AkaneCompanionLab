@@ -1,6 +1,6 @@
 ---
 name: music-card-share
-description: Use when exec_run is available and the user wants to find a song, request a song, or share a QQ native music card for a NetEase or QQ Music track.
+description: Use when exec_run is available and the user wants to find a song, request a song, or share a QQ native music card for a NetEase track.
 ---
 
 # Music Card Share
@@ -27,16 +27,14 @@ finding the correct id. It never downloads, decrypts, or uploads audio.
 Run the bundled search script from the Skill directory using `exec_run`:
 
 ```
-python music-card-share/scripts/search_music.py --platform netease --query "借口 陈海星" --limit 5
-python music-card-share/scripts/search_music.py --platform qq --query "借口 周杰伦" --limit 5
+python music-card-share/scripts/search_music.py --query "借口 陈海星" --limit 5
 ```
 
 The script prints one JSON document with `status` in `success` / `empty` / `error`
-and, on success, `results` with `track_id` (`songmid` for QQ), `title`, `artists`
-and `album`. Read it directly; it is small, so no cursor paging is needed.
+and, on success, `results` with the NetEase `track_id`, `title`, `artists` and
+`album`. Read it directly; it is small, so no cursor paging is needed.
 
-- `netease_music` track ids are decimal; `qq_music` track ids are `songmid`
-  (alphanumeric, not the numeric `songid`).
+- `netease_music` track ids are decimal.
 - Pick the result whose title + artist best matches the user's request. Honor
   "原唱", "Live", "翻唱" and similar qualifiers.
 - If several versions are all reasonable, choose by the user's wording; if you
@@ -57,7 +55,5 @@ exact id cannot be located right now; never invent an id from the song title.
 - Do not download audio, bypass membership, or attempt to extract encrypted cache
   formats. Only the card is delivered; whether the full song plays is decided by
   QQ, the platform's copyright, membership, and region.
-- User did not name a platform: try NetEase first; if nothing suitable, try QQ
-  and say you switched platforms.
 - On `empty` or `error`, report the real outcome and offer to adjust the query;
   do not pretend a card was prepared.

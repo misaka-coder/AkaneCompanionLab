@@ -1425,8 +1425,8 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_music_card",
     display_name="Send music card",
     description=(
-        "发送一张 QQ 原生音乐分享卡片给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
-        "netease_music 的 track_id 是纯数字网易云歌曲 ID；qq_music 的 track_id 是歌曲的 songmid，不是数字 songid。"
+        "发送一张网易云 QQ 原生音乐分享卡片给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
+        "platform 固定为 netease_music，track_id 是纯数字网易云歌曲 ID。"
         "track_id 必须是本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
         "本工具只把卡片送入本轮 QQ 交付队列，不代表传输已经成功。"
     ),
@@ -1436,14 +1436,14 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["netease_music", "qq_music"],
-                "description": "音乐平台：网易云或 QQ音乐。",
+                "enum": ["netease_music"],
+                "description": "音乐平台，当前固定为网易云。",
             },
             "track_id": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "精确的平台歌曲 ID（netease_music 纯数字 / qq_music 为 songmid）。",
+                "description": "精确的网易云纯数字歌曲 ID。",
             },
         },
         "required": ["platform", "track_id"],
@@ -1452,8 +1452,8 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("music_card_delivery",),
     visible_in=("qq",),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,
@@ -2784,11 +2784,11 @@ class CapabilityRegistry:
                 trigger=_always,
             ),
             CapabilityModule(
-                name="qq_music_card",
+                name="qq_native_music_card",
                 layer="qq_delivery",
                 modes=(ClientMode.QQ_TEXT,),
                 tools=QQ_MUSIC_CARD_TOOL_NAMES,
-                light_hint="在 QQ 会话里，你可以把已确认歌曲 ID 的网易云/QQ音乐歌曲以原生音乐卡片发给用户；只发送卡片，不下载音频。",
+                light_hint="在 QQ 会话里，你可以把已确认歌曲 ID 的网易云歌曲以原生音乐卡片发给用户；只发送卡片，不下载音频。",
                 trigger=_always,
             ),
             CapabilityModule(

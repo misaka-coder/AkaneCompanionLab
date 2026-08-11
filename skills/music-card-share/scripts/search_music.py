@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""music-card-share: search NetEase / QQ Music for a track and return a stable
+"""music-card-share: search NetEase for a track and return a stable
 track_id that Akane's ``send_music_card`` can deliver as a QQ native card.
 
 Python standard library only. Outputs a single JSON document on stdout:
@@ -23,9 +23,6 @@ HTTP_TIMEOUT_SECONDS = 8
 MAX_RESPONSE_BYTES = 1024 * 1024
 
 USER_AGENT = "Mozilla/5.0 (compatible; AkaneMusicCardShare/1.0)"
-
-PLATFORMS = {"netease": "netease_music", "qq": "qq_music"}
-
 
 def _http_get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Referer": "https://music.163.com/"})
@@ -65,55 +62,17 @@ def _search_netease(query: str, limit: int) -> list[dict]:
     return results
 
 
-def _search_qq(query: str, limit: int) -> list[dict]:
-    params = urllib.parse.urlencode({"w": query, "format": "json", "p": 1, "n": limit, "new_json": 1})
-    url = f"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?{params}"
-    payload = _http_get_json(url)
-    song_list = (((payload.get("data") or {}).get("song") or {}).get("list")) or []
-    results = []
-    for song in song_list[:limit]:
-        if not isinstance(song, dict):
-            continue
-        songmid = str(song.get("songmid") or song.get("mid") or "").strip()
-        if not songmid:
-            continue
-        artists = [
-            str(item.get("name") or "").strip()
-            for item in (song.get("singer") or [])
-            if isinstance(item, dict) and str(item.get("name") or "").strip()
-        ]
-        album = str(song.get("albumname") or "").strip()
-        if not album and isinstance(song.get("album"), dict):
-            album = str(song["album"].get("name") or "").strip()
-        results.append(
-            {
-                "track_id": songmid,
-                "title": str(song.get("songname") or song.get("title") or "").strip(),
-                "artists": artists,
-                "album": album,
-            }
-        )
-    return results
-
-
-_SEARCHERS = {
-    "netease": _search_netease,
-    "qq": _search_qq,
-}
-
-
-def _search(platform_key: str, query: str, limit: int) -> dict:
-    platform_name = PLATFORMS.get(platform_key, platform_key)
+def _search(query: str, limit: int) -> dict:
     base = {
         "status": "error",
-        "platform": platform_name,
+        "platform": "netease_music",
         "query": query,
     }
     clean_query = str(query or "").strip()
     if not clean_query:
         return {**base, "reason": "empty_query"}
     try:
-        results = _SEARCHERS[platform_key](clean_query, limit)
+        results = _search_netease(clean_query, limit)
     except urllib.error.HTTPError as exc:
         return {**base, "reason": f"http_error:{exc.code}"}
     except (urllib.error.URLError, TimeoutError) as exc:
@@ -126,13 +85,12 @@ def _search(platform_key: str, query: str, limit: int) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Search NetEase or QQ Music for a track.")
-    parser.add_argument("--platform", choices=sorted(PLATFORMS), required=True, help="netease or qq")
+    parser = argparse.ArgumentParser(description="Search NetEase for a track.")
     parser.add_argument("--query", required=True, help="search text, e.g. '借口 陈海星'")
     parser.add_argument("--limit", type=int, default=5, help="max results (1-5)")
     args = parser.parse_args(argv)
     limit = max(1, min(MAX_RESULTS, int(args.limit)))
-    result = _search(args.platform, args.query, limit)
+    result = _search(args.query, limit)
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0

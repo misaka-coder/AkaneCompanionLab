@@ -2,7 +2,7 @@
 
 Covers the 16 acceptance items:
   1. music_segment exact JSON (channelcore-onebot installed wheel).
-  2. NetEase / QQ track-id format validation.
+  2. NetEase track-id format validation and unsupported-platform rejection.
   3. send_music_card handler emits the correct delivery event.
   4/5. QQ private -> send_private_msg, QQ group -> send_group_msg.
   6. Multiple parallel cards send separately.
@@ -11,7 +11,7 @@ Covers the 16 acceptance items:
   9. send_music_card is in the QQ profile and absent on desktop.
  10. The QQ schema is byte-identical regardless of Shell/provider readiness.
  11. music-card-share appears in the bundled Skill catalog with a full body.
- 12. The search script projects QQ songmid into track_id.
+ 12. The search script projects a NetEase song id into track_id.
  13-15. MemCore records exec_run + send_music_card traces and stays reloadable
         without upstream raw / audio / host paths.
  16. Plain-text request schema stays stable (covered by 10).
@@ -112,10 +112,6 @@ class MusicSegmentContractTests(unittest.TestCase):
             music_segment("163", "2703973041").as_onebot(),
             {"type": "music", "data": {"type": "163", "id": "2703973041"}},
         )
-        self.assertEqual(
-            music_segment("qq", "002XWgfo0IKPOH").as_onebot(),
-            {"type": "music", "data": {"type": "qq", "id": "002XWgfo0IKPOH"}},
-        )
 
 
 class SendMusicCardHandlerTests(unittest.TestCase):
@@ -151,20 +147,11 @@ class SendMusicCardHandlerTests(unittest.TestCase):
         )
         self.assertNotIn("整首歌已发送", result.followup_context)
 
-    def test_handler_qq_music_songmid_receipt(self) -> None:
-        result = self.handler.execute(
-            call={"type": "send_music_card", "platform": "qq_music", "track_id": "002XWgfo0IKPOH"},
-            context=self.context,
-        )
-        self.assertEqual(result.stream_events[0]["music"], {"platform": "qq_music", "track_id": "002XWgfo0IKPOH"})
-        self.assertIn("QQ音乐音乐卡片已进入本轮 QQ 交付队列", result.followup_context)
-
     def test_handler_rejects_bad_ids(self) -> None:
         cases = [
             ("netease_music", "ABC"),
             ("netease_music", "12a3"),
-            ("qq_music", "123456"),  # numeric songid is not a songmid
-            ("qq_music", ""),
+            ("qq_music", "002XWgfo0IKPOH"),
             ("netease_music", ""),
         ]
         for platform, track_id in cases:
@@ -213,7 +200,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
                 [
                     {
                         "type": "music_share_ready",
-                        "music": {"platform": "qq_music", "track_id": "002XWgfo0IKPOH"},
+                        "music": {"platform": "netease_music", "track_id": "2703973041"},
                         "send_to_user": True,
                         "client_mode": "qq_text",
                     }
@@ -224,7 +211,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         payload = mocked.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/send_group_msg"))
         self.assertEqual(payload["group_id"], QQ_GROUP_FIXTURE_ID)
-        self.assertEqual(payload["message"], [{"type": "music", "data": {"type": "qq", "id": "002XWgfo0IKPOH"}}])
+        self.assertEqual(payload["message"], [{"type": "music", "data": {"type": "163", "id": "2703973041"}}])
 
     def test_multiple_cards_send_separately(self) -> None:
         with patch(
@@ -241,7 +228,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
                     },
                     {
                         "type": "music_share_ready",
-                        "music": {"platform": "qq_music", "track_id": "002XWgfo0IKPOH"},
+                        "music": {"platform": "netease_music", "track_id": "25642214"},
                         "send_to_user": True,
                         "client_mode": "qq_text",
                     },
@@ -250,7 +237,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertEqual(result["count"], 2)
         self.assertEqual(mocked.call_count, 2)
         message_types = [call.kwargs["json"]["message"][0]["data"]["type"] for call in mocked.call_args_list]
-        self.assertEqual(message_types, ["163", "qq"])
+        self.assertEqual(message_types, ["163", "163"])
 
     def test_partial_delivery_reports_the_real_split(self) -> None:
         with patch(
@@ -268,7 +255,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
                     },
                     {
                         "type": "music_share_ready",
-                        "music": {"platform": "qq_music", "track_id": "002XWgfo0IKPOH"},
+                        "music": {"platform": "netease_music", "track_id": "25642214"},
                         "send_to_user": True,
                         "client_mode": "qq_text",
                     },
@@ -358,6 +345,8 @@ class QqGatewayMusicCardTests(_GatewayHarness):
 
 class QqCapabilityProfileTests(unittest.TestCase):
     def test_music_card_only_in_qq_profile(self) -> None:
+        from companion_v01.tool_handlers.core import TOOL_SPEC_BY_TYPE
+
         registry = CapabilityRegistry()
         qq = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
         desktop = registry.select(CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET))
@@ -366,6 +355,8 @@ class QqCapabilityProfileTests(unittest.TestCase):
         self.assertNotIn("send_music_card", desktop.tool_names)
         self.assertIn("open_music_search", desktop.tool_names)
         self.assertNotIn("open_music_search", qq.tool_names)
+        platform_schema = TOOL_SPEC_BY_TYPE["send_music_card"].input_schema["properties"]["platform"]
+        self.assertEqual(platform_schema["enum"], ["netease_music"])
 
     def test_qq_schema_is_stable_across_readiness_and_repeated_builds(self) -> None:
         from companion_v01.tool_handlers.core import TOOL_SPEC_BY_TYPE
@@ -454,7 +445,6 @@ class MusicCardSkillCatalogTests(unittest.TestCase):
             for keyword in (
                 "search_music.py",
                 "send_music_card",
-                "songmid",
                 "netease_music",
                 "exec_run",
                 "not download",
@@ -465,42 +455,6 @@ class MusicCardSkillCatalogTests(unittest.TestCase):
 
 
 class MusicSearchScriptTests(unittest.TestCase):
-    def test_qq_songmid_is_projected_into_track_id(self) -> None:
-        search = _load_search_script()
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                return False
-
-            def read(self, size: int = -1):
-                return json.dumps(
-                    {
-                        "code": 0,
-                        "data": {
-                            "song": {
-                                "list": [
-                                    {
-                                        "songmid": "002XWgfo0IKPOH",
-                                        "songname": "借口",
-                                        "singer": [{"name": "周杰伦"}],
-                                        "albumname": "范特西",
-                                    }
-                                ]
-                            }
-                        },
-                    }
-                ).encode("utf-8")
-
-        with patch.object(search.urllib.request, "urlopen", return_value=_Response()):
-            result = search._search("qq", "借口 周杰伦", 5)
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["platform"], "qq_music")
-        self.assertEqual(result["results"][0]["track_id"], "002XWgfo0IKPOH")
-        self.assertEqual(result["results"][0]["title"], "借口")
-
     def test_netease_id_is_projected_and_empty_is_structured(self) -> None:
         search = _load_search_script()
 
@@ -528,7 +482,7 @@ class MusicSearchScriptTests(unittest.TestCase):
                 ).encode("utf-8")
 
         with patch.object(search.urllib.request, "urlopen", return_value=_Response()):
-            result = search._search("netease", "借口 陈海星", 5)
+            result = search._search("借口 陈海星", 5)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["results"][0]["track_id"], "2703973041")
 
@@ -543,43 +497,8 @@ class MusicSearchScriptTests(unittest.TestCase):
                 return json.dumps({"result": {"songs": []}}).encode("utf-8")
 
         with patch.object(search.urllib.request, "urlopen", return_value=_Empty()):
-            empty = search._search("netease", "不存在的东西", 5)
+            empty = search._search("不存在的东西", 5)
         self.assertEqual(empty["status"], "empty")
-
-    def test_qq_mid_field_is_used_as_songmid_fallback(self) -> None:
-        search = _load_search_script()
-
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc):
-                return False
-
-            def read(self, size: int = -1):
-                return json.dumps(
-                    {
-                        "code": 0,
-                        "data": {
-                            "song": {
-                                "list": [
-                                    {
-                                        "mid": "002XWgfo0IKPOH",
-                                        "title": "借口",
-                                        "singer": [{"name": "周杰伦"}],
-                                        "album": {"name": "七里香"},
-                                    }
-                                ]
-                            }
-                        },
-                    }
-                ).encode("utf-8")
-
-        with patch.object(search.urllib.request, "urlopen", return_value=_Response()):
-            result = search._search("qq", "借口 周杰伦", 5)
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["results"][0]["track_id"], "002XWgfo0IKPOH")
-        self.assertEqual(result["results"][0]["album"], "七里香")
 
     def test_http_error_is_structured(self) -> None:
         import urllib.error
@@ -590,7 +509,7 @@ class MusicSearchScriptTests(unittest.TestCase):
             raise urllib.error.HTTPError("url", 403, "forbidden", None, None)
 
         with patch.object(search.urllib.request, "urlopen", side_effect=_raise):
-            result = search._search("netease", "借口", 5)
+            result = search._search("借口", 5)
         self.assertEqual(result["status"], "error")
         self.assertIn("http_error:403", result["reason"])
 
