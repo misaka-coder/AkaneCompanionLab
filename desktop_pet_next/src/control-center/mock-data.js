@@ -110,6 +110,10 @@ export const modelPage = {
   chatModel: "deepseek-chat",
   useForVision: true,
   visionModel: "",
+  visionConfigured: false,
+  hasVisionApiKey: false,
+  visionBaseUrl: "",
+  visionApiProtocol: "openai",
   timeoutSeconds: 120,
   providers: [
     {

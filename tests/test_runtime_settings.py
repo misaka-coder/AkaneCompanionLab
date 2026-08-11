@@ -177,6 +177,109 @@ class BotSettingsViewTests(unittest.TestCase):
         self.assertEqual(updated.chat_api_protocol, "responses")
         self.assertEqual(updated.llm_chat_reasoning_effort, "")
 
+    def test_model_service_standalone_vision_provider_wins_over_chat(self) -> None:
+        base = BotSettingsView(
+            chat_api_key="chat-key",
+            chat_base_url="https://chat.example/v1",
+            chat_model_name="chat-model",
+            chat_api_protocol="openai",
+            vision_api_key="",
+            vision_base_url="",
+            vision_model_name="",
+        )
+        updated = base.with_model_service(
+            SimpleNamespace(
+                api_key="chat-key",
+                base_url="https://chat.example/v1",
+                chat_model="chat-model",
+                protocol="openai",
+                use_for_vision=True,
+                vision_model="gemini-3.5-flash",
+                vision_api_key="vision-key",
+                vision_base_url="https://api.akane.win/v1",
+                vision_api_protocol="openai",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(updated.chat_api_key, "chat-key")
+        self.assertEqual(updated.chat_base_url, "https://chat.example/v1")
+        self.assertEqual(updated.chat_model_name, "chat-model")
+        self.assertEqual(updated.vision_api_key, "vision-key")
+        self.assertEqual(updated.vision_base_url, "https://api.akane.win/v1")
+        self.assertEqual(updated.vision_model_name, "gemini-3.5-flash")
+        self.assertEqual(updated.vision_api_protocol, "openai")
+
+    def test_model_service_standalone_vision_falls_back_to_protocol(self) -> None:
+        base = BotSettingsView()
+        updated = base.with_model_service(
+            SimpleNamespace(
+                api_key="chat-key",
+                base_url="https://chat.example/v1",
+                chat_model="chat-model",
+                protocol="responses",
+                use_for_vision=True,
+                vision_model="gemini-3.5-flash",
+                vision_api_key="vision-key",
+                vision_base_url="https://api.akane.win/v1",
+                vision_api_protocol="",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(updated.vision_api_protocol, "responses")
+
+    def test_model_service_standalone_vision_requires_full_route(self) -> None:
+        base = BotSettingsView(
+            chat_api_key="chat-key",
+            chat_base_url="https://chat.example/v1",
+            chat_model_name="chat-model",
+            chat_api_protocol="openai",
+        )
+        updated = base.with_model_service(
+            SimpleNamespace(
+                api_key="chat-key",
+                base_url="https://chat.example/v1",
+                chat_model="chat-model",
+                protocol="openai",
+                use_for_vision=True,
+                vision_model="gemini-3.5-flash",
+                vision_api_key="",
+                vision_base_url="",
+                vision_api_protocol="",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(updated.vision_api_key, "chat-key")
+        self.assertEqual(updated.vision_base_url, "https://chat.example/v1")
+        self.assertEqual(updated.vision_model_name, "gemini-3.5-flash")
+
+    def test_model_service_standalone_vision_disabled_clears_route(self) -> None:
+        base = BotSettingsView(
+            vision_api_key="old-key",
+            vision_base_url="https://old.example/v1",
+            vision_model_name="old-model",
+        )
+        updated = base.with_model_service(
+            SimpleNamespace(
+                api_key="chat-key",
+                base_url="https://chat.example/v1",
+                chat_model="chat-model",
+                protocol="openai",
+                use_for_vision=False,
+                vision_model="gemini-3.5-flash",
+                vision_api_key="vision-key",
+                vision_base_url="https://api.akane.win/v1",
+                vision_api_protocol="openai",
+                chat_reasoning_effort="",
+            )
+        )
+
+        self.assertEqual(updated.vision_api_key, "")
+        self.assertEqual(updated.vision_base_url, "")
+        self.assertEqual(updated.vision_model_name, "")
+
     def test_model_service_preserves_an_explicit_aux_provider(self) -> None:
         base = BotSettingsView(
             aux_api_key="aux-key",

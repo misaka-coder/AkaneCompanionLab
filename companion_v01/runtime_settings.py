@@ -355,6 +355,18 @@ class BotSettingsView:
         image_generation_base_url = _text(getattr(model_settings, "image_generation_base_url", ""))
         image_generation_model = _text(getattr(model_settings, "image_generation_model", "")) or "gpt-image-2"
         vision_model = _text(getattr(model_settings, "vision_model", "")) or model
+        # 独立视觉 provider：当 chat 与 vision 走不同服务商时（例如聊天用
+        # DeepSeek、看图用 Gemini），视觉路由使用自己的 key/base_url/protocol，
+        # 不再复用 chat 的 provider。仅当三项 + 模型都填齐时才视为独立配置。
+        vision_api_key = _text(getattr(model_settings, "vision_api_key", ""))
+        vision_base_url = _text(getattr(model_settings, "vision_base_url", ""))
+        vision_api_protocol = _text(getattr(model_settings, "vision_api_protocol", ""))
+        standalone_vision = bool(
+            use_for_vision
+            and vision_api_key
+            and vision_base_url
+            and vision_model
+        )
         chat_reasoning_effort = normalize_reasoning_effort(
             getattr(model_settings, "chat_reasoning_effort", "")
         )
@@ -376,10 +388,10 @@ class BotSettingsView:
             chat_base_url=base_url,
             chat_model_name=model,
             chat_api_protocol=protocol,
-            vision_api_key=api_key if use_for_vision else "",
-            vision_base_url=base_url if use_for_vision else "",
+            vision_api_key=vision_api_key if standalone_vision else (api_key if use_for_vision else ""),
+            vision_base_url=vision_base_url if standalone_vision else (base_url if use_for_vision else ""),
             vision_model_name=vision_model if use_for_vision else "",
-            vision_api_protocol=protocol,
+            vision_api_protocol=(vision_api_protocol or protocol) if standalone_vision else protocol,
             image_generation_enabled=use_for_image_generation,
             image_generation_api_key=image_generation_api_key,
             image_generation_base_url=image_generation_base_url,

@@ -1218,6 +1218,16 @@ function bindEvents() {
       return;
     }
 
+    const modelStandaloneVisionToggle = event.target.closest("[data-model-standalone-vision]");
+    if (modelStandaloneVisionToggle) {
+      state.modelDraft = {
+        ...readModelServiceForm(),
+        standaloneVision: Boolean(modelStandaloneVisionToggle.checked)
+      };
+      renderActivePage();
+      return;
+    }
+
     const workflowFileInput = event.target.closest("[data-workflow-file-input]");
     if (workflowFileInput) {
       void importWorkflowFile(workflowFileInput);
@@ -1259,7 +1269,7 @@ async function runModelServiceAction(actionId) {
   state.modelActionStatus = modelBusyLabel(actionId);
   renderActivePage();
   try {
-    const result = await dataSource.runModelServiceAction(actionId, draft);
+    const result = await dataSource.runModelServiceAction(actionId, normalizeModelServiceDraft(draft));
     if (actionId === "models" && result?.ok) {
       state.modelModels = Array.isArray(result.models) ? result.models : [];
       if (!state.modelDraft.chatModel && state.modelModels.length) {
@@ -2315,6 +2325,34 @@ function renderModelPage() {
               </label>
             ` : ""}
 
+            <label class="model-inline-toggle span-2">
+              <input data-model-standalone-vision type="checkbox"${draft.standaloneVision ? " checked" : ""} />
+              <span>
+                <strong>使用独立的视觉服务</strong>
+                <small>聊天与看图走不同服务商时开启（例如聊天用 DeepSeek、看图用 Gemini）。</small>
+              </span>
+            </label>
+
+            ${draft.useForVision && draft.standaloneVision ? `
+              <label class="span-2">
+                <span>视觉 Base URL</span>
+                <input data-model-vision-base-url type="text" value="${escapeAttr(draft.visionBaseUrl)}" placeholder="https://api.example.com/v1" autocomplete="url" />
+              </label>
+              <label class="span-2">
+                <span>视觉 API Key</span>
+                <input data-model-vision-api-key type="password" value="${escapeAttr(draft.visionApiKey)}" placeholder="${escapeAttr(visionApiKeyPlaceholder)}" autocomplete="off" />
+              </label>
+              <label class="span-2">
+                <span>视觉协议</span>
+                <select data-model-vision-protocol>
+                  ${["openai", "responses", "anthropic", "gemini", "ollama"].map((item) => `
+                    <option value="${item}"${(draft.visionApiProtocol || "openai") === item ? " selected" : ""}>${escapeHtml(item)}</option>
+                  `).join("")}
+                </select>
+                <small>默认 openai；中转服务选 openai，原生 Gemini 接口选 gemini。</small>
+              </label>
+            ` : ""}
+
             ${modelPage.hasApiKey ? `
               <label class="model-clear-key span-2">
                 <input data-model-clear-key type="checkbox" />
@@ -2350,6 +2388,9 @@ function renderModelPage() {
 }
 
 function buildModelServiceDraft(source = {}) {
+  const hasStandaloneVision =
+    source.visionConfigured === true ||
+    Boolean(String(source.visionBaseUrl || "").trim() && String(source.visionModel || "").trim());
   return {
     providerId: String(source.providerId || "openai_compatible"),
     protocol: String(source.protocol || "openai"),
@@ -2358,6 +2399,10 @@ function buildModelServiceDraft(source = {}) {
     chatModel: String(source.chatModel || ""),
     useForVision: source.useForVision !== false,
     visionModel: String(source.visionModel || ""),
+    standaloneVision: hasStandaloneVision,
+    visionBaseUrl: String(source.visionBaseUrl || ""),
+    visionApiKey: "",
+    visionApiProtocol: String(source.visionApiProtocol || "openai"),
     timeoutSeconds: Number(source.timeoutSeconds || 120),
     clearApiKey: false
   };
@@ -2375,6 +2420,12 @@ function readModelServiceForm() {
     chatModel: String(root.querySelector("[data-model-chat-model]")?.value || fallback.chatModel || "").trim(),
     useForVision: Boolean(root.querySelector("[data-model-use-vision]")?.checked ?? fallback.useForVision),
     visionModel: String(root.querySelector("[data-model-vision-model]")?.value || fallback.visionModel || "").trim(),
+    standaloneVision: Boolean(
+      root.querySelector("[data-model-standalone-vision]")?.checked ?? fallback.standaloneVision
+    ),
+    visionBaseUrl: String(root.querySelector("[data-model-vision-base-url]")?.value || fallback.visionBaseUrl || "").trim(),
+    visionApiKey: String(root.querySelector("[data-model-vision-api-key]")?.value || fallback.visionApiKey || "").trim(),
+    visionApiProtocol: String(root.querySelector("[data-model-vision-protocol]")?.value || fallback.visionApiProtocol || "openai"),
     timeoutSeconds: Number(root.querySelector("[data-model-timeout]")?.value || fallback.timeoutSeconds || 120),
     clearApiKey: Boolean(root.querySelector("[data-model-clear-key]")?.checked)
   };
@@ -2382,6 +2433,30 @@ function readModelServiceForm() {
 
 function modelProviderById(providerId) {
   return (modelPage.providers || []).find((item) => item.id === providerId) || null;
+}
+
+const visionApiKeyPlaceholder = "已保存，留空表示继续使用原密钥";
+
+function normalizeModelServiceDraft(draft = {}) {
+  const normalized = { ...draft };
+  const standaloneVision =
+    normalized.standaloneVision === true &&
+    String(normalized.visionBaseUrl || "").trim() &&
+    String(normalized.visionModel || "").trim();
+  if (!standaloneVision) {
+    normalized.visionBaseUrl = "";
+    normalized.visionApiKey = "";
+    normalized.visionApiProtocol = "";
+    normalized.visionModel = String(normalized.visionModel || "").trim();
+    delete normalized.standaloneVision;
+    return normalized;
+  }
+  normalized.visionBaseUrl = String(normalized.visionBaseUrl || "").trim();
+  normalized.visionApiKey = String(normalized.visionApiKey || "").trim();
+  normalized.visionApiProtocol = String(normalized.visionApiProtocol || "openai");
+  normalized.visionModel = String(normalized.visionModel || "").trim();
+  delete normalized.standaloneVision;
+  return normalized;
 }
 
 function renderCharacterPage() {

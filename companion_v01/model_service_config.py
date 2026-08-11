@@ -123,6 +123,12 @@ class ModelServiceSettings:
     image_generation_base_url: str = ""
     image_generation_model: str = "gpt-image-2"
     vision_model: str = ""
+    # 独立的视觉 provider。当 chat 与 vision 需要走不同服务商（例如聊天用
+    # DeepSeek、看图用 Gemini）时，填这三项 + vision_model；此时视觉不再
+    # 复用 chat 的 key/base_url。留空则维持旧行为：视觉复用 chat provider。
+    vision_api_key: str = field(default="", repr=False)
+    vision_base_url: str = ""
+    vision_api_protocol: str = ""
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     chat_reasoning_effort: str = ""
     chat_max_output_tokens: int = 0
@@ -134,6 +140,20 @@ class ModelServiceSettings:
         if self.protocol == "ollama":
             return True
         return bool(self.api_key)
+
+    @property
+    def vision_configured(self) -> bool:
+        """Whether an independent vision provider is fully specified.
+
+        A standalone vision route requires base_url + model; api_key is only
+        mandatory for non-Ollama providers.  Protocol falls back to the chat
+        protocol so an empty value still yields a usable client.
+        """
+        if not (self.vision_base_url and self.vision_model):
+            return False
+        if self.vision_api_protocol != "ollama":
+            return bool(self.vision_api_key)
+        return True
 
 
 class ModelServiceConfigStore:
@@ -181,6 +201,7 @@ def settings_from_mapping(
     *,
     existing_api_key: str = "",
     existing_image_generation_api_key: str = "",
+    existing_vision_api_key: str = "",
     require_model: bool = True,
 ) -> ModelServiceSettings:
     provider_id = str(raw.get("providerId") or raw.get("provider_id") or "openai_compatible").strip()
@@ -226,6 +247,25 @@ def settings_from_mapping(
         or "gpt-image-2"
     ).strip() or "gpt-image-2"
     vision_model = str(raw.get("visionModel") or raw.get("vision_model") or "").strip()
+    vision_api_key = str(
+        raw.get("visionApiKey") or raw.get("vision_api_key") or ""
+    ).strip()
+    if not vision_api_key and not bool(
+        raw.get("clearVisionApiKey") or raw.get("clear_vision_api_key")
+    ):
+        vision_api_key = str(existing_vision_api_key or "").strip()
+    vision_base_url = _normalize_configured_base_url(
+        str(raw.get("visionBaseUrl") or raw.get("vision_base_url") or ""),
+        protocol=str(raw.get("visionApiProtocol") or raw.get("vision_api_protocol") or "openai"),
+    )
+    vision_api_protocol = normalize_api_protocol(
+        protocol=str(
+            raw.get("visionApiProtocol")
+            or raw.get("vision_api_protocol")
+            or ""
+        ),
+        base_url=str(raw.get("visionBaseUrl") or raw.get("vision_base_url") or ""),
+    )
     timeout_seconds = _bounded_int(
         raw.get("timeoutSeconds", raw.get("timeout_seconds")),
         default=DEFAULT_TIMEOUT_SECONDS,
@@ -256,6 +296,9 @@ def settings_from_mapping(
         image_generation_base_url=image_generation_base_url,
         image_generation_model=image_generation_model,
         vision_model=vision_model,
+        vision_api_key=vision_api_key,
+        vision_base_url=vision_base_url,
+        vision_api_protocol=vision_api_protocol,
         timeout_seconds=timeout_seconds,
         chat_reasoning_effort=chat_reasoning_effort,
         chat_max_output_tokens=chat_max_output_tokens,
@@ -372,6 +415,11 @@ def public_model_service_snapshot(
         "hasApiKey": bool(settings.api_key),
         "chatModel": settings.chat_model,
         "useForVision": settings.use_for_vision,
+        "visionModel": settings.vision_model,
+        "visionConfigured": settings.vision_configured,
+        "hasVisionApiKey": bool(settings.vision_api_key),
+        "visionBaseUrl": settings.vision_base_url,
+        "visionApiProtocol": settings.vision_api_protocol,
         "useForImageGeneration": settings.use_for_image_generation,
         "hasImageGenerationApiKey": bool(settings.image_generation_api_key),
         "imageGenerationBaseUrl": settings.image_generation_base_url,
@@ -398,10 +446,18 @@ def apply_model_service_settings(config_module: Any, settings: ModelServiceSetti
     setattr(config_module, "IMAGE_GENERATION_MODEL", settings.image_generation_model)
 
     if settings.use_for_vision:
-        setattr(config_module, "VISION_API_KEY", settings.api_key)
-        setattr(config_module, "VISION_BASE_URL", settings.base_url)
-        setattr(config_module, "VISION_MODEL_NAME", settings.vision_model or settings.chat_model)
-        setattr(config_module, "VISION_API_PROTOCOL", settings.protocol)
+        if settings.vision_configured:
+            # 独立视觉 provider：chat 与 vision 走不同服务商时，
+            # 视觉路由使用自己的 key/base_url/protocol，不再复用 chat。
+            setattr(config_module, "VISION_API_KEY", settings.vision_api_key)
+            setattr(config_module, "VISION_BASE_URL", settings.vision_base_url)
+            setattr(config_module, "VISION_MODEL_NAME", settings.vision_model)
+            setattr(config_module, "VISION_API_PROTOCOL", settings.vision_api_protocol or settings.protocol)
+        else:
+            setattr(config_module, "VISION_API_KEY", settings.api_key)
+            setattr(config_module, "VISION_BASE_URL", settings.base_url)
+            setattr(config_module, "VISION_MODEL_NAME", settings.vision_model or settings.chat_model)
+            setattr(config_module, "VISION_API_PROTOCOL", settings.protocol)
     else:
         # The visible model-service settings own the runtime VISION_* route.
         # Leaving previous values in place silently keeps an old provider alive

@@ -78,6 +78,7 @@ def build_model_services_router(
                 payload,
                 existing_api_key=existing,
                 existing_image_generation_api_key=existing_settings.image_generation_api_key,
+                existing_vision_api_key=existing_settings.vision_api_key,
             )
             store.save(settings)
             reload_result = (
@@ -180,6 +181,7 @@ async def _run_candidate_action(
         settings = settings_from_mapping(
             payload,
             existing_api_key=existing,
+            existing_vision_api_key=_load_existing_vision_secret(store, config_module, payload),
             require_model=require_model,
         )
         result = await asyncio.to_thread(runner, settings)
@@ -239,6 +241,15 @@ def _load_existing_secret(
         payload.get("providerId") or payload.get("provider_id") or existing.provider_id
     ).strip()
     return existing.api_key if requested_provider_id == existing.provider_id else ""
+
+
+def _load_existing_vision_secret(
+    store: ModelServiceConfigStore,
+    config_module: Any,
+    payload: dict[str, Any],
+) -> str:
+    existing = _load_existing_settings(store, config_module)
+    return str(getattr(existing, "vision_api_key", "") or "").strip()
 
 
 async def _request_mapping(request: Request) -> dict[str, Any]:

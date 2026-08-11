@@ -71,6 +71,10 @@ function adaptModelPage(page) {
   model.visionModel = String(model.visionModel || "");
   model.hasApiKey = Boolean(model.hasApiKey);
   model.useForVision = model.useForVision !== false;
+  model.visionConfigured = Boolean(model.visionConfigured);
+  model.hasVisionApiKey = Boolean(model.hasVisionApiKey);
+  model.visionBaseUrl = String(model.visionBaseUrl || "");
+  model.visionApiProtocol = String(model.visionApiProtocol || "openai");
   model.timeoutSeconds = Number(model.timeoutSeconds || 120);
   return model;
 }

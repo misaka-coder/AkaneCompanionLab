@@ -174,6 +174,79 @@ class ModelServiceConfigTests(unittest.TestCase):
         self.assertEqual(config.VISION_MODEL_NAME, "")
         self.assertEqual(config.VISION_API_PROTOCOL, "anthropic")
 
+    def test_standalone_vision_provider_routes_vision_to_its_own_service(self) -> None:
+        config = build_config()
+        settings = settings_from_mapping(
+            {
+                "providerId": "openai_compatible",
+                "baseUrl": "https://chat.example/v1",
+                "apiKey": "chat-key",
+                "chatModel": "deepseek-v4-flash",
+                "useForVision": True,
+                "visionModel": "gemini-3.5-flash",
+                "visionApiKey": "vision-key",
+                "visionBaseUrl": "https://api.akane.win/v1",
+                "visionApiProtocol": "openai",
+            }
+        )
+
+        self.assertTrue(settings.vision_configured)
+        self.assertEqual(settings.vision_api_key, "vision-key")
+        self.assertEqual(settings.vision_base_url, "https://api.akane.win/v1")
+        self.assertEqual(settings.vision_api_protocol, "openai")
+
+        apply_model_service_settings(config, settings)
+
+        self.assertEqual(config.CHAT_API_KEY, "chat-key")
+        self.assertEqual(config.CHAT_BASE_URL, "https://chat.example/v1")
+        self.assertEqual(config.VISION_API_KEY, "vision-key")
+        self.assertEqual(config.VISION_BASE_URL, "https://api.akane.win/v1")
+        self.assertEqual(config.VISION_MODEL_NAME, "gemini-3.5-flash")
+        self.assertEqual(config.VISION_API_PROTOCOL, "openai")
+
+    def test_standalone_vision_provider_preserves_existing_key_on_save(self) -> None:
+        settings = settings_from_mapping(
+            {
+                "providerId": "openai_compatible",
+                "baseUrl": "https://chat.example/v1",
+                "apiKey": "chat-key",
+                "chatModel": "deepseek-v4-flash",
+                "useForVision": True,
+                "visionModel": "gemini-3.5-flash",
+                "visionBaseUrl": "https://api.akane.win/v1",
+                "visionApiProtocol": "openai",
+            },
+            existing_vision_api_key="saved-vision-key",
+        )
+
+        self.assertEqual(settings.vision_api_key, "saved-vision-key")
+
+    def test_standalone_vision_ignored_when_incomplete(self) -> None:
+        config = build_config()
+        settings = settings_from_mapping(
+            {
+                "providerId": "openai_compatible",
+                "baseUrl": "https://chat.example/v1",
+                "apiKey": "chat-key",
+                "chatModel": "deepseek-v4-flash",
+                "useForVision": True,
+                "visionModel": "gemini-3.5-flash",
+                "visionBaseUrl": "",
+                "visionApiKey": "",
+                "visionApiProtocol": "",
+            }
+        )
+
+        self.assertFalse(settings.vision_configured)
+        self.assertEqual(settings.vision_model, "gemini-3.5-flash")
+
+        apply_model_service_settings(config, settings)
+
+        self.assertEqual(config.VISION_API_KEY, "chat-key")
+        self.assertEqual(config.VISION_BASE_URL, "https://chat.example/v1")
+        self.assertEqual(config.VISION_MODEL_NAME, "gemini-3.5-flash")
+        self.assertEqual(config.VISION_API_PROTOCOL, "openai")
+
     def test_openai_compatible_probe_and_test_use_real_http_contract(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format, *args):
