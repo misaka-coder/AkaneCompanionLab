@@ -23,11 +23,15 @@ This skill is only relevant when `exec_run` is actually offered in the current t
 ## Handle and resource rules
 
 - Always reuse the **exact handle** already shown in context. Never invent handles and never pass `latest` to `exec_run`.
+- Do not try to decrypt DRM-protected media or proprietary platform cache formats such as `ncm`, `qmc`,
+  `kgm`, or `mgg`. Ask for a normal user-owned source such as WAV, MP3, FLAC, M4A, or MP4 instead.
 - Stage the input with `input_resources` using `as` = a safe relative path inside the run workspace, e.g. `inputs/source.wav`. The model only ever references that relative path, never a host path.
 - Declare every intended output with `output_globs` relative to the current run directory, e.g. `outputs/result.mp3`.
 - **Do not set `cwd`** when using `input_resources`/`output_globs`; resource mode requires omitting `cwd`.
 - Prefer directory prefixes (`inputs/`, `outputs/`) so inputs and results do not collide.
 - ffmpeg does not create directories: before writing into `outputs/`, create it first in the same command, e.g. `mkdir outputs && ffmpeg -y ...`. Plain `mkdir` works on both cmd and POSIX shells; the run workspace is fresh, so the directory does not exist yet.
+- For routine conversion commands, prefer `ffmpeg -hide_banner -loglevel error -y ...` so a successful run
+  does not fill the tool result with progress noise; failures still return the relevant error.
 
 ## Inspect with ffprobe
 
@@ -47,13 +51,19 @@ Format conversion:
 ffmpeg -y -i inputs/source.wav -codec:a libmp3lame -q:a 2 outputs/result.mp3
 ```
 
-Trim a segment (`-ss` seek before `-i` for speed; `-t` duration):
+Fast video trim (`-ss` before `-i` for input seeking; stream copy may start on a nearby keyframe):
 
 ```
-ffmpeg -y -i inputs/source.mp4 -ss 00:00:05 -t 10 -c copy outputs/clip.mp4
+ffmpeg -y -ss 00:00:05 -i inputs/source.mp4 -t 10 -c copy outputs/clip.mp4
 ```
 
-For an audio-only trim that re-encodes, add the codec option explicitly instead of `-c copy`.
+When the boundary must be accurate, re-encode instead of using stream copy, for example:
+
+```
+ffmpeg -y -ss 00:00:05 -i inputs/source.mp4 -t 10 -c:v libx264 -c:a aac outputs/clip.mp4
+```
+
+For an audio-only trim, also re-encode with an explicit audio codec instead of `-c copy`.
 
 Resample / channels:
 
@@ -66,6 +76,9 @@ Change speed (audio only):
 ```
 ffmpeg -y -i inputs/source.wav -filter:a atempo=1.5 outputs/faster.wav
 ```
+
+One `atempo` stage should stay between 0.5 and 2.0 for broad ffmpeg compatibility. Chain stages for
+larger changes, such as `atempo=2.0,atempo=2.0` for 4x or `atempo=0.5,atempo=0.5` for 0.25x.
 
 Adjust / normalize volume:
 
@@ -80,13 +93,19 @@ Fade in / out:
 ffmpeg -y -i inputs/source.wav -af "afade=t=in:st=0:d=1,afade=t=out:st=2:d=1" outputs/faded.wav
 ```
 
-Remove leading/trailing silence:
+The example assumes a 3-second output. For a real fade-out, inspect the effective output duration first
+and set the fade-out start to `duration - fade_duration`; do not blindly reuse `st=2`.
+
+Remove leading and trailing silence while preserving pauses in the middle:
 
 ```
-ffmpeg -y -i inputs/source.wav -af "silenceremove=start_periods=1:start_threshold=-50dB:stop_periods=1:stop_threshold=-50dB" outputs/trimmed.wav
+ffmpeg -y -i inputs/source.wav -af "silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB:start_silence=0.02:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB:start_silence=0.02:detection=peak,areverse" outputs/trimmed.wav
 ```
 
-For videos, apply audio filters with `-filter:a` and keep the video stream with `-map 0:v -map 0:a`; changing video speed requires `setpts` on the video stream together with `atempo` on the audio.
+Do not replace this with `stop_periods=1`: that can stop at the first silence inside speech or music and
+discard everything after it. For videos known to contain both streams, apply audio filters with
+`-filter:a` and map the intended video/audio streams; changing video speed requires `setpts` on the video
+stream together with `atempo` on the audio.
 
 ## Platform differences
 

@@ -220,6 +220,8 @@ class MediaSkillCatalogTests(unittest.TestCase):
         self.assertIn("send_file", body)
         self.assertIn("exec_status", body)
         self.assertIn("registration_failed", body)
+        self.assertIn("DRM-protected", body)
+        self.assertIn("-hide_banner -loglevel error", body)
         self.assertIn("not", body)  # 边界声明：何时不要加载
         self.assertIn("When NOT to load", body)
         self.assertNotIn("C:", body)
@@ -231,6 +233,13 @@ class MediaSkillCatalogTests(unittest.TestCase):
         loaded = self.registry.load(SKILL_NAME)
         self.assertNotIn("scripts/", loaded.content)
         self.assertEqual(loaded.execution_cwd, f"alias:{SKILL_BUNDLED_MOUNT}")
+
+    def test_skill_preserves_internal_silence_and_distinguishes_exact_trim(self) -> None:
+        body = self.registry.load(SKILL_NAME).content
+        self.assertIn("areverse,silenceremove=", body)
+        self.assertIn("Do not replace this with `stop_periods=1`", body)
+        self.assertIn("stream copy may start on a nearby keyframe", body)
+        self.assertIn("-ss 00:00:05 -i inputs/source.mp4", body)
 
 
 class MediaSkillExecutionLoopTests(unittest.TestCase):
@@ -326,6 +335,17 @@ class MediaSkillExecutionLoopTests(unittest.TestCase):
     def _ffmpeg_convert_cmd(self) -> str:
         return "mkdir outputs && ffmpeg -y -i inputs/source.wav -codec:a libmp3lame -q:a 2 outputs/result.mp3"
 
+    @staticmethod
+    def _write_wav_with_internal_pause(path: Path, *, sample_rate: int = 8000) -> None:
+        samples = array("h")
+        for amplitude, seconds in ((0, 0.25), (8000, 0.5), (0, 0.4), (-8000, 0.5), (0, 0.25)):
+            samples.extend([amplitude] * int(sample_rate * seconds))
+        with wave.open(str(path), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(sample_rate)
+            writer.writeframes(samples.tobytes())
+
     def test_media_inspect_is_one_exec_run_without_cursor_paging(self) -> None:
         result = self.handler.execute(
             call={
@@ -379,7 +399,7 @@ class MediaSkillExecutionLoopTests(unittest.TestCase):
         result = self.handler.execute(
             call={
                 "type": "exec_run",
-                "command": "ffmpeg -y -i inputs/source.wav -codec:a nope outputs/result.mp3",
+                "command": "mkdir outputs && ffmpeg -y -i inputs/source.wav -codec:a nope outputs/result.mp3",
                 "initial_wait_seconds": 2,
                 "input_resources": [{"handle": self.handle, "as": "inputs/source.wav"}],
                 "output_globs": ["outputs/result.mp3"],
@@ -405,6 +425,55 @@ class MediaSkillExecutionLoopTests(unittest.TestCase):
         state = result.state_updates["capability_execution"]
         self.assertEqual(state.get("artifact_status"), ARTIFACT_STATUS_NOT_REQUESTED)
         self.assertNotIn("generated_resources", state)
+
+    def test_trim_silence_preserves_audio_after_an_internal_pause(self) -> None:
+        source = Path(self._tmp.name) / "pause.wav"
+        self._write_wav_with_internal_pause(source)
+        handle = self._register_wav(source)
+        command = (
+            'mkdir outputs && ffmpeg -hide_banner -loglevel error -y -i inputs/source.wav -af '
+            '"silenceremove=start_periods=1:start_duration=0.12:start_threshold=-50dB:'
+            'start_silence=0.02:detection=peak,areverse,silenceremove=start_periods=1:'
+            'start_duration=0.12:start_threshold=-50dB:start_silence=0.02:detection=peak,areverse" '
+            'outputs/trimmed.wav'
+        )
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": command,
+                "initial_wait_seconds": 2,
+                "input_resources": [{"handle": handle, "as": "inputs/source.wav"}],
+                "output_globs": ["outputs/trimmed.wav"],
+            },
+            context=self._context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], EXEC_STATUS_COMPLETED)
+        generated = state["generated_resources"][0]
+        file_ref = self.generated_service.resolve_input_resource(
+            profile_user_id="alice",
+            session_id="s1",
+            target=generated["handle"],
+            timestamp=0,
+        )
+        self.assertIsNotNone(file_ref)
+        duration = float(
+            subprocess.check_output(
+                [
+                    _FFPROBE,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(file_ref["absolute_path"]),
+                ],
+                text=True,
+            ).strip()
+        )
+        self.assertGreater(duration, 1.1, "the second audible segment after the pause was lost")
+        self.assertLess(duration, 1.8, "leading/trailing silence was not removed")
 
 
 class _FakeLLM:
