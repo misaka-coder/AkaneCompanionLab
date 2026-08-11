@@ -2356,6 +2356,179 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
+    def test_visual_tool_followup_reuses_turn_frozen_user_prompt_and_appends_tools(self) -> None:
+        class RecordingManager:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def record_request_projection(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "attempt": len(self.calls),
+                    "turn_id": kwargs["turn_id"],
+                }
+
+        class VisualToolLLM:
+            supports_request_observer = True
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict[str, int]:
+                return {}
+
+            def call_chat_json_result(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                current_user = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": kwargs["user_prompt"]},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
+                        },
+                    ],
+                }
+                persistent = [current_user, *list(kwargs.get("post_user_turns") or [])]
+                observed = kwargs["request_observer"](
+                    {
+                        "protocol": "openai",
+                        "model_route": {"protocol": "openai", "model": "vision-test"},
+                        "system_prefix": kwargs["system_prompt"],
+                        "tool_schema": [],
+                        "history_messages": persistent,
+                        "persistent_turn_messages": persistent,
+                        "audit_history_messages": persistent,
+                    }
+                )
+                parsed = {"emotion": "normal", "speech": "完成", "tool_call": None}
+                return SimpleNamespace(
+                    parsed=parsed,
+                    raw_text=json.dumps(parsed, ensure_ascii=False),
+                    error="" if observed["ok"] else f"request_observer_rejected:{observed['reason']}",
+                )
+
+        manager = RecordingManager()
+        llm = VisualToolLLM()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.llm = llm
+        engine.memcore_manager = manager
+        tool_turns = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-search",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"角色"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-search", "content": "搜索结果"},
+        ]
+        contexts = [
+            {
+                "system_prompt": "stable system",
+                "user_prompt": "[22:49] user: 发来了一张图片。",
+                "fallback": {"speech": "fallback"},
+                "visual_defaults": {"emotion": "normal"},
+                "debug_enabled": False,
+                "allow_tool_call": True,
+                "prompt_scope": "",
+                "post_user_turns": [],
+                "memcore_projection_read": {
+                    "current_turn_id": "turn-vision-tool",
+                    "current_turn_messages": [
+                        {
+                            "turn_id": "turn-vision-tool",
+                            "payload": {"role": "user", "content": "canonical"},
+                            "source_ids": ["vision-user"],
+                            "projection_index": 0,
+                            "projection_status": "complete",
+                            "projection_version": 1,
+                        }
+                    ],
+                },
+            },
+            {
+                "system_prompt": "stable system",
+                # Rebuilding prompt context used to replace the already-frozen
+                # current user slot with this shorter variant.
+                "user_prompt": "发来了一张图片。",
+                "fallback": {"speech": "fallback"},
+                "visual_defaults": {"emotion": "normal"},
+                "debug_enabled": False,
+                "allow_tool_call": True,
+                "prompt_scope": "",
+                "post_user_turns": tool_turns,
+                "memcore_projection_read": {
+                    "current_turn_id": "turn-vision-tool",
+                    "current_turn_messages": [
+                        {
+                            "turn_id": "turn-vision-tool",
+                            "payload": {"role": "user", "content": "frozen"},
+                            "source_ids": ["vision-user"],
+                            "projection_index": 0,
+                            "projection_status": "request_frozen",
+                            "projection_version": 1,
+                        },
+                        {
+                            "turn_id": "turn-vision-tool",
+                            "payload": tool_turns[0],
+                            "source_ids": ["vision-tool-action"],
+                            "projection_index": 1,
+                            "projection_status": "canonical_fallback",
+                            "projection_version": 1,
+                        },
+                        {
+                            "turn_id": "turn-vision-tool",
+                            "payload": tool_turns[1],
+                            "source_ids": ["vision-tool-result"],
+                            "projection_index": 2,
+                            "projection_status": "canonical_fallback",
+                            "projection_version": 1,
+                        },
+                    ],
+                },
+            },
+        ]
+        engine._prepare_final_response_context = lambda **_kwargs: contexts.pop(0)
+        engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
+        engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
+        engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
+        state: dict[str, object] = {}
+
+        for _ in range(2):
+            result = engine._build_final_response(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                user_message="发来了一张图片。",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+                user_images=[{"data_url": "data:image/png;base64,AAAA"}],
+                request_projection_state=state,
+            )
+            self.assertEqual(result["speech"], "完成")
+
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["user_prompt"], llm.calls[1]["user_prompt"])
+        self.assertEqual(llm.calls[1]["post_user_turns"], tool_turns)
+        self.assertEqual(len(manager.calls[0]["turn_messages"]), 1)
+        self.assertEqual(len(manager.calls[1]["turn_messages"]), 3)
+        self.assertEqual(
+            manager.calls[0]["turn_messages"][0]["payload"],
+            manager.calls[1]["turn_messages"][0]["payload"],
+        )
+        self.assertEqual(state["turn_id"], "turn-vision-tool")
+        self.assertNotIn("AAAA", repr(state))
+
     def test_memcore_stream_retry_keeps_projection_and_adds_ephemeral_repair_tail(self) -> None:
         class RecordingManager:
             def __init__(self) -> None:

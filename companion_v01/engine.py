@@ -3763,6 +3763,11 @@ class AkaneMemoryEngine:
             turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
 
         prompt_exclude_source_ids: list[str] = []
+        # Request-frozen user text is turn-scoped, not generation-scoped.  A
+        # tool continuation rebuilds prompt context, but it must keep the exact
+        # current user message that crossed the first provider boundary while
+        # appending only new action/result projections after it.
+        request_projection_state: dict[str, Any] = {}
         final_output = yield from self._generate_round(
             mode=mode,
             session_id=session_id,
@@ -3787,6 +3792,7 @@ class AkaneMemoryEngine:
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
             stable_system_context=plugin_stable_system_context,
+            request_projection_state=request_projection_state,
         )
         recent_raw_for_turn = list(recent_raw)
         tool_turns: list[dict[str, Any]] = []
@@ -3897,6 +3903,7 @@ class AkaneMemoryEngine:
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                     stable_system_context=plugin_stable_system_context,
+                    request_projection_state=request_projection_state,
                 )
                 break
             if streaming:
@@ -3951,6 +3958,7 @@ class AkaneMemoryEngine:
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                     stable_system_context=plugin_stable_system_context,
+                    request_projection_state=request_projection_state,
                 )
                 tool_round_index += 1
                 if allow_retry:
@@ -4011,6 +4019,7 @@ class AkaneMemoryEngine:
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
                     stable_system_context=plugin_stable_system_context,
+                    request_projection_state=request_projection_state,
                 )
                 if allow_retry:
                     continue
@@ -4118,6 +4127,7 @@ class AkaneMemoryEngine:
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
                 stable_system_context=plugin_stable_system_context,
+                request_projection_state=request_projection_state,
             )
             tool_round_index += 1
 
@@ -4313,6 +4323,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
+        request_projection_state: dict[str, Any] | None = None,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         """Dispatch one model generation to the transport implementation.
 
@@ -4347,6 +4358,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=domain_profile_id,
                 prompt_scope=prompt_scope,
+                request_projection_state=request_projection_state,
             ))
         return self._build_final_response(
             session_id=session_id,
@@ -4372,6 +4384,7 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
+            request_projection_state=request_projection_state,
         )
     def process_voice_turn_stream(
         self,
@@ -4622,6 +4635,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
+        request_projection_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._is_multimodal_unavailable_target(execution_target):
             return self._multimodal_unavailable_output(
@@ -4660,6 +4674,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            request_projection_state=request_projection_state,
         )
         max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
@@ -4676,7 +4691,10 @@ class AkaneMemoryEngine:
             )
             request_kwargs = {
                 "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": str(generation_context["user_prompt"])
+                "user_prompt": self._request_projection_user_prompt(
+                    request_projection_state,
+                    str(generation_context["user_prompt"]),
+                )
                 + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
                 "temperature": FINAL_RESPONSE_TEMPERATURE,
@@ -4939,6 +4957,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
+        request_projection_state: dict[str, Any] | None = None,
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         if self._is_multimodal_unavailable_target(execution_target):
             return self._multimodal_unavailable_output(
@@ -4977,6 +4996,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            request_projection_state=request_projection_state,
         )
         speaker_identity = self._resolve_turn_speaker_identity(
             client_context,
@@ -5007,7 +5027,10 @@ class AkaneMemoryEngine:
             )
             request_kwargs = {
                 "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": str(generation_context["user_prompt"])
+                "user_prompt": self._request_projection_user_prompt(
+                    request_projection_state,
+                    str(generation_context["user_prompt"]),
+                )
                 + (retry_note if request_observer is None else ""),
                 "fallback": dict(generation_context["fallback"]),
                 "temperature": FINAL_RESPONSE_TEMPERATURE,
@@ -5384,6 +5407,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        request_projection_state: dict[str, Any] | None = None,
     ) -> Any:
         if not bool(getattr(self.llm, "supports_request_observer", False)):
             return None
@@ -5406,12 +5430,12 @@ class AkaneMemoryEngine:
             nonlocal frozen_turn_messages
             if not isinstance(request, dict):
                 return {"ok": False, "status": "failed", "reason": "request_observation_invalid"}
+            persistent_messages = [
+                dict(message)
+                for message in list(request.get("persistent_turn_messages") or [])
+                if isinstance(message, dict)
+            ]
             if not frozen_turn_messages:
-                persistent_messages = [
-                    dict(message)
-                    for message in list(request.get("persistent_turn_messages") or [])
-                    if isinstance(message, dict)
-                ]
                 if not persistent_messages:
                     return {"ok": False, "status": "failed", "reason": "persistent_turn_messages_missing"}
                 if len(persistent_messages) != len(current_messages):
@@ -5479,6 +5503,13 @@ class AkaneMemoryEngine:
                 character_pack_id=character_pack_id,
             )
             if isinstance(result, dict) and result.get("ok"):
+                if isinstance(request_projection_state, dict) and persistent_messages:
+                    first_message = persistent_messages[0]
+                    if str(first_message.get("role") or "").strip().lower() == "user":
+                        frozen_prompt = self._provider_message_text(first_message.get("content"))
+                        if frozen_prompt:
+                            request_projection_state.setdefault("current_user_prompt", frozen_prompt)
+                            request_projection_state.setdefault("turn_id", turn_id)
                 generation_context["memcore_request_projection"] = {
                     key: result.get(key)
                     for key in (
@@ -5501,6 +5532,37 @@ class AkaneMemoryEngine:
             }
 
         return observe
+
+    @staticmethod
+    def _provider_message_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type not in {"text", "input_text"}:
+                continue
+            text = block.get("text")
+            if text is None:
+                text = block.get("input_text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _request_projection_user_prompt(
+        request_projection_state: dict[str, Any] | None,
+        fallback: str,
+    ) -> str:
+        if isinstance(request_projection_state, dict):
+            frozen = request_projection_state.get("current_user_prompt")
+            if isinstance(frozen, str) and frozen:
+                return frozen
+        return str(fallback or "")
 
     @staticmethod
     def _attach_tool_execution_receipts(
