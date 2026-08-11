@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
-from companion_v01.llm_runtime import LLMRuntime, ModelBundle
+from companion_v01.llm_runtime import ChatJSONStreamResult, LLMRuntime, ModelBundle
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import (
@@ -485,6 +485,51 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(provider_calls, [])
         self.assertIn("request_observer_rejected:projection_write_failed", result.error)
         self.assertEqual(result.raw_text, "")
+
+    def test_nonstream_json_decode_error_recovers_through_stream(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        metrics: list[str] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_metric = lambda key, *_args, **_kwargs: metrics.append(str(key))
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: self.fail("decode error should be recovered")
+
+        def fail_nonstream(**_kwargs: object) -> object:
+            raise json.JSONDecodeError("Extra data", "{}{}", 2)
+
+        runtime._create_completion = fail_nonstream
+
+        def recovered_stream(**_kwargs: object):
+            if False:
+                yield {}
+            return ChatJSONStreamResult(
+                parsed={"speech": "主动推送已恢复"},
+                raw_text='{"speech":"主动推送已恢复"}',
+                elapsed_ms=1.0,
+                error="",
+                latest_emotion="",
+                latest_speech="主动推送已恢复",
+                latest_reply_medium="text",
+                fallback_used=False,
+            )
+
+        runtime._stream_chat_json = recovered_stream
+        result = runtime._call_json_result(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="responses", protocol="responses"),
+                model="gpt-test",
+            ),
+            system_prompt="system",
+            user_prompt="current",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="chat:plugin_proactive:test",
+        )
+
+        self.assertEqual(result.parsed["speech"], "主动推送已恢复")
+        self.assertFalse(result.fallback_used)
+        self.assertIn("chat_nonstream_stream_recoveries", metrics)
 
     def test_request_observer_rejection_stops_stream_before_provider_transport(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

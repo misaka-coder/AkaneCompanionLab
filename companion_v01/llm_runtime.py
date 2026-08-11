@@ -1228,6 +1228,35 @@ class LLMRuntime:
                 )
             self._note_parse_fallback(content, phase="call_json")
         except Exception as exc:
+            # Some OpenAI-compatible gateways have occasionally returned a
+            # valid response followed by a second JSON document on
+            # non-streaming requests. The SDK raises ``JSONDecodeError: Extra
+            # data`` before we can inspect the model output. Retry the same
+            # request through the streaming adapter only for that transport
+            # shape; this keeps the normal path, prompt prefix and cache key
+            # unchanged while allowing proactive plugin turns to complete.
+            if isinstance(exc, json.JSONDecodeError):
+                recovered = self._recover_json_call_via_stream(
+                    bundle=bundle,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    fallback=fallback,
+                    temperature=temperature,
+                    prompt_cache_key=prompt_cache_key,
+                    user_images=user_images,
+                    native_tools=native_tools,
+                    native_tool_choice=native_tool_choice,
+                    early_tool_call_validator=None,
+                    system_extra_blocks=system_extra_blocks,
+                    history_turns=history_turns,
+                    ephemeral_turns=ephemeral_turns,
+                    post_user_turns=post_user_turns,
+                    prompt_audit_sections=prompt_audit_sections,
+                    request_observer=request_observer,
+                )
+                if recovered is not None:
+                    self._record_metric("chat_nonstream_stream_recoveries")
+                    return recovered
             self._record_metric("errors")
             self._capture_runtime_error(exc, phase="call_json")
             self._record_metric("chat_json_fallbacks")
@@ -1258,6 +1287,39 @@ class LLMRuntime:
             fallback_used=True,
             metadata_status=metadata_status,
             metadata_present=metadata_present,
+        )
+
+    def _recover_json_call_via_stream(
+        self,
+        **kwargs: Any,
+    ) -> ChatJSONResult | None:
+        """Recover a non-stream JSON decode failure with one stream.
+
+        This is deliberately transport-only.  The request payload, model,
+        prompt-cache key and native-tool schemas are forwarded unchanged;
+        only the wire mode changes.  A failed or fallback stream is ignored so
+        the caller still returns its ordinary structured fallback.
+        """
+
+        try:
+            iterator = self._stream_chat_json(**kwargs)
+            while True:
+                next(iterator)
+        except StopIteration as stopped:
+            stream_result = stopped.value
+        except Exception:
+            return None
+        if not isinstance(stream_result, ChatJSONStreamResult):
+            return None
+        if stream_result.error or stream_result.fallback_used:
+            return None
+        return ChatJSONResult(
+            parsed=dict(stream_result.parsed or {}),
+            raw_text=str(stream_result.raw_text or ""),
+            error=str(stream_result.error or ""),
+            fallback_used=False,
+            metadata_status=str(stream_result.metadata_status or "missing"),
+            metadata_present=bool(stream_result.metadata_present),
         )
 
     def _call_ndjson(
