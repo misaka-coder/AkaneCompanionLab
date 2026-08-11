@@ -271,6 +271,41 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_3")
         self.assertEqual("".join(runtime._extract_stream_text(chunk) for chunk in chunks), '{"speech":"checking"}')
 
+    def test_responses_input_drops_orphaned_tool_outputs(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+
+        request = runtime._responses_input_from_messages(
+            [
+                {"role": "user", "content": "当前问题"},
+                {"role": "tool", "tool_call_id": "call-compacted-away", "content": "旧结果"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-live",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"rates"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-live", "content": "实时结果"},
+            ]
+        )
+
+        self.assertEqual(
+            request,
+            [
+                {"role": "user", "content": "当前问题"},
+                {
+                    "type": "function_call",
+                    "call_id": "call-live",
+                    "name": "web_search",
+                    "arguments": '{"q":"rates"}',
+                },
+                {"type": "function_call_output", "call_id": "call-live", "output": "实时结果"},
+            ],
+        )
+
     def test_responses_input_preserves_plain_message_boundaries_for_source_attribution(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         messages = [

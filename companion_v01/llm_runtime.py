@@ -2990,6 +2990,7 @@ class LLMRuntime:
 
     def _responses_input_from_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        function_call_ids: set[str] = set()
 
         def append_plain_message(role: str, content: Any) -> None:
             items.append({"role": role, "content": content})
@@ -3002,6 +3003,7 @@ class LLMRuntime:
                     items.append({"role": "assistant", "content": content})
                 for call in self._normalize_openai_history_tool_calls(message.get("tool_calls")):
                     function = call["function"]
+                    function_call_ids.add(call["id"])
                     items.append(
                         {
                             "type": "function_call",
@@ -3013,7 +3015,13 @@ class LLMRuntime:
                 continue
             if role == "tool":
                 call_id = str(message.get("tool_call_id") or "").strip()
-                if call_id:
+                # Responses requires every function_call_output to reference a
+                # function_call present in the same input.  Memory projection
+                # can legitimately retain a tool result after its originating
+                # assistant call has been compacted away; sending that orphan
+                # makes PinAI reject the whole request with a 400.  Keep valid
+                # tool rounds byte-for-byte unchanged and drop only the orphan.
+                if call_id and call_id in function_call_ids:
                     items.append(
                         {
                             "type": "function_call_output",
