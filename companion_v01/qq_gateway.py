@@ -2696,7 +2696,9 @@ class NapCatQQGateway:
         session_id: str = "",
     ) -> str:
         active_reply_mode = _safe_reply_mode(reply_mode, default=self.default_reply_mode)
-        return f"qq.reply_delivery: {active_reply_mode}"
+        lines = [f"qq.reply_delivery: {active_reply_mode}"]
+        lines.extend(self.consume_delivery_notes(session_id))
+        return "\n".join(lines)
 
     def render_reply_text(self, frame: dict[str, Any]) -> str:
         return "\n".join(self.render_reply_messages(frame)).strip()

@@ -752,18 +752,36 @@ def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, 
     When a card was attempted but did not actually transmit, the model's own
     success claim must be suppressed and replaced by one deterministic notice.
     """
-    attempted = int(music_send_result.get("count") or 0) > 0
+    attempted_count = max(0, int(music_send_result.get("count") or 0))
+    attempted = attempted_count > 0
+    results = [item for item in music_send_result.get("results", []) if isinstance(item, dict)]
+    successful_count = sum(1 for item in results if bool(item.get("ok")))
+    failed_count = max(0, attempted_count - successful_count)
+    status = str(music_send_result.get("status") or "").strip().lower()
+    partial = attempted and (status == "partial" or (successful_count > 0 and failed_count > 0))
     failed = attempted and not bool(music_send_result.get("ok"))
     if failed:
+        notice = (
+            f"这次有 {successful_count} 张音乐卡片已经发出，另有 {failed_count} 张没有成功交付。"
+            "失败的卡片可能是 QQ 暂时无法解析或交付连接异常，可以换一个版本再试。"
+            if partial
+            else "音乐卡片没有成功发出，可能是 QQ 暂时无法解析这首歌或交付连接异常。可以换一个版本再试。"
+        )
         return {
             "attempted": attempted,
             "failed": failed,
+            "partial": partial,
+            "successful_count": successful_count,
+            "failed_count": failed_count,
             "suppress_model_text": True,
-            "notice": "音乐卡片没有成功发出，可能是 QQ 暂时无法解析这首歌或交付连接异常。可以换一个版本再试。",
+            "notice": notice,
         }
     return {
         "attempted": attempted,
         "failed": failed,
+        "partial": False,
+        "successful_count": successful_count,
+        "failed_count": failed_count,
         "suppress_model_text": False,
         "notice": "",
     }
@@ -1574,8 +1592,24 @@ def _process_qq_turn_streaming(
     music_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_music_delivery_issue"}
     if music_delivery_failed:
         music_delivery_feedback_result = qq_gateway.send_reply(context, music_decision["notice"])
-        music_delivery_feedback_result["status"] = "music_failure_notice_sent"
-        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】音乐卡片发送失败，用户已收到通知。")
+        if bool(music_decision.get("partial")):
+            music_delivery_feedback_result["status"] = "music_partial_notice_sent"
+            ok_results = [result for result in music_send_result.get("results", []) if bool(result.get("ok"))]
+            note_parts = [
+                "【上一轮交付状态】音乐卡片部分发送成功"
+                f"（成功 {music_decision.get('successful_count', 0)} 张，"
+                f"失败 {music_decision.get('failed_count', 0)} 张），用户已收到通知。"
+            ]
+            for result in ok_results[:3]:
+                platform_label = "网易云" if str(result.get("platform")) == "netease_music" else "QQ音乐"
+                note_parts.append(f"{platform_label}音乐卡片发送成功，track_id={result.get('track_id')}。")
+            qq_gateway.add_delivery_note(
+                _sid,
+                "".join(note_parts),
+            )
+        else:
+            music_delivery_feedback_result["status"] = "music_failure_notice_sent"
+            qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】音乐卡片发送失败，用户已收到通知。")
     elif music_delivery_attempted:
         ok_results = [result for result in music_send_result.get("results", []) if bool(result.get("ok"))]
         note_parts = [f"【上一轮交付状态】音乐卡片发送成功（共 {len(ok_results)} 张）。"]

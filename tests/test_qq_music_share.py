@@ -251,6 +251,37 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         message_types = [call.kwargs["json"]["message"][0]["data"]["type"] for call in mocked.call_args_list]
         self.assertEqual(message_types, ["163", "qq"])
 
+    def test_partial_delivery_reports_the_real_split(self) -> None:
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request",
+            side_effect=[_FakeOneBotOk(), _FakeOneBotFailed()],
+        ):
+            result = self.gateway.send_music_cards(
+                self.context,
+                [
+                    {
+                        "type": "music_share_ready",
+                        "music": {"platform": "netease_music", "track_id": "2703973041"},
+                        "send_to_user": True,
+                        "client_mode": "qq_text",
+                    },
+                    {
+                        "type": "music_share_ready",
+                        "music": {"platform": "qq_music", "track_id": "002XWgfo0IKPOH"},
+                        "send_to_user": True,
+                        "client_mode": "qq_text",
+                    },
+                ],
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "partial")
+        decision = _qq_music_delivery_decision(result)
+        self.assertTrue(decision["partial"])
+        self.assertEqual(decision["successful_count"], 1)
+        self.assertEqual(decision["failed_count"], 1)
+        self.assertIn("1 张音乐卡片已经发出", decision["notice"])
+        self.assertIn("另有 1 张没有成功交付", decision["notice"])
+
     def test_duplicate_platform_and_track_sent_once(self) -> None:
         event = {
             "type": "music_share_ready",
@@ -301,6 +332,27 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertTrue(result["ok"])
         self.assertEqual(result["count"], 0)
         mocked.assert_not_called()
+
+    def test_delivery_note_is_visible_once_in_the_next_turn_context(self) -> None:
+        self.gateway.add_delivery_note(self.context.session_id, "【上一轮交付状态】音乐卡片发送失败。")
+        first = self.gateway.build_extra_context(
+            event={},
+            is_group=False,
+            user_id=QQ_MASTER_FIXTURE_ID,
+            group_id=0,
+            reply_mode="auto",
+            session_id=self.context.session_id,
+        )
+        second = self.gateway.build_extra_context(
+            event={},
+            is_group=False,
+            user_id=QQ_MASTER_FIXTURE_ID,
+            group_id=0,
+            reply_mode="auto",
+            session_id=self.context.session_id,
+        )
+        self.assertIn("【上一轮交付状态】音乐卡片发送失败。", first)
+        self.assertEqual(second, "qq.reply_delivery: auto")
 
 
 class QqCapabilityProfileTests(unittest.TestCase):
