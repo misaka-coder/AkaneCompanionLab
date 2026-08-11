@@ -205,6 +205,12 @@ MEDIA_WORKBENCH_TOOL_NAMES = (
     "convert_media_file",
 )
 
+# M68: when a host-frozen execution profile is present, plain inspect/convert is
+# handled through the media-inspect-convert Skill over exec_run. These two tools
+# stay selected only when Shell is off, so the Shell-on capability profile keeps
+# a smaller schema while Shell-off experience is unchanged.
+MEDIA_WORKBENCH_SHELL_OVERLAP_TOOL_NAMES = ("inspect_media_info", "convert_media_file")
+
 GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
     "inspect_generated_file",
     "manage_generated_file",
@@ -2168,6 +2174,18 @@ def _execution_qq_enabled(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.execution_qq_enabled
 
 
+def _execution_available_in_mode(snapshot: CapabilitySnapshot) -> bool:
+    """Host-frozen execution availability for the current client mode.
+
+    QQ relies on the owner-opened Shell flag; desktop relies on the configured
+    execution provider. Neither depends on transient provider readiness, so the
+    capability schema stays byte-identical while readiness fluctuates.
+    """
+    if snapshot.client_mode == ClientMode.QQ_TEXT:
+        return snapshot.execution_qq_enabled
+    return snapshot.execution_enabled
+
+
 def _has_image_context(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_image_attachment or snapshot.has_image_generated_file or snapshot.has_image_workspace_file
 
@@ -2373,6 +2391,12 @@ class CapabilityRegistry:
                 for tool_name in module.tools
                 if tool_name not in hidden and (allowed is None or tool_name in allowed)
             )
+            if module.name == "media_workbench" and _execution_available_in_mode(snapshot):
+                module_tools = tuple(
+                    tool_name
+                    for tool_name in module_tools
+                    if tool_name not in MEDIA_WORKBENCH_SHELL_OVERLAP_TOOL_NAMES
+                )
             if not module_tools:
                 continue
             hint = module.light_hint.strip()
