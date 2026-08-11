@@ -429,8 +429,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
     def test_default_allowlist_includes_validated_native_tools(self) -> None:
         # The shipped default allowlist contains validated read tools plus
-        # bounded session-material/image-generation artifact tools. Read the
-        # class field default (immune to .env / other tests).
+        # bounded session-material/image-generation/artifact delivery tools.
+        # Read the class field default (immune to .env / other tests).
         from config import Settings
 
         default = str(Settings.model_fields["NATIVE_TOOL_DECISION_ALLOWLIST"].default or "")
@@ -442,6 +442,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "browse_memory",
                 "read_memory_timeline",
                 "open_memory",
+                "load_skill",
                 "list_reminders",
                 "check_inventory",
                 "inspect_media_info",
@@ -463,6 +464,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 "convert_media_file",
                 "cover_song",
                 "send_file",
+                "send_music_card",
             },
         )
 

@@ -38,6 +38,7 @@ from companion_v01.routes.qq import _qq_music_delivery_decision
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.music import SendMusicCardToolHandler
+from companion_v01.tool_orchestration_engine import build_native_tool_decision_plan, native_tool_decision_allowlist
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -405,6 +406,26 @@ class QqCapabilityProfileTests(unittest.TestCase):
                     sort_keys=False,
                 ),
             )
+
+    def test_skill_loader_and_music_delivery_enter_the_verified_native_plan(self) -> None:
+        from companion_v01.tool_handlers.skills import LoadSkillToolHandler
+
+        selected = {
+            "load_skill": LoadSkillToolHandler(registry=object()),
+            "send_music_card": SendMusicCardToolHandler(),
+        }
+        self.assertTrue(set(selected).issubset(native_tool_decision_allowlist()))
+
+        plan = build_native_tool_decision_plan(
+            selected,
+            allow_tool_call=True,
+            provider_supports_native_tools=True,
+            allowed_tool_names=selected,
+        )
+        self.assertEqual(plan.status, "enabled")
+        native_names = [str((item.get("function") or {}).get("name") or "") for item in plan.tools]
+        self.assertEqual(native_names, ["load_skill", "send_music_card"])
+        self.assertEqual(plan.legacy_prompt_exclusions, {"load_skill", "send_music_card"})
 
 
 class _SpecShim:
