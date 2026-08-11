@@ -160,6 +160,7 @@ from .tool_handlers.generated_media import (
     SeparateAudioStemsToolHandler,
     TranscribeMediaToolHandler,
 )
+from .tool_handlers.music import SendMusicCardToolHandler
 from .tool_handlers.web_browser import (
     BrowserPageToolHandler,
     OpenBrowserToolHandler,

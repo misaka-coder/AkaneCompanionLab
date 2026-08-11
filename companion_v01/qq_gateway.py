@@ -33,6 +33,7 @@ from channelcore_onebot import (
     resolve_quoted_message as resolve_onebot_quoted_message,
     image_segment,
     mface_segment,
+    music_segment,
     text_segment,
     voice_segment,
 )
@@ -52,6 +53,12 @@ QQ_TEXT_CAPABILITIES = (
 )
 
 QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
+
+# Akane QQ music-card platform -> OneBot music segment type (V1 open set).
+QQ_MUSIC_PLATFORM_TO_ONEBOT = {
+    "netease_music": "163",
+    "qq_music": "qq",
+}
 
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
@@ -2955,6 +2962,77 @@ class NapCatQQGateway:
             "results": results,
         }
 
+    def send_music_card(
+        self,
+        context: QQMessageContext,
+        *,
+        platform: str,
+        track_id: str,
+    ) -> dict[str, Any]:
+        """Send one QQ native music card; returns the real NapCat transport result."""
+        clean_platform = str(platform or "").strip()
+        clean_track_id = str(track_id or "").strip()
+        onebot_type = QQ_MUSIC_PLATFORM_TO_ONEBOT.get(clean_platform)
+        if not context.target_id or onebot_type is None or not clean_track_id:
+            return {"ok": False, "reason": "empty_target_or_music"}
+        try:
+            plan = build_message_action(
+                self._outbound_target(context),
+                [music_segment(onebot_type, clean_track_id)],
+                # The card is delivered before the final text reply; do not claim
+                # the one reply reference so the model's closing text keeps it.
+                reply_to="",
+            )
+        except ValueError as exc:
+            return self._outbound_plan_failure(exc)
+        result = self._send_outbound_plan(plan, timeout=8)
+        result["platform"] = clean_platform
+        result["track_id"] = clean_track_id
+        return result
+
+    def send_music_cards(
+        self,
+        context: QQMessageContext,
+        tool_events: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Deliver all model-selected music cards, one NapCat message each, deduped."""
+        events = [event for event in tool_events or [] if isinstance(event, dict)]
+        targets: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for event in events:
+            if str(event.get("type") or "") != "music_share_ready":
+                continue
+            if not bool(event.get("send_to_user")):
+                continue
+            event_mode = str(event.get("client_mode") or "").strip().lower()
+            if event_mode and event_mode != "qq_text":
+                continue
+            music = event.get("music") if isinstance(event.get("music"), dict) else {}
+            platform = str(music.get("platform") or "").strip()
+            track_id = str(music.get("track_id") or "").strip()
+            if platform not in QQ_MUSIC_PLATFORM_TO_ONEBOT or not track_id:
+                continue
+            identity = (platform, track_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            targets.append({"platform": platform, "track_id": track_id})
+        if not targets:
+            return {"ok": True, "count": 0, "results": []}
+
+        results: list[dict[str, Any]] = []
+        for target in targets:
+            results.append(self.send_music_card(context, **target))
+        all_ok = bool(results) and all(bool(result.get("ok")) for result in results)
+        any_ok = any(bool(result.get("ok")) for result in results)
+        status = "sent" if all_ok else "partial" if any_ok else "failed"
+        return {
+            "ok": all_ok,
+            "status": status,
+            "count": len(results),
+            "results": results,
+        }
+
     def parse_economy_command(self, message: str) -> dict[str, Any] | None:
         """Parse economy commands. Returns None if not an economy command.
 
@@ -3663,7 +3741,7 @@ class NapCatQQGateway:
         events = (frame or {}).get("tool_events")
         if not isinstance(events, list):
             return False
-        artifact_ready_types = {"generated_file_ready", "file_ready"}
+        artifact_ready_types = {"generated_file_ready", "file_ready", "music_share_ready"}
         for event in events:
             if not isinstance(event, dict):
                 continue

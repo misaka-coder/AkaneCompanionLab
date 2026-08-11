@@ -746,6 +746,29 @@ def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str])
     return unsent
 
 
+def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, Any]:
+    """Decide music-card delivery handling for the current QQ turn.
+
+    When a card was attempted but did not actually transmit, the model's own
+    success claim must be suppressed and replaced by one deterministic notice.
+    """
+    attempted = int(music_send_result.get("count") or 0) > 0
+    failed = attempted and not bool(music_send_result.get("ok"))
+    if failed:
+        return {
+            "attempted": attempted,
+            "failed": failed,
+            "suppress_model_text": True,
+            "notice": "音乐卡片没有成功发出，可能是 QQ 暂时无法解析这首歌或交付连接异常。可以换一个版本再试。",
+        }
+    return {
+        "attempted": attempted,
+        "failed": failed,
+        "suppress_model_text": False,
+        "notice": "",
+    }
+
+
 def _send_pending_stage_messages(
     *,
     qq_gateway: Any,
@@ -1376,11 +1399,18 @@ def _process_qq_turn_streaming(
 
     file_delivery_attempted = int(file_send_result.get("count") or 0) > 0
     file_delivery_failed = file_delivery_attempted and not bool(file_send_result.get("ok"))
-    # Deliver the artifact before any model-authored completion claim. On
+    # Music cards are delivered before any model-authored completion claim too.
+    music_send_result = qq_gateway.send_music_cards(context, delivery_events)
+    music_decision = _qq_music_delivery_decision(music_send_result)
+    music_delivery_attempted = bool(music_decision["attempted"])
+    music_delivery_failed = bool(music_decision["failed"])
+    # Deliver the artifacts before any model-authored completion claim. On
     # failure, only the deterministic transport feedback below is allowed out.
     final_reply_messages = (
         []
-        if file_delivery_failed or bool(frame.get("_transient_final_failure"))
+        if file_delivery_failed
+        or music_delivery_failed
+        or bool(frame.get("_transient_final_failure"))
         else qq_gateway.render_reply_messages(frame)
     )
     reply_messages = final_reply_messages
@@ -1408,14 +1438,16 @@ def _process_qq_turn_streaming(
     )
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
+    visible_music_delivered = music_delivery_attempted and bool(music_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
     if (
-        (not visible_text_delivered and not visible_file_delivered)
-        or (not final_frame_received and not visible_file_delivered)
+        (not visible_text_delivered and not visible_file_delivered and not visible_music_delivered)
+        or (not final_frame_received and not visible_file_delivered and not visible_music_delivered)
         or (
             bool(frame.get("_transient_final_failure"))
             and tool_preface_delivered
             and not visible_file_delivered
+            and not visible_music_delivered
         )
     ):
         # A streamed tool preface or emotion is not an authoritative final
@@ -1539,6 +1571,18 @@ def _process_qq_turn_streaming(
             _sid,
             f"【上一轮交付状态】文件发送成功（共 {file_send_result.get('count', 0)} 个）。",
         )
+    music_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_music_delivery_issue"}
+    if music_delivery_failed:
+        music_delivery_feedback_result = qq_gateway.send_reply(context, music_decision["notice"])
+        music_delivery_feedback_result["status"] = "music_failure_notice_sent"
+        qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】音乐卡片发送失败，用户已收到通知。")
+    elif music_delivery_attempted:
+        ok_results = [result for result in music_send_result.get("results", []) if bool(result.get("ok"))]
+        note_parts = [f"【上一轮交付状态】音乐卡片发送成功（共 {len(ok_results)} 张）。"]
+        for result in ok_results[:3]:
+            platform_label = "网易云" if str(result.get("platform")) == "netease_music" else "QQ音乐"
+            note_parts.append(f"{platform_label}音乐卡片发送成功，track_id={result.get('track_id')}。")
+        qq_gateway.add_delivery_note(_sid, "".join(note_parts))
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
@@ -1550,8 +1594,10 @@ def _process_qq_turn_streaming(
         "emotion_mface_result": emotion_mface_result,
         "emotion_image_result": emotion_image_result,
         "file_send_result": file_send_result,
+        "music_send_result": music_send_result,
         "final_reply_fallback_result": final_reply_fallback_result,
         "file_delivery_feedback_result": file_delivery_feedback_result,
+        "music_delivery_feedback_result": music_delivery_feedback_result,
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
     }

@@ -219,6 +219,7 @@ GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
 FILE_HANDOFF_TOOL_NAMES = ("send_file",)
 CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
 QQ_STICKER_TOOL_NAMES = ("send_sticker",)
+QQ_MUSIC_CARD_TOOL_NAMES = ("send_music_card",)
 
 
 OPEN_BROWSER_TOOL_SPEC = CapabilityToolSpec(
@@ -1419,6 +1420,43 @@ SEND_STICKER_TOOL_SPEC = CapabilityToolSpec(
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=2048,
+)
+SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="send_music_card",
+    display_name="Send music card",
+    description=(
+        "发送一张 QQ 原生音乐分享卡片给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
+        "netease_music 的 track_id 是纯数字网易云歌曲 ID；qq_music 的 track_id 是歌曲的 songmid，不是数字 songid。"
+        "track_id 必须是本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
+        "本工具只把卡片送入本轮 QQ 交付队列，不代表传输已经成功。"
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "platform": {
+                "type": "string",
+                "enum": ["netease_music", "qq_music"],
+                "description": "音乐平台：网易云或 QQ音乐。",
+            },
+            "track_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "精确的平台歌曲 ID（netease_music 纯数字 / qq_music 为 songmid）。",
+            },
+        },
+        "required": ["platform", "track_id"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("music_card_delivery",),
+    visible_in=("qq",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
 )
 INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     capability_id="inspect_media_info",
@@ -2743,6 +2781,14 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=QQ_STICKER_TOOL_NAMES,
                 light_hint="你有一组静态表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="qq_music_card",
+                layer="qq_delivery",
+                modes=(ClientMode.QQ_TEXT,),
+                tools=QQ_MUSIC_CARD_TOOL_NAMES,
+                light_hint="在 QQ 会话里，你可以把已确认歌曲 ID 的网易云/QQ音乐歌曲以原生音乐卡片发给用户；只发送卡片，不下载音频。",
                 trigger=_always,
             ),
             CapabilityModule(

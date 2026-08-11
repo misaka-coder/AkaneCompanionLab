@@ -57,6 +57,7 @@ from .memory import (
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
 )
+from .music import SendMusicCardToolHandler
 from .skills import LoadSkillToolHandler, ManageSkillToolHandler
 from .web_browser import (
     BrowserPageToolHandler,
@@ -190,6 +191,7 @@ def build_builtin_tool_handlers(
         "send_sticker": SendStickerToolHandler(
             sticker_service=sticker_assets,
         ),
+        "send_music_card": SendMusicCardToolHandler(),
         "manage_generated_file": ManageGeneratedFileToolHandler(
             generated_file_service=generated_file_service,
             task_workspace_service=task_workspace_service,
