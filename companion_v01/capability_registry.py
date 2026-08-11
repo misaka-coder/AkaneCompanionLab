@@ -148,6 +148,7 @@ COMMON_TOOL_NAMES = (
     "read_memory_timeline",
     "browse_memory",
     "open_memory",
+    "load_skill",
     "load_character_context",
     "set_reminder",
     "list_reminders",
@@ -158,7 +159,7 @@ COMMON_TOOL_NAMES = (
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
-EXEC_TOOL_NAMES = ("exec_run", "exec_status", "exec_cancel")
+EXEC_TOOL_NAMES = ("exec_run", "exec_status", "exec_cancel", "manage_skill")
 DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
@@ -2584,7 +2585,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；跨多日或群聊记录很多时用 browse_memory 先看目录；已知具体时段时用 read_memory_timeline 读原文；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
+                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；跨多日或群聊记录很多时用 browse_memory 先看目录；已知具体时段时用 read_memory_timeline 读原文；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。任务明确匹配 Skills 目录中的说明时用 load_skill 渐进加载操作手册。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -2605,7 +2606,7 @@ class CapabilityRegistry:
                 light_hint=(
                     "桌宠本机模式下，当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
                     "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
-                    "只有宿主在本机启用执行时这项能力才会出现。"
+                    "只有宿主在本机启用执行时这项能力才会出现；需要创建或更新 Skill 时，可在执行工作区写草稿后用 manage_skill 原子发布。"
                 ),
                 trigger=_execution_enabled,
                 unavailable_reason="本机执行提供者当前没有通过可用性检查。",
@@ -2619,7 +2620,8 @@ class CapabilityRegistry:
                 light_hint=(
                     "当前 QQ 会话已由主人开放 Shell；当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
-                    "不会隐式访问聊天成员的个人电脑。主人可用 /shell status 查看本会话权限。"
+                    "不会隐式访问聊天成员的个人电脑。主人还可把执行工作区中的 Skill 草稿用 manage_skill 原子发布；"
+                    "主人可用 /shell status 查看本会话权限。"
                 ),
                 trigger=_execution_qq_enabled,
                 unavailable_reason="当前 QQ 会话的 Shell 没有开放，或执行提供者没有通过可用性检查。",

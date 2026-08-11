@@ -58,6 +58,7 @@ from ..capability_registry import (
     WEB_SEARCH_TOOL_SPEC,
 )
 from ..execution_specs import EXEC_CANCEL_TOOL_SPEC, EXEC_RUN_TOOL_SPEC, EXEC_STATUS_TOOL_SPEC
+from ..skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
 
 
 @dataclass(frozen=True)
@@ -803,6 +804,16 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="control",
         default_round_budget=3,
     ),
+    "load_skill": ToolMetadata(
+        family="skill",
+        operation="read",
+        default_round_budget=4,
+    ),
+    "manage_skill": ToolMetadata(
+        family="skill",
+        operation="control",
+        default_round_budget=4,
+    ),
 }
 
 
@@ -857,6 +868,8 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "exec_run": EXEC_RUN_TOOL_SPEC,
     "exec_status": EXEC_STATUS_TOOL_SPEC,
     "exec_cancel": EXEC_CANCEL_TOOL_SPEC,
+    "load_skill": LOAD_SKILL_TOOL_SPEC,
+    "manage_skill": MANAGE_SKILL_TOOL_SPEC,
 }
 
 

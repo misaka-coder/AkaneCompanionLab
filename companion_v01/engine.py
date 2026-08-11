@@ -7024,6 +7024,24 @@ class AkaneMemoryEngine:
             pass
         return store
 
+    def _get_skill_registry(self) -> Any:
+        registry = getattr(self, "skill_registry", None)
+        if registry is not None:
+            return registry
+        from .skill_runtime import SkillRegistry, resolve_skill_roots
+
+        bundled_root, managed_root, execution_workspace = resolve_skill_roots(config)
+        registry = SkillRegistry(
+            bundled_root=bundled_root,
+            managed_root=managed_root,
+            execution_workspace_root=execution_workspace,
+        )
+        try:
+            setattr(self, "skill_registry", registry)
+        except Exception:
+            pass
+        return registry
+
     def _build_execution_provider(self) -> Any | None:
         """Host-bound execution provider, or None when execution is disabled.
 
@@ -7067,6 +7085,7 @@ class AkaneMemoryEngine:
                 run_log_dir=run_log_dir,
                 allowed_env_names=allowed_names,
                 proxy_url=proxy_url,
+                mounts=self._get_skill_registry().mount_paths(),
             )
         except Exception as exc:
             logger.warning("execution provider disabled: %s", exc)
@@ -7108,6 +7127,7 @@ class AkaneMemoryEngine:
             describe_scene=self._describe_tool_scene_context,
             build_npc_followup_context=self._build_npc_followup_context,
             observe_gift_image_fn=self.observe_gift_image_once,
+            skill_registry=self._get_skill_registry(),
             execution_provider=self._build_execution_provider(),
             approval_store=self._get_approval_store(),
         )
@@ -7245,6 +7265,13 @@ class AkaneMemoryEngine:
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
+        skill_catalog = ""
+        if "load_skill" in tuple(getattr(selection, "tool_names", ()) or ()):
+            try:
+                skill_catalog = str(self._get_skill_registry().prompt_catalog() or "").strip()
+            except Exception as exc:
+                logger.warning("skill catalog projection failed: %s", type(exc).__name__)
+                skill_catalog = "【可按需加载的 Skills】\n- Skill 目录当前读取失败，本轮不要假装已经加载 Skill。"
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
@@ -7287,20 +7314,25 @@ class AkaneMemoryEngine:
 
         if not handlers:
             if not include_capability_status and excluded:
-                return (
+                direct_hint = (
                     "本轮可直接调用的工具及参数以请求中实际附带的工具定义为准；"
                     "不要把这些工具手写进最终 JSON 的兼容 tool_call 字段。"
                 )
+                return "\n\n".join(part for part in (skill_catalog, direct_hint) if part)
             if not disclosures and not capability_hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
             parts: list[str] = []
             append_capability_context(parts)
+            if skill_catalog:
+                parts.extend([skill_catalog, ""])
             parts.extend(media_routing)
             parts.append("当前没有需要展开的具体工具，tool_call 固定为 null。")
             return "\n".join(parts)
 
         lines: list[str] = []
         append_capability_context(lines)
+        if skill_catalog:
+            lines.extend([skill_catalog, ""])
         if (
             client_context
             and client_context.effective_mode == ClientMode.DESKTOP_PET

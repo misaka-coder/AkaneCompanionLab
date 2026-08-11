@@ -166,3 +166,5 @@ from .tool_handlers.web_browser import (
     OpenMusicSearchToolHandler,
     WebSearchToolHandler,
 )
+from .tool_handlers.skills import LoadSkillToolHandler, ManageSkillToolHandler
+from .skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC

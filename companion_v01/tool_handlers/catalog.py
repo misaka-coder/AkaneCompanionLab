@@ -57,6 +57,7 @@ from .memory import (
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
 )
+from .skills import LoadSkillToolHandler, ManageSkillToolHandler
 from .web_browser import (
     BrowserPageToolHandler,
     OpenBrowserToolHandler,
@@ -97,6 +98,7 @@ def build_builtin_tool_handlers(
     describe_scene: Any,
     build_npc_followup_context: Any,
     observe_gift_image_fn: Any,
+    skill_registry: Any | None = None,
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
@@ -239,6 +241,8 @@ def build_builtin_tool_handlers(
         "open_music_search": OpenMusicSearchToolHandler(),
         "browser_page": BrowserPageToolHandler(),
     }
+    if skill_registry is not None:
+        handlers["load_skill"] = LoadSkillToolHandler(registry=skill_registry)
     if execution_provider is not None:
         resource_bridge = None
         workspace_root = getattr(execution_provider, "workspace_root", None)
@@ -267,6 +271,8 @@ def build_builtin_tool_handlers(
             approval_store=approval_store,
             resource_bridge=resource_bridge,
         )
+        if skill_registry is not None:
+            handlers["manage_skill"] = ManageSkillToolHandler(registry=skill_registry)
     if image_generation_service is not None:
         handlers["generate_image"] = GenerateImageToolHandler(
             image_generation_service=image_generation_service,
