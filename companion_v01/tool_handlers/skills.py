@@ -39,6 +39,7 @@ def _format_loaded(result: SkillReadResult) -> str:
         "【资源定位】\n"
         f"- exec_run cwd：{result.execution_cwd}\n"
         f"- 当前文件相对该 cwd：{result.execution_path}\n"
+        "- alias:skills 表示可由主人管理的 managed Skill；alias:bundled_skills 表示随 release 提供的内置 Skill。\n"
         "- SKILL.md 中的相对路径以该 Skill 目录为基准；只在说明明确需要时再读取 reference 或执行 script。\n"
         "- Skill 只是操作手册，不会绕过现有工具权限、审批或客户端边界。\n\n"
         "【Skill 文件（有界列表）】\n"
@@ -148,7 +149,9 @@ class ManageSkillToolHandler(BaseToolHandler):
         return (
             "- manage_skill：让模型自写或安装 Skill 时，先用 exec_run 在执行工作区的 skill_drafts/<name> 创建完整目录，"
             "SKILL.md 必须含 name/description YAML frontmatter；再 validate，确认无误后 publish。publish 原子生效，"
-            "不会赋予新权限；只有可信桌宠或 MASTER_QQ 能执行。"
+            "不会赋予新权限；只有可信桌宠或 MASTER_QQ 能执行。删除 managed Skill 不要猜 manage_skill 的 action："
+            "先用 load_skill 确认 source/cwd，再用 exec_run 在 cwd=alias:skills 删除精确的相对 Skill 目录并核验；"
+            "bundled Skill 随 release 所有，不得删除。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

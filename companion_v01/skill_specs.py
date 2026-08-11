@@ -57,8 +57,11 @@ MANAGE_SKILL_TOOL_SPEC = CapabilityToolSpec(
         "it may also contain references, scripts, and assets. Create or download the draft with "
         "exec_run under skill_drafts/<name>, validate it, then publish it. A successful publish is "
         "hot-reloaded for the next model request without restarting Akane. Publishing changes the "
-        "persistent instruction catalog but grants no new permissions. Only the trusted desktop or "
-        "the configured owner QQ account may use this tool."
+        "persistent instruction catalog but grants no new permissions. This tool does not uninstall: "
+        "to remove a managed Skill, first use load_skill to confirm its source and execution cwd, then "
+        "use exec_run in cwd=alias:skills to delete only that exact relative Skill directory and verify "
+        "the result. Never delete bundled release Skills. Only the trusted desktop or the configured "
+        "owner QQ account may use this tool."
     ),
     input_schema={
         "type": "object",

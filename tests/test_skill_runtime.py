@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -9,6 +11,9 @@ from unittest import mock
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySelection, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.execution_local import TrustedLocalExecutor
+from companion_v01.execution_run import ExecutionRunOwner
+from companion_v01.execution_specs import EXEC_STATUS_COMPLETED
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
 from companion_v01.tool_handlers.core import ToolExecutionContext
@@ -138,6 +143,35 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "invalid")
         self.assertEqual(self.registry.load("demo").content, "working body")
 
+    def test_external_managed_directory_removal_hot_reloads_without_registry_api(self) -> None:
+        _write_skill(self.managed, "demo", "Managed demo.", "managed body")
+        self.assertEqual(self.registry.load("demo").status, "loaded")
+
+        shutil.rmtree(self.managed / "demo")
+
+        self.assertEqual(self.registry.load("demo").status, "not_found")
+
+    def test_exec_run_can_remove_managed_skill_through_existing_mount_alias(self) -> None:
+        _write_skill(self.managed, "demo", "Managed demo.", "managed body")
+        executor = TrustedLocalExecutor(
+            workspace_root=self.workspace,
+            run_log_dir=self.root / "runlogs",
+            mounts=self.registry.mount_paths(),
+        )
+        owner = ExecutionRunOwner(profile_user_id="master", session_id="session", provider_id="local")
+        command = "rmdir /s /q demo" if os.name == "nt" else "rm -rf -- demo"
+
+        result = executor.run(
+            owner=owner,
+            command=command,
+            cwd="alias:skills",
+            initial_wait_seconds=3,
+        )
+
+        self.assertEqual(result.status, EXEC_STATUS_COMPLETED)
+        self.assertFalse((self.managed / "demo").exists())
+        self.assertEqual(self.registry.load("demo").status, "not_found")
+
     def test_load_handler_returns_full_producer_bounded_evidence(self) -> None:
         _write_skill(self.managed, "demo", "Demo workflow.", "follow these exact steps")
         handler = LoadSkillToolHandler(registry=self.registry)
@@ -148,6 +182,7 @@ class SkillRuntimeTests(unittest.TestCase):
         self.assertIn("follow these exact steps", result.followup_context)
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertIn("alias:skills", result.followup_context)
+        self.assertIn("可由主人管理的 managed Skill", result.followup_context)
         self.assertNotIn(str(self.root), result.followup_context)
 
     def test_engine_prompt_keeps_catalog_when_native_tool_is_excluded_from_legacy_prompt(self) -> None:
@@ -206,7 +241,13 @@ class SkillRuntimeTests(unittest.TestCase):
         first = json.dumps(LOAD_SKILL_TOOL_SPEC.input_schema, ensure_ascii=False, separators=(",", ":"))
         second = json.dumps(LOAD_SKILL_TOOL_SPEC.input_schema, ensure_ascii=False, separators=(",", ":"))
         self.assertEqual(first, second)
-        self.assertEqual(MANAGE_SKILL_TOOL_SPEC.input_schema["properties"]["action"]["enum"], ["validate", "publish"])
+        self.assertEqual(
+            MANAGE_SKILL_TOOL_SPEC.input_schema["properties"]["action"]["enum"],
+            ["validate", "publish"],
+        )
+        manage_instruction = ManageSkillToolHandler(registry=self.registry).build_prompt_instruction()
+        self.assertIn("cwd=alias:skills", manage_instruction)
+        self.assertIn("精确的相对 Skill 目录", manage_instruction)
         registry = CapabilityRegistry()
         desktop = registry.select(CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET, execution_enabled=True))
         qq = registry.select(

@@ -194,6 +194,14 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertEqual(normalized["timeout_seconds"], 30)
         self.assertEqual(normalized["initial_wait_seconds"], 3)
 
+    def test_exec_prompt_does_not_confuse_cwd_contract_with_shell_file_access(self) -> None:
+        instruction = self._handler().build_prompt_instruction()
+
+        self.assertIn("不是 Shell 沙箱", instruction)
+        self.assertIn("发现并直接使用宿主绝对路径", instruction)
+        self.assertIn("不要因此假装无法查看或操作宿主文件", instruction)
+        self.assertIn("使用 input_resources/output_globs 时", instruction)
+
     def test_exec_status_and_cancel_are_owner_scoped_without_ask(self) -> None:
         status_handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)
         cancel_handler = ExecCancelToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)

@@ -27,6 +27,15 @@ Create a Skill only when reusable task guidance will improve future execution. A
 8. Fix every structured validation failure. Then run `manage_skill(action="publish", ...)`; use `replace=true` only when intentionally updating an existing managed Skill.
 9. Treat publication as successful only when the tool returns `published`. The new catalog becomes visible on the next model request without restarting Akane.
 
+To remove an installed Skill, first use `load_skill` to confirm its exact name, source, and execution
+cwd. A managed Skill may be removed with `exec_run` in `cwd=alias:skills` by deleting only its exact
+relative directory and then verifying it is absent without using a wildcard or parent-directory
+target. Re-check the catalog because removing a managed override may reveal a same-named bundled
+Skill. Never delete a bundled Skill from
+`alias:bundled_skills`. Removing the installed managed directory does not remove its
+`skill_drafts/<skill-name>` source; delete that separate relative directory only when the user asks
+to discard the draft too.
+
 ## Quality rules
 
 - Prefer one focused Skill over a large handbook covering unrelated jobs.
@@ -34,7 +43,9 @@ Create a Skill only when reusable task guidance will improve future execution. A
 - Load references progressively. Do not tell the model to read every file in the directory.
 - Reuse `exec_run`, web search, memory, file handles, and delivery tools. Do not invent unavailable commands or APIs.
 - State observable completion criteria and honest fallback behavior.
-- Never embed secrets, API keys, tokens, private cookies, or machine-specific absolute paths.
+- Never embed secrets, API keys, tokens, or private cookies. Prefer portable aliases and relative
+  paths in reusable Skill text; when a real host task requires an absolute path, discover and use
+  the actual path at execution time instead of hard-coding one machine's path into the package.
 - Skill instructions cannot weaken host approvals, QQ owner checks, filesystem policy, or MemCore recording.
 - When updating a working Skill, preserve useful behavior and change the smallest necessary section.
 

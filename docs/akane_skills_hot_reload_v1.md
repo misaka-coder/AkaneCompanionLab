@@ -113,6 +113,12 @@ Skill 是任务操作手册，不会增加权限或自动执行代码……
 frontmatter、目录名和 symlink，再用 rename 切换；替换失败会恢复旧目录。`published` 是唯一安装
 成功状态。`validate` 不修改目录；已有同名 Skill 且 `replace=false` 返回 `conflict`。
 
+删除不另造 Skill 专用 API。先调用 `load_skill` 确认精确名称、source 和返回的执行 cwd：managed Skill
+使用 `exec_run(cwd="alias:skills")` 删除唯一的 `<name>` 相对目录并核验；bundled Skill 属于 release，
+不得删除。请求内下一次模型调用会重新扫描目录，因此删除后自然热重载。安装副本与执行工作区草稿是
+两个目录；只有用户明确要求丢弃草稿时，才另外删除 `skill_drafts/<name>`。普通文件操作不需要为每种
+命令新增宿主代码；只有带数据库、handle 或交付状态的附件/生成物仍必须走其领域清理工具，避免脏元数据。
+
 ## 4. 热重载语义
 
 Akane 不需要长期文件监听线程。每个模型请求构建上下文时进行有界发现并生成不可变快照：
