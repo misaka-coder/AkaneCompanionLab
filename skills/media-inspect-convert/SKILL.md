@@ -12,7 +12,7 @@ This skill is only relevant when `exec_run` is actually offered in the current t
 
 - The user asks for the real specs of an existing media file: duration, codec, sample rate, channels, bitrate, resolution, fps, whether it has an audio track.
 - The user asks to convert, trim a segment, resample/change channels, change speed, adjust or normalize volume, fade in/out, or remove leading/trailing silence of an existing media resource.
-- A media handle (`aud_*`, `vid_*`, `file_*`, `gen_*`) already exists in this session's context and the user wants the resulting file delivered or kept in the workspace.
+- A media handle (`file_*`, `img_*`, `audio_*`, `gen_*`) already exists in this session's context and the user wants the resulting file delivered or kept in the workspace.
 
 ## When NOT to load
 

@@ -7,8 +7,8 @@ Scope: exec_run 资源暂存与输出登记、send_file 交付、MemCore 轨迹�
 
 ## 0. 文档定位
 
-本文档说明 Akane **通用执行的资源闭环**：如何把材料索引中的 `doc_*` / `img_*` /
-`aud_*` / `vid_*` / `arc_*` 与已有 `gen_*` 资源安全地传入 `exec_run`，如何声明命令输出并登记为新的
+本文档说明 Akane **通用执行的资源闭环**：如何把材料索引中的 `file_*` / `img_*` /
+`audio_*` 与已有 `gen_*` 资源安全地传入 `exec_run`，如何声明命令输出并登记为新的
 `gen_*`，如何用 `send_file` 交付到 QQ 或桌宠，以及如何在 MemCore 里保存轨迹、
 压卡并按需回看。它建立在通用执行 v1 之上，不改变执行工具的职责边界。
 
@@ -35,7 +35,7 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
   "type": "exec_run",
   "command": "python process.py inputs/source.wav outputs/result.wav",
   "input_resources": [
-    {"handle": "aud_001", "as": "inputs/source.wav"}
+    {"handle": "audio_001", "as": "inputs/source.wav"}
   ],
   "output_globs": ["outputs/result.wav"]
 }
@@ -44,7 +44,7 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 ### 2.1 input_resources 规则
 
 - `handle` 必须是当前用户 / 会话材料索引中**实际显示**的精确句柄（常见为
-  `doc_*`、`img_*`、`aud_*`、`vid_*`、`arc_*`、`gen_*`）。不接受 `latest`
+  `file_*`、`img_*`、`audio_*`、`gen_*`）。不接受 `latest`
   等会随时间变化的别名；解析逻辑与 `send_file` 使用相同 owner scope。
 - `as` 必须是命令工作区内的**安全相对路径**。
   - 拒绝绝对路径、`..`、盘符（`C:`）、UNC（`\\`）、冒号段与 symlink 逃逸。
@@ -132,7 +132,7 @@ QQ 调用的 Shell 运行在 QQ Bot 后端所在机器。Bot 部署于云端时�
 
 | 标识 | 职责 | 谁生成 | 是否模型可见 |
 |------|------|--------|--------------|
-| `doc_*` / `img_*` / `aud_*` / `vid_*` / `arc_*` | 用户上传 / 工作台已有的原始材料 | 附件入库 | 是（handle） |
+| `file_*` / `img_*` / `audio_*` | 用户上传 / 工作台已有的原始材料 | 附件入库 | 是（handle） |
 | `gen_*` | Akane 工具生成的产物 | GeneratedFileService | 是（handle） |
 | `run_id` | 一次 exec_run 的运行身份 | 执行 provider | 是（运行期内） |
 | `call_id` | 一次工具调用身份（MemCore correlation） | 工具调用链 | 是（卡片内） |

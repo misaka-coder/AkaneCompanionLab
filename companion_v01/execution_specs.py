@@ -232,7 +232,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                             "maxLength": 120,
                             "description": (
                                 "当前会话材料索引实际显示的精确资源句柄，"
-                                "如 doc_001 / img_001 / aud_001 / vid_001 / gen_001；不接受 latest 等别名。"
+                                "如 file_001 / img_001 / audio_001 / gen_001（按索引原样抄写）；不接受 latest 等别名。"
                             ),
                         },
                         "as": {

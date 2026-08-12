@@ -307,7 +307,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "不要因此假装无法查看或操作宿主文件。环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
-            "（使用材料索引实际显示的 doc_* / img_* / aud_* / vid_* / gen_*）与命令工作区内相对路径 as，"
+            "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
             "输入会复制进本次运行的独立工作区；"
             "使用 input_resources/output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管工作目录，"
             "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
