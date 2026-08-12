@@ -101,16 +101,23 @@ class LocalTestLauncherTests(unittest.TestCase):
 
     def test_cloud_profile_sync_has_a_narrow_allowlist_and_external_target(self) -> None:
         source = (ROOT / "sync_akane_local_test_from_cloud.ps1").read_text(encoding="utf-8")
-        self.assertIn('"CHAT_API_KEY"', source)
+        self.assertIn('GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")', source)
+        self.assertIn("${name}_MODEL_NAME=deepseek-v4-flash", source)
+        self.assertIn("${name}_BASE_URL=https://api.deepseek.com/v1", source)
+        self.assertIn('foreach ($name in @("CHAT", "TEXT", "AUX"))', source)
         self.assertIn('"VISION_MODEL_NAME"', source)
         self.assertIn('"EXECUTION_ENABLED"', source)
         self.assertIn('"MEMORY_BACKEND"', source)
+        self.assertIn("MEMCORE_OPERATION_PROJECTION_POLICY=compact_after_terminal", source)
+        remote_allowlist = source[source.index("$allowlist = @(") : source.index(")\n$allowlistJson")]
+        self.assertNotIn('"CHAT_API_KEY"', remote_allowlist)
+        self.assertNotIn('"TEXT_API_KEY"', remote_allowlist)
         self.assertNotIn('"QQ_ONEBOT_ACCESS_TOKEN"', source)
         self.assertNotIn('"QQ_WEBHOOK_SECRET"', source)
         self.assertNotIn('"AKANE_ADMIN_TOKEN"', source)
         self.assertIn('"cloud-aligned.env"', source)
         self.assertIn("LocalApplicationData", source)
-        self.assertIn("Secrets, QQ credentials, paths, logs and memory were not printed or copied", source)
+        self.assertIn("Provider secrets, QQ credentials, paths, logs and memory were not printed or copied", source)
 
     def test_package_sync_is_revision_bound_and_contract_checked(self) -> None:
         source = (ROOT / "scripts" / "sync_akane_local_packages.ps1").read_text(encoding="utf-8")

@@ -27,14 +27,6 @@ if ($ServiceName -notmatch '^[A-Za-z0-9_.@-]+$') {
 }
 
 $allowlist = @(
-    "CHAT_API_KEY",
-    "CHAT_API_PROTOCOL",
-    "CHAT_BASE_URL",
-    "CHAT_MODEL_NAME",
-    "TEXT_API_KEY",
-    "TEXT_API_PROTOCOL",
-    "TEXT_BASE_URL",
-    "TEXT_MODEL_NAME",
     "VISION_API_KEY",
     "VISION_API_PROTOCOL",
     "VISION_BASE_URL",
@@ -42,7 +34,8 @@ $allowlist = @(
     "VISION_MODEL_NAME",
     "CHAT_SUPPORTS_IMAGES",
     "EXECUTION_ENABLED",
-    "MEMORY_BACKEND"
+    "MEMORY_BACKEND",
+    "MEMCORE_OPERATION_PROJECTION_POLICY"
 )
 $allowlistJson = $allowlist | ConvertTo-Json -Compress
 $remoteScript = @"
@@ -90,8 +83,6 @@ try {
 }
 
 $required = @(
-    "CHAT_API_KEY", "CHAT_API_PROTOCOL", "CHAT_BASE_URL", "CHAT_MODEL_NAME",
-    "TEXT_API_KEY", "TEXT_API_PROTOCOL", "TEXT_BASE_URL", "TEXT_MODEL_NAME",
     "VISION_API_KEY", "VISION_API_PROTOCOL", "VISION_BASE_URL", "VISION_ENABLED", "VISION_MODEL_NAME",
     "EXECUTION_ENABLED", "MEMORY_BACKEND"
 )
@@ -102,8 +93,27 @@ foreach ($name in $required) {
     }
 }
 
+$deepSeekApiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process")
+if ([string]::IsNullOrWhiteSpace($deepSeekApiKey)) {
+    $deepSeekApiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+}
+if ([string]::IsNullOrWhiteSpace($deepSeekApiKey)) {
+    throw "local_deepseek_api_key_missing"
+}
+
 $lines = New-Object System.Collections.Generic.List[string]
+foreach ($name in @("CHAT", "TEXT", "AUX")) {
+    $lines.Add("${name}_API_KEY=$deepSeekApiKey")
+    $lines.Add("${name}_API_PROTOCOL=openai")
+    $lines.Add("${name}_BASE_URL=https://api.deepseek.com/v1")
+    $lines.Add("${name}_MODEL_NAME=deepseek-v4-flash")
+}
+$lines.Add("CHAT_SUPPORTS_IMAGES=false")
+
 foreach ($name in $allowlist) {
+    if ($name -eq "CHAT_SUPPORTS_IMAGES" -or $name -eq "MEMCORE_OPERATION_PROJECTION_POLICY") {
+        continue
+    }
     $property = $payload.PSObject.Properties[$name]
     if ($null -eq $property) {
         continue
@@ -114,6 +124,7 @@ foreach ($name in $allowlist) {
     }
     $lines.Add("$name=$value")
 }
+$lines.Add("MEMCORE_OPERATION_PROJECTION_POLICY=compact_after_terminal")
 
 $targetDir = Join-Path $resolvedDataRoot "config"
 $target = Join-Path $targetDir "cloud-aligned.env"
@@ -138,7 +149,8 @@ if ($null -ne $icacls -and -not [string]::IsNullOrWhiteSpace([string]$env:USERNA
 }
 
 Write-Host "[OK] Cloud-aligned local-test provider profile saved."
-Write-Host "[INFO] Chat model: $([string]$payload.CHAT_MODEL_NAME)"
+Write-Host "[INFO] Chat/text/aux model: deepseek-v4-flash"
 Write-Host "[INFO] Vision model: $([string]$payload.VISION_MODEL_NAME)"
 Write-Host "[INFO] Shell execution: $([string]$payload.EXECUTION_ENABLED)"
-Write-Host "[INFO] Secrets, QQ credentials, paths, logs and memory were not printed or copied."
+Write-Host "[INFO] MemCore tool-result settlement: compact_after_terminal"
+Write-Host "[INFO] Provider secrets, QQ credentials, paths, logs and memory were not printed or copied."

@@ -10,7 +10,7 @@
 - QQ channel 固定关闭，避免本地测试进程与线上 Bot 同时消费消息。
 - 命名实例需要的管理凭据与 Satellite 凭据在每次启动时临时生成，只在本地后端与桌宠子进程间共享，不写入 `.env`、日志或实例清单。
 - Prompt、角色包、Skill 和生产代码来自当前工作区；模型、视觉和 env 级 TTS 默认值复用项目根目录 `.env`。
-- 若存在 `%LOCALAPPDATA%\Akane\local-test-runtime\config\cloud-aligned.env`，它会在项目 `.env` 之后加载，用于对齐云端当前 provider 与能力开关；该文件不在仓库内。
+- 若存在 `%LOCALAPPDATA%\Akane\local-test-runtime\config\cloud-aligned.env`，它会在项目 `.env` 之后加载。纯本地测试档固定让 Chat/Text/Aux 走本机 `DEEPSEEK_API_KEY` 对应的 DeepSeek V4 Flash，视觉模型、Shell 和 Memory backend 则与云端当前运行配置对齐；该私密文件不在仓库内。
 - 内部 Python 包按相邻源码仓库的 Git 提交指纹对齐；提交变化时会在本机缓存中重建 wheel 并更新 `.venv`，日常启动不会重复构建。
 - 新建的纯本地测试档首次启动默认使用“完全访问”，避免桌宠主界面无法承接逐次审批；这只作用于回环地址上的隔离 `local-test` 实例，且不会跳过 URL、路径、密钥等硬安全校验。之后在“设置 → 能力 → 安全边界”做出的选择会被保留，启动器不会反复覆盖。
 - 这是“Akane 宿主纯本地”，不是“模型离线运行”。若 `.env` 指向 DeepSeek、Gemini 等远程 provider，模型请求仍需要联网。
@@ -29,7 +29,7 @@ start_akane_local_test.bat
 sync_akane_local_test_from_cloud.bat
 ```
 
-同步脚本只复制 Chat/Text/Vision provider 配置、对应 API key、Shell 开关和 Memory backend。它不复制 QQ 凭据、管理 token、路径、日志、数据库或记忆；普通本地启动不会连接云服务器。
+同步脚本从本机用户环境读取 `DEEPSEEK_API_KEY`，为 Chat/Text/Aux 写入 DeepSeek V4 Flash；从云端只复制独立视觉 provider、Shell 开关和 Memory backend。它同时固定启用 `compact_after_terminal`，使已结束工具轮的长结果在后续轮变成可回读卡片。它不复制 QQ 凭据、管理 token、路径、日志、数据库或记忆；普通本地启动不会连接云服务器。
 
 云端数据根中持久化的 TTS provider 选择、GPT-SoVITS profile、ASR/RVC 外部运行时状态不会复制。本地实例会使用自身可用的语音 provider 或 fallback；因此当前档用于严格对照聊天、视觉、Shell、Skill、MemCore 与桌宠 UI，不能把语音供应链视为已经一比一对齐。
 
@@ -77,4 +77,4 @@ ok     local-test  valid
 
 ## 配置对齐口径
 
-启动器复用本地 `.env`，再按需加载仓库外的 cloud-aligned 私密覆盖档，最后只覆盖实例、数据根、监听地址和 QQ 开关。云端 provider 配置变化后重新运行同步脚本即可；不要复制云端数据库、运行日志或 `users_data`。
+启动器复用本地 `.env`，再按需加载仓库外的 cloud-aligned 私密覆盖档，最后只覆盖实例、数据根、监听地址和 QQ 开关。云端视觉 provider 配置变化后重新运行同步脚本即可；Chat/Text/Aux 保持 DeepSeek V4 Flash，不会随云端临时主模型漂移。不要复制云端数据库、运行日志或 `users_data`。
