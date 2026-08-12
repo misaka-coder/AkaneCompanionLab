@@ -111,9 +111,12 @@ class VideoUnderstandingCatalogTests(unittest.TestCase):
         self.assertIn("ffprobe", body)
         self.assertIn("ffmpeg", body)
         self.assertIn("contact sheet", body)
-        self.assertIn("overview_4x3.jpg", body)
+        self.assertIn("overview_%02d.jpg", body)
         self.assertIn("tile=4x3", body)
-        self.assertIn("fps=12/DURATION", body)
+        self.assertIn("fps=36/DURATION", body)
+        self.assertIn("two to five 3x3/4x3 sheets", body)
+        self.assertIn("Load all registered overview", body)
+        self.assertIn('output_globs=["overview_*.jpg"]', body)
         self.assertIn("-ss HH:MM:SS", body)
         self.assertIn("t_000s.jpg", body)
         self.assertIn("input_resources", body)
@@ -290,19 +293,19 @@ class VideoUnderstandingExecutionLoopTests(unittest.TestCase):
         self.assertEqual({item["attachment_handle"] for item in images}, set(handles))
         self.assertIn("原生多模态通道", loaded.followup_context)
 
-    def test_contact_sheet_registers_one_image_then_loads_as_one_visual_input(self) -> None:
+    def test_multiple_contact_sheets_register_then_load_in_one_visual_round(self) -> None:
         result = self.handler.execute(
             call={
                 "type": "exec_run",
                 "command": (
                     "ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 "
-                    '-vf "fps=3,scale=160:120:force_original_aspect_ratio=decrease,'
-                    'pad=160:120:(ow-iw)/2:(oh-ih)/2,tile=3x3:padding=2:margin=2" '
-                    "-frames:v 1 overview_3x3.jpg"
+                    '-vf "fps=6,scale=160:120:force_original_aspect_ratio=decrease,'
+                    'pad=160:120:(ow-iw)/2:(oh-ih)/2,tile=3x3:nb_frames=9:padding=2:margin=2" '
+                    "-frames:v 2 overview_%02d.jpg"
                 ),
                 "initial_wait_seconds": 2,
                 "input_resources": [{"handle": self.handle, "as": "inputs/source.mp4"}],
-                "output_globs": ["overview_3x3.jpg"],
+                "output_globs": ["overview_*.jpg"],
             },
             context=self._context(),
         )
@@ -310,21 +313,21 @@ class VideoUnderstandingExecutionLoopTests(unittest.TestCase):
         self.assertEqual(state["status"], EXEC_STATUS_COMPLETED)
         self.assertEqual(state.get("artifact_status"), ARTIFACT_STATUS_REGISTERED)
         resources = state.get("generated_resources", [])
-        self.assertEqual(len(resources), 1, resources)
-        self.assertEqual(resources[0]["name"], "overview_3x3.jpg")
-        self.assertEqual(resources[0]["media_type"], "image/jpeg")
+        self.assertEqual(len(resources), 2, resources)
+        self.assertEqual([item["name"] for item in resources], ["overview_01.jpg", "overview_02.jpg"])
+        self.assertEqual({item["media_type"] for item in resources}, {"image/jpeg"})
 
         loaded = self.material_handler.execute(
             call={
                 "type": "load_material",
-                "targets": [resources[0]["handle"]],
-                "purpose": "3x3 视频概览联系表，按从左到右、从上到下查看",
+                "targets": [item["handle"] for item in resources],
+                "purpose": "两张连续 3x3 视频概览联系表，按文件名及格子从左到右、从上到下查看",
             },
             context=self._context(),
         )
         self.assertEqual(loaded.stream_events[0]["status"], "ready")
-        self.assertEqual(loaded.stream_events[0]["image_count"], 1)
-        self.assertEqual(len(loaded.model_image_inputs), 1)
+        self.assertEqual(loaded.stream_events[0]["image_count"], 2)
+        self.assertEqual(len(loaded.model_image_inputs), 2)
 
     def test_load_material_on_raw_video_handle_is_honest_unresolved(self) -> None:
         result = self.material_handler.execute(

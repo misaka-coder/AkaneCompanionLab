@@ -50,22 +50,23 @@ Decide based on the question and the probed duration; do not let the host decide
 - Static image or slideshow: lower the density; a few frames are enough.
 - Speech/subtitle/lyrics question: prefer a transcript (step 6); frames alone are insufficient evidence.
 
-### 3. Make a contact sheet for the overview
+### 3. Make one or more contact sheets for the overview
 
 ```
-ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -vf "fps=12/DURATION,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,drawtext=text='%{pts\\:hms}':x=8:y=h-th-8:fontsize=18:fontcolor=white:box=1:boxcolor=black@0.65,tile=4x3:padding=4:margin=4" -frames:v 1 overview_4x3.jpg
+ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -vf "fps=36/DURATION,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,drawtext=text='%{pts\\:hms}':x=8:y=h-th-8:fontsize=18:fontcolor=white:box=1:boxcolor=black@0.65,tile=4x3:nb_frames=12:padding=4:margin=4" -frames:v 3 overview_%02d.jpg
 ```
 
-- For a broad "what happens" question, prefer one overview contact sheet before loading many individual frames. A 3x3 sheet (9 frames) is enough for quieter videos; use at most 4x3 (12 frames) for a denser overview. Read cells left-to-right, top-to-bottom.
-- Replace `DURATION` in the example with the real probed duration, so `fps=12/DURATION` samples about 12 evenly spaced moments. Keep the completed sheet roughly 1200-1600 pixels wide; more tiny cells usually lose more evidence than they save.
+- For a broad "what happens" question, prefer contact sheets before loading many individual frames. Use one 3x3 sheet (9 frames) for a short or quiet video; use two to five 3x3/4x3 sheets for a longer, faster, or scene-dense video. Read sheets by filename and cells left-to-right, top-to-bottom.
+- Choose `SHEET_COUNT` from 1 to 5 and `CELLS_PER_SHEET` as 9 or 12. Replace `36` in the example with `SHEET_COUNT * CELLS_PER_SHEET`, replace `DURATION` with the probed duration, and set `-frames:v SHEET_COUNT`. This samples the entire video in temporal order and emits sequential files such as `overview_01.jpg`, `overview_02.jpg`, and `overview_03.jpg`.
+- Keep every completed sheet roughly 1200-1600 pixels wide. Prefer several legible sheets over one sheet with dozens of tiny cells; do not exceed five sheets in one overview because `load_material` accepts at most five images per call.
 - Burn a timestamp into every cell when `drawtext` is available. If this ffmpeg build lacks `drawtext` or a usable font, retry without that filter and put the exact row-major cell-to-time mapping in the subsequent `load_material.purpose`; never silently pretend an unlabeled cell has a precise timestamp.
-- Repeat `input_resources=[{"handle": "<exact file_* handle>", "as": "inputs/source.mp4"}]` on this extraction call even though the probe already staged the same video. Declare `output_globs=["overview_4x3.jpg"]`; do not set `cwd`.
-- Load the single registered contact-sheet `gen_*` with `load_material`. Use it to locate scenes, actions, cuts, and promising time ranges. A contact sheet is an overview, not reliable evidence for small subtitles, fine UI text, faces, brief objects, or exact fast motion.
+- Repeat `input_resources=[{"handle": "<exact file_* handle>", "as": "inputs/source.mp4"}]` on this extraction call even though the probe already staged the same video. Declare `output_globs=["overview_*.jpg"]`; do not set `cwd`.
+- Load all registered overview `gen_*` handles together in one `load_material` call, in filename order, and state each sheet's covered time range in `purpose`. Use the sheets jointly to locate scenes, actions, cuts, and promising time ranges. A contact sheet is an overview, not reliable evidence for small subtitles, fine UI text, faces, brief objects, or exact fast motion.
 - This usually reduces image blocks and tool feedback, but it does not guarantee a fixed visual-token reduction: providers may tile a large image internally. Never trade away evidence merely to minimize token count.
 
 ### 4. Deep-read selected moments at original frame size
 
-After the contact sheet, extract only the two to five moments needed to answer the question. For a specific-time question, obvious small text, or very short video, you may skip the contact sheet and go directly here.
+After reviewing the contact sheet or sheets, extract only the two to five moments needed to answer the question. For a specific-time question, obvious small text, or very short video, you may skip the overview and go directly here.
 
 ```
 ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:00 -frames:v 1 t_000s.jpg && ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:05 -frames:v 1 t_005s.jpg
