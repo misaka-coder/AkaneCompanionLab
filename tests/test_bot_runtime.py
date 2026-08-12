@@ -4,6 +4,7 @@ import asyncio
 import logging
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -309,6 +310,15 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.close_count, 1)
         self.assertEqual(followups.close_count, 1)
         self.assertEqual(runtime.plugin_command_broker, None)
+
+    async def test_start_labels_host_commands_with_public_display_name(self) -> None:
+        runtime, plugin_host, _engine, _followups = _runtime("internal-bot-id")
+        runtime.bot_config = replace(runtime.bot_config, display_name="Akane Public")
+
+        await runtime.start()
+
+        registration = plugin_host.host_registrations[0]
+        self.assertEqual(registration.handler._bot_label, "Akane Public")
 
     async def test_stop_closes_voice_runtime_before_memory_engine(self) -> None:
         runtime, _plugin_host, engine, _followups = _runtime()

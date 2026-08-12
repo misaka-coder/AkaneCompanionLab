@@ -19,7 +19,6 @@ from .local_capability_config import (
 from .plugin_api import PluginQQCommandHandler, PluginQQCommandRequest, PluginQQCommandResult
 
 CAPABILITY_COMMAND = "/能力"
-CAPABILITY_COMMAND_DETAIL = "/能力 详情"
 
 _SHELL_MODE_LABELS = {
     "trusted_auto_allow": "已开启（直接执行）",
@@ -134,6 +133,17 @@ def build_capability_diagnosis(
     chat_model = _text(getattr(settings, "chat_model_name", ""), fallback="未配置")
     vision_enabled = bool(getattr(settings, "vision_enabled", True))
     vision_model = _text(getattr(settings, "vision_model_name", ""), fallback="未配置")
+    vision_status = getattr(engine, "native_chat_vision_status", None)
+    if callable(vision_status):
+        try:
+            resolved_vision = vision_status() or {}
+            vision_enabled = bool(resolved_vision.get("enabled"))
+            vision_model = _text(resolved_vision.get("model"), fallback=vision_model)
+        except Exception:
+            # Keep the settings snapshot as a bounded diagnostic fallback.  A
+            # diagnosis command must not make an otherwise healthy QQ command
+            # fail because a capability probe raised.
+            pass
 
     master_qq = _text(getattr(qq_gateway, "master_qq", ""))
     is_owner = bool(master_qq) and _text(qq_number) == master_qq
@@ -150,16 +160,27 @@ def build_capability_diagnosis(
             group_vision = "未知"
 
     selection = _resolve_qq_selection(engine, profile_user_id=profile_user_id, session_id=session_id)
-    selection_tool_names = tuple(getattr(selection, "tool_names", ()) or ()) if selection is not None else ()
-    tool_count = len(selection_tool_names)
-    available_tools = frozenset(selection_tool_names)
+    ready_tool_names = tuple(getattr(selection, "tool_names", ()) or ()) if selection is not None else ()
+    schema_tool_names = (
+        tuple(getattr(selection, "schema_tool_names", ()) or ready_tool_names)
+        if selection is not None
+        else ()
+    )
+    tool_count = len(schema_tool_names)
+    ready_tool_count = len(ready_tool_names)
+    available_tools = frozenset(ready_tool_names)
     media_rows = {
-        tool_name: "可用" if tool_name in available_tools else "不可用"
+        tool_name: (
+            "未知"
+            if selection is None
+            else ("可用" if tool_name in available_tools else "当前不可用")
+        )
         for tool_name in _MEDIA_TOOL_NAMES
     }
 
     skill_count = 0
     skill_names: tuple[str, ...] = ()
+    skill_status = "未启用"
     skill_registry = getattr(engine, "skill_registry", None)
     if skill_registry is not None:
         try:
@@ -167,8 +188,9 @@ def build_capability_diagnosis(
             entries = tuple(snapshot.entries or ())
             skill_count = len(entries)
             skill_names = tuple(entry.name for entry in entries)[:_SKILL_LIST_LIMIT]
+            skill_status = "available"
         except Exception:
-            skill_count = 0
+            skill_status = "unknown"
 
     satellite_status: str | None = None
     if satellite_service is not None:
@@ -187,9 +209,9 @@ def build_capability_diagnosis(
         unavailable.append("Shell：已关闭（本会话不能执行命令/脚本）")
     elif not shell_supported:
         unavailable.append("Shell：宿主 QQ 总闸或执行提供者未启用")
-    if not (vision_enabled and _text(getattr(settings, "vision_model_name", ""))):
-        unavailable.append("视觉模型：未配置（图片/视频画面理解不可用）")
-    if satellite_status == "离线":
+    if not vision_enabled:
+        unavailable.append("视觉模型：未启用或未配置（图片/视频画面理解不可用）")
+    if is_owner and satellite_status == "离线":
         unavailable.append("Satellite：离线")
     if not provider:
         unavailable.append("执行器：不可用")
@@ -204,8 +226,23 @@ def build_capability_diagnosis(
     ]
     if group_vision is not None:
         lines.append(f"群识图：{group_vision}")
-    lines.append(f"Skill：可用 {skill_count} 个" + (f"（{'、'.join(skill_names)}）" if skill_names else ""))
-    lines.append(f"当前模型可见工具：{tool_count} 个" if selection is not None else "当前模型可见工具：未知")
+    if skill_status == "available":
+        # Skill names can disclose private workflows.  Members only need the
+        # public count; the owner gets the bounded inventory for diagnosis.
+        lines.append(
+            f"Skill：可用 {skill_count} 个"
+            + (f"（{'、'.join(skill_names)}）" if is_owner and skill_names else "")
+        )
+    elif skill_status == "unknown":
+        lines.append("Skill：状态未知")
+    else:
+        lines.append("Skill：未启用")
+    if selection is None:
+        lines.append("工具画像：未知")
+    elif ready_tool_count == tool_count:
+        lines.append(f"工具画像：{tool_count} 个（全部可执行）")
+    else:
+        lines.append(f"工具画像：{tool_count} 个（当前可执行 {ready_tool_count} 个）")
     lines.append(
         "媒体/文件处理："
         + " · ".join(f"{name}={media_rows[name]}" for name in _MEDIA_TOOL_NAMES)
@@ -225,6 +262,7 @@ def build_capability_diagnosis(
         "reply": "\n".join(lines),
         "is_owner": is_owner,
         "tool_count": tool_count,
+        "ready_tool_count": ready_tool_count,
     }
 
 

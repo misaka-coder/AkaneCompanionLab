@@ -27,6 +27,7 @@ from companion_v01.plugin_qq_commands import PluginQQCommandBroker
 
 class _FakeSelection:
     tool_names = ("exec_run", "load_material", "transcribe_media", "send_file", "load_skill")
+    schema_tool_names = (*tool_names, "open_browser")
 
 
 class _FakeSkillEntry:
@@ -48,6 +49,8 @@ class _FakeProvider:
 
 
 class _FakeEngine:
+    _DEFAULT_SELECTION = object()
+
     def __init__(
         self,
         *,
@@ -57,7 +60,7 @@ class _FakeEngine:
         chat_model: str = "claude-sonnet-5",
         vision_model: str = "gemini-3.5-flash",
         vision_enabled: bool = True,
-        selection: object | None = None,
+        selection: object | None = _DEFAULT_SELECTION,
         base_dir: Path | None = None,
     ) -> None:
         self.capability_config_base_dir = str(base_dir or Path(tempfile.mkdtemp(prefix="capdiag_")))
@@ -66,7 +69,7 @@ class _FakeEngine:
         self.tool_handlers = {"exec_run": _FakeExecHandler() if execution_enabled else {}}
         self._shell_mode = shell_mode
         self._execution_qq_enabled = execution_qq_enabled
-        self._selection = selection if selection is not None else _FakeSelection()
+        self._selection = _FakeSelection() if selection is self._DEFAULT_SELECTION else selection
         self.settings = _FakeSettings(chat_model=chat_model, vision_model=vision_model, vision_enabled=vision_enabled)
 
     def _resolve_client_protocol_context(self, payload):
@@ -180,7 +183,7 @@ class CapabilityDiagnosisContentTests(unittest.TestCase):
         self.assertIn("Shell 执行位置：宿主本机执行器", reply)
         self.assertIn("Satellite：离线", reply)
         self.assertIn("Satellite：离线", reply)
-        self.assertIn("当前模型可见工具：5 个", reply)
+        self.assertIn("工具画像：6 个（当前可执行 5 个）", reply)
 
     def test_member_sees_public_subset_without_owner_rows(self) -> None:
         engine = _FakeEngine()
@@ -188,9 +191,32 @@ class CapabilityDiagnosisContentTests(unittest.TestCase):
         reply = result["reply"]
         self.assertFalse(result["is_owner"])
         self.assertIn("Chat 模型：claude-sonnet-5", reply)
-        self.assertIn("当前模型可见工具：5 个", reply)
+        self.assertIn("工具画像：6 个（当前可执行 5 个）", reply)
         self.assertNotIn("Shell 执行位置", reply)
-        self.assertNotIn("\nSatellite：", reply)
+        self.assertNotIn("Satellite", reply)
+        self.assertNotIn("media-inspect-convert", reply)
+        self.assertIn("Skill：可用 2 个", reply)
+
+    def test_owner_sees_bounded_skill_inventory(self) -> None:
+        reply = _build(_FakeEngine(), _FakeGateway())["reply"]
+        self.assertIn("Skill：可用 2 个（media-inspect-convert、video-understanding）", reply)
+
+    def test_selection_failure_is_reported_as_unknown_not_unavailable(self) -> None:
+        reply = _build(_FakeEngine(selection=None), _FakeGateway())["reply"]
+        self.assertIn("工具画像：未知", reply)
+        self.assertIn("load_material=未知", reply)
+        self.assertNotIn("load_material=当前不可用", reply)
+
+    def test_skill_snapshot_failure_is_not_reported_as_zero_skills(self) -> None:
+        class _BrokenSkillRegistry:
+            def snapshot(self):
+                raise RuntimeError("synthetic failure")
+
+        engine = _FakeEngine()
+        engine.skill_registry = _BrokenSkillRegistry()
+        reply = _build(engine, _FakeGateway())["reply"]
+        self.assertIn("Skill：状态未知", reply)
+        self.assertNotIn("Skill：可用 0 个", reply)
 
     def test_private_chat_session_label(self) -> None:
         engine = _FakeEngine()
@@ -221,7 +247,7 @@ class CapabilityDiagnosisContentTests(unittest.TestCase):
         engine = _FakeEngine(shell_mode="disabled", vision_enabled=False)
         reply = _build(engine, _FakeGateway())["reply"]
         self.assertIn("Shell：已关闭", reply)
-        self.assertIn("视觉模型：未配置", reply)
+        self.assertIn("视觉模型：未启用或未配置", reply)
 
 
 class CapabilityDiagnosisBrokerTests(unittest.TestCase):
@@ -258,7 +284,7 @@ class CapabilityDiagnosisBrokerTests(unittest.TestCase):
         self.assertTrue(result.handled)
         self.assertEqual(result.reason, "")
         self.assertIn("能力诊断", result.reply_text)
-        self.assertIn("当前模型可见工具", result.reply_text)
+        self.assertIn("工具画像", result.reply_text)
 
     def test_host_command_takes_precedence_over_plugin_same_token(self) -> None:
         from companion_v01.plugin_api import PluginQQCommandResult

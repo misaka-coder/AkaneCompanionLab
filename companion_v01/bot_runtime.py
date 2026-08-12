@@ -181,7 +181,7 @@ class BotRuntime:
             qq_gateway=self.qq_gateway,
             config_module=self.config_module,
             satellite_service=self.desktop_satellite_service,
-            bot_label=str(getattr(self, "bot_id", "") or ""),
+            bot_label=str(getattr(self, "display_name", "") or ""),
         )
         self.plugin_command_broker = self.plugin_host.build_qq_command_broker(
             host_registrations=host_commands
