@@ -2,8 +2,9 @@
 
 Covers the QQ video understanding closure slice:
   1. video-understanding is visible in the bundled Skill catalog.
-  2. Skill body is a real workflow (ffprobe probe, ffmpeg frame extraction,
-     output_globs -> gen_*, load_material, transcribe_media, honest fallbacks)
+  2. Skill body is a real workflow (ffprobe probe, contact-sheet overview,
+     timestamped deep-read frames, output_globs -> gen_*, load_material,
+     transcribe_media, honest fallbacks)
      and leaks no absolute path.
   3. Real ffmpeg E2E: a QQ-style video attachment (kind=file, file_* handle)
      is probed with ffprobe through exec_run.
@@ -109,6 +110,10 @@ class VideoUnderstandingCatalogTests(unittest.TestCase):
         body = loaded.content
         self.assertIn("ffprobe", body)
         self.assertIn("ffmpeg", body)
+        self.assertIn("contact sheet", body)
+        self.assertIn("overview_4x3.jpg", body)
+        self.assertIn("tile=4x3", body)
+        self.assertIn("fps=12/DURATION", body)
         self.assertIn("-ss HH:MM:SS", body)
         self.assertIn("t_000s.jpg", body)
         self.assertIn("input_resources", body)
@@ -119,6 +124,10 @@ class VideoUnderstandingCatalogTests(unittest.TestCase):
         self.assertIn("open_memory", body)
         self.assertIn("When NOT to load", body)
         self.assertIn("exec_run", body)
+        self.assertIn("fresh per-run resource workspace", body)
+        self.assertIn("Repeat the exact video handle", body)
+        self.assertIn('output_globs=["t_*.jpg"]', body)
+        self.assertNotIn("python -c", body)
         self.assertNotIn("C:", body)
         self.assertNotIn("C:\\", body)
         self.assertNotIn(str(ROOT), body)
@@ -280,6 +289,42 @@ class VideoUnderstandingExecutionLoopTests(unittest.TestCase):
         self.assertTrue(all(item["data_url"].startswith("data:image/jpeg;base64,") for item in images), images)
         self.assertEqual({item["attachment_handle"] for item in images}, set(handles))
         self.assertIn("原生多模态通道", loaded.followup_context)
+
+    def test_contact_sheet_registers_one_image_then_loads_as_one_visual_input(self) -> None:
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": (
+                    "ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 "
+                    '-vf "fps=3,scale=160:120:force_original_aspect_ratio=decrease,'
+                    'pad=160:120:(ow-iw)/2:(oh-ih)/2,tile=3x3:padding=2:margin=2" '
+                    "-frames:v 1 overview_3x3.jpg"
+                ),
+                "initial_wait_seconds": 2,
+                "input_resources": [{"handle": self.handle, "as": "inputs/source.mp4"}],
+                "output_globs": ["overview_3x3.jpg"],
+            },
+            context=self._context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], EXEC_STATUS_COMPLETED)
+        self.assertEqual(state.get("artifact_status"), ARTIFACT_STATUS_REGISTERED)
+        resources = state.get("generated_resources", [])
+        self.assertEqual(len(resources), 1, resources)
+        self.assertEqual(resources[0]["name"], "overview_3x3.jpg")
+        self.assertEqual(resources[0]["media_type"], "image/jpeg")
+
+        loaded = self.material_handler.execute(
+            call={
+                "type": "load_material",
+                "targets": [resources[0]["handle"]],
+                "purpose": "3x3 视频概览联系表，按从左到右、从上到下查看",
+            },
+            context=self._context(),
+        )
+        self.assertEqual(loaded.stream_events[0]["status"], "ready")
+        self.assertEqual(loaded.stream_events[0]["image_count"], 1)
+        self.assertEqual(len(loaded.model_image_inputs), 1)
 
     def test_load_material_on_raw_video_handle_is_honest_unresolved(self) -> None:
         result = self.material_handler.execute(

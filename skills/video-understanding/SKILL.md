@@ -26,6 +26,8 @@ The video usually appears in the workspace index with a `file_*` handle and a na
 
 ## Workflow
 
+Every `exec_run` that uses `input_resources`/`output_globs` starts in a fresh per-run resource workspace. Files staged for the probe do not carry into the next command. Repeat the exact video handle and `as: inputs/source.mp4` in every later `exec_run` that reads the video. A `gen_*` output from an earlier run must likewise be restaged through `input_resources` before another run can read it.
+
 ### 1. Probe the media first
 
 One `exec_run` call, then read the JSON yourself:
@@ -46,21 +48,36 @@ Decide based on the question and the probed duration; do not let the host decide
 - Specific-time question: extract around that moment (before and after it), not the whole video.
 - Obvious scene changes: `select='gt(scene,0.3)'` frame selection can be used instead of plain sampling.
 - Static image or slideshow: lower the density; a few frames are enough.
-- Speech/subtitle/lyrics question: prefer a transcript (step 5); frames alone are insufficient evidence.
+- Speech/subtitle/lyrics question: prefer a transcript (step 6); frames alone are insufficient evidence.
 
-### 3. Extract timestamped frames and register them
+### 3. Make a contact sheet for the overview
 
 ```
-python -c "from pathlib import Path; Path('outputs').mkdir(parents=True, exist_ok=True)" && ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:00 -frames:v 1 outputs/t_000s.jpg && ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:05 -frames:v 1 outputs/t_005s.jpg
+ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -vf "fps=12/DURATION,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,drawtext=text='%{pts\\:hms}':x=8:y=h-th-8:fontsize=18:fontcolor=white:box=1:boxcolor=black@0.65,tile=4x3:padding=4:margin=4" -frames:v 1 overview_4x3.jpg
 ```
 
-- Choose no more than five explicit timestamps from the probed duration before extracting. Use one `-ss HH:MM:SS -frames:v 1` output per chosen moment and put the timestamp in its filename, such as `t_000s.jpg`, `t_005s.jpg`, or `t_01m20s.jpg`. The generated filename is the model-visible timestamp evidence; do not rename it to an anonymous `frame_01.jpg`.
-- If scene detection is useful, use it only to discover candidate moments. Read the reported presentation timestamps, then re-extract the selected moments with explicit `-ss` commands and timestamped filenames before calling `load_material`. A numbered scene frame with no known timestamp is not sufficient evidence for a timeline claim.
-- Declare every intended output with `output_globs` (e.g. `outputs/t_*.jpg`); completed runs register real `gen_*` handles. Success is only `status=completed` with `artifact_status=registered` and real `gen_*` handles — an `exit_code=0` without registration is not a deliverable.
-- Keep batches small: `load_material` accepts up to 5 images per call and output registration is capped; for more coverage, extract once more for the specific segment rather than flooding one run.
-- Do not set `cwd`; ffmpeg does not create directories, so create `outputs` first with the cross-platform Python command shown above. Prefer `-hide_banner -loglevel error -y` so successful runs stay clean and failures still return the error.
+- For a broad "what happens" question, prefer one overview contact sheet before loading many individual frames. A 3x3 sheet (9 frames) is enough for quieter videos; use at most 4x3 (12 frames) for a denser overview. Read cells left-to-right, top-to-bottom.
+- Replace `DURATION` in the example with the real probed duration, so `fps=12/DURATION` samples about 12 evenly spaced moments. Keep the completed sheet roughly 1200-1600 pixels wide; more tiny cells usually lose more evidence than they save.
+- Burn a timestamp into every cell when `drawtext` is available. If this ffmpeg build lacks `drawtext` or a usable font, retry without that filter and put the exact row-major cell-to-time mapping in the subsequent `load_material.purpose`; never silently pretend an unlabeled cell has a precise timestamp.
+- Repeat `input_resources=[{"handle": "<exact file_* handle>", "as": "inputs/source.mp4"}]` on this extraction call even though the probe already staged the same video. Declare `output_globs=["overview_4x3.jpg"]`; do not set `cwd`.
+- Load the single registered contact-sheet `gen_*` with `load_material`. Use it to locate scenes, actions, cuts, and promising time ranges. A contact sheet is an overview, not reliable evidence for small subtitles, fine UI text, faces, brief objects, or exact fast motion.
+- This usually reduces image blocks and tool feedback, but it does not guarantee a fixed visual-token reduction: providers may tile a large image internally. Never trade away evidence merely to minimize token count.
 
-### 4. Load the frames into the multimodal round
+### 4. Deep-read selected moments at original frame size
+
+After the contact sheet, extract only the two to five moments needed to answer the question. For a specific-time question, obvious small text, or very short video, you may skip the contact sheet and go directly here.
+
+```
+ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:00 -frames:v 1 t_000s.jpg && ffmpeg -hide_banner -loglevel error -y -i inputs/source.mp4 -ss 00:00:05 -frames:v 1 t_005s.jpg
+```
+
+- Repeat the exact video `input_resources` again for this new `exec_run`; a prior run's `inputs/source.mp4` no longer exists here.
+- Choose no more than five explicit timestamps using `-ss HH:MM:SS`. Put the timestamp in each filename, such as `t_000s.jpg`, `t_005s.jpg`, or `t_01m20s.jpg`, and declare `output_globs=["t_*.jpg"]`.
+- If scene detection is useful, use it only to discover candidate moments. Read the reported presentation timestamps, then re-extract selected moments with explicit `-ss` commands and timestamped filenames. A numbered scene frame with no known timestamp is not sufficient evidence for a timeline claim.
+- Success is only `status=completed` with `artifact_status=registered` and real `gen_*` handles. An `exit_code=0` without registration is not a deliverable.
+- Prefer `-hide_banner -loglevel error -y` so successful runs stay clean and failures still return the error. Write outputs directly in the managed current directory; no Python helper or extra output directory is required.
+
+### 5. Load the frames into the multimodal round
 
 Call `load_material` with the exact `gen_*` handles from `generated_resources` (up to 5), e.g.:
 
@@ -70,13 +87,13 @@ Call `load_material` with the exact `gen_*` handles from `generated_resources` (
 
 The loaded images are sent to the vision model in the next round. Track which handles loaded successfully: an `unresolved` item means that frame never reached the model — do not describe it. If nothing loads, say so and stop; do not claim you saw frames you did not see.
 
-### 5. Audio evidence when the question needs it
+### 6. Audio evidence when the question needs it
 
 - If the question is about speech, dialogue, subtitles, or lyrics, call `transcribe_media` on the video handle (or a `gen_*` audio already extracted); it handles video files directly by using the audio track.
 - If ffprobe showed no audio stream, do not invent dialogue; say the video has no audio track.
 - If transcription fails, answer from frames only and state that the spoken content could not be verified.
 
-### 6. Answer with the evidence
+### 7. Answer with the evidence
 
 Combine the question, probed metadata, loaded frames (with their timestamps), and any transcript, and reply in character naturally. State boundaries honestly: which time range the frames covered, whether you heard speech, what failed. Offer the next segment you can look at ("前面 10 秒的画面看到了…，要不要我再看 1 分 20 秒附近？"). Do not recite internal commands or pipeline mechanics to the user.
 
