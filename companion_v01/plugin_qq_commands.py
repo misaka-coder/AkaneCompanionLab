@@ -53,14 +53,16 @@ class PluginQQCommandBroker:
         self,
         registrations: tuple[_PluginCommandRegistration, ...],
         *,
+        host_registrations: tuple[_PluginCommandRegistration, ...] = (),
         handler_timeout_seconds: float = DEFAULT_HANDLER_TIMEOUT_SECONDS,
         availability_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._handler_timeout_seconds = max(0.01, float(handler_timeout_seconds))
         self._availability_provider = availability_provider or (lambda: True)
-        # Fast lookup: normalised command → first matching registration
+        # Fast lookup: normalised command → first matching registration.
+        # Host builtin commands take precedence over plugin registrations.
         self._index: dict[str, _PluginCommandRegistration] = {}
-        for reg in registrations:
+        for reg in (*host_registrations, *registrations):
             if reg.command not in self._index:
                 self._index[reg.command] = reg
 

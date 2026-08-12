@@ -28,7 +28,8 @@ class _FakePluginHost:
         self.start_count += 1
         return {"status": "active", "plugins": []}
 
-    def build_qq_command_broker(self) -> str:
+    def build_qq_command_broker(self, host_registrations: tuple = ()) -> str:
+        self.host_registrations = host_registrations
         return "broker"
 
     async def stop(self) -> dict[str, Any]:

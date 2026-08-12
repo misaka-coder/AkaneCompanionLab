@@ -455,11 +455,16 @@ class PluginHost:
             raise TypeError("invalid_reasoning_port")
         self._reasoning_port = port
 
-    def build_qq_command_broker(self) -> PluginQQCommandBroker:
+    def build_qq_command_broker(
+        self,
+        host_registrations: tuple = (),
+    ) -> PluginQQCommandBroker:
         """Build an immutable command broker from all activated plugin QQ commands.
 
         Call after :meth:`start`.  Registrations do not mutate at runtime, and
         the returned broker rejects dispatch once the host begins stopping.
+        ``host_registrations`` may carry host builtin commands (e.g. ``/能力``);
+        they take precedence over plugin registrations with the same token.
         """
         registrations: list[_PluginCommandRegistration] = []
         for active in self._active_plugins.values():
@@ -467,6 +472,7 @@ class PluginHost:
                 registrations.append(reg)
         return PluginQQCommandBroker(
             tuple(registrations),
+            host_registrations=tuple(host_registrations or ()),
             availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
         )
 

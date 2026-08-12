@@ -15,6 +15,7 @@ from services.tts_client import EdgeTTSClient
 from .async_task_supervisor import AsyncTaskSupervisor
 from .bot_profile import BotConfig, bot_config_from_instance_context
 from .deployment_security import InstanceDeploymentSecurity, resolve_instance_deployment_security
+from .capability_diagnosis import build_host_command_registrations
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .desktop_satellite import DesktopSatelliteService
 from .engine import AkaneMemoryEngine
@@ -175,7 +176,16 @@ class BotRuntime:
             return {"status": "active", "reason": "already_started", "bot_id": self.bot_id}
 
         plugin_status = await self.plugin_host.start()
-        self.plugin_command_broker = self.plugin_host.build_qq_command_broker()
+        host_commands = build_host_command_registrations(
+            engine=self.engine,
+            qq_gateway=self.qq_gateway,
+            config_module=self.config_module,
+            satellite_service=self.desktop_satellite_service,
+            bot_label=str(getattr(self, "bot_id", "") or ""),
+        )
+        self.plugin_command_broker = self.plugin_host.build_qq_command_broker(
+            host_registrations=host_commands
+        )
         self._started = True
         status = "degraded" if plugin_status.get("status") == "degraded" else "active"
         return {
