@@ -48,7 +48,8 @@ import { createVisualRenderer } from "./visual-renderer.js";
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
 import {
   completeSegmentedBubbleDelivery,
-  getBubbleSegmentDisplayDelay
+  getBubbleSegmentDisplayDelay,
+  splitStreamedBubbleText
 } from "./bubble-delivery.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
@@ -7246,7 +7247,16 @@ async function processThinkStream(stream, turnToken) {
       const text = String(event?.text || "").trim();
       if (text) receivedSpeechSegment = true;
       if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
-      if (queueStreamedReplySegment(text, turnToken, event?.index) || streamingReplyText) {
+      const bubbleSegments = splitSpeechText(text);
+      let queuedBubble = false;
+      for (let index = 0; index < bubbleSegments.length; index += 1) {
+        queuedBubble = queueStreamedReplySegment(
+          bubbleSegments[index],
+          turnToken,
+          `stream:${String(event?.index ?? "unknown")}:${index}`
+        ) || queuedBubble;
+      }
+      if (queuedBubble || streamingReplyText) {
         rendered = true;
       }
       queueStreamedTtsSegment(text, turnToken, event?.index);
@@ -7814,7 +7824,7 @@ function buildSpeechTextKey(text) {
 function splitSpeechText(text) {
   const source = String(text || "").replace(/\r\n/g, "\n").trim();
   if (!source) return [];
-  return segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT });
+  return splitStreamedBubbleText(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT });
 }
 
 function showThinking() {
@@ -9986,10 +9996,8 @@ function queueStreamedReplySegment(text, turnToken, segmentIndex = null) {
   ensureStreamingReplyTurn(turnToken);
   const textKey = buildSpeechTextKey(normalized);
   if (!textKey) return false;
-  const numericIndex = Number(segmentIndex);
-  const segmentKey = Number.isFinite(numericIndex)
-    ? `${numericIndex}:${textKey}`
-    : textKey;
+  const indexKey = segmentIndex == null ? "" : String(segmentIndex).trim();
+  const segmentKey = indexKey ? `${indexKey}:${textKey}` : textKey;
   if (streamingReplySegmentKeys.has(segmentKey)) return false;
 
   streamingReplySegmentKeys.add(segmentKey);
@@ -10015,8 +10023,8 @@ function queueLiveReplyPayloadItems(items, { speaking = true, finalText = "" } =
   const tail = removeStreamingReplyPrefix(normalized.join(""));
   if (tail) {
     const tailSegments = splitSpeechText(tail);
-    for (const segment of tailSegments) {
-      queueStreamedReplySegment(segment, activeTurnToken);
+    for (let index = 0; index < tailSegments.length; index += 1) {
+      queueStreamedReplySegment(tailSegments[index], activeTurnToken, `final:${index}`);
     }
     if (speaking) setPetMotion("speaking");
   }
