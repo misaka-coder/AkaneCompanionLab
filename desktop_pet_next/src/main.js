@@ -46,11 +46,7 @@ import {
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
-import {
-  completeSegmentedBubbleDelivery,
-  getBubbleSegmentDisplayDelay,
-  splitStreamedBubbleText
-} from "./bubble-delivery.js";
+import { getBubbleSegmentDisplayDelay } from "./bubble-delivery.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
 
@@ -630,7 +626,6 @@ let replyDisplayActive = false;
 let segmentTimer = 0;
 let lastTurnSignature = "";
 let lastTurnTextKey = "";
-let firstSpeechSegmentShown = false;
 let lastActivityActionSignature = "";
 let motionTimer = 0;
 let transientEmotionTimer = 0;
@@ -694,15 +689,6 @@ let streamingTtsPendingShort = "";
 let streamingTtsPendingShortKey = "";
 let streamingTtsPendingShortTimer = 0;
 const streamingTtsSegmentKeys = new Set();
-let streamingReplyTurnToken = 0;
-let streamingReplyText = "";
-let streamingReplyFinalText = "";
-let streamingReplyFinalized = false;
-let streamedReplyCompletionShown = false;
-let streamedReplyLastShownAt = 0;
-let streamedReplyLastShownText = "";
-let streamedReplyQueue = [];
-const streamingReplySegmentKeys = new Set();
 let ttsPrewarmTimer = 0;
 let ttsPrewarmController = null;
 let ttsPrewarmInFlightKey = "";
@@ -6800,12 +6786,10 @@ function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}
   cancelTtsPrewarm();
   stopTts();
   clearLocalInteraction();
-  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
   resetStreamingTtsState();
-  resetStreamingReplyState();
   desktopFileDeliveryHandled.clear();
   window.clearTimeout(bubbleTimer);
   window.clearTimeout(segmentTimer);
@@ -6923,11 +6907,9 @@ async function sendMessage(text) {
   let restoreText = "";
   cancelEmotionPreview({ restore: true });
   clearLocalInteraction();
-  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   resetStreamingTtsState(turnToken);
-  resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   showThinking();
   markTurnLatency("thinking-shown");
@@ -6947,7 +6929,6 @@ async function sendMessage(text) {
   } catch (error) {
     if (!isTurnActive(turnToken)) return;
     restoreText = trimmed;
-    firstSpeechSegmentShown = false;
     showError(isAbortLike(error) ? "请求超时" : formatError(error));
   } finally {
     markTurnLatency("turn-finished");
@@ -7029,11 +7010,9 @@ async function sendProactiveWake() {
   proactiveWakeNextAllowedAt = startedAt + getProactiveWakeIntervalMs();
   proactiveWakeRunning = true;
   sending = true;
-  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   resetStreamingTtsState(turnToken);
-  resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   scheduleSettingsSnapshot();
 
@@ -7054,7 +7033,6 @@ async function sendProactiveWake() {
     proactiveWakeLastAt = startedAt;
   } catch (error) {
     if (!isTurnActive(turnToken) || isAbortLike(error)) return;
-    firstSpeechSegmentShown = false;
     setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
   } finally {
     markTurnLatency("turn-finished");
@@ -7214,7 +7192,6 @@ async function* sendThinkStream(message, turnToken, options = {}) {
 
 async function processThinkStream(stream, turnToken) {
   let partialSpeech = "";
-  let receivedSpeechSegment = false;
   let rendered = false;
   let streamErrored = false;
   let streamErrorMessage = "";
@@ -7225,7 +7202,7 @@ async function processThinkStream(stream, turnToken) {
 
     if (type === "turn_start") {
       markTurnLatency("stream-turn-start");
-      if (!rendered && !streamingReplyText && !firstSpeechSegmentShown) {
+      if (!rendered) {
         showThinking();
       }
     } else if (type === "ui") {
@@ -7234,65 +7211,38 @@ async function processThinkStream(stream, turnToken) {
       const chunk = String(event?.text || "");
       if (chunk) {
         partialSpeech += chunk;
-        // ``speech_chunk`` has already been parsed from the model's speech
-        // field by the backend. Surface it immediately so a slow first
-        // sentence does not leave the pet frozen on the thinking ellipsis.
-        // Complete ``speech_segment`` events remain the delivery units for
-        // timed bubbles and TTS; the preview is visual only.
-        if (!receivedSpeechSegment) {
-          displayStreamingReplyPreview(partialSpeech);
-        }
+        // Keep chunks as transport progress only. They are not stable display
+        // units and may end halfway through a sentence. The authoritative
+        // final frame below is the sole owner of reply bubble sequencing.
       }
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
-      if (text) receivedSpeechSegment = true;
       if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
-      const bubbleSegments = splitSpeechText(text);
-      let queuedBubble = false;
-      for (let index = 0; index < bubbleSegments.length; index += 1) {
-        queuedBubble = queueStreamedReplySegment(
-          bubbleSegments[index],
-          turnToken,
-          `stream:${String(event?.index ?? "unknown")}:${index}`
-        ) || queuedBubble;
-      }
-      if (queuedBubble || streamingReplyText) {
-        rendered = true;
-      }
       queueStreamedTtsSegment(text, turnToken, event?.index);
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
     } else if (type === "browser_open_requested") {
       void handleBrowserOpenEvent(event);
     } else if (type === "assistant_working") {
-      const hasShownReply = rendered || Boolean(streamingReplyText) || firstSpeechSegmentShown;
-      showToolWorking(event, { hasShownReply });
+      showToolWorking(event, { hasShownReply: rendered });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       if (renderPayload(payload)) {
         rendered = true;
-        firstSpeechSegmentShown = false;
       }
     } else if (type === "npc_turn") {
       if (!rendered && renderPayload(event)) {
         rendered = true;
-        firstSpeechSegmentShown = false;
       }
     } else if (type === "stream_error" || type === "error") {
       streamErrored = true;
       streamErrorMessage = String(event?.message || "Stream error");
       if (event?.partial && !rendered) {
-        firstSpeechSegmentShown = false;
         if (renderPayload(event.partial)) rendered = true;
       }
     } else if (type === "stream_end") {
-      if (streamingReplyText) {
-        finalizeStreamedReplyDisplay();
-        rendered = true;
-      }
       flushStreamingTtsPending({ turnToken });
       if (event?.partial && !rendered) {
-        firstSpeechSegmentShown = false;
         if (renderPayload(event.partial)) rendered = true;
       }
     }
@@ -7301,7 +7251,6 @@ async function processThinkStream(stream, turnToken) {
   if (!isTurnActive(turnToken)) return false;
   flushStreamingTtsPending({ turnToken });
   if (!rendered && partialSpeech.trim()) {
-    firstSpeechSegmentShown = false;
     rendered = renderPayload({ speech: partialSpeech.trim() });
   }
 
@@ -7327,17 +7276,12 @@ function renderPayload(
 
   const segments = normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
-    const finalSpeech = String(payload.speech || payload.text || "").trim();
     const signature = `segments:${segments.join("\u241e")}`;
     const textKey = buildSpeechTextKey(segments.join(""));
     if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
     lastTurnSignature = signature;
     lastTurnTextKey = textKey;
-    if (source === "live" && streamingReplyText) {
-      queueLiveReplyPayloadItems(segments, { speaking, finalText: finalSpeech });
-    } else {
-      showSpeechSegments(segments, { speaking });
-    }
+    showSpeechSegments(segments, { speaking });
     if (source === "live") setRuntimeStatus("回复中", { mode: "replying" });
     if (source === "live") queueLiveTtsPayloadItems(segments, signature);
     return true;
@@ -7352,12 +7296,7 @@ function renderPayload(
   if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
   lastTurnSignature = signature;
   lastTurnTextKey = textKey;
-  if (source === "live" && streamingReplyText) {
-    queueLiveReplyPayloadItems(displaySegments.length ? displaySegments : [speech], {
-      speaking,
-      finalText: speech
-    });
-  } else if (displaySegments.length) {
+  if (displaySegments.length) {
     showSpeechSegments(displaySegments, { speaking });
   } else {
     showBubbleText(speech, { transient: false, dismiss: true, speaking, kind: "reply" });
@@ -7824,7 +7763,7 @@ function buildSpeechTextKey(text) {
 function splitSpeechText(text) {
   const source = String(text || "").replace(/\r\n/g, "\n").trim();
   if (!source) return [];
-  return splitStreamedBubbleText(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT });
+  return segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT });
 }
 
 function showThinking() {
@@ -7898,24 +7837,6 @@ function displayReplyBubbleText(text, { speaking = true } = {}) {
   scheduleNativeHitTestSync({ force: true });
   if (speaking) setPetMotion("speaking");
   updateActivityControls();
-}
-
-function displayStreamingReplyPreview(text) {
-  const preview = String(text || "").trim();
-  if (!preview) return false;
-
-  clearLocalInteraction();
-  window.clearTimeout(bubbleTimer);
-  bubbleKind = "reply";
-  replyDisplayActive = true;
-  setBubbleContent(preview);
-  els.bubble.classList.add("visible");
-  scheduleNativeHitTestSync({ force: true });
-  setPetMotion("speaking");
-  setRuntimeStatus("回复中", { mode: "replying" });
-  markTurnLatencyOnce("first-bubble-preview", { chars: preview.length });
-  updateActivityControls();
-  return true;
 }
 
 function getSegmentDisplayDelay(text) {
@@ -9384,11 +9305,9 @@ async function sendCareFeedReply({ item, care, hungerDelta, energyDelta, affecti
   const turnToken = ++activeTurnToken;
   activeTurnLatencyTrace = createTurnLatencyTrace("care_feed", turnToken, { itemName });
   sending = true;
-  firstSpeechSegmentShown = false;
   lastTurnSignature = "";
   lastTurnTextKey = "";
   resetStreamingTtsState(turnToken);
-  resetStreamingReplyState(turnToken);
   desktopFileDeliveryHandled.clear();
   scheduleSettingsSnapshot();
 
@@ -9969,153 +9888,6 @@ function buildPlayableMusicCatalog() {
   }
 
   return catalog.slice(0, 12);
-}
-
-function resetStreamingReplyState(turnToken = 0) {
-  streamingReplyTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
-  streamingReplyText = "";
-  streamingReplyFinalText = "";
-  streamingReplyFinalized = false;
-  streamedReplyCompletionShown = false;
-  streamedReplyLastShownAt = 0;
-  streamedReplyLastShownText = "";
-  streamedReplyQueue = [];
-  streamingReplySegmentKeys.clear();
-}
-
-function ensureStreamingReplyTurn(turnToken) {
-  const normalizedToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
-  if (streamingReplyTurnToken === normalizedToken) return;
-  resetStreamingReplyState(normalizedToken);
-}
-
-function queueStreamedReplySegment(text, turnToken, segmentIndex = null) {
-  const normalized = normalizeTtsText(text);
-  if (!normalized || !isTurnActive(turnToken)) return false;
-
-  ensureStreamingReplyTurn(turnToken);
-  const textKey = buildSpeechTextKey(normalized);
-  if (!textKey) return false;
-  const indexKey = segmentIndex == null ? "" : String(segmentIndex).trim();
-  const segmentKey = indexKey ? `${indexKey}:${textKey}` : textKey;
-  if (streamingReplySegmentKeys.has(segmentKey)) return false;
-
-  streamingReplySegmentKeys.add(segmentKey);
-  streamingReplyText = normalizeTtsText(streamingReplyText ? `${streamingReplyText}${normalized}` : normalized);
-  streamedReplyQueue.push(normalized);
-  const immediate = !replyDisplayActive || bubbleKind === "thinking" || !streamedReplyLastShownText;
-  scheduleStreamedReplyDisplay({ immediate });
-  return true;
-}
-
-function queueLiveReplyPayloadItems(items, { speaking = true, finalText = "" } = {}) {
-  const normalized = (Array.isArray(items) ? items : [items])
-    .map((item) => normalizeTtsText(item))
-    .filter(Boolean);
-  if (!normalized.length) {
-    finalizeStreamedReplyDisplay();
-    return false;
-  }
-
-  const authoritativeFinalText = normalizeTtsText(finalText || normalized.join(""));
-  if (authoritativeFinalText) streamingReplyFinalText = authoritativeFinalText;
-
-  const tail = removeStreamingReplyPrefix(normalized.join(""));
-  if (tail) {
-    const tailSegments = splitSpeechText(tail);
-    for (let index = 0; index < tailSegments.length; index += 1) {
-      queueStreamedReplySegment(tailSegments[index], activeTurnToken, `final:${index}`);
-    }
-    if (speaking) setPetMotion("speaking");
-  }
-  finalizeStreamedReplyDisplay();
-  return true;
-}
-
-function removeStreamingReplyPrefix(text) {
-  const finalText = normalizeTtsText(text);
-  const prefix = normalizeTtsText(streamingReplyText);
-  if (!finalText || !prefix) return finalText;
-  if (finalText.startsWith(prefix)) return normalizeTtsText(finalText.slice(prefix.length));
-
-  const finalKey = buildSpeechTextKey(finalText);
-  const prefixKey = buildSpeechTextKey(prefix);
-  if (!prefixKey || !finalKey.startsWith(prefixKey)) return "";
-  if (finalKey.length <= prefixKey.length) return "";
-
-  let compactCount = 0;
-  let sliceIndex = 0;
-  for (let index = 0; index < finalText.length; index += 1) {
-    if (!/\s/.test(finalText[index])) compactCount += 1;
-    if (compactCount >= prefixKey.length) {
-      sliceIndex = index + 1;
-      break;
-    }
-  }
-  return normalizeTtsText(finalText.slice(sliceIndex));
-}
-
-function scheduleStreamedReplyDisplay({ immediate = false } = {}) {
-  if (!streamedReplyQueue.length || segmentTimer) return;
-  if (immediate) {
-    showNextStreamedReplySegment();
-    return;
-  }
-  const elapsed = Date.now() - streamedReplyLastShownAt;
-  const delay = Math.max(0, getSegmentDisplayDelay(streamedReplyLastShownText) - elapsed);
-  segmentTimer = window.setTimeout(() => {
-    segmentTimer = 0;
-    showNextStreamedReplySegment();
-  }, delay);
-}
-
-function showNextStreamedReplySegment() {
-  window.clearTimeout(segmentTimer);
-  segmentTimer = 0;
-  if (!streamedReplyQueue.length || !isTurnActive(streamingReplyTurnToken)) return;
-
-  const text = streamedReplyQueue.shift();
-  streamedReplyLastShownText = text;
-  streamedReplyLastShownAt = Date.now();
-  firstSpeechSegmentShown = true;
-  displayReplyBubbleText(text, { speaking: true });
-  markTurnLatencyOnce("first-bubble-displayed", { chars: String(text || "").length });
-
-  if (streamedReplyQueue.length) {
-    scheduleStreamedReplyDisplay();
-  } else if (streamingReplyFinalized) {
-    scheduleStreamedReplyCompletion();
-  }
-}
-
-function finalizeStreamedReplyDisplay() {
-  if (!streamingReplyText) return;
-  streamingReplyFinalized = true;
-  if (streamedReplyQueue.length) {
-    scheduleStreamedReplyDisplay();
-    return;
-  }
-  scheduleStreamedReplyCompletion();
-}
-
-function scheduleStreamedReplyCompletion() {
-  if (streamedReplyCompletionShown || streamedReplyQueue.length || segmentTimer) return;
-  if (!replyDisplayActive || bubbleKind !== "reply" || !isTurnActive(streamingReplyTurnToken)) return;
-
-  const finalText = normalizeTtsText(streamingReplyFinalText || streamingReplyText);
-  if (!finalText) return;
-  // ``queueLiveReplyPayloadItems`` has already compared the authoritative
-  // final speech with the streamed prefix and queued any missing tail. Once
-  // that queue is empty, every part of the reply has been shown. Replacing the
-  // last segment with ``finalText`` here used to put the entire answer into one
-  // height-limited bubble, making it look truncated even though the segmented
-  // delivery had succeeded. Keep the last segment visible, like QQ keeps the
-  // last message bubble, and dismiss it after its ordinary reading window.
-  streamedReplyCompletionShown = true;
-  const completion = completeSegmentedBubbleDelivery({
-    lastSegment: streamedReplyLastShownText
-  });
-  scheduleBubbleReset(completion.dismissCharCount, bubbleToken);
 }
 
 function resetStreamingTtsState(turnToken = 0) {

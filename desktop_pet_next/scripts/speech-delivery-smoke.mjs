@@ -15,6 +15,11 @@ assert.deepEqual(segmentSpeechForDelivery("她说：“我在看《孤独摇滚�
 ]);
 assert.deepEqual(segmentSpeechForDelivery("收益率是 3.5%。"), ["收益率是 3.5%。"]);
 assert.deepEqual(segmentSpeechForDelivery("U.S. market is open. OK."), ["U.S. market is open.", "OK."]);
+assert.deepEqual(segmentSpeechForDelivery("……喵。行了，别得意了。"), [
+  "……",
+  "喵。",
+  "行了，别得意了。"
+]);
 
 const ttsChunks = segmentSpeechForDelivery(
   "这是一个需要交给语音合成的很长句子，《孤独摇滚！》的标题必须保持完整，然后再继续说下去。",
