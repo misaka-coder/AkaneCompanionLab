@@ -46,6 +46,10 @@ import {
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
+import {
+  completeSegmentedBubbleDelivery,
+  getBubbleSegmentDisplayDelay
+} from "./bubble-delivery.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
 
@@ -130,11 +134,7 @@ const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a"
 const MUSIC_LYRIC_EXTENSIONS = new Set(["lrc"]);
 const MUSIC_PLAY_MODES = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
 const MIN_RECORDING_MS = 700;
-const SEGMENT_MIN_MS = 1200;
-const SEGMENT_MAX_MS = 4500;
-const SEGMENT_CHAR_RATE = 120;
 const CLIENT_SEGMENT_SOFT_LIMIT = 56;
-const CLIENT_SEGMENT_MAX = 5;
 const LOCAL_CLICK_DELAY_MS = 240;
 const INPUT_HISTORY_LIMIT = 24;
 const CHAT_INPUT_IDLE_HIDE_MS = 5000;
@@ -7814,17 +7814,7 @@ function buildSpeechTextKey(text) {
 function splitSpeechText(text) {
   const source = String(text || "").replace(/\r\n/g, "\n").trim();
   if (!source) return [];
-  return limitClientSegments(
-    segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT })
-  );
-}
-
-function limitClientSegments(segments) {
-  if (segments.length <= CLIENT_SEGMENT_MAX) return segments;
-  return [
-    ...segments.slice(0, CLIENT_SEGMENT_MAX - 1),
-    segments.slice(CLIENT_SEGMENT_MAX - 1).join("")
-  ];
+  return segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT });
 }
 
 function showThinking() {
@@ -7919,7 +7909,7 @@ function displayStreamingReplyPreview(text) {
 }
 
 function getSegmentDisplayDelay(text) {
-  return Math.max(SEGMENT_MIN_MS, Math.min(SEGMENT_MAX_MS, String(text || "").length * SEGMENT_CHAR_RATE));
+  return getBubbleSegmentDisplayDelay(text);
 }
 
 function showBubbleText(
@@ -10106,23 +10096,18 @@ function scheduleStreamedReplyCompletion() {
 
   const finalText = normalizeTtsText(streamingReplyFinalText || streamingReplyText);
   if (!finalText) return;
-  if (buildSpeechTextKey(finalText) === buildSpeechTextKey(streamedReplyLastShownText)) {
-    streamedReplyCompletionShown = true;
-    scheduleBubbleReset(Math.max(finalText.length, 4), bubbleToken);
-    return;
-  }
-
-  const elapsed = Date.now() - streamedReplyLastShownAt;
-  const delay = Math.max(0, getSegmentDisplayDelay(streamedReplyLastShownText) - elapsed);
-  segmentTimer = window.setTimeout(() => {
-    segmentTimer = 0;
-    if (!isTurnActive(streamingReplyTurnToken)) return;
-    streamedReplyCompletionShown = true;
-    streamedReplyLastShownText = finalText;
-    streamedReplyLastShownAt = Date.now();
-    displayReplyBubbleText(finalText, { speaking: ttsActive });
-    scheduleBubbleReset(Math.max(finalText.length, 4), bubbleToken);
-  }, delay);
+  // ``queueLiveReplyPayloadItems`` has already compared the authoritative
+  // final speech with the streamed prefix and queued any missing tail. Once
+  // that queue is empty, every part of the reply has been shown. Replacing the
+  // last segment with ``finalText`` here used to put the entire answer into one
+  // height-limited bubble, making it look truncated even though the segmented
+  // delivery had succeeded. Keep the last segment visible, like QQ keeps the
+  // last message bubble, and dismiss it after its ordinary reading window.
+  streamedReplyCompletionShown = true;
+  const completion = completeSegmentedBubbleDelivery({
+    lastSegment: streamedReplyLastShownText
+  });
+  scheduleBubbleReset(completion.dismissCharCount, bubbleToken);
 }
 
 function resetStreamingTtsState(turnToken = 0) {

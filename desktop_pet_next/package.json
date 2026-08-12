@@ -12,6 +12,7 @@
     "smoke:care-feature": "node ./scripts/care-feature-smoke.mjs",
     "smoke:instance-storage": "node ./scripts/instance-storage-smoke.mjs",
     "smoke:speech-delivery": "node ./scripts/speech-delivery-smoke.mjs",
+    "smoke:bubble-delivery": "node ./scripts/bubble-delivery-smoke.mjs",
     "smoke:realtime-voice": "node ./scripts/realtime-voice-smoke.mjs",
     "smoke:voice-endpoint": "node ./scripts/realtime-voice-endpoint-smoke.mjs",
     "smoke:voice-call": "node ./scripts/realtime-voice-call-flow-smoke.mjs",
