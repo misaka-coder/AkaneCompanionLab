@@ -5880,10 +5880,13 @@ class AkaneMemoryEngine:
         tool_round_index: int,
         max_tool_rounds: int,
     ) -> bool:
+        reason_tool = str((final_output.get("tool_call") or {}).get("type") or "")
+        detail = str(rejection or "").replace("\n", " ").strip()[:240]
         logger.warning(
-            "tool_call_rejected session=%s reason_tool=%s",
+            "tool_call_rejected session=%s reason_tool=%s detail=%s",
             session_id,
-            str((final_output.get("tool_call") or {}).get("type") or ""),
+            reason_tool,
+            detail or "rejected call carried no legacy type",
         )
         tool_followups.append(rejection)
         return tool_round_index < max_tool_rounds - 1

@@ -510,7 +510,12 @@ class VisionObservationService:
             self._notify_observation_ready(target=target, observation=saved)
             return saved
         except Exception as exc:
-            logger.warning("Vision observation failed for %s: %s", target.source_path, exc)
+            logger.warning(
+                "Vision observation failed for %s (type=%s): %s",
+                target.target_id,
+                target.observation_type,
+                exc,
+            )
             saved = self._save_observation(
                 target=target,
                 status="error",
