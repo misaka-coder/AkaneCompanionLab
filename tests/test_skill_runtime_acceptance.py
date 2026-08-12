@@ -13,11 +13,16 @@ Covers the acceptance-matrix rows that the existing suites do not exercise yet:
   9. publish installs references/ and scripts/ and they stay loadable/listed.
  10. MemCore round records the REAL load_skill handler output (not a fabricated
      string) and it survives settlement with open_memory reload.
+ 11. Published scripts really execute through the local execution provider;
+     success output and non-zero stderr/exit status remain truthful.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +33,8 @@ from companion_v01.skill_runtime import (
     SKILL_MAX_PACKAGE_FILES,
     SKILL_MAX_PROMPT_ITEMS,
 )
+from companion_v01.execution_local import TrustedLocalExecutor
+from companion_v01.execution_run import ExecutionRunOwner
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.skills import LoadSkillToolHandler
 
@@ -227,6 +234,49 @@ class SkillRuntimeAcceptanceTests(unittest.TestCase):
         guide = self.registry.load("helper", resource="references/guide.md")
         self.assertEqual(guide.status, "loaded")
         self.assertEqual(guide.content, "guidance")
+
+    def test_published_scripts_execute_via_shell_with_real_success_and_failure(self) -> None:
+        draft = self.registry.execution_workspace_root / "skill_drafts" / "runner"
+        _write_skill(draft.parent, "runner", "Runner.", "Run scripts through exec_run.")
+        (draft / "scripts").mkdir()
+        (draft / "scripts" / "ok.py").write_text("print('skill-script-ok')\n", encoding="utf-8")
+        (draft / "scripts" / "fail.py").write_text(
+            "import sys\nprint('skill-script-failed', file=sys.stderr)\nsys.exit(7)\n",
+            encoding="utf-8",
+        )
+        published = self.registry.publish("skill_drafts/runner")
+        self.assertEqual(published.status, "published")
+
+        executor = TrustedLocalExecutor(
+            workspace_root=self.registry.execution_workspace_root,
+            run_log_dir=self.root / "runlogs",
+            mounts=self.registry.mount_paths(),
+        )
+        owner = ExecutionRunOwner(profile_user_id="master", session_id="s1", provider_id="local")
+
+        def command_for(relative_script: str) -> str:
+            args = [sys.executable, relative_script]
+            return subprocess.list2cmdline(args) if os.name == "nt" else " ".join(shlex.quote(arg) for arg in args)
+
+        succeeded = executor.run(
+            owner=owner,
+            command=command_for("runner/scripts/ok.py"),
+            cwd="alias:skills",
+            initial_wait_seconds=3,
+        )
+        self.assertEqual(succeeded.status, "completed")
+        self.assertEqual(succeeded.exit_code, 0)
+        self.assertIn("skill-script-ok", succeeded.stdout)
+
+        failed = executor.run(
+            owner=owner,
+            command=command_for("runner/scripts/fail.py"),
+            cwd="alias:skills",
+            initial_wait_seconds=3,
+        )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.exit_code, 7)
+        self.assertIn("skill-script-failed", failed.stderr)
 
 
 class _FakeLLM:
