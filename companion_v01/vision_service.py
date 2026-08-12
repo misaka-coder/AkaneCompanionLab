@@ -25,6 +25,27 @@ PROMPT_STYLE_REVISION = "atmo5"
 VISION_ERROR_RETRY_COOLDOWN_SECONDS = 300
 
 
+def _safe_log_identifier(value: Any, *, fallback: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.:@+-]", "_", str(value or "").strip())[:120]
+    return text or fallback
+
+
+def _safe_vision_error_for_log(exc: Exception) -> str:
+    """Keep a bounded diagnostic while excluding secrets and host paths."""
+
+    text = str(exc or "").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|password|secret|token|authorization)\s*[:=]\s*[^\s,;]+",
+        r"\1=[redacted]",
+        text,
+    )
+    text = re.sub(r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)", "[local_path]", text)
+    text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
+    text = re.sub(r"(?<![A-Za-z0-9:])/(?:home|Users|opt|var|tmp|srv|mnt|media)/[^\s,;|<>]+", "[local_path]", text)
+    return (text.strip() or "provider_request_failed")[:300]
+
+
 @dataclass(frozen=True)
 class VisionTarget:
     observation_type: str
@@ -511,10 +532,11 @@ class VisionObservationService:
             return saved
         except Exception as exc:
             logger.warning(
-                "Vision observation failed for %s (type=%s): %s",
-                target.target_id,
-                target.observation_type,
-                exc,
+                "Vision observation failed target=%s observation_type=%s error_type=%s message=%s",
+                _safe_log_identifier(target.target_id, fallback="unknown"),
+                _safe_log_identifier(target.observation_type, fallback="unknown"),
+                exc.__class__.__name__,
+                _safe_vision_error_for_log(exc),
             )
             saved = self._save_observation(
                 target=target,

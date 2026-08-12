@@ -5880,16 +5880,52 @@ class AkaneMemoryEngine:
         tool_round_index: int,
         max_tool_rounds: int,
     ) -> bool:
-        reason_tool = str((final_output.get("tool_call") or {}).get("type") or "")
-        detail = str(rejection or "").replace("\n", " ").strip()[:240]
+        reason_tool, reason_code = self._tool_call_rejection_log_fields(
+            final_output=final_output,
+            rejection=rejection,
+        )
         logger.warning(
-            "tool_call_rejected session=%s reason_tool=%s detail=%s",
+            "tool_call_rejected session=%s reason_tool=%s reason=%s",
             session_id,
-            reason_tool,
-            detail or "rejected call carried no legacy type",
+            reason_tool or "unknown",
+            reason_code,
         )
         tool_followups.append(rejection)
         return tool_round_index < max_tool_rounds - 1
+
+    @staticmethod
+    def _tool_call_rejection_log_fields(
+        *,
+        final_output: dict[str, Any],
+        rejection: str,
+    ) -> tuple[str, str]:
+        """Return bounded diagnostic labels without logging model arguments.
+
+        Rejection feedback is model-facing text and may contain the submitted
+        command, URL, query, path, or other user material.  Logs only need the
+        attempted capability and rejection class; the full feedback remains in
+        the active tool round and MemCore rather than crossing the log boundary.
+        """
+
+        reason_tool = str((final_output.get("tool_call") or {}).get("type") or "").strip()
+        text = str(rejection or "")
+        if not reason_tool:
+            match = re.search(r"工具(?:「\s*|\s+)([A-Za-z][A-Za-z0-9_.:-]{0,79})(?:」)?", text)
+            if match is not None:
+                reason_tool = match.group(1)
+        if not text.strip():
+            reason_code = "rejection_detail_missing"
+        elif "兼容 JSON tool_call" in text or "歧义调用" in text:
+            reason_code = "native_tool_wrong_carrier"
+        elif "参数不完整" in text or "格式不对" in text or "参数不符合" in text:
+            reason_code = "bad_args"
+        elif "执行器不可用" in text or "当前不在线" in text or "没有提供" in text:
+            reason_code = "not_available"
+        elif "本轮不可用" in text or "不存在的工具" in text:
+            reason_code = "unknown_tool"
+        else:
+            reason_code = "validation_rejected"
+        return reason_tool[:80], reason_code
 
     def _build_tool_round_extra_context(
         self,

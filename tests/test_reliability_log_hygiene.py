@@ -40,12 +40,12 @@ class VisionObservationLogHygieneTests(unittest.TestCase):
             hint_text="img_027",
         )
 
-    def _service(self, *, fail: bool = True) -> VisionObservationService:
+    def _service(self, *, fail: bool = True, error: str = "upstream 502") -> VisionObservationService:
         store = MemoryStore(self.root / "db")
 
         def analyze(target):
             if fail:
-                raise RuntimeError("upstream 502")
+                raise RuntimeError(error)
             return {"summary": "ok"}
 
         return VisionObservationService(
@@ -62,9 +62,24 @@ class VisionObservationLogHygieneTests(unittest.TestCase):
             service._observe_target(target)
         joined = "\n".join(captured.output)
         self.assertIn("attachment:img_027", joined)
-        self.assertIn("type=attachment_image", joined)
+        self.assertIn("observation_type=attachment_image", joined)
+        self.assertIn("error_type=RuntimeError", joined)
         self.assertNotIn(str(self.root), joined)
         self.assertNotIn("C:\\", joined)
+
+    def test_failure_log_redacts_exception_paths_secrets_and_newlines(self) -> None:
+        secret_path = str(self.root / "private" / "frame.png")
+        service = self._service(
+            fail=True,
+            error=f"failed at {secret_path}\nAuthorization: Bearer secret-token-123 api_key=hidden-value",
+        )
+        with self.assertLogs(logging.getLogger("akane.vision"), level="WARNING") as captured:
+            service._observe_target(self._target())
+        joined = "\n".join(captured.output)
+        self.assertNotIn(secret_path, joined)
+        self.assertNotIn("secret-token-123", joined)
+        self.assertNotIn("hidden-value", joined)
+        self.assertIn("[local_path]", joined)
 
     def test_success_path_logs_nothing_and_stores_ready(self) -> None:
         service = self._service(fail=False)
@@ -76,14 +91,17 @@ class VisionObservationLogHygieneTests(unittest.TestCase):
 
 
 class ToolCallRejectionLogHygieneTests(unittest.TestCase):
-    def test_rejection_log_includes_detail_and_session(self) -> None:
+    def test_rejection_log_includes_safe_tool_and_reason_without_arguments(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         followups: list[str] = []
         logger = logging.getLogger("akane.engine")
         with self.assertLogs(logger, level="WARNING") as captured:
             allow = engine._record_tool_call_rejection(
                 final_output={"tool_call": {"type": ""}},
-                rejection="工具 fetch_media_from_url 本轮不可用。\n请改用现有链接工具。",
+                rejection=(
+                    "工具 fetch_media_from_url 的调用参数不完整或格式不对，"
+                    "你提交的是 C:\\Users\\Lenovo\\secret.txt token=hidden-value。"
+                ),
                 tool_followups=followups,
                 session_id="qq_group_shared_302814983",
                 tool_round_index=0,
@@ -91,9 +109,12 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
             )
         joined = "\n".join(captured.output)
         self.assertIn("qq_group_shared_302814983", joined)
-        self.assertIn("fetch_media_from_url", joined)
-        self.assertIn("reason_tool=", joined)
-        self.assertEqual(followups, ["工具 fetch_media_from_url 本轮不可用。\n请改用现有链接工具。"])
+        self.assertIn("reason_tool=fetch_media_from_url", joined)
+        self.assertIn("reason=bad_args", joined)
+        self.assertNotIn("secret.txt", joined)
+        self.assertNotIn("hidden-value", joined)
+        self.assertEqual(len(followups), 1)
+        self.assertIn("secret.txt", followups[0])
         self.assertTrue(allow)
 
     def test_rejection_log_marks_unknown_when_detail_empty(self) -> None:
@@ -109,7 +130,8 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
                 max_tool_rounds=4,
             )
         joined = "\n".join(captured.output)
-        self.assertIn("rejected call carried no legacy type", joined)
+        self.assertIn("reason_tool=unknown", joined)
+        self.assertIn("reason=rejection_detail_missing", joined)
         self.assertNotIn("C:\\", joined)
 
 
