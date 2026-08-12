@@ -148,6 +148,27 @@ if (-not $SkipPackageSync) {
     Write-Host "[INFO] Internal packages: $($packageSync.Status) ($($packageSync.Fingerprint.Substring(0, 12)))"
 }
 
+$localPython = Join-Path $projectDir ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $localPython -PathType Leaf)) {
+    throw "local_test_python_not_found"
+}
+$policyInitializer = Join-Path $projectDir "scripts\initialize_akane_local_test_policy.py"
+$policyResult = & $localPython $policyInitializer `
+    --users-data-root (Join-Path $resolvedDataRoot "users_data") `
+    --profile-user-id "master"
+if ($LASTEXITCODE -ne 0) {
+    throw "local_test_approval_policy_initialization_failed"
+}
+$policyState = [string]($policyResult | Select-Object -Last 1)
+if ($policyState -eq "initialized:trusted_auto_allow") {
+    Write-Host "[INFO] Local approval policy: full access (initialized for this isolated loopback profile)."
+} elseif ($policyState -eq "preserved:trusted_auto_allow") {
+    Write-Host "[INFO] Local approval policy: full access (preserved)."
+} else {
+    Write-Host "[INFO] Local approval policy: existing user choice preserved."
+}
+Write-Host "[INFO] Change it later in Settings -> Abilities -> Safety Boundary."
+
 $launcher = Join-Path $projectDir "start_akane_next.ps1"
 $launcherArguments = @{
     InstanceId = $instanceId

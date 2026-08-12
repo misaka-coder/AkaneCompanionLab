@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 
 from companion_v01.instance_profile import resolve_instance_context
+from companion_v01.local_capability_config import get_approval_policy_config, save_approval_policy_config
+from scripts.initialize_akane_local_test_policy import initialize_local_test_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +34,8 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn('[int]$BackendPort = 11999', source)
         self.assertIn('-SeedBundledCharacters:$seedCharacters', source)
         self.assertIn("Sync-AkaneLocalPackages", source)
+        self.assertIn("initialize_akane_local_test_policy.py", source)
+        self.assertIn("Settings -> Abilities -> Safety Boundary", source)
         self.assertNotIn("CloudSatellite =", source)
 
     def test_prepare_only_creates_isolated_named_instance_without_leaking_env_values(self) -> None:
@@ -118,6 +122,58 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn("--force-reinstall", source)
         self.assertIn("browse_memory", source)
         self.assertIn("open_memory", source)
+
+    def test_new_local_profile_defaults_to_full_access_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            users_data_root = Path(temp_dir) / "users_data"
+
+            status, mode = initialize_local_test_policy(users_data_root=users_data_root)
+
+            self.assertEqual((status, mode), ("initialized", "trusted_auto_allow"))
+            policy = get_approval_policy_config(
+                base_dir=users_data_root,
+                profile_user_id="master",
+            )["approvalPolicy"]
+            self.assertEqual(policy["defaultMode"], "trusted_auto_allow")
+
+    def test_existing_local_approval_choice_is_never_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            users_data_root = Path(temp_dir) / "users_data"
+            saved = save_approval_policy_config(
+                base_dir=users_data_root,
+                profile_user_id="master",
+                payload={"defaultMode": "ask_each_time"},
+            )
+            self.assertTrue(saved["ok"])
+
+            status, mode = initialize_local_test_policy(users_data_root=users_data_root)
+
+            self.assertEqual((status, mode), ("preserved", "ask_each_time"))
+            policy = get_approval_policy_config(
+                base_dir=users_data_root,
+                profile_user_id="master",
+            )["approvalPolicy"]
+            self.assertEqual(policy["defaultMode"], "ask_each_time")
+
+    def test_policy_initializer_runs_as_a_script_outside_the_repo_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            users_data_root = root / "users_data"
+            completed = subprocess.run(
+                (
+                    str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                    str(ROOT / "scripts" / "initialize_akane_local_test_policy.py"),
+                    "--users-data-root",
+                    str(users_data_root),
+                ),
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout.strip(), "initialized:trusted_auto_allow")
 
 
 if __name__ == "__main__":
