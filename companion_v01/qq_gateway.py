@@ -2548,6 +2548,7 @@ class NapCatQQGateway:
             legacy_kind = {
                 "image": "image",
                 "audio": "audio",
+                "video": "video",
                 "file": "document",
             }.get(attachment.kind)
             if not legacy_kind:

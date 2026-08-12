@@ -213,6 +213,83 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["attachments"][0]["quoted_message_id"], "quoted-1")
         self.assertEqual(result["attachments"][0]["sender_label"], "伙伴")
 
+    def test_gateway_preserves_direct_and_quoted_video_attachments(self) -> None:
+        gateway = NapCatQQGateway(wake_words=("Akane",))
+        direct_event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "group_id": GROUP_ID,
+            "message_id": "direct-video",
+            "message": [
+                {"type": "text", "data": {"text": "Akane 看看这个视频"}},
+                {
+                    "type": "video",
+                    "data": {
+                        "file": "clip.mp4",
+                        "url": "https://provider.invalid/private-video",
+                    },
+                },
+            ],
+        }
+
+        context = gateway.build_message_context(direct_event)
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(len(context.attachments), 1)
+        self.assertEqual(context.attachments[0]["kind"], "video")
+        self.assertEqual(context.attachments[0]["mime_type"], "video/mp4")
+
+        quoted_event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "group_id": GROUP_ID,
+            "message_id": "current-video-quote",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-video"}},
+                {"type": "text", "data": {"text": "Akane 看看这个"}},
+            ],
+        }
+        quoted_context = gateway.build_message_context(quoted_event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_id": "quoted-video",
+                        "self_id": BOT_ID,
+                        "message_type": "group",
+                        "group_id": GROUP_ID,
+                        "user_id": USER_ID,
+                        "sender": {"user_id": USER_ID, "card": "伙伴"},
+                        "message": [
+                            {
+                                "type": "video",
+                                "data": {
+                                    "file": "quoted.mp4",
+                                    "url": "https://provider.invalid/private-quoted-video",
+                                },
+                            }
+                        ],
+                    },
+                }
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            result = gateway.resolve_quoted_attachments(quoted_event, context=quoted_context)
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["attachments"][0]["kind"], "video")
+        self.assertEqual(result["attachments"][0]["mime_type"], "video/mp4")
+        self.assertEqual(result["attachments"][0]["quoted_message_id"], "quoted-video")
+
     def test_gateway_marks_quoted_bot_reply_as_assistant_self(self) -> None:
         gateway = NapCatQQGateway()
         event = {
