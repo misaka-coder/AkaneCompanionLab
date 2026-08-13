@@ -27,6 +27,15 @@ logger = logging.getLogger("akane.response_builder")
 
 PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
 
+
+def _safe_projection_failure_code(value: Any, *, fallback: str = "projection_detail_unavailable") -> str:
+    """Keep diagnostics useful without copying paths or provider data into logs."""
+
+    text = str(value or "").strip().lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{0,159}", text):
+        return text
+    return str(fallback or "projection_detail_unavailable")[:160]
+
 # 文档 §9 的稳定回读说明: 属于 compact profile 的稳定工具规则, 放在稳定前缀;
 # 只要可见历史仍含 compact turn 就不能撤掉, 以免旧回执变成不可打开的死引用。
 COMPACT_READBACK_STABLE_HINT = (
@@ -89,6 +98,7 @@ def prepare_context(
     prompt_exclude_source_ids: list[str] | None = None,
     domain_profile_id: str = "",
     prompt_scope: str = "",
+    current_user_source_id: str = "",
 ) -> dict[str, Any]:
     normalized_prompt_scope = str(prompt_scope or "").strip().lower()
     client_context = client_context or engine._resolve_client_protocol_context({})
@@ -158,7 +168,7 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
-    current_source_id = str(current_record.get("source_id") or "").strip()
+    current_source_id = str(current_user_source_id or current_record.get("source_id") or "").strip()
     provider_projection = _build_memcore_provider_history(
         engine,
         profile_user_id=profile_user_id,
@@ -174,8 +184,54 @@ def prepare_context(
         str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
     )
     projection_authoritative = not projection_migration_window
+    projection_recovery_failure: dict[str, Any] | None = None
     if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
-        return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+        logger.warning(
+            "memcore projection unavailable status=%s reason=%s detail=%s current_source=%s",
+            str(provider_projection.get("status") or "unavailable")[:40],
+            str(provider_projection.get("reason") or "projection_unavailable")[:120],
+            _safe_projection_failure_code(provider_projection.get("detail"), fallback="none"),
+            "present" if current_source_id else "missing",
+        )
+        # A completed tool action/result pair is already an exact, bounded
+        # provider continuation.  If the broader MemCore history projection is
+        # temporarily unavailable, preserve the current turn instead of
+        # discarding the successful tool work.  This recovery is deliberately
+        # narrow: it carries no legacy/guessed history, only the frozen current
+        # stimulus and the explicit post-user tool turns supplied by the host.
+        if current_source_id and any(isinstance(turn, dict) for turn in list(post_user_turns or [])):
+            projection_recovery_failure = dict(
+                _projection_failure_context(
+                    provider_projection,
+                    prompt_scope=normalized_prompt_scope,
+                )["memcore_projection_failure"]
+            )
+            provider_projection = {
+                "ok": True,
+                "status": "current_turn_recovery",
+                "reason": "",
+                "provider_profile": "",
+                "history_turns": [],
+                "current_turn_id": "",
+                "current_turn_messages": [],
+                "source_ids": [],
+                "source_count": 0,
+                "message_count": 0,
+                "stable_prefix_hash": "",
+                "projection_version": 0,
+                "compaction_generation": 0,
+                "projection_generation": 0,
+                "current_source_visible": True,
+            }
+            projection_read_active = True
+            projection_authoritative = True
+            logger.warning(
+                "memcore current-turn continuation recovery activated reason=%s detail=%s",
+                str(projection_recovery_failure.get("reason") or "projection_unavailable")[:120],
+                _safe_projection_failure_code(projection_recovery_failure.get("detail"), fallback="none"),
+            )
+        else:
+            return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
     if projection_read_active and projection_authoritative:
         projected_current_message = _projected_current_message_text(
             provider_projection,
@@ -703,6 +759,8 @@ def prepare_context(
             for key, value in provider_projection.items()
             if key not in {"history_turns"}
         }
+        if projection_recovery_failure is not None:
+            generation_context["memcore_projection_recovery"] = dict(projection_recovery_failure)
         generation_context["prompt_context_lifecycle"] = {
             "event_timeline_authoritative": event_timeline_authoritative,
             "skipped_event_backed": list(materialized_contexts.skipped_event_backed),
@@ -995,7 +1053,14 @@ def _build_memcore_provider_history(
             migration_reason = str((projection or {}).get("reason") or "")
             if migration_reason in PROJECTION_READ_MIGRATION_REASONS:
                 return {"ok": False, "status": "migration_window", "reason": migration_reason}
-            return {"ok": False, "status": "unavailable", "reason": "projection_build_failed"}
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "projection_build_failed",
+                "detail": _safe_projection_failure_code(
+                    (projection or {}).get("reason") or (projection or {}).get("status"),
+                ),
+            }
         current_sid = str(current_source_id).strip()
         current_source_visible = False
         current_turn_id = ""
@@ -1072,10 +1137,13 @@ def _build_memcore_provider_history(
 def _projection_failure_context(projection: dict[str, Any], *, prompt_scope: str) -> dict[str, Any]:
     status = str((projection or {}).get("status") or "unavailable").strip()[:40] or "unavailable"
     reason = str((projection or {}).get("reason") or "projection_unavailable").strip()[:120]
+    raw_detail = str((projection or {}).get("detail") or "").strip()
+    detail = _safe_projection_failure_code(raw_detail) if raw_detail else ""
     return {
         "memcore_projection_failure": {
             "status": status,
             "reason": reason or "projection_unavailable",
+            **({"detail": detail} if detail else {}),
         },
         "prompt_scope": str(prompt_scope or "").strip(),
     }

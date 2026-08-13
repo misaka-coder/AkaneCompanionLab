@@ -3768,7 +3768,13 @@ class AkaneMemoryEngine:
         # tool continuation rebuilds prompt context, but it must keep the exact
         # current user message that crossed the first provider boundary while
         # appending only new action/result projections after it.
-        request_projection_state: dict[str, Any] = {}
+        request_projection_state: dict[str, Any] = {
+            # The current stimulus is a turn invariant.  Tool prefaces and
+            # observations are appended to ``recent_raw_for_turn`` later, so
+            # rediscovering the stimulus from the mutable history tail can
+            # lose its source id and abort an otherwise successful tool turn.
+            "current_user_source_id": str(user_record.get("source_id") or "").strip(),
+        }
         final_output = yield from self._generate_round(
             mode=mode,
             session_id=session_id,
@@ -4666,6 +4672,9 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
+            current_user_source_id=str(
+                (request_projection_state or {}).get("current_user_source_id") or ""
+            ).strip(),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
         if isinstance(projection_failure, dict):
@@ -4743,6 +4752,10 @@ class AkaneMemoryEngine:
             )
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
+            self._attach_nonfatal_memcore_failure(
+                normalized,
+                generation_context.get("memcore_projection_recovery"),
+            )
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 if provider_output_raw:
                     normalized["_provider_output_raw"] = provider_output_raw
@@ -4777,6 +4790,10 @@ class AkaneMemoryEngine:
             )
             if repaired is not None:
                 repaired_normalized, repaired_raw = repaired
+                self._attach_nonfatal_memcore_failure(
+                    repaired_normalized,
+                    generation_context.get("memcore_projection_recovery"),
+                )
                 if repaired_raw:
                     repaired_normalized["_provider_output_raw"] = repaired_raw
                 return repaired_normalized
@@ -5129,6 +5146,9 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
+            current_user_source_id=str(
+                (request_projection_state or {}).get("current_user_source_id") or ""
+            ).strip(),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
         if isinstance(projection_failure, dict):
@@ -5460,6 +5480,10 @@ class AkaneMemoryEngine:
         else:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
+        self._attach_nonfatal_memcore_failure(
+            normalized,
+            generation_context.get("memcore_projection_recovery"),
+        )
         return normalized
 
     def _prepare_final_response_context(
@@ -5488,6 +5512,7 @@ class AkaneMemoryEngine:
         prompt_exclude_source_ids: list[str] | None = None,
         domain_profile_id: str = "",
         prompt_scope: str = "",
+        current_user_source_id: str = "",
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
 
@@ -5516,10 +5541,17 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
+            current_user_source_id=current_user_source_id,
         )
 
     @staticmethod
     def _memcore_projection_failure_output(failure: dict[str, Any]) -> dict[str, Any]:
+        raw_detail = str(failure.get("detail") or "").strip()
+        detail = (
+            AkaneMemoryEngine._safe_memcore_failure_code(raw_detail, fallback="projection_detail_unavailable")
+            if raw_detail
+            else ""
+        )
         return {
             "emotion": "concerned",
             "speech": "这次上下文没有完整衔接成功，我先不在证据有缺口的情况下乱答。请稍后再试。",
@@ -5535,6 +5567,7 @@ class AkaneMemoryEngine:
                     failure.get("reason"),
                     fallback="projection_unavailable",
                 ),
+                **({"detail": detail} if detail else {}),
             },
         }
 

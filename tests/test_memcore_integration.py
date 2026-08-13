@@ -6489,6 +6489,163 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["memcore_projection_failure"]["reason"], "projection_build_failed")
         self.assertNotIn("LEGACY", repr(result))
 
+    def test_tool_continuation_uses_frozen_current_source_instead_of_mutable_raw_tail(self) -> None:
+        current_source_id = "current-user-source"
+        projection_messages = [
+            {
+                "turn_id": "turn-current",
+                "payload": {"role": "user", "content": "查一首歌"},
+                "source_ids": [current_source_id],
+                "projection_index": 0,
+                "projection_status": "request_frozen",
+                "projection_version": 2,
+            },
+            {
+                "turn_id": "turn-current",
+                "payload": {
+                    "role": "assistant",
+                    "content": "我去查。",
+                    "tool_calls": [
+                        {
+                            "id": "call-search",
+                            "type": "function",
+                            "function": {"name": "exec_run", "arguments": '{"command":"search"}'},
+                        }
+                    ],
+                },
+                "source_ids": ["preface", "tool-use"],
+                "projection_index": 1,
+                "projection_status": "canonical_fallback",
+                "projection_version": 2,
+            },
+            {
+                "turn_id": "turn-current",
+                "payload": {"role": "tool", "tool_call_id": "call-search", "content": "搜索成功"},
+                "source_ids": ["tool-result"],
+                "projection_index": 2,
+                "projection_status": "canonical_fallback",
+                "projection_version": 2,
+            },
+        ]
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "ok": True,
+                "status": "ok",
+                "raw": [
+                    {"source_id": current_source_id, "role": "user", "content": "查一首歌"},
+                    {"source_id": "preface", "role": "assistant", "content": "我去查。"},
+                ],
+                "raw_text": "",
+                "episodic_text": "",
+                "semantic_text": "",
+            },
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": projection_messages,
+                "stable_prefix_hash": "d" * 64,
+                "projection_version": 2,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        # This is the production failure shape: after recording the assistant
+        # preface, the old tail-based splitter synthesized a user record with
+        # no source_id even though the real current stimulus was still present.
+        engine._split_history_records = lambda **kwargs: (
+            list(kwargs.get("recent_raw") or []),
+            {"role": "user", "content": kwargs.get("user_message") or "", "timestamp": 100},
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="查一首歌",
+                recent_raw=[
+                    {"source_id": current_source_id, "role": "user", "content": "查一首歌"},
+                    {"source_id": "preface", "role": "assistant", "content": "我去查。"},
+                ],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+                current_user_source_id=current_source_id,
+                post_user_turns=[
+                    dict(projection_messages[1]["payload"]),
+                    dict(projection_messages[2]["payload"]),
+                ],
+            )
+
+        self.assertNotIn("memcore_projection_failure", result)
+        self.assertEqual(result["memcore_projection_read"]["current_turn_id"], "turn-current")
+        self.assertEqual(result["post_user_turns"][1]["content"], "搜索成功")
+        self.assertEqual(result["user_prompt"], "查一首歌")
+
+    def test_tool_continuation_preserves_current_turn_when_projection_read_fails(self) -> None:
+        memcore_manager = _PromptContextMemcoreManager(
+            {
+                "ok": True,
+                "status": "ok",
+                "raw": [
+                    {"source_id": "current", "role": "user", "content": "查一首歌"},
+                    {"source_id": "preface", "role": "assistant", "content": "我去查。"},
+                ],
+                "raw_text": "LEGACY RAW MUST STAY OUT",
+                "episodic_text": "LEGACY EPISODIC MUST STAY OUT",
+                "semantic_text": "LEGACY SEMANTIC MUST STAY OUT",
+            },
+            projection_payload={
+                "ok": False,
+                "status": "failed",
+                "reason": "open_turn_projection_temporarily_unavailable",
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=memcore_manager)
+        post_user_turns = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-search",
+                        "type": "function",
+                        "function": {"name": "exec_run", "arguments": '{"command":"search"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-search", "content": "搜索成功"},
+        ]
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="查一首歌",
+                recent_raw=[
+                    {"source_id": "current", "role": "user", "content": "查一首歌"},
+                    {"source_id": "preface", "role": "assistant", "content": "我去查。"},
+                ],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+                current_user_source_id="current",
+                post_user_turns=post_user_turns,
+            )
+
+        self.assertNotIn("memcore_projection_failure", result)
+        self.assertEqual(result["memcore_projection_read"]["status"], "current_turn_recovery")
+        self.assertEqual(
+            result["memcore_projection_recovery"]["detail"],
+            "open_turn_projection_temporarily_unavailable",
+        )
+        self.assertEqual(result["post_user_turns"], post_user_turns)
+        self.assertNotIn("LEGACY", repr(result))
+
     def test_native_tool_projection_has_no_prompt_envelope_store_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
