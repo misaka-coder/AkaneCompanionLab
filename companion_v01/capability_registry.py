@@ -829,13 +829,15 @@ INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
     display_name="Inspect attachment",
     description=(
         "List the current attachment workspace, or open and inspect a single image or file. "
+        "In QQ groups, 'latest' is restricted to attachments explicitly bound to the current turn; "
+        "use 'all' or an exact handle for historical materials. "
         "To compare multiple materials, prefer sync_attachment_workspace."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "target": {"type": "string", "maxLength": 120, "description": "'all' to list, or attachment id / title / filename / 'latest'. Defaults to latest."},
+            "target": {"type": "string", "maxLength": 120, "description": "'all' to list, or attachment id / title / filename / 'latest'. In QQ groups, latest only selects a current-turn bound attachment. Defaults to latest."},
             "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
         },
         "required": [],

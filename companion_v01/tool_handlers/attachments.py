@@ -32,6 +32,8 @@ class InspectAttachmentToolHandler(BaseToolHandler):
         return (
             "- inspect_attachment：当你需要列出当前材料，或展开查看其中一张图片/一个文件时使用。"
             '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
+            "群聊中的 latest 只指本轮 QQ 消息明确绑定的材料；本轮没有材料时会要求先列出工作台或使用精确 handle，"
+            "不会把其他群友或更早的材料冒充成本轮图片。"
             "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
             "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
         )
@@ -50,13 +52,45 @@ class InspectAttachmentToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.attachment_service.inspect_attachment(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            target=str(call.get("target") or ""),
-            kind=str(call.get("kind") or "any"),
-            timestamp=context.now_ts,
-        )
+        requested_target = str(call.get("target") or "").strip()
+        effective_target = requested_target
+        if self._is_latest_alias(requested_target) and self._is_qq_group_turn(context):
+            bound_ids = self._current_qq_attachment_ids(context)
+            if not bound_ids:
+                return ToolExecutionResult(
+                    tool_type=self.tool_type,
+                    followup_context=(
+                        "本轮 QQ 群消息没有绑定任何附件，因此不能把共享工作台中的历史 latest 当成本轮图片或文件。"
+                        "如果用户指的是历史材料，请先用 inspect_attachment(target=\"all\") 查看发送者、时间和 handle，"
+                        "再用精确 handle 打开；不要猜测。"
+                    ),
+                )
+            result = {}
+            for bound_id in reversed(bound_ids):
+                candidate = self.attachment_service.inspect_attachment(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    target=bound_id,
+                    kind=str(call.get("kind") or "any"),
+                    timestamp=context.now_ts,
+                )
+                if bool(candidate.get("ok")):
+                    result = candidate
+                    break
+            if not result:
+                result = {
+                    "ok": False,
+                    "status": "current_attachment_kind_unavailable",
+                    "followup_context": "本轮绑定的材料中没有符合 kind 条件的项目；不要改用历史 latest 猜测。",
+                }
+        else:
+            result = self.attachment_service.inspect_attachment(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                target=effective_target,
+                kind=str(call.get("kind") or "any"),
+                timestamp=context.now_ts,
+            )
         item = result.get("item") if isinstance(result, dict) else None
         events = []
         if isinstance(item, dict):
@@ -71,6 +105,30 @@ class InspectAttachmentToolHandler(BaseToolHandler):
             operation_result=result,
             success_events=events,
         )
+
+    @staticmethod
+    def _is_latest_alias(value: Any) -> bool:
+        return str(value or "").strip().lower() in {"", "latest", "current", "最近", "当前", "最后一张", "最后一个"}
+
+    @staticmethod
+    def _is_qq_group_turn(context: ToolExecutionContext) -> bool:
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        delivery_context = (
+            request_context.get("qq_delivery_context")
+            if isinstance(request_context.get("qq_delivery_context"), dict)
+            else {}
+        )
+        return str(context.client_mode or request_context.get("client_mode") or "").strip() == "qq_text" and bool(
+            delivery_context.get("is_group")
+        )
+
+    @staticmethod
+    def _current_qq_attachment_ids(context: ToolExecutionContext) -> list[str]:
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        values = request_context.get("qq_current_attachment_ids")
+        if not isinstance(values, list):
+            return []
+        return [str(value or "").strip() for value in values if str(value or "").strip()]
 
     def _normalize_kind(self, value: Any) -> str:
         kind = str(value or "any").strip().lower()

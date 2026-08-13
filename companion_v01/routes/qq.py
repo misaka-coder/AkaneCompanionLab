@@ -1929,6 +1929,8 @@ def build_qq_router(
                     event_timestamp=int(event.get("time") or time.time()),
                 ),
             )
+            if attachment_ids:
+                turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             send_result = dict(
                 turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []}
@@ -2836,6 +2838,7 @@ def build_qq_router(
                     )
 
             attachments_registered = []
+            attachment_ids: list[str] = []
             if context.attachments:
                 attachments_registered = await asyncio.to_thread(
                     engine.ingest_qq_attachments,
@@ -3009,6 +3012,11 @@ def build_qq_router(
             )
             if _qq_native_user_images:
                 turn_payload["native_user_images"] = _qq_native_user_images
+            if attachment_ids:
+                # Bind relative selectors such as inspect_attachment(latest) to
+                # evidence from this QQ event, rather than the shared group's
+                # historical workspace.
+                turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])

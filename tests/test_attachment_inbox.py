@@ -783,6 +783,60 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("handle=img_001", listed.followup_context)
             self.assertEqual(listed.stream_events, [])
 
+            unrelated_latest = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="other-user.jpg",
+                timestamp=119,
+            )
+            service.mark_ready(
+                profile_user_id="user",
+                session_id="session",
+                attachment_id=unrelated_latest["attachment_id"],
+                summary_title="其他群友旧图",
+                short_hint="这不是本轮绑定的图片。",
+                timestamp=120,
+            )
+
+            unbound_group_latest = inspect_handler.execute(
+                call=inspect_handler.normalize_call({"type": "inspect_attachment", "target": "latest"}) or {},
+                context=ToolExecutionContext(
+                    profile_user_id="user",
+                    session_id="session",
+                    now_ts=121,
+                    visual_payload={},
+                    client_mode="qq_text",
+                    request_context={
+                        "client_mode": "qq_text",
+                        "qq_delivery_context": {"is_group": True},
+                    },
+                ),
+            )
+            self.assertIn("没有绑定任何附件", unbound_group_latest.followup_context)
+            self.assertNotIn("盘子里有面包和热汤", unbound_group_latest.followup_context)
+            self.assertEqual(unbound_group_latest.stream_events, [])
+
+            bound_group_latest = inspect_handler.execute(
+                call=inspect_handler.normalize_call({"type": "inspect_attachment", "target": "latest"}) or {},
+                context=ToolExecutionContext(
+                    profile_user_id="user",
+                    session_id="session",
+                    now_ts=122,
+                    visual_payload={},
+                    client_mode="qq_text",
+                    request_context={
+                        "client_mode": "qq_text",
+                        "qq_delivery_context": {"is_group": True},
+                        "qq_current_attachment_ids": [pending["attachment_id"]],
+                    },
+                ),
+            )
+            self.assertIn("盘子里有面包和热汤", bound_group_latest.followup_context)
+            self.assertNotIn("这不是本轮绑定的图片", bound_group_latest.followup_context)
+            self.assertEqual(bound_group_latest.stream_events[0]["type"], "attachment_inspected")
+
             clear_handler = ClearAttachmentFocusToolHandler(
                 attachment_service=service,
                 task_workspace_service=task_service,

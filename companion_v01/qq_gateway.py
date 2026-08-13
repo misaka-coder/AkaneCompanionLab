@@ -868,10 +868,21 @@ class NapCatQQGateway:
             )
             if not trigger.should_respond:
                 suppress_passive_image = bool(has_group_image and not group_vision_enabled)
+                unbound_group_image = bool(has_group_image)
                 return QQMessageContext(
                     should_respond=False,
-                    reason="group_vision_disabled" if suppress_passive_image else trigger.reason,
-                    should_record=not suppress_passive_image,
+                    reason=(
+                        "group_vision_disabled"
+                        if suppress_passive_image
+                        else ("group_passive_image_unbound" if unbound_group_image else trigger.reason)
+                    ),
+                    # An unaddressed image event has no attachment handle or
+                    # pixels in MemCore. Recording "sent an image" would invite a
+                    # later turn to mistake some older workspace image for it.
+                    # A caption attached to unavailable pixels is incomplete
+                    # evidence too, so the whole unaddressed image event stays
+                    # outside passive memory.
+                    should_record=not (suppress_passive_image or unbound_group_image),
                     is_group=True,
                     target_id=group_id,
                     user_id=user_id,
