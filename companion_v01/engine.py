@@ -178,6 +178,7 @@ _MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
 )
 FINAL_RESPONSE_TEMPERATURE = 0.8
 FINAL_RESPONSE_JSON_REPAIR_TEMPERATURE = 0.0
+FINAL_RESPONSE_JSON_REPAIR_MAX_OUTPUT_TOKENS = 512
 
 
 class _ContextBoundGenerator:
@@ -4756,6 +4757,16 @@ class AkaneMemoryEngine:
                 normalized,
                 generation_context.get("memcore_projection_recovery"),
             )
+            if self._is_deliverable_parse_recovery(
+                normalized,
+                parse_fallback=parse_fallback,
+                provider_output_raw=provider_output_raw,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+            ):
+                self._record_final_response_parse_recovery_metric()
+                if provider_output_raw:
+                    normalized["_provider_output_raw"] = provider_output_raw
+                return normalized
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 if provider_output_raw:
                     normalized["_provider_output_raw"] = provider_output_raw
@@ -4797,6 +4808,8 @@ class AkaneMemoryEngine:
                 if repaired_raw:
                     repaired_normalized["_provider_output_raw"] = repaired_raw
                 return repaired_normalized
+            if parse_fallback:
+                break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
         normalized["_transient_final_failure"] = True
@@ -4906,6 +4919,7 @@ class AkaneMemoryEngine:
                 prompt_audit_sections=None,
                 chat_model_override=chat_model_override,
                 execution_target=execution_target,
+                max_output_tokens=FINAL_RESPONSE_JSON_REPAIR_MAX_OUTPUT_TOKENS,
             )
         except Exception as exc:
             logger.warning(
@@ -4972,6 +4986,40 @@ class AkaneMemoryEngine:
                 if success
                 else "chat_final_response_json_repair_failures"
             )
+
+    def _record_final_response_parse_recovery_metric(self) -> None:
+        record = getattr(self.llm, "record_metric", None)
+        if callable(record):
+            record("chat_final_response_parse_recoveries")
+
+    def _is_deliverable_parse_recovery(
+        self,
+        output: Any,
+        *,
+        parse_fallback: bool,
+        provider_output_raw: str,
+        allow_tool_call: bool,
+    ) -> bool:
+        """Accept only complete model-authored speech from malformed JSON.
+
+        The streaming parser exposes ``speech`` only after its JSON string value
+        is closed.  We still require proof that no tool call remains pending:
+        either tools were disabled for this generation, or the malformed wire
+        text explicitly contains ``tool_call: null``.  This prevents a tool
+        preface from being mistaken for a final answer while avoiding an
+        expensive full-context retry for a harmless trailing-brace error.
+        """
+
+        if not parse_fallback or not isinstance(output, dict):
+            return False
+        if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
+            return False
+        if self._is_retryable_final_output(output, parse_fallback=False):
+            return False
+        if not allow_tool_call:
+            return True
+        raw = str(provider_output_raw or "")
+        return bool(re.search(r'["\']tool_call["\']\s*:\s*null\b', raw, flags=re.IGNORECASE))
 
     @staticmethod
     def _log_final_response_retry(
@@ -5290,6 +5338,15 @@ class AkaneMemoryEngine:
             if native_preface_text:
                 normalized["_native_preface_text"] = native_preface_text
             buffered_events = current_events
+            if self._is_deliverable_parse_recovery(
+                normalized,
+                parse_fallback=parse_fallback,
+                provider_output_raw=provider_output_raw,
+                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+            ):
+                self._record_final_response_parse_recovery_metric()
+                final_parse_fallback = False
+                break
             if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
                 break
             retry_feedback = self._final_response_retry_feedback(
@@ -5331,6 +5388,8 @@ class AkaneMemoryEngine:
             # partial normalized result and mark it as transient below instead
             # of starting another user-visible generation attempt.
             if streamed_speech_to_user:
+                break
+            if parse_fallback:
                 break
             if stream_error:
                 if hasattr(self.llm, "record_metric"):

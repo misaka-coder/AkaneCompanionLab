@@ -34,13 +34,19 @@ from companion_v01.tool_orchestration_engine import build_native_tool_decision_p
 from companion_v01.tool_runtime import ToolExecutionContext
 
 
-def _context(*, profile_user_id: str = "alice", session_id: str = "s1") -> ToolExecutionContext:
+def _context(
+    *,
+    profile_user_id: str = "alice",
+    session_id: str = "s1",
+    actor_stable_id: str = "",
+) -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id=profile_user_id,
         session_id=session_id,
         now_ts=0,
         visual_payload={},
         client_mode="qq",
+        request_context={"actor_stable_id": actor_stable_id} if actor_stable_id else {},
     )
 
 
@@ -201,6 +207,8 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("发现并直接使用宿主绝对路径", instruction)
         self.assertIn("不要因此假装无法查看或操作宿主文件", instruction)
         self.assertIn("使用 input_resources/output_globs 时", instruction)
+        self.assertIn("input_resources/output_globs 与 cwd 互斥", instruction)
+        self.assertIn("同时传入会被拒绝", instruction)
 
     def test_exec_status_and_cancel_are_owner_scoped_without_ask(self) -> None:
         status_handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)
@@ -216,6 +224,35 @@ class ExecHandlerPermissionTests(unittest.TestCase):
             context=_context(),
         )
         self.assertEqual(cancel_result.stream_events[0]["status"], "unknown")
+
+    def test_group_exec_run_is_scoped_to_the_member_who_started_it(self) -> None:
+        from companion_v01.execution_run import ExecutionRunOwner
+
+        group_session = "qq_group_shared_872732158"
+        alice_owner = ExecutionRunOwner(
+            profile_user_id="alice",
+            session_id=f"{group_session}\x1fqq:10001",
+            provider_id="local",
+        )
+        start = self.provider.run(
+            owner=alice_owner,
+            command=_python_command("print('owned')"),
+            initial_wait_seconds=1,
+        )
+        self.assertEqual(start.status, "completed")
+        status_handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)
+
+        other_member = status_handler.execute(
+            call={"type": "exec_status", "run_id": start.run_id},
+            context=_context(session_id=group_session, actor_stable_id="qq:10002"),
+        )
+        same_member = status_handler.execute(
+            call={"type": "exec_status", "run_id": start.run_id},
+            context=_context(session_id=group_session, actor_stable_id="qq:10001"),
+        )
+
+        self.assertEqual(other_member.stream_events[0]["status"], "unknown")
+        self.assertEqual(same_member.stream_events[0]["status"], "completed")
 
     def test_exec_status_normalizes_bounded_wait(self) -> None:
         handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)

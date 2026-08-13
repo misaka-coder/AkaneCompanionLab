@@ -2193,6 +2193,35 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("max_tokens", responses_payload)
         self.assertEqual(responses_payload["max_output_tokens"], 4096)
 
+    def test_request_scoped_output_budget_overrides_chat_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_chat_max_output_tokens=4096,
+            prompt_cache_hints_enabled=False,
+        )
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.example.com/v1",
+            ),
+            model="repair-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="repair JSON",
+            user_prompt="malformed",
+            temperature=0.0,
+            json_mode=True,
+            max_output_tokens=512,
+        )
+
+        self.assertEqual(payload["max_tokens"], 512)
+        self.assertEqual(runtime._responses_payload_from_chat(payload)["max_output_tokens"], 512)
+
     def test_prompt_limit_counts_native_image_as_visual_budget_not_base64_text(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime.settings = BotSettingsView(

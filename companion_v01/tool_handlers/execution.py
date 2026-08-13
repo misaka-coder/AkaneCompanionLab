@@ -83,9 +83,19 @@ class _ExecToolHandlerBase(BaseToolHandler):
 
     def _owner(self, context: ToolExecutionContext) -> ExecutionRunOwner:
         provider = self.execution_provider
+        session_id = str(context.session_id or "")
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        actor_id = str(request_context.get("actor_stable_id") or "").strip()
+        if session_id.startswith("qq_group_shared_") and actor_id.startswith("qq:"):
+            # A shared QQ group is one conversation, but a long-running command
+            # still belongs to the member who started it.  Keep that host-only
+            # ownership detail out of prompts and public run receipts while
+            # preventing another member's ordinary message from resuming or
+            # cancelling the previous member's process.
+            session_id = f"{session_id}\x1f{actor_id}"
         return ExecutionRunOwner(
             profile_user_id=str(context.profile_user_id or ""),
-            session_id=str(context.session_id or ""),
+            session_id=session_id,
             provider_id=str(getattr(provider, "provider_id", "local") or "local"),
         )
 
@@ -308,7 +318,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
             "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
-            "输入会复制进本次运行的独立工作区；"
+            "输入会复制进本次运行的独立工作区；input_resources/output_globs 与 cwd 互斥，"
+            "只要使用任一资源字段就必须省略 cwd，同时传入会被拒绝；"
             "使用 input_resources/output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管工作目录，"
             "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
             "需要命令产出文件时，用 output_globs 声明相对当前目录的输出路径，并直接把产物写在该目录内，"

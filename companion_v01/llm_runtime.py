@@ -959,6 +959,7 @@ class LLMRuntime:
         chat_model_override: str = "",
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
         execution_target: ModelExecutionTarget | None = None,
+        max_output_tokens: int = 0,
     ) -> ChatJSONResult:
         self._record_metric("chat_json_calls")
         return self._call_json_result(
@@ -980,6 +981,7 @@ class LLMRuntime:
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
+            max_output_tokens=max_output_tokens,
         )
 
     def chat_supports_native_tools(
@@ -1141,6 +1143,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
+        max_output_tokens: int = 0,
     ) -> ChatJSONResult:
         native_requested = bool(self._normalize_native_tools(native_tools))
         content = ""
@@ -1160,6 +1163,7 @@ class LLMRuntime:
                 ephemeral_turns=ephemeral_turns,
                 post_user_turns=post_user_turns,
                 prompt_audit_sections=prompt_audit_sections,
+                max_output_tokens=max_output_tokens,
             )
             self._observe_completion_request(
                 bundle=bundle,
@@ -1730,6 +1734,7 @@ class LLMRuntime:
         ephemeral_turns: list[dict[str, Any]] | None = None,
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
+        max_output_tokens: int = 0,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -1761,6 +1766,8 @@ class LLMRuntime:
             and self._settings_view().llm_chat_max_output_tokens > 0
         ):
             payload["max_tokens"] = int(self._settings_view().llm_chat_max_output_tokens)
+        if int(max_output_tokens or 0) > 0:
+            payload["max_tokens"] = int(max_output_tokens)
         # Current OpenAI reasoning models reject sampling controls when explicit
         # reasoning effort is selected. Keep temperature for all legacy paths.
         if not (
