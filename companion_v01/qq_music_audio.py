@@ -1,89 +1,175 @@
-"""Resolve provider-owned public audio URLs for QQ music delivery fallbacks.
-
-This module never reads cookies or account credentials.  It only asks QQ
-Music's public web endpoint for a short-lived URL available to anonymous web
-clients.  Empty results (VIP, copyright, region, or provider policy) are a
-normal structured unavailable outcome, not an invitation to bypass access.
-"""
+"""Validate model-selected public audio URLs for QQ voice delivery."""
 
 from __future__ import annotations
 
-import json
-import re
+import ipaddress
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
 
-QQ_MUSIC_SONGMID_RE = re.compile(r"^(?=.*[A-Za-z])[0-9A-Za-z_-]{1,64}$")
-QQ_MUSIC_VKEY_ENDPOINT = "https://u.y.qq.com/cgi-bin/musicu.fcg"
-MAX_RESPONSE_BYTES = 1024 * 1024
+PUBLIC_AUDIO_SAMPLE_BYTES = 512
+PUBLIC_AUDIO_URL_MAX_CHARS = 2048
+PROVIDER_AUDIO_HOST_SUFFIXES = (
+    "music.163.com",
+    "music.126.net",
+    "qqmusic.qq.com",
+    "tc.qq.com",
+)
 
 
-def resolve_qq_music_public_audio_url(
-    songmid: str,
+class _UnsafeAudioRedirectError(Exception):
+    pass
+
+
+def _hostname_matches_suffix(hostname: str, suffix: str) -> bool:
+    clean_host = str(hostname or "").strip().rstrip(".").lower()
+    clean_suffix = str(suffix or "").strip().strip(".").lower()
+    return bool(clean_host and clean_suffix) and (
+        clean_host == clean_suffix or clean_host.endswith("." + clean_suffix)
+    )
+
+
+def _audio_sample_looks_binary(sample: bytes) -> bool:
+    value = bytes(sample or b"")
+    if not value:
+        return False
+    stripped = value.lstrip().lower()
+    if stripped.startswith((b"<!doctype", b"<html", b"<?xml")):
+        return False
+    return value.startswith((b"ID3", b"OggS", b"fLaC", b"RIFF")) or (
+        len(value) >= 2 and value[0] == 0xFF and (value[1] & 0xE0) == 0xE0
+    ) or (len(value) >= 12 and value[4:8] == b"ftyp")
+
+
+def _public_hostname_status(
+    hostname: str,
+    *,
+    resolver: Callable[..., Any] = socket.getaddrinfo,
+) -> str:
+    clean_host = str(hostname or "").strip().rstrip(".").lower()
+    if not clean_host:
+        return "missing_hostname"
+    try:
+        literal = ipaddress.ip_address(clean_host)
+        addresses = [literal]
+    except ValueError:
+        try:
+            rows = resolver(clean_host, None, type=socket.SOCK_STREAM)
+        except (OSError, socket.gaierror):
+            return "hostname_unreachable"
+        addresses = []
+        for row in rows or []:
+            try:
+                addresses.append(ipaddress.ip_address(str(row[4][0] or "")))
+            except (IndexError, TypeError, ValueError):
+                continue
+    if not addresses:
+        return "hostname_unreachable"
+    if any(
+        not address.is_global
+        or address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        for address in addresses
+    ):
+        return "private_or_reserved_host"
+    return "public"
+
+
+def _audio_hostname_status(hostname: str, *, resolver: Callable[..., Any]) -> str:
+    """Honor known provider hosts behind local TUN fake-IP DNS.
+
+    Dove/Clash-style enhanced DNS commonly maps public provider hosts into
+    198.18.0.0/15.  We permit that reserved answer only for the small provider
+    host allowlist; arbitrary model-provided hosts remain subject to strict
+    public-IP validation.
+    """
+    status = _public_hostname_status(hostname, resolver=resolver)
+    clean_host = str(hostname or "").strip().rstrip(".").lower()
+    if status == "private_or_reserved_host" and any(
+        _hostname_matches_suffix(clean_host, suffix)
+        for suffix in PROVIDER_AUDIO_HOST_SUFFIXES
+    ):
+        return "public"
+    return status
+
+
+class _PublicAudioRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, *, resolver: Callable[..., Any]) -> None:
+        super().__init__()
+        self._resolver = resolver
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        parsed = urllib.parse.urlparse(str(newurl or "").strip())
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or _audio_hostname_status(str(parsed.hostname), resolver=self._resolver) != "public"
+        ):
+            raise _UnsafeAudioRedirectError("unsafe_audio_redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def resolve_public_audio_url(
+    url: str,
     *,
     timeout_seconds: float = 8.0,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    opener: Callable[..., Any] | None = None,
+    resolver: Callable[..., Any] = socket.getaddrinfo,
 ) -> dict[str, Any]:
-    clean_mid = str(songmid or "").strip()
-    if not QQ_MUSIC_SONGMID_RE.fullmatch(clean_mid):
-        return {"ok": False, "status": "invalid_songmid"}
+    """Verify a model-selected public audio URL without downloading the track.
 
-    payload = {
-        "req_1": {
-            "module": "vkey.GetVkeyServer",
-            "method": "CgiGetVkey",
-            "param": {
-                "guid": "10000",
-                "songmid": [clean_mid],
-                "songtype": [0],
-                "uin": "0",
-                "loginflag": 1,
-                "platform": "20",
-            },
-        },
-        "comm": {"uin": 0, "format": "json", "ct": 24, "cv": 0},
-    }
+    This is a transport preflight, not a media downloader.  It rejects local or
+    credential-bearing URLs, checks both the original and redirected host, and
+    reads only a small ranged sample before handing the URL to OneBot.
+    """
+
+    clean_url = str(url or "").strip()
+    if not clean_url or len(clean_url) > PUBLIC_AUDIO_URL_MAX_CHARS:
+        return {"ok": False, "status": "invalid_audio_url"}
+    parsed = urllib.parse.urlparse(clean_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return {"ok": False, "status": "invalid_audio_url"}
+    host_status = _audio_hostname_status(str(parsed.hostname), resolver=resolver)
+    if host_status != "public":
+        return {"ok": False, "status": host_status}
     request = urllib.request.Request(
-        QQ_MUSIC_VKEY_ENDPOINT,
-        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        clean_url,
         headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (compatible; AkaneMusicDelivery/1.0)",
-            "Referer": "https://y.qq.com/",
+            "User-Agent": "Mozilla/5.0 (compatible; AkaneAudioDelivery/1.0)",
+            "Range": f"bytes=0-{PUBLIC_AUDIO_SAMPLE_BYTES - 1}",
         },
     )
+    open_request = opener or urllib.request.build_opener(
+        _PublicAudioRedirectHandler(resolver=resolver)
+    ).open
     try:
-        with opener(request, timeout=max(1.0, min(float(timeout_seconds), 15.0))) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        with open_request(request, timeout=max(1.0, min(float(timeout_seconds), 15.0))) as response:
+            sample = response.read(PUBLIC_AUDIO_SAMPLE_BYTES)
+            media_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            final_url = str(response.geturl() or clean_url).strip()
+    except _UnsafeAudioRedirectError:
+        return {"ok": False, "status": "unsafe_audio_redirect"}
     except (urllib.error.URLError, TimeoutError, OSError):
-        return {"ok": False, "status": "provider_unreachable"}
-    if len(raw) > MAX_RESPONSE_BYTES:
-        return {"ok": False, "status": "response_too_large"}
-    try:
-        document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {"ok": False, "status": "invalid_provider_response"}
-
-    response_block = document.get("req_1") if isinstance(document, dict) else None
-    data = response_block.get("data") if isinstance(response_block, dict) else None
-    entries = data.get("midurlinfo") if isinstance(data, dict) else None
-    first = entries[0] if isinstance(entries, list) and entries and isinstance(entries[0], dict) else {}
-    purl = str(first.get("purl") or "").strip()
-    sip_values = data.get("sip") if isinstance(data, dict) else None
-    sip = str(sip_values[0] or "").strip() if isinstance(sip_values, list) and sip_values else ""
-    if not purl or not sip:
-        return {"ok": False, "status": "public_audio_unavailable"}
-
-    candidate = urllib.parse.urljoin(sip, purl)
-    parsed = urllib.parse.urlparse(candidate)
-    hostname = str(parsed.hostname or "").lower()
-    trusted_host = hostname.endswith(".qqmusic.qq.com") or hostname.endswith(".tc.qq.com")
-    if parsed.scheme not in {"http", "https"} or not trusted_host:
-        return {"ok": False, "status": "untrusted_provider_url"}
-    if parsed.scheme == "http":
-        parsed = parsed._replace(scheme="https")
-        candidate = urllib.parse.urlunparse(parsed)
-    return {"ok": True, "status": "ready", "url": candidate}
+        return {"ok": False, "status": "audio_url_unreachable"}
+    final = urllib.parse.urlparse(final_url)
+    if final.scheme not in {"http", "https"} or not final.hostname or final.username or final.password:
+        return {"ok": False, "status": "unsafe_audio_redirect"}
+    final_host_status = _audio_hostname_status(str(final.hostname), resolver=resolver)
+    if final_host_status != "public":
+        return {"ok": False, "status": "unsafe_audio_redirect"}
+    media_ok = media_type.startswith("audio/") or (
+        media_type in {"application/octet-stream", "binary/octet-stream"}
+        and _audio_sample_looks_binary(sample)
+    )
+    if not media_ok or not sample or sample.lstrip().lower().startswith((b"<!doctype", b"<html")):
+        return {"ok": False, "status": "not_public_audio"}
+    return {"ok": True, "status": "ready", "url": final_url, "media_type": media_type or "audio/unknown"}

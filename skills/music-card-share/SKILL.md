@@ -1,17 +1,15 @@
 ---
 name: music-card-share
-description: Use when exec_run is available and the user wants to find or deliver a NetEase or QQ Music track in a QQ conversation.
+description: Use when exec_run is available and the user wants to find a NetEase or QQ Music track, send a NetEase native card, or resolve a public audio URL for QQ voice.
 ---
 
-# Music Card Share
+# Music Share
 
-Find the exact platform track id for a song and deliver a QQ native music card.
-The card itself is sent with the `send_music_card` tool; this Skill only handles
-finding the correct id. The Skill and its search script never download, decrypt,
-or upload audio. NetEase first tries a native card and can fall back to its public
-song URL when QQ rejects the card. QQ Music's known-broken native-card path is not
-retried; its delivery adapter sends voice only when the anonymous public endpoint
-actually returns a playable URL. Transport results are reported separately.
+Find the exact platform track id for a song, then let the model choose the delivery surface.
+`send_music_card` attempts only a native card and returns the real QQ transport result.
+`send_audio` sends a verified public audio URL or an existing audio handle as QQ voice.
+Neither tool silently changes the requested surface. The script never downloads,
+decrypts, or uploads audio.
 
 ## When to load
 
@@ -46,27 +44,46 @@ small result directly; no cursor paging is needed.
   "原唱", "Live", "翻唱" and similar qualifiers.
 - If several versions are all reasonable, choose by the user's wording; if you
   really cannot decide, ask one short question instead of guessing.
-- After picking an id, call `send_music_card(platform=..., track_id=...)`. Do not
-  claim the card was transmitted; the tool result only confirms it entered the
-  QQ delivery queue.
+- If the user wants a card, select a NetEase result and call
+  `send_music_card(platform=netease_music, track_id=...)`. QQ Music native cards
+  are not exposed because the real transport does not support them.
+  Its result is the real card transport receipt. On failure, do not claim success
+  and do not assume voice was sent.
+- If the user asks for playable QQ voice, or explicitly agrees after a card failure,
+  resolve a public URL for the exact selected ID:
+
+```
+python music-card-share/scripts/search_music.py --platform netease --audio-track-id "1971144922"
+python music-card-share/scripts/search_music.py --platform qq --audio-track-id "002XWgfo0IKPOH"
+```
+
+  Only when the script returns `status=success` with `audio_url`, call
+  `send_audio(source=<audio_url>, name=<song title>)`.
+  `send_audio` preflights the URL and returns the real QQ voice transport result.
 
 ## Without Shell
 
 If `exec_run` is not available, only call `send_music_card` when a search result
-or user input already gave an exact official track id (or `web_search` returned a
+or user input already gave an exact NetEase track id (or `web_search` returned a
 page whose official song url embeds a precise id). Otherwise say honestly that the
 exact id cannot be located right now; never invent an id from the song title.
 
 ## Behavior rules
 
-- Do not download audio, bypass membership, or attempt to extract encrypted cache
-  formats. Whether the card or its delivery-layer voice fallback plays is still
-  decided by QQ, the platform's copyright, membership, and region.
-- QQ Music voice fallback is best effort: it only works when the anonymous public
+- Do not download audio merely to use these tools, bypass membership, or attempt to extract encrypted cache
+  formats. Whether a card or public URL is available is still decided by QQ,
+  the platform's copyright, membership, and region.
+- QQ Music public audio is best effort: it only works when the anonymous public
   web endpoint returns a playable URL. VIP, copyright-restricted, or regional
   tracks can legitimately remain unavailable; report that honestly and offer a
   different version or NetEase result.
+- Every public audio URL is preflighted before QQ receives it. A song page that
+  returns HTML, a removed track, or a copyright-restricted response is unavailable;
+  do not tell the user it is still transcoding or waiting for the song duration.
 - If the user did not name a platform, try NetEase first; if no suitable result
   exists, try QQ Music and say you switched platforms.
 - On `empty` or `error`, report the real outcome and offer to adjust the query;
   do not pretend a card was prepared.
+- A card failure and a voice failure are ordinary tool results. Read them, choose
+  the next step, and still produce a normal final reply; never turn either into a
+  system crash or ask the user to repeat the whole conversation.

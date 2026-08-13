@@ -43,7 +43,6 @@ from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECK
 from .deployment_security import QQChannelRuntimeConfig
 from .model_service_config import normalize_provider_model_id
 from .onebot_transport import OneBotActionTransport
-from .qq_music_audio import QQ_MUSIC_SONGMID_RE, resolve_qq_music_public_audio_url
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -59,9 +58,6 @@ QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
 QQ_MUSIC_PLATFORM_TO_ONEBOT = {
     "netease_music": "163",
 }
-QQ_MUSIC_DELIVERY_PLATFORMS = frozenset({"netease_music", "qq_music"})
-
-QQ_NETEASE_OUTER_AUDIO_URL = "https://music.163.com/song/media/outer/url?id={track_id}.mp3"
 
 QQ_CHARACTER_PACK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 QQ_CHARACTER_COMMAND_PREFIX_RE = re.compile(r"^[!/／]?(?:qq)?\s*", re.IGNORECASE)
@@ -2990,7 +2986,9 @@ class NapCatQQGateway:
         clean_platform = str(platform or "").strip()
         clean_track_id = str(track_id or "").strip()
         onebot_type = QQ_MUSIC_PLATFORM_TO_ONEBOT.get(clean_platform)
-        if not context.target_id or onebot_type is None or not clean_track_id:
+        if onebot_type is None:
+            return {"ok": False, "status": "unavailable", "reason": "unsupported_music_card_platform"}
+        if not context.target_id or not clean_track_id:
             return {"ok": False, "reason": "empty_target_or_music"}
         try:
             plan = build_message_action(
@@ -3006,152 +3004,6 @@ class NapCatQQGateway:
         result["platform"] = clean_platform
         result["track_id"] = clean_track_id
         return result
-
-    def send_music_voice_fallback(
-        self,
-        context: QQMessageContext,
-        *,
-        platform: str,
-        track_id: str,
-    ) -> dict[str, Any]:
-        """Send a provider-owned public song URL as a QQ voice fallback.
-
-        The URL is either constructed from a validated numeric NetEase track id
-        or resolved internally from a validated QQ Music songmid. No
-        model-provided URL, host path, cookie, or account credential enters this
-        path. Like the music card, this auxiliary delivery does not claim the
-        source-message reply reference, so the model's completed text remains
-        independently deliverable.
-        """
-        clean_platform = str(platform or "").strip()
-        clean_track_id = str(track_id or "").strip()
-        if not context.target_id:
-            return {"ok": False, "reason": "invalid_music_voice_fallback_target"}
-        if clean_platform == "netease_music" and re.fullmatch(r"[0-9]{1,20}", clean_track_id):
-            audio_url = QQ_NETEASE_OUTER_AUDIO_URL.format(track_id=clean_track_id)
-            summary = "网易云音乐"
-        elif clean_platform == "qq_music" and QQ_MUSIC_SONGMID_RE.fullmatch(clean_track_id):
-            resolution = resolve_qq_music_public_audio_url(clean_track_id)
-            if not bool(resolution.get("ok")):
-                return {
-                    "ok": False,
-                    "reason": "qq_music_public_audio_unavailable",
-                    "provider_status": str(resolution.get("status") or "unavailable"),
-                }
-            audio_url = str(resolution.get("url") or "").strip()
-            summary = "QQ音乐"
-        else:
-            return {"ok": False, "reason": "invalid_music_voice_fallback_target"}
-        try:
-            plan = build_message_action(
-                self._outbound_target(context),
-                [voice_segment(audio_url, summary=summary)],
-                reply_to="",
-            )
-        except ValueError as exc:
-            return self._outbound_plan_failure(exc)
-        result = self._send_outbound_plan(plan, timeout=30)
-        result["platform"] = clean_platform
-        result["track_id"] = clean_track_id
-        result["delivery_surface"] = "voice_fallback"
-        return result
-
-    def send_music_cards(
-        self,
-        context: QQMessageContext,
-        tool_events: list[dict[str, Any]] | None,
-    ) -> dict[str, Any]:
-        """Deliver all model-selected music cards, one NapCat message each, deduped."""
-        events = [event for event in tool_events or [] if isinstance(event, dict)]
-        targets: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-        for event in events:
-            if str(event.get("type") or "") != "music_share_ready":
-                continue
-            if not bool(event.get("send_to_user")):
-                continue
-            event_mode = str(event.get("client_mode") or "").strip().lower()
-            if event_mode and event_mode != "qq_text":
-                continue
-            music = event.get("music") if isinstance(event.get("music"), dict) else {}
-            platform = str(music.get("platform") or "").strip()
-            track_id = str(music.get("track_id") or "").strip()
-            if platform not in QQ_MUSIC_DELIVERY_PLATFORMS or not track_id:
-                continue
-            identity = (platform, track_id)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            targets.append({"platform": platform, "track_id": track_id})
-        if not targets:
-            return {"ok": True, "count": 0, "results": []}
-
-        results: list[dict[str, Any]] = []
-        for target in targets:
-            # QQ Music native cards were retired after real NapCat rejection.
-            # For this provider, go directly to the anonymous public-audio
-            # resolver instead of knowingly emitting a broken card action.
-            card_result = (
-                {
-                    "ok": False,
-                    "status": "skipped",
-                    "reason": "qq_music_native_card_unavailable",
-                    "platform": "qq_music",
-                    "track_id": str(target.get("track_id") or ""),
-                }
-                if str(target.get("platform") or "") == "qq_music"
-                else self.send_music_card(context, **target)
-            )
-            if bool(card_result.get("ok")):
-                results.append(
-                    {
-                        **card_result,
-                        "ok": True,
-                        "card_ok": True,
-                        "delivery_surface": "music_card",
-                    }
-                )
-                continue
-            voice_result = self.send_music_voice_fallback(context, **target)
-            results.append(
-                {
-                    "ok": bool(voice_result.get("ok")),
-                    "status": "fallback_sent" if voice_result.get("ok") else "failed",
-                    "platform": str(target.get("platform") or ""),
-                    "track_id": str(target.get("track_id") or ""),
-                    "card_ok": False,
-                    "card_result": card_result,
-                    "delivery_surface": "voice_fallback" if voice_result.get("ok") else "none",
-                    "voice_fallback": voice_result,
-                }
-            )
-        all_ok = bool(results) and all(bool(result.get("ok")) for result in results)
-        any_ok = any(bool(result.get("ok")) for result in results)
-        fallback_count = sum(
-            1
-            for result in results
-            if bool(result.get("ok")) and str(result.get("delivery_surface") or "") == "voice_fallback"
-        )
-        card_count = sum(1 for result in results if bool(result.get("card_ok")))
-        status = (
-            "sent"
-            if all_ok and fallback_count == 0
-            else "fallback_sent"
-            if all_ok and card_count == 0
-            else "mixed_sent"
-            if all_ok
-            else "partial"
-            if any_ok
-            else "failed"
-        )
-        return {
-            "ok": all_ok,
-            "status": status,
-            "count": len(results),
-            "card_count": card_count,
-            "fallback_count": fallback_count,
-            "results": results,
-        }
 
     def parse_economy_command(self, message: str) -> dict[str, Any] | None:
         """Parse economy commands. Returns None if not an economy command.
@@ -3861,7 +3713,7 @@ class NapCatQQGateway:
         events = (frame or {}).get("tool_events")
         if not isinstance(events, list):
             return False
-        artifact_ready_types = {"generated_file_ready", "file_ready", "music_share_ready"}
+        artifact_ready_types = {"generated_file_ready", "file_ready"}
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -3919,7 +3771,14 @@ class NapCatQQGateway:
         result["inline_fallback_skipped"] = inline_fallback_skipped
         return result
 
-    def send_voice(self, context: QQMessageContext, *, audio_path: str, name: str = "") -> dict[str, Any]:
+    def send_voice(
+        self,
+        context: QQMessageContext,
+        *,
+        audio_path: str,
+        name: str = "",
+        claim_reply: bool = True,
+    ) -> dict[str, Any]:
         clean_path = str(audio_path or "").strip()
         if not context.target_id or not clean_path:
             return {"ok": False, "reason": "empty_target_or_audio"}
@@ -3928,7 +3787,7 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "audio_not_found"}
 
-        reply_to = self._claim_reply_message_id(context)
+        reply_to = self._claim_reply_message_id(context) if claim_reply else ""
         resolved_path = path_obj.resolve()
         onebot_path = self._onebot_file_path(resolved_path)
         file_candidates: list[tuple[str, str]] = []
@@ -3995,6 +3854,25 @@ class NapCatQQGateway:
         result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
         if not staged.ok:
             result["staging_reason"] = staged.code
+        return result
+
+    def send_voice_url(self, context: QQMessageContext, *, audio_url: str, name: str = "") -> dict[str, Any]:
+        """Send an already preflighted public audio URL as a QQ voice message."""
+        clean_url = str(audio_url or "").strip()
+        if not context.target_id or not clean_url:
+            return {"ok": False, "reason": "empty_target_or_audio_url"}
+        try:
+            plan = build_message_action(
+                self._outbound_target(context),
+                [voice_segment(clean_url, summary=str(name or "网络音频").strip() or "网络音频")],
+                # Tool delivery happens before the model's final reply.  Keep
+                # the source-message reply reference available for that reply.
+                reply_to="",
+            )
+        except ValueError as exc:
+            return self._outbound_plan_failure(exc)
+        result = self._send_outbound_plan(plan, timeout=30)
+        result["transport"] = "public_url"
         return result
 
     def send_file(self, context: QQMessageContext, *, file_path: str, name: str = "") -> dict[str, Any]:

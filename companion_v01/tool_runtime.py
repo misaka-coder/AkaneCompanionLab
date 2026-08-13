@@ -72,7 +72,9 @@ from .capability_registry import (
     RETRIEVE_MEMORY_TOOL_SPEC,
     RETRY_ATTACHMENT_TOOL_SPEC,
     REVISE_GENERATED_FILE_TOOL_SPEC,
+    SEND_AUDIO_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
+    SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
     SEPARATE_AUDIO_STEMS_TOOL_SPEC,
     SET_REMINDER_TOOL_SPEC,
@@ -160,7 +162,7 @@ from .tool_handlers.generated_media import (
     SeparateAudioStemsToolHandler,
     TranscribeMediaToolHandler,
 )
-from .tool_handlers.music import SendMusicCardToolHandler
+from .tool_handlers.music import SendAudioToolHandler, SendMusicCardToolHandler
 from .tool_handlers.web_browser import (
     BrowserPageToolHandler,
     OpenBrowserToolHandler,

@@ -49,6 +49,7 @@ from ..capability_registry import (
     RETRIEVE_MEMORY_TOOL_SPEC,
     RETRY_ATTACHMENT_TOOL_SPEC,
     REVISE_GENERATED_FILE_TOOL_SPEC,
+    SEND_AUDIO_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
@@ -733,6 +734,9 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "send_file": ToolMetadata(
         family="file_handoff", operation="control", risk="medium", default_round_budget=3, requires_confirmation=True
     ),
+    "send_audio": ToolMetadata(
+        family="qq_audio_delivery", operation="control", risk="low", default_round_budget=3
+    ),
     "send_sticker": ToolMetadata(family="social_delivery", operation="control", risk="low", default_round_budget=3),
     "send_music_card": ToolMetadata(
         family="qq_music_delivery", operation="control", risk="low", default_round_budget=3
@@ -861,6 +865,7 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "inspect_generated_file": INSPECT_GENERATED_FILE_TOOL_SPEC,
     "manage_generated_file": MANAGE_GENERATED_FILE_TOOL_SPEC,
     "send_file": SEND_FILE_TOOL_SPEC,
+    "send_audio": SEND_AUDIO_TOOL_SPEC,
     "send_sticker": SEND_STICKER_TOOL_SPEC,
     "send_music_card": SEND_MUSIC_CARD_TOOL_SPEC,
     "inspect_media_info": INSPECT_MEDIA_INFO_TOOL_SPEC,

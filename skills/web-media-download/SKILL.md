@@ -71,10 +71,13 @@ registered artifact.
 
 ## Deliver
 
-- If the user asked for the file, call `send_file` once with the exact `gen_*`
-  handle returned by `generated_resources`.
-- The `send_file` result confirms queueing, not final client receipt. Say it is
-  entering or has entered the delivery queue; do not claim the user received it.
+- For video, image, archive, document, or any other ordinary file, call `send_file`
+  once with the exact `gen_*` handle returned by `generated_resources`.
+- For downloaded audio in QQ, call `send_audio` with that same handle to send a
+  playable voice bubble. Use `send_file` separately for ordinary file transfer;
+  when both are requested the two delivery calls may be made together.
+- Treat the delivery tool result as authoritative. A failed card, voice, or file
+  delivery is feedback for the next model step; it must not be described as success.
 - If the user only asked to identify or inspect a link, do not send a file
   automatically.
 - On failure, keep the useful canonical id/URL visible, explain the actual

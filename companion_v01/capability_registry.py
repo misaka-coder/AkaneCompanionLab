@@ -220,6 +220,7 @@ FILE_HANDOFF_TOOL_NAMES = ("send_file",)
 CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
 QQ_STICKER_TOOL_NAMES = ("send_sticker",)
 QQ_MUSIC_CARD_TOOL_NAMES = ("send_music_card",)
+QQ_AUDIO_DELIVERY_TOOL_NAMES = ("send_audio",)
 
 
 OPEN_BROWSER_TOOL_SPEC = CapabilityToolSpec(
@@ -1427,12 +1428,11 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_music_card",
     display_name="Send music card",
     description=(
-        "把网易云或 QQ音乐歌曲交付给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
-        "netease_music 的 track_id 是纯数字歌曲 ID；qq_music 的 track_id 是字母数字 songmid。"
+        "把网易云歌曲作为原生音乐卡片交付给当前 QQ 会话。"
+        "track_id 是网易云纯数字歌曲 ID。"
         "track_id 必须是本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
-        "本工具只把目标送入本轮 QQ 交付队列，不代表传输已经成功；"
-        "网易云先尝试原生卡片，被 QQ 拒绝后改发公开音频语音。"
-        "QQ音乐已知无可用原生卡片，只在平台匿名公开接口返回可播地址时直接发语音。"
+        "本工具只尝试原生音乐卡片，并把 QQ 的真实传输结果直接返回模型；不会暗中改发语音。"
+        "卡片失败后，模型可依据结果决定是否寻找公开音频 URL，再调用 send_audio。"
     ),
     input_schema={
         "type": "object",
@@ -1440,14 +1440,14 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["netease_music", "qq_music"],
-                "description": "音乐平台：网易云或 QQ音乐。",
+                "enum": ["netease_music"],
+                "description": "原生卡片平台；当前仅支持网易云。",
             },
             "track_id": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "精确的平台歌曲 ID（网易云纯数字 / QQ音乐 songmid）。",
+                "description": "精确的网易云纯数字歌曲 ID。",
             },
         },
         "required": ["platform", "track_id"],
@@ -1456,8 +1456,47 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("music_card_delivery",),
     visible_in=("qq",),
-    spec_version="1.2.0",
-    schema_version=3,
+    spec_version="2.0.0",
+    schema_version=5,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=4096,
+)
+
+SEND_AUDIO_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="send_audio",
+    display_name="Send audio",
+    description=(
+        "把一段真实音频交付到当前 QQ 会话。source 可以是当前会话已有的 audio_*/file_*/gen_* 音频句柄，"
+        "也可以是公开 HTTP(S) 音频直链；平台名称和歌曲 ID 不是语音交付参数。"
+        "本工具只发送可直接播放的 QQ 语音；需要普通文件时另用 send_file，需要两种表现时可并行调用两项工具。"
+        "工具会返回真实传输结果，"
+        "失败不会导致回合终止，也不会被系统改成另一种交付方式。"
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "description": "精确音频句柄（如 audio_001/gen_001）或公开 HTTP(S) 音频 URL。",
+            },
+            "name": {
+                "type": "string",
+                "maxLength": 160,
+                "description": "可选的人类可读音频名称；不用于定位本地文件。",
+            },
+        },
+        "required": ["source"],
+    },
+    risk="low",
+    confirm="never",
+    effects=("audio_delivery",),
+    visible_in=("qq",),
+    spec_version="1.0.0",
+    schema_version=1,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,
@@ -2792,7 +2831,15 @@ class CapabilityRegistry:
                 layer="qq_delivery",
                 modes=(ClientMode.QQ_TEXT,),
                 tools=QQ_MUSIC_CARD_TOOL_NAMES,
-                light_hint="在 QQ 会话里，你可以把已确认歌曲 ID 的网易云歌曲以原生音乐卡片发给用户；只发送卡片，不下载音频。",
+                light_hint="在 QQ 会话里，你可以把已确认歌曲 ID 的网易云歌曲作为原生音乐卡片发送；工具会返回真实成败，不会自动改发语音。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="qq_audio_delivery",
+                layer="qq_delivery",
+                modes=(ClientMode.QQ_TEXT,),
+                tools=QQ_AUDIO_DELIVERY_TOOL_NAMES,
+                light_hint="在 QQ 会话里，你可以把公开音频直链或已有音频句柄发送为 QQ 语音；普通文件仍使用 send_file。",
                 trigger=_always,
             ),
             CapabilityModule(

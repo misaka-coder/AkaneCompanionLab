@@ -35,6 +35,7 @@ from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
 from .qq_channel_profiles import QQChannelDeploymentProfile
 from .qq_gateway import NapCatQQGateway
+from .qq_tool_delivery import QQToolDeliveryPort
 from .resource_manifest import ResourceManifest
 from .runtime_settings import BotSettingsView, normalize_thinking_mode
 from .settings_overrides import (
@@ -548,6 +549,7 @@ class BotRuntimeFactory:
                     default_character_pack_id=instance_context.character_pack_id,
                     wake_words=effective_bot_config.wake_words,
                 )
+                engine.bind_qq_delivery_port(QQToolDeliveryPort(qq_gateway))
                 qq_followup_tasks = AsyncTaskSupervisor(name=f"qq-followups:{instance_context.instance_id}")
                 plugin_host.bind_notification_port(QQTextNotificationPort(qq_gateway))
             else:

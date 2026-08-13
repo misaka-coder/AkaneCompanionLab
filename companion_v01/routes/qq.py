@@ -746,76 +746,6 @@ def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str])
     return unsent
 
 
-def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, Any]:
-    """Decide music-card delivery handling for the current QQ turn.
-
-    A music card is an auxiliary delivery surface. Its transport failure must
-    be reported honestly, but must never erase the model's completed reply.
-    """
-    attempted_count = max(0, int(music_send_result.get("count") or 0))
-    attempted = attempted_count > 0
-    results = [item for item in music_send_result.get("results", []) if isinstance(item, dict)]
-    successful_count = sum(1 for item in results if bool(item.get("ok")))
-    card_count = sum(1 for item in results if bool(item.get("card_ok", item.get("ok"))))
-    fallback_count = sum(
-        1
-        for item in results
-        if bool(item.get("ok")) and str(item.get("delivery_surface") or "") == "voice_fallback"
-    )
-    failed_count = max(0, attempted_count - successful_count)
-    status = str(music_send_result.get("status") or "").strip().lower()
-    partial = attempted and (status == "partial" or (successful_count > 0 and failed_count > 0))
-    failed = attempted and failed_count > 0
-    recovered = attempted and fallback_count > 0
-    if failed:
-        notice = (
-            f"这次有 {successful_count} 首歌已经交付"
-            f"（其中 {fallback_count} 首改用 QQ 语音），另有 {failed_count} 首没有成功交付。"
-            "失败项可能是 QQ 无法解析卡片，且平台没有提供公开可播放地址，可以换一个版本再试。"
-            if partial
-            else "音乐卡片没有成功发出，可能是 QQ 暂时无法解析这首歌或交付连接异常。可以换一个版本再试。"
-        )
-        return {
-            "attempted": attempted,
-            "failed": failed,
-            "partial": partial,
-            "successful_count": successful_count,
-            "card_count": card_count,
-            "fallback_count": fallback_count,
-            "failed_count": failed_count,
-            "recovered": recovered,
-            "notice": notice,
-        }
-    if recovered:
-        notice = (
-            "原生音乐卡片不可用或没有被 QQ 正常解析，我已经改用 QQ 语音把歌曲发出来了。"
-            if fallback_count == 1
-            else f"有 {fallback_count} 张音乐卡片没有被 QQ 正常解析，我已经改用 QQ 语音发出来了。"
-        )
-        return {
-            "attempted": attempted,
-            "failed": False,
-            "partial": False,
-            "successful_count": successful_count,
-            "card_count": card_count,
-            "fallback_count": fallback_count,
-            "failed_count": 0,
-            "recovered": True,
-            "notice": notice,
-        }
-    return {
-        "attempted": attempted,
-        "failed": failed,
-        "partial": False,
-        "successful_count": successful_count,
-        "card_count": card_count,
-        "fallback_count": fallback_count,
-        "failed_count": failed_count,
-        "recovered": False,
-        "notice": "",
-    }
-
-
 def _send_pending_stage_messages(
     *,
     qq_gateway: Any,
@@ -1446,11 +1376,6 @@ def _process_qq_turn_streaming(
 
     file_delivery_attempted = int(file_send_result.get("count") or 0) > 0
     file_delivery_failed = file_delivery_attempted and not bool(file_send_result.get("ok"))
-    # Music cards are delivered before any model-authored completion claim too.
-    music_send_result = qq_gateway.send_music_cards(context, delivery_events)
-    music_decision = _qq_music_delivery_decision(music_send_result)
-    music_delivery_attempted = bool(music_decision["attempted"])
-    music_delivery_failed = bool(music_decision["failed"])
     # Deliver artifacts before the final text so transport feedback can follow
     # the model's completed reply.  An auxiliary delivery failure must not turn
     # a successfully completed LLM turn into an apparent system crash.
@@ -1484,16 +1409,14 @@ def _process_qq_turn_streaming(
     )
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
-    visible_music_delivered = music_delivery_attempted and int(music_decision.get("successful_count") or 0) > 0
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
     if (
-        (not visible_text_delivered and not visible_file_delivered and not visible_music_delivered)
-        or (not final_frame_received and not visible_file_delivered and not visible_music_delivered)
+        (not visible_text_delivered and not visible_file_delivered)
+        or (not final_frame_received and not visible_file_delivered)
         or (
             bool(frame.get("_transient_final_failure"))
             and tool_preface_delivered
             and not visible_file_delivered
-            and not visible_music_delivered
         )
     ):
         # A streamed tool preface or emotion is not an authoritative final
@@ -1617,46 +1540,6 @@ def _process_qq_turn_streaming(
             _sid,
             f"【上一轮交付状态】文件发送成功（共 {file_send_result.get('count', 0)} 个）。",
         )
-    music_delivery_feedback_result = {"ok": True, "status": "skipped", "reason": "no_music_delivery_issue"}
-    if music_delivery_failed:
-        music_delivery_feedback_result = qq_gateway.send_reply(context, music_decision["notice"])
-        if bool(music_decision.get("partial")):
-            music_delivery_feedback_result["status"] = "music_partial_notice_sent"
-            ok_results = [result for result in music_send_result.get("results", []) if bool(result.get("ok"))]
-            note_parts = [
-                "【上一轮交付状态】音乐卡片部分发送成功"
-                f"（成功 {music_decision.get('successful_count', 0)} 张，"
-                f"失败 {music_decision.get('failed_count', 0)} 张），用户已收到通知。"
-            ]
-            for result in ok_results[:3]:
-                platform_label = "网易云" if str(result.get("platform")) == "netease_music" else "QQ音乐"
-                surface_label = (
-                    "QQ语音回退发送成功"
-                    if str(result.get("delivery_surface") or "") == "voice_fallback"
-                    else "音乐卡片发送成功"
-                )
-                note_parts.append(f"{platform_label}{surface_label}，track_id={result.get('track_id')}。")
-            qq_gateway.add_delivery_note(
-                _sid,
-                "".join(note_parts),
-            )
-        else:
-            music_delivery_feedback_result["status"] = "music_failure_notice_sent"
-            qq_gateway.add_delivery_note(_sid, "【上一轮交付状态】音乐卡片发送失败，用户已收到通知。")
-    elif bool(music_decision.get("recovered")):
-        music_delivery_feedback_result = qq_gateway.send_reply(context, music_decision["notice"])
-        music_delivery_feedback_result["status"] = "music_voice_fallback_notice_sent"
-        qq_gateway.add_delivery_note(
-            _sid,
-            "【上一轮交付状态】原生音乐卡片不可用或未被 QQ 解析，已改用 QQ 语音成功交付，用户已收到通知。",
-        )
-    elif music_delivery_attempted:
-        ok_results = [result for result in music_send_result.get("results", []) if bool(result.get("ok"))]
-        note_parts = [f"【上一轮交付状态】音乐卡片发送成功（共 {len(ok_results)} 张）。"]
-        for result in ok_results[:3]:
-            platform_label = "网易云" if str(result.get("platform")) == "netease_music" else "QQ音乐"
-            note_parts.append(f"{platform_label}音乐卡片发送成功，track_id={result.get('track_id')}。")
-        qq_gateway.add_delivery_note(_sid, "".join(note_parts))
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
@@ -1668,10 +1551,8 @@ def _process_qq_turn_streaming(
         "emotion_mface_result": emotion_mface_result,
         "emotion_image_result": emotion_image_result,
         "file_send_result": file_send_result,
-        "music_send_result": music_send_result,
         "final_reply_fallback_result": final_reply_fallback_result,
         "file_delivery_feedback_result": file_delivery_feedback_result,
-        "music_delivery_feedback_result": music_delivery_feedback_result,
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
     }

@@ -117,8 +117,13 @@ stream together with `atempo` on the audio.
 
 - The initial `exec_run` result already returns generous output. Normal commands do not need cursor paging; only continue with `exec_status(...cursor=...)` when output was explicitly truncated or the task is still running.
 - A conversion is only a success when `status` is `completed`. Then check `artifact_status` and `generated_resources`: only a `registered` `artifact_status` with real `gen_*` handles means the outputs were recorded.
-- If the user wants the file, call `send_file` with the exact `gen_*` handle from `generated_resources`.
-- Deliver once. Do not loop `send_file`; do not report a file as delivered based only on the command's `exit_code`.
+- If the user wants an ordinary file, call `send_file` once with the exact `gen_*` handle from
+  `generated_resources`.
+- For an audio output in QQ, call `send_audio` with that same handle to send a playable voice bubble.
+  Use `send_file` separately when the user asks for the ordinary file; if both are requested, the two
+  delivery calls may be made together. Non-audio handles are not accepted by `send_audio`.
+- Treat the delivery tool result as authoritative. Do not loop delivery calls or report delivery
+  based only on the command's `exit_code`.
 
 ## Failure handling
 

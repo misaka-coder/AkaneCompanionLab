@@ -7430,6 +7430,19 @@ class AkaneMemoryEngine:
             approval_store=self._get_approval_store(),
         )
 
+    def bind_qq_delivery_port(self, delivery_port: Any | None) -> None:
+        """Bind the live QQ transport port to QQ-only delivery handlers.
+
+        The engine is constructed before the channel gateway, so the handlers
+        are assembled first and receive the narrow port once the runtime owns a
+        real gateway.  No delivery target or transport state enters prompts.
+        """
+        for tool_name in ("send_music_card", "send_audio"):
+            handler = self.tool_handlers.get(tool_name)
+            binder = getattr(handler, "bind_delivery_port", None)
+            if callable(binder):
+                binder(delivery_port)
+
     def _resolve_tool_handlers(
         self,
         *,

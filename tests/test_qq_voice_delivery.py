@@ -1053,13 +1053,15 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertIn("我先准备一下", repr(gateway.text_sends))
         self.assertTrue(any("文件发送失败" in note for note in gateway.delivery_notes))
 
-    def test_failed_music_delivery_keeps_model_reply_and_adds_truthful_feedback(self) -> None:
+    def test_legacy_music_event_is_not_reinterpreted_after_model_final(self) -> None:
         class FailedMusicGateway(FakeQQGateway):
             def __init__(self) -> None:
                 super().__init__()
                 self.delivery_notes: list[str] = []
+                self.music_calls = 0
 
             def send_music_cards(self, context, tool_events):
+                self.music_calls += 1
                 return {
                     "ok": False,
                     "status": "failed",
@@ -1111,18 +1113,21 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         sent_text = repr(gateway.text_sends)
         self.assertIn("卡片正在尝试交付", sent_text)
-        self.assertIn("音乐卡片没有成功发出", sent_text)
+        self.assertNotIn("音乐卡片没有成功发出", sent_text)
         self.assertNotIn("没有形成可交付的文字结果", sent_text)
-        self.assertEqual(result["music_delivery_feedback_result"]["status"], "music_failure_notice_sent")
-        self.assertTrue(any("音乐卡片发送失败" in note for note in gateway.delivery_notes))
+        self.assertEqual(gateway.music_calls, 0)
+        self.assertNotIn("music_delivery_feedback_result", result)
+        self.assertEqual(gateway.delivery_notes, [])
 
-    def test_music_voice_fallback_keeps_model_reply_and_reports_recovery(self) -> None:
+    def test_route_never_performs_hidden_music_voice_fallback(self) -> None:
         class RecoveredMusicGateway(FakeQQGateway):
             def __init__(self) -> None:
                 super().__init__()
                 self.delivery_notes: list[str] = []
+                self.music_calls = 0
 
             def send_music_cards(self, context, tool_events):
+                self.music_calls += 1
                 return {
                     "ok": True,
                     "status": "fallback_sent",
@@ -1183,13 +1188,11 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         sent_text = repr(gateway.text_sends)
         self.assertIn("正在尝试交付", sent_text)
-        self.assertIn("改用 QQ 语音", sent_text)
+        self.assertNotIn("改用 QQ 语音", sent_text)
         self.assertNotIn("音乐卡片没有成功发出", sent_text)
-        self.assertEqual(
-            result["music_delivery_feedback_result"]["status"],
-            "music_voice_fallback_notice_sent",
-        )
-        self.assertTrue(any("已改用 QQ 语音成功交付" in note for note in gateway.delivery_notes))
+        self.assertEqual(gateway.music_calls, 0)
+        self.assertNotIn("music_delivery_feedback_result", result)
+        self.assertEqual(gateway.delivery_notes, [])
 
 
 if __name__ == "__main__":
