@@ -284,7 +284,7 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertEqual(result["count"], 1)
         self.assertEqual(mocked.call_count, 1)
 
-    def test_napcat_failure_is_honest_and_suppresses_success_claim(self) -> None:
+    def test_napcat_failure_is_honest_without_suppressing_completed_reply(self) -> None:
         with patch(
             "companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotFailed()
         ):
@@ -303,14 +303,13 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertEqual(result["status"], "failed")
         decision = _qq_music_delivery_decision(result)
         self.assertTrue(decision["failed"])
-        self.assertTrue(decision["suppress_model_text"])
         self.assertIn("音乐卡片没有成功发出", decision["notice"])
 
-    def test_music_delivery_success_does_not_suppress_model_text(self) -> None:
+    def test_music_delivery_success_needs_no_failure_notice(self) -> None:
         decision = _qq_music_delivery_decision({"ok": True, "status": "sent", "count": 1, "results": [{"ok": True}]})
         self.assertTrue(decision["attempted"])
         self.assertFalse(decision["failed"])
-        self.assertFalse(decision["suppress_model_text"])
+        self.assertEqual(decision["notice"], "")
 
     def test_no_music_events_are_a_noop(self) -> None:
         with patch(

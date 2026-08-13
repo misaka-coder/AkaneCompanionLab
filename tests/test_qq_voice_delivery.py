@@ -55,6 +55,9 @@ class FakeQQGateway:
     def send_generated_files(self, context, tool_events):
         return {"ok": True, "count": 0, "results": []}
 
+    def send_music_cards(self, context, tool_events):
+        return {"ok": True, "status": "skipped", "count": 0, "results": []}
+
     def send_market_charts(self, context, tool_events, *, authorization=""):
         return {"ok": True, "count": 0, "results": []}
 
@@ -1047,8 +1050,71 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         self.assertEqual(result["file_delivery_feedback_result"]["status"], "failure_notice_sent")
         self.assertTrue(any("文件这次发送失败" in message for batch in gateway.text_sends for message in batch))
-        self.assertNotIn("我先准备一下", repr(gateway.text_sends))
+        self.assertIn("我先准备一下", repr(gateway.text_sends))
         self.assertTrue(any("文件发送失败" in note for note in gateway.delivery_notes))
+
+    def test_failed_music_delivery_keeps_model_reply_and_adds_truthful_feedback(self) -> None:
+        class FailedMusicGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivery_notes: list[str] = []
+
+            def send_music_cards(self, context, tool_events):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "count": 1,
+                    "results": [{"ok": False, "reason": "onebot_music_parse_failed"}],
+                }
+
+            def add_delivery_note(self, session_id: str, note: str) -> None:
+                self.delivery_notes.append(note)
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "我已经找到这首歌，卡片正在尝试交付。",
+                        "speech_segments": ["我已经找到这首歌，卡片正在尝试交付。"],
+                        "tool_events": [
+                            {
+                                "type": "music_share_ready",
+                                "send_to_user": True,
+                                "client_mode": "qq_text",
+                                "music": {"platform": "netease_music", "track_id": "30352891"},
+                            }
+                        ],
+                    },
+                }
+
+        gateway = FailedMusicGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "推一张音乐卡片"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=False,
+                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        sent_text = repr(gateway.text_sends)
+        self.assertIn("卡片正在尝试交付", sent_text)
+        self.assertIn("音乐卡片没有成功发出", sent_text)
+        self.assertNotIn("没有形成可交付的文字结果", sent_text)
+        self.assertEqual(result["music_delivery_feedback_result"]["status"], "music_failure_notice_sent")
+        self.assertTrue(any("音乐卡片发送失败" in note for note in gateway.delivery_notes))
 
 
 if __name__ == "__main__":

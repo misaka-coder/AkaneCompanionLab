@@ -749,8 +749,8 @@ def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str])
 def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, Any]:
     """Decide music-card delivery handling for the current QQ turn.
 
-    When a card was attempted but did not actually transmit, the model's own
-    success claim must be suppressed and replaced by one deterministic notice.
+    A music card is an auxiliary delivery surface. Its transport failure must
+    be reported honestly, but must never erase the model's completed reply.
     """
     attempted_count = max(0, int(music_send_result.get("count") or 0))
     attempted = attempted_count > 0
@@ -773,7 +773,6 @@ def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, 
             "partial": partial,
             "successful_count": successful_count,
             "failed_count": failed_count,
-            "suppress_model_text": True,
             "notice": notice,
         }
     return {
@@ -782,7 +781,6 @@ def _qq_music_delivery_decision(music_send_result: dict[str, Any]) -> dict[str, 
         "partial": False,
         "successful_count": successful_count,
         "failed_count": failed_count,
-        "suppress_model_text": False,
         "notice": "",
     }
 
@@ -1422,13 +1420,12 @@ def _process_qq_turn_streaming(
     music_decision = _qq_music_delivery_decision(music_send_result)
     music_delivery_attempted = bool(music_decision["attempted"])
     music_delivery_failed = bool(music_decision["failed"])
-    # Deliver the artifacts before any model-authored completion claim. On
-    # failure, only the deterministic transport feedback below is allowed out.
+    # Deliver artifacts before the final text so transport feedback can follow
+    # the model's completed reply.  An auxiliary delivery failure must not turn
+    # a successfully completed LLM turn into an apparent system crash.
     final_reply_messages = (
         []
-        if file_delivery_failed
-        or music_delivery_failed
-        or bool(frame.get("_transient_final_failure"))
+        if bool(frame.get("_transient_final_failure"))
         else qq_gateway.render_reply_messages(frame)
     )
     reply_messages = final_reply_messages

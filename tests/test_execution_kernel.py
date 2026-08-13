@@ -553,6 +553,39 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertIn("任务完成时间=", result.model_feedback)
         self.assertIn("本次查询时间=", result.model_feedback)
 
+    def test_status_wait_does_not_wake_model_for_progress_output(self) -> None:
+        run_id = new_run_id()
+
+        class NoisyProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def status(self, *, owner, run_id, cursor=None):
+                self.calls += 1
+                if self.calls < 3:
+                    return ExecRunStatus(
+                        EXEC_STATUS_RUNNING,
+                        run_id,
+                        tail=f"progress {self.calls}\n",
+                        next_cursor=make_cursor(run_id, self.calls),
+                        started_at=100.0,
+                    )
+                return ExecRunStatus(
+                    EXEC_STATUS_COMPLETED,
+                    run_id,
+                    exit_code=0,
+                    tail="progress 1\nprogress 2\ndone\n",
+                    started_at=100.0,
+                    finished_at=130.0,
+                )
+
+        provider = NoisyProvider()
+        result = execute_exec_status(provider, owner=OWNER, run_id=run_id, wait_seconds=1)
+
+        self.assertEqual(result.event_status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(provider.calls, 3)
+        self.assertIn("done", result.data["tail"])
+
     def test_status_wrapper_catches_provider_errors_and_invalid_results(self) -> None:
         class Broken(_FakeExecutionProvider):
             def status(self, **_kwargs):

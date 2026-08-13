@@ -322,8 +322,8 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出。每次返回自 cursor 之后的新输出"
         "片段和 next_cursor；任务终止后仍可逐页读完剩余输出，全部读完后 next_cursor 才为 null。"
-        "如果任务仍在运行且暂时没有新输出，可用 wait_seconds 在同一次工具调用内等待状态变化，"
-        "避免为了轮询反复消耗模型回合；有新输出或进入终态会提前返回。"
+        "如果任务仍在运行，可用 wait_seconds 在同一次工具调用内等待进入终态或等待窗口结束，"
+        "期间产生的输出会在返回时一并给出，避免进度行或警告触发反复的模型轮询；进入终态会提前返回。"
         "cursor 用于超长输出或运行中增量观察，普通命令不需要机械翻页。终态结果保留一段可读时间，"
         "之后返回 unknown。"
     ),
@@ -340,7 +340,7 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                 "type": "integer",
                 "minimum": EXEC_MIN_STATUS_WAIT_SECONDS,
                 "maximum": EXEC_MAX_STATUS_WAIT_SECONDS,
-                "description": "运行中且暂无新输出时最多等待多少秒；默认 0，continuation 通常使用 30。",
+                "description": "运行中最多等待进入终态或窗口结束的秒数；默认 0，continuation 通常使用 30。",
             },
         },
         "required": ["run_id"],

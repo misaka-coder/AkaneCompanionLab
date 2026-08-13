@@ -564,7 +564,8 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
         return (
             "- exec_status：按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出；"
             "每次返回自 cursor 之后的新输出和 next_cursor，任务终止且输出读完后 next_cursor 为 null；"
-            "运行中暂无新输出时可用 wait_seconds 最多等待 30 秒，有新输出或终态会提前返回。"
+            "运行中可用 wait_seconds 最多等待 30 秒；进入终态会提前返回，否则在窗口结束时一次给出期间增量输出，"
+            "避免被进度行或警告唤醒后反复轮询。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

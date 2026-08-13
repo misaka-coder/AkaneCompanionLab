@@ -774,7 +774,15 @@ def execute_exec_status(
     cursor: str | None = None,
     wait_seconds: Any = None,
 ) -> ExecMappedResult:
-    """Read one bounded output page, optionally waiting for a new observation."""
+    """Read one bounded output page, optionally waiting for terminal or deadline.
+
+    ``wait_seconds`` is intended to save model/tool rounds.  Returning as soon
+    as a command prints a warning or progress line defeats that purpose: noisy
+    CLIs can otherwise wake the model every few seconds while the same process
+    is still running.  Keep observing the same cursor until the run reaches a
+    terminal state or the requested bounded wait expires, then return all
+    output accumulated from that cursor in one producer-bounded page.
+    """
 
     clean_run_id = str(run_id or "").strip()
     clean_cursor = str(cursor or "").strip() or None
@@ -793,7 +801,6 @@ def execute_exec_status(
                 isinstance(status_result, ExecRunStatus)
                 and status_result.run_id == clean_run_id
                 and status_result.status == EXEC_STATUS_RUNNING
-                and not str(status_result.tail or "")
                 and time.monotonic() < deadline
             ):
                 time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
