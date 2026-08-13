@@ -7,7 +7,7 @@ Covers the 16 acceptance items:
   4/5. QQ private -> send_private_msg, QQ group -> send_group_msg.
   6. Multiple parallel cards send separately.
   7. Duplicate (platform, track_id) is sent once.
-  8. NapCat failure is returned honestly and suppresses the model's success claim.
+  8. A rejected card falls back to QQ voice; dual failure stays honest.
   9. send_music_card is in the QQ profile and absent on desktop.
  10. The QQ schema is byte-identical regardless of Shell/provider readiness.
  11. music-card-share appears in the bundled Skill catalog with a full body.
@@ -34,6 +34,7 @@ from companion_v01.client_protocol import ClientMode
 from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.qq_music_audio import resolve_qq_music_public_audio_url
 from companion_v01.routes.qq import _qq_music_delivery_decision
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.tool_handlers.core import ToolExecutionContext
@@ -151,7 +152,7 @@ class SendMusicCardHandlerTests(unittest.TestCase):
         cases = [
             ("netease_music", "ABC"),
             ("netease_music", "12a3"),
-            ("qq_music", "002XWgfo0IKPOH"),
+            ("qq_music", "123456"),
             ("netease_music", ""),
         ]
         for platform, track_id in cases:
@@ -161,6 +162,11 @@ class SendMusicCardHandlerTests(unittest.TestCase):
                         {"type": "send_music_card", "platform": platform, "track_id": track_id}
                     )
                 )
+
+        qq = self.handler.normalize_call(
+            {"type": "send_music_card", "platform": "qq_music", "track_id": "002XWgfo0IKPOH"}
+        )
+        self.assertEqual(qq["track_id"], "002XWgfo0IKPOH")
 
 
 class QqGatewayMusicCardTests(_GatewayHarness):
@@ -240,9 +246,16 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertEqual(message_types, ["163", "163"])
 
     def test_partial_delivery_reports_the_real_split(self) -> None:
-        with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
-            side_effect=[_FakeOneBotOk(), _FakeOneBotFailed()],
+        with (
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=[_FakeOneBotOk(), _FakeOneBotFailed()],
+            ),
+            patch.object(
+                self.gateway,
+                "send_music_voice_fallback",
+                return_value={"ok": False, "reason": "voice_fallback_failed"},
+            ),
         ):
             result = self.gateway.send_music_cards(
                 self.context,
@@ -267,8 +280,8 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertTrue(decision["partial"])
         self.assertEqual(decision["successful_count"], 1)
         self.assertEqual(decision["failed_count"], 1)
-        self.assertIn("1 张音乐卡片已经发出", decision["notice"])
-        self.assertIn("另有 1 张没有成功交付", decision["notice"])
+        self.assertIn("1 首歌已经交付", decision["notice"])
+        self.assertIn("另有 1 首没有成功交付", decision["notice"])
 
     def test_duplicate_platform_and_track_sent_once(self) -> None:
         event = {
@@ -285,8 +298,15 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         self.assertEqual(mocked.call_count, 1)
 
     def test_napcat_failure_is_honest_without_suppressing_completed_reply(self) -> None:
-        with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotFailed()
+        with (
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotFailed()
+            ),
+            patch.object(
+                self.gateway,
+                "send_music_voice_fallback",
+                return_value={"ok": False, "reason": "voice_fallback_failed"},
+            ),
         ):
             result = self.gateway.send_music_cards(
                 self.context,
@@ -304,6 +324,109 @@ class QqGatewayMusicCardTests(_GatewayHarness):
         decision = _qq_music_delivery_decision(result)
         self.assertTrue(decision["failed"])
         self.assertIn("音乐卡片没有成功发出", decision["notice"])
+
+    def test_napcat_card_failure_falls_back_to_netease_voice(self) -> None:
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotOk()):
+            group_context = self._group_context()
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request",
+            side_effect=[_FakeOneBotFailed(), _FakeOneBotOk()],
+        ) as mocked:
+            result = self.gateway.send_music_cards(
+                group_context,
+                [
+                    {
+                        "type": "music_share_ready",
+                        "music": {"platform": "netease_music", "track_id": "2703973041"},
+                        "send_to_user": True,
+                        "client_mode": "qq_text",
+                    }
+                ],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "fallback_sent")
+        self.assertEqual(result["card_count"], 0)
+        self.assertEqual(result["fallback_count"], 1)
+        self.assertEqual(mocked.call_count, 2)
+        card_message = mocked.call_args_list[0].kwargs["json"]["message"]
+        voice_message = mocked.call_args_list[1].kwargs["json"]["message"]
+        self.assertEqual(card_message[0]["type"], "music")
+        self.assertEqual(voice_message[0]["type"], "record")
+        self.assertEqual(
+            voice_message[0]["data"]["file"],
+            "https://music.163.com/song/media/outer/url?id=2703973041.mp3",
+        )
+        self.assertFalse(any(item["type"] == "reply" for item in voice_message))
+        decision = _qq_music_delivery_decision(result)
+        self.assertTrue(decision["recovered"])
+        self.assertFalse(decision["failed"])
+        self.assertIn("改用 QQ 语音", decision["notice"])
+
+    def test_qq_music_card_failure_uses_public_audio_only_when_resolved(self) -> None:
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotOk()):
+            group_context = self._group_context()
+        with (
+            patch(
+                "companion_v01.qq_gateway.resolve_qq_music_public_audio_url",
+                return_value={
+                    "ok": True,
+                    "status": "ready",
+                    "url": "https://aqqmusic.tc.qq.com/C400demo.m4a?vkey=ephemeral",
+                },
+            ),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=_FakeOneBotOk(),
+            ) as mocked,
+        ):
+            result = self.gateway.send_music_cards(
+                group_context,
+                [
+                    {
+                        "type": "music_share_ready",
+                        "music": {"platform": "qq_music", "track_id": "004TBpSN3Z3bq2"},
+                        "send_to_user": True,
+                        "client_mode": "qq_text",
+                    }
+                ],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "fallback_sent")
+        self.assertEqual(mocked.call_count, 1)
+        voice_message = mocked.call_args_list[0].kwargs["json"]["message"]
+        self.assertEqual(voice_message[0]["type"], "record")
+        self.assertIn("aqqmusic.tc.qq.com", voice_message[0]["data"]["file"])
+
+    def test_qq_music_restricted_track_does_not_fake_voice_success(self) -> None:
+        with (
+            patch(
+                "companion_v01.qq_gateway.resolve_qq_music_public_audio_url",
+                return_value={"ok": False, "status": "public_audio_unavailable"},
+            ),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=_FakeOneBotFailed(),
+            ) as mocked,
+        ):
+            result = self.gateway.send_music_cards(
+                self.context,
+                [
+                    {
+                        "type": "music_share_ready",
+                        "music": {"platform": "qq_music", "track_id": "003gUSz24CSQsT"},
+                        "send_to_user": True,
+                        "client_mode": "qq_text",
+                    }
+                ],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(mocked.call_count, 0)
+        fallback = result["results"][0]["voice_fallback"]
+        self.assertEqual(fallback["provider_status"], "public_audio_unavailable")
 
     def test_music_delivery_success_needs_no_failure_notice(self) -> None:
         decision = _qq_music_delivery_decision({"ok": True, "status": "sent", "count": 1, "results": [{"ok": True}]})
@@ -355,7 +478,7 @@ class QqCapabilityProfileTests(unittest.TestCase):
         self.assertIn("open_music_search", desktop.tool_names)
         self.assertNotIn("open_music_search", qq.tool_names)
         platform_schema = TOOL_SPEC_BY_TYPE["send_music_card"].input_schema["properties"]["platform"]
-        self.assertEqual(platform_schema["enum"], ["netease_music"])
+        self.assertEqual(platform_schema["enum"], ["netease_music", "qq_music"])
 
     def test_qq_schema_is_stable_across_readiness_and_repeated_builds(self) -> None:
         from companion_v01.tool_handlers.core import TOOL_SPEC_BY_TYPE
@@ -445,6 +568,7 @@ class MusicCardSkillCatalogTests(unittest.TestCase):
                 "search_music.py",
                 "send_music_card",
                 "netease_music",
+                "qq_music",
                 "exec_run",
                 "not download",
             ):
@@ -481,7 +605,7 @@ class MusicSearchScriptTests(unittest.TestCase):
                 ).encode("utf-8")
 
         with patch.object(search.urllib.request, "urlopen", return_value=_Response()):
-            result = search._search("借口 陈海星", 5)
+            result = search._search("netease", "借口 陈海星", 5)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["results"][0]["track_id"], "2703973041")
 
@@ -496,7 +620,7 @@ class MusicSearchScriptTests(unittest.TestCase):
                 return json.dumps({"result": {"songs": []}}).encode("utf-8")
 
         with patch.object(search.urllib.request, "urlopen", return_value=_Empty()):
-            empty = search._search("不存在的东西", 5)
+            empty = search._search("netease", "不存在的东西", 5)
         self.assertEqual(empty["status"], "empty")
 
     def test_http_error_is_structured(self) -> None:
@@ -508,9 +632,82 @@ class MusicSearchScriptTests(unittest.TestCase):
             raise urllib.error.HTTPError("url", 403, "forbidden", None, None)
 
         with patch.object(search.urllib.request, "urlopen", side_effect=_raise):
-            result = search._search("借口", 5)
+            result = search._search("netease", "借口", 5)
         self.assertEqual(result["status"], "error")
         self.assertIn("http_error:403", result["reason"])
+
+    def test_qq_songmid_is_projected(self) -> None:
+        search = _load_search_script()
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self, size: int = -1):
+                return json.dumps(
+                    {
+                        "data": {
+                            "song": {
+                                "list": [
+                                    {
+                                        "songmid": "002XWgfo0IKPOH",
+                                        "songname": "借口",
+                                        "singer": [{"name": "周杰伦"}],
+                                        "albumname": "七里香",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ).encode("utf-8")
+
+        with patch.object(search.urllib.request, "urlopen", return_value=_Response()):
+            result = search._search("qq", "借口 周杰伦", 5)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["platform"], "qq_music")
+        self.assertEqual(result["results"][0]["track_id"], "002XWgfo0IKPOH")
+
+
+class QqMusicPublicAudioResolverTests(unittest.TestCase):
+    class _Response:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size: int = -1):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def test_public_vkey_url_is_accepted_without_exposing_credentials_to_model(self) -> None:
+        response = self._Response(
+            {
+                "req_1": {
+                    "code": 0,
+                    "data": {
+                        "sip": ["http://aqqmusic.tc.qq.com/"],
+                        "midurlinfo": [{"purl": "C400abc.m4a?guid=10000&vkey=short-lived"}],
+                    },
+                }
+            }
+        )
+        result = resolve_qq_music_public_audio_url("004TBpSN3Z3bq2", opener=lambda *_a, **_k: response)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["url"].startswith("https://aqqmusic.tc.qq.com/"))
+
+    def test_vip_or_restricted_track_is_structured_unavailable(self) -> None:
+        response = self._Response(
+            {"req_1": {"code": 0, "data": {"sip": ["http://aqqmusic.tc.qq.com/"], "midurlinfo": [{"purl": ""}]}}}
+        )
+        result = resolve_qq_music_public_audio_url("003gUSz24CSQsT", opener=lambda *_a, **_k: response)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "public_audio_unavailable")
 
 
 class _FakeLLM:

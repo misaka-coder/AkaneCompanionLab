@@ -17,11 +17,13 @@ from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
 
 MUSIC_PLATFORM_LABELS = {
     "netease_music": "网易云",
+    "qq_music": "QQ音乐",
 }
 
 # NetEase track ids are pure decimal song ids.
 MUSIC_TRACK_ID_PATTERNS = {
     "netease_music": re.compile(r"^[0-9]{1,20}$"),
+    "qq_music": re.compile(r"^(?=.*[A-Za-z])[0-9A-Za-z_-]{1,64}$"),
 }
 
 
@@ -44,10 +46,12 @@ class SendMusicCardToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- send_music_card：当用户要在当前 QQ 会话收到网易云原生音乐卡片时使用。"
-            "platform 固定为 netease_music，track_id 是纯数字网易云歌曲 ID；"
+            "- send_music_card：当用户要在当前 QQ 会话收到网易云或 QQ音乐时使用。"
+            "platform 为 netease_music（track_id 是纯数字歌曲 ID）或 qq_music（track_id 是字母数字 songmid）；"
             "track_id 必须来自本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
-            "它只把卡片送入本轮 QQ 交付队列，不代表传输已经成功。"
+            "工具结果只表示进入交付队列，不代表传输已经成功；"
+            "网易云会先尝试原生卡片，卡片被 QQ 拒绝后再改发公开音频语音；"
+            "QQ音乐原生卡片已知不可用，仅在匿名公开接口真实返回可播地址时直接发语音。"
         )
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -58,12 +62,17 @@ class SendMusicCardToolHandler(BaseToolHandler):
         if label is None:
             return ToolExecutionResult(
                 tool_type=self.tool_type,
-                followup_context="音乐卡片参数无效：当前只支持 platform=netease_music。",
+                followup_context="音乐交付参数无效：platform 只支持 netease_music 或 qq_music。",
             )
         if not pattern or not pattern.fullmatch(track_id):
+            hint = (
+                "网易云 track_id 必须是纯数字歌曲 ID，请使用搜索结果里的精确 ID。"
+                if platform == "netease_music"
+                else "QQ音乐 track_id 必须是歌曲 songmid（字母数字组合），不是数字 songid。"
+            )
             return ToolExecutionResult(
                 tool_type=self.tool_type,
-                followup_context="网易云 track_id 必须是纯数字歌曲 ID，请使用搜索结果里的精确 ID。",
+                followup_context=hint,
             )
         return ToolExecutionResult(
             tool_type=self.tool_type,

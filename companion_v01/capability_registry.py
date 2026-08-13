@@ -1427,10 +1427,12 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_music_card",
     display_name="Send music card",
     description=(
-        "发送一张网易云 QQ 原生音乐分享卡片给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
-        "platform 固定为 netease_music，track_id 是纯数字网易云歌曲 ID。"
+        "把网易云或 QQ音乐歌曲交付给当前 QQ 会话。只接受 platform 与 track_id 两个字段："
+        "netease_music 的 track_id 是纯数字歌曲 ID；qq_music 的 track_id 是字母数字 songmid。"
         "track_id 必须是本工具结果、用户输入或已展开工具轨迹中真实出现的精确 ID，严禁根据歌名猜测或编造。"
-        "本工具只把卡片送入本轮 QQ 交付队列，不代表传输已经成功。"
+        "本工具只把目标送入本轮 QQ 交付队列，不代表传输已经成功；"
+        "网易云先尝试原生卡片，被 QQ 拒绝后改发公开音频语音。"
+        "QQ音乐已知无可用原生卡片，只在平台匿名公开接口返回可播地址时直接发语音。"
     ),
     input_schema={
         "type": "object",
@@ -1438,14 +1440,14 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["netease_music"],
-                "description": "音乐平台，当前固定为网易云。",
+                "enum": ["netease_music", "qq_music"],
+                "description": "音乐平台：网易云或 QQ音乐。",
             },
             "track_id": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "精确的网易云纯数字歌曲 ID。",
+                "description": "精确的平台歌曲 ID（网易云纯数字 / QQ音乐 songmid）。",
             },
         },
         "required": ["platform", "track_id"],
@@ -1454,8 +1456,8 @@ SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("music_card_delivery",),
     visible_in=("qq",),
-    spec_version="1.1.0",
-    schema_version=2,
+    spec_version="1.2.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,

@@ -1116,6 +1116,81 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["music_delivery_feedback_result"]["status"], "music_failure_notice_sent")
         self.assertTrue(any("音乐卡片发送失败" in note for note in gateway.delivery_notes))
 
+    def test_music_voice_fallback_keeps_model_reply_and_reports_recovery(self) -> None:
+        class RecoveredMusicGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.delivery_notes: list[str] = []
+
+            def send_music_cards(self, context, tool_events):
+                return {
+                    "ok": True,
+                    "status": "fallback_sent",
+                    "count": 1,
+                    "card_count": 0,
+                    "fallback_count": 1,
+                    "results": [
+                        {
+                            "ok": True,
+                            "card_ok": False,
+                            "delivery_surface": "voice_fallback",
+                            "track_id": "30352891",
+                        }
+                    ],
+                }
+
+            def add_delivery_note(self, session_id: str, note: str) -> None:
+                self.delivery_notes.append(note)
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "我已经找到这首歌，正在尝试交付。",
+                        "speech_segments": ["我已经找到这首歌，正在尝试交付。"],
+                        "tool_events": [
+                            {
+                                "type": "music_share_ready",
+                                "send_to_user": True,
+                                "client_mode": "qq_text",
+                                "music": {"platform": "netease_music", "track_id": "30352891"},
+                            }
+                        ],
+                    },
+                }
+
+        gateway = RecoveredMusicGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "推一首歌"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=False,
+                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        sent_text = repr(gateway.text_sends)
+        self.assertIn("正在尝试交付", sent_text)
+        self.assertIn("改用 QQ 语音", sent_text)
+        self.assertNotIn("音乐卡片没有成功发出", sent_text)
+        self.assertEqual(
+            result["music_delivery_feedback_result"]["status"],
+            "music_voice_fallback_notice_sent",
+        )
+        self.assertTrue(any("已改用 QQ 语音成功交付" in note for note in gateway.delivery_notes))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,13 +1,17 @@
 ---
 name: music-card-share
-description: Use when exec_run is available and the user wants to find a song, request a song, or share a QQ native music card for a NetEase track.
+description: Use when exec_run is available and the user wants to find or deliver a NetEase or QQ Music track in a QQ conversation.
 ---
 
 # Music Card Share
 
 Find the exact platform track id for a song and deliver a QQ native music card.
 The card itself is sent with the `send_music_card` tool; this Skill only handles
-finding the correct id. It never downloads, decrypts, or uploads audio.
+finding the correct id. The Skill and its search script never download, decrypt,
+or upload audio. NetEase first tries a native card and can fall back to its public
+song URL when QQ rejects the card. QQ Music's known-broken native-card path is not
+retried; its delivery adapter sends voice only when the anonymous public endpoint
+actually returns a playable URL. Transport results are reported separately.
 
 ## When to load
 
@@ -28,13 +32,16 @@ Run the bundled search script from the Skill directory using `exec_run`:
 
 ```
 python music-card-share/scripts/search_music.py --query "借口 陈海星" --limit 5
+python music-card-share/scripts/search_music.py --platform qq --query "借口 周杰伦" --limit 5
 ```
 
 The script prints one JSON document with `status` in `success` / `empty` / `error`
-and, on success, `results` with the NetEase `track_id`, `title`, `artists` and
-`album`. Read it directly; it is small, so no cursor paging is needed.
+and, on success, `results` with `track_id`, `title`, `artists` and `album`.
+NetEase is the default platform; pass `--platform qq` for QQ Music. Read the
+small result directly; no cursor paging is needed.
 
-- `netease_music` track ids are decimal.
+- `netease_music` track ids are decimal. `qq_music` track ids are alphanumeric
+  `songmid` values, not numeric `songid` values.
 - Pick the result whose title + artist best matches the user's request. Honor
   "原唱", "Live", "翻唱" and similar qualifiers.
 - If several versions are all reasonable, choose by the user's wording; if you
@@ -53,7 +60,13 @@ exact id cannot be located right now; never invent an id from the song title.
 ## Behavior rules
 
 - Do not download audio, bypass membership, or attempt to extract encrypted cache
-  formats. Only the card is delivered; whether the full song plays is decided by
-  QQ, the platform's copyright, membership, and region.
+  formats. Whether the card or its delivery-layer voice fallback plays is still
+  decided by QQ, the platform's copyright, membership, and region.
+- QQ Music voice fallback is best effort: it only works when the anonymous public
+  web endpoint returns a playable URL. VIP, copyright-restricted, or regional
+  tracks can legitimately remain unavailable; report that honestly and offer a
+  different version or NetEase result.
+- If the user did not name a platform, try NetEase first; if no suitable result
+  exists, try QQ Music and say you switched platforms.
 - On `empty` or `error`, report the real outcome and offer to adjust the query;
   do not pretend a card was prepared.
