@@ -88,6 +88,8 @@ SYSTEM_MEDIA_CONTROL_TOOL_SPEC = CapabilityToolSpec(
     display_name="Control system media",
     description=(
         "按用户明确要求控制绑定电脑的系统播放器。只允许播放、暂停、停止、上一首和下一首，不会操作文件或网页。"
+        "返回状态严格区分：已确认达到目标状态、指令已发送但状态未确认（execution_unknown，不算成功）、无媒体会话或明确失败；"
+        "未确认时不要声称播放状态已经改变。"
     ),
     input_schema={
         "type": "object",

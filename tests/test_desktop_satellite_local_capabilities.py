@@ -396,6 +396,64 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
         self.assertEqual(envelope.data["result"]["foreground"]["processName"], "editor")
         self.assertIn("真实读取完成", result.followup_context)
 
+    def test_media_control_execution_unknown_reaches_model_as_unconfirmed_not_success(self) -> None:
+        service = DesktopSatelliteService(instance_id="instance-a", token="device-secret")
+        broker = ExecutorBroker(service)
+        spec = next(item for item in DESKTOP_SATELLITE_TOOL_SPECS if item.capability_id == "system_media_control")
+        result_box: dict[str, BrokerExecutionResult] = {}
+
+        with TestClient(self._app(service)) as client:
+            with client.websocket_connect(
+                "/capabilities/satellite/ws",
+                headers={"Authorization": "Bearer device-secret"},
+            ) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("instance-a"))
+                registered = websocket.receive_json()
+                receipt = service.resolve_receipt(spec)
+                self.assertIsNotNone(receipt)
+                assert receipt is not None
+
+                def execute() -> None:
+                    result_box["result"] = broker.execute(
+                        spec=spec,
+                        receipt_value=receipt.as_dict(),
+                        invocation_id="call_media_unknown",
+                        arguments={"action": "play"},
+                    )
+
+                worker = threading.Thread(target=execute, daemon=True)
+                worker.start()
+                invoke = websocket.receive_json()
+                self.assertEqual(invoke["tool_id"], spec.capability_id)
+
+                websocket.send_json(
+                    _execution_message(
+                        "result",
+                        registered,
+                        "call_media_unknown",
+                        spec.capability_id,
+                        status="execution_unknown",
+                        reason="media_state_not_confirmed",
+                        data={
+                            "ok": False,
+                            "status": "execution_unknown",
+                            "playbackStatus": "paused",
+                            "action": "play",
+                        },
+                    )
+                )
+                worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        result = result_box["result"]
+        self.assertEqual(result.status, "execution_unknown")
+        self.assertEqual(result.reason, "media_state_not_confirmed")
+        self.assertIn("结果未确认", result.model_feedback)
+        self.assertIn("不要声称操作已经完成", result.model_feedback)
+        self.assertEqual(result.data["playbackStatus"], "paused")
+        self.assertEqual(result.data["status"], "execution_unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

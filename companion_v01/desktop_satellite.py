@@ -311,6 +311,13 @@ class DesktopSatelliteService:
                     model_feedback=self._success_feedback(tool_id),
                     data=data,
                 )
+            elif raw_status == "execution_unknown":
+                pending.result = BrokerExecutionResult(
+                    status="execution_unknown",
+                    reason=reason or "execution_unknown",
+                    model_feedback=self._unknown_feedback(tool_id),
+                    data=data,
+                )
             elif raw_status == "rejected":
                 pending.result = BrokerExecutionResult(
                     status="failed",
@@ -379,6 +386,15 @@ class DesktopSatelliteService:
         if rejected:
             return f"用户的电脑拒绝了这次{operation}，请如实说明没有执行。"
         return f"用户的电脑没有成功完成{operation}，请如实说明这次操作失败。"
+
+    @staticmethod
+    def _unknown_feedback(tool_id: str) -> str:
+        spec = desktop_satellite_spec(tool_id)
+        operation = spec.display_name if spec is not None else "本地能力调用"
+        return (
+            f"已向用户绑定电脑发送{operation}指令，但执行器没有确认到实际状态变化；"
+            "请如实说明结果未确认，不要声称操作已经完成。"
+        )
 
     @staticmethod
     def _safe_result_data(value: Any) -> dict[str, Any]:
@@ -514,6 +530,7 @@ class DesktopSatelliteService:
             "invalid_action",
             "result_serialization_failed",
             "media_control_failed",
+            "media_state_not_confirmed",
             "unsupported_platform",
             "no_active_session",
             "control_failed",

@@ -1560,7 +1560,7 @@ def _execute_satellite_with_broker(
             model_feedback = f"已从用户绑定电脑读取或执行了 {spec.display_name}，以下是实际返回结果。"
         else:
             model_feedback = f"当前无法使用用户电脑上的{spec.display_name}，请如实说明没有完成。"
-    if data and status == "succeeded":
+    if data and status in {"succeeded", "execution_unknown"}:
         model_feedback = f"{model_feedback}\n实际返回数据：{json.dumps(data, ensure_ascii=False, sort_keys=True)}"
     event = {
         "type": "capability_execution_result",
