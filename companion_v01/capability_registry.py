@@ -1088,7 +1088,7 @@ COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
         "把当前对话中已经整理好的内容，或 source_ids 指向的现有材料，生成一个新的文档、表格、"
         "字幕或文本文件。普通聊天回复不要调用。若只是忠实转换现有材料，可不填 content_markdown；"
         "若需要改写、总结或排版，先在 content_markdown/table_rows 中给出要写入的最终内容。"
-        "适合文档、简单网页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
+        "适合文档、静态展示页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
         "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
     ),
     input_schema={

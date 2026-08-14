@@ -72,11 +72,11 @@ class CodingProjectSkillTests(unittest.TestCase):
         content = self.registry.load("coding-project").content
         for marker in (
             "Honest ability check first",
-            "Scope an acceptable MVP",
+            "Scope an acceptable MVP and keep going",
             "Check the environment, never assume",
-            "Commands must keep real failure status",
+            "Read before editing; preserve real failure status",
             "Build incrementally, edit locally",
-            "Long tasks must not hide progress",
+            "Keep long tasks observable",
             "Verification levels",
             "Web deliverables must match the deployment reality",
             "Delivery: queued is not received",
@@ -84,12 +84,17 @@ class CodingProjectSkillTests(unittest.TestCase):
         ):
             self.assertIn(marker, content)
         self.assertIn("未运行验证", content)
-        self.assertIn("set -e", content)
+        self.assertIn("$LASTEXITCODE", content)
         self.assertIn('$ErrorActionPreference = "Stop"', content)
         self.assertIn("node --check file.js", content)
         self.assertIn("python -m py_compile", content)
         self.assertIn("Pointer Lock", content)
         self.assertIn("已进入发送队列", content)
+        self.assertIn("does not expose a\n  JavaScript console", content)
+        self.assertIn("One failed command is evidence for the next step", content)
+        self.assertIn("briefly tell the user the concrete next step", content)
+        self.assertIn("Fix the root cause with the smallest coherent change", content)
+        self.assertIn("Run the narrowest relevant check", content)
 
     def test_skill_declares_no_permission_upgrade_or_new_tools(self) -> None:
         content = self.registry.load("coding-project").content
@@ -121,6 +126,7 @@ class ToolDescriptionBoundaryTests(unittest.TestCase):
     def test_compose_file_spec_names_generation_vs_run_boundary(self) -> None:
         description = COMPOSE_FILE_TOOL_SPEC.description
         self.assertIn("返回成功只证明文件已生成，不证明内容可运行", description)
+        self.assertIn("静态展示页", description)
         self.assertIn("coding-project Skill", description)
 
     def test_revise_spec_names_verification_boundary_and_local_edits(self) -> None:
@@ -131,8 +137,8 @@ class ToolDescriptionBoundaryTests(unittest.TestCase):
     def test_exec_run_spec_guides_long_tasks_and_failure_propagation(self) -> None:
         description = EXEC_RUN_TOOL_SPEC.description
         self.assertIn("running 是命令仍在执行的正常状态", description)
-        self.assertIn("set -e", description)
-        self.assertIn("不要用 tail/head/grep 管道隐藏进度", description)
+        self.assertIn("抑制或缓冲实时输出", description)
+        self.assertIn("按当前 Shell 显式保留并检查每一步失败状态", description)
         self.assertIn("不是 Shell 沙箱", description)
         self.assertIn("当前宿主用户权限", description)
 

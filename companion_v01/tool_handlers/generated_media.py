@@ -211,7 +211,7 @@ class ComposeFileToolHandler(BaseToolHandler):
             "要生成表格优先用 table_rows；要生成 Word/PDF/Markdown 优先用 content_markdown。"
             "需要标红、加粗、黄色高亮时，把明确规则写进 formatting；后端只执行白名单样式字段。"
             "生成结果会成为 gen_001 这类可继续修改的生成文件，不会覆盖用户原始附件。"
-            "它适合文档、简单网页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
+            "它适合文档、静态展示页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
             "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
         )
 
