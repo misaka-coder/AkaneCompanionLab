@@ -1164,6 +1164,39 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
             client_mode="desktop_pet",
         )
 
+    def test_tool_spec_action_enum_is_the_single_model_visible_contract(self) -> None:
+        handler = BrowserPageToolHandler(browser_runner=object())
+        spec = handler.tool_spec()
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        enum_actions = list(spec.input_schema["properties"]["action"]["enum"])
+        # The canonical ToolSpec (native schema authority) must expose exactly
+        # the actions the handler actually accepts, and nothing else.
+        self.assertEqual(sorted(enum_actions), sorted(handler.ALLOWED_ACTIONS))
+        self.assertEqual(len(enum_actions), 9)
+        self.assertEqual(
+            enum_actions,
+            ["navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"],
+        )
+
+        minimal_calls = {
+            "navigate": {"type": "browser_page", "action": "navigate", "url": "https://example.com"},
+            "read_text": {"type": "browser_page", "action": "read_text"},
+            "current": {"type": "browser_page", "action": "current"},
+            "snapshot": {"type": "browser_page", "action": "snapshot"},
+            "scroll": {"type": "browser_page", "action": "scroll"},
+            "elements": {"type": "browser_page", "action": "elements"},
+            "click": {"type": "browser_page", "action": "click", "ref": "e1"},
+            "fill": {"type": "browser_page", "action": "fill", "ref": "e1", "text": "搜索"},
+            "press": {"type": "browser_page", "action": "press", "key": "Enter"},
+        }
+        for action in enum_actions:
+            with self.subTest(action=action):
+                normalized = handler.normalize_call(minimal_calls[action])
+                self.assertIsNotNone(normalized, action)
+                assert normalized is not None
+                self.assertEqual(normalized["action"], action)
+
     def test_prompt_instruction_distinguishes_managed_read_from_user_visible_open(self) -> None:
         instruction = BrowserPageToolHandler(browser_runner=object()).build_prompt_instruction()
 

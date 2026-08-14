@@ -199,5 +199,71 @@ class RecordToolBatchOversizedAnchorTests(unittest.TestCase):
                 manager.close()
 
 
+    def test_execution_unknown_result_status_is_persisted_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = _manager(temp_dir)
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "u-5", "content": "播放", "timestamp": 500},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                exchange = _exchange("system_media_control", "call-5", 501, "已发送指令但状态未确认")
+                exchange["result_status"] = "execution_unknown"
+                batch = manager.record_tool_batch(
+                    exchanges=[exchange],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(batch["ok"], batch)
+                stored = manager._store.get_record_by_source_id(batch["exchanges"][0]["tool_result_source_id"])
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored["trace_metadata"]["status"], "execution_unknown")
+            finally:
+                manager.close()
+
+    def test_task_event_text_keeps_operation_paths_and_redacts_secrets(self) -> None:
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        text = MemcoreManager._safe_task_event_text(
+            "处理 C:\\Users\\Lenovo\\Desktop\\a.txt，api_key=supersecret123，token=xyz",
+            limit=200,
+        )
+        self.assertIn("C:\\Users\\Lenovo\\Desktop\\a.txt", text)
+        self.assertNotIn("supersecret123", text)
+        self.assertNotIn("[local_path]", text)
+
+    def test_legacy_path_projection_migration_runs_via_maintenance_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = _manager(temp_dir)
+            try:
+                manager.begin_input_turn(
+                    {"source_id": "u-6", "content": "迁移前", "timestamp": 600},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                dry = manager.run_legacy_path_projection_migration(dry_run=True)
+                self.assertTrue(dry["ok"], dry)
+                self.assertTrue(dry["dry_run"])
+                self.assertIn("totals", dry)
+                applied = manager.run_legacy_path_projection_migration(dry_run=False)
+                self.assertTrue(applied["ok"], applied)
+                self.assertFalse(applied["dry_run"])
+                self.assertEqual(applied["failed_namespace_count"], 0)
+            finally:
+                manager.close()
+
+
 if __name__ == "__main__":
     unittest.main()

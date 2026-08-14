@@ -177,7 +177,6 @@ class MemcoreManager:
         self._uses_process_runtime = False
         self._systems: dict[tuple[str, str, str], Any] = {}
         self._warmed_index_keys: set[tuple[str, str, str]] = set()
-        self._migrated_path_namespaces: set[tuple[str, str, str]] = set()
         self._background_futures: set[Future[Any]] = set()
         self._background_compactions: dict[tuple[str, str, str, str], Future[Any]] = {}
         self._pending_compactions: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
@@ -1896,6 +1895,104 @@ class MemcoreManager:
                 "projection_generation": 0,
             }
 
+    def run_legacy_path_projection_migration(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Explicit pre-traffic maintenance: migrate legacy path-damage projections.
+
+        Iterates every namespace with frozen projections in the store and runs
+        the idempotent V3 migration (re-projection + settlement rebuild).  This
+        must run during a release maintenance phase or before the service takes
+        traffic, never on the first user request.  Returns per-namespace reports
+        and aggregate counts without any payload text.
+        """
+
+        operation = "run_legacy_path_projection_migration"
+        if not self.available or self._store is None or self._memcore_module is None:
+            return self._status(operation, False, "unavailable", reason=self._reason or "memcore_not_ready")
+        try:
+            list_namespaces = getattr(self._store, "list_projection_namespaces", None)
+            if not callable(list_namespaces):
+                return self._status(operation, False, "unsupported", reason="store_namespace_listing_unsupported")
+            namespaces = list_namespaces()
+        except Exception as exc:
+            return self._status(
+                operation,
+                False,
+                "failed",
+                reason=f"namespace_listing_failed:{type(exc).__name__}",
+            )
+        from memcore.projection import ProjectionAdapter, default_renderer_registry
+        from memcore.projection_migration import migrate_legacy_path_projections
+
+        timezone = str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+        registry = default_renderer_registry()
+        token_counter = self._token_counter
+        count_text = getattr(token_counter, "count_text", None) if token_counter is not None else None
+        totals: dict[str, int] = {}
+        reports: list[dict[str, Any]] = []
+        for tenant_id, user_id, domain_id, conversation_id in namespaces:
+            try:
+                namespace = self._memcore_module.Namespace(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    domain_id=domain_id,
+                    conversation_id=conversation_id,
+                )
+                adapter = ProjectionAdapter(renderer_registry=registry, timezone=timezone)
+                report = migrate_legacy_path_projections(
+                    store=self._store,
+                    adapter=adapter,
+                    namespace=namespace,
+                    dry_run=bool(dry_run),
+                    count_text=count_text if callable(count_text) else None,
+                )
+            except Exception as exc:
+                report = {"status": "failed", "reason": f"{type(exc).__name__}"}
+            reports.append(
+                {
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "domain_id": domain_id,
+                    "conversation_id": conversation_id,
+                    "report": report,
+                }
+            )
+            for key in (
+                "scanned_memcore_marker_rows",
+                "scanned_host_local_path_rows",
+                "scanned_host_tmpdir_rows",
+                "migrated",
+                "version_advanced_only",
+                "preserved_irrecoverable_host_redaction",
+                "preserved_without_raw_source",
+                "settled_rebuilt",
+                "settled_rebuilt_noop",
+                "settled_rebuilt_fallback",
+                "settled_rebuild_failed_dropped",
+            ):
+                if isinstance(report, dict):
+                    totals[key] = totals.get(key, 0) + int(report.get(key) or 0)
+        failed_namespaces = sum(1 for item in reports if str(item["report"].get("status") or "") == "failed")
+        result = {
+            **self._status(
+                operation,
+                failed_namespaces == 0,
+                "ok" if failed_namespaces == 0 else "partial",
+            ),
+            "dry_run": bool(dry_run),
+            "namespace_count": len(namespaces),
+            "failed_namespace_count": failed_namespaces,
+            "totals": totals,
+            "reports": reports,
+        }
+        logger.info(
+            "memcore legacy path projection migration done: namespaces=%s failed=%s dry_run=%s totals=%s",
+            len(namespaces),
+            failed_namespaces,
+            bool(dry_run),
+            json.dumps(totals, ensure_ascii=False, sort_keys=True),
+        )
+        return result
+
     def record_request_projection(
         self,
         *,
@@ -3221,6 +3318,13 @@ class MemcoreManager:
 
     @staticmethod
     def _safe_task_event_text(value: Any, *, limit: int) -> str:
+        """Keep background-task text model-reusable without projecting secrets.
+
+        Operation evidence (goal text, messages, failure targets, discovered
+        paths) stays intact so a later continuation round can reuse it.
+        Resource backing paths belong to structured fields and must not enter
+        these text fields in the first place.
+        """
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         text = re.sub(
@@ -3228,12 +3332,6 @@ class MemcoreManager:
             r"\1=[redacted]",
             text,
         )
-        text = re.sub(
-            r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)",
-            "[local_path]",
-            text,
-        )
-        text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
         text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
         return re.sub(r"\s+", " ", text).strip()[: max(1, int(limit or 1))]
 
@@ -3546,38 +3644,8 @@ class MemcoreManager:
                     runtime=self._runtime,
                 )
                 self._systems[key] = existing
-                self._migrate_legacy_path_projections_once(existing, key)
         self._warm_index_for_system(existing, operation="get_system")
         return existing
-
-    def _migrate_legacy_path_projections_once(self, system: Any, key: tuple[str, str, str]) -> None:
-        """Run the explicit legacy path-omission migration once per namespace.
-
-        Idempotent on the MemCore side; guarded here so the marker scan runs
-        at most once per (user, conversation, domain) for this process.
-        """
-
-        migrate = getattr(system, "migrate_legacy_path_projections", None)
-        if not callable(migrate):
-            return
-        with self._lock:
-            if key in self._migrated_path_namespaces:
-                return
-            self._migrated_path_namespaces.add(key)
-        try:
-            report = migrate()
-        except Exception as exc:
-            logger.warning(
-                "memcore legacy path projection migration failed for namespace %s: %s",
-                key,
-                str(exc) or exc.__class__.__name__,
-            )
-            return
-        try:
-            from memcore.projection_migration import migration_report_summary
-        except ImportError:
-            return
-        logger.info("memcore %s", migration_report_summary(report))
 
     @staticmethod
     def _build_prompt_overrides(persona_text: str) -> Any:

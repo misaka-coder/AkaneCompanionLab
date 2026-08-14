@@ -559,6 +559,23 @@ class ExecTraceStatusTests(unittest.TestCase):
         )
         self.assertEqual(envelope.status, "ok")
 
+    def test_satellite_execution_unknown_keeps_real_state_in_trace_status(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        result = SimpleNamespace(
+            tool_type="system_media_control",
+            followup_context="已向用户绑定电脑发送指令，但结果未确认。",
+            stream_events=[
+                {
+                    "type": "capability_execution_result",
+                    "tool_type": "system_media_control",
+                    "status": "execution_unknown",
+                    "reason": "media_state_not_confirmed",
+                }
+            ],
+        )
+        self.assertTrue(engine._tool_result_is_error(result))
+        self.assertEqual(engine._tool_result_trace_status(result), "execution_unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

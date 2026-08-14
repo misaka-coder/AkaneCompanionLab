@@ -787,6 +787,32 @@ class AkaneMemoryEngine:
             logger.warning("memcore manager disabled during setup: %s", exc)
             return None
 
+    def migrate_memcore_legacy_path_projections(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Explicit pre-traffic maintenance for legacy path-damage projections.
+
+        Never runs on the ordinary request path.  Returns per-namespace
+        migration reports and aggregate counts without payload text.
+        """
+
+        manager = getattr(self, "memcore_manager", None)
+        runner = getattr(manager, "run_legacy_path_projection_migration", None)
+        if not callable(runner):
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "memcore_migration_unavailable",
+                "dry_run": bool(dry_run),
+            }
+        try:
+            return runner(dry_run=bool(dry_run))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "failed",
+                "reason": f"{type(exc).__name__}",
+                "dry_run": bool(dry_run),
+            }
+
     def _memcore_manager_if_enabled(self):
         manager = getattr(self, "memcore_manager", None)
         if manager is None or not getattr(manager, "enabled", False):
@@ -7118,12 +7144,15 @@ class AkaneMemoryEngine:
             status = str(event.get("status") or event.get("state") or "").strip().lower()
             if status in {"canceled", "cancelled"}:
                 return "cancelled"
-            # Preserve the exec command's real terminal state in the MemCore
-            # observation instead of collapsing it to a generic error/success,
-            # so a timed-out or unconfirmed command is never remembered as done.
+            # Preserve trusted terminal states in the MemCore observation
+            # instead of collapsing them to a generic error/success, so a
+            # timed-out or unconfirmed operation (exec commands and reviewed
+            # desktop satellite capabilities alike) is never remembered as
+            # done.  capability_execution_result events are only emitted by
+            # reviewed execution paths, so their known terminal states are
+            # safe to keep verbatim.
             if (
-                tool_type in EXEC_TOOL_SPEC_BY_ID
-                and str(event.get("type") or "").strip() == "capability_execution_result"
+                str(event.get("type") or "").strip() == "capability_execution_result"
                 and status in {"failed", "timed_out", "execution_unknown"}
             ):
                 return status
