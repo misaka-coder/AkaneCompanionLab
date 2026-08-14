@@ -479,7 +479,6 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             text,
         )
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
-        text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
         return re.sub(r"\s+", " ", text).strip()[:limit]
 
     def _run_coro_blocking(self, awaitable: Any) -> Any:

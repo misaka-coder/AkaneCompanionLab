@@ -75,7 +75,7 @@ Akane 从 wheelhouse 或包索引安装 `requirements-packages.txt` 中精确锁
 M1.2 后，Akane 公开能力 catalog 和 approval preview 的通用清洗逻辑也回流到 `capcore`：
 
 - legacy catalog entry 通过 `project_mapping_fields()` 统一得到 canonical `risk / confirm / effects`。
-- approval preview 会统一脱敏本地绝对路径、Bearer、secret-like literal 和 URL query secret。
+- approval preview 会统一脱敏 Bearer、secret-like literal 和 URL query secret；拟执行命令中的操作路径保留，供用户知情同意。
 - Akane route 层仍可在 `capcore` 输出之上做产品侧过滤，例如不把 `api_key` 这类敏感 key 名暴露给控制中心。
 
 ## 验证命令

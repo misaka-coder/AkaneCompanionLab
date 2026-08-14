@@ -7084,12 +7084,6 @@ class AkaneMemoryEngine:
             r"\1=[redacted]",
             text,
         )
-        text = re.sub(
-            r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)",
-            "[local_path]",
-            text,
-        )
-        text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
         return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:

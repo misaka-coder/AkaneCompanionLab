@@ -52,11 +52,12 @@ _READY_AVAILABILITY_STATUSES = frozenset({"ready", "available", "degraded", "ok"
 
 
 def _sanitize_model_text(value: Any) -> str:
-    """Keep executor output useful without projecting host secrets or paths.
+    """Keep executor output useful without projecting host secrets.
 
-    The provider keeps the original bytes in its private run log.  This copy is
-    the model-facing projection, so it follows the same redaction boundary as
-    the rest of the tool trace.
+    The provider keeps the original bytes in its private run log.  This copy
+    is the model-facing projection: secrets are redacted, but executable
+    evidence (commands, discovered paths, output text) stays intact so the
+    model can reuse it verbatim in the next round.
     """
     text = str(value or "")
     text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
@@ -65,13 +66,6 @@ def _sanitize_model_text(value: Any) -> str:
         r"\1=[redacted]",
         text,
     )
-    text = re.sub(
-        r"(?P<quote>[\"'])(?:[A-Za-z]:[\\/]|\\\\)[^\"'\r\n]+(?P=quote)",
-        "[local_path]",
-        text,
-    )
-    text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
-    text = re.sub(r"(?<![\w/])/(?:users|home|root|var|tmp|mnt|Volumes)/[^\r\n,;|<>\s]+", "[local_path]", text)
     return text
 
 

@@ -326,7 +326,7 @@ audit = mem.record_request_projection(
 )
 ```
 
-持久审计保存 hash、source IDs、代次和结构化状态，不保存 API key、本地绝对路径或完整敏感 audit 正文。
+持久审计保存 hash、source IDs、代次和结构化状态，不保存 API key、宿主内部路径字段或完整敏感 audit 正文。
 
 ## 读取接口
 
@@ -476,7 +476,7 @@ MemCore package 的权威接口在 `memcore.MemorySystem`、`memcore.timeline`�
 - complete 前 staged metadata 不进入普通检索；
 - tool/material trace 默认不进入普通检索，显式查询可读；
 - 跨 Namespace 数据不可见，群聊 Actor 归因不丢；
-- raw、日志、audit、projection 中无 key、base64、本地绝对路径；
+- raw、日志、audit 中无 key、base64、宿主内部路径；projection 中无 key、base64、宿主内部路径字段，模型完成任务所需的操作路径证据保留原样；
 - 不可用与失败返回结构化状态，不出现 fake success；
 - 旧 prompt/history 写入器与 reader 已删除或只剩明确迁移入口。
 

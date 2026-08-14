@@ -445,7 +445,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(raw, (unit * 5000).encode("utf-8"))
         self.assertNotIn(b"\xef\xbf\xbd", raw)
 
-    def test_secret_and_path_are_redacted_for_model_but_kept_in_private_log(self) -> None:
+    def test_secret_redacted_for_model_but_kept_in_private_log_while_paths_stay(self) -> None:
         executor = self._executor()
         command = _python_command(
             "import sys; print('api_key=supersecret123'); "
@@ -457,7 +457,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
         mapped = map_exec_run_outcome(start)
         self.assertNotIn("supersecret123", mapped.model_feedback)
-        self.assertNotIn("C:\\Users\\alice", mapped.model_feedback)
+        self.assertIn("C:\\Users\\alice", mapped.model_feedback)
         self.assertNotIn("supersecret123", str(mapped.data))
         log = (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8", errors="replace")
         self.assertIn("supersecret123", log)

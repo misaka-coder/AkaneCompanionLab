@@ -297,7 +297,6 @@ class TaskWorkspaceService:
             r"\1=[redacted]",
             text,
         )
-        text = re.sub(r"(?<![\w/])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|<>]*", "[local_path]", text)
         text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[: max(1, int(limit or 1))]

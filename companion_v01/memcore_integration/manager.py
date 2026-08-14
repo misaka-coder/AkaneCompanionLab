@@ -177,6 +177,7 @@ class MemcoreManager:
         self._uses_process_runtime = False
         self._systems: dict[tuple[str, str, str], Any] = {}
         self._warmed_index_keys: set[tuple[str, str, str]] = set()
+        self._migrated_path_namespaces: set[tuple[str, str, str]] = set()
         self._background_futures: set[Future[Any]] = set()
         self._background_compactions: dict[tuple[str, str, str, str], Future[Any]] = {}
         self._pending_compactions: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
@@ -3545,8 +3546,38 @@ class MemcoreManager:
                     runtime=self._runtime,
                 )
                 self._systems[key] = existing
+                self._migrate_legacy_path_projections_once(existing, key)
         self._warm_index_for_system(existing, operation="get_system")
         return existing
+
+    def _migrate_legacy_path_projections_once(self, system: Any, key: tuple[str, str, str]) -> None:
+        """Run the explicit legacy path-omission migration once per namespace.
+
+        Idempotent on the MemCore side; guarded here so the marker scan runs
+        at most once per (user, conversation, domain) for this process.
+        """
+
+        migrate = getattr(system, "migrate_legacy_path_projections", None)
+        if not callable(migrate):
+            return
+        with self._lock:
+            if key in self._migrated_path_namespaces:
+                return
+            self._migrated_path_namespaces.add(key)
+        try:
+            report = migrate()
+        except Exception as exc:
+            logger.warning(
+                "memcore legacy path projection migration failed for namespace %s: %s",
+                key,
+                str(exc) or exc.__class__.__name__,
+            )
+            return
+        try:
+            from memcore.projection_migration import migration_report_summary
+        except ImportError:
+            return
+        logger.info("memcore %s", migration_report_summary(report))
 
     @staticmethod
     def _build_prompt_overrides(persona_text: str) -> Any:

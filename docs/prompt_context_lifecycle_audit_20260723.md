@@ -616,7 +616,7 @@ QQ 每轮上下文已从一整段固定说明收敛为单行 live state：`qq.re
 - 任务事件复用 MemCore 的通用 `record_external_event()`，没有给 MemCore 增加 task 表或第二历史区；
 - task created、steps/artifact update、worker delegated/started/tool/waiting/blocked/completed、user question、cleaned 等现有事件都走同一桥接；
 - MemCore 事件只包含 task id、当前状态、目标、actor、短消息、是否等待用户、问题、handoff 摘要和产物 handle，不写完整步骤 payload、工具 followup、文件正文、storage path 或 delivery 账号；
-- 本地绝对路径、Bearer 与 key/token/password/secret 样式在进入 MemCore 前脱敏；
+- Bearer 与 key/token/password/secret 样式在进入 MemCore 前脱敏；宿主内部路径字段（`storage_relpath` 等）仍隐藏，模型完成任务所需的操作路径（命令、工具结果中的路径）保留原样，不注入脱敏标记；
 - 事件写入返回结构化 `ok/status/reason/source_id`，失败会附在 TaskWorkspaceService 返回值并写 warning，不伪装成已记录；任务数据库本身仍可独立完成状态更新；
 - 主聊天改用 `task.workspace` 短索引，保留全部 active task、全部 pending handoff task、待回答问题和产物 handle，不再每轮展开步骤、工坊说明、交接明细、最近事件与前台话术；
 - 短索引没有沿用旧的两条 task 上限或七天静默隐藏；完整 `build_prompt_context()` 继续供后台 worker 使用，`manage_task_workspace inspect` 继续按需返回完整步骤和交接；

@@ -27,8 +27,6 @@ APPROVAL_SECRET_MARKERS = (
     "token",
 )
 APPROVAL_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-LOCAL_PATH_RE = re.compile(r"(?i)([A-Z]:[\\/][^\s,;]+|\\\\[^\s,;]+|/(?:users|home|root|var|tmp|mnt|Volumes)/[^\s,;]+)")
-
 
 def build_approval_request_fingerprint(payload: Mapping[str, Any]) -> str:
     """Deterministic fingerprint of the requested action, bound to the grant.
@@ -402,7 +400,6 @@ def _safe_public_text(value: Any, *, default: str = "", limit: int = 160) -> str
     lowered = text.lower()
     if any(marker in lowered for marker in APPROVAL_SECRET_MARKERS):
         return default[:limit]
-    text = LOCAL_PATH_RE.sub("[local_path]", text)
     return text[:limit]
 
 

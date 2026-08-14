@@ -403,7 +403,7 @@ class InvocationContext:
 不要把这些内容塞进 context：
 
 - API key。
-- 本地绝对路径。
+- 宿主内部路径（数据库/缓存/run log 物理位置）。
 - 截图内容。
 - prompt 全文。
 - 聊天历史。
