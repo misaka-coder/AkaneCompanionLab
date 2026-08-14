@@ -524,6 +524,7 @@ class AttachmentInboxService:
         target: str = "",
         section: str = "",
         kind: str = "any",
+        max_chars: int = 12000,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         resolution = self._resolve_target_result(
@@ -563,7 +564,11 @@ class AttachmentInboxService:
             )
             or item
         )
-        content = self._extract_section_content(touched, section=section)
+        content = self._extract_section_content(
+            touched,
+            section=section,
+            max_chars=max(500, min(4_000_000, int(max_chars or 12000))),
+        )
         if not content:
             return {
                 "ok": False,
@@ -1534,8 +1539,9 @@ class AttachmentInboxService:
         lines.append("请基于这份材料信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
         return "\n".join(lines)
 
-    def _extract_section_content(self, item: dict[str, Any], *, section: str) -> str:
-        original = self._extract_original_file_section(item, section=section)
+    def _extract_section_content(self, item: dict[str, Any], *, section: str, max_chars: int = 12000) -> str:
+        limit = max(500, min(4_000_000, int(max_chars or 12000)))
+        original = self._extract_original_file_section(item, section=section, max_chars=limit)
         if original:
             return original
 
@@ -1545,7 +1551,7 @@ class AttachmentInboxService:
         if isinstance(sheets, list) and sheets:
             sheet_content = self._extract_sheet_section(sheets, normalized_section)
             if sheet_content:
-                return sheet_content[:2200]
+                return sheet_content[:limit]
 
         tables = detail.get("tables")
         if (
@@ -1555,7 +1561,7 @@ class AttachmentInboxService:
         ):
             table_content = self._extract_table_section(tables, normalized_section)
             if table_content:
-                return table_content[:2200]
+                return table_content[:limit]
 
         preview = str(detail.get("text_preview") or detail.get("content_preview") or "").strip()
         if not preview:
@@ -1565,13 +1571,13 @@ class AttachmentInboxService:
         if line_range is not None:
             start, end = line_range
             selected = lines[max(0, start - 1) : max(start, end)]
-            return "\n".join(selected).strip()[:2200]
+            return "\n".join(selected).strip()[:limit]
 
         paragraph_index = self._parse_section_index(normalized_section)
         paragraphs = [block.strip() for block in re.split(r"\n\s*\n", preview) if block.strip()]
         if paragraph_index is not None and paragraphs:
             if 1 <= paragraph_index <= len(paragraphs):
-                return paragraphs[paragraph_index - 1][:2200]
+                return paragraphs[paragraph_index - 1][:limit]
             return ""
         if normalized_section and normalized_section not in {"全文", "全部", "预览", "当前可用片段"}:
             lowered = normalized_section.lower()
@@ -1579,8 +1585,8 @@ class AttachmentInboxService:
                 if lowered in line.lower():
                     start = max(0, index - 2)
                     end = min(len(lines), index + 8)
-                    return "\n".join(lines[start:end]).strip()[:2200]
-        return preview[:2200]
+                    return "\n".join(lines[start:end]).strip()[:limit]
+        return preview[:limit]
 
     def read_material_for_generation(self, item: dict[str, Any], *, max_chars: int = 30000) -> str:
         """Return a larger, bounded source excerpt for backend rendering.

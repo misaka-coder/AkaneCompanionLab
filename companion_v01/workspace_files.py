@@ -360,6 +360,7 @@ class WorkspaceFileService:
         state_map = self._state_map(profile_user_id=profile_user_id, session_id=session_id)
         page_items: list[dict[str, Any]] = []
         shown_chars = 0
+        shown_lines = 0
         complete = True
         extraction_capped = False
         budget_chars, budget_lines = (
@@ -390,16 +391,15 @@ class WorkspaceFileService:
                     "stale_cursor", reason="workspace file shrank since the previous page", detail_requested=uri
                 )
             remaining = budget_chars - shown_chars
-            if remaining <= 0:
+            remaining_lines = budget_lines - shown_lines
+            if remaining <= 0 or remaining_lines <= 0:
                 complete = False
                 break
             page_text, next_offset, total_chars = paged_reading.slice_page(
                 content,
                 start=offset,
                 budget_chars=remaining,
-                budget_lines=max(1, budget_lines - sum(
-                    str(item.get("content") or "").count("\n") for item in page_items
-                )),
+                budget_lines=remaining_lines,
             )
             page_items.append(
                 {
@@ -415,6 +415,7 @@ class WorkspaceFileService:
                 }
             )
             shown_chars += len(page_text)
+            shown_lines += page_text.count("\n") + (1 if page_text else 0)
             if next_offset >= total_chars:
                 file_index += 1
                 offset = 0
@@ -422,8 +423,10 @@ class WorkspaceFileService:
             else:
                 offset = next_offset
                 complete = False
-                if shown_chars >= budget_chars:
-                    break
+                # A partial file is the page boundary. Continuing the same file
+                # in this result would duplicate file headers and can exceed the
+                # line budget even while the raw character counter looks safe.
+                break
 
         if file_index >= len(resolved) and offset == 0:
             complete = True
@@ -699,6 +702,7 @@ class WorkspaceFileService:
             "complete": complete,
             "next_cursor": next_cursor,
             "shown_entries": min(total_entries, end_index),
+            "page_entries": max(0, end_index - start_index),
             "total_entries": total_entries,
         }
 

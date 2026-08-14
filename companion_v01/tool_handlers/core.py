@@ -414,6 +414,10 @@ READ_ATTACHMENT_SECTION_INPUT_SCHEMA: dict[str, Any] = {
             "enum": ["any", "file", "document"],
             "description": "Optional. Default document.",
         },
+        "cursor": {
+            "type": "string",
+            "description": "Opaque continuation cursor from a previous attachment-section page; pass only the cursor to continue it.",
+        },
     },
     "required": [],
 }
@@ -500,12 +504,6 @@ READ_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
             "minItems": 1,
             "maxItems": 200,
             "description": "workspace:/ relative file paths from list_workspace.",
-        },
-        "max_chars": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 4000000,
-            "description": "Maximum characters to read. Default 1000000.",
         },
         "cursor": {
             "type": "string",

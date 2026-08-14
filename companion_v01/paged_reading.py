@@ -132,6 +132,11 @@ def slice_page(
     start = max(0, start)
     char_end = min(total, start + max(MIN_PAGE_BUDGET_CHARS, int(budget_chars or 0)))
     segment = text[start:char_end]
+    # When the entire remainder fits, returning all of it is both lossless and
+    # complete.  Cutting back to the last newline here would manufacture an
+    # unnecessary continuation for a short final line.
+    if char_end >= total:
+        return segment, total, total
     newline_count = segment.count("\n")
     if newline_count >= max(1, int(budget_lines or 1)):
         target = max(1, int(budget_lines or 1))

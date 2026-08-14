@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -254,6 +255,8 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             '"section":"第2页|第10-30行|第1个表|Sheet1","kind":"any|file|document"}。'
             "它只展开当前已解析出的可用文本片段；如果文件本身没有文本层或还没解析好，系统会告诉你。"
             "不要用它处理图片礼物或长期记忆。"
+            "当指定 section 还有未展示内容时会返回 cursor；当前证据够用就直接回答，"
+            "只有需要同一 section 的后续内容时才只传 cursor 继续。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -261,6 +264,9 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
+        cursor = str(value.get("cursor") or "").strip()
+        if cursor:
+            return {"type": self.tool_type, "cursor": cursor}
         return {
             "type": self.tool_type,
             "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
@@ -273,12 +279,45 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        from ..paged_reading import (
+            FIRST_PAGE_BUDGET_CHARS,
+            FIRST_PAGE_BUDGET_LINES,
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            cursor_binding,
+            json_payload,
+            make_paged_cursor,
+            parse_json_payload,
+            parse_paged_cursor,
+            slice_page,
+        )
+
+        owner_binding = cursor_binding(self.tool_type, context.profile_user_id, context.session_id)
+        cursor = str(call.get("cursor") or "").strip()
+        start_offset = 0
+        expected_fingerprint = ""
+        if cursor:
+            payload = parse_json_payload(parse_paged_cursor(cursor, tool="as", binding=owner_binding))
+            if not isinstance(payload, dict):
+                return self._page_failure("cursor_invalid", "cursor 不属于当前用户/会话，或已损坏")
+            call = {
+                "type": self.tool_type,
+                "target": str(payload.get("t") or ""),
+                "section": str(payload.get("s") or "当前可用片段"),
+                "kind": str(payload.get("k") or "document"),
+            }
+            try:
+                start_offset = max(0, int(payload.get("o") or 0))
+            except (TypeError, ValueError):
+                return self._page_failure("cursor_invalid", "cursor 偏移无效")
+            expected_fingerprint = str(payload.get("f") or "")
         result = self.attachment_service.read_section(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
             target=str(call.get("target") or ""),
             section=str(call.get("section") or ""),
             kind=str(call.get("kind") or "document"),
+            max_chars=4_000_000,
             timestamp=context.now_ts,
         )
         item = result.get("item") if isinstance(result, dict) else None
@@ -298,27 +337,75 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             success_events=events,
         )
         if bool(result.get("ok")):
-            # The section extraction is the tool's own paging unit; its output is
-            # bounded by the extraction budget, so it must bypass the global
-            # 8000-char insurance instead of being silently cut there.
-            diagnostics = {"shown_chars": len(content)}
-            extra_note = ""
-            if content and len(content) >= 11_500:
-                extra_note = (
-                    "\n该片段达到单次展开上限；如需其它位置，用 section 指定页、行或 sheet 继续读取。"
+            fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if expected_fingerprint and fingerprint != expected_fingerprint:
+                return self._page_failure("stale_cursor", "附件内容在上一页后已变化")
+            if start_offset > len(content):
+                return self._page_failure("stale_cursor", "附件片段比 cursor 记录的更短")
+            budget_chars, budget_lines = (
+                (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
+                if not cursor
+                else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
+            )
+            page_text, next_offset, total_chars = slice_page(
+                content,
+                start=start_offset,
+                budget_chars=budget_chars,
+                budget_lines=budget_lines,
+            )
+            complete = next_offset >= total_chars
+            item = result.get("item") if isinstance(result.get("item"), dict) else {}
+            stable_target = str(item.get("attachment_handle") or item.get("attachment_id") or call.get("target") or "")
+            section = str(call.get("section") or "当前可用片段")
+            followup = (
+                f"你刚刚展开读取了工作台材料 {stable_target} 的「{section}」。\n"
+                f"本页内容如下：\n{page_text}\n"
+                "请基于这段展开内容自然回应；不要把材料全文默认写入长期记忆。"
+            )
+            continuation = None
+            if not complete:
+                next_cursor = make_paged_cursor(
+                    tool="as",
+                    binding=owner_binding,
+                    payload=json_payload(
+                        {"t": stable_target, "s": section, "k": str(call.get("kind") or "document"), "o": next_offset, "f": fingerprint}
+                    ),
                 )
+                continuation = {"type": self.tool_type, "cursor": next_cursor}
+                followup += (
+                    f"\n本页展示 {len(page_text)} 字，该 section 还有未展示内容。当前证据够用就直接回答；"
+                    f'需要时再调用 read_attachment_section(cursor="{next_cursor}")。'
+                )
+            elif len(content) >= 4_000_000:
+                followup += "\n该 section 已达到4M提取窗口；窗口外内容未包含，需改用更精确的页、行或 sheet 范围。"
+            diagnostics = {"shown_chars": len(page_text), "total_chars": total_chars, "complete": complete}
             envelope = ToolFollowupEnvelope(
-                content=(
-                    str(execution.followup_context or "").strip() + extra_note
-                ),
+                content=followup,
                 producer_bounded=True,
-                complete=True,
-                continuation=None,
+                complete=complete,
+                continuation=continuation,
                 diagnostics=diagnostics,
             )
             execution.followup_context = envelope.content
             execution.followup_envelope = envelope
         return execution
+
+    def _page_failure(self, status: str, reason: str) -> ToolExecutionResult:
+        from ..paged_reading import page_failure_feedback
+
+        content = page_failure_feedback(status=status, tool=self.tool_type, detail=reason)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "attachment_section_read", "status": status, "reason": reason}],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={"status": status},
+            ),
+        )
 
     def _normalize_kind(self, value: Any) -> str:
         kind = str(value or "document").strip().lower()

@@ -49,10 +49,11 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 | `list_workspace` | 50000 条扫描上限 | 是（8000 出口二次截断） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 实时文件系统 | 是（按完整 entry） |
 | `register_workspace_items` | max_files≤5000 | 是（条目清单可能 300k+ 字，8000 出口砍） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 实时文件系统+附件服务 | 否（完成回执即可） |
 
-> 实施修正（Phase 2/5 落地后）：`register_workspace_items` 采用 **complete_bounded**：全部失败/缺失行必须逐条可见，
-> 成功回执按 16 KiB 预算展示并明确写出剩余条数；操作本身 complete=True，完整文件清单走 list_workspace。
-> `focus_workspace`（每文件 12k 上限 + 明确指引 read_workspace）与 `load_character_context`（包内容有界）同样
-> 升级为 producer-bounded complete=True，不再被 8000 出口二次截断。`AdapterCapabilityToolHandler` 保持 6000 字
+> Repair pass 修正：`register_workspace_items` 不再隐藏成功 handle（`list_workspace` 无法恢复 handle），
+> 而是按完整 handle 回执分页；每页实际登记本页文件，后续 cursor 绑定 owner 与解析后文件集指纹。
+> `focus_workspace` 当前轮使用与 `read_workspace` 相同的首页预算，超出部分直接返回
+> `read_workspace` continuation，不再以 producer-bounded 绕过保险后一次灌入多文件全文。
+> `load_character_context`（包内容有界）保持 producer-bounded complete=True。`AdapterCapabilityToolHandler` 保持 6000 字
 > 上限，作为“未迁移第三方结果”的最后保险分类。
 | `web_search.search/batch_search` | 每条摘要 420 字、整页 6000 字 | 是（条目中间切断） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | AnySearch 返回（已归一） | 是（按完整结果条目） |
 | `web_search.extract` | 5000 字 | 是（正文硬切） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | AnySearch 提取正文 | 是（重提取+fingerprint） |
@@ -96,8 +97,8 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 | 分类 | 工具 |
 |---|---|
 | `short_inline` | 播放器控制、交付、提醒、库存、审批、capability ACK、gen_* 登记、open_browser、open_music_search、manage_task_workspace、媒体工作台状态 |
-| `complete_bounded` | load_skill、retrieve_memory、open_memory 等已合格者；`web_search.get_sub_domains`、register_workspace_items、focus_workspace、load_character_context、read_attachment_section（本次升级） |
-| `paged_source` | read_workspace、list_workspace、web_search.search/batch_search/extract、browser_page 快照/elements、inspect_generated_file（content 续读） |
+| `complete_bounded` | load_skill、retrieve_memory、open_memory 等已合格者；`web_search.get_sub_domains`、load_character_context |
+| `paged_source` | read_workspace、list_workspace、register_workspace_items、focus_workspace（跨工具续到 read_workspace）、read_attachment_section、web_search.search/batch_search/extract、browser_page 快照/elements、inspect_generated_file（content 续读） |
 | `reloadable_external` | browser 快照（实例内不可变缓存）；MemCore compact_reloadable 卡片承载历史 |
 | `unsafe_unbounded` | AnySearch 原始 JSON：只保存安全归一后的证据字段，不存原始大 JSON；AdapterCapabilityToolHandler 保持 6000 字最后保险 |
 
@@ -109,7 +110,7 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 3. 分页以完整逻辑单元为边界：文件按行、列表按完整条目、搜索按完整结果、快照按行；
    不拆 UTF-8 字符、不拆条目、不拆结构化对象。
 4. cursor 版本化（`p1.`）、opaque、绑定工具+owner（profile/session）+资源指纹（size/mtime_ns 或内容 hash）+偏移；
-   跨会话/文件变化/页面变化 → 结构化 `cursor_invalid` / `cursor_owner_mismatch` / `stale_cursor` /
+   跨会话或 cursor 损坏统一返回 `cursor_invalid`（不泄露 owner 是否存在）；文件变化/页面变化 → 结构化 `stale_cursor` /
    `source_missing` / `snapshot_expired` / `page_closed`，绝不静默从头重读、绝不新旧拼接。
 5. 模型可见反馈明确：本页范围、剩余事实、够用即可回答、只有需要时才用 cursor 续读；
    不输出 schema 说明书，不强迫翻页。
