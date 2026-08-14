@@ -200,13 +200,13 @@ class OpenMusicSearchToolHandler(BaseToolHandler):
                 }
             ],
             followup_context=(
-                f"你刚刚为用户在{platform_label}打开了公开音乐搜索页：{url}。"
-                "这只是搜索/打开入口，不代表歌曲已经开始播放。"
+                f"已请求桌宠为用户打开 {platform_label} 公开音乐搜索页（{url}）。"
+                "桌宠尚未确认浏览器已经打开，这更不代表歌曲已经开始播放。"
                 "如果用户还要求你继续点进结果或尝试播放，需要按 browser_page 的授权边界继续操作；"
-                "不能登录、下载、绕过会员/版权限制，也不要声称已经播放成功。"
+                "不能登录、下载、绕过会员/版权限制，也不要声称已经打开或播放成功。"
             ),
             state_updates={
-                "music_request_status": "opened_search",
+                "music_request_status": "requested_open",
                 "music_request_platform": platform,
                 "music_request_query": query[:160],
                 "music_request_url": url,

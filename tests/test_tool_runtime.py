@@ -1148,9 +1148,10 @@ class OpenMusicSearchToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["type"], "browser_open_requested")
         self.assertIn("y.qq.com", result.stream_events[0]["url"])
         self.assertFalse(result.stream_events[0]["requires_confirmation"])
-        self.assertEqual(result.state_updates["music_request_status"], "opened_search")
+        self.assertEqual(result.state_updates["music_request_status"], "requested_open")
         self.assertEqual(result.state_updates["music_request_platform"], "qq_music")
         self.assertIn("不代表歌曲已经开始播放", result.followup_context)
+        self.assertIn("尚未确认", result.followup_context)
 
 
 class BrowserPageToolHandlerTests(unittest.TestCase):
