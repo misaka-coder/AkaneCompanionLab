@@ -1243,7 +1243,7 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         assert call is not None
         self.assertEqual(call["action"], "navigate")
         self.assertEqual(call["url"], "https://example.com/docs?x=1")
-        self.assertEqual(call["max_chars"], 5000)
+        self.assertNotIn("max_chars", call)
         self.assertTrue(call["open_for_user"])
 
         read_current = handler.normalize_call({"type": "browser_page", "action": "read", "max_chars": 12})
@@ -1251,7 +1251,7 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         assert read_current is not None
         self.assertEqual(read_current["action"], "read_text")
         self.assertEqual(read_current["url"], "")
-        self.assertEqual(read_current["max_chars"], 500)
+        self.assertNotIn("max_chars", read_current)
 
         elements = handler.normalize_call({"type": "browser_page", "action": "inspect_elements", "element_limit": 99})
         self.assertIsNotNone(elements)
@@ -1356,7 +1356,7 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         result = handler.execute(call=call, context=self._context())
 
         self.assertEqual(
-            runner.calls[0], {"action": "navigate", "url": "https://example.com/article", "max_chars": 1000}
+            runner.calls[0], {"action": "navigate", "url": "https://example.com/article", "max_chars": 50_000}
         )
         self.assertEqual(result.tool_type, "browser_page")
         self.assertEqual(result.stream_events[0]["type"], "browser_page_read")

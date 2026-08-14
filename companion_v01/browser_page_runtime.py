@@ -4,10 +4,17 @@ import importlib.util
 import re
 import sys
 import threading
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urljoin
+
+SNAPSHOT_CAPTURE_MAX_CHARS = 250_000
+SNAPSHOT_TTL_SECONDS = 30 * 60
+SNAPSHOT_MAX_ENTRIES = 16
+SNAPSHOT_MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -19,6 +26,12 @@ class BrowserPageResult:
     title: str = ""
     text: str = ""
     reason: str = ""
+    snapshot_id: str = ""
+    complete: bool = True
+    next_cursor: str = ""
+    shown_chars: int = 0
+    total_chars: int = 0
+    page_revision: str = ""
 
 
 class ManagedBrowserPageRunner:
@@ -28,6 +41,11 @@ class ManagedBrowserPageRunner:
     and tested without pulling in browser binaries; real execution becomes
     available when the local runtime has Playwright installed. The default is a
     visible Akane-managed browser window so users can see browser actions.
+
+    Every page-observing action captures an immutable snapshot into a bounded
+    in-memory cache (TTL + entry count + total bytes).  Continuation cursors
+    read pages from that same captured snapshot: they never re-scroll, never
+    re-click, and never treat a live-changed page as the tail of an old one.
     """
 
     def __init__(
@@ -36,6 +54,11 @@ class ManagedBrowserPageRunner:
         headless: bool = False,
         timeout_ms: int = 15000,
         browser_channel: str | None = None,
+        snapshot_ttl_seconds: float = SNAPSHOT_TTL_SECONDS,
+        snapshot_max_entries: int = SNAPSHOT_MAX_ENTRIES,
+        snapshot_max_total_bytes: int = SNAPSHOT_MAX_TOTAL_BYTES,
+        snapshot_capture_max_chars: int = SNAPSHOT_CAPTURE_MAX_CHARS,
+        now: Any = None,
     ) -> None:
         self.headless = bool(headless)
         self.timeout_ms = max(3000, min(60000, int(timeout_ms or 15000)))
@@ -46,6 +69,14 @@ class ManagedBrowserPageRunner:
         self._browser: Any | None = None
         self._context: Any | None = None
         self._page: Any | None = None
+        self._now = now or time.time
+        self._snapshot_ttl_seconds = max(1.0, float(snapshot_ttl_seconds))
+        self._snapshot_max_entries = max(1, int(snapshot_max_entries))
+        self._snapshot_max_total_bytes = max(1024, int(snapshot_max_total_bytes))
+        self._snapshot_capture_max_chars = max(1000, int(snapshot_capture_max_chars))
+        self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._snapshot_lock = threading.Lock()
+        self._page_revision = 0
 
     def capability_status(self) -> dict[str, Any]:
         if not self.is_available():
@@ -58,6 +89,23 @@ class ManagedBrowserPageRunner:
 
     def is_available(self) -> bool:
         return importlib.util.find_spec("playwright") is not None
+
+    def has_live_page(self) -> bool:
+        page = self._page
+        if page is None:
+            return False
+        try:
+            return not page.is_closed()
+        except Exception:
+            return False
+
+    def page_revision(self) -> str:
+        return f"r{max(0, int(self._page_revision or 0))}"
+
+    def _advance_page_revision(self) -> str:
+        with self._lock:
+            self._page_revision += 1
+            return self.page_revision()
 
     def run(
         self,
@@ -95,6 +143,78 @@ class ManagedBrowserPageRunner:
                 candidate_index=candidate_index,
             )
         )
+
+    def store_snapshot(
+        self,
+        *,
+        kind: str,
+        text: str,
+        url: str = "",
+        title: str = "",
+    ) -> dict[str, Any]:
+        """Capture one immutable snapshot into the bounded cache.
+
+        Returns the cache record (``snapshot_id`` etc.) so the caller can page
+        it.  Old snapshots stay readable until TTL/eviction: a cursor always
+        reads the same captured bytes, never a re-captured page.
+        """
+        snapshot_id = "snap_" + uuid.uuid4().hex[:16]
+        record = {
+            "snapshot_id": snapshot_id,
+            "kind": str(kind or "page"),
+            "text": str(text or "")[: self._snapshot_capture_max_chars],
+            "url": str(url or "")[:800],
+            "title": str(title or "")[:200],
+            "revision": self.page_revision(),
+            "created_at": float(self._now()),
+        }
+        with self._snapshot_lock:
+            self._snapshot_cache[snapshot_id] = (record["created_at"], record)
+            self._trim_snapshot_cache_locked()
+        return dict(record)
+
+    def read_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        """Read a cached immutable snapshot; ``None`` when missing or expired."""
+        clean_id = str(snapshot_id or "").strip()
+        if not clean_id:
+            return None
+        now = float(self._now())
+        with self._snapshot_lock:
+            cached = self._snapshot_cache.get(clean_id)
+            if cached is None:
+                return None
+            created_at, record = cached
+            if now - created_at > self._snapshot_ttl_seconds:
+                del self._snapshot_cache[clean_id]
+                return None
+            return dict(record)
+
+    def _trim_snapshot_cache_locked(self) -> None:
+        now = float(self._now())
+        expired = [
+            snapshot_id
+            for snapshot_id, (created_at, _record) in self._snapshot_cache.items()
+            if now - created_at > self._snapshot_ttl_seconds
+        ]
+        for snapshot_id in expired:
+            del self._snapshot_cache[snapshot_id]
+        while len(self._snapshot_cache) > self._snapshot_max_entries:
+            oldest = min(
+                self._snapshot_cache.items(),
+                key=lambda item: item[1][0],
+            )[0]
+            del self._snapshot_cache[oldest]
+        total_bytes = sum(
+            len((record.get("text") or "").encode("utf-8"))
+            for _created_at, record in self._snapshot_cache.values()
+        )
+        while total_bytes > self._snapshot_max_total_bytes and len(self._snapshot_cache) > 1:
+            oldest = min(
+                self._snapshot_cache.items(),
+                key=lambda item: item[1][0],
+            )[0]
+            del self._snapshot_cache[oldest]
+            total_bytes = sum(len((record.get("text") or "").encode("utf-8")) for _created_at, record in self._snapshot_cache.values())
 
     def shutdown(self) -> None:
         executor = self._executor
@@ -134,6 +254,7 @@ class ManagedBrowserPageRunner:
             if action in {"navigate", "read_text"} and url:
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
                 self._bring_to_front(page)
+                self._advance_page_revision()
             elif action in {"navigate"} and not url:
                 return BrowserPageResult(ok=False, status="invalid_request", action=action, reason="url_required")
 
@@ -143,6 +264,7 @@ class ManagedBrowserPageRunner:
             if action == "scroll":
                 page.mouse.wheel(0, self._safe_scroll_delta(scroll_delta))
                 self._brief_visual_pause(page)
+                self._advance_page_revision()
             elif action in {"click", "fill", "press"}:
                 control_result = self._run_control_action(
                     page,
@@ -155,21 +277,40 @@ class ManagedBrowserPageRunner:
                 )
                 if control_result is not None:
                     return control_result
+                self._advance_page_revision()
                 current_url = str(getattr(page, "url", "") or current_url)
 
             title = self._safe_title(page)
-            text = ""
-            if action in {"navigate", "read_text", "current", "scroll", "snapshot", "click", "fill", "press"}:
-                text = self._safe_page_snapshot(page, max_chars=max_chars)
-            elif action == "elements":
-                text = self._safe_element_summary(page, element_limit=element_limit)
+            snapshot_kind = "elements" if action == "elements" else "page"
+            if action == "elements":
+                captured = self._safe_element_summary(page, element_limit=element_limit)
+            else:
+                captured = self._safe_page_snapshot(page, max_chars=self._snapshot_capture_max_chars)
+            record = self.store_snapshot(kind=snapshot_kind, text=captured, url=current_url, title=title)
+            from .paged_reading import FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES, slice_page
+
+            page_text, next_offset, total_chars = slice_page(
+                captured,
+                start=0,
+                budget_chars=FIRST_PAGE_BUDGET_CHARS,
+                budget_lines=FIRST_PAGE_BUDGET_LINES,
+            )
+            complete = next_offset >= total_chars
             return BrowserPageResult(
                 ok=True,
                 status="executed" if action in {"click", "fill", "press"} else "available",
                 action=action,
                 url=current_url,
                 title=title,
-                text=text,
+                text=page_text,
+                snapshot_id=str(record.get("snapshot_id") or ""),
+                complete=complete,
+                next_cursor=(
+                    f"{record.get('snapshot_id')}:{next_offset}" if not complete else ""
+                ),
+                shown_chars=len(page_text),
+                total_chars=total_chars,
+                page_revision=str(record.get("revision") or ""),
             )
         except Exception as exc:
             return BrowserPageResult(
@@ -229,6 +370,8 @@ class ManagedBrowserPageRunner:
         self._browser = None
         self._context = None
         self._page = None
+        with self._snapshot_lock:
+            self._snapshot_cache.clear()
 
     def _safe_title(self, page: Any) -> str:
         try:
@@ -241,11 +384,11 @@ class ManagedBrowserPageRunner:
             text = str(page.inner_text("body", timeout=3000) or "")
         except Exception:
             return ""
-        limit = max(500, min(5000, int(max_chars or 3000)))
+        limit = max(500, min(self._snapshot_capture_max_chars, int(max_chars or 3000)))
         return text.replace("\r\n", "\n").replace("\r", "\n").strip()[:limit]
 
     def _safe_page_snapshot(self, page: Any, *, max_chars: int) -> str:
-        limit = max(500, min(5000, int(max_chars or 3000)))
+        limit = max(500, min(self._snapshot_capture_max_chars, int(max_chars or 3000)))
         parts: list[str] = []
         position = self._safe_scroll_position(page)
         if position:
@@ -278,7 +421,7 @@ class ManagedBrowserPageRunner:
         except Exception:
             return ""
         text = str(snapshot or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        limit = max(500, min(5000, int(max_chars or 3000)))
+        limit = max(500, min(self._snapshot_capture_max_chars, int(max_chars or 3000)))
         viewport = self._safe_viewport_box(page)
         visible_text = self._filter_visible_snapshot_lines(text, viewport=viewport)
         return (visible_text or text)[:limit]

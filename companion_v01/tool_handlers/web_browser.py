@@ -254,7 +254,6 @@ class BrowserPageToolHandler(BaseToolHandler):
         "End",
     }
     SECRET_MARKERS = ("api_key", "apikey", "authorization", "bearer", "cookie", "password", "secret", "token")
-    MAX_TEXT_CHARS = 5000
     MAX_ELEMENT_LIMIT = 40
     MAX_SELECTOR_CHARS = 220
     MAX_FILL_TEXT_CHARS = 500
@@ -276,7 +275,7 @@ class BrowserPageToolHandler(BaseToolHandler):
             "或继续处理 Akane 托管浏览器窗口的当前页时才使用 browser_page。"
             "它只操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
             "推荐闭环：navigate 打开 → snapshot 看结构和 ref / elements 看可见候选 → click/fill/press 操作。"
-            'navigate 格式为 {"type":"browser_page","action":"navigate","url":"https://...","max_chars":3000}；'
+            'navigate 格式为 {"type":"browser_page","action":"navigate","url":"https://..."}；'
             "一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，"
             '才加 "open_for_user":true；'
             'snapshot 返回 accessibility snapshot 与元素 ref，格式为 {"type":"browser_page","action":"snapshot"}；'
@@ -286,6 +285,9 @@ class BrowserPageToolHandler(BaseToolHandler):
             '输入格式为 {"type":"browser_page","action":"fill","ref":"e4","text":"搜索词"}；'
             '按键格式为 {"type":"browser_page","action":"press","ref":"e4","key":"Enter"}；'
             'read_text/scroll/current 分别读取正文、滚动并返回滚动后状态、查看当前页状态。'
+            "页面快照还有未展示部分时，结果会带 cursor：cursor 只读取同一份已捕获快照的剩余内容，"
+            "不会再次滚动或点击；如果当前内容已经足够回答，可以直接回答，不要机械翻完所有分页。"
+            "scroll 是移动真实页面并产生新快照；操作是否生效要看操作后的真实页面状态。"
             "如果用户已经给出多步浏览目标（例如打开某站、滚动、点第一个视频、告诉我当前页），"
             "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用，直到任务完成、候选不存在、页面不可用，"
             "或需要登录/支付/上传/下载等真实阻塞。"
@@ -319,6 +321,9 @@ class BrowserPageToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
+        cursor = str(value.get("cursor") or "").strip()
+        if cursor:
+            return {"type": self.tool_type, "cursor": cursor}
         action = self._normalize_action(value)
         if not action:
             return None
@@ -349,9 +354,6 @@ class BrowserPageToolHandler(BaseToolHandler):
             "type": self.tool_type,
             "action": action,
             "url": url,
-            "max_chars": self._coerce_int(
-                value.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000
-            ),
             "open_for_user": self._coerce_bool(value.get("open_for_user") or value.get("openForUser")),
             "scroll_delta": self._coerce_int(
                 value.get("scroll_delta") or value.get("delta"), minimum=-2400, maximum=2400, default=800
@@ -367,10 +369,12 @@ class BrowserPageToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        cursor = str(call.get("cursor") or "").strip()
+        if cursor:
+            return self._execute_snapshot_continuation(cursor=cursor, context=context)
         action = str(call.get("action") or "current").strip() or "current"
         url = str(call.get("url") or "").strip()
         open_for_user = bool(call.get("open_for_user"))
-        max_chars = self._coerce_int(call.get("max_chars"), minimum=500, maximum=self.MAX_TEXT_CHARS, default=3000)
         scroll_delta = self._coerce_int(call.get("scroll_delta"), minimum=-2400, maximum=2400, default=800)
         element_limit = self._coerce_int(
             call.get("element_limit"), minimum=1, maximum=self.MAX_ELEMENT_LIMIT, default=20
@@ -384,7 +388,7 @@ class BrowserPageToolHandler(BaseToolHandler):
             authorization = self._authorize_control_action(action=action, call=call, context=context)
             if not authorization.get("ok"):
                 return self._approval_required(action=action, call=call, context=context, authorization=authorization)
-        run_kwargs: dict[str, Any] = {"action": action, "url": url, "max_chars": max_chars}
+        run_kwargs: dict[str, Any] = {"action": action, "url": url, "max_chars": 50_000}
         if action == "scroll":
             run_kwargs["scroll_delta"] = scroll_delta
         if action == "elements":
@@ -417,12 +421,14 @@ class BrowserPageToolHandler(BaseToolHandler):
 
         safe_url = self._sanitize_output(normalized.url)[:800]
         safe_title = self._clip(self._sanitize_output(normalized.title), 180)
-        safe_text = self._clip(self._sanitize_output(normalized.text), max_chars)
+        safe_text = self._sanitize_output(normalized.text, strip=False)
         lines = ["【Akane 托管浏览器窗口】", f"动作：{normalized.action}"]
         if safe_url:
             lines.append(f"URL: {safe_url}")
         if safe_title:
             lines.append(f"标题：{safe_title}")
+        if normalized.page_revision:
+            lines.append(f"页面版本：{normalized.page_revision}")
         if safe_text:
             lines.append("元素摘要：" if normalized.action == "elements" else "页面状态快照：")
             lines.append(safe_text)
@@ -441,6 +447,27 @@ class BrowserPageToolHandler(BaseToolHandler):
         next_hint = self._build_browser_next_hint(normalized.action, safe_text)
         if next_hint:
             lines.append(next_hint)
+        continuation = None
+        diagnostics: dict[str, Any] = {
+            "action": normalized.action,
+            "complete": bool(normalized.complete),
+            "shown_chars": int(normalized.shown_chars or 0),
+            "total_chars": int(normalized.total_chars or 0),
+            "snapshot_id": str(normalized.snapshot_id or ""),
+        }
+        if not normalized.complete and normalized.snapshot_id and normalized.next_cursor:
+            cursor = self._issue_browser_cursor(
+                snapshot_id=normalized.snapshot_id,
+                offset=normalized.next_cursor,
+                context=context,
+            )
+            if cursor:
+                continuation = {"type": self.tool_type, "cursor": cursor}
+                lines.append(
+                    f"本页之后还有未展示的快照内容（已展示 {normalized.shown_chars}/{normalized.total_chars} 字）。"
+                    "如果当前内容已经足够回答，可以直接回答；只有确实需要同一份快照的后续内容时，才调用："
+                    f'browser_page(cursor="{cursor}")'
+                )
         events = []
         if open_event:
             events.append(open_event)
@@ -456,12 +483,25 @@ class BrowserPageToolHandler(BaseToolHandler):
                 "scroll_delta": scroll_delta if normalized.action == "scroll" else 0,
                 "element_count": self._count_element_summary_lines(safe_text) if normalized.action == "elements" else 0,
                 "requires_confirmation": False,
+                "snapshot_id": str(normalized.snapshot_id or ""),
+                "page_revision": str(normalized.page_revision or ""),
+                "complete": bool(normalized.complete),
+                "shown_chars": int(normalized.shown_chars or 0),
+                "total_chars": int(normalized.total_chars or 0),
             }
         )
+        content = "\n".join(lines)
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
-            followup_context=self._clip("\n".join(lines), self.MAX_TEXT_CHARS + 700),
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=bool(normalized.complete),
+                continuation=continuation,
+                diagnostics=diagnostics,
+            ),
             state_updates={
                 "browser_page_status": normalized.status,
                 "browser_page_url": safe_url,
@@ -472,6 +512,155 @@ class BrowserPageToolHandler(BaseToolHandler):
                 else 0,
                 "browser_page_next_hint": next_hint,
                 "browser_control_status": normalized.status if normalized.action in self.CONTROL_ACTIONS else "",
+            },
+        )
+
+    def _execute_snapshot_continuation(
+        self, *, cursor: str, context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        from ..paged_reading import (
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            page_failure_feedback,
+            parse_json_payload,
+            parse_paged_cursor,
+            slice_page,
+        )
+
+        payload = parse_json_payload(
+            parse_paged_cursor(cursor, tool="bp", binding=self._browser_cursor_owner_binding(context))
+        )
+        if not isinstance(payload, dict):
+            return self._snapshot_failure("cursor_invalid", "cursor 不属于当前用户/会话，或已损坏")
+        snapshot_id = str(payload.get("s") or "").strip()
+        if not snapshot_id:
+            return self._snapshot_failure("cursor_invalid", "cursor 没有快照标识")
+        try:
+            offset = max(0, int(payload.get("o") or 0))
+        except (TypeError, ValueError):
+            return self._snapshot_failure("cursor_invalid", "cursor 偏移无效")
+        record = self.browser_runner.read_snapshot(snapshot_id) if hasattr(self.browser_runner, "read_snapshot") else None
+        if record is None:
+            has_live = bool(getattr(self.browser_runner, "has_live_page", None) and self.browser_runner.has_live_page())
+            return self._snapshot_failure(
+                "page_closed" if not has_live else "snapshot_expired",
+                "浏览器页面已关闭" if not has_live else "该快照已过期，需要重新读取当前页面",
+            )
+        snapshot_text = str(record.get("text") or "")
+        if len(snapshot_text) <= offset and offset > 0:
+            return self._snapshot_failure("stale_cursor", "快照内容比 cursor 记录的更短")
+        page_text, next_offset, total_chars = slice_page(
+            snapshot_text,
+            start=offset,
+            budget_chars=NEXT_PAGE_BUDGET_CHARS,
+            budget_lines=NEXT_PAGE_BUDGET_LINES,
+        )
+        safe_page = self._sanitize_output(page_text, strip=False)
+        complete = next_offset >= total_chars
+        kind = str(record.get("kind") or "page")
+        lines = [
+            "【Akane 托管浏览器窗口·同一快照续读】",
+            f"动作：snapshot 续读（不会重新滚动或点击页面）",
+            f"URL: {self._sanitize_output(str(record.get('url') or ''))[:800]}",
+            f"页面版本：{str(record.get('revision') or '')}",
+            "元素摘要：" if kind == "elements" else "页面状态快照：",
+            safe_page,
+        ]
+        continuation = None
+        if not complete:
+            next_cursor = self._issue_browser_cursor(snapshot_id=snapshot_id, offset=next_offset, context=context)
+            if next_cursor:
+                continuation = {"type": self.tool_type, "cursor": next_cursor}
+                lines.append(
+                    f"本页之后还有未展示的快照内容（已展示 {len(page_text)}/{total_chars} 字）。"
+                    "如果当前内容已经足够回答，可以直接回答；只有确实需要同一份快照的后续内容时，才调用："
+                    f'browser_page(cursor="{next_cursor}")'
+                )
+        else:
+            lines.append(f"已读完这份快照（共 {total_chars} 字）。要查看操作后的最新页面状态请重新调用 snapshot。")
+        content = "\n".join(lines)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "browser_page_read",
+                    "provider": "managed_browser",
+                    "action": "snapshot",
+                    "status": "available",
+                    "url": str(record.get("url") or ""),
+                    "snapshot_id": snapshot_id,
+                    "page_revision": str(record.get("revision") or ""),
+                    "complete": complete,
+                    "shown_chars": len(page_text),
+                    "total_chars": total_chars,
+                    "requires_confirmation": False,
+                }
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=complete,
+                continuation=continuation,
+                diagnostics={
+                    "action": "snapshot",
+                    "complete": complete,
+                    "shown_chars": len(page_text),
+                    "total_chars": total_chars,
+                    "snapshot_id": snapshot_id,
+                },
+            ),
+            state_updates={
+                "browser_page_status": "available",
+                "browser_page_url": str(record.get("url") or ""),
+                "browser_page_title": str(record.get("title") or ""),
+            },
+        )
+
+    def _issue_browser_cursor(self, *, snapshot_id: str, offset: Any, context: ToolExecutionContext) -> str:
+        from ..paged_reading import json_payload, make_paged_cursor
+
+        try:
+            clean_offset = max(0, int(str(offset or "0").split(":")[-1]))
+        except (TypeError, ValueError):
+            return ""
+        return make_paged_cursor(
+            tool="bp",
+            binding=self._browser_cursor_owner_binding(context),
+            payload=json_payload({"s": str(snapshot_id or ""), "o": clean_offset}),
+        )
+
+    def _browser_cursor_owner_binding(self, context: ToolExecutionContext) -> str:
+        from ..paged_reading import cursor_binding
+
+        return cursor_binding("browser_page", context.profile_user_id, context.session_id)
+
+    def _snapshot_failure(self, status: str, reason: str) -> ToolExecutionResult:
+        from ..paged_reading import page_failure_feedback
+
+        content = page_failure_feedback(status=status, tool=self.tool_type, detail=reason)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "browser_page_read",
+                    "provider": "managed_browser",
+                    "action": "snapshot",
+                    "status": status,
+                    "reason": reason,
+                }
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={"status": status},
+            ),
+            state_updates={
+                "browser_page_status": status,
+                "browser_page_reason": reason,
             },
         )
 
@@ -517,6 +706,12 @@ class BrowserPageToolHandler(BaseToolHandler):
                 title=str(value.get("title") or ""),
                 text=str(value.get("text") or ""),
                 reason=str(value.get("reason") or ""),
+                snapshot_id=str(value.get("snapshot_id") or ""),
+                complete=bool(value.get("complete", True)),
+                next_cursor=str(value.get("next_cursor") or ""),
+                shown_chars=int(value.get("shown_chars") or 0),
+                total_chars=int(value.get("total_chars") or 0),
+                page_revision=str(value.get("page_revision") or ""),
             )
         return BrowserPageResult(ok=False, status="unavailable", action=fallback_action, reason="invalid_runner_result")
 
@@ -833,12 +1028,12 @@ class BrowserPageToolHandler(BaseToolHandler):
     def _count_element_summary_lines(self, text: str) -> int:
         return sum(1 for line in str(text or "").splitlines() if re.match(r"^\d+\.\s+", line.strip()))
 
-    def _sanitize_output(self, value: str) -> str:
+    def _sanitize_output(self, value: str, *, strip: bool = True) -> str:
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
         text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s]+", "Authorization: Bearer [redacted]", text)
         text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
         text = re.sub(r"(?i)([?&](?:api[_-]?key|password|secret|token)=)[^&#\s]+", r"\1[redacted]", text)
-        return text.strip()
+        return text.strip() if strip else text
 
     def _clip(self, value: str, limit: int) -> str:
         text = str(value or "").strip()
