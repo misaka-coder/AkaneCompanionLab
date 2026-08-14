@@ -179,3 +179,29 @@ python -m unittest tests.test_memcore_integration
 python -m py_compile companion_v01/skill_runtime.py companion_v01/skill_specs.py companion_v01/tool_handlers/skills.py
 git diff --check
 ```
+
+## 9. Coding-project Skill 云端部署记录（2026-08-14）
+
+- 云端不可变 release `e0fa6fd-coding-project` 已上线统一 Host；上一版
+  `5f2b975-long-tool-paging` 保留为直接回滚点
+  （`/etc/systemd/system/akane-host.service.d/90-release.conf.pre-e0fa6fd`）。
+- 该 release 带来三个 coding 闭环变更：新增 bundled `coding-project` Skill
+  （MVP 界定、环境检查、增量构建、真实失败传播、验证等级、诚实交付）；收紧
+  compose_file / revise_generated_file / exec_run 的模型可见描述；exec 宿主
+  quoting 与终端反馈修复（commit `34c4be3`）。
+- 部署前对 personal/finance 的 memcore 与 akane_memory 共 6 个 SQLite 库做
+  备份并全部 `PRAGMA quick_check` ok，备份目录
+  `/opt/akane/backups/e0fa6fd-predeploy-20260814T141810Z`。
+- 切换前在新 release 内运行 8 个聚焦测试模块 170 项回归：169 通过、2 项
+  平台 skip、1 项既有失败（web-media-download SKILL.md 正文与测试断言漂移，
+  在当前线上 release 同样存在，非本 release 引入）。
+- 切换后 `/health` 为 ok 且 root binding 有效，`akane-host.service` active
+  且 `NRestarts=0`，进程 cwd 指向新 release；NapCat 事件正常接收，无启动
+  traceback/import error；vision JSONDecodeError 为既有现象。
+- 新 release 内 SkillRegistry 实测加载 6 个 skill（含 coding-project，
+  bundled，正文完整含 MVP/验证等级/交付边界）。
+- 未修改 Bot 账号、模型密钥、host.env、bots.toml、QQ profile 或数据根；
+  `.packages` 由上一 release 原样复制（本轮未改动任何抽包依赖）。
+- 部署前 schema 变化说明：compose_file / revise_generated_file / exec_run
+  描述各改动一次，对应 provider 前缀会冷建一次；之后保持稳定，不影响
+  MemCore 压卡规则。
