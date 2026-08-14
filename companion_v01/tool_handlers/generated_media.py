@@ -211,6 +211,8 @@ class ComposeFileToolHandler(BaseToolHandler):
             "要生成表格优先用 table_rows；要生成 Word/PDF/Markdown 优先用 content_markdown。"
             "需要标红、加粗、黄色高亮时，把明确规则写进 formatting；后端只执行白名单样式字段。"
             "生成结果会成为 gen_001 这类可继续修改的生成文件，不会覆盖用户原始附件。"
+            "它适合文档、简单网页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
+            "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1374,6 +1376,8 @@ class ReviseGeneratedFileToolHandler(BaseToolHandler):
             "再把最终内容写进 content_markdown 或 table_rows。"
             "如果只是调整颜色、加粗或高亮，把明确样式规则写进 formatting。"
             "如果用户只是要求继续改文件，优先用这个工具；如果是从原始附件重新整理一份新文件，用 compose_file。"
+            "成功只代表产生了修改版文件，不代表修改解决了运行问题；复杂代码不建议连续整文件重写，"
+            "优先加载 coding-project Skill 局部修改并运行检查。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

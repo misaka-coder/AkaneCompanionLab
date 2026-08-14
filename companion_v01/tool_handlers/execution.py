@@ -337,6 +337,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "input_resources/output_globs 时，命令可以从 pwd、find 等真实结果发现并直接使用宿主绝对路径；"
             "不要因此假装无法查看或操作宿主文件。环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
+            "running 是正常状态，不是失败。安装、构建等长任务不要接 tail/head 管道隐藏进度；"
+            "多步骤命令要让前一步失败真实传播（POSIX 用 set -e，PowerShell 用 $ErrorActionPreference=\"Stop\"）。"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
             "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
             "输入会复制进本次运行的独立工作区；input_resources/output_globs 与 cwd 互斥，"

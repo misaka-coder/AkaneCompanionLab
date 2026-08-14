@@ -1088,6 +1088,8 @@ COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
         "把当前对话中已经整理好的内容，或 source_ids 指向的现有材料，生成一个新的文档、表格、"
         "字幕或文本文件。普通聊天回复不要调用。若只是忠实转换现有材料，可不填 content_markdown；"
         "若需要改写、总结或排版，先在 content_markdown/table_rows 中给出要写入的最终内容。"
+        "适合文档、简单网页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
+        "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
     ),
     input_schema={
         "type": "object",
@@ -1169,6 +1171,8 @@ REVISE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "修改一个已经生成的 gen_* 文件并创建新版本，不覆盖旧文件。"
         "instruction 说明修改目标；需要重写正文或表格时，同时提供 content_markdown 或 table_rows。"
+        "成功只代表产生了修改版文件，不代表修改解决了运行问题；修改后仍需真实验证。"
+        "复杂代码不建议连续整文件重写，优先加载 coding-project Skill 局部修改并运行检查。"
     ),
     input_schema={
         "type": "object",
