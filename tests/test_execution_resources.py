@@ -14,7 +14,7 @@ from capcore import PermissionDecision
 from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
-from companion_v01.execution_resources import ExecutionResourceBridge
+from companion_v01.execution_resources import ExecutionResourceBridge, ExecutionResourceScope
 from companion_v01.execution_run import ExecRunStatus, ExecutionRunOwner
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.local_capability_config import save_approval_policy_config
@@ -24,6 +24,7 @@ from companion_v01.tool_runtime import ToolExecutionContext
 
 
 OWNER = ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local")
+RESOURCE_SCOPE = ExecutionResourceScope(profile_user_id="alice", session_id="s1")
 
 
 def _python_command(code: str) -> str:
@@ -32,13 +33,20 @@ def _python_command(code: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
-def _context(*, profile_user_id: str = "alice", session_id: str = "s1", client_mode: str = "qq") -> ToolExecutionContext:
+def _context(
+    *,
+    profile_user_id: str = "alice",
+    session_id: str = "s1",
+    client_mode: str = "qq",
+    actor_stable_id: str = "",
+) -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id=profile_user_id,
         session_id=session_id,
         now_ts=0,
         visual_payload={},
         client_mode=client_mode,
+        request_context={"actor_stable_id": actor_stable_id} if actor_stable_id else {},
     )
 
 
@@ -60,13 +68,20 @@ class _Harness:
             workspace_root=self.workspace,
         )
 
-    def register_input(self, *, name: str = "source.txt", content: str = "hello") -> dict:
+    def register_input(
+        self,
+        *,
+        name: str = "source.txt",
+        content: str = "hello",
+        profile_user_id: str = "alice",
+        session_id: str = "s1",
+    ) -> dict:
         path = self.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         item = self.store.add_attachment_inbox_item(
-            profile_user_id="alice",
-            session_id="s1",
+            profile_user_id=profile_user_id,
+            session_id=session_id,
             kind="file",
             source="test",
             status="ready",
@@ -91,6 +106,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         result = self.harness.bridge.stage_inputs(
             run_id="execrun_" + "a" * 32,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[{"handle": item["attachment_handle"], "as": "inputs/source.txt"}],
             output_globs=[],
         )
@@ -104,6 +120,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         invalid_run = self.harness.bridge.stage_inputs(
             run_id="../../escape",
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=[],
         )
@@ -112,6 +129,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         alias = self.harness.bridge.stage_inputs(
             run_id="execrun_" + "0" * 32,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[{"handle": "latest", "as": "input.txt"}],
             output_globs=[],
         )
@@ -124,6 +142,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
             result = self.harness.bridge.stage_inputs(
                 run_id="execrun_" + "b" * 32,
                 owner=OWNER,
+                resource_scope=RESOURCE_SCOPE,
                 input_resources=[{"handle": item["attachment_handle"], "as": unsafe}],
                 output_globs=[],
             )
@@ -136,6 +155,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         missing = self.harness.bridge.stage_inputs(
             run_id="execrun_" + "c" * 32,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[{"handle": "file_999", "as": "x.txt"}],
             output_globs=[],
         )
@@ -144,6 +164,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         duplicate = self.harness.bridge.stage_inputs(
             run_id="execrun_" + "d" * 32,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[
                 {"handle": handle, "as": "same.txt"},
                 {"handle": handle, "as": "same.txt"},
@@ -158,6 +179,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         staged = self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["outputs/*.txt"],
         )
@@ -184,6 +206,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["out.txt"],
         )
@@ -199,6 +222,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["out.txt"],
         )
@@ -226,6 +250,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["photo.jpg", "clip.mp4", "slides.pptx", "Main.java", "script.py"],
         )
@@ -266,6 +291,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         staged = bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["*.txt"],
         )
@@ -283,6 +309,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         staged = self.harness.bridge.stage_inputs(
             run_id=no_output_run,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=[],
         )
@@ -294,6 +321,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         staged = self.harness.bridge.stage_inputs(
             run_id=failed_run,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["out.txt"],
         )
@@ -312,6 +340,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         staged = self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["../outside.txt"],
         )
@@ -325,6 +354,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["outputs/result.wav"],
         )
@@ -337,6 +367,7 @@ class ExecutionResourceBridgeTests(unittest.TestCase):
         self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["out.txt"],
         )
@@ -426,6 +457,60 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "completed")
         self.assertIn("PING", result.followup_context)
 
+    def test_group_run_keeps_member_control_but_uses_shared_resource_scope(self) -> None:
+        group_session = "qq_group_shared_872732158"
+        save_approval_policy_config(
+            base_dir=self.harness.root,
+            profile_user_id=group_session,
+            payload={"defaultMode": "trusted_auto_allow"},
+        )
+        item = self.harness.register_input(
+            content="GROUP INPUT",
+            profile_user_id=group_session,
+            session_id=group_session,
+        )
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": _python_command(
+                    "import pathlib;"
+                    "pathlib.Path('result.txt').write_text("
+                    "pathlib.Path('inputs/source.txt').read_text())"
+                ),
+                "initial_wait_seconds": 2,
+                "input_resources": [
+                    {"handle": item["attachment_handle"], "as": "inputs/source.txt"}
+                ],
+                "output_globs": ["result.txt"],
+            },
+            context=_context(
+                profile_user_id=group_session,
+                session_id=group_session,
+                actor_stable_id="qq:1906243651",
+            ),
+        )
+
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], "completed", result.followup_context)
+        handle = state["generated_resources"][0]["handle"]
+        delivery = self.harness.generated_service.send_file(
+            profile_user_id=group_session,
+            session_id=group_session,
+            target=handle,
+            targets=[handle],
+            timestamp=1,
+        )
+        self.assertTrue(delivery["ok"], delivery)
+        self.assertEqual(delivery["files"][0]["name"], "result.txt")
+
+        stored = self.harness.store.list_generated_files(
+            profile_user_id=group_session,
+            session_id=group_session,
+            statuses=["ready"],
+            limit=10,
+        )
+        self.assertEqual([item["generated_handle"] for item in stored], [handle])
+
     def test_exec_run_staging_rejection_never_runs_command(self) -> None:
         call = {
             "type": "exec_run",
@@ -479,6 +564,7 @@ class ExecStatusResourceRegistrationTests(unittest.TestCase):
         staged = self.harness.bridge.stage_inputs(
             run_id=run_id,
             owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
             input_resources=[],
             output_globs=["out.txt"],
         )

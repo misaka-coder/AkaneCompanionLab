@@ -66,10 +66,26 @@ class RegisteredOutput:
     size_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionResourceScope:
+    """Conversation namespace used by existing attachment/generated stores.
+
+    This is intentionally distinct from ``ExecutionRunOwner``.  A shared QQ
+    conversation scopes command control to the member who started a run, while
+    its attachments and generated artifacts remain visible to that shared
+    conversation.  Mixing the two scopes makes a freshly returned ``gen_*``
+    handle impossible to deliver from the same turn.
+    """
+
+    profile_user_id: str
+    session_id: str
+
+
 @dataclass(slots=True)
 class _RunBinding:
     run_id: str
-    owner: Any
+    execution_owner: Any
+    resource_scope: ExecutionResourceScope
     cwd_relpath: str
     output_globs: tuple[str, ...]
     input_handles: tuple[str, ...]
@@ -153,6 +169,7 @@ class ExecutionResourceBridge:
         *,
         run_id: str,
         owner: Any,
+        resource_scope: ExecutionResourceScope,
         input_resources: Sequence[Mapping[str, Any]] | None,
         output_globs: Sequence[str] | None,
     ) -> dict[str, Any]:
@@ -198,7 +215,7 @@ class ExecutionResourceBridge:
                 self._cleanup_workspace(run_dir)
                 return {"ok": False, "reason": "duplicate_input_resource_target"}
             seen_targets.add(relpath)
-            file_ref = self._resolve_input_handle(handle, owner)
+            file_ref = self._resolve_input_handle(handle, resource_scope)
             if not file_ref:
                 self._cleanup_workspace(run_dir)
                 return {"ok": False, "reason": f"input_handle_not_found:{handle}"}
@@ -234,7 +251,8 @@ class ExecutionResourceBridge:
         with self._lock:
             self._bindings[clean_run_id] = _RunBinding(
                 run_id=clean_run_id,
-                owner=owner,
+                execution_owner=owner,
+                resource_scope=resource_scope,
                 cwd_relpath=cwd_relpath,
                 output_globs=tuple(globs),
                 input_handles=input_handles,
@@ -268,7 +286,7 @@ class ExecutionResourceBridge:
         """Return whether this bridge owns resource state for the run."""
         with self._lock:
             binding = self._bindings.get(str(run_id or "").strip())
-        return binding is not None and _same_owner(binding.owner, owner)
+        return binding is not None and _same_owner(binding.execution_owner, owner)
 
     # -- registration ------------------------------------------------------------
 
@@ -293,7 +311,7 @@ class ExecutionResourceBridge:
                 "generated_resources": [],
                 "reason": "execution_resources_unknown_run",
             }
-        if not _same_owner(binding.owner, owner):
+        if not _same_owner(binding.execution_owner, owner):
             return {
                 "ok": False,
                 "artifact_status": ARTIFACT_STATUS_NOT_REGISTERED,
@@ -388,7 +406,7 @@ class ExecutionResourceBridge:
                         "generated_resources": [],
                         "reason": "execution_resources_unknown_run",
                     }
-                if not _same_owner(binding.owner, owner):
+                if not _same_owner(binding.execution_owner, owner):
                     return {
                         "ok": False,
                         "artifact_status": ARTIFACT_STATUS_NOT_REGISTERED,
@@ -438,13 +456,17 @@ class ExecutionResourceBridge:
             for binding in stale_bindings:
                 self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
 
-    def _resolve_input_handle(self, handle: str, owner: Any) -> dict[str, Any] | None:
+    def _resolve_input_handle(
+        self,
+        handle: str,
+        resource_scope: ExecutionResourceScope,
+    ) -> dict[str, Any] | None:
         service = self.generated_file_service
         resolver = getattr(service, "resolve_input_resource", None)
         if callable(resolver):
             resolved = resolver(
-                profile_user_id=str(getattr(owner, "profile_user_id", "") or ""),
-                session_id=str(getattr(owner, "session_id", "") or ""),
+                profile_user_id=str(resource_scope.profile_user_id or ""),
+                session_id=str(resource_scope.session_id or ""),
                 target=handle,
                 timestamp=int(self._now()),
             )
@@ -493,8 +515,8 @@ class ExecutionResourceBridge:
             return None
         title = str(source.stem or "akane_output").strip()[:60] or "akane_output"
         target = service.allocate_output_path(
-            profile_user_id=str(getattr(binding.owner, "profile_user_id", "") or ""),
-            session_id=str(getattr(binding.owner, "session_id", "") or ""),
+            profile_user_id=str(binding.resource_scope.profile_user_id or ""),
+            session_id=str(binding.resource_scope.session_id or ""),
             title=title,
             output_format=extension,
             timestamp=int(self._now()),
@@ -505,8 +527,8 @@ class ExecutionResourceBridge:
             shutil.copy2(source, target)
             mime_type = mimetypes.guess_type(source.name)[0] or service._mime_type_for_format(extension)
             generated = service.register_generated_artifact(
-                profile_user_id=str(getattr(binding.owner, "profile_user_id", "") or ""),
-                session_id=str(getattr(binding.owner, "session_id", "") or ""),
+                profile_user_id=str(binding.resource_scope.profile_user_id or ""),
+                session_id=str(binding.resource_scope.session_id or ""),
                 output_path=target,
                 output_title=title,
                 output_format=extension,

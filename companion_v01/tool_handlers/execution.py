@@ -36,7 +36,7 @@ from ..capcore_runtime import (
     resolve_permission_for_profile,
 )
 from ..capability_approval import build_approval_request_fingerprint
-from ..execution_resources import ExecutionResourceBridge
+from ..execution_resources import ExecutionResourceBridge, ExecutionResourceScope
 from ..execution_run import (
     ExecutionRunOwner,
     execute_exec_cancel,
@@ -97,6 +97,15 @@ class _ExecToolHandlerBase(BaseToolHandler):
             profile_user_id=str(context.profile_user_id or ""),
             session_id=session_id,
             provider_id=str(getattr(provider, "provider_id", "local") or "local"),
+        )
+
+    @staticmethod
+    def _resource_scope(context: ToolExecutionContext) -> ExecutionResourceScope:
+        """Keep artifacts in the conversation namespace, not run-control scope."""
+
+        return ExecutionResourceScope(
+            profile_user_id=str(context.profile_user_id or ""),
+            session_id=str(context.session_id or ""),
         )
 
     def capability_status(self, **_kwargs: Any) -> dict[str, Any]:
@@ -441,6 +450,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             staged = bridge.stage_inputs(
                 run_id=run_id,
                 owner=self._owner(context),
+                resource_scope=self._resource_scope(context),
                 input_resources=input_resources,
                 output_globs=output_globs,
             )
