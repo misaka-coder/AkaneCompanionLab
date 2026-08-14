@@ -133,3 +133,23 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 `tests/test_execution_kernel.py`、`tests/test_execution_wiring.py`、`tests/test_execution_resources.py`、
 `tests/test_memcore_integration.py`、`tests/test_workspace_files.py`、`tests/test_workspace_management.py`、
 `tests/test_generated_files.py`、`tests/test_attachment_inbox.py` + 新增契约测试。
+
+## 7. 云端部署记录（2026-08-14）
+
+- 云端不可变 release `5f2b975-long-tool-paging` 已上线统一 Host；上一版
+  `bfac18c-group-resource-scope` 保留为直接回滚点（`/opt/akane/ops/90-release.conf.bak-fc49d38-20260814T1132Z`）。
+- 部署前按惯例对 personal/finance 的 memcore 与 akane_memory 共 6 个 SQLite 库做 online backup +
+  `PRAGMA quick_check`（全部 ok），备份目录 `/opt/akane/backups/fc49d38-predeploy-20260814T113159Z`。
+- 切换前在云端新 release 内运行 516 项聚焦回归全部通过。该轮在服务器上发现并修复一个真实缺陷：
+  文件指纹原用 `size:mtime_ns`，在云主机文件系统上两次内容不同的写可能落入同一时间戳，
+  导致内容变化漏检；已改为提取正文 sha256 内容指纹（commit `5f2b975`，含回归测试）。
+- 切换后 `/health` 为 `ok` 且 root binding 有效，`akane-host.service` active 且 `NRestarts=0`，
+  进程 cwd 指向新 release；personal/finance 两个 Bot 均为 `online / active`，
+  两条 QQ self-check 均为 `connected`（account_online=true）。
+- 启动窗口没有 traceback、import error 或 MemCore compaction failure；vision 的
+  JSONDecodeError 警告在切换前 2 小时已有 115 次同类记录，属于既有现象，非本 release 引入。
+- 未修改 Bot 账号、NapCat/OneBot、模型密钥、host.env、bots.toml、QQ profile 或两份数据根；
+  `.packages` 由上一 release 原样复制（本轮未改动任何抽包依赖）。
+- 部署前 schema 变化说明：read_workspace / list_workspace / web_search / browser_page /
+  inspect_generated_file 各发生一次稳定 schema 变更（新增 cursor，删除 max_chars），
+  对应 provider 前缀会冷建一次；之后 schema 保持稳定，不影响 MemCore 压卡规则。
