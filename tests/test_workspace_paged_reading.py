@@ -101,6 +101,19 @@ class WorkspacePagedReadingTests(unittest.TestCase):
         self.assertEqual(continuation.followup_envelope.diagnostics["status"], "stale_cursor")
         self.assertIn("stale_cursor", str(continuation.followup_context))
 
+    def test_changed_content_with_identical_stat_metadata_is_still_stale(self) -> None:
+        import os
+
+        self._write("Inbox/a.md", "A" * 80_000)
+        first = self.handler.execute(call={"type": "read_workspace", "targets": ["workspace:/Inbox/a.md"]}, context=_context())
+        cursor = first.followup_envelope.continuation["cursor"]
+        target = self.tmp / "ws" / "Inbox" / "a.md"
+        stat = target.stat()
+        target.write_bytes(("B" * 80_000).encode("utf-8"))
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        continuation = self.handler.execute(call={"type": "read_workspace", "cursor": cursor}, context=_context())
+        self.assertEqual(continuation.followup_envelope.diagnostics["status"], "stale_cursor")
+
     def test_deleted_file_returns_source_missing(self) -> None:
         self._write("Inbox/a.md", "A" * 80_000)
         first = self.handler.execute(call={"type": "read_workspace", "targets": ["workspace:/Inbox/a.md"]}, context=_context())

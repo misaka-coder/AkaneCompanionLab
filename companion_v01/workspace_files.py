@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import importlib.util
 import mimetypes
 import zipfile
@@ -294,10 +295,10 @@ class WorkspaceFileService:
         pack complete file blocks into one page while budget remains.
 
         The cursor is stateless: its payload carries the workspace:/ target list,
-        the current file index, the char offset and the file fingerprint
-        (size:mtime_ns).  Continuations re-read the live source and verify the
-        fingerprint, so a changed file yields ``stale_cursor`` instead of
-        splicing old offsets into new content.
+        the current file index, the char offset and a content fingerprint
+        (sha256 of the extracted text).  Continuations re-read the live source
+        and verify the fingerprint, so a changed file yields ``stale_cursor``
+        instead of splicing old offsets into new content.
         """
         from . import paged_reading
 
@@ -363,6 +364,7 @@ class WorkspaceFileService:
         shown_lines = 0
         complete = True
         extraction_capped = False
+        current_fingerprint = ""
         budget_chars, budget_lines = (
             (paged_reading.FIRST_PAGE_BUDGET_CHARS, paged_reading.FIRST_PAGE_BUDGET_LINES)
             if not cursor
@@ -371,17 +373,13 @@ class WorkspaceFileService:
 
         while file_index < len(resolved):
             path, uri = resolved[file_index]
-            fingerprint = self._file_fingerprint(path)
-            if cursor and expected_fingerprint and fingerprint != expected_fingerprint:
-                return self._paged_failure(
-                    "stale_cursor", reason="workspace file changed since the previous page", detail_requested=uri
-                )
             read = self._read_file_paged(path)
             if read.get("status") != "ok":
                 page_items.append({"uri": uri, **read})
                 file_index += 1
                 offset = 0
                 expected_fingerprint = ""
+                current_fingerprint = ""
                 continue
             content = str(read.get("content") or "")
             if read.get("extraction_capped"):
@@ -389,6 +387,14 @@ class WorkspaceFileService:
             if len(content) <= offset and offset > 0:
                 return self._paged_failure(
                     "stale_cursor", reason="workspace file shrank since the previous page", detail_requested=uri
+                )
+            # Content-based fingerprint: filesystem mtime granularity is not
+            # reliable across hosts, so bind the cursor to the extracted text
+            # itself.  Same text -> same page boundary; changed text -> stale.
+            current_fingerprint = self._content_fingerprint(content)
+            if cursor and expected_fingerprint and current_fingerprint != expected_fingerprint:
+                return self._paged_failure(
+                    "stale_cursor", reason="workspace file changed since the previous page", detail_requested=uri
                 )
             remaining = budget_chars - shown_chars
             remaining_lines = budget_lines - shown_lines
@@ -420,6 +426,7 @@ class WorkspaceFileService:
                 file_index += 1
                 offset = 0
                 expected_fingerprint = ""
+                current_fingerprint = ""
             else:
                 offset = next_offset
                 complete = False
@@ -441,7 +448,7 @@ class WorkspaceFileService:
                         "t": [self.to_uri(path) for path, _uri in resolved],
                         "i": file_index,
                         "o": offset,
-                        "f": expected_fingerprint or self._file_fingerprint(resolved[file_index][0]),
+                        "f": expected_fingerprint or current_fingerprint,
                     }
                 ),
             )
@@ -470,12 +477,8 @@ class WorkspaceFileService:
         }
 
     @staticmethod
-    def _file_fingerprint(path: Path) -> str:
-        try:
-            stat = path.stat()
-            return f"{int(stat.st_size)}:{int(stat.st_mtime_ns)}"
-        except OSError:
-            return ""
+    def _content_fingerprint(content: str) -> str:
+        return hashlib.sha256(str(content or "").encode("utf-8")).hexdigest()[:32]
 
     def _read_file_paged(self, path: Path) -> dict[str, Any]:
         """Extract one file's full rendered text window for paged reading.
