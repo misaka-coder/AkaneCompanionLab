@@ -114,12 +114,13 @@ def max_tool_rounds() -> int:
 def max_tool_emergency_rounds(*, current_budget: int = 0) -> int:
     """Return the universal fail-safe ceiling, never a normal workflow budget."""
 
-    soft_budget = _bounded_int(current_budget, default=max_tool_rounds(), lower=1, upper=32)
+    hard_cap = max(1, int(getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP", 48) or 48))
+    soft_budget = _bounded_int(current_budget, default=max_tool_rounds(), lower=1, upper=hard_cap)
     configured = _bounded_int(
-        getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS", 16),
-        default=16,
+        getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS", hard_cap),
+        default=hard_cap,
         lower=1,
-        upper=32,
+        upper=hard_cap,
     )
     return max(soft_budget, configured)
 

@@ -121,6 +121,146 @@ class FinalJSONRepairTests(unittest.TestCase):
         self.assertIn("chat_final_response_json_repair_successes", llm.metrics)
         self.assertNotIn("chat_final_response_retries", llm.metrics)
 
+    def test_streamed_complete_speech_allows_text_preserving_json_repair(self) -> None:
+        malformed = '{"speech":"工具已经做完，这是最终结果。"'
+
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.repair_calls = 0
+
+            @staticmethod
+            def snapshot_metrics():
+                return {}
+
+            @staticmethod
+            def record_metric(_name):
+                return None
+
+            def stream_chat_json(self, **_kwargs):
+                yield {"type": "speech_segment", "text": "工具已经做完，这是最终结果。"}
+                return SimpleNamespace(
+                    parsed={"speech": "工具已经做完，这是最终结果。"},
+                    raw_text=malformed,
+                    error="",
+                    fallback_used=True,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            def call_chat_json_result(self, **_kwargs):
+                self.repair_calls += 1
+                repaired = {"speech": "工具已经做完，这是最终结果。", "tool_call": None}
+                return ChatJSONResult(
+                    parsed=repaired,
+                    raw_text=json.dumps(repaired, ensure_ascii=False),
+                )
+
+        llm = FakeLLM()
+        engine = self._engine(llm)
+        events, result = _drain(
+            engine._stream_final_response(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                user_message="继续",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=0,
+            )
+        )
+
+        self.assertIn(
+            {"type": "speech_segment", "text": "工具已经做完，这是最终结果。"},
+            events,
+        )
+        self.assertEqual(result["speech"], "工具已经做完，这是最终结果。")
+        self.assertNotIn("_transient_final_failure", result)
+        self.assertEqual(llm.repair_calls, 1)
+
+    def test_streamed_speech_rejects_json_repair_that_rewrites_the_answer(self) -> None:
+        malformed = '{"speech":"原始完整答复。"'
+
+        class FakeLLM:
+            @staticmethod
+            def snapshot_metrics():
+                return {}
+
+            @staticmethod
+            def record_metric(_name):
+                return None
+
+            def stream_chat_json(self, **_kwargs):
+                yield {"type": "speech_segment", "text": "原始完整答复。"}
+                return SimpleNamespace(
+                    parsed={"speech": "原始完整答复。"},
+                    raw_text=malformed,
+                    error="",
+                    fallback_used=True,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            @staticmethod
+            def call_chat_json_result(**_kwargs):
+                repaired = {"speech": "被改写的答复。", "tool_call": None}
+                return ChatJSONResult(
+                    parsed=repaired,
+                    raw_text=json.dumps(repaired, ensure_ascii=False),
+                )
+
+        engine = self._engine(FakeLLM())
+        _events, result = _drain(
+            engine._stream_final_response(
+                session_id="qq_group_shared_1",
+                profile_user_id="qq_group_shared_1",
+                user_message="继续",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=0,
+            )
+        )
+
+        self.assertEqual(result["speech"], "原始完整答复。")
+        self.assertTrue(result["_transient_final_failure"])
+
+    def test_json_repair_never_swallows_a_pending_tool_call(self) -> None:
+        class FakeLLM:
+            @staticmethod
+            def record_metric(_name):
+                return None
+
+            @staticmethod
+            def call_chat_json_result(**_kwargs):
+                repaired = {
+                    "speech": "我继续查一下。",
+                    "tool_call": {"type": "web_search", "query": "证据"},
+                }
+                return ChatJSONResult(
+                    parsed=repaired,
+                    raw_text=json.dumps(repaired, ensure_ascii=False),
+                )
+
+        engine = self._engine(FakeLLM())
+        result = engine._try_repair_final_response_json(
+            provider_output_raw='{"speech":"我继续查一下。","tool_call":{"type":"web_search"',
+            generation_context=engine._prepare_final_response_context(),
+            profile_user_id="u",
+            session_id="s",
+            client_context=None,
+            resource_manifest=None,
+            user_message="继续",
+            domain_profile_id="",
+        )
+
+        self.assertIsNone(result)
+
     def test_failed_json_repair_stops_without_replaying_full_context(self) -> None:
         malformed = '{"speech":"第一次格式坏了"'
 

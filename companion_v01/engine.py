@@ -4967,6 +4967,7 @@ class AkaneMemoryEngine:
         domain_profile_id: str,
         execution_target: Any = None,
         chat_model_override: str = "",
+        expected_speech: str = "",
     ) -> tuple[dict[str, Any], str] | None:
         repaired_call = self._repair_final_response_json(
             provider_output_raw=provider_output_raw,
@@ -4976,6 +4977,16 @@ class AkaneMemoryEngine:
         if repaired_call is None:
             return None
         repaired_result = getattr(repaired_call, "parsed", None)
+        if isinstance(repaired_result, dict) and (
+            repaired_result.get("tool_call")
+            or repaired_result.get(NATIVE_TOOL_CALL_FIELD)
+            or repaired_result.get(NATIVE_TOOL_CALLS_FIELD)
+        ):
+            # A syntax repair must never turn a pending tool request into a
+            # final answer. The ordinary full-context tool loop remains the
+            # only authority allowed to execute that call.
+            self._record_final_response_json_repair_metric(success=False)
+            return None
         repaired_normalized = self._normalize_final_output(
             result=repaired_result,
             visual_defaults=dict(generation_context["visual_defaults"]),
@@ -4989,6 +5000,13 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
         )
+        expected = str(expected_speech or "").strip()
+        if expected and str(repaired_normalized.get("speech") or "").strip() != expected:
+            # Streaming consumers may already have seen this exact speech.
+            # Accept a repair only when it is purely structural; changed text
+            # would duplicate or contradict the user-visible response.
+            self._record_final_response_json_repair_metric(success=False)
+            return None
         self._attach_memory_annotation_truth(
             repaired_normalized,
             result=repaired_call,
@@ -5399,8 +5417,9 @@ class AkaneMemoryEngine:
                     domain_profile_id=domain_profile_id,
                     execution_target=execution_target,
                     chat_model_override=chat_model_override,
+                    expected_speech=(str(normalized.get("speech") or "") if streamed_speech_to_user else ""),
                 )
-                if parse_fallback and not streamed_speech_to_user
+                if parse_fallback
                 else None
             )
             if repaired is not None:

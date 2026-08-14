@@ -21,6 +21,7 @@ WORKSPACE_DIR = str(AKANE_DATA_PATHS.workspace)
 CACHE_DIR = str(AKANE_DATA_PATHS.cache)
 RUN_DIR = str(AKANE_DATA_PATHS.run)
 DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP = 48
 
 
 class Settings(BaseSettings):
@@ -289,7 +290,7 @@ class Settings(BaseSettings):
     # 同轮工具调用的常规软预算。持续产生新调用/新结果时允许继续。
     MAX_TOOL_ROUNDS: int = 3
     # 仅用于阻止失控循环的紧急硬上限；正常工具链不应触及。
-    MAX_TOOL_EMERGENCY_ROUNDS: int = 16
+    MAX_TOOL_EMERGENCY_ROUNDS: int = MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP
     # native tool 通道总开关。默认开启 native-first：allowlist 内、且 (host, model)
     # 能力档案已验证的工具走 provider native schema；未知/未验证 provider 会结构化
     # 回退 legacy JSON tool_call。需要保守兼容时可经 env 显式关闭。
@@ -759,7 +760,7 @@ def _apply_settings(s: Settings) -> None:
     MAX_TOOL_ROUNDS = max(1, min(5, int(s.MAX_TOOL_ROUNDS)))
     MAX_TOOL_EMERGENCY_ROUNDS = max(
         MAX_TOOL_ROUNDS + 1,
-        min(32, int(s.MAX_TOOL_EMERGENCY_ROUNDS)),
+        min(MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP, int(s.MAX_TOOL_EMERGENCY_ROUNDS)),
     )
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "web_search").strip()
