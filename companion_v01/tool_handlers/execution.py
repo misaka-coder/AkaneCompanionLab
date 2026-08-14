@@ -177,6 +177,8 @@ class _ExecToolHandlerBase(BaseToolHandler):
             state_updates["capability_execution"]["generated_resources"] = list(data.get("generated_resources") or [])
         if data.get("artifact_status"):
             state_updates["capability_execution"]["artifact_status"] = str(data.get("artifact_status") or "")
+        if data.get("artifact_reason"):
+            state_updates["capability_execution"]["artifact_reason"] = str(data.get("artifact_reason") or "")
         if data.get("next_action"):
             state_updates["capability_execution"]["next_action"] = dict(data.get("next_action") or {})
         return ToolExecutionResult(
@@ -284,13 +286,16 @@ class _ExecToolHandlerBase(BaseToolHandler):
         data = dict(mapped.data or {})
         data["generated_resources"] = resources
         data["artifact_status"] = artifact_status
+        artifact_reason = str(registration.get("reason") or "")
+        if artifact_reason:
+            data["artifact_reason"] = artifact_reason
         feedback = str(mapped.model_feedback or "")
         if resources:
             labels = "、".join(f"{item.get('handle')}({item.get('name')})" for item in resources)
             targets = [item.get("handle") for item in resources]
             data["next_action"] = {"tool": "send_file", "targets": targets}
             if artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
-                reason = str(registration.get("reason") or "output_registration_incomplete")
+                reason = artifact_reason or "output_registration_incomplete"
                 feedback = (
                     f"{feedback}\n仅部分输出登记成功：{labels}；其余输出登记失败（{reason}）。"
                     "需要交付已成功登记的文件时调用 send_file(targets=[...])；不要声称全部产物都已生成或交付。"
@@ -301,7 +306,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
                     "不要自动替用户发送。"
                 )
         elif artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
-            reason = str(registration.get("reason") or "unknown")
+            reason = artifact_reason or "unknown"
             feedback = (
                 f"{feedback}\n命令已完成，但输出登记失败（{reason}）。请调整输出声明或告知用户交付失败，"
                 "不要声称文件已经生成或已经交付。"
@@ -341,9 +346,9 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "多步骤命令要按当前 Shell 显式保留并检查每一步失败状态，不要用最后一步成功掩盖前面的失败。"
             "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
             "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
-            "输入会复制进本次运行的独立工作区；input_resources/output_globs 与 cwd 互斥，"
-            "只要使用任一资源字段就必须省略 cwd，同时传入会被拒绝；"
-            "使用 input_resources/output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管工作目录，"
+            "输入会复制进本次运行的独立工作区，因此 input_resources 与 cwd 互斥；"
+            "output_globs 可以与工作区相对 cwd 一起使用，直接登记该项目目录中本次新建或变更的产物；"
+            "使用 input_resources 或省略 cwd 只声明 output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管临时目录，"
             "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
             "需要命令产出文件时，用 output_globs 声明相对当前目录的输出路径，并直接把产物写在该目录内，"
             "命令完成后会自动登记为 gen_*，"
@@ -389,7 +394,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return None
         if value.get("output_globs") is not None and output_globs is None:
             return None
-        if str(value.get("cwd") or "").strip() and (input_resources or output_globs):
+        if str(value.get("cwd") or "").strip() and input_resources:
             # Resource mode owns an isolated per-run cwd. Silently ignoring a
             # caller-supplied cwd would make the approved request differ from
             # the command actually executed.
@@ -463,13 +468,22 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             if bridge is None:
                 return self._resource_rejected("execution_resources_unconfigured")
             run_id = new_run_id()
-            staged = bridge.stage_inputs(
-                run_id=run_id,
-                owner=self._owner(context),
-                resource_scope=self._resource_scope(context),
-                input_resources=input_resources,
-                output_globs=output_globs,
-            )
+            if output_globs and cwd and not input_resources:
+                staged = bridge.bind_workspace_outputs(
+                    run_id=run_id,
+                    owner=self._owner(context),
+                    resource_scope=self._resource_scope(context),
+                    cwd=cwd,
+                    output_globs=output_globs,
+                )
+            else:
+                staged = bridge.stage_inputs(
+                    run_id=run_id,
+                    owner=self._owner(context),
+                    resource_scope=self._resource_scope(context),
+                    input_resources=input_resources,
+                    output_globs=output_globs,
+                )
             if not bool(staged.get("ok")):
                 return self._resource_rejected(str(staged.get("reason") or "execution_resources_staging_failed"))
             cwd = str(staged.get("cwd_relpath") or cwd)

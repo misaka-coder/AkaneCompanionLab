@@ -95,6 +95,8 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn("briefly tell the user the concrete next step", content)
         self.assertIn("Fix the root cause with the smallest coherent change", content)
         self.assertIn("Run the narrowest relevant check", content)
+        self.assertIn("project's workspace-relative `cwd`", content)
+        self.assertIn("without\n  copying the project", content)
 
     def test_skill_declares_no_permission_upgrade_or_new_tools(self) -> None:
         content = self.registry.load("coding-project").content

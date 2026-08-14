@@ -74,9 +74,12 @@ multi-step command where the last step succeeds can hide an earlier failure.
   before delivery so accidental rewrites and generated debris are visible.
 - Use `exec_run` with a workspace-relative `cwd` (absolute paths are rejected for that
   field; commands may still read host paths discovered from real output).
-- Only when the user needs the deliverable files do you declare them with
-  `output_globs` so they register as `gen_*`; intermediate project files can simply
-  stay in the workspace.
+- Only when the user needs deliverable files, declare `output_globs`. You may combine
+  it with the project's workspace-relative `cwd`; the command then runs in that
+  existing project and registers files it creates or changes there as `gen_*` without
+  copying the project to a temporary directory. Intermediate files can stay in the
+  workspace. `input_resources` still uses an isolated directory and cannot be combined
+  with `cwd`.
 
 ## 5. Keep long tasks observable
 

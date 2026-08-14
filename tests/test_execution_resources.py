@@ -417,7 +417,8 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         self.assertTrue(state.get("generated_resources"))
         self.assertEqual(state.get("artifact_status"), "registered")
 
-    def test_resource_mode_rejects_cwd_instead_of_silently_ignoring_it(self) -> None:
+    def test_output_globs_accept_existing_workspace_cwd(self) -> None:
+        (self.harness.workspace / "subdir").mkdir()
         normalized = self.handler.normalize_call(
             {
                 "type": "exec_run",
@@ -426,7 +427,77 @@ class ExecRunResourceWiringTests(unittest.TestCase):
                 "output_globs": ["out.txt"],
             }
         )
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["cwd"], "subdir")
+
+    def test_input_resources_still_reject_cwd(self) -> None:
+        normalized = self.handler.normalize_call(
+            {
+                "type": "exec_run",
+                "command": "echo hi",
+                "cwd": "subdir",
+                "input_resources": [{"handle": "file_001", "as": "in.txt"}],
+            }
+        )
         self.assertIsNone(normalized)
+
+    def test_existing_project_output_is_registered_without_deleting_project(self) -> None:
+        project = self.harness.workspace / "project"
+        project.mkdir()
+        (project / "source.txt").write_text("keep", encoding="utf-8")
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": _python_command("open('artifact.txt','w').write('done')"),
+                "cwd": "project",
+                "initial_wait_seconds": 2,
+                "output_globs": ["artifact.txt"],
+            },
+            context=_context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], "completed", result.followup_context)
+        self.assertEqual(state["artifact_status"], "registered")
+        self.assertEqual(state["generated_resources"][0]["name"], "artifact.txt")
+        self.assertEqual((project / "source.txt").read_text(encoding="utf-8"), "keep")
+        self.assertEqual((project / "artifact.txt").read_text(encoding="utf-8"), "done")
+
+    def test_existing_unchanged_output_is_not_registered(self) -> None:
+        project = self.harness.workspace / "project"
+        project.mkdir()
+        (project / "artifact.txt").write_text("old", encoding="utf-8")
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": _python_command("print('no output change')"),
+                "cwd": "project",
+                "initial_wait_seconds": 2,
+                "output_globs": ["artifact.txt"],
+            },
+            context=_context(),
+        )
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["artifact_status"], "registration_failed")
+        self.assertEqual(state["artifact_reason"], "output_not_created_or_changed")
+        self.assertEqual((project / "artifact.txt").read_text(encoding="utf-8"), "old")
+
+    def test_failed_project_command_never_deletes_project(self) -> None:
+        project = self.harness.workspace / "project"
+        project.mkdir()
+        (project / "source.txt").write_text("keep", encoding="utf-8")
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": "exit 2",
+                "cwd": "project",
+                "initial_wait_seconds": 2,
+                "output_globs": ["artifact.txt"],
+            },
+            context=_context(),
+        )
+        self.assertEqual(result.state_updates["capability_execution"]["status"], "failed")
+        self.assertEqual((project / "source.txt").read_text(encoding="utf-8"), "keep")
 
     def test_failed_command_finalizes_resource_workspace(self) -> None:
         result = self.handler.execute(
@@ -609,6 +680,80 @@ class ExecStatusResourceRegistrationTests(unittest.TestCase):
             context=_context(),
         )
         self.assertEqual(first.stream_events[0]["status"], EXEC_STATUS_COMPLETED)
+        self.assertIn("已登记生成资源", first.followup_context)
+        first_handles = [
+            item.get("handle")
+            for item in first.state_updates["capability_execution"].get("generated_resources", [])
+        ]
+        second = self.status_handler.execute(
+            call={"type": "exec_status", "run_id": run_id},
+            context=_context(),
+        )
+        second_handles = [
+            item.get("handle")
+            for item in second.state_updates["capability_execution"].get("generated_resources", [])
+        ]
+        self.assertEqual(first_handles, second_handles)
+        self.assertEqual(len(first_handles), 1)
+
+    def test_exec_status_registers_changed_output_in_existing_project_without_cleanup(self) -> None:
+        project = self.harness.workspace / "project"
+        project.mkdir()
+        output = project / "bundle.txt"
+        output.write_text("old", encoding="utf-8")
+        run_id = "execrun_" + "1234567890abcdef1234567890abcdef"
+        bound = self.harness.bridge.bind_workspace_outputs(
+            run_id=run_id,
+            owner=OWNER,
+            resource_scope=RESOURCE_SCOPE,
+            cwd="project",
+            output_globs=["bundle.txt"],
+        )
+        self.assertTrue(bound["ok"], bound)
+        from companion_v01.execution_run import execute_exec_run
+
+        command = _python_command(
+            "import pathlib,time;time.sleep(1.2);"
+            "pathlib.Path('bundle.txt').write_text('new')"
+        )
+        mapped = execute_exec_run(
+            self.provider,
+            owner=OWNER,
+            command=command,
+            cwd="project",
+            initial_wait_seconds=1,
+            run_id=run_id,
+        )
+        self.assertEqual(mapped.event_status, "running", mapped.data)
+        cursor = mapped.data.get("next_cursor")
+        status = None
+        for _ in range(20):
+            status = self.status_handler.execute(
+                call={
+                    "type": "exec_status",
+                    "run_id": run_id,
+                    "cursor": cursor,
+                    "wait_seconds": 1,
+                },
+                context=_context(),
+            )
+            state = status.state_updates["capability_execution"]
+            if state["status"] == "completed":
+                break
+            cursor = state.get("next_cursor")
+        self.assertIsNotNone(status)
+        state = status.state_updates["capability_execution"]
+        self.assertEqual(state["status"], "completed", status.followup_context)
+        self.assertEqual(state["artifact_status"], "registered")
+        self.assertEqual(state["generated_resources"][0]["name"], "bundle.txt")
+        self.assertEqual(output.read_text(encoding="utf-8"), "new")
+        self.assertTrue(project.is_dir())
+
+        first = self.status_handler.execute(
+            call={"type": "exec_status", "run_id": run_id},
+            context=_context(),
+        )
+        self.assertEqual(first.stream_events[0]["status"], "completed")
         self.assertIn("已登记生成资源", first.followup_context)
         first_handles = [
             item.get("handle")

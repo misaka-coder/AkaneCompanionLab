@@ -191,8 +191,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "不要用最后一步成功掩盖前面的失败。"
         "普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
         "按需续读。需要命令读取已有材料时用 input_resources 声明句柄与命令工作区内的 as 相对路径，"
-        "输入会复制进本次运行的独立工作区；仅在这种资源登记模式下，当前目录以及 TMPDIR/TMP/TEMP 都指向"
-        "该次受管工作目录，不要切换到 /tmp 等外部目录。需要命令产出文件时用 output_globs 声明相对当前目录的输出，命令完成后"
+        "输入会复制进本次运行的独立工作区，且 input_resources 不能与 cwd 同时使用。需要命令产出文件时用"
+        "output_globs 声明相对当前目录的输出；它可以与工作区相对 cwd 一起使用，直接登记现有项目目录中"
+        "本次新建或变更的产物。省略 cwd 时使用本次受管临时目录，不要切换到 /tmp 等外部目录。命令完成后"
         "只登记明确声明的输出为 gen_*，再用 send_file 交付。执行失败、超时或取消都会明确返回对应状态，"
         "不会声称成功；登记失败也会与命令成功明确区分。"
     ),
@@ -210,7 +211,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "maxLength": EXEC_CWD_MAX_CHARS,
                 "description": (
                     "工作区内相对路径或挂载别名（可选），默认工作区根。"
-                    "使用 input_resources 或 output_globs 的隔离资源模式时必须省略 cwd。"
+                    "使用 input_resources 时必须省略 cwd；output_globs 可与工作区相对 cwd 同用。"
                 ),
             },
             "timeout_seconds": {
@@ -256,7 +257,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "maxItems": 32,
                 "description": (
                     "可选：命令完成后要登记为 gen_* 的输出路径 glob。路径相对本次受管当前目录；"
-                    "命令必须把产物写在该目录内，不要写到 /tmp 等外部目录。全部展开并去重，只登记明确声明的输出。"
+                    "与工作区相对 cwd 同用时只登记本次新建或变更的匹配文件；否则命令必须把产物写在"
+                    "本次临时目录内。不要写到 /tmp 等外部目录。全部展开并去重，只登记明确声明的输出。"
                 ),
             },
         },
@@ -304,6 +306,10 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                     ARTIFACT_STATUS_NOT_REGISTERED,
                     ARTIFACT_STATUS_NOT_REQUESTED,
                 ],
+            },
+            "artifact_reason": {
+                "type": "string",
+                "description": "输出未完整登记时的结构化原因；为空表示没有额外登记错误。",
             },
         },
         "required": ["status"],
@@ -389,6 +395,10 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                     ARTIFACT_STATUS_NOT_REGISTERED,
                     ARTIFACT_STATUS_NOT_REQUESTED,
                 ],
+            },
+            "artifact_reason": {
+                "type": "string",
+                "description": "输出未完整登记时的结构化原因；为空表示没有额外登记错误。",
             },
         },
         "required": ["status", "run_id"],

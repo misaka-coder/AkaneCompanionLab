@@ -7,10 +7,11 @@ This module is deliberately small.  It does exactly two things:
   ``audio_*`` / ``gen_*``) into a run-scoped workspace inside the execution
   workspace, so a command can read them through safe relative paths without
   ever learning the original storage path.
-* ``register_outputs``: expand declared ``output_globs`` inside the same
-  run-scoped workspace, validate each match (regular file, containment,
-  size / count limits), copy it into the existing GeneratedFileService
-  managed storage, and register it as ``gen_*`` using the existing service.
+* ``register_outputs``: expand declared ``output_globs`` inside either the
+  run-scoped workspace or an explicitly bound persistent project directory,
+  validate each match (regular file, containment, size / count limits), copy
+  it into the existing GeneratedFileService managed storage, and register it
+  as ``gen_*`` using the existing service.
 
 It is not a ResourceManager, a database, or a global registry.  Per-run
 binding is only the mapping needed to make ``exec_status`` register outputs
@@ -89,6 +90,8 @@ class _RunBinding:
     cwd_relpath: str
     output_globs: tuple[str, ...]
     input_handles: tuple[str, ...]
+    cleanup_workspace: bool = True
+    baseline_outputs: tuple[tuple[str, int, int, int], ...] = ()
     registered: tuple[RegisteredOutput, ...] = ()
     artifact_status: str = ARTIFACT_STATUS_NOT_REQUESTED
     artifact_reason: str = ""
@@ -269,6 +272,74 @@ class ExecutionResourceBridge:
             "output_globs": list(globs),
         }
 
+    def bind_workspace_outputs(
+        self,
+        *,
+        run_id: str,
+        owner: Any,
+        resource_scope: ExecutionResourceScope,
+        cwd: str,
+        output_globs: Sequence[str] | None,
+    ) -> dict[str, Any]:
+        """Bind output registration to an existing workspace project.
+
+        Unlike ``stage_inputs``, this mode never owns or removes the directory.
+        A pre-run stat snapshot ensures an already-present, unchanged file is
+        not mistaken for output produced by the current command.
+        """
+        if not is_valid_run_id(run_id):
+            return {"ok": False, "reason": "invalid_execution_run_id"}
+        globs = [
+            normalized
+            for raw in (output_globs or [])
+            if (normalized := normalize_output_glob(raw)) is not None
+        ]
+        if not globs or len(globs) != len(list(output_globs or [])):
+            return {"ok": False, "reason": "invalid_output_glob"}
+        cwd_relpath = normalize_resource_as(cwd)
+        if cwd_relpath is None:
+            return {"ok": False, "reason": "invalid_output_cwd"}
+        run_dir = (self.workspace_root / cwd_relpath).resolve(strict=False)
+        try:
+            run_dir.relative_to(self.workspace_root)
+        except ValueError:
+            return {"ok": False, "reason": "output_cwd_escapes_workspace"}
+        if not run_dir.is_dir():
+            return {"ok": False, "reason": "output_cwd_not_found"}
+
+        clean_run_id = str(run_id or "").strip()
+        with self._lock:
+            if clean_run_id in self._bindings:
+                return {"ok": False, "reason": "duplicate_execution_run_id"}
+        matches, overflow = self._collect_output_matches(globs, run_dir)
+        if overflow:
+            return {"ok": False, "reason": "existing_output_file_limit_exceeded"}
+        baseline = tuple(
+            (relpath, *self._output_fingerprint((run_dir / relpath).resolve()))
+            for relpath in matches
+        )
+        self._prune_bindings()
+        with self._lock:
+            self._bindings[clean_run_id] = _RunBinding(
+                run_id=clean_run_id,
+                execution_owner=owner,
+                resource_scope=resource_scope,
+                cwd_relpath=cwd_relpath,
+                output_globs=tuple(globs),
+                input_handles=(),
+                cleanup_workspace=False,
+                baseline_outputs=baseline,
+                created_at=self._now(),
+            )
+        return {
+            "ok": True,
+            "cwd_relpath": cwd_relpath,
+            "staged_inputs": [],
+            "input_handles": [],
+            "output_globs": list(globs),
+            "output_mode": "persistent_workspace",
+        }
+
     def run_cwd_relpath(self, run_id: str) -> str:
         """Public stable cwd for a run (empty string when unknown)."""
         if not run_id:
@@ -330,7 +401,7 @@ class ExecutionResourceBridge:
                 binding.artifact_status = ARTIFACT_STATUS_NOT_REQUESTED
                 binding.finalized = True
             result = self._registration_result(binding)
-            self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
+            self._cleanup_binding_workspace(binding)
             return result
 
         run_dir = self.workspace_root / binding.cwd_relpath
@@ -341,15 +412,27 @@ class ExecutionResourceBridge:
                 binding.artifact_reason = "output_file_limit_exceeded"
                 binding.finalized = True
             result = self._registration_result(binding)
-            self._cleanup_workspace(run_dir)
+            self._cleanup_binding_workspace(binding)
             return result
+        baseline = {
+            relpath: (size, mtime_ns, ctime_ns)
+            for relpath, size, mtime_ns, ctime_ns in binding.baseline_outputs
+        }
+        if baseline:
+            matches = [
+                relpath
+                for relpath in matches
+                if baseline.get(relpath) != self._output_fingerprint((run_dir / relpath).resolve())
+            ]
         if not matches:
             with self._lock:
                 binding.artifact_status = ARTIFACT_STATUS_REGISTRATION_FAILED
-                binding.artifact_reason = "output_not_found"
+                binding.artifact_reason = (
+                    "output_not_created_or_changed" if baseline else "output_not_found"
+                )
                 binding.finalized = True
             result = self._registration_result(binding)
-            self._cleanup_workspace(run_dir)
+            self._cleanup_binding_workspace(binding)
             return result
 
         registered: list[RegisteredOutput] = []
@@ -385,7 +468,7 @@ class ExecutionResourceBridge:
                 binding.artifact_status = ARTIFACT_STATUS_REGISTRATION_FAILED
                 binding.artifact_reason = "output_registration_incomplete" if failures else "output_not_found"
             binding.finalized = True
-        self._cleanup_workspace(run_dir)
+        self._cleanup_binding_workspace(binding)
         return self._registration_result(binding)
 
     def finalize_without_outputs(self, *, run_id: str, owner: Any, reason: str) -> dict[str, Any]:
@@ -422,7 +505,7 @@ class ExecutionResourceBridge:
                     binding.artifact_reason = str(reason or "command_not_completed") if binding.output_globs else ""
                     binding.finalized = True
                 result = self._registration_result(binding)
-            self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
+            self._cleanup_binding_workspace(binding)
             return result
 
     def _registration_result(self, binding: _RunBinding) -> dict[str, Any]:
@@ -454,7 +537,7 @@ class ExecutionResourceBridge:
                         stale_bindings.append(binding)
                         self._bindings.pop(run_id, None)
             for binding in stale_bindings:
-                self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
+                self._cleanup_binding_workspace(binding)
 
     def _resolve_input_handle(
         self,
@@ -507,6 +590,11 @@ class ExecutionResourceBridge:
                     if len(matches) > self.max_outputs:
                         return sorted(matches.keys()), True
         return sorted(matches.keys()), False
+
+    @staticmethod
+    def _output_fingerprint(path: Path) -> tuple[int, int, int]:
+        stat = path.stat()
+        return (int(stat.st_size), int(stat.st_mtime_ns), int(stat.st_ctime_ns))
 
     def _register_one_output(self, source: Path, relpath: str, binding: _RunBinding) -> RegisteredOutput | None:
         service = self.generated_file_service
@@ -575,6 +663,10 @@ class ExecutionResourceBridge:
                 shutil.rmtree(run_dir)
         except OSError:
             pass
+
+    def _cleanup_binding_workspace(self, binding: _RunBinding) -> None:
+        if binding.cleanup_workspace:
+            self._cleanup_workspace(self.workspace_root / binding.cwd_relpath)
 
 
 def _same_owner(left: Any, right: Any) -> bool:
