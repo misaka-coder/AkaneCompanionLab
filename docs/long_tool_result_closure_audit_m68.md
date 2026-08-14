@@ -47,7 +47,13 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 |---|---|---|---|---|---|---|---|---|---|---|
 | `read_workspace` | 服务层 max_chars≤4M；`truncated` 标志 | 是（>4M 服务截断；否则被 8000 出口砍） | 否 | 否 | 否 | 是 | 截断后的 followup | 是（存了被砍版本） | 工作区原文件 | 是 |
 | `list_workspace` | 50000 条扫描上限 | 是（8000 出口二次截断） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 实时文件系统 | 是（按完整 entry） |
-| `register_workspace_items` | max_files≤5000 | 是（条目清单可能 300k+ 字，8000 出口砍） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 实时文件系统+附件服务 | 是（按完整条目） |
+| `register_workspace_items` | max_files≤5000 | 是（条目清单可能 300k+ 字，8000 出口砍） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 实时文件系统+附件服务 | 否（完成回执即可） |
+
+> 实施修正（Phase 2/5 落地后）：`register_workspace_items` 采用 **complete_bounded**：全部失败/缺失行必须逐条可见，
+> 成功回执按 16 KiB 预算展示并明确写出剩余条数；操作本身 complete=True，完整文件清单走 list_workspace。
+> `focus_workspace`（每文件 12k 上限 + 明确指引 read_workspace）与 `load_character_context`（包内容有界）同样
+> 升级为 producer-bounded complete=True，不再被 8000 出口二次截断。`AdapterCapabilityToolHandler` 保持 6000 字
+> 上限，作为“未迁移第三方结果”的最后保险分类。
 | `web_search.search/batch_search` | 每条摘要 420 字、整页 6000 字 | 是（条目中间切断） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | AnySearch 返回（已归一） | 是（按完整结果条目） |
 | `web_search.extract` | 5000 字 | 是（正文硬切） | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | AnySearch 提取正文 | 是（重提取+fingerprint） |
 | `browser_page` snapshot/read_text/current | 5000 字硬切 | 是 | 否 | 否 | 否 | 是 | 截断后的 followup | 是 | 浏览器页面（动态） | 是（需不可变快照缓存） |
@@ -90,12 +96,10 @@ G=是否再经统一 8000 出口；M=MemCore 当前轮存什么；R=settled 后�
 | 分类 | 工具 |
 |---|---|
 | `short_inline` | 播放器控制、交付、提醒、库存、审批、capability ACK、gen_* 登记、open_browser、open_music_search、manage_task_workspace、媒体工作台状态 |
-| `complete_bounded` | load_skill、retrieve_memory、open_memory 等已合格者；`web_search.get_sub_domains`（本次升级） |
-| `paged_source` | read_workspace、list_workspace、register_workspace_items、web_search.search/batch_search/extract、browser_page 快照/elements、read_attachment_section（溢出保护）、inspect_generated_file |
+| `complete_bounded` | load_skill、retrieve_memory、open_memory 等已合格者；`web_search.get_sub_domains`、register_workspace_items、focus_workspace、load_character_context、read_attachment_section（本次升级） |
+| `paged_source` | read_workspace、list_workspace、web_search.search/batch_search/extract、browser_page 快照/elements、inspect_generated_file（content 续读） |
 | `reloadable_external` | browser 快照（实例内不可变缓存）；MemCore compact_reloadable 卡片承载历史 |
-| `unsafe_unbounded` | AnySearch 原始 JSON：只保存安全归一后的证据字段，不存原始大 JSON |
-
-没有真实长结果的工具不为"统一"加分页代码。
+| `unsafe_unbounded` | AnySearch 原始 JSON：只保存安全归一后的证据字段，不存原始大 JSON；AdapterCapabilityToolHandler 保持 6000 字最后保险 |
 
 ## 4. 设计要点（进入 Phase 1 的硬约束）
 

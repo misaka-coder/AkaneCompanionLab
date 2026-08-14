@@ -385,9 +385,11 @@ class FocusWorkspaceToolHandler(BaseToolHandler):
             context_text = self.workspace_service.build_prompt_context(
                 profile_user_id=context.profile_user_id,
                 session_id=context.session_id,
+                max_chars_per_file=12_000,
             )
             if context_text:
                 lines.extend(["", context_text])
+        followup_text = "\n".join(lines)
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[
@@ -398,7 +400,18 @@ class FocusWorkspaceToolHandler(BaseToolHandler):
                     "focused": focused,
                 }
             ],
-            followup_context="\n".join(lines),
+            followup_context=followup_text,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup_text,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={
+                    "action": action,
+                    "affected": len(affected),
+                    "focused": len(focused),
+                },
+            ),
         )
 
 

@@ -25,6 +25,7 @@ from .core import (
     BaseToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolFollowupEnvelope,
 )
 
 class LoadCharacterContextToolHandler(BaseToolHandler):
@@ -105,9 +106,20 @@ class LoadCharacterContextToolHandler(BaseToolHandler):
             for item in result.get("failed") or []
             if isinstance(item, dict)
         ]
+        followup_text = str(result.get("followup_context") or "")
         return ToolExecutionResult(
             tool_type=self.tool_type,
-            followup_context=str(result.get("followup_context") or ""),
+            followup_context=followup_text,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup_text,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={
+                    "loaded": len(loaded_targets),
+                    "failed": len(failed_targets),
+                },
+            ),
             state_updates={
                 "character_context": {
                     "status": str(result.get("status") or "unavailable"),
