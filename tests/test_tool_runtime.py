@@ -679,22 +679,31 @@ class WebSearchToolHandlerTests(unittest.TestCase):
     def test_time_range_search_followup_requests_broader_coverage(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
 
-        followup = handler._format_search_followup(
+        page = handler._paged_search_result(
             action="search",
             call={"query": "最近一周和日经225有关的新闻"},
-            payload=[
-                {
-                    "title": "单日行情",
-                    "url": "https://example.com/one-day",
-                    "snippet": "只覆盖 2026-07-10。",
-                }
-            ],
+            result={
+                "results": [
+                    {
+                        "title": "单日行情",
+                        "url": "https://example.com/one-day",
+                        "snippet": "只覆盖 2026-07-10。",
+                    }
+                ]
+            },
             redaction_terms=[],
+            start_entry=0,
+            expected_fingerprint="",
+            owner_binding="p1",
+            profile_user_id="p1",
+            coverage_status="unverified",
         )
 
+        followup = page.followup_context
         self.assertIn("当前任务尚未完成", followup)
         self.assertIn("batch_search", followup)
         self.assertIn("extract", followup)
+        self.assertTrue(page.followup_envelope.complete)
 
     def test_transient_failure_invites_alternate_read_only_research(self) -> None:
         handler = WebSearchToolHandler(config_base_dir="unused", mcp_tool_caller=object())
@@ -733,7 +742,9 @@ class WebSearchToolHandlerTests(unittest.TestCase):
         )
         self.assertIsNotNone(public_extract)
         assert public_extract is not None
-        self.assertEqual(public_extract["max_chars"], 5000)
+        self.assertEqual(public_extract["action"], "extract")
+        self.assertEqual(public_extract["url"], "https://example.com/article")
+        self.assertNotIn("max_chars", public_extract)
 
         self.assertIsNone(
             handler.normalize_call(

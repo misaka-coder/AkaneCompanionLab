@@ -32,6 +32,7 @@ from .core import (
     BaseToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolFollowupEnvelope,
     ToolMetadata,
 )
 
@@ -862,8 +863,6 @@ class WebSearchToolHandler(BaseToolHandler):
     MAX_QUERY_LENGTH = 240
     MAX_QUERIES = 4
     MAX_RESULTS = 10
-    MAX_FOLLOWUP_CHARS = 6000
-    MAX_EXTRACT_CHARS = 5000
 
     def tool_spec(self):  # M66-B: canonical ToolSpec authority
         return WEB_SEARCH_TOOL_SPEC
@@ -1060,9 +1059,11 @@ class WebSearchToolHandler(BaseToolHandler):
             "不需要用户显式说“联网”“搜索”“查询”。例：日经指数现在多少、七月新番有哪些、最新模型价格、今天上海天气 -> web_search。"
             '搜索格式为 {"type":"web_search","action":"search","query":"搜索词","max_results":5}；'
             '多目标/时间范围检索格式为 {"type":"web_search","action":"batch_search","queries":["查询1","查询2"],"max_results":3}；'
-            '网页提取格式为 {"type":"web_search","action":"extract","url":"https://...","max_chars":3000}。'
+            '网页提取格式为 {"type":"web_search","action":"extract","url":"https://..."}。'
             "最近一周、时间范围、新闻汇总或多来源核验通常优先 batch_search；如果结果只覆盖一个日期或单一来源，"
             "继续换日期、语言或来源检索，并对关键结果 extract，不要把一次搜索当成完整覆盖。"
+            "结果或正文还有未展示部分时，返回内容会带 cursor；如果已展示内容足够回答，可以直接回答，"
+            "只有确实需要后续内容时才调用 web_search(cursor=\"...\") 继续，不要重复传原查询参数。"
             "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
             "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
             "再调用 browser_page.navigate 或 open_browser。"
@@ -1074,6 +1075,9 @@ class WebSearchToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
+        cursor = str(value.get("cursor") or "").strip()
+        if cursor:
+            return {"type": self.tool_type, "cursor": cursor}
         action = self._normalize_action(value)
         if action == "extract":
             url = self._normalize_public_url(value.get("url") or value.get("link"))
@@ -1083,9 +1087,6 @@ class WebSearchToolHandler(BaseToolHandler):
                 "type": self.tool_type,
                 "action": "extract",
                 "url": url,
-                "max_chars": self._coerce_int(
-                    value.get("max_chars"), minimum=500, maximum=self.MAX_EXTRACT_CHARS, default=3000
-                ),
             }
         if action == "batch_search":
             queries = self._normalize_queries(value.get("queries") or value.get("query"))
@@ -1125,6 +1126,26 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         runtime_profile_user_id = self._resolve_runtime_profile_user_id(context)
+        cursor_payload: dict[str, Any] | None = None
+        start_entry = 0
+        start_offset = 0
+        if str(call.get("cursor") or "").strip():
+            resolved = self._resolve_cursor_call(call=call, context=context)
+            if not isinstance(resolved, dict):
+                return resolved
+            cursor_payload = resolved
+            cursor_args = dict(resolved.get("arguments") or {}) if isinstance(resolved.get("arguments"), Mapping) else {}
+            call = {
+                "type": self.tool_type,
+                "action": str(resolved.get("action") or "search"),
+                **{key: value for key, value in cursor_args.items() if value not in (None, "")},
+            }
+            start_entry = int(resolved.get("start_entry") or 0)
+            start_offset = int(resolved.get("start_offset") or 0)
+            expected_fingerprint = str(resolved.get("fingerprint") or "")
+        else:
+            expected_fingerprint = ""
+
         server = get_mcp_server_runtime_config(
             base_dir=self.config_base_dir,
             profile_user_id=runtime_profile_user_id,
@@ -1174,10 +1195,6 @@ class WebSearchToolHandler(BaseToolHandler):
             return self._failure("anysearch_rest_failed", "AnySearch 官方 HTTPS 搜索调用失败。")
         if self._mcp_result_is_error(result):
             if use_mcp and server:
-                # A valid MCP error result proves the transport and server are
-                # reachable.  It may only mean that one URL could not be
-                # extracted, so it must not poison readiness for the next
-                # search or another public source.
                 self._remember_server_ready(runtime_profile_user_id, server)
             return self._mcp_tool_failure(
                 action=action,
@@ -1188,31 +1205,488 @@ class WebSearchToolHandler(BaseToolHandler):
         if use_mcp and server:
             self._remember_server_ready(runtime_profile_user_id, server)
 
-        followup = self._format_followup(
-            action=action,
-            call=call,
-            result=result if isinstance(result, dict) else {},
-            redaction_terms=redaction_terms,
-        )
+        owner_binding = self._web_cursor_owner_binding(context)
         query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
         coverage_status = "unverified" if self._search_needs_broader_coverage(query_label) else "not_required"
+        if action in {"search", "batch_search"}:
+            return self._paged_search_result(
+                action=action,
+                call=call,
+                result=result if isinstance(result, dict) else {},
+                redaction_terms=redaction_terms,
+                start_entry=start_entry,
+                expected_fingerprint=expected_fingerprint,
+                owner_binding=owner_binding,
+                profile_user_id=runtime_profile_user_id,
+                coverage_status=coverage_status,
+            )
+        if action == "extract":
+            return self._paged_extract_result(
+                call=call,
+                result=result if isinstance(result, dict) else {},
+                redaction_terms=redaction_terms,
+                start_offset=start_offset,
+                expected_fingerprint=expected_fingerprint,
+                owner_binding=owner_binding,
+                profile_user_id=runtime_profile_user_id,
+            )
+        if action == "get_sub_domains":
+            return self._paged_sub_domains_result(
+                call=call,
+                result=result if isinstance(result, dict) else {},
+                redaction_terms=redaction_terms,
+                start_offset=start_offset,
+                expected_fingerprint=expected_fingerprint,
+                owner_binding=owner_binding,
+                profile_user_id=runtime_profile_user_id,
+            )
+        return self._failure("unsupported_action", f"AnySearch 不支持的动作：{action}。")
+
+    def _resolve_cursor_call(
+        self, *, call: dict[str, Any], context: ToolExecutionContext
+    ) -> dict[str, Any] | ToolExecutionResult:
+        from ..paged_reading import parse_json_payload, parse_paged_cursor
+
+        cursor = str(call.get("cursor") or "").strip()
+        payload = parse_json_payload(
+            parse_paged_cursor(cursor, tool="we", binding=self._web_cursor_owner_binding(context))
+        )
+        if not isinstance(payload, dict):
+            return self._cursor_failure("cursor_invalid", "cursor 不属于当前用户/会话，或已损坏")
+        action = str(payload.get("a") or "").strip()
+        if action not in self.ALLOWED_ACTIONS:
+            return self._cursor_failure("cursor_invalid", "cursor 引用的动作无效")
+        return {
+            "action": action,
+            "arguments": dict(payload.get("args") or {}),
+            "start_entry": int(payload.get("s") or 0) if action in {"search", "batch_search"} else 0,
+            "start_offset": int(payload.get("o") or 0) if action in {"extract", "get_sub_domains"} else 0,
+            "fingerprint": str(payload.get("f") or ""),
+        }
+
+    def _cursor_failure(self, status: str, reason: str) -> ToolExecutionResult:
+        from ..paged_reading import page_failure_feedback
+
+        content = page_failure_feedback(status=status, tool=self.tool_type, detail=reason)
         return ToolExecutionResult(
             tool_type=self.tool_type,
+            stream_events=[
+                {"type": "web_search_completed", "provider": "anysearch", "status": status, "reason": reason}
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={"status": status},
+            ),
+        )
+
+    def _web_cursor_owner_binding(self, context: ToolExecutionContext) -> str:
+        from ..paged_reading import cursor_binding
+
+        return cursor_binding(
+            "web_search",
+            self._resolve_runtime_profile_user_id(context),
+            context.session_id,
+        )
+
+    @staticmethod
+    def _web_evidence_fingerprint(value: str) -> str:
+        return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+    def _search_evidence_entries(self, payload: Any, *, redaction_terms: list[str]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for item in self._coerce_search_results(payload)[: self.MAX_RESULTS]:
+            title = self._sanitize_output(
+                str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms
+            )[:160]
+            url = self._sanitize_output(
+                str(item.get("url") or item.get("link") or ""), redaction_terms=redaction_terms
+            )[:500]
+            snippet = self._sanitize_output(
+                str(
+                    item.get("snippet")
+                    or item.get("summary")
+                    or item.get("description")
+                    or item.get("content")
+                    or ""
+                ),
+                redaction_terms=redaction_terms,
+            )
+            date = self._search_result_date_hint(item)
+            if date:
+                date = self._sanitize_output(date, redaction_terms=redaction_terms)[:160]
+            entries.append({"title": title, "url": url, "snippet": snippet, "date": date})
+        return entries
+
+    def _render_search_entry(self, index: int, entry: Mapping[str, Any]) -> str:
+        lines = [f"{index}. {str(entry.get('title') or '')}"]
+        if entry.get("url"):
+            lines.append(f"   URL: {str(entry.get('url') or '')}")
+        if entry.get("date"):
+            lines.append("   来源日期字段（需结合正文判断含义）: " + str(entry.get("date") or ""))
+        if entry.get("snippet"):
+            lines.append(f"   摘要: {str(entry.get('snippet') or '')}")
+        return "\n".join(lines)
+
+    def _paged_search_result(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        result: Mapping[str, Any],
+        redaction_terms: list[str],
+        start_entry: int,
+        expected_fingerprint: str,
+        owner_binding: str,
+        profile_user_id: str,
+        coverage_status: str,
+    ) -> ToolExecutionResult:
+        from ..paged_reading import (
+            make_paged_cursor,
+            json_payload,
+            page_failure_feedback,
+        )
+
+        payload = self._extract_payload(result, redaction_terms=redaction_terms)
+        entries = self._search_evidence_entries(payload, redaction_terms=redaction_terms)
+        fingerprint = self._web_evidence_fingerprint(json.dumps(entries, ensure_ascii=False, sort_keys=True))
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            content = page_failure_feedback(
+                status="content_changed",
+                tool=self.tool_type,
+                detail="重新检索得到的结果与上一页不一致",
+            )
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {"type": "web_search_completed", "provider": "anysearch", "status": "content_changed"}
+                ],
+                followup_context=content,
+                followup_envelope=ToolFollowupEnvelope(
+                    content=content,
+                    producer_bounded=True,
+                    complete=True,
+                    continuation=None,
+                    diagnostics={"status": "content_changed"},
+                ),
+            )
+
+        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
+        lines = ["【AnySearch 联网搜索结果】"]
+        if query_label:
+            lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
+        if self._search_needs_broader_coverage(query_label):
+            lines.append(
+                "覆盖提醒：这是时间范围、新闻汇总或多来源核验请求。若当前结果只覆盖单一日期或单一来源，当前任务尚未完成；"
+                "请继续 batch_search（拆分日期、语言或来源）并对关键页面 extract。某个查询失败时优先换查询词或来源，不要直接放弃整个检索。"
+            )
+        lines.extend(
+            [
+                "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
+                "搜索摘要不是规范化行情快照。涉及时效性结论时，应从结果正文明确核对内容日期、来源时区和交易状态；只有时分没有日期、日期冲突或含义不明时，应继续提取正文或交叉搜索，仍不明确就降低置信度，不能擅自称为“今天盘中”或“今天收盘”。",
+            ]
+        )
+        if not entries:
+            raw_text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+            lines.append("没有拿到可用搜索结果。")
+            if raw_text:
+                lines.append(self._clip(raw_text, 1200))
+            lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
+            content = "\n".join(lines)
+            return self._web_page_result(
+                content=content,
+                complete=True,
+                continuation=None,
+                diagnostics={"action": action, "entry_count": 0, "complete": True},
+                profile_user_id=profile_user_id,
+                coverage_status=coverage_status,
+            )
+        budget = 32_000
+        shown = 0
+        chars = sum(len(line) + 1 for line in lines)
+        shown_count = 0
+        for index in range(start_entry, len(entries)):
+            block = self._render_search_entry(index + 1, entries[index])
+            if shown > 0 and chars + len(block) + 1 > budget:
+                break
+            lines.append(block)
+            chars += len(block) + 1
+            shown += 1
+            shown_count += 1
+        complete = start_entry + shown_count >= len(entries)
+        if not complete:
+            cursor = make_paged_cursor(
+                tool="we",
+                binding=owner_binding,
+                payload=json_payload(
+                    {
+                        "a": action,
+                        "args": {str(key): value for key, value in dict(call).items() if key != "type" and value not in (None, "")},
+                        "s": start_entry + shown_count,
+                        "f": fingerprint,
+                    }
+                ),
+            )
+            lines.append(
+                f"本页展示了 {start_entry + 1}—{start_entry + shown_count} 条结果，之后还有 {len(entries) - start_entry - shown_count} 条。"
+                "如果这些结果已经足够回答，可以直接回答；只有确实需要看后续结果时才调用："
+                f'web_search(cursor="{cursor}")'
+            )
+        else:
+            lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
+        content = "\n".join(lines)
+        return self._web_page_result(
+            content=content,
+            complete=complete,
+            continuation=(
+                {"type": self.tool_type, "cursor": cursor} if not complete else None
+            ),
+            diagnostics={
+                "action": action,
+                "entry_count": len(entries),
+                "shown_entries": shown_count,
+                "start_entry": start_entry,
+                "complete": complete,
+            },
+            profile_user_id=profile_user_id,
+            coverage_status=coverage_status,
+        )
+
+    def _paged_extract_result(
+        self,
+        *,
+        call: Mapping[str, Any],
+        result: Mapping[str, Any],
+        redaction_terms: list[str],
+        start_offset: int,
+        expected_fingerprint: str,
+        owner_binding: str,
+        profile_user_id: str = "",
+    ) -> ToolExecutionResult:
+        from ..paged_reading import (
+            FIRST_PAGE_BUDGET_CHARS,
+            FIRST_PAGE_BUDGET_LINES,
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            json_payload,
+            make_paged_cursor,
+            page_failure_feedback,
+            slice_page,
+        )
+
+        payload = self._extract_payload(result, redaction_terms=redaction_terms)
+        data = self._first_mapping(payload)
+        title = self._sanitize_output(str(data.get("title") or data.get("name") or ""), redaction_terms=redaction_terms)
+        text = self._sanitize_output(
+            str(data.get("text") or data.get("content") or data.get("markdown") or data.get("body") or ""),
+            redaction_terms=redaction_terms,
+        )
+        if not text:
+            text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+        url = self._sanitize_output(str(call.get("url") or ""), redaction_terms=redaction_terms)[:500]
+        fingerprint = self._web_evidence_fingerprint(text)
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            content = page_failure_feedback(
+                status="stale_cursor",
+                tool=self.tool_type,
+                detail="该网页重新提取后的内容与上一页不一致，可能已被更新",
+            )
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {"type": "web_search_completed", "provider": "anysearch", "status": "stale_cursor"}
+                ],
+                followup_context=content,
+                followup_envelope=ToolFollowupEnvelope(
+                    content=content,
+                    producer_bounded=True,
+                    complete=True,
+                    continuation=None,
+                    diagnostics={"status": "stale_cursor"},
+                ),
+            )
+
+        header_lines = [
+            "【AnySearch 网页内容提取结果】",
+            f"URL: {url}",
+        ]
+        if title:
+            header_lines.append(f"标题：{self._clip(title, 160)}")
+        header_lines.append(
+            "证据口径：本轮网页提取发生时间不等于正文事实日期；涉及时效性事实时，以正文明确的日期、更新字段和来源时区为准。"
+        )
+        budget_chars, budget_lines = (
+            (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
+            if not expected_fingerprint
+            else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
+        )
+        header_size = sum(len(line) + 1 for line in header_lines) + len("正文摘录：") + 1
+        page_text, next_offset, total_chars = slice_page(
+            text or "没有拿到可用正文。",
+            start=start_offset,
+            budget_chars=max(500, budget_chars - header_size),
+            budget_lines=budget_lines,
+        )
+        complete = next_offset >= total_chars
+        lines = [*header_lines, "正文摘录：", page_text]
+        continuation = None
+        if not complete and text:
+            cursor = make_paged_cursor(
+                tool="we",
+                binding=owner_binding,
+                payload=json_payload(
+                    {"a": "extract", "args": {"url": str(call.get("url") or "")}, "o": next_offset, "f": fingerprint}
+                ),
+            )
+            continuation = {"type": self.tool_type, "cursor": cursor}
+            lines.append(
+                "正文还有未展示部分。如果当前内容已经足够回答，可以直接回答；"
+                f"只有确实需要后续正文时，才调用 web_search(cursor=\"{cursor}\")。"
+            )
+        else:
+            lines.append(f"已读完本次提取到的全部正文（共 {total_chars} 字）。")
+        content = "\n".join(lines)
+        return self._web_page_result(
+            content=content,
+            complete=complete,
+            continuation=continuation,
+            diagnostics={
+                "action": "extract",
+                "shown_chars": len(page_text),
+                "total_chars": total_chars,
+                "complete": complete,
+            },
+            profile_user_id=profile_user_id,
+        )
+
+    def _paged_sub_domains_result(
+        self,
+        *,
+        call: Mapping[str, Any],
+        result: Mapping[str, Any],
+        redaction_terms: list[str],
+        start_offset: int,
+        expected_fingerprint: str,
+        owner_binding: str,
+        profile_user_id: str = "",
+    ) -> ToolExecutionResult:
+        from ..paged_reading import (
+            FIRST_PAGE_BUDGET_CHARS,
+            json_payload,
+            make_paged_cursor,
+            page_failure_feedback,
+            slice_page,
+        )
+
+        payload = self._extract_payload(result, redaction_terms=redaction_terms)
+        text = self._sanitize_output(
+            self._payload_to_text(payload, redaction_terms=redaction_terms), redaction_terms=redaction_terms
+        )
+        fingerprint = self._web_evidence_fingerprint(text)
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            content = page_failure_feedback(
+                status="content_changed",
+                tool=self.tool_type,
+                detail="重新查询得到的结果与上一页不一致",
+            )
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {"type": "web_search_completed", "provider": "anysearch", "status": "content_changed"}
+                ],
+                followup_context=content,
+                followup_envelope=ToolFollowupEnvelope(
+                    content=content,
+                    producer_bounded=True,
+                    complete=True,
+                    continuation=None,
+                    diagnostics={"status": "content_changed"},
+                ),
+            )
+        domains = ", ".join(str(item) for item in call.get("domains") or [])
+        header_lines = [
+            "【AnySearch 域名能力结果】",
+            f"域名：{self._sanitize_output(domains, redaction_terms=redaction_terms)[:240]}",
+        ]
+        header_size = sum(len(line) + 1 for line in header_lines)
+        page_text, next_offset, total_chars = slice_page(
+            text or "没有拿到可用结果。",
+            start=start_offset,
+            budget_chars=max(500, FIRST_PAGE_BUDGET_CHARS - header_size),
+            budget_lines=2000,
+        )
+        complete = next_offset >= total_chars
+        lines = [*header_lines, page_text]
+        continuation = None
+        if not complete:
+            cursor = make_paged_cursor(
+                tool="we",
+                binding=owner_binding,
+                payload=json_payload(
+                    {
+                        "a": "get_sub_domains",
+                        "args": {"domains": list(call.get("domains") or [])},
+                        "o": next_offset,
+                        "f": fingerprint,
+                    }
+                ),
+            )
+            continuation = {"type": self.tool_type, "cursor": cursor}
+            lines.append(
+                "结果还有未展示部分。如果当前内容已经足够回答，可以直接回答；"
+                f"只有确实需要后续内容时，才调用 web_search(cursor=\"{cursor}\")。"
+            )
+        content = "\n".join(lines)
+        return self._web_page_result(
+            content=content,
+            complete=complete,
+            continuation=continuation,
+            diagnostics={
+                "action": "get_sub_domains",
+                "shown_chars": len(page_text),
+                "total_chars": total_chars,
+                "complete": complete,
+            },
+            profile_user_id=profile_user_id,
+        )
+
+    @staticmethod
+    def _web_page_result(
+        *,
+        content: str,
+        complete: bool,
+        continuation: Mapping[str, Any] | None,
+        diagnostics: Mapping[str, Any],
+        profile_user_id: str = "",
+        coverage_status: str = "not_required",
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult(
+            tool_type="web_search",
             stream_events=[
                 {
                     "type": "web_search_completed",
                     "provider": "anysearch",
-                    "action": action,
                     "status": "ok",
-                    "coverage_status": coverage_status,
+                    "complete": bool(complete),
                 }
             ],
-            followup_context=followup,
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=bool(complete),
+                continuation=dict(continuation) if continuation else None,
+                diagnostics=dict(diagnostics),
+            ),
             state_updates={
                 "web_search_status": "ok",
                 "web_search_provider": "anysearch",
-                "web_search_profile_user_id": runtime_profile_user_id,
-                "web_search_coverage_status": coverage_status,
+                "web_search_profile_user_id": str(profile_user_id or ""),
+                "web_search_coverage_status": str(coverage_status or ""),
+                "web_search_complete": bool(complete),
             },
         )
 
@@ -1427,130 +1901,6 @@ class WebSearchToolHandler(BaseToolHandler):
             if call.get(key):
                 args[key] = str(call.get(key) or "")
         return args
-
-    def _format_followup(
-        self,
-        *,
-        action: str,
-        call: Mapping[str, Any],
-        result: Mapping[str, Any],
-        redaction_terms: list[str],
-    ) -> str:
-        if bool(result.get("isError") or result.get("is_error")):
-            return "AnySearch 返回了错误状态；请自然告诉用户这次联网检索没有拿到可靠结果。"
-        payload = self._extract_payload(result, redaction_terms=redaction_terms)
-        if action == "extract":
-            return self._format_extract_followup(call=call, payload=payload, redaction_terms=redaction_terms)
-        if action == "get_sub_domains":
-            return self._format_sub_domains_followup(call=call, payload=payload, redaction_terms=redaction_terms)
-        return self._format_search_followup(action=action, call=call, payload=payload, redaction_terms=redaction_terms)
-
-    def _format_search_followup(
-        self,
-        *,
-        action: str,
-        call: Mapping[str, Any],
-        payload: Any,
-        redaction_terms: list[str],
-    ) -> str:
-        results = self._coerce_search_results(payload)
-        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
-        lines = ["【AnySearch 联网搜索结果】"]
-        if query_label:
-            lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
-        if self._search_needs_broader_coverage(query_label):
-            lines.append(
-                "覆盖提醒：这是时间范围、新闻汇总或多来源核验请求。若当前结果只覆盖单一日期或单一来源，当前任务尚未完成；"
-                "请继续 batch_search（拆分日期、语言或来源）并对关键页面 extract。某个查询失败时优先换查询词或来源，不要直接放弃整个检索。"
-            )
-        lines.extend(
-            [
-                "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
-                "搜索摘要不是规范化行情快照。涉及时效性结论时，应从结果正文明确核对内容日期、来源时区和交易状态；只有时分没有日期、日期冲突或含义不明时，应继续提取正文或交叉搜索，仍不明确就降低置信度，不能擅自称为“今天盘中”或“今天收盘”。",
-            ]
-        )
-        if not results:
-            text = self._payload_to_text(payload, redaction_terms=redaction_terms)
-            if text:
-                lines.append(self._clip(text, self.MAX_FOLLOWUP_CHARS - 120))
-            else:
-                lines.append("没有拿到可用搜索结果。")
-        else:
-            for index, item in enumerate(results[: self.MAX_RESULTS], start=1):
-                title = self._sanitize_output(
-                    str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms
-                )[:160]
-                url = self._sanitize_output(
-                    str(item.get("url") or item.get("link") or ""), redaction_terms=redaction_terms
-                )[:500]
-                snippet = self._sanitize_output(
-                    str(
-                        item.get("snippet")
-                        or item.get("summary")
-                        or item.get("description")
-                        or item.get("content")
-                        or ""
-                    ),
-                    redaction_terms=redaction_terms,
-                )
-                lines.append(f"{index}. {title}")
-                if url:
-                    lines.append(f"   URL: {url}")
-                source_date = self._search_result_date_hint(item)
-                if source_date:
-                    lines.append(
-                        "   来源日期字段（需结合正文判断含义）: "
-                        + self._sanitize_output(source_date, redaction_terms=redaction_terms)[:160]
-                    )
-                if snippet:
-                    lines.append(f"   摘要: {self._clip(snippet, 420)}")
-        lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
-        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
-
-    def _format_extract_followup(
-        self,
-        *,
-        call: Mapping[str, Any],
-        payload: Any,
-        redaction_terms: list[str],
-    ) -> str:
-        max_chars = int(call.get("max_chars") or 3000)
-        data = self._first_mapping(payload)
-        title = self._sanitize_output(str(data.get("title") or data.get("name") or ""), redaction_terms=redaction_terms)
-        text = self._sanitize_output(
-            str(data.get("text") or data.get("content") or data.get("markdown") or data.get("body") or ""),
-            redaction_terms=redaction_terms,
-        )
-        if not text:
-            text = self._payload_to_text(payload, redaction_terms=redaction_terms)
-        lines = [
-            "【AnySearch 网页内容提取结果】",
-            f"URL: {self._sanitize_output(str(call.get('url') or ''), redaction_terms=redaction_terms)[:500]}",
-        ]
-        if title:
-            lines.append(f"标题：{self._clip(title, 160)}")
-        lines.append(
-            "证据口径：本轮网页提取发生时间不等于正文事实日期；涉及时效性事实时，以正文明确的日期、更新字段和来源时区为准。"
-        )
-        lines.append("正文摘录：")
-        lines.append(self._clip(text or "没有拿到可用正文。", max_chars))
-        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
-
-    def _format_sub_domains_followup(
-        self,
-        *,
-        call: Mapping[str, Any],
-        payload: Any,
-        redaction_terms: list[str],
-    ) -> str:
-        text = self._payload_to_text(payload, redaction_terms=redaction_terms)
-        domains = ", ".join(str(item) for item in call.get("domains") or [])
-        lines = [
-            "【AnySearch 域名能力结果】",
-            f"域名：{self._sanitize_output(domains, redaction_terms=redaction_terms)[:240]}",
-            self._clip(text or "没有拿到可用结果。", 3000),
-        ]
-        return self._clip("\n".join(lines), self.MAX_FOLLOWUP_CHARS)
 
     def _extract_payload(self, result: Mapping[str, Any], *, redaction_terms: list[str]) -> Any:
         for key in ("results", "items", "data", "result"):

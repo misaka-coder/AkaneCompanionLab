@@ -318,11 +318,9 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
                 "maximum": 10,
                 "description": "Maximum search results to return.",
             },
-            "max_chars": {
-                "type": "integer",
-                "minimum": 500,
-                "maximum": 5000,
-                "description": "Maximum extracted characters for action=extract.",
+            "cursor": {
+                "type": "string",
+                "description": "Opaque continuation cursor from a previous web_search page; pass only the cursor to read the next page of the same results or extraction.",
             },
             "domain": {
                 "type": "string",
@@ -345,7 +343,7 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
+    spec_version="1.1.0",
     schema_version=1,
     execution_class="sync",
     idempotency="read_only",

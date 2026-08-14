@@ -538,7 +538,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             "read_attachment_section": set(),
             "sync_attachment_workspace": set(),
             "list_workspace": set(),
-            "read_workspace": {"targets"},
+            "read_workspace": set(),
             "inspect_generated_file": set(),
         }
         for name, required in expected_required.items():
