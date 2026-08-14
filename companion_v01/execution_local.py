@@ -35,7 +35,11 @@ temporary workspace.
 
 from __future__ import annotations
 
+import base64
 import codecs
+import ctypes
+from ctypes import wintypes
+import ntpath
 import os
 import re
 import signal
@@ -117,6 +121,27 @@ def _unknown_status(run_id: str) -> ExecRunStatus:
     return ExecRunStatus(status=EXEC_STATUS_UNKNOWN, run_id=str(run_id or ""), reason="run_not_found")
 
 
+def _split_windows_command_line(command: str) -> list[str] | None:
+    """Parse a Windows command using CreateProcess-compatible quoting."""
+
+    if os.name != "nt":
+        return None
+    argc = ctypes.c_int()
+    shell32 = ctypes.windll.shell32
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    argv = shell32.CommandLineToArgvW(str(command or ""), ctypes.byref(argc))
+    if not argv:
+        return None
+    try:
+        return [argv[index] for index in range(argc.value)]
+    finally:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        kernel32.LocalFree.restype = wintypes.HLOCAL
+        kernel32.LocalFree(ctypes.cast(argv, wintypes.HLOCAL))
+
+
 class TrustedLocalExecutor(ExecutionProvider):
     """Local process provider: real subprocesses in a constrained workspace."""
 
@@ -190,6 +215,23 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecutionAvailability(enabled=False, status="unavailable", reason="workspace_missing")
         return ExecutionAvailability(enabled=True, status="ready", reason="")
 
+    def model_environment(self) -> dict[str, str]:
+        """Return non-sensitive host facts used to guide command generation."""
+
+        if os.name == "nt":
+            path_value = str(self.host_env.get("PATH") or "")
+            has_pwsh = any((Path(part) / "pwsh.exe").is_file() for part in path_value.split(os.pathsep) if part)
+            return {
+                "platform": "windows",
+                "command_shell": "cmd.exe",
+                "preferred_script_shell": "pwsh" if has_pwsh else "powershell.exe",
+            }
+        return {
+            "platform": "macos" if sys.platform == "darwin" else "linux",
+            "command_shell": "/bin/sh",
+            "preferred_script_shell": "/bin/sh",
+        }
+
     def run(
         self,
         *,
@@ -222,7 +264,10 @@ class TrustedLocalExecutor(ExecutionProvider):
 
         env = self._build_env(workdir=workdir)
         try:
-            proc = self._spawn(clean_command, workdir, env)
+            spawn_command: str | Sequence[str] = clean_command
+            if os.name == "nt":
+                spawn_command = self._prepare_windows_command(clean_command)
+            proc = self._spawn(spawn_command, workdir, env)
         except Exception as exc:
             self.store.mark_terminal(
                 run_id,
@@ -483,7 +528,35 @@ class TrustedLocalExecutor(ExecutionProvider):
             self._logs[run_id] = handle
         return f"runlog:{run_id}"
 
-    def _spawn(self, command: str, workdir: Path, env: dict[str, str]) -> subprocess.Popen:
+    def _prepare_windows_command(self, command: str) -> str | list[str]:
+        """Run explicit PowerShell programs via ``-EncodedCommand``.
+
+        Passing a non-trivial ``powershell -Command`` program through
+        ``cmd.exe /c`` adds a second quoting language. Loops, dictionaries and
+        nested quotes can then hang or execute a different command. A direct
+        argv launch with PowerShell's UTF-16LE encoded-command contract
+        preserves the exact program without a temporary file or path leak.
+        """
+
+        argv = _split_windows_command_line(command)
+        if not argv:
+            return command
+        executable = ntpath.basename(argv[0]).casefold()
+        if executable not in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+            return command
+        command_index = next(
+            (index for index, value in enumerate(argv[1:], start=1) if value.casefold() in {"-command", "-c"}),
+            -1,
+        )
+        if command_index < 0 or command_index + 2 != len(argv):
+            return command
+        script = argv[command_index + 1]
+        if not script or script == "-":
+            return command
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return [*argv[:command_index], "-EncodedCommand", encoded]
+
+    def _spawn(self, command: str | Sequence[str], workdir: Path, env: dict[str, str]) -> subprocess.Popen:
         if os.name == "nt":
             # Passing the command string with shell=True routes it through
             # COMSPEC verbatim; an argv-list `cmd /c` form re-quotes the string
@@ -494,7 +567,7 @@ class TrustedLocalExecutor(ExecutionProvider):
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True,
+                shell=isinstance(command, str),
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         return subprocess.Popen(

@@ -481,6 +481,39 @@ class ExecOrchestrationTests(unittest.TestCase):
                 self.assertEqual(mapped.event_status, start.status)
                 self.assertIn("不要声称成功", mapped.model_feedback)
 
+    def test_terminal_status_feedback_exposes_real_state_reason_and_tail(self) -> None:
+        run_id = new_run_id()
+
+        class TerminalStatusProvider(_FakeExecutionProvider):
+            def __init__(self, result):
+                super().__init__(ExecutionRunStore())
+                self.result = result
+
+            def status(self, **_kwargs):
+                return self.result
+
+        cases = (
+            (
+                ExecRunStatus(EXEC_STATUS_FAILED, run_id, exit_code=7, tail="permission denied", reason="access_denied"),
+                ("status=failed", "exit_code=7", "access_denied", "permission denied"),
+            ),
+            (
+                ExecRunStatus(EXEC_STATUS_TIMED_OUT, run_id, tail="still waiting", reason="execution_timeout"),
+                ("status=timed_out", "execution_timeout", "still waiting", "进程组终止"),
+            ),
+            (
+                ExecRunStatus(EXEC_STATUS_CANCELLED, run_id, tail="partial", reason="cancelled_by_user"),
+                ("status=cancelled", "cancelled_by_user", "partial"),
+            ),
+        )
+        for result, expected_parts in cases:
+            with self.subTest(status=result.status):
+                mapped = execute_exec_status(TerminalStatusProvider(result), owner=OWNER, run_id=run_id)
+                self.assertEqual(mapped.envelope_status, "error")
+                for part in expected_parts:
+                    self.assertIn(part, mapped.model_feedback)
+                self.assertIn("不要声称成功", mapped.model_feedback)
+
     def test_cancel_failure_does_not_change_run_to_cancelled(self) -> None:
         store = self._store()
         provider = _FakeExecutionProvider(store, cancel_fails=True)

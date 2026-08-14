@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from companion_v01.execution_local import ExecutionPathError, TrustedLocalExecutor
 from companion_v01.execution_run import ExecutionRunOwner, make_cursor
@@ -75,6 +76,47 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command="exit 2", initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_FAILED)
         self.assertEqual(start.exit_code, 2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell quoting regression")
+    def test_powershell_inline_program_is_encoded_and_completes(self) -> None:
+        executor = self._executor()
+        (self.workspace / "示例.txt").write_text("ok", encoding="utf-8")
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            "$map=@{'.txt'='文档';'.log'='日志'}; "
+            "foreach($f in Get-ChildItem -LiteralPath . -File){ "
+            "$ext=$f.Extension.ToLowerInvariant(); if($map.ContainsKey($ext)){ "
+            "$dest=Join-Path . $map[$ext]; New-Item -ItemType Directory -Force -Path $dest | Out-Null; "
+            "Move-Item -LiteralPath $f.FullName -Destination (Join-Path $dest $f.Name) -Force } }; "
+            "Write-Output 'organized'"
+        )
+        command = subprocess.list2cmdline(["powershell.exe", "-NoProfile", "-Command", script])
+
+        start = executor.run(owner=self.owner, command=command, timeout_seconds=10, initial_wait_seconds=10)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("organized", start.stdout)
+        self.assertTrue((self.workspace / "文档" / "示例.txt").is_file())
+        self.assertEqual(list(self.run_log_dir.glob(".*.command.ps1")), [])
+
+    def test_model_environment_identifies_current_host_without_paths(self) -> None:
+        environment = self._executor().model_environment()
+        expected = "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux"
+        self.assertEqual(environment["platform"], expected)
+        self.assertIn("command_shell", environment)
+        self.assertIn("preferred_script_shell", environment)
+        self.assertNotIn(str(self.workspace), str(environment))
+
+    def test_model_environment_distinguishes_linux_and_macos(self) -> None:
+        executor = self._executor()
+        for platform_name, expected in (("linux", "linux"), ("darwin", "macos")):
+            with self.subTest(platform_name=platform_name):
+                with patch("companion_v01.execution_local.os.name", "posix"), patch(
+                    "companion_v01.execution_local.sys.platform", platform_name
+                ):
+                    environment = executor.model_environment()
+                self.assertEqual(environment["platform"], expected)
+                self.assertEqual(environment["command_shell"], "/bin/sh")
 
     def test_empty_command_is_rejected(self) -> None:
         executor = self._executor()

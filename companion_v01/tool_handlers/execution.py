@@ -318,8 +318,20 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return EXEC_RUN_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
+        environment = {}
+        describe_environment = getattr(self.execution_provider, "model_environment", None)
+        if callable(describe_environment):
+            try:
+                environment = dict(describe_environment() or {})
+            except Exception:
+                environment = {}
+        platform = str(environment.get("platform") or "当前宿主")
+        command_shell = str(environment.get("command_shell") or "宿主默认 Shell")
+        script_shell = str(environment.get("preferred_script_shell") or command_shell)
         return (
             "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本；命令参数字段名是 command（不是 cmd）。"
+            f"当前执行宿主 platform={platform}，默认命令 Shell={command_shell}，脚本优先使用 {script_shell}；"
+            "请按当前宿主生成命令，不要把 PowerShell、POSIX shell 或 macOS 专用命令混用。"
             "cwd 只能用工作区相对路径或挂载别名，"
             "不接受绝对路径，但这只是启动目录字段的契约，不是 Shell 沙箱。普通主机管理/文件任务未使用"
             "input_resources/output_globs 时，命令可以从 pwd、find 等真实结果发现并直接使用宿主绝对路径；"
@@ -333,7 +345,9 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
             "需要命令产出文件时，用 output_globs 声明相对当前目录的输出路径，并直接把产物写在该目录内，"
             "命令完成后会自动登记为 gen_*，"
-            "然后用 send_file 交付。高风险命令会按当前用户策略请求确认。"
+            "然后用 send_file 交付。对批量移动、改名、覆盖或删除等会改变文件系统的任务，先用只读命令核对真实目标，"
+            "再让执行命令与自己向用户说明的范围完全一致；执行后根据真实状态和结果复核，不要把 timed_out/failed 当成功。"
+            "高风险命令会按当前用户策略请求确认。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

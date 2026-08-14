@@ -895,11 +895,28 @@ def execute_exec_status(
             {**event, "reason": clean_reason},
         )
     clean_reason = safe_reason or f"execution_{status}"
+    output = f"\n终止前的增量输出：\n{safe_tail}" if safe_tail else ""
+    exit_detail = f"，exit_code={status_result.exit_code!r}" if status_result.exit_code is not None else ""
+    if status == EXEC_STATUS_FAILED:
+        feedback = (
+            f"命令执行失败（status=failed{exit_detail}，reason={clean_reason}）。{output}"
+            "请依据这份真实结果修正命令或如实说明失败，不要声称成功。"
+        )
+    elif status == EXEC_STATUS_TIMED_OUT:
+        feedback = (
+            f"命令执行超时（status=timed_out，reason={clean_reason}），执行器已确认进程组终止。{output}"
+            "这次操作没有完成；可缩小范围或修正命令后重试，不要声称成功。"
+        )
+    else:
+        feedback = (
+            f"命令已被执行器确认取消（status=cancelled，reason={clean_reason}）。{output}"
+            "这次操作没有完成，不要声称成功。"
+        )
     return ExecMappedResult(
         "error",
         status,
         clean_reason,
-        "命令未成功完成；请按返回状态如实说明，不要声称成功。",
+        feedback,
         data,
         {**event, "reason": clean_reason},
     )

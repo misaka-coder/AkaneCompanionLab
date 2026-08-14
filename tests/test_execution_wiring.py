@@ -209,6 +209,12 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("使用 input_resources/output_globs 时", instruction)
         self.assertIn("input_resources/output_globs 与 cwd 互斥", instruction)
         self.assertIn("同时传入会被拒绝", instruction)
+        self.assertIn("当前执行宿主 platform=", instruction)
+        self.assertIn("默认命令 Shell=", instruction)
+        self.assertIn("不要把 PowerShell、POSIX shell 或 macOS 专用命令混用", instruction)
+        self.assertIn("先用只读命令核对真实目标", instruction)
+        self.assertIn("与自己向用户说明的范围完全一致", instruction)
+        self.assertIn("timed_out/failed", instruction)
 
     def test_exec_status_and_cancel_are_owner_scoped_without_ask(self) -> None:
         status_handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)
