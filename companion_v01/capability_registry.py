@@ -717,18 +717,38 @@ BROWSER_PAGE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="browser_page",
     display_name="Browser page",
     description=(
-        "Open and operate an Akane-managed visible browser window: read, scroll, click numbered candidates, "
-        "or submit authorized forms. Does not log in, download, upload, or access private/intranet content."
+        "Open and operate the Akane-managed visible browser window: navigate to a public page, "
+        "read its text, take an accessibility snapshot, scroll, list visible elements, or click/fill/press "
+        "authorized controls. Does not log in, download, upload, or access private/intranet content. "
+        "Returned page state is evidence of what was observed, not proof that an action changed the page."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "action": {"type": "string", "enum": ["open", "read", "scroll", "click", "input", "submit", "close", "status"], "description": "Browser action."},
-            "url": {"type": "string", "maxLength": 1600, "description": "Public URL for open action."},
-            "target": {"type": "string", "maxLength": 200, "description": "Element target for click/input/scroll."},
-            "text": {"type": "string", "maxLength": 500, "description": "Text to input."},
-            "reason": {"type": "string", "maxLength": 120, "description": "Why this action is needed."},
+            "action": {
+                "type": "string",
+                "enum": ["navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"],
+                "description": (
+                    "navigate=open a public URL; read_text=extract current page text; current=page status; "
+                    "snapshot=accessibility snapshot with element refs; scroll=scroll current page; "
+                    "elements=visible link/button/input candidates; click/fill/press=authorized controls."
+                ),
+            },
+            "url": {"type": "string", "maxLength": 1600, "description": "Public http(s) URL; required for navigate."},
+            "max_chars": {"type": "integer", "minimum": 500, "maximum": 5000, "description": "Response text cap for navigate/read_text/snapshot/scroll."},
+            "open_for_user": {"type": "boolean", "description": "Also open the page in the user's system browser."},
+            "scroll_delta": {"type": "integer", "minimum": -2400, "maximum": 2400, "description": "Scroll pixels (positive = down) for scroll."},
+            "element_limit": {"type": "integer", "minimum": 1, "maximum": 40, "description": "Max visible elements for elements."},
+            "candidate_index": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Numbered candidate from elements for click."},
+            "ref": {"type": "string", "description": "Element ref (e.g. e3) from snapshot for click/fill/press."},
+            "selector": {"type": "string", "maxLength": 220, "description": "CSS selector fallback for click/fill/press."},
+            "text": {"type": "string", "maxLength": 500, "description": "Text to type for fill."},
+            "key": {
+                "type": "string",
+                "enum": ["Enter", "Escape", "Tab", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Home", "End"],
+                "description": "Key for press.",
+            },
         },
         "required": ["action"],
     },

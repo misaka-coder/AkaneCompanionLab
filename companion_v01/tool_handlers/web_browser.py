@@ -272,32 +272,28 @@ class BrowserPageToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- browser_page：仅在桌宠模式下，当用户明确要你打开并读取、滚动或操作一个公开网页，"
-            "或继续处理 Akane 托管浏览器窗口的当前页面时使用。"
-            "它会操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
-            '打开并读取托管窗口格式为 {"type":"browser_page","action":"navigate","url":"https://...","max_chars":3000}；'
-            '一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，才加 "open_for_user":true；'
-            '读取当前页格式为 {"type":"browser_page","action":"read_text","max_chars":3000}；'
-            '观察当前页面状态格式为 {"type":"browser_page","action":"snapshot","max_chars":3000}，'
-            "返回 accessibility snapshot 和元素 ref；"
-            '滚动当前页格式为 {"type":"browser_page","action":"scroll","scroll_delta":800,"max_chars":3000}；'
-            '查看当前页可见链接/按钮/输入框摘要格式为 {"type":"browser_page","action":"elements","element_limit":20}；'
-            "如果用户已经明确给出多步浏览目标，例如“打开某站、滚动、点第一个视频/链接、告诉我当前页”，"
-            "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用下一步 browser_page，"
-            "直到任务完成、候选不存在、页面不可用、需要登录/支付/上传/下载等真实阻塞，或控制动作缺少批准。"
-            "高风险控制动作只有在用户已批准或能力策略为完全访问时才会执行："
-            "snapshot 返回的 Visible link/video candidates 可直接按序号点击，"
-            '例如 {"type":"browser_page","action":"click","candidate_index":1}；'
-            '优先先 snapshot，再用 ref 点击/输入，例如 {"type":"browser_page","action":"click","ref":"e3"}；'
-            'CSS selector 仅作兼容，点击格式为 {"type":"browser_page","action":"click","selector":"button:has-text(\'搜索\')"}；'
+            "或继续处理 Akane 托管浏览器窗口的当前页时才使用 browser_page。"
+            "它只操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
+            "推荐闭环：navigate 打开 → snapshot 看结构和 ref / elements 看可见候选 → click/fill/press 操作。"
+            'navigate 格式为 {"type":"browser_page","action":"navigate","url":"https://...","max_chars":3000}；'
+            "一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，"
+            '才加 "open_for_user":true；'
+            'snapshot 返回 accessibility snapshot 与元素 ref，格式为 {"type":"browser_page","action":"snapshot"}；'
+            'elements 列出可见链接/按钮/输入框候选，格式为 {"type":"browser_page","action":"elements","element_limit":20}；'
+            '按候选序号点击格式为 {"type":"browser_page","action":"click","candidate_index":1}，'
+            '用 ref 点击格式为 {"type":"browser_page","action":"click","ref":"e3"}；'
             '输入格式为 {"type":"browser_page","action":"fill","ref":"e4","text":"搜索词"}；'
-            '按键格式为 {"type":"browser_page","action":"press","ref":"e4","key":"Enter"}。'
-            '查看当前页状态格式为 {"type":"browser_page","action":"current"}。'
+            '按键格式为 {"type":"browser_page","action":"press","ref":"e4","key":"Enter"}；'
+            'read_text/scroll/current 分别读取正文、滚动并返回滚动后状态、查看当前页状态。'
+            "如果用户已经给出多步浏览目标（例如打开某站、滚动、点第一个视频、告诉我当前页），"
+            "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用，直到任务完成、候选不存在、页面不可用，"
+            "或需要登录/支付/上传/下载等真实阻塞。"
+            "控制动作（click/fill/press）只在用户已批准或能力策略为完全访问时执行；"
+            "不可用于登录、支付、下单、授权、删除、发布、下载、上传、文件选择、私密表单、localhost/内网/file 路径。"
+            "返回的页面状态是读取到的证据，不等于整站阅读，也不等于操作已经改变页面；"
+            "scroll 只返回滚动后的页面状态，elements 只列出候选，不要声称已经点击或输入。"
             "如果用户只要求“打开给我看/在普通浏览器打开”且不需要你读取或操作，使用 open_browser；"
             "只有用户要你自己读取、总结、核对页面正文时才使用 browser_page。"
-            "navigate/read_text/current/snapshot/scroll 会返回当前页面状态，不等于整站完整阅读；"
-            "scroll 只滚动并返回滚动后的页面状态，elements 只列出候选元素；不要声称已经点击或输入。"
-            "click/fill/press 不可用于登录、支付、下单、授权、删除、发布、下载、上传、文件选择或私密表单；"
-            "不要用它执行脚本、读取 localhost/内网/file 路径或用户私密链接。"
             "如果只是搜索资料，优先用 web_search；web_search 只返回结果，不会打开或滚动浏览器，"
             "需要打开某条搜索结果时再用 browser_page.navigate 或 open_browser。"
         )
@@ -323,6 +319,8 @@ class BrowserPageToolHandler(BaseToolHandler):
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
         action = self._normalize_action(value)
+        if not action:
+            return None
         url = ""
         if action in {"navigate", "read_text"} and (value.get("url") or value.get("link") or value.get("href")):
             url = self._normalize_public_url(value.get("url") or value.get("link") or value.get("href"))
@@ -557,6 +555,9 @@ class BrowserPageToolHandler(BaseToolHandler):
         raw = str(value.get("action") or "").strip().lower().replace("-", "_").replace(" ", "_")
         if not raw:
             return "navigate" if (value.get("url") or value.get("link") or value.get("href")) else "current"
+        # Short-term aliases for the pre-convergence action names.  The model
+        # never sees these names (schema and prompt expose only
+        # ALLOWED_ACTIONS); remove them once historical callers are gone.
         aliases = {
             "open": "navigate",
             "go": "navigate",
@@ -584,7 +585,8 @@ class BrowserPageToolHandler(BaseToolHandler):
             "accessibility_snapshot": "snapshot",
         }
         action = aliases.get(raw, raw)
-        return action if action in self.ALLOWED_ACTIONS else "current"
+        # Unknown actions are rejected instead of silently executing `current`.
+        return action if action in self.ALLOWED_ACTIONS else ""
 
     def _normalize_public_url(self, value: Any) -> str:
         url = str(value or "").strip()
@@ -835,7 +837,6 @@ class BrowserPageToolHandler(BaseToolHandler):
         text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s]+", "Authorization: Bearer [redacted]", text)
         text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
         text = re.sub(r"(?i)([?&](?:api[_-]?key|password|secret|token)=)[^&#\s]+", r"\1[redacted]", text)
-        text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
         return text.strip()
 
     def _clip(self, value: str, limit: int) -> str:
@@ -1827,7 +1828,6 @@ class WebSearchToolHandler(BaseToolHandler):
                 text = text.replace(term, "[redacted]")
         text = re.sub(r"(?i)authorization:\s*bearer\s+[^\s]+", "Authorization: Bearer [redacted]", text)
         text = re.sub(r"(?i)\b(api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
-        text = re.sub(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", "[local_path]", text)
         return text.strip()
 
     def _clip(self, value: str, limit: int) -> str:
