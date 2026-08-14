@@ -4833,8 +4833,11 @@ fn system_media_target_confirmed(
         return false;
     };
     if !after.ok {
-        // A stop action may legitimately end the active media session.
-        return action == "stop";
+        // A stop action may legitimately end the active media session, but an
+        // unreadable snapshot is not proof of that: only an explicit
+        // no_active_session result counts.  Read failures and permission
+        // errors must stay unconfirmed.
+        return action == "stop" && after.reason == "no_active_session";
     }
     match action {
         "play" => after.playback_status == "playing",
@@ -7123,12 +7126,20 @@ mod tests {
             Some(&no_track),
             Some(&playing_b)
         ));
-        // stop that ends the session (ok=false) is confirmed.
+        // stop that ends the session with an explicit no_active_session result
+        // is confirmed.
         let closed = media_snapshot(false, "unavailable", "no_active_session", "unknown", "");
         assert!(system_media_target_confirmed(
             "stop",
             Some(&playing),
             Some(&closed)
+        ));
+        // an unreadable snapshot is NOT proof that stop ended the session.
+        let read_failed = media_snapshot(false, "unavailable", "read_failed", "unknown", "");
+        assert!(!system_media_target_confirmed(
+            "stop",
+            Some(&playing),
+            Some(&read_failed)
         ));
         // stop while still playing is NOT confirmed.
         assert!(!system_media_target_confirmed(
