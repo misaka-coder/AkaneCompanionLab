@@ -16,6 +16,7 @@ from .core import (
     BaseToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolFollowupEnvelope,
     operation_tool_result,
 )
 
@@ -290,11 +291,34 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
                     "section": str(call.get("section") or ""),
                 }
             )
-        return operation_tool_result(
+        content = str(result.get("content") or "") if isinstance(result, dict) else ""
+        execution = operation_tool_result(
             tool_type=self.tool_type,
             operation_result=result,
             success_events=events,
         )
+        if bool(result.get("ok")):
+            # The section extraction is the tool's own paging unit; its output is
+            # bounded by the extraction budget, so it must bypass the global
+            # 8000-char insurance instead of being silently cut there.
+            diagnostics = {"shown_chars": len(content)}
+            extra_note = ""
+            if content and len(content) >= 11_500:
+                extra_note = (
+                    "\n该片段达到单次展开上限；如需其它位置，用 section 指定页、行或 sheet 继续读取。"
+                )
+            envelope = ToolFollowupEnvelope(
+                content=(
+                    str(execution.followup_context or "").strip() + extra_note
+                ),
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics=diagnostics,
+            )
+            execution.followup_context = envelope.content
+            execution.followup_envelope = envelope
+        return execution
 
     def _normalize_kind(self, value: Any) -> str:
         kind = str(value or "document").strip().lower()

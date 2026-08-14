@@ -278,6 +278,438 @@ class WorkspaceFileService:
             "items": items,
         }
 
+    def read_items_paged(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        targets: list[str],
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Read workspace files in complete logical pages with a continuation cursor.
+
+        First page renders up to ``FIRST_PAGE_BUDGET_CHARS`` / ``FIRST_PAGE_BUDGET_LINES``;
+        continuations render ``NEXT_PAGE_BUDGET_CHARS`` / ``NEXT_PAGE_BUDGET_LINES``.
+        A page never splits a UTF-8 character or a text line, and multi-file reads
+        pack complete file blocks into one page while budget remains.
+
+        The cursor is stateless: its payload carries the workspace:/ target list,
+        the current file index, the char offset and the file fingerprint
+        (size:mtime_ns).  Continuations re-read the live source and verify the
+        fingerprint, so a changed file yields ``stale_cursor`` instead of
+        splicing old offsets into new content.
+        """
+        from . import paged_reading
+
+        owner_binding = paged_reading.cursor_binding("read_workspace", profile_user_id, session_id)
+        requested_targets = self._normalize_target_list(targets)
+        file_index = 0
+        offset = 0
+        expected_fingerprint = ""
+        payload = (
+            paged_reading.parse_json_payload(
+                paged_reading.parse_paged_cursor(cursor, tool="ws", binding=owner_binding)
+            )
+            if cursor
+            else None
+        )
+
+        # The owner check runs first so a foreign session cursor is rejected
+        # before any file access; the payload then supplies the target list.
+        if cursor and payload is None:
+            return self._paged_failure(
+                "cursor_invalid", reason="cursor could not be decoded for this owner/session"
+            )
+        if payload is not None:
+            if not isinstance(payload, dict):
+                return self._paged_failure("cursor_invalid", reason="cursor payload is not a page record")
+            embedded_targets = payload.get("t")
+            if not isinstance(embedded_targets, list) or not embedded_targets:
+                return self._paged_failure("cursor_invalid", reason="cursor payload has no target list")
+            requested_targets = self._normalize_target_list([str(item or "") for item in embedded_targets])
+            try:
+                file_index = max(0, int(payload.get("i") or 0))
+            except (TypeError, ValueError):
+                return self._paged_failure("cursor_invalid", reason="cursor file index is invalid")
+            try:
+                offset = max(0, int(payload.get("o") or 0))
+            except (TypeError, ValueError):
+                return self._paged_failure("cursor_invalid", reason="cursor offset is invalid")
+            expected_fingerprint = str(payload.get("f") or "")
+
+        if not requested_targets:
+            return self._paged_failure("cursor_invalid", reason="no workspace targets")
+
+        resolved: list[tuple[Path, str]] = []
+        for requested in requested_targets:
+            try:
+                path, uri = self.resolve_uri(requested)
+            except WorkspacePathError as exc:
+                return self._paged_failure("cursor_invalid", reason=str(exc), detail_requested=requested)
+            if not path.exists():
+                return self._paged_failure(
+                    "source_missing", reason="workspace item does not exist", detail_requested=uri
+                )
+            if not path.is_file():
+                return self._paged_failure("not_file", reason="target is not a file", detail_requested=uri)
+            resolved.append((path, uri))
+
+        if file_index >= len(resolved):
+            return self._paged_failure("cursor_invalid", reason="cursor file index is out of range")
+
+        state_map = self._state_map(profile_user_id=profile_user_id, session_id=session_id)
+        page_items: list[dict[str, Any]] = []
+        shown_chars = 0
+        complete = True
+        extraction_capped = False
+        budget_chars, budget_lines = (
+            (paged_reading.FIRST_PAGE_BUDGET_CHARS, paged_reading.FIRST_PAGE_BUDGET_LINES)
+            if not cursor
+            else (paged_reading.NEXT_PAGE_BUDGET_CHARS, paged_reading.NEXT_PAGE_BUDGET_LINES)
+        )
+
+        while file_index < len(resolved):
+            path, uri = resolved[file_index]
+            fingerprint = self._file_fingerprint(path)
+            if cursor and expected_fingerprint and fingerprint != expected_fingerprint:
+                return self._paged_failure(
+                    "stale_cursor", reason="workspace file changed since the previous page", detail_requested=uri
+                )
+            read = self._read_file_paged(path)
+            if read.get("status") != "ok":
+                page_items.append({"uri": uri, **read})
+                file_index += 1
+                offset = 0
+                expected_fingerprint = ""
+                continue
+            content = str(read.get("content") or "")
+            if read.get("extraction_capped"):
+                extraction_capped = True
+            if len(content) <= offset and offset > 0:
+                return self._paged_failure(
+                    "stale_cursor", reason="workspace file shrank since the previous page", detail_requested=uri
+                )
+            remaining = budget_chars - shown_chars
+            if remaining <= 0:
+                complete = False
+                break
+            page_text, next_offset, total_chars = paged_reading.slice_page(
+                content,
+                start=offset,
+                budget_chars=remaining,
+                budget_lines=max(1, budget_lines - sum(
+                    str(item.get("content") or "").count("\n") for item in page_items
+                )),
+            )
+            page_items.append(
+                {
+                    "uri": uri,
+                    "status": "ok",
+                    "content": page_text,
+                    "source_kind": read.get("source_kind") or "",
+                    "page_start": offset,
+                    "page_end": next_offset,
+                    "shown_chars": len(page_text),
+                    "total_chars": total_chars,
+                    "file_complete": next_offset >= total_chars,
+                }
+            )
+            shown_chars += len(page_text)
+            if next_offset >= total_chars:
+                file_index += 1
+                offset = 0
+                expected_fingerprint = ""
+            else:
+                offset = next_offset
+                complete = False
+                if shown_chars >= budget_chars:
+                    break
+
+        if file_index >= len(resolved) and offset == 0:
+            complete = True
+
+        next_cursor = None
+        if not complete:
+            next_cursor = paged_reading.make_paged_cursor(
+                tool="ws",
+                binding=owner_binding,
+                payload=paged_reading.json_payload(
+                    {
+                        "t": [self.to_uri(path) for path, _uri in resolved],
+                        "i": file_index,
+                        "o": offset,
+                        "f": expected_fingerprint or self._file_fingerprint(resolved[file_index][0]),
+                    }
+                ),
+            )
+        return {
+            "status": "ok",
+            "items": page_items,
+            "complete": complete,
+            "next_cursor": next_cursor,
+            "extraction_capped": extraction_capped,
+            "diagnostics": {
+                "shown_chars": shown_chars,
+                "file_count": len(resolved),
+            },
+        }
+
+    @staticmethod
+    def _paged_failure(status: str, *, reason: str, detail_requested: str = "") -> dict[str, Any]:
+        return {
+            "status": status,
+            "reason": reason,
+            "detail_requested": detail_requested,
+            "items": [],
+            "complete": True,
+            "next_cursor": None,
+            "diagnostics": {},
+        }
+
+    @staticmethod
+    def _file_fingerprint(path: Path) -> str:
+        try:
+            stat = path.stat()
+            return f"{int(stat.st_size)}:{int(stat.st_mtime_ns)}"
+        except OSError:
+            return ""
+
+    def _read_file_paged(self, path: Path) -> dict[str, Any]:
+        """Extract one file's full rendered text window for paged reading.
+
+        Text files decode fully (bounded by ``max_read_bytes``).  Word/Excel/PDF/
+        ZIP render into a bounded window and report ``extraction_capped`` when the
+        renderer stops early, so the page contract never lies about coverage.
+        """
+        try:
+            size = int(path.stat().st_size)
+        except OSError:
+            return {"status": "read_failed", "reason": "file metadata could not be read"}
+        if size > self.max_read_bytes:
+            return {
+                "status": "too_large",
+                "reason": f"file exceeds workspace read limit ({self.max_read_bytes} bytes)",
+            }
+        suffix = path.suffix.lower().lstrip(".")
+        extraction_limit = 4_000_000
+        try:
+            if suffix in TEXT_EXTENSIONS or (mimetypes.guess_type(path.name)[0] or "").startswith("text/"):
+                content = self._read_plain_text(path)
+                capped = False
+                source_kind = "text"
+            elif suffix == "docx":
+                content = self._read_docx(path, max_chars=extraction_limit, capped_flag=True)
+                capped = content[1]
+                content = content[0]
+                source_kind = "docx"
+            elif suffix == "xlsx":
+                content = self._read_xlsx(path, max_chars=extraction_limit, capped_flag=True)
+                capped = content[1]
+                content = content[0]
+                source_kind = "xlsx"
+            elif suffix == "pdf":
+                content = self._read_pdf(path, max_chars=extraction_limit, capped_flag=True)
+                capped = content[1]
+                content = content[0]
+                source_kind = "pdf"
+            elif suffix == "zip":
+                content = self._read_zip_manifest(path, max_chars=extraction_limit, capped_flag=True)
+                capped = content[1]
+                content = content[0]
+                source_kind = "zip"
+            else:
+                return {
+                    "status": "unsupported_binary",
+                    "reason": "binary file requires a specialized media or document tool",
+                    "source_kind": suffix or "binary",
+                }
+        except WorkspaceReaderUnavailable as exc:
+            return {"status": "read_failed", "reason": str(exc)[:160], "source_kind": suffix}
+        except Exception:
+            return {
+                "status": "read_failed",
+                "reason": "file content could not be read",
+                "source_kind": suffix,
+            }
+        return {
+            "status": "ok",
+            "content": content,
+            "extraction_capped": bool(capped),
+            "source_kind": source_kind,
+        }
+
+    def _read_file(self, path: Path, *, max_chars: int) -> dict[str, Any]:
+        try:
+            size = int(path.stat().st_size)
+        except OSError:
+            return {"status": "read_failed", "reason": "file metadata could not be read"}
+        if size > self.max_read_bytes:
+            return {
+                "status": "too_large",
+                "reason": f"file exceeds workspace read limit ({self.max_read_bytes} bytes)",
+            }
+
+        suffix = path.suffix.lower().lstrip(".")
+        try:
+            if suffix in TEXT_EXTENSIONS or (mimetypes.guess_type(path.name)[0] or "").startswith("text/"):
+                content = self._read_plain_text(path)
+                source_kind = "text"
+            elif suffix == "docx":
+                content = self._read_docx(path, max_chars=max_chars)
+                source_kind = "docx"
+            elif suffix == "xlsx":
+                content = self._read_xlsx(path, max_chars=max_chars)
+                source_kind = "xlsx"
+            elif suffix == "pdf":
+                content = self._read_pdf(path, max_chars=max_chars)
+                source_kind = "pdf"
+            elif suffix == "zip":
+                content = self._read_zip_manifest(path, max_chars=max_chars)
+                source_kind = "zip"
+            else:
+                return {
+                    "status": "unsupported_binary",
+                    "reason": "binary file requires a specialized media or document tool",
+                    "source_kind": suffix or "binary",
+                }
+        except WorkspaceReaderUnavailable as exc:
+            return {"status": "read_failed", "reason": str(exc)[:160], "source_kind": suffix}
+        except Exception:
+            return {
+                "status": "read_failed",
+                "reason": "file content could not be read",
+                "source_kind": suffix,
+            }
+
+        truncated = len(content) > max_chars
+        return {
+            "status": "ok",
+            "content": content[:max_chars],
+            "truncated": truncated,
+            "source_kind": source_kind,
+        }
+
+    def list_items_paged(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        paths: list[str] | None = None,
+        depth: int = 1,
+        max_entries: int = 10000,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Page a live directory listing by complete entries.
+
+        The cursor payload carries the requested paths, depth and entry limit
+        plus the next entry index.  Continuations re-walk the live file system
+        with the same parameters, so the list reflects the current state; the
+        page boundary never splits a single entry line.
+        """
+        from . import paged_reading
+
+        owner_binding = paged_reading.cursor_binding("list_workspace", profile_user_id, session_id)
+        effective_paths = self._normalize_target_list(paths or ["workspace:/"])
+        effective_depth = max(0, min(8, int(depth or 0)))
+        entry_limit = max(1, min(50000, int(max_entries or 10000)))
+        start_index = 0
+        if cursor:
+            payload = paged_reading.parse_json_payload(
+                paged_reading.parse_paged_cursor(cursor, tool="wl", binding=owner_binding)
+            )
+            if not isinstance(payload, dict):
+                return self._paged_failure("cursor_invalid", reason="cursor could not be decoded for this owner/session")
+            effective_paths = (
+                self._normalize_target_list([str(item or "") for item in payload.get("p") or []])
+                or effective_paths
+            )
+            try:
+                effective_depth = max(0, min(8, int(payload.get("d") or effective_depth)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                entry_limit = max(1, min(50000, int(payload.get("m") or entry_limit)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                start_index = max(0, int(payload.get("i") or 0))
+            except (TypeError, ValueError):
+                start_index = 0
+
+        raw = self.list_items(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            paths=effective_paths,
+            depth=effective_depth,
+            max_entries=entry_limit,
+        )
+        targets = list(raw.get("results") or [])
+        entries_flat: list[tuple[int, dict[str, Any]]] = [
+            (target_index, dict(entry))
+            for target_index, target in enumerate(targets)
+            if str(target.get("status") or "") == "ok"
+            for entry in list(target.get("entries") or [])
+        ]
+        total_entries = len(entries_flat)
+        budget = paged_reading.ENTRY_PAGE_BUDGET_CHARS
+        shown_chars = 0
+        picked: dict[int, list[dict[str, Any]]] = {}
+        end_index = start_index
+        for index in range(start_index, total_entries):
+            target_index, entry = entries_flat[index]
+            line = self._render_entry_line(entry)
+            if shown_chars > 0 and shown_chars + len(line) + 1 > budget:
+                break
+            picked.setdefault(target_index, []).append(entry)
+            shown_chars += len(line) + 1
+            end_index = index + 1
+        if shown_chars == 0 and start_index < total_entries:
+            # A single over-budget entry still gets shown whole (never split).
+            target_index, entry = entries_flat[start_index]
+            picked.setdefault(target_index, []).append(entry)
+            end_index = start_index + 1
+
+        results: list[dict[str, Any]] = []
+        for target_index, target in enumerate(targets):
+            if target_index in picked:
+                results.append(
+                    {
+                        "requested": str(target.get("requested") or ""),
+                        "status": "ok",
+                        "entries": picked[target_index],
+                    }
+                )
+                continue
+            if str(target.get("status") or "") != "ok" and start_index == 0:
+                results.append(target)
+        complete = end_index >= total_entries
+        next_cursor = ""
+        if not complete:
+            next_cursor = paged_reading.make_paged_cursor(
+                tool="wl",
+                binding=owner_binding,
+                payload=paged_reading.json_payload(
+                    {"p": effective_paths, "d": effective_depth, "m": entry_limit, "i": end_index}
+                ),
+            )
+        return {
+            "status": "ok" if results else raw.get("status") or "ok",
+            "results": results,
+            "truncated": bool(raw.get("truncated")),
+            "complete": complete,
+            "next_cursor": next_cursor,
+            "shown_entries": min(total_entries, end_index),
+            "total_entries": total_entries,
+        }
+
+    @staticmethod
+    def _render_entry_line(entry: dict[str, Any]) -> str:
+        kind = "目录" if entry.get("kind") == "directory" else "文件"
+        return (
+            f"  - [{kind}/{entry.get('workspace_status')}] "
+            f"{entry.get('uri')} ({int(entry.get('size') or 0)} bytes)"
+        )
+
     def resolve_file_targets(
         self,
         *,
@@ -725,7 +1157,7 @@ class WorkspaceFileService:
                 continue
         return payload.decode("utf-8", errors="replace")
 
-    def _read_docx(self, path: Path, *, max_chars: int) -> str:
+    def _read_docx(self, path: Path, *, max_chars: int, capped_flag: bool = False) -> str:
         if importlib.util.find_spec("docx") is None:
             raise WorkspaceReaderUnavailable("python-docx is not installed")
         from docx import Document  # type: ignore
@@ -733,25 +1165,33 @@ class WorkspaceFileService:
         document = Document(str(path))
         lines: list[str] = []
         char_count = 0
+        capped = False
         for paragraph in document.paragraphs:
             text = str(paragraph.text or "").strip()
             if text:
                 lines.append(text)
                 char_count += len(text) + 1
             if char_count > max_chars:
-                return "\n".join(lines)
-        for table in document.tables:
-            for row in table.rows:
-                cells = [str(cell.text or "").strip().replace("\n", " ") for cell in row.cells]
-                if any(cells):
-                    line = "| " + " | ".join(cells) + " |"
-                    lines.append(line)
-                    char_count += len(line) + 1
-                if char_count > max_chars:
-                    return "\n".join(lines)
-        return "\n".join(line for line in lines if line)
+                capped = True
+                break
+        if not capped:
+            for table in document.tables:
+                for row in table.rows:
+                    cells = [str(cell.text or "").strip().replace("\n", " ") for cell in row.cells]
+                    if any(cells):
+                        line = "| " + " | ".join(cells) + " |"
+                        lines.append(line)
+                        char_count += len(line) + 1
+                    if char_count > max_chars:
+                        capped = True
+                        break
+                if capped:
+                    break
+        return ("\n".join(line for line in lines if line), capped) if capped_flag else "\n".join(
+            line for line in lines if line
+        )
 
-    def _read_xlsx(self, path: Path, *, max_chars: int) -> str:
+    def _read_xlsx(self, path: Path, *, max_chars: int, capped_flag: bool = False) -> str:
         if importlib.util.find_spec("openpyxl") is None:
             raise WorkspaceReaderUnavailable("openpyxl is not installed")
         from openpyxl import load_workbook  # type: ignore
@@ -760,6 +1200,7 @@ class WorkspaceFileService:
         try:
             lines: list[str] = []
             char_count = 0
+            capped = False
             for sheet in workbook.worksheets:
                 heading = f"## Sheet: {sheet.title}"
                 lines.append(heading)
@@ -771,12 +1212,15 @@ class WorkspaceFileService:
                         lines.append(line)
                         char_count += len(line) + 1
                     if char_count > max_chars:
-                        return "\n".join(lines)
-            return "\n".join(lines)
+                        capped = True
+                        break
+                if capped:
+                    break
+            return ("\n".join(lines), capped) if capped_flag else "\n".join(lines)
         finally:
             workbook.close()
 
-    def _read_pdf(self, path: Path, *, max_chars: int) -> str:
+    def _read_pdf(self, path: Path, *, max_chars: int, capped_flag: bool = False) -> str:
         if importlib.util.find_spec("pypdf") is None:
             raise WorkspaceReaderUnavailable("pypdf is not installed")
         from pypdf import PdfReader  # type: ignore
@@ -784,6 +1228,7 @@ class WorkspaceFileService:
         reader = PdfReader(str(path))
         lines: list[str] = []
         char_count = 0
+        capped = False
         for index, page in enumerate(reader.pages, start=1):
             text = str(page.extract_text() or "").strip()
             if text:
@@ -791,20 +1236,23 @@ class WorkspaceFileService:
                 lines.extend([heading, text])
                 char_count += len(heading) + len(text) + 2
             if char_count > max_chars:
+                capped = True
                 break
-        return "\n".join(lines)
+        return ("\n".join(lines), capped) if capped_flag else "\n".join(lines)
 
-    def _read_zip_manifest(self, path: Path, *, max_chars: int) -> str:
+    def _read_zip_manifest(self, path: Path, *, max_chars: int, capped_flag: bool = False) -> str:
         with zipfile.ZipFile(path, "r") as archive:
             lines = ["## Archive entries"]
             char_count = len(lines[0]) + 1
+            capped = False
             for info in archive.infolist():
                 line = f"- {info.filename} ({info.file_size} bytes)"
                 lines.append(line)
                 char_count += len(line) + 1
                 if char_count > max_chars:
+                    capped = True
                     break
-            return "\n".join(lines)
+            return ("\n".join(lines), capped) if capped_flag else "\n".join(lines)
 
     def _state_map(self, *, profile_user_id: str, session_id: str) -> dict[str, dict[str, Any]]:
         states = self.store.list_workspace_file_states(

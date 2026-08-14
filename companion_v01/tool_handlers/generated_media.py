@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import config
@@ -11,6 +12,7 @@ from .core import (
     BaseToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolFollowupEnvelope,
     operation_tool_result,
 )
 
@@ -1764,6 +1766,7 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
             '格式为 {"type":"inspect_generated_file","target":"gen_001|最近|文件标题",'
             '"section":"content|head|tail|summary|file_list|manifest|file:manifest.json","max_chars":12000}。'
             "它只读取生成物，不会发送、修改或删除文件；适合继续修改前先确认内容、查看转写稿、检查训练集 zip 的 manifest/README。"
+            "正文还有未展示部分时结果会带 cursor；如果已展示内容足够可以直接回答，只有确实需要后续正文时才用 inspect_generated_file(cursor=\"...\") 继续。"
             "如果只是要把文件再发给用户，用 send_file；如果要修改内容，用 revise_generated_file。"
         )
 
@@ -1772,6 +1775,9 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
+        cursor = str(value.get("cursor") or "").strip()
+        if cursor:
+            return {"type": self.tool_type, "cursor": cursor}
         target = (
             value.get("target")
             if value.get("target") is not None
@@ -1791,6 +1797,9 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        cursor = str(call.get("cursor") or "").strip()
+        if cursor:
+            return self._execute_continuation(cursor=cursor, context=context)
         result = self.generated_file_service.inspect_generated_file(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
@@ -1807,10 +1816,211 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
                     "inspection": result.get("inspection"),
                 }
             )
-        return ToolExecutionResult(
+        execution = ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,
             followup_context=str(result.get("followup_context") or "") if isinstance(result, dict) else "",
+        )
+        if bool(result.get("ok")):
+            inspection = result.get("inspection") if isinstance(result.get("inspection"), dict) else {}
+            truncated = bool(inspection.get("truncated"))
+            generated = result.get("generated") if isinstance(result.get("generated"), dict) else {}
+            content = str(inspection.get("content") or "")
+            diagnostics = {
+                "section": str(inspection.get("section") or ""),
+                "source_kind": str(inspection.get("source_kind") or ""),
+                "truncated": truncated,
+                "shown_chars": len(content),
+            }
+            continuation = None
+            extra_note = ""
+            if truncated and str(inspection.get("section") or "") == "content" and generated.get("absolute_path"):
+                cursor_value = self._issue_content_cursor(
+                    generated=generated,
+                    offset=len(content),
+                    context=context,
+                )
+                if cursor_value:
+                    continuation = {"type": self.tool_type, "cursor": cursor_value}
+                    extra_note = (
+                        "\n正文还有未展示部分。如果当前内容已经足够，可以直接回答；"
+                        f"只有确实需要后续正文时，才调用 inspect_generated_file(cursor=\"{cursor_value}\")。"
+                    )
+                else:
+                    extra_note = (
+                        "\n正文还有未展示部分，但当前文件不满足连续读取条件；"
+                        "可用 section=head/tail/summary 或其它读取路径查看。"
+                    )
+            envelope = ToolFollowupEnvelope(
+                content=str(execution.followup_context or "").strip() + extra_note,
+                producer_bounded=True,
+                complete=continuation is None,
+                continuation=continuation,
+                diagnostics=diagnostics,
+            )
+            execution.followup_context = envelope.content
+            execution.followup_envelope = envelope
+        return execution
+
+    def _execute_continuation(self, *, cursor: str, context: ToolExecutionContext) -> ToolExecutionResult:
+        from ..paged_reading import (
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            page_failure_feedback,
+            parse_json_payload,
+            parse_paged_cursor,
+            slice_page,
+        )
+
+        owner_binding = self._inspection_owner_binding(context)
+        payload = parse_json_payload(parse_paged_cursor(cursor, tool="gf", binding=owner_binding))
+        if not isinstance(payload, dict):
+            return self._continuation_failure("cursor_invalid", "cursor could not be decoded for this owner/session")
+        target = str(payload.get("t") or "").strip()
+        section = str(payload.get("s") or "content").strip()
+        try:
+            offset = max(0, int(payload.get("o") or 0))
+        except (TypeError, ValueError):
+            return self._continuation_failure("cursor_invalid", "cursor offset is invalid")
+        expected_fingerprint = str(payload.get("f") or "")
+        if not target:
+            return self._continuation_failure("cursor_invalid", "cursor payload has no target")
+        result = self.generated_file_service.inspect_generated_file(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            target=target,
+            section=section,
+            max_chars=40000,
+        )
+        if not bool(result.get("ok")):
+            return self._continuation_failure(
+                str((result or {}).get("error") or "generated_file_not_found"),
+                "generated file could not be re-read for continuation",
+            )
+        generated = result.get("generated") if isinstance(result.get("generated"), dict) else {}
+        absolute_path = generated.get("absolute_path")
+        if not absolute_path:
+            return self._continuation_failure("source_missing", "generated file body is missing on disk")
+        try:
+            resolved_path = Path(str(absolute_path))
+            if not resolved_path.exists() or not resolved_path.is_file():
+                return self._continuation_failure("source_missing", "generated file body is missing on disk")
+            fingerprint = f"{int(resolved_path.stat().st_size)}:{int(resolved_path.stat().st_mtime_ns)}"
+        except OSError:
+            return self._continuation_failure("source_missing", "generated file body is unreadable")
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            return self._continuation_failure("stale_cursor", "generated file changed since the previous page")
+        output_format = str(generated.get("output_format") or "").strip()
+        service = self.generated_file_service
+        text = str(
+            service._read_generated_text_material(path=resolved_path, output_format=output_format, max_chars=4_000_000)
+            or ""
+        )
+        if not text:
+            return self._continuation_failure("unavailable", "generated file has no paged text material")
+        if len(text) <= offset:
+            return self._continuation_failure("stale_cursor", "generated file shrank since the previous page")
+        page_text, next_offset, total_chars = slice_page(
+            text,
+            start=offset,
+            budget_chars=NEXT_PAGE_BUDGET_CHARS,
+            budget_lines=NEXT_PAGE_BUDGET_LINES,
+        )
+        complete = next_offset >= total_chars
+        lines = [
+            "【生成文件续读结果】",
+            f"目标：{target}（section={section}）",
+            page_text,
+        ]
+        continuation = None
+        if not complete:
+            next_cursor = self._issue_content_cursor(
+                generated=generated,
+                offset=next_offset,
+                context=context,
+            )
+            if next_cursor:
+                continuation = {"type": self.tool_type, "cursor": next_cursor}
+                lines.append(
+                    "正文还有未展示部分。如果当前内容已经足够，可以直接回答；"
+                    f"只有确实需要后续正文时，才调用 inspect_generated_file(cursor=\"{next_cursor}\")。"
+                )
+            else:
+                lines.append("正文还有未展示部分，但当前文件不满足连续读取条件。")
+        else:
+            lines.append(f"已读取该 section 的全部可读取正文（共 {total_chars} 字）。")
+        content = "\n".join(lines)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "generated_file_inspected",
+                    "generated_file": generated,
+                    "inspection": {
+                        "section": section,
+                        "source_kind": output_format,
+                        "truncated": not complete,
+                        "content": page_text,
+                    },
+                }
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=complete,
+                continuation=continuation,
+                diagnostics={
+                    "section": section,
+                    "shown_chars": len(page_text),
+                    "total_chars": total_chars,
+                    "complete": complete,
+                },
+            ),
+        )
+
+    def _issue_content_cursor(self, *, generated: dict[str, Any], offset: int, context: ToolExecutionContext) -> str:
+        from ..paged_reading import cursor_binding, json_payload, make_paged_cursor
+
+        absolute_path = generated.get("absolute_path")
+        if not absolute_path:
+            return ""
+        try:
+            resolved_path = Path(str(absolute_path))
+            fingerprint = f"{int(resolved_path.stat().st_size)}:{int(resolved_path.stat().st_mtime_ns)}"
+        except OSError:
+            return ""
+        target = str(generated.get("generated_id") or generated.get("generated_handle") or "")
+        if not target:
+            return ""
+        return make_paged_cursor(
+            tool="gf",
+            binding=self._inspection_owner_binding(context),
+            payload=json_payload({"t": target, "s": "content", "o": int(offset), "f": fingerprint}),
+        )
+
+    def _inspection_owner_binding(self, context: ToolExecutionContext) -> str:
+        from ..paged_reading import cursor_binding
+
+        return cursor_binding("inspect_generated_file", context.profile_user_id, context.session_id)
+
+    def _continuation_failure(self, status: str, reason: str) -> ToolExecutionResult:
+        from ..paged_reading import page_failure_feedback
+
+        content = page_failure_feedback(status=status, tool=self.tool_type, detail=reason)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {"type": "generated_file_inspected", "status": status, "reason": reason}
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={"status": status},
+            ),
         )
 
     def _normalize_max_chars(self, value: Any) -> int:

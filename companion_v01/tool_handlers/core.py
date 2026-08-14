@@ -476,6 +476,10 @@ LIST_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
             "maximum": 50000,
             "description": "Maximum entries to return. Default 10000.",
         },
+        "cursor": {
+            "type": "string",
+            "description": "Opaque continuation cursor from a previous list_workspace page; pass only the cursor to list the next page.",
+        },
     },
     "required": [],
 }
@@ -503,8 +507,12 @@ READ_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
             "maximum": 4000000,
             "description": "Maximum characters to read. Default 1000000.",
         },
+        "cursor": {
+            "type": "string",
+            "description": "Opaque continuation cursor from a previous read_workspace page; pass only the cursor to read the next page.",
+        },
     },
-    "required": ["targets"],
+    "required": [],
 }
 
 
@@ -532,6 +540,10 @@ INSPECT_GENERATED_FILE_INPUT_SCHEMA: dict[str, Any] = {
             "minimum": 500,
             "maximum": 40000,
             "description": "Maximum characters. Default 12000.",
+        },
+        "cursor": {
+            "type": "string",
+            "description": "Opaque continuation cursor from a previous inspect_generated_file content page; pass only the cursor to read the next page.",
         },
     },
     "required": [],
