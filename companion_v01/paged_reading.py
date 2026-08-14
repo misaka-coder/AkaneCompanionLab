@@ -95,6 +95,22 @@ def offset_payload(*, offset: int) -> str:
     return file_offset_payload(file_index=0, offset=offset)
 
 
+def json_payload(value: Any) -> str:
+    """JSON-encode a payload with stable, compact serialization."""
+    import json as _json
+
+    return _json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def parse_json_payload(payload: str) -> Any | None:
+    import json as _json
+
+    try:
+        return _json.loads(str(payload or ""))
+    except (ValueError, TypeError):
+        return None
+
+
 def slice_page(
     text: str,
     *,
