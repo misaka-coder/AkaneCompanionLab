@@ -83,12 +83,18 @@ def build_report(db_path: Path, *, apply: bool, timezone: str) -> dict:
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", required=True, help="Path to the MemCore SQLite database (memcore_v01.db).")
-    parser.add_argument("--apply", action="store_true", help="Actually migrate; without this flag the run is a dry run.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="Actually migrate; without this flag the run is a dry run.")
+    mode.add_argument("--dry-run", action="store_true", help="Explicitly request the default read-only migration report.")
     parser.add_argument("--timezone", default="Asia/Shanghai", help="IANA timezone for projection rendering.")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     db_path = Path(args.db).resolve(strict=True)
     report = build_report(db_path, apply=args.apply, timezone=args.timezone)

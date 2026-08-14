@@ -264,6 +264,16 @@ class RecordToolBatchOversizedAnchorTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    def test_legacy_path_migration_cli_accepts_explicit_dry_run(self) -> None:
+        from scripts.migrate_legacy_path_projections import build_parser
+
+        parser = build_parser()
+        explicit = parser.parse_args(["--db", "memcore.db", "--dry-run"])
+        self.assertTrue(explicit.dry_run)
+        self.assertFalse(explicit.apply)
+        default = parser.parse_args(["--db", "memcore.db"])
+        self.assertFalse(default.apply)
+
 
 if __name__ == "__main__":
     unittest.main()
