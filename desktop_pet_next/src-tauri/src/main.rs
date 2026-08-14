@@ -4687,7 +4687,7 @@ fn control_system_media_macos(action: &str) -> Result<SystemMediaControlResult, 
     Ok(system_media_control_from_snapshot(
         action,
         ok,
-        if ok { "executed" } else { "not-executed" },
+        if ok { "executed" } else { "failed" },
         if ok { "" } else { "apple_music_unavailable" },
         None,
     ))
@@ -4701,37 +4701,13 @@ fn control_system_media_windows(action: &str) -> Result<SystemMediaControlResult
     };
 
     let before = read_current_system_media_windows().ok();
-    if action == "play"
-        && before
-            .as_ref()
-            .map(|snapshot| snapshot.playback_status == "playing")
-            .unwrap_or(false)
-    {
-        return Ok(system_media_control_from_snapshot(
-            action,
-            true,
-            "already-playing",
-            "",
-            before,
-        ));
-    }
-    if action == "pause"
-        && before
-            .as_ref()
-            .map(|snapshot| snapshot.playback_status == "paused")
-            .unwrap_or(false)
-    {
-        return Ok(system_media_control_from_snapshot(
-            action,
-            true,
-            "already-paused",
-            "",
-            before,
-        ));
+    if let Some(early) = system_media_control_early_outcome(action, before.as_ref()) {
+        return Ok(early);
     }
 
-    // Windows exposes one media key for play/pause. Guard above keeps
-    // explicit play/pause actions idempotent when the current state is known.
+    // Windows exposes one media key for play/pause. The early-outcome guard
+    // keeps explicit play/pause actions idempotent when the current state is
+    // already known.
     let vk: VIRTUAL_KEY = match action {
         "play" | "pause" => VK_MEDIA_PLAY_PAUSE,
         "next" => VK_MEDIA_NEXT_TRACK,
@@ -4775,15 +4751,151 @@ fn control_system_media_windows(action: &str) -> Result<SystemMediaControlResult
         ];
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize == inputs.len()
     };
-    let after = read_current_system_media_windows().ok().or(before);
-
-    Ok(system_media_control_from_snapshot(
+    if !executed {
+        return Ok(system_media_control_from_snapshot(
+            action,
+            false,
+            "failed",
+            "send_input_failed",
+            before,
+        ));
+    }
+    let after = poll_system_media_control_confirmation(action, before.as_ref());
+    Ok(system_media_control_post_send_outcome(
         action,
-        executed,
-        if executed { "executed" } else { "not-executed" },
-        if executed { "" } else { "send_input_failed" },
-        after,
+        before.as_ref(),
+        after.as_ref(),
     ))
+}
+
+const SYSTEM_MEDIA_POLL_ATTEMPTS: usize = 6;
+const SYSTEM_MEDIA_POLL_DELAY_MILLIS: u64 = 150;
+
+fn system_media_control_early_outcome(
+    action: &str,
+    before: Option<&SystemMediaSnapshot>,
+) -> Option<SystemMediaControlResult> {
+    if action == "play"
+        && before
+            .map(|snapshot| snapshot.playback_status == "playing")
+            .unwrap_or(false)
+    {
+        return Some(system_media_control_from_snapshot(
+            action,
+            true,
+            "already_playing",
+            "",
+            before.cloned(),
+        ));
+    }
+    if action == "pause"
+        && before
+            .map(|snapshot| snapshot.playback_status == "paused")
+            .unwrap_or(false)
+    {
+        return Some(system_media_control_from_snapshot(
+            action,
+            true,
+            "already_paused",
+            "",
+            before.cloned(),
+        ));
+    }
+    let known_no_session = before
+        .map(|snapshot| !snapshot.ok && snapshot.reason == "no_active_session")
+        .unwrap_or(false);
+    if known_no_session {
+        if action == "stop" {
+            return Some(system_media_control_from_snapshot(
+                action,
+                true,
+                "already_stopped",
+                "",
+                before.cloned(),
+            ));
+        }
+        return Some(system_media_control_unavailable(
+            action,
+            "no_active_session",
+            "",
+        ));
+    }
+    None
+}
+
+/// Whether the post-send snapshot proves the requested action took effect.
+fn system_media_target_confirmed(
+    action: &str,
+    before: Option<&SystemMediaSnapshot>,
+    after: Option<&SystemMediaSnapshot>,
+) -> bool {
+    let Some(after) = after else {
+        return false;
+    };
+    if !after.ok {
+        // A stop action may legitimately end the active media session.
+        return action == "stop";
+    }
+    match action {
+        "play" => after.playback_status == "playing",
+        "pause" => {
+            after.playback_status == "paused" || after.playback_status == "stopped"
+        }
+        "stop" => matches!(after.playback_status.as_str(), "stopped" | "closed"),
+        "next" | "previous" => match before {
+            Some(previous) if previous.ok && !previous.track_key.is_empty() => {
+                !after.track_key.is_empty() && after.track_key != previous.track_key
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Post-send mapping: sending a key is not the same as confirming its effect.
+fn system_media_control_post_send_outcome(
+    action: &str,
+    before: Option<&SystemMediaSnapshot>,
+    after: Option<&SystemMediaSnapshot>,
+) -> SystemMediaControlResult {
+    let final_snapshot = after.cloned().or_else(|| before.cloned());
+    if system_media_target_confirmed(action, before, after) {
+        system_media_control_from_snapshot(action, true, "executed", "", final_snapshot)
+    } else {
+        system_media_control_from_snapshot(
+            action,
+            false,
+            "execution_unknown",
+            "media_state_not_confirmed",
+            final_snapshot,
+        )
+    }
+}
+
+/// Bounded confirmation poll after a media key was sent. Never blocks long
+/// and never fails the pet flow: it returns the last readable snapshot.
+#[cfg(windows)]
+fn poll_system_media_control_confirmation(
+    action: &str,
+    before: Option<&SystemMediaSnapshot>,
+) -> Option<SystemMediaSnapshot> {
+    let mut last: Option<SystemMediaSnapshot> = None;
+    for _ in 0..SYSTEM_MEDIA_POLL_ATTEMPTS {
+        match read_current_system_media_windows() {
+            Ok(snapshot) => {
+                let confirmed = system_media_target_confirmed(action, before, Some(&snapshot));
+                last = Some(snapshot);
+                if confirmed {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            SYSTEM_MEDIA_POLL_DELAY_MILLIS,
+        ));
+    }
+    last
 }
 
 #[cfg(windows)]
@@ -5796,7 +5908,13 @@ async fn execute_satellite_invocation_once(
                 )
             } else {
                 let control = control_system_media(action.to_string()).await;
-                let status = if control.ok { "succeeded" } else { "failed" };
+                let status = if control.ok {
+                    "succeeded"
+                } else if control.status == "execution_unknown" {
+                    "execution_unknown"
+                } else {
+                    "failed"
+                };
                 let reason = if control.ok {
                     String::new()
                 } else if control.reason.trim().is_empty() {
@@ -6934,5 +7052,155 @@ mod tests {
         assert_eq!(result.status, "rejected");
         assert_eq!(result.reason, "unsafe_url");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    fn media_snapshot(
+        ok: bool,
+        status: &str,
+        reason: &str,
+        playback_status: &str,
+        track_key: &str,
+    ) -> SystemMediaSnapshot {
+        SystemMediaSnapshot {
+            ok,
+            status: status.to_string(),
+            reason: reason.to_string(),
+            captured_at: 1,
+            platform: "windows".to_string(),
+            track_key: track_key.to_string(),
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            source_app: String::new(),
+            playback_status: playback_status.to_string(),
+            is_playing: playback_status == "playing",
+            position_seconds: None,
+            duration_seconds: None,
+        }
+    }
+
+    #[test]
+    fn media_target_confirmation_requires_observed_state_change() {
+        let paused = media_snapshot(true, "ready", "", "paused", "track-a");
+        let playing = media_snapshot(true, "ready", "", "playing", "track-a");
+        let playing_b = media_snapshot(true, "ready", "", "playing", "track-b");
+        let paused_b = media_snapshot(true, "ready", "", "paused", "track-b");
+
+        // paused -> play -> playing is confirmed.
+        assert!(system_media_target_confirmed(
+            "play",
+            Some(&paused),
+            Some(&playing)
+        ));
+        // paused -> play -> still paused is NOT confirmed.
+        assert!(!system_media_target_confirmed(
+            "play",
+            Some(&paused),
+            Some(&paused)
+        ));
+        // next with a changed track is confirmed.
+        assert!(system_media_target_confirmed(
+            "next",
+            Some(&playing),
+            Some(&playing_b)
+        ));
+        // next with an unchanged track is NOT confirmed.
+        assert!(!system_media_target_confirmed(
+            "next",
+            Some(&playing),
+            Some(&playing)
+        ));
+        // pause -> paused is confirmed (paused or stopped both count).
+        assert!(system_media_target_confirmed(
+            "pause",
+            Some(&playing),
+            Some(&paused)
+        ));
+        // next cannot be confirmed when the before-track is unknown.
+        let no_track = media_snapshot(true, "ready", "", "playing", "");
+        assert!(!system_media_target_confirmed(
+            "next",
+            Some(&no_track),
+            Some(&playing_b)
+        ));
+        // stop that ends the session (ok=false) is confirmed.
+        let closed = media_snapshot(false, "unavailable", "no_active_session", "unknown", "");
+        assert!(system_media_target_confirmed(
+            "stop",
+            Some(&playing),
+            Some(&closed)
+        ));
+        // stop while still playing is NOT confirmed.
+        assert!(!system_media_target_confirmed(
+            "stop",
+            Some(&playing),
+            Some(&playing)
+        ));
+        // a missing post-send snapshot never confirms.
+        assert!(!system_media_target_confirmed("play", Some(&paused), None));
+    }
+
+    #[test]
+    fn media_control_early_outcome_keeps_idempotent_success_and_no_session() {
+        let playing = media_snapshot(true, "ready", "", "playing", "track-a");
+        let paused = media_snapshot(true, "ready", "", "paused", "track-a");
+        let no_session = media_snapshot(false, "unavailable", "no_active_session", "unknown", "");
+
+        let already_play = system_media_control_early_outcome("play", Some(&playing)).unwrap();
+        assert!(already_play.ok);
+        assert_eq!(already_play.status, "already_playing");
+
+        let already_pause = system_media_control_early_outcome("pause", Some(&paused)).unwrap();
+        assert!(already_pause.ok);
+        assert_eq!(already_pause.status, "already_paused");
+
+        let no_session_play = system_media_control_early_outcome("play", Some(&no_session)).unwrap();
+        assert!(!no_session_play.ok);
+        assert_eq!(no_session_play.status, "unavailable");
+        assert_eq!(no_session_play.reason, "no_active_session");
+
+        let stopped_no_session =
+            system_media_control_early_outcome("stop", Some(&no_session)).unwrap();
+        assert!(stopped_no_session.ok);
+        assert_eq!(stopped_no_session.status, "already_stopped");
+
+        // A paused player that is asked to play must not short-circuit.
+        assert!(system_media_control_early_outcome("play", Some(&paused)).is_none());
+    }
+
+    #[test]
+    fn media_control_post_send_distinguishes_executed_from_unknown() {
+        let paused = media_snapshot(true, "ready", "", "paused", "track-a");
+        let playing = media_snapshot(true, "ready", "", "playing", "track-a");
+        let paused_b = media_snapshot(true, "ready", "", "paused", "track-b");
+        let playing_b = media_snapshot(true, "ready", "", "playing", "track-b");
+
+        let confirmed = system_media_control_post_send_outcome("play", Some(&paused), Some(&playing));
+        assert!(confirmed.ok);
+        assert_eq!(confirmed.status, "executed");
+        assert_eq!(confirmed.playback_status, "playing");
+
+        let unconfirmed =
+            system_media_control_post_send_outcome("play", Some(&paused), Some(&paused_b));
+        assert!(!unconfirmed.ok);
+        assert_eq!(unconfirmed.status, "execution_unknown");
+        assert_eq!(unconfirmed.reason, "media_state_not_confirmed");
+        assert_eq!(unconfirmed.playback_status, "paused");
+
+        let next_unknown =
+            system_media_control_post_send_outcome("next", Some(&playing), Some(&playing));
+        assert!(!next_unknown.ok);
+        assert_eq!(next_unknown.status, "execution_unknown");
+
+        let next_confirmed =
+            system_media_control_post_send_outcome("next", Some(&playing), Some(&playing_b));
+        assert!(next_confirmed.ok);
+        assert_eq!(next_confirmed.status, "executed");
+
+        // Snapshot read failures leave the previous state visible, unconfirmed.
+        let read_failed = system_media_control_post_send_outcome("play", Some(&paused), None);
+        assert!(!read_failed.ok);
+        assert_eq!(read_failed.status, "execution_unknown");
+        assert_eq!(read_failed.playback_status, "paused");
     }
 }

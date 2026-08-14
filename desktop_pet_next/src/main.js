@@ -7331,6 +7331,16 @@ function normalizeSystemMediaControlAction(action) {
   return normalized;
 }
 
+function normalizeSystemMediaControlActionLabel(action) {
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (normalized === "play") return "播放";
+  if (normalized === "pause") return "暂停";
+  if (normalized === "stop") return "停止";
+  if (normalized === "next") return "切到下一首";
+  if (normalized === "previous") return "切到上一首";
+  return "媒体";
+}
+
 function activityExplicitlyTargetsSystemMedia(activity, sourceId) {
   const source = String(sourceId || "").trim().toLowerCase();
   const handle = String(activity?.handle || activity?.target || "").trim().toLowerCase();
@@ -7406,6 +7416,18 @@ async function controlSystemMediaPlayback(action) {
     window.setTimeout(() => {
       void refreshSystemMediaSnapshot();
     }, normalized === "next" || normalized === "previous" ? 600 : 180);
+    window.setTimeout(() => {
+      lastActivityActionSignature = "";
+    }, 900);
+    return true;
+  }
+  if (result?.status === "execution_unknown") {
+    const message = `已向系统播放器发送${normalizeSystemMediaControlActionLabel(normalized)}指令，但还没有确认到播放状态变化。`;
+    setRuntimeStatus(message, { mode: "music" });
+    showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
+    window.setTimeout(() => {
+      void refreshSystemMediaSnapshot();
+    }, 600);
     window.setTimeout(() => {
       lastActivityActionSignature = "";
     }, 900);
