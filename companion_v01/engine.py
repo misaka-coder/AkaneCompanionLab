@@ -5049,9 +5049,10 @@ class AkaneMemoryEngine:
         The streaming parser exposes ``speech`` only after its JSON string value
         is closed.  We still require proof that no tool call remains pending:
         either tools were disabled for this generation, or the malformed wire
-        text explicitly contains ``tool_call: null``.  This prevents a tool
-        preface from being mistaken for a final answer while avoiding an
-        expensive full-context retry for a harmless trailing-brace error.
+        text has no tool-call field (an omitted optional field is valid) or
+        explicitly contains ``tool_call: null``.  An explicit non-null tool
+        call still blocks recovery so a tool preface cannot be mistaken for a
+        final answer.
         """
 
         if not parse_fallback or not isinstance(output, dict):
@@ -5063,6 +5064,13 @@ class AkaneMemoryEngine:
         if not allow_tool_call:
             return True
         raw = str(provider_output_raw or "")
+        # A final answer is allowed to omit the optional ``tool_call`` field.
+        # Only reject recovery when the wire text explicitly contains a
+        # non-null tool call; requiring an explicit ``tool_call: null`` turned
+        # ordinary short replies into false "undeliverable" failures.
+        tool_field = re.search(r'["\']tool_call["\']\s*:', raw, flags=re.IGNORECASE)
+        if tool_field is None:
+            return True
         return bool(re.search(r'["\']tool_call["\']\s*:\s*null\b', raw, flags=re.IGNORECASE))
 
     @staticmethod

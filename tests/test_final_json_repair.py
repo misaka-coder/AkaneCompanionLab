@@ -46,7 +46,7 @@ class FinalJSONRepairTests(unittest.TestCase):
         return engine
 
     def test_stream_parse_failure_uses_small_json_repair_instead_of_full_retry(self) -> None:
-        malformed = '{"emotion":"normal","speech":"仓库看完了，建议补 README 和部署文档。"'
+        malformed = '{"emotion":"normal","speech":"仓库看完了，建议补 README 和部署文档。","tool_call":{"type":"pending"'
 
         class FakeLLM:
             def __init__(self) -> None:
@@ -122,7 +122,7 @@ class FinalJSONRepairTests(unittest.TestCase):
         self.assertNotIn("chat_final_response_retries", llm.metrics)
 
     def test_streamed_complete_speech_allows_text_preserving_json_repair(self) -> None:
-        malformed = '{"speech":"工具已经做完，这是最终结果。"'
+        malformed = '{"speech":"工具已经做完，这是最终结果。","tool_call":{"type":"pending"'
 
         class FakeLLM:
             def __init__(self) -> None:
@@ -181,7 +181,7 @@ class FinalJSONRepairTests(unittest.TestCase):
         self.assertEqual(llm.repair_calls, 1)
 
     def test_streamed_speech_rejects_json_repair_that_rewrites_the_answer(self) -> None:
-        malformed = '{"speech":"原始完整答复。"'
+        malformed = '{"speech":"原始完整答复。","tool_call":{"type":"pending"'
 
         class FakeLLM:
             @staticmethod
@@ -262,7 +262,7 @@ class FinalJSONRepairTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_failed_json_repair_stops_without_replaying_full_context(self) -> None:
-        malformed = '{"speech":"第一次格式坏了"'
+        malformed = '{"speech":"第一次格式坏了","tool_call":{"type":"pending"'
 
         class FakeLLM:
             def __init__(self) -> None:
@@ -405,8 +405,32 @@ class FinalJSONRepairTests(unittest.TestCase):
             )
         )
 
+    def test_parse_recovery_delivers_complete_speech_when_optional_tool_field_is_omitted(self) -> None:
+        engine = self._engine(SimpleNamespace())
+
+        self.assertTrue(
+            engine._is_deliverable_parse_recovery(
+                {"speech": "简短答复已经完整。", "tool_call": None},
+                parse_fallback=True,
+                provider_output_raw='{"speech":"简短答复已经完整。"',
+                allow_tool_call=True,
+            )
+        )
+
+    def test_parse_recovery_rejects_explicit_non_null_tool_call(self) -> None:
+        engine = self._engine(SimpleNamespace())
+
+        self.assertFalse(
+            engine._is_deliverable_parse_recovery(
+                {"speech": "我继续查。", "tool_call": None},
+                parse_fallback=True,
+                provider_output_raw='{"speech":"我继续查。","tool_call":{"type":"web_search"',
+                allow_tool_call=True,
+            )
+        )
+
     def test_nonstream_final_response_uses_the_same_bounded_repair_path(self) -> None:
-        malformed = '{"speech":"同步答复已经写好，只差一个括号"'
+        malformed = '{"speech":"同步答复已经写好，只差一个括号","tool_call":{"type":"pending"'
 
         class FakeLLM:
             def __init__(self) -> None:
