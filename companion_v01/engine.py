@@ -5491,7 +5491,6 @@ class AkaneMemoryEngine:
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         original_allow_tool_call = bool(generation_context.get("allow_tool_call", allow_tool_call))
         normalized: dict[str, Any] = {}
-        buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
         streamed_speech_to_user = False
         unrecovered_stream_error = ""
@@ -5549,17 +5548,13 @@ class AkaneMemoryEngine:
                     break
                 if isinstance(event, dict):
                     current_events.append(event)
-                    # The LLM runtime parses top-level JSON fields incrementally
-                    # and emits speech/ui events before the final JSON object is
-                    # complete. Forward those events immediately so the HTTP
-                    # NDJSON stream is genuinely user-visible streaming. We
-                    # still retain the events for the final normalized result;
-                    # persistence and retry decisions remain completion-bound.
-                    yield event
-                    if str(event.get("type") or "") in {"speech_chunk", "speech_segment"} and str(
-                        event.get("text") or ""
-                    ):
-                        streamed_speech_to_user = True
+                    # Provider speech events are speculative until the final
+                    # wire object passes the same terminal validation as the
+                    # persisted response. Emitting them before that boundary
+                    # makes a malformed attempt visible and then emits the
+                    # recovery answer as a duplicate bubble/voice unit.
+                    # Keep them per-attempt; only the accepted attempt below
+                    # is committed to the transport.
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = self._llm_result_used_fallback(
                 stream_result,
@@ -5601,7 +5596,6 @@ class AkaneMemoryEngine:
             native_preface_text = str(getattr(stream_result, "native_preface_text", "") or "").strip()
             if native_preface_text:
                 normalized["_native_preface_text"] = native_preface_text
-            buffered_events = current_events
             terminal_output = self._final_attempt_terminal_output(
                 normalized=normalized,
                 parse_fallback=parse_fallback,
@@ -5618,6 +5612,19 @@ class AkaneMemoryEngine:
             )
             if terminal_output is not None:
                 normalized = terminal_output
+                # A legal tool call has its user-facing preface emitted by the
+                # tool-round coordinator from `_native_preface_text`; forwarding
+                # provider speech here would create a second authority. For a
+                # final no-tool answer, commit only this accepted attempt's
+                # buffered events. Earlier retry attempts were never exposed.
+                if not self._final_output_has_tool_call(normalized):
+                    for accepted_event in current_events:
+                        yield accepted_event
+                        if str(accepted_event.get("type") or "") in {
+                            "speech_chunk",
+                            "speech_segment",
+                        } and str(accepted_event.get("text") or ""):
+                            streamed_speech_to_user = True
                 break
             retry_feedback = self._final_response_retry_feedback(
                 raw_result=getattr(stream_result, "parsed", None),
@@ -5756,11 +5763,8 @@ class AkaneMemoryEngine:
                 break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
-        # Events were forwarded as they arrived above. Do not replay them here:
-        # replaying would duplicate speech in the UI/TTS pipeline. In the rare
-        # case a future stream implementation only returns buffered events,
-        # preserve compatibility by forwarding events that were not already
-        # emitted (currently all events from this path are emitted immediately).
+        # Provider events are committed at the accepted terminal boundary above;
+        # retry attempts are intentionally discarded instead of replayed.
         if unrecovered_stream_error:
             yield {
                 "type": "stream_error",
