@@ -177,8 +177,30 @@ _MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
     default=None,
 )
 FINAL_RESPONSE_TEMPERATURE = 0.8
-FINAL_RESPONSE_JSON_REPAIR_TEMPERATURE = 0.0
-FINAL_RESPONSE_JSON_REPAIR_MAX_OUTPUT_TOKENS = 512
+
+# Same-turn final recovery feedback (Phase 2). The recovery request must reuse
+# the original user message, current images, MemCore timeline, completed
+# tool_call/tool_result and the same stable system prefix and cache key; the
+# only addition is this host feedback appended once at the tail. It is
+# request-scoped (never written into long-term history) and clearly marked as
+# host feedback, not a user message.
+FINAL_RESPONSE_RECOVERY_FEEDBACK = (
+    "【宿主反馈】\n"
+    "上一条输出没有形成可交付的最终文字。\n"
+    "请基于同一用户请求和已经存在的工具结果重新生成最终答复。\n"
+    "不要重复已完成的工具，不要讨论这次格式错误。"
+)
+
+# Terminal plain-text recovery: after the configured structured generations all
+# fail, one more same-context generation without JSON requirement and without
+# tools. The model authors the text; the host only wraps presentation defaults.
+FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = FINAL_RESPONSE_RECOVERY_FEEDBACK + (
+    "\n本次请直接输出纯文本最终答复：不要输出 JSON，不要调用任何工具。"
+)
+
+# Wire text that carries any JSON structure (braces or a quoted JSON key)
+# is treated as (possibly damaged) JSON, never as complete plain text.
+_JSON_FRAGMENT_RE = re.compile(r'[{}]|"[A-Za-z_][A-Za-z0-9_]*"\s*:')
 
 
 class _ContextBoundGenerator:
@@ -4715,40 +4737,32 @@ class AkaneMemoryEngine:
         )
         max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
+        original_allow_tool_call = bool(generation_context.get("allow_tool_call", allow_tool_call))
         normalized: dict[str, Any] = {}
         provider_output_raw = ""
         retry_feedback = ""
+        transport_failures = 0
         for attempt in range(1, max_attempts + 1):
+            # Final recovery (attempt >= 2) reuses the identical user message,
+            # images, MemCore timeline, tool results, system prefix and cache
+            # key, adding the fixed host feedback once at the tail. New tool
+            # calls are closed during recovery so completed side effects are
+            # never re-executed.
+            recovery_mode = attempt > 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = self._final_response_retry_note(attempt, retry_feedback)
-            retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
+            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if recovery_mode else ""
+            request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
+                request_projection_state=request_projection_state,
+                user_images=user_images,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                prompt_cache_key=prompt_cache_key,
                 retry_note=retry_note,
                 request_observer=request_observer,
+                recovery_mode=recovery_mode,
+                allow_tool_call=original_allow_tool_call,
             )
-            request_kwargs = {
-                "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": self._request_projection_user_prompt(
-                    request_projection_state,
-                    str(generation_context["user_prompt"]),
-                )
-                + (retry_note if request_observer is None else ""),
-                "fallback": dict(generation_context["fallback"]),
-                "temperature": FINAL_RESPONSE_TEMPERATURE,
-                "prompt_cache_key": prompt_cache_key,
-                "user_images": user_images,
-                "system_extra_blocks": generation_context.get("system_extra_blocks"),
-                "history_turns": generation_context.get("history_turns"),
-                "ephemeral_turns": retry_ephemeral_turns,
-                "post_user_turns": generation_context.get("post_user_turns"),
-                "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
-                "native_tools": generation_context.get("native_tools"),
-                "native_tool_choice": generation_context.get("native_tool_choice", ""),
-                "chat_model_override": chat_model_override,
-                "execution_target": execution_target,
-            }
-            if request_observer is not None:
-                request_kwargs["request_observer"] = request_observer
             call_result = (
                 self.llm.call_chat_json_result(**request_kwargs) if hasattr(self.llm, "call_chat_json_result") else None
             )
@@ -4758,6 +4772,8 @@ class AkaneMemoryEngine:
                     {"status": "failed", "reason": "request_projection_record_failed"}
                 )
             provider_output_raw = str(getattr(call_result, "raw_text", "") or "")
+            if str(getattr(call_result, "error", "") or "").strip():
+                transport_failures += 1
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = self._llm_result_used_fallback(
                 call_result,
@@ -4771,7 +4787,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 client_context=client_context,
                 resource_manifest=resource_manifest,
-                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                allow_tool_call=original_allow_tool_call and not recovery_mode,
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 user_message=user_message,
                 domain_profile_id=domain_profile_id,
@@ -4783,20 +4799,22 @@ class AkaneMemoryEngine:
                 normalized,
                 generation_context.get("memcore_projection_recovery"),
             )
-            if self._is_deliverable_parse_recovery(
-                normalized,
+            terminal_output = self._final_attempt_terminal_output(
+                normalized=normalized,
                 parse_fallback=parse_fallback,
                 provider_output_raw=provider_output_raw,
-                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
-            ):
-                self._record_final_response_parse_recovery_metric()
-                if provider_output_raw:
-                    normalized["_provider_output_raw"] = provider_output_raw
-                return normalized
-            if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
-                if provider_output_raw:
-                    normalized["_provider_output_raw"] = provider_output_raw
-                return normalized
+                allow_tool_call=original_allow_tool_call,
+                recovery_mode=recovery_mode,
+                generation_context=generation_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+            )
+            if terminal_output is not None:
+                return terminal_output
             retry_feedback = self._final_response_retry_feedback(
                 raw_result=result,
                 normalized=normalized,
@@ -4809,37 +4827,48 @@ class AkaneMemoryEngine:
                 raw_result=result,
                 provider_output_raw=provider_output_raw,
             )
-            repaired = (
-                self._try_repair_final_response_json(
-                    provider_output_raw=provider_output_raw,
-                    generation_context=generation_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    client_context=client_context,
-                    resource_manifest=resource_manifest,
-                    user_message=user_message,
-                    domain_profile_id=domain_profile_id,
-                    execution_target=execution_target,
-                    chat_model_override=chat_model_override,
-                )
-                if parse_fallback
-                else None
-            )
-            if repaired is not None:
-                repaired_normalized, repaired_raw = repaired
-                self._attach_nonfatal_memcore_failure(
-                    repaired_normalized,
-                    generation_context.get("memcore_projection_recovery"),
-                )
-                if repaired_raw:
-                    repaired_normalized["_provider_output_raw"] = repaired_raw
-                return repaired_normalized
-            if parse_fallback:
-                break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
-        normalized["_transient_final_failure"] = True
-        normalized.pop("_provider_output_raw", None)
+        # Every structured generation failed. A legal tool call still continues
+        # the ordinary tool loop. Otherwise one final same-context plain-text
+        # generation (no JSON requirement, no tools) delivers the model's own
+        # text; the host only wraps presentation defaults. Only when every
+        # provider call was unreachable do we emit an explicit service failure
+        # notification instead of pretending the model answered.
+        if self._final_output_has_tool_call(normalized):
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
+            return normalized
+        if self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
+            recovered = self._recover_final_response_plain_text(
+                generation_context=generation_context,
+                request_projection_state=request_projection_state,
+                user_images=user_images,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                request_observer=request_observer,
+                prompt_cache_key=prompt_cache_key,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+            )
+            if recovered is not None:
+                self._attach_nonfatal_memcore_failure(
+                    recovered,
+                    generation_context.get("memcore_projection_recovery"),
+                )
+                return recovered
+            if transport_failures >= max_attempts and max_attempts > 0:
+                self._record_final_service_failure_metric()
+                return self._final_service_failure_output(reason="provider_unreachable")
+            normalized["_transient_final_failure"] = True
+            normalized.pop("_provider_output_raw", None)
+        else:
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
         return normalized
 
     @staticmethod
@@ -4847,28 +4876,6 @@ class AkaneMemoryEngine:
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
         return max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
-
-    @staticmethod
-    def _final_response_retry_note(attempt: int, feedback: str = "") -> str:
-        if attempt <= 1:
-            return ""
-        issue = {
-            "result_not_object": "上一次输出不是规定的 JSON 对象。",
-            "json_parse_fallback": "上一次输出没有被解析为规定的完整 JSON 对象。",
-            "speech_missing": "上一次 JSON 缺少 `speech` 字段。",
-            "speech_wrong_type": "上一次 JSON 的 `speech` 不是字符串。",
-            "speech_empty": "上一次 JSON 的 `speech` 是空字符串。",
-            "speech_unusable": "上一次输出经规范化后没有形成可交付的 `speech`。",
-            "placeholder_reply": "上一次 `speech` 只是处理中或未完成的占位答复。",
-        }.get(feedback, "上一次生成没有形成有效、可交付的最终答复。")
-        repeated = "相同结构问题已经重复出现；" if attempt >= 3 else ""
-        return (
-            f"【最终答复修复重试】{issue}{repeated}"
-            "请重新输出规定的完整 JSON 对象，并实际写入字符串字段"
-            '`"speech":"这里直接写本轮给用户的完整答复"`；'
-            "先完成 speech 正文，再填写其余规定字段，不要照抄示例文字、留空、"
-            "只写处理中占位语或未完成声明。是否继续调用工具仍由你根据现有证据和可用工具自主判断。"
-        )
 
     @staticmethod
     def _final_response_retry_feedback(
@@ -4892,72 +4899,95 @@ class AkaneMemoryEngine:
             return "speech_unusable"
         return "placeholder_reply"
 
-    def _repair_final_response_json(
+    def _build_final_response_request_kwargs(
         self,
         *,
-        provider_output_raw: str,
-        execution_target: Any = None,
-        chat_model_override: str = "",
-    ) -> Any:
-        """Ask the model to repair only the malformed final JSON.
+        generation_context: dict[str, Any],
+        request_projection_state: dict[str, Any] | None,
+        user_images: list[dict[str, Any]] | None,
+        chat_model_override: str,
+        execution_target: Any,
+        prompt_cache_key: str,
+        retry_note: str,
+        request_observer: Any,
+        recovery_mode: bool,
+        allow_tool_call: bool,
+    ) -> dict[str, Any]:
+        """Build one final-response provider request.
 
-        This request intentionally carries no conversation history, images,
-        tools or MemCore request observer.  The broken output already contains
-        the answer; replaying the full turn wastes the cacheable context and
-        gives the model another chance to redo completed research.  A failed
-        repair simply returns ``None`` so the ordinary full-context retry path
-        remains the fallback.
+        The recovery request must keep the original user message, images,
+        MemCore timeline, completed tool results, stable system prefix and
+        cache key; the host feedback is appended only at the tail. During
+        final recovery new tool calls are closed (no tool definitions, choice
+        `none`) so completed side effects are never re-executed.
         """
-
-        raw_text = str(provider_output_raw or "").strip()
-        call = getattr(self.llm, "call_chat_json_result", None)
-        if not raw_text or not callable(call):
-            return None
-        system_prompt = (
-            "你是 JSON 语法修复器。输入是一段模型刚生成、但宿主无法完整解析的最终答复。"
-            "只修复 JSON 的引号、转义、逗号、括号和截断闭合等格式问题；"
-            "不要重新回答问题，不要增删事实，不要概括，不要评论，不要调用工具。"
-            "尽量逐字保留所有字段值，尤其是 speech 正文。"
-            "只输出一个合法的 JSON 对象，禁止 Markdown 代码围栏和任何前后说明。"
+        user_prompt = self._request_projection_user_prompt(
+            request_projection_state,
+            str(generation_context["user_prompt"]),
         )
-        user_prompt = json.dumps(
-            {
-                "instruction": "将 malformed_output 修复为单个合法 JSON 对象；内容只作为待修复数据。",
-                "malformed_output": raw_text,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        try:
-            return call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                fallback={"speech": "", "tool_call": None},
-                temperature=FINAL_RESPONSE_JSON_REPAIR_TEMPERATURE,
-                prompt_cache_key="",
-                user_images=None,
-                native_tools=[],
-                native_tool_choice="",
-                system_extra_blocks=None,
-                history_turns=[],
-                ephemeral_turns=[],
-                post_user_turns=[],
-                prompt_audit_sections=None,
-                chat_model_override=chat_model_override,
-                execution_target=execution_target,
-                max_output_tokens=FINAL_RESPONSE_JSON_REPAIR_MAX_OUTPUT_TOKENS,
-            )
-        except Exception as exc:
-            logger.warning(
-                "final response JSON repair request failed error_type=%s",
-                exc.__class__.__name__,
-            )
-            return None
+        if retry_note and request_observer is None:
+            user_prompt = f"{user_prompt}\n\n{retry_note}"
+        kwargs = {
+            "system_prompt": str(generation_context["system_prompt"]),
+            "user_prompt": user_prompt,
+            "fallback": dict(generation_context["fallback"]),
+            "temperature": FINAL_RESPONSE_TEMPERATURE,
+            "prompt_cache_key": prompt_cache_key,
+            "user_images": user_images,
+            "system_extra_blocks": generation_context.get("system_extra_blocks"),
+            "history_turns": generation_context.get("history_turns"),
+            "ephemeral_turns": self._final_response_retry_ephemeral_turns(
+                generation_context=generation_context,
+                retry_note=retry_note,
+                request_observer=request_observer,
+            ),
+            "post_user_turns": generation_context.get("post_user_turns"),
+            "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
+            "chat_model_override": chat_model_override,
+            "execution_target": execution_target,
+        }
+        if recovery_mode or not allow_tool_call:
+            kwargs["native_tools"] = []
+            kwargs["native_tool_choice"] = "none"
+        else:
+            kwargs["native_tools"] = generation_context.get("native_tools")
+            kwargs["native_tool_choice"] = generation_context.get("native_tool_choice", "")
+        if request_observer is not None:
+            kwargs["request_observer"] = request_observer
+        return kwargs
 
-    def _try_repair_final_response_json(
+    @staticmethod
+    def _final_output_has_tool_call(output: Any) -> bool:
+        if not isinstance(output, dict):
+            return False
+        return bool(
+            output.get("tool_call")
+            or output.get(NATIVE_TOOL_CALL_FIELD)
+            or output.get(NATIVE_TOOL_CALLS_FIELD)
+        )
+
+    @staticmethod
+    def _raw_tool_call_is_pending(raw: str) -> bool:
+        """True when the wire text carries a non-null `tool_call` intent.
+
+        A final answer is allowed to omit the optional `tool_call` field or
+        write an explicit `tool_call: null`; only an explicit non-null tool
+        call blocks plain-text/parse recovery so a tool preface is never
+        mistaken for a final answer.
+        """
+        text = str(raw or "")
+        if re.search(r'["\']tool_call["\']\s*:\s*null\b', text, flags=re.IGNORECASE):
+            return False
+        return bool(re.search(r'["\']tool_call["\']\s*:', text, flags=re.IGNORECASE))
+
+    def _final_attempt_terminal_output(
         self,
         *,
+        normalized: dict[str, Any],
+        parse_fallback: bool,
         provider_output_raw: str,
+        allow_tool_call: bool,
+        recovery_mode: bool,
         generation_context: dict[str, Any],
         profile_user_id: str,
         session_id: str,
@@ -4965,30 +4995,100 @@ class AkaneMemoryEngine:
         resource_manifest: ResourceManifest | None,
         user_message: str,
         domain_profile_id: str,
-        execution_target: Any = None,
-        chat_model_override: str = "",
-        expected_speech: str = "",
-    ) -> tuple[dict[str, Any], str] | None:
-        repaired_call = self._repair_final_response_json(
+    ) -> dict[str, Any] | None:
+        """Decide the terminal state of one generation attempt.
+
+        Returns a deliverable normalized dict, or `None` when the attempt
+        must be retried with the same-context host feedback. Shared by the
+        streaming and non-streaming transports so both surfaces agree on the
+        terminal semantics:
+        - complete plain text without JSON structure and without a pending
+          tool call is wrapped directly as `speech` with default
+          presentation fields;
+        - a legal tool call continues the ordinary tool loop (never recovery);
+        - complete model speech is delivered (parse recovery included);
+        - during final recovery new tool calls are closed, so any tool request
+          in a recovery attempt counts as a failed attempt.
+        """
+        if not self._final_output_has_tool_call(normalized):
+            wrapped = self._wrap_plain_text_final_speech(
+                provider_output_raw=provider_output_raw,
+                parse_fallback=parse_fallback,
+                generation_context=generation_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+            )
+            if wrapped is not None:
+                return wrapped
+        if self._final_output_has_tool_call(normalized):
+            if not recovery_mode:
+                if provider_output_raw:
+                    normalized["_provider_output_raw"] = provider_output_raw
+                return normalized
+            # Recovery closes new tool calls; a tool request here is a failed
+            # attempt, never a reason to re-execute completed side effects.
+            return None
+        if recovery_mode and self._raw_tool_call_is_pending(provider_output_raw):
+            return None
+        if self._is_deliverable_parse_recovery(
+            normalized,
+            parse_fallback=parse_fallback,
             provider_output_raw=provider_output_raw,
-            execution_target=execution_target,
-            chat_model_override=chat_model_override,
-        )
-        if repaired_call is None:
-            return None
-        repaired_result = getattr(repaired_call, "parsed", None)
-        if isinstance(repaired_result, dict) and (
-            repaired_result.get("tool_call")
-            or repaired_result.get(NATIVE_TOOL_CALL_FIELD)
-            or repaired_result.get(NATIVE_TOOL_CALLS_FIELD)
+            allow_tool_call=allow_tool_call,
         ):
-            # A syntax repair must never turn a pending tool request into a
-            # final answer. The ordinary full-context tool loop remains the
-            # only authority allowed to execute that call.
-            self._record_final_response_json_repair_metric(success=False)
+            self._record_final_response_parse_recovery_metric()
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
+            return normalized
+        if not self._is_retryable_final_output(normalized):
+            # A complete speech extracted from malformed wire text is still a
+            # tool preface when the wire carries a non-null tool call. It must
+            # never be delivered as the final answer; same-context regeneration
+            # replaces it.
+            if parse_fallback and self._raw_tool_call_is_pending(provider_output_raw):
+                return None
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
+            return normalized
+        return None
+
+    def _wrap_plain_text_final_speech(
+        self,
+        *,
+        provider_output_raw: str,
+        parse_fallback: bool,
+        generation_context: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        client_context: ClientProtocolContext | None,
+        resource_manifest: ResourceManifest | None,
+        user_message: str,
+        domain_profile_id: str,
+    ) -> dict[str, Any] | None:
+        """Wrap complete plain-text provider output as the final speech.
+
+        Only when the wire text is complete ordinary text with no JSON
+        structure (and therefore no pending tool call) is the model's own text
+        packaged as `speech`; presentation fields use the defaults. Damaged
+        JSON fragments are never wrapped here — they go to same-context
+        regeneration instead.
+        """
+        raw = str(provider_output_raw or "").strip()
+        if not raw or not parse_fallback or _JSON_FRAGMENT_RE.search(raw):
             return None
-        repaired_normalized = self._normalize_final_output(
-            result=repaired_result,
+        text = raw
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3:
+                text = "\n".join(lines[1:-1]).strip()
+        if not text:
+            return None
+        wrapped = self._normalize_final_output(
+            result={"speech": text},
             visual_defaults=dict(generation_context["visual_defaults"]),
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -5000,36 +5100,153 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
         )
-        expected = str(expected_speech or "").strip()
-        if expected and str(repaired_normalized.get("speech") or "").strip() != expected:
-            # Streaming consumers may already have seen this exact speech.
-            # Accept a repair only when it is purely structural; changed text
-            # would duplicate or contradict the user-visible response.
-            self._record_final_response_json_repair_metric(success=False)
-            return None
-        self._attach_memory_annotation_truth(
-            repaired_normalized,
-            result=repaired_call,
-            raw_result=repaired_result,
-        )
-        self._attach_tool_execution_receipts(repaired_normalized, generation_context)
-        if self._is_retryable_final_output(
-            repaired_normalized,
-            parse_fallback=bool(getattr(repaired_call, "fallback_used", False)),
-        ):
-            self._record_final_response_json_repair_metric(success=False)
-            return None
-        self._record_final_response_json_repair_metric(success=True)
-        return repaired_normalized, str(getattr(repaired_call, "raw_text", "") or "")
+        wrapped["_provider_output_raw"] = raw
+        wrapped["_final_recovery"] = {"kind": "plain_text_wrap"}
+        return wrapped
 
-    def _record_final_response_json_repair_metric(self, *, success: bool) -> None:
+    def _recover_final_response_plain_text(
+        self,
+        *,
+        generation_context: dict[str, Any],
+        request_projection_state: dict[str, Any] | None,
+        user_images: list[dict[str, Any]] | None,
+        chat_model_override: str,
+        execution_target: Any,
+        request_observer: Any,
+        prompt_cache_key: str,
+        profile_user_id: str,
+        session_id: str,
+        client_context: ClientProtocolContext | None,
+        resource_manifest: ResourceManifest | None,
+        user_message: str,
+        domain_profile_id: str,
+    ) -> dict[str, Any] | None:
+        """One same-context plain-text generation after structured failures.
+
+        No JSON requirement and no tools; the model authors the text and the
+        host only wraps presentation defaults. Returns `None` when the
+        provider is unavailable, lacks this capability, or still produced no
+        usable text.
+        """
+        call = getattr(self.llm, "call_chat_text", None)
+        if not callable(call):
+            return None
+        note = FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK
+        user_prompt = self._request_projection_user_prompt(
+            request_projection_state,
+            str(generation_context["user_prompt"]),
+        )
+        if request_observer is None:
+            user_prompt = f"{user_prompt}\n\n{note}"
+        try:
+            result = call(
+                system_prompt=str(generation_context["system_prompt"]),
+                user_prompt=user_prompt,
+                temperature=FINAL_RESPONSE_TEMPERATURE,
+                prompt_cache_key=prompt_cache_key,
+                user_images=user_images,
+                system_extra_blocks=generation_context.get("system_extra_blocks"),
+                history_turns=generation_context.get("history_turns"),
+                ephemeral_turns=self._final_response_retry_ephemeral_turns(
+                    generation_context=generation_context,
+                    retry_note=note if request_observer is not None else "",
+                    request_observer=request_observer,
+                ),
+                post_user_turns=generation_context.get("post_user_turns"),
+                prompt_audit_sections=generation_context.get("prompt_audit_sections"),
+                chat_model_override=chat_model_override,
+                request_observer=request_observer,
+                execution_target=execution_target,
+            )
+        except Exception as exc:
+            logger.warning(
+                "final response plain text recovery failed error_type=%s",
+                exc.__class__.__name__,
+            )
+            return None
+        speech = self._extract_final_plain_text_speech(getattr(result, "text", ""))
+        if not speech:
+            return None
+        normalized = self._normalize_final_output(
+            result={"speech": speech},
+            visual_defaults=dict(generation_context["visual_defaults"]),
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            client_context=client_context,
+            resource_manifest=resource_manifest,
+            allow_tool_call=False,
+            debug_enabled=bool(generation_context["debug_enabled"]),
+            user_message=user_message,
+            domain_profile_id=domain_profile_id,
+            capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+        )
+        raw_text = str(getattr(result, "raw_text", "") or "") or speech
+        error = str(getattr(result, "error", "") or "").strip()
+        if raw_text:
+            normalized["_provider_output_raw"] = raw_text
+        normalized["_final_recovery"] = {
+            "kind": "plain_text",
+            **({"error": error} if error else {}),
+        }
+        self._record_final_plain_text_recovery_metric()
+        return normalized
+
+    @staticmethod
+    def _extract_final_plain_text_speech(text: Any) -> str:
+        """Best-effort speech extraction from the plain-text recovery response.
+
+        Accepts the whole text when it carries no JSON structure; a stray JSON
+        object with a usable `speech` string is also honored. Anything that
+        still looks like damaged JSON is rejected so the host never fabricates
+        or mangles an answer.
+        """
+        candidate = str(text or "").strip()
+        if not candidate:
+            return ""
+        if candidate.startswith("```") and candidate.endswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) >= 3:
+                candidate = "\n".join(lines[1:-1]).strip()
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            speech = str(parsed.get("speech") or "").strip()
+            if speech:
+                return speech
+        if _JSON_FRAGMENT_RE.search(candidate):
+            return ""
+        return candidate
+
+    def _record_final_plain_text_recovery_metric(self) -> None:
         record = getattr(self.llm, "record_metric", None)
         if callable(record):
-            record(
-                "chat_final_response_json_repair_successes"
-                if success
-                else "chat_final_response_json_repair_failures"
-            )
+            record("chat_final_plain_text_recoveries")
+
+    def _record_final_service_failure_metric(self) -> None:
+        record = getattr(self.llm, "record_metric", None)
+        if callable(record):
+            record("chat_final_service_failures")
+
+    @staticmethod
+    def _final_service_failure_output(*, reason: str = "") -> dict[str, Any]:
+        """Structured service-failure terminal state.
+
+        Only emitted when every provider call in the turn was unreachable;
+        never pretends the model answered.
+        """
+        return {
+            "emotion": "concerned",
+            "speech": "我这边服务暂时不可用，这次没能完成回复。请稍后再试一次。",
+            "tool_call": None,
+            "memory_metadata": {},
+            "_transient_final_failure": True,
+            "_service_failure": {
+                "status": "unavailable",
+                "reason": str(reason or "provider_unreachable")[:80],
+            },
+        }
 
     def _record_final_response_parse_recovery_metric(self) -> None:
         record = getattr(self.llm, "record_metric", None)
@@ -5059,19 +5276,15 @@ class AkaneMemoryEngine:
             return False
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
-        if self._is_retryable_final_output(output, parse_fallback=False):
+        if self._is_retryable_final_output(output):
             return False
         if not allow_tool_call:
             return True
-        raw = str(provider_output_raw or "")
         # A final answer is allowed to omit the optional ``tool_call`` field.
         # Only reject recovery when the wire text explicitly contains a
         # non-null tool call; requiring an explicit ``tool_call: null`` turned
         # ordinary short replies into false "undeliverable" failures.
-        tool_field = re.search(r'["\']tool_call["\']\s*:', raw, flags=re.IGNORECASE)
-        if tool_field is None:
-            return True
-        return bool(re.search(r'["\']tool_call["\']\s*:\s*null\b', raw, flags=re.IGNORECASE))
+        return not self._raw_tool_call_is_pending(provider_output_raw)
 
     @staticmethod
     def _log_final_response_retry(
@@ -5151,15 +5364,21 @@ class AkaneMemoryEngine:
         digest = hashlib.sha256(canonical.encode("utf-8", errors="ignore")).hexdigest()[:20]
         return f"chat:final:{digest}"
 
-    def _is_retryable_final_output(self, output: Any, *, parse_fallback: bool = False) -> bool:
+    def _is_retryable_final_output(self, output: Any) -> bool:
+        """True when the normalized output carries no deliverable final speech.
+
+        A parse fallback no longer forces a retry by itself: complete model
+        speech extracted from malformed wire text is deliverable. Pending tool
+        calls are not retryable here either — they continue the ordinary tool
+        loop (the recovery layer separately blocks tool calls during final
+        recovery).
+        """
         if not isinstance(output, dict):
             return True
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
         text = str(output.get("speech") or "").strip()
         if not text:
-            return True
-        if parse_fallback:
             return True
         compact = "".join(text.split())
         if len(compact) <= 160 and any(
@@ -5270,6 +5489,7 @@ class AkaneMemoryEngine:
         }
         max_attempts = self._final_response_max_attempts(generation_context)
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
+        original_allow_tool_call = bool(generation_context.get("allow_tool_call", allow_tool_call))
         normalized: dict[str, Any] = {}
         buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
@@ -5277,39 +5497,31 @@ class AkaneMemoryEngine:
         unrecovered_stream_error = ""
         unrecovered_stream_partial: dict[str, str] = {}
         provider_output_raw = ""
-        final_parse_fallback = False
         retry_feedback = ""
+        transport_failures = 0
+        attempts_made = 0
         for attempt in range(1, max_attempts + 1):
+            # Final recovery (attempt >= 2) reuses the identical user message,
+            # images, MemCore timeline, tool results, system prefix and cache
+            # key, adding the fixed host feedback once at the tail. New tool
+            # calls are closed during recovery so completed side effects are
+            # never re-executed.
+            recovery_mode = attempt > 1
+            attempts_made += 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = self._final_response_retry_note(attempt, retry_feedback)
-            retry_ephemeral_turns = self._final_response_retry_ephemeral_turns(
+            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if recovery_mode else ""
+            request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
+                request_projection_state=request_projection_state,
+                user_images=user_images,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                prompt_cache_key=prompt_cache_key,
                 retry_note=retry_note,
                 request_observer=request_observer,
+                recovery_mode=recovery_mode,
+                allow_tool_call=original_allow_tool_call,
             )
-            request_kwargs = {
-                "system_prompt": str(generation_context["system_prompt"]),
-                "user_prompt": self._request_projection_user_prompt(
-                    request_projection_state,
-                    str(generation_context["user_prompt"]),
-                )
-                + (retry_note if request_observer is None else ""),
-                "fallback": dict(generation_context["fallback"]),
-                "temperature": FINAL_RESPONSE_TEMPERATURE,
-                "prompt_cache_key": prompt_cache_key,
-                "user_images": user_images,
-                "native_tools": generation_context.get("native_tools"),
-                "native_tool_choice": generation_context.get("native_tool_choice", ""),
-                "system_extra_blocks": generation_context.get("system_extra_blocks"),
-                "history_turns": generation_context.get("history_turns"),
-                "ephemeral_turns": retry_ephemeral_turns,
-                "post_user_turns": generation_context.get("post_user_turns"),
-                "prompt_audit_sections": generation_context.get("prompt_audit_sections"),
-                "chat_model_override": chat_model_override,
-                "execution_target": execution_target,
-            }
-            if request_observer is not None:
-                request_kwargs["request_observer"] = request_observer
             iterator = self.llm.stream_chat_json(
                 **request_kwargs,
                 early_tool_call_validator=(
@@ -5325,7 +5537,7 @@ class AkaneMemoryEngine:
                         is not None
                     )
                 )
-                if bool(generation_context.get("allow_tool_call", allow_tool_call))
+                if (original_allow_tool_call and not recovery_mode)
                 else None,
             )
             current_events: list[dict[str, Any]] = []
@@ -5354,7 +5566,6 @@ class AkaneMemoryEngine:
                 metrics_before=metrics_before,
                 metrics_after=metrics_after,
             )
-            final_parse_fallback = parse_fallback
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
             provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
             if "request_observer_rejected:" in stream_error:
@@ -5362,6 +5573,7 @@ class AkaneMemoryEngine:
                     {"status": "failed", "reason": "request_projection_record_failed"}
                 )
             if stream_error:
+                transport_failures += 1
                 unrecovered_stream_error = stream_error
                 unrecovered_stream_partial = {
                     "emotion": str(getattr(stream_result, "latest_emotion", "") or ""),
@@ -5375,7 +5587,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 resource_manifest=resource_manifest,
                 user_message=user_message,
-                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                allow_tool_call=original_allow_tool_call and not recovery_mode,
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -5390,16 +5602,22 @@ class AkaneMemoryEngine:
             if native_preface_text:
                 normalized["_native_preface_text"] = native_preface_text
             buffered_events = current_events
-            if self._is_deliverable_parse_recovery(
-                normalized,
+            terminal_output = self._final_attempt_terminal_output(
+                normalized=normalized,
                 parse_fallback=parse_fallback,
                 provider_output_raw=provider_output_raw,
-                allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
-            ):
-                self._record_final_response_parse_recovery_metric()
-                final_parse_fallback = False
-                break
-            if not self._is_retryable_final_output(normalized, parse_fallback=parse_fallback):
+                allow_tool_call=original_allow_tool_call,
+                recovery_mode=recovery_mode,
+                generation_context=generation_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+            )
+            if terminal_output is not None:
+                normalized = terminal_output
                 break
             retry_feedback = self._final_response_retry_feedback(
                 raw_result=getattr(stream_result, "parsed", None),
@@ -5413,38 +5631,13 @@ class AkaneMemoryEngine:
                 raw_result=getattr(stream_result, "parsed", None),
                 provider_output_raw=provider_output_raw,
             )
-            repaired = (
-                self._try_repair_final_response_json(
-                    provider_output_raw=provider_output_raw,
-                    generation_context=generation_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    client_context=client_context,
-                    resource_manifest=resource_manifest,
-                    user_message=user_message,
-                    domain_profile_id=domain_profile_id,
-                    execution_target=execution_target,
-                    chat_model_override=chat_model_override,
-                    expected_speech=(str(normalized.get("speech") or "") if streamed_speech_to_user else ""),
-                )
-                if parse_fallback
-                else None
-            )
-            if repaired is not None:
-                normalized, provider_output_raw = repaired
-                final_parse_fallback = False
-                unrecovered_stream_error = ""
-                unrecovered_stream_partial = {}
-                break
-            # Once speech has reached the UI/TTS pipeline, retrying the entire
-            # response would expose duplicate or contradictory text. Keep the
-            # partial normalized result and mark it as transient below instead
-            # of starting another user-visible generation attempt.
-            if streamed_speech_to_user:
-                break
-            if parse_fallback:
-                break
             if stream_error:
+                if streamed_speech_to_user:
+                    # Speech already reached the user before the transport
+                    # died. Keep the delivered text authoritative; issuing a
+                    # duplicate non-stream request would expose contradictory
+                    # text.
+                    break
                 if hasattr(self.llm, "record_metric"):
                     self.llm.record_metric("chat_stream_nonstream_fallbacks")
                 fallback_metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -5470,7 +5663,6 @@ class AkaneMemoryEngine:
                     metrics_before=fallback_metrics_before,
                     metrics_after=fallback_metrics_after,
                 )
-                final_parse_fallback = fallback_parse_failure
                 fallback_transport_failure = int(fallback_metrics_after.get("errors", 0) or 0) > int(
                     fallback_metrics_before.get("errors", 0) or 0
                 )
@@ -5482,7 +5674,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=resource_manifest,
                     user_message=user_message,
-                    allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                    allow_tool_call=original_allow_tool_call and not recovery_mode,
                     debug_enabled=bool(generation_context["debug_enabled"]),
                     domain_profile_id=domain_profile_id,
                     capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -5492,10 +5684,7 @@ class AkaneMemoryEngine:
                     result=fallback_call_result,
                     raw_result=fallback_result,
                 )
-                if fallback_transport_failure and self._is_retryable_final_output(
-                    normalized,
-                    parse_fallback=fallback_parse_failure,
-                ):
+                if fallback_transport_failure and self._is_retryable_final_output(normalized):
                     if hasattr(self.llm, "record_metric"):
                         self.llm.record_metric("chat_stream_uncached_fallbacks")
                     uncached_request_kwargs = {**request_kwargs, "prompt_cache_key": ""}
@@ -5526,7 +5715,6 @@ class AkaneMemoryEngine:
                         metrics_before=uncached_metrics_before,
                         metrics_after=uncached_metrics_after,
                     )
-                    final_parse_fallback = fallback_parse_failure
                     normalized = self._normalize_final_output(
                         result=uncached_result,
                         visual_defaults=dict(generation_context["visual_defaults"]),
@@ -5535,7 +5723,7 @@ class AkaneMemoryEngine:
                         client_context=client_context,
                         resource_manifest=resource_manifest,
                         user_message=user_message,
-                        allow_tool_call=bool(generation_context.get("allow_tool_call", allow_tool_call)),
+                        allow_tool_call=original_allow_tool_call and not recovery_mode,
                         debug_enabled=bool(generation_context["debug_enabled"]),
                         domain_profile_id=domain_profile_id,
                         capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -5547,7 +5735,6 @@ class AkaneMemoryEngine:
                     )
                     if not self._is_retryable_final_output(
                         normalized,
-                        parse_fallback=fallback_parse_failure,
                     ) and hasattr(self.llm, "record_metric"):
                         self.llm.record_metric("chat_stream_uncached_recoveries")
                 self._attach_tool_execution_receipts(normalized, generation_context)
@@ -5555,10 +5742,7 @@ class AkaneMemoryEngine:
                     fallback_preface_text = str(normalized.get("speech") or "").strip()
                     if fallback_preface_text:
                         normalized["_native_preface_text"] = fallback_preface_text
-                if not self._is_retryable_final_output(
-                    normalized,
-                    parse_fallback=fallback_parse_failure,
-                ):
+                if not self._is_retryable_final_output(normalized):
                     unrecovered_stream_error = ""
                     unrecovered_stream_partial = {}
                     if hasattr(self.llm, "record_metric"):
@@ -5583,12 +5767,40 @@ class AkaneMemoryEngine:
                 "message": unrecovered_stream_error,
                 "partial": unrecovered_stream_partial,
             }
-        if self._is_retryable_final_output(
-            normalized,
-            parse_fallback=final_parse_fallback,
-        ):
+        if unrecovered_stream_error and streamed_speech_to_user:
+            # Transport died after real speech reached the user. Keep that
+            # truthful partial delivery authoritative; never append a recovery
+            # answer or the generic fallback over it.
             normalized["_transient_final_failure"] = True
             normalized.pop("_provider_output_raw", None)
+        elif self._final_output_has_tool_call(normalized):
+            # A legal tool call still continues the ordinary tool loop.
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
+        elif self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
+            recovered = self._recover_final_response_plain_text(
+                generation_context=generation_context,
+                request_projection_state=request_projection_state,
+                user_images=user_images,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                request_observer=request_observer,
+                prompt_cache_key=prompt_cache_key,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+            )
+            if recovered is not None:
+                normalized = recovered
+            elif transport_failures >= attempts_made and attempts_made > 0:
+                self._record_final_service_failure_metric()
+                normalized = self._final_service_failure_output(reason="provider_unreachable")
+            else:
+                normalized["_transient_final_failure"] = True
+                normalized.pop("_provider_output_raw", None)
         else:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw

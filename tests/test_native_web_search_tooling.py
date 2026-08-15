@@ -2292,7 +2292,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(captured["native_tools"], [schema])
         self.assertEqual(captured["native_tool_choice"], "auto")
 
-    def test_stream_final_response_does_not_retry_after_speech_is_delivered(self) -> None:
+    def test_stream_final_response_retries_placeholder_speech_for_the_real_answer(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         prompts = []
         metrics = []
@@ -2351,16 +2351,20 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             )
         )
 
+        # A streamed placeholder is not a deliverable final answer: the same
+        # turn keeps generating (same context, tail feedback) until real text
+        # arrives, so the user never has to re-ask.
         self.assertEqual(
             events,
             [
                 {"type": "turn_start", "speaker": "Akane"},
                 {"type": "speech_segment", "text": "我在认真听你说，要不要再多告诉我一点？"},
+                {"type": "speech_segment", "text": "这是重试后的完整答复。"},
             ],
         )
-        self.assertEqual(result["speech"], "我在认真听你说，要不要再多告诉我一点？")
-        self.assertEqual(len(prompts), 1)
-        self.assertEqual(metrics, [])
+        self.assertEqual(result["speech"], "这是重试后的完整答复。")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("chat_final_response_retries", metrics)
 
     def test_tool_working_stream_event_is_in_progress_only(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -2380,11 +2384,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             engine._is_retryable_final_output({"speech": "我在认真听你说，要不要再多告诉我一点？", "tool_call": None})
         )
         self.assertTrue(engine._is_retryable_final_output({"speech": "还没处理完", "tool_call": None}))
-        self.assertTrue(
-            engine._is_retryable_final_output(
-                {"speech": "已有完整答复。", "tool_call": None},
-                parse_fallback=True,
-            )
+        # A parse fallback no longer forces a retry by itself: complete model
+        # speech extracted from malformed wire text is deliverable. The wire
+        # tool-intent guard lives in the recovery layer, not here.
+        self.assertFalse(
+            engine._is_retryable_final_output({"speech": "已有完整答复。", "tool_call": None})
         )
         self.assertFalse(
             engine._is_retryable_final_output(

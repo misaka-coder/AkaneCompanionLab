@@ -2293,7 +2293,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
                 parsed = (
                     {"emotion": "normal"}
-                    if len(self.calls) == 1 or "缺少 `speech` 字段" not in retry_tail
+                    if len(self.calls) == 1 or "上一条输出没有形成可交付的最终文字。" not in retry_tail
                     else {"emotion": "normal", "speech": "完成"}
                 )
                 return SimpleNamespace(parsed=parsed, raw_text=json.dumps(parsed, ensure_ascii=False), error="")
@@ -2350,9 +2350,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
             [{"role": "user", "content": "本轮临时证据"}],
         )
         self.assertEqual(llm.calls[1]["ephemeral_turns"][0], llm.calls[0]["ephemeral_turns"][0])
-        self.assertIn("最终答复修复重试", llm.calls[1]["ephemeral_turns"][-1]["content"])
-        self.assertIn("缺少 `speech` 字段", llm.calls[1]["ephemeral_turns"][-1]["content"])
-        self.assertIn('"speech":"这里直接写本轮给用户的完整答复"', llm.calls[1]["ephemeral_turns"][-1]["content"])
+        tail_content = llm.calls[1]["ephemeral_turns"][-1]["content"]
+        self.assertIn("【宿主反馈】", tail_content)
+        self.assertIn("上一条输出没有形成可交付的最终文字。", tail_content)
+        self.assertIn("请基于同一用户请求和已经存在的工具结果重新生成最终答复。", tail_content)
+        self.assertIn("不要重复已完成的工具", tail_content)
+        self.assertIn("不要讨论这次格式错误", tail_content)
+        # The recovery feedback is request-scoped: it never replaces the frozen
+        # user message recorded in the MemCore projection.
+        self.assertEqual(llm.calls[0]["user_prompt"], llm.calls[1]["user_prompt"])
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
@@ -2580,7 +2586,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
                 parsed = (
                     {"emotion": "normal", "speech": ""}
-                    if len(self.calls) == 1 or "`speech` 是空字符串" not in retry_tail
+                    if len(self.calls) == 1 or "上一条输出没有形成可交付的最终文字。" not in retry_tail
                     else {"emotion": "normal", "speech": "完成"}
                 )
 
@@ -2657,11 +2663,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
             llm.calls[0]["ephemeral_turns"],
             [{"role": "user", "content": "本轮语音临时证据"}],
         )
-        self.assertIn(
-            "最终答复修复重试",
-            llm.calls[1]["ephemeral_turns"][-1]["content"],
-        )
-        self.assertIn("`speech` 是空字符串", llm.calls[1]["ephemeral_turns"][-1]["content"])
+        tail_content = llm.calls[1]["ephemeral_turns"][-1]["content"]
+        self.assertIn("【宿主反馈】", tail_content)
+        self.assertIn("上一条输出没有形成可交付的最终文字。", tail_content)
+        self.assertIn("不要重复已完成的工具", tail_content)
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
@@ -7956,6 +7961,7 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                     self.assertEqual(len(tool_payloads), 1)
                     content = str(tool_payloads[0].get("content") or "")
                     self.assertIn("[compact_reloadable]", content)
+                    self.assertIn("time: ", content)
                     self.assertIn("tool: exec_run", content)
                     self.assertIn("status: success", content)
                     self.assertIn("call_id: call-exec-long", content)

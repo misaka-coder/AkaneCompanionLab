@@ -229,6 +229,15 @@ class ChatJSONStreamResult:
     metadata_present: bool = False
 
 
+@dataclass
+class ChatTextResult:
+    """Raw model text from a plain-text completion (no JSON requirement)."""
+
+    text: str
+    raw_text: str
+    error: str = ""
+
+
 def _memory_metadata_truth(
     payload: Any,
     *,
@@ -983,6 +992,77 @@ class LLMRuntime:
             request_observer=request_observer,
             max_output_tokens=max_output_tokens,
         )
+
+    def call_chat_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.7,
+        prompt_cache_key: str = "",
+        user_images: list[dict[str, Any]] | None = None,
+        system_extra_blocks: list[str] | None = None,
+        history_turns: list[dict[str, Any]] | None = None,
+        ephemeral_turns: list[dict[str, Any]] | None = None,
+        post_user_turns: list[dict[str, Any]] | None = None,
+        prompt_audit_sections: list[dict[str, Any]] | None = None,
+        chat_model_override: str = "",
+        request_observer: Callable[[dict[str, Any]], Any] | None = None,
+        execution_target: ModelExecutionTarget | None = None,
+        max_output_tokens: int = 0,
+    ) -> ChatTextResult:
+        """Plain-text chat completion without JSON requirement and without tools.
+
+        Used only as the terminal final-response recovery: the model authors
+        the answer as ordinary text, the host wraps presentation defaults.
+        The request keeps the same stable prefix and cache key as the
+        structured attempts; the recovery instruction is carried in the tail
+        by the caller.
+        """
+        self._record_metric("chat_text_calls")
+        bundle = self._request_bundle(
+            execution_target=execution_target,
+            chat_model_override=chat_model_override,
+        )
+        try:
+            request_payload = self._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=False,
+                prompt_cache_key=prompt_cache_key,
+                user_images=user_images,
+                native_tools=[],
+                native_tool_choice="none",
+                system_extra_blocks=system_extra_blocks,
+                history_turns=history_turns,
+                ephemeral_turns=ephemeral_turns,
+                post_user_turns=post_user_turns,
+                prompt_audit_sections=prompt_audit_sections,
+                max_output_tokens=max_output_tokens,
+            )
+            self._observe_completion_request(
+                bundle=bundle,
+                payload=request_payload,
+                observer=request_observer,
+                persistent_turn_messages=self._persistent_turn_messages_from_payload(
+                    payload=request_payload,
+                    bundle=bundle,
+                    history_turns=history_turns,
+                    ephemeral_turns=ephemeral_turns,
+                    post_user_turns=post_user_turns,
+                ),
+            )
+            response = self._create_completion(bundle=bundle, payload=request_payload)
+            self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
+            self._note_truncation(response, phase="call_chat_text")
+            text = self._extract_text(response)
+            return ChatTextResult(text=text, raw_text=text)
+        except Exception as exc:
+            self._record_metric("errors")
+            self._capture_runtime_error(exc, phase="call_chat_text")
+            return ChatTextResult(text="", raw_text="", error=str(exc or "").strip())
 
     def chat_supports_native_tools(
         self,

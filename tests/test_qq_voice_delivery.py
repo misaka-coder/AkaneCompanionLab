@@ -674,6 +674,48 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertIn("没有形成可交付的文字结果", gateway.text_sends[0][0])
         self.assertTrue(result["final_failure_notice_result"]["ok"])
 
+    def test_same_turn_recovered_final_never_sends_the_failure_notice(self) -> None:
+        # A malformed final that recovers in the same turn must be delivered
+        # like any normal reply: QQ sends the recovered speech and never the
+        # "没有形成可交付的文字结果" terminal notice.
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "turn_start", "speaker": "Akane"}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "emotion": "normal",
+                        "speech": "重新生成后正常交付的答复。",
+                        "speech_segments": ["重新生成后正常交付的答复。"],
+                        "tool_events": [],
+                        "_final_recovery": {"kind": "plain_text"},
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_recovered",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "继续处理"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["重新生成后正常交付的答复。"]])
+        self.assertNotIn("没有形成可交付的文字结果", repr(gateway.text_sends))
+        self.assertFalse(bool(result.get("send_result", {}).get("final_failure_notice")))
+
     def test_tool_preface_without_final_frame_is_not_treated_as_completed_reply(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
