@@ -191,6 +191,214 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertIn("不要讨论这次格式错误", second["user_prompt"])
         self.assertIn("chat_final_response_retries", llm.metrics)
 
+    def test_streamed_speech_sentence_is_not_repeated_during_same_turn_recovery(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    yield {"type": "speech_chunk", "text": "第一句已经说完。"}
+                    yield {"type": "speech_segment", "index": 0, "text": "第一句已经说完。"}
+                    return SimpleNamespace(
+                        parsed={"speech": "第一句已经说完。"},
+                        raw_text='{"speech":"第一句已经说完。","tool_call":{"type":"pending"',
+                        error="",
+                        fallback_used=True,
+                        latest_emotion="",
+                        latest_speech="第一句已经说完。",
+                        latest_reply_medium="",
+                        native_preface_text="",
+                    )
+                yield {"type": "speech_chunk", "text": "这里补上剩余结论。"}
+                yield {"type": "speech_segment", "index": 0, "text": "这里补上剩余结论。"}
+                return SimpleNamespace(
+                    parsed={"speech": "这里补上剩余结论。", "tool_call": None},
+                    raw_text='{"speech":"这里补上剩余结论。","tool_call":null}',
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="这里补上剩余结论。",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+        llm = FakeLLM()
+        engine = self._engine(llm)
+        events, result = self._run_stream(engine)
+
+        delivered = [event["text"] for event in events if event.get("type") == "speech_segment"]
+        self.assertEqual(delivered, ["第一句已经说完。", "这里补上剩余结论。"])
+        self.assertIn("第一句已经说完。", llm.calls[1]["user_prompt"])
+        self.assertIn("从 speech 中解析出的完整句子", llm.calls[1]["user_prompt"])
+        self.assertIn("用户可能已经看到或听到", llm.calls[1]["user_prompt"])
+        self.assertEqual(result["speech"], "第一句已经说完。\n这里补上剩余结论。")
+
+    def test_recovery_suppresses_only_replayed_prefix_and_keeps_intentional_repeat(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    yield {"type": "speech_chunk", "text": "好。"}
+                    yield {"type": "speech_segment", "index": 0, "text": "好。"}
+                    return SimpleNamespace(
+                        parsed={"speech": "好。"},
+                        raw_text='{"speech":"好。","tool_call":{"type":"pending"',
+                        error="",
+                        fallback_used=True,
+                        latest_emotion="",
+                        latest_speech="好。",
+                        latest_reply_medium="",
+                        native_preface_text="",
+                    )
+                # The recovery provider repeats the already-emitted prefix,
+                # then intentionally uses the same sentence once more.
+                yield {"type": "speech_chunk", "text": "好。好。结束。"}
+                yield {"type": "speech_segment", "index": 0, "text": "好。"}
+                yield {"type": "speech_segment", "index": 1, "text": "好。"}
+                yield {"type": "speech_segment", "index": 2, "text": "结束。"}
+                return SimpleNamespace(
+                    parsed={"speech": "好。好。结束。", "tool_call": None},
+                    raw_text='{"speech":"好。好。结束。","tool_call":null}',
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="好。好。结束。",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+        events, result = self._run_stream(self._engine(FakeLLM()))
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["好。", "好。", "结束。"],
+        )
+        self.assertEqual(result["speech"], "好。好。结束。")
+
+    def test_transport_error_after_complete_sentence_recovers_only_missing_tail(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    yield {"type": "speech_chunk", "text": "先给你第一句。"}
+                    yield {"type": "speech_segment", "index": 0, "text": "先给你第一句。"}
+                    return SimpleNamespace(
+                        parsed={"speech": "先给你第一句。"},
+                        raw_text='{"speech":"先给你第一句。',
+                        error="upstream connection closed",
+                        fallback_used=True,
+                        latest_emotion="",
+                        latest_speech="先给你第一句。",
+                        latest_reply_medium="",
+                        native_preface_text="",
+                    )
+                self.assert_recovery_prompt(kwargs["user_prompt"])
+                yield {"type": "speech_chunk", "text": "这里是剩余结论。"}
+                yield {"type": "speech_segment", "index": 0, "text": "这里是剩余结论。"}
+                return SimpleNamespace(
+                    parsed={"speech": "这里是剩余结论。", "tool_call": None},
+                    raw_text='{"speech":"这里是剩余结论。","tool_call":null}',
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="这里是剩余结论。",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            @staticmethod
+            def assert_recovery_prompt(prompt: str) -> None:
+                if "先给你第一句。" not in prompt:
+                    raise AssertionError(prompt)
+
+        events, result = self._run_stream(self._engine(FakeLLM()))
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["先给你第一句。", "这里是剩余结论。"],
+        )
+        self.assertFalse(any(event.get("type") == "stream_error" for event in events))
+        self.assertEqual(result["speech"], "先给你第一句。\n这里是剩余结论。")
+
+    def test_repeated_stream_transport_errors_still_reach_plain_text_tail_recovery(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.stream_calls = 0
+                self.text_calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **_kwargs):
+                self.stream_calls += 1
+                yield {"type": "speech_chunk", "text": "第一句。"}
+                yield {"type": "speech_segment", "index": 0, "text": "第一句。"}
+                return SimpleNamespace(
+                    parsed={"speech": "第一句。"},
+                    raw_text='{"speech":"第一句。',
+                    error="upstream connection closed",
+                    fallback_used=True,
+                    latest_emotion="",
+                    latest_speech="第一句。",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            def call_chat_text(self, **kwargs):
+                self.text_calls += 1
+                if "第一句。" not in kwargs["user_prompt"]:
+                    raise AssertionError(kwargs["user_prompt"])
+                return ChatTextResult(text="这里补上最后结论。", raw_text="这里补上最后结论。")
+
+        llm = FakeLLM()
+        events, result = self._run_stream(self._engine(llm))
+
+        self.assertEqual(llm.stream_calls, 3)
+        self.assertEqual(llm.text_calls, 1)
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["第一句。"],
+        )
+        self.assertFalse(any(event.get("type") == "stream_error" for event in events))
+        self.assertEqual(result["speech"], "第一句。\n这里补上最后结论。")
+
     # --- Phase 5 item 2: three damaged JSON -> plain-text recovery ---
 
     def test_three_damaged_json_then_plain_text_recovery(self) -> None:

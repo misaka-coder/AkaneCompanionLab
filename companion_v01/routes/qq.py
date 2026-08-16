@@ -700,47 +700,59 @@ def _qq_sender_role(event: object) -> str:
 
 
 def _filter_unsent_reply_messages(messages: list[str], sent_messages: list[str]) -> list[str]:
-    sent_normalized = {_normalize_reply_text(item) for item in sent_messages if _normalize_reply_text(item)}
-    sent_joined = "".join(str(item or "").strip() for item in sent_messages if str(item or "").strip()).strip()
-    sent_joined_normalized = _normalize_reply_text(sent_joined)
-    sent_canonical_prefix = "".join(_canonical_reply_text(item) for item in sent_messages)
+    remaining_sent = [str(item or "").strip() for item in sent_messages if str(item or "").strip()]
     unsent: list[str] = []
     for message in messages:
         text = str(message or "").strip()
         if not text:
             continue
+        normalized = _normalize_reply_text(text)
+        exact_index = next(
+            (
+                index
+                for index, sent_item in enumerate(remaining_sent)
+                if normalized and normalized == _normalize_reply_text(sent_item)
+            ),
+            -1,
+        )
+        if exact_index >= 0:
+            remaining_sent.pop(exact_index)
+            continue
+
+        sent_canonical_prefix = "".join(_canonical_reply_text(item) for item in remaining_sent)
         canonical = _canonical_reply_text(text)
         if sent_canonical_prefix and canonical.startswith(sent_canonical_prefix):
-            if canonical == sent_canonical_prefix:
-                continue
             text = _strip_canonical_prefix(text, sent_canonical_prefix)
+            remaining_sent = []
             if not text:
                 continue
-        normalized = _normalize_reply_text(text)
-        if normalized and normalized in sent_normalized:
-            continue
-        if sent_joined and text.startswith(sent_joined):
-            text = text[len(sent_joined) :].strip()
             normalized = _normalize_reply_text(text)
-            if not normalized:
-                continue
-        elif sent_joined_normalized and normalized == sent_joined_normalized:
-            continue
+
         trimmed_by_sent_prefix = False
-        for sent_item in sent_messages:
-            sent_text = str(sent_item or "").strip()
-            if sent_text and text.startswith(sent_text):
-                text = text[len(sent_text) :].strip()
-                normalized = _normalize_reply_text(text)
-                trimmed_by_sent_prefix = True
+        while remaining_sent:
+            prefix_index = next(
+                (
+                    index
+                    for index, sent_item in enumerate(remaining_sent)
+                    if str(sent_item or "").strip() and text.startswith(str(sent_item or "").strip())
+                ),
+                -1,
+            )
+            if prefix_index < 0:
                 break
-        if trimmed_by_sent_prefix:
-            if not normalized:
-                continue
-            generic_tail = re.sub(r"[\s，。！？!?~～、,.]+", "", text)
-            if len(generic_tail) < 10:
-                continue
-        if any(_is_similar_reply(text, sent_item) for sent_item in sent_messages):
+            sent_text = remaining_sent.pop(prefix_index)
+            text = text[len(sent_text) :].strip()
+            normalized = _normalize_reply_text(text)
+            trimmed_by_sent_prefix = True
+            if not text:
+                break
+        if trimmed_by_sent_prefix and not normalized:
+            continue
+        if any(_is_similar_reply(text, sent_item) for sent_item in remaining_sent):
+            similar_index = next(
+                index for index, sent_item in enumerate(remaining_sent) if _is_similar_reply(text, sent_item)
+            )
+            remaining_sent.pop(similar_index)
             continue
         unsent.append(text)
     return unsent
@@ -759,13 +771,12 @@ def _send_pending_stage_messages(
         if len(streamed_messages) >= max_streamed:
             break
         normalized = _normalize_reply_text(text)
-        if not normalized or normalized in {_normalize_reply_text(item) for item in streamed_messages}:
-            continue
-        if any(_is_similar_reply(text, sent_item) for sent_item in streamed_messages):
+        if not normalized:
             continue
         result = qq_gateway.send_reply(context, text[:1800].strip())
-        streamed_messages.append(text)
         stream_send_results.append(result)
+        if bool(result.get("ok")):
+            streamed_messages.append(text)
     return []
 
 
@@ -1214,6 +1225,8 @@ def _process_qq_turn_streaming(
     frame: dict[str, Any] = {}
     final_frame_received = False
     tool_preface_delivered = False
+    final_streamed_text_delivered = False
+    current_stage_streamed_count = 0
     delivery_hint = ""
     active_reply_mode = (
         _normalize_reply_medium(getattr(context, "reply_mode", ""))
@@ -1245,13 +1258,32 @@ def _process_qq_turn_streaming(
             text = str(stream_event.get("text") or "").strip()
             if not text:
                 continue
+            if not _streaming_allows_tool_preface(active_reply_mode, delivery_hint):
+                continue
             normalized = _normalize_reply_text(text)
             if not normalized or normalized in {_normalize_reply_text(item) for item in pending_stage_messages}:
                 continue
             pending_stage_messages.append(text)
+            streamed_before = len(streamed_messages)
+            pending_stage_messages = _send_pending_stage_messages(
+                qq_gateway=qq_gateway,
+                context=context,
+                pending_messages=pending_stage_messages,
+                streamed_messages=streamed_messages,
+                stream_send_results=stream_send_results,
+                max_streamed=max_streamed,
+            )
+            current_stage_streamed_count += max(0, len(streamed_messages) - streamed_before)
             continue
-        if event_type == "assistant_stage_decision" and pending_stage_messages:
+        if event_type == "assistant_stage_decision":
             has_tool_call = bool(stream_event.get("has_tool_call"))
+            if has_tool_call and current_stage_streamed_count:
+                tool_preface_delivered = True
+            elif not has_tool_call and current_stage_streamed_count:
+                final_streamed_text_delivered = True
+            current_stage_streamed_count = 0
+            if not pending_stage_messages:
+                continue
             text_allowed = (
                 _streaming_allows_tool_preface(active_reply_mode, delivery_hint)
                 if has_tool_call
@@ -1260,13 +1292,6 @@ def _process_qq_turn_streaming(
             if not text_allowed:
                 if has_tool_call:
                     pending_stage_messages = []
-                continue
-            # A tool preface must be delivered before the tool runs.  A final
-            # no-tool response has no such latency boundary: its authoritative
-            # final_ui frame follows immediately and may correct provisional
-            # segmentation produced from arbitrarily small provider deltas.
-            # Do not irreversibly send those provisional pieces to QQ.
-            if not has_tool_call:
                 continue
             streamed_before = len(streamed_messages)
             pending_stage_messages = _send_pending_stage_messages(
@@ -1388,8 +1413,8 @@ def _process_qq_turn_streaming(
     if streamed_messages and bool(frame.get("_transient_final_failure")):
         # A complete speech field may already have reached QQ before a malformed
         # JSON tail forces the final frame to its generic persona fallback. The
-        # delivered speech is authoritative; never append that fallback as a
-        # second, contradictory bubble.
+        # model's speech remains the sole body authority; never append that
+        # host fallback as a second, contradictory bubble.
         unsent_reply_messages = []
     else:
         unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
@@ -1416,6 +1441,7 @@ def _process_qq_turn_streaming(
         or (
             bool(frame.get("_transient_final_failure"))
             and tool_preface_delivered
+            and not final_streamed_text_delivered
             and not visible_file_delivered
         )
     ):

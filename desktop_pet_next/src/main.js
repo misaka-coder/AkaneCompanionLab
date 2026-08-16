@@ -624,6 +624,10 @@ let bubbleTimer = 0;
 let bubbleKind = "none";
 let replyDisplayActive = false;
 let segmentTimer = 0;
+let streamedReplyTurnToken = 0;
+let streamedReplySegments = [];
+let streamedReplySegmentCounts = new Map();
+let streamedReplySegmentActive = false;
 let lastTurnSignature = "";
 let lastTurnTextKey = "";
 let lastActivityActionSignature = "";
@@ -6790,6 +6794,7 @@ function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}
   lastTurnTextKey = "";
   lastActivityActionSignature = "";
   resetStreamingTtsState();
+  resetStreamedReplySegments();
   desktopFileDeliveryHandled.clear();
   window.clearTimeout(bubbleTimer);
   window.clearTimeout(segmentTimer);
@@ -7195,6 +7200,7 @@ async function processThinkStream(stream, turnToken) {
   let rendered = false;
   let streamErrored = false;
   let streamErrorMessage = "";
+  resetStreamedReplySegments(turnToken);
 
   for await (const event of stream) {
     if (!isTurnActive(turnToken)) return false;
@@ -7218,7 +7224,10 @@ async function processThinkStream(stream, turnToken) {
     } else if (type === "speech_segment") {
       const text = String(event?.text || "").trim();
       if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
+      if (queueStreamedReplySegment(text, turnToken)) rendered = true;
       queueStreamedTtsSegment(text, turnToken, event?.index);
+    } else if (type === "speech_reset") {
+      partialSpeech = String(event?.speech || "");
     } else if (type === "file_ready" || type === "generated_file_ready") {
       void handleDesktopFileDeliveryEvent(event);
     } else if (type === "browser_open_requested") {
@@ -7227,7 +7236,18 @@ async function processThinkStream(stream, turnToken) {
       showToolWorking(event, { hasShownReply: rendered });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
-      if (renderPayload(payload)) {
+      const canonicalSpeech = String(payload?.speech || payload?.text || "").trim();
+      const finalSegments = canonicalSpeech
+        ? splitSpeechText(canonicalSpeech)
+        : normalizeSegments(payload?.speech_segments || payload?.segments);
+      for (const segment of missingFinalReplySegments(finalSegments)) {
+        if (queueStreamedReplySegment(segment, turnToken)) {
+          rendered = true;
+          queueStreamedTtsSegment(segment, turnToken);
+        }
+      }
+      const hasStreamedReply = streamedReplySegmentCounts.size > 0;
+      if (renderPayload(payload, { suppressSpeech: hasStreamedReply })) {
         rendered = true;
       }
     } else if (type === "npc_turn") {
@@ -7265,7 +7285,13 @@ async function processThinkStream(stream, turnToken) {
 
 function renderPayload(
   payload,
-  { source = "live", speaking = source === "live", persistEmotion = true, force = false } = {}
+  {
+    source = "live",
+    speaking = source === "live",
+    persistEmotion = true,
+    force = false,
+    suppressSpeech = false
+  } = {}
 ) {
   if (!payload || typeof payload !== "object") return false;
   applyPayloadCareSnapshot(payload, { source });
@@ -7273,8 +7299,12 @@ function renderPayload(
   applyPayloadActivity(payload);
   applyPayloadFileDeliveries(payload);
   applyPayloadBrowserEvents(payload);
+  if (suppressSpeech) return false;
 
-  const segments = normalizeSegments(payload.speech_segments || payload.segments);
+  const speech = String(payload.speech || payload.text || "").trim();
+  const segments = speech
+    ? splitSpeechText(speech)
+    : normalizeSegments(payload.speech_segments || payload.segments);
   if (segments.length > 0) {
     const signature = `segments:${segments.join("\u241e")}`;
     const textKey = buildSpeechTextKey(segments.join(""));
@@ -7287,7 +7317,6 @@ function renderPayload(
     return true;
   }
 
-  const speech = String(payload.speech || payload.text || "").trim();
   if (!speech) return false;
   const clientSegments = splitSpeechText(speech);
   const displaySegments = clientSegments.length > 1 ? clientSegments : [];
@@ -7849,6 +7878,68 @@ function showSpeechSegments(segments, { speaking = true } = {}) {
   };
 
   showNext();
+}
+
+function resetStreamedReplySegments(turnToken = 0) {
+  window.clearTimeout(segmentTimer);
+  segmentTimer = 0;
+  streamedReplyTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  streamedReplySegments = [];
+  streamedReplySegmentCounts = new Map();
+  streamedReplySegmentActive = false;
+}
+
+function queueStreamedReplySegment(text, turnToken) {
+  // This is a delivery queue derived from the model's canonical `speech`
+  // field. It must never become a second body-authoring surface.
+  const normalized = String(text || "").trim();
+  const normalizedTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  if (!normalized || !isTurnActive(normalizedTurnToken)) return false;
+  if (streamedReplyTurnToken !== normalizedTurnToken) resetStreamedReplySegments(normalizedTurnToken);
+  const textKey = buildSpeechTextKey(normalized);
+  if (!textKey) return false;
+  streamedReplySegmentCounts.set(textKey, (streamedReplySegmentCounts.get(textKey) || 0) + 1);
+  streamedReplySegments.push(normalized);
+  if (!streamedReplySegmentActive) showNextStreamedReplySegment(normalizedTurnToken);
+  return true;
+}
+
+function missingFinalReplySegments(segments) {
+  const delivered = new Map(streamedReplySegmentCounts);
+  const missing = [];
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    const text = String(segment || "").trim();
+    const textKey = buildSpeechTextKey(text);
+    if (!textKey) continue;
+    const count = delivered.get(textKey) || 0;
+    if (count > 0) {
+      delivered.set(textKey, count - 1);
+      continue;
+    }
+    missing.push(text);
+  }
+  return missing;
+}
+
+function showNextStreamedReplySegment(turnToken) {
+  if (!isTurnActive(turnToken) || streamedReplyTurnToken !== turnToken) return;
+  const text = streamedReplySegments.shift();
+  if (!text) {
+    streamedReplySegmentActive = false;
+    return;
+  }
+  streamedReplySegmentActive = true;
+  window.clearTimeout(bubbleTimer);
+  displayReplyBubbleText(text, { speaking: true });
+  segmentTimer = window.setTimeout(() => {
+    segmentTimer = 0;
+    if (streamedReplySegments.length) {
+      showNextStreamedReplySegment(turnToken);
+      return;
+    }
+    streamedReplySegmentActive = false;
+    scheduleBubbleReset(Math.max(text.length, 4), bubbleToken);
+  }, getSegmentDisplayDelay(text));
 }
 
 function displayReplyBubbleText(text, { speaking = true } = {}) {

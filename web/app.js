@@ -2438,9 +2438,25 @@ async function handleThinkStreamEvent(event, streamState = null) {
     }
     dialogueTextEl.classList.remove("is-pending");
     appendStreamedDialogueText(text);
-    if (state.streamingTtsEnabled) {
-      appendSpeechForTts(text);
+    return null;
+  }
+
+  if (eventType === "speech_segment") {
+    const text = String(event?.text || "").trim();
+    if (text && streamState) {
+      streamState.hadPartialSpeech = true;
     }
+    if (text && state.streamingTtsEnabled) {
+      enqueueSpeechSegment(text);
+    }
+    return null;
+  }
+
+  if (eventType === "speech_reset") {
+    const committed = String(event?.speech || "");
+    resetStreamedDialogueText();
+    if (committed) appendStreamedDialogueText(committed);
+    if (streamState) streamState.hadPartialSpeech = Boolean(committed);
     return null;
   }
 

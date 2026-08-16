@@ -3964,7 +3964,13 @@ class AkaneMemoryEngine:
                 break
             if streaming:
                 native_preface_text = str(final_output.pop("_native_preface_text", "") or "").strip()
-                if native_preface_text and tool_calls and self._tool_call_allows_assistant_preface(tool_calls[0]):
+                native_preface_streamed = bool(final_output.pop("_native_preface_streamed", False))
+                if (
+                    native_preface_text
+                    and not native_preface_streamed
+                    and tool_calls
+                    and self._tool_call_allows_assistant_preface(tool_calls[0])
+                ):
                     yield {"type": "speech_segment", "index": 0, "text": native_preface_text}
                 yield {
                     "type": "assistant_stage_decision",
@@ -5120,6 +5126,7 @@ class AkaneMemoryEngine:
         resource_manifest: ResourceManifest | None,
         user_message: str,
         domain_profile_id: str,
+        delivered_speech_segments: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """One same-context plain-text generation after structured failures.
 
@@ -5131,7 +5138,10 @@ class AkaneMemoryEngine:
         call = getattr(self.llm, "call_chat_text", None)
         if not callable(call):
             return None
-        note = FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK
+        note = self._stream_final_response_recovery_feedback(
+            delivered_speech_segments,
+            plain_text=True,
+        )
         user_prompt = self._request_projection_user_prompt(
             request_projection_state,
             str(generation_context["user_prompt"]),
@@ -5189,6 +5199,59 @@ class AkaneMemoryEngine:
             **({"error": error} if error else {}),
         }
         self._record_final_plain_text_recovery_metric()
+        return normalized
+
+    @staticmethod
+    def _stream_final_response_recovery_feedback(
+        delivered_segments: list[str] | None,
+        *,
+        plain_text: bool = False,
+    ) -> str:
+        segments = [str(item or "").strip() for item in (delivered_segments or []) if str(item or "").strip()]
+        if not segments:
+            return FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK if plain_text else FINAL_RESPONSE_RECOVERY_FEEDBACK
+        delivered = "\n".join(f"- {item}" for item in segments)
+        feedback = (
+            "【宿主反馈】\n"
+            "上一条输出没有形成完整终稿，但以下从 speech 中解析出的完整句子已经提交到本轮交付通道，"
+            "用户可能已经看到或听到，不能安全撤回。"
+            "不要重复、改写或否认它们；只补充尚未交付的剩余答复。\n"
+            "请基于同一用户请求和已经存在的工具结果继续；不要重复已完成的工具，"
+            "不要讨论这次格式或传输错误。\n"
+            f"【已交付句子】\n{delivered}"
+        )
+        if plain_text:
+            feedback += "\n本次请直接输出纯文本剩余答复：不要输出 JSON，不要调用任何工具。"
+        return feedback
+
+    def _merge_streamed_speech_into_final(
+        self,
+        output: dict[str, Any],
+        *,
+        delivered_segments: list[str],
+    ) -> dict[str, Any]:
+        """Rebuild canonical speech from its delivered prefix and recovery tail.
+
+        ``delivered_segments`` are parser-derived boundaries from the model's
+        earlier ``speech`` value, not an independent content authority.
+        """
+        segments = [str(item or "").strip() for item in delivered_segments if str(item or "").strip()]
+        if not segments:
+            return output
+        normalized = dict(output or {})
+        final_speech = str(normalized.get("speech") or "").strip()
+        delivered_text = "\n".join(segments)
+        compact_delivered = "".join(delivered_text.split())
+        compact_final = "".join(final_speech.split())
+        if compact_delivered and compact_final.startswith(compact_delivered):
+            return normalized
+        merged_text = "\n".join([delivered_text, final_speech] if final_speech else [delivered_text])
+        speech, speech_segments = self._normalize_speech_payload(
+            speech=merged_text,
+            fallback_to_default=False,
+        )
+        normalized["speech"] = speech
+        normalized["speech_segments"] = speech_segments
         return normalized
 
     @staticmethod
@@ -5491,9 +5554,9 @@ class AkaneMemoryEngine:
         prompt_cache_key = self._final_prompt_cache_key(generation_context)
         original_allow_tool_call = bool(generation_context.get("allow_tool_call", allow_tool_call))
         normalized: dict[str, Any] = {}
-        buffered_events: list[dict[str, Any]] = []
         stream_result: Any = None
         streamed_speech_to_user = False
+        delivered_speech_segments: list[str] = []
         unrecovered_stream_error = ""
         unrecovered_stream_partial: dict[str, str] = {}
         provider_output_raw = ""
@@ -5509,7 +5572,15 @@ class AkaneMemoryEngine:
             recovery_mode = attempt > 1
             attempts_made += 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if recovery_mode else ""
+            delivered_before_attempt = list(delivered_speech_segments)
+            recovery_prefix_keys = ["".join(item.split()) for item in delivered_before_attempt]
+            recovery_prefix_index = 0
+            recovery_prefix_matching = recovery_mode and bool(recovery_prefix_keys)
+            retry_note = (
+                self._stream_final_response_recovery_feedback(delivered_before_attempt)
+                if recovery_mode
+                else ""
+            )
             request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -5540,7 +5611,7 @@ class AkaneMemoryEngine:
                 if (original_allow_tool_call and not recovery_mode)
                 else None,
             )
-            current_events: list[dict[str, Any]] = []
+            attempt_had_speech_chunk = False
             while True:
                 try:
                     event = next(iterator)
@@ -5548,18 +5619,38 @@ class AkaneMemoryEngine:
                     stream_result = stop.value
                     break
                 if isinstance(event, dict):
-                    current_events.append(event)
                     # The LLM runtime parses top-level JSON fields incrementally
                     # and emits speech/ui events before the final JSON object is
                     # complete. Forward those events immediately so the HTTP
                     # NDJSON stream is genuinely user-visible streaming. We
                     # still retain the events for the final normalized result;
                     # persistence and retry decisions remain completion-bound.
-                    yield event
-                    if str(event.get("type") or "") in {"speech_chunk", "speech_segment"} and str(
-                        event.get("text") or ""
-                    ):
+                    event_type = str(event.get("type") or "")
+                    if event_type == "speech_chunk" and str(event.get("text") or ""):
+                        attempt_had_speech_chunk = True
+                    if event_type == "speech_segment":
+                        segment_text = str(event.get("text") or "").strip()
+                        segment_key = "".join(segment_text.split())
+                        if not segment_text or self._is_retryable_final_output(
+                            {"speech": segment_text, "tool_call": None}
+                        ):
+                            continue
+                        if recovery_prefix_matching:
+                            if (
+                                recovery_prefix_index < len(recovery_prefix_keys)
+                                and segment_key == recovery_prefix_keys[recovery_prefix_index]
+                            ):
+                                recovery_prefix_index += 1
+                                if recovery_prefix_index >= len(recovery_prefix_keys):
+                                    recovery_prefix_matching = False
+                                continue
+                            # Only an exact leading replay is suppressed. Once
+                            # recovery diverges into its new tail, repeated text
+                            # is legitimate speech and must remain visible.
+                            recovery_prefix_matching = False
+                        delivered_speech_segments.append(segment_text)
                         streamed_speech_to_user = True
+                    yield event
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = self._llm_result_used_fallback(
                 stream_result,
@@ -5601,23 +5692,35 @@ class AkaneMemoryEngine:
             native_preface_text = str(getattr(stream_result, "native_preface_text", "") or "").strip()
             if native_preface_text:
                 normalized["_native_preface_text"] = native_preface_text
-            buffered_events = current_events
-            terminal_output = self._final_attempt_terminal_output(
-                normalized=normalized,
-                parse_fallback=parse_fallback,
-                provider_output_raw=provider_output_raw,
-                allow_tool_call=original_allow_tool_call,
-                recovery_mode=recovery_mode,
-                generation_context=generation_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                client_context=client_context,
-                resource_manifest=resource_manifest,
-                user_message=user_message,
-                domain_profile_id=domain_profile_id,
+            terminal_output = (
+                None
+                if stream_error
+                else self._final_attempt_terminal_output(
+                    normalized=normalized,
+                    parse_fallback=parse_fallback,
+                    provider_output_raw=provider_output_raw,
+                    allow_tool_call=original_allow_tool_call,
+                    recovery_mode=recovery_mode,
+                    generation_context=generation_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    client_context=client_context,
+                    resource_manifest=resource_manifest,
+                    user_message=user_message,
+                    domain_profile_id=domain_profile_id,
+                )
             )
             if terminal_output is not None:
-                normalized = terminal_output
+                normalized = self._merge_streamed_speech_into_final(
+                    terminal_output,
+                    delivered_segments=delivered_before_attempt if recovery_mode else [],
+                )
+                if self._final_output_has_tool_call(normalized) and len(delivered_speech_segments) > len(
+                    delivered_before_attempt
+                ):
+                    normalized["_native_preface_streamed"] = True
+                unrecovered_stream_error = ""
+                unrecovered_stream_partial = {}
                 break
             retry_feedback = self._final_response_retry_feedback(
                 raw_result=getattr(stream_result, "parsed", None),
@@ -5631,12 +5734,22 @@ class AkaneMemoryEngine:
                 raw_result=getattr(stream_result, "parsed", None),
                 provider_output_raw=provider_output_raw,
             )
+            if attempt_had_speech_chunk:
+                yield {
+                    "type": "speech_reset",
+                    "speech": "\n".join(delivered_speech_segments),
+                    "attempt": attempt,
+                    "reason": "attempt_not_deliverable",
+                }
             if stream_error:
                 if streamed_speech_to_user:
-                    # Speech already reached the user before the transport
-                    # died. Keep the delivered text authoritative; issuing a
-                    # duplicate non-stream request would expose contradictory
-                    # text.
+                    # Complete sentence boundaries already emitted from speech
+                    # may be visible. The next structured attempt receives that
+                    # exact prefix and only continues the missing tail.
+                    if attempt < max_attempts:
+                        if hasattr(self.llm, "record_metric"):
+                            self.llm.record_metric("chat_final_response_retries")
+                        continue
                     break
                 if hasattr(self.llm, "record_metric"):
                     self.llm.record_metric("chat_stream_nonstream_fallbacks")
@@ -5756,6 +5869,30 @@ class AkaneMemoryEngine:
                 break
             if attempt < max_attempts and hasattr(self.llm, "record_metric"):
                 self.llm.record_metric("chat_final_response_retries")
+        if unrecovered_stream_error and streamed_speech_to_user:
+            recovered = self._recover_final_response_plain_text(
+                generation_context=generation_context,
+                request_projection_state=request_projection_state,
+                user_images=user_images,
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                request_observer=request_observer,
+                prompt_cache_key=prompt_cache_key,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
+                delivered_speech_segments=delivered_speech_segments,
+            )
+            if recovered is not None:
+                normalized = self._merge_streamed_speech_into_final(
+                    recovered,
+                    delivered_segments=delivered_speech_segments,
+                )
+                unrecovered_stream_error = ""
+                unrecovered_stream_partial = {}
         # Events were forwarded as they arrived above. Do not replay them here:
         # replaying would duplicate speech in the UI/TTS pipeline. In the rare
         # case a future stream implementation only returns buffered events,
@@ -5768,9 +5905,9 @@ class AkaneMemoryEngine:
                 "partial": unrecovered_stream_partial,
             }
         if unrecovered_stream_error and streamed_speech_to_user:
-            # Transport died after real speech reached the user. Keep that
-            # truthful partial delivery authoritative; never append a recovery
-            # answer or the generic fallback over it.
+            # Transport died after complete speech sentences entered the
+            # delivery channel. Preserve them in canonical speech and never
+            # append a contradictory generic fallback over them.
             normalized["_transient_final_failure"] = True
             normalized.pop("_provider_output_raw", None)
         elif self._final_output_has_tool_call(normalized):
@@ -5792,9 +5929,13 @@ class AkaneMemoryEngine:
                 resource_manifest=resource_manifest,
                 user_message=user_message,
                 domain_profile_id=domain_profile_id,
+                delivered_speech_segments=delivered_speech_segments,
             )
             if recovered is not None:
-                normalized = recovered
+                normalized = self._merge_streamed_speech_into_final(
+                    recovered,
+                    delivered_segments=delivered_speech_segments,
+                )
             elif transport_failures >= attempts_made and attempts_made > 0:
                 self._record_final_service_failure_metric()
                 normalized = self._final_service_failure_output(reason="provider_unreachable")

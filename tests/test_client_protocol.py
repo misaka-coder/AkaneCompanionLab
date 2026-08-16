@@ -5,6 +5,7 @@ import unittest
 from companion_v01.client_protocol import ClientCapability, ClientMode
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.output_adapters import OutputAdapterRegistry
+from companion_v01.prompt_blocks import PromptBlockRegistry
 from companion_v01.prompt_profiles import PromptModule, PromptProfileRegistry
 
 
@@ -173,6 +174,12 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertNotIn("speech_segments", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True).split("字段固定为", 1)[-1].split("。", 1)[0])
+
+    def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
+        text = PromptBlockRegistry().require("field_order").text
+
+        self.assertLess(text.index("reply_medium"), text.index("speech"))
+        self.assertLess(text.index("speech"), text.index("tool_call"))
 
     def test_desktop_prompt_profile_excludes_scene_observations_but_keeps_pet_context(self) -> None:
         profile = PromptProfileRegistry().get(ClientMode.DESKTOP_PET)

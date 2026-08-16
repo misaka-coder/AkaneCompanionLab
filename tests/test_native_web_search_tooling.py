@@ -2351,14 +2351,12 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             )
         )
 
-        # A streamed placeholder is not a deliverable final answer: the same
-        # turn keeps generating (same context, tail feedback) until real text
-        # arrives, so the user never has to re-ask.
+        # Sentence streaming stays immediate, but a known host fallback is not
+        # a model-authored speech unit and must never become a visible bubble.
         self.assertEqual(
             events,
             [
                 {"type": "turn_start", "speaker": "Akane"},
-                {"type": "speech_segment", "text": "我在认真听你说，要不要再多告诉我一点？"},
                 {"type": "speech_segment", "text": "这是重试后的完整答复。"},
             ],
         )

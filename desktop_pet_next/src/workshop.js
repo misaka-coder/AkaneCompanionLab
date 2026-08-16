@@ -2864,6 +2864,10 @@ async function consumeWorkshopThinkStream(response, assistantMessage) {
         assistantMessage.segments.push(text);
         assistantMessage.status = "生成中";
       }
+    } else if (type === "speech_reset") {
+      partialSpeech = String(event.speech || "");
+      assistantMessage.text = partialSpeech.trim();
+      assistantMessage.status = "重新生成中";
     } else if (type === "ui") {
       const emotion = String(event.emotion || "").trim();
       if (emotion) assistantMessage.emotion = emotion;

@@ -90,8 +90,9 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="field_order",
                     text=(
-                        "输出最终 JSON 时，请先完整输出 emotion，再输出 speech，"
-                        "紧接着输出 tool_call，再继续输出后面的字段。"
+                        "输出最终 JSON 时，请先完整输出 emotion；若当前字段清单含 reply_medium，"
+                        "紧接着输出 reply_medium；然后完整输出 speech，再输出 tool_call，"
+                        "最后继续输出后面的字段。"
                     ),
                 ),
                 PromptBlock(

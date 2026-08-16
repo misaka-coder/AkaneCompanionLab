@@ -190,15 +190,17 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual([segment["type"] for segment in messages[1]], ["text"])
         self.assertEqual(sum(segment["type"] == "reply" for message in messages for segment in message), 1)
 
-    def test_final_reply_uses_authoritative_segments_not_provisional_stream_pieces(self) -> None:
+    def test_speech_derived_complete_sentences_are_sent_immediately_without_final_resend(self) -> None:
+        delivery_observed_during_generation: list[list[list[str]]] = []
+
         class FakeEngine:
             desktop_pet_character_resources = None
 
             def process_turn_stream(self, payload: dict):
-                yield {"type": "speech_segment", "text": "1."}
-                yield {"type": "speech_segment", "text": "第一条"}
-                yield {"type": "speech_segment", "text": "2."}
-                yield {"type": "speech_segment", "text": "第二条"}
+                yield {"type": "speech_segment", "text": "1. 第一条"}
+                delivery_observed_during_generation.append([list(item) for item in gateway.text_sends])
+                yield {"type": "speech_segment", "text": "2. 第二条"}
+                delivery_observed_during_generation.append([list(item) for item in gateway.text_sends])
                 yield {"type": "assistant_stage_decision", "has_tool_call": False}
                 yield {
                     "type": "final_ui",
@@ -230,9 +232,111 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(gateway.text_sends, [["1. 第一条", "2. 第二条"]])
+        self.assertEqual(gateway.text_sends, [["1. 第一条"], ["2. 第二条"]])
+        self.assertEqual(
+            delivery_observed_during_generation,
+            [
+                [["1. 第一条"]],
+                [["1. 第一条"], ["2. 第二条"]],
+            ],
+        )
         self.assertEqual(result["reply_messages"], ["1. 第一条", "2. 第二条"])
-        self.assertEqual(result["send_result"].get("streamed_count"), None)
+        self.assertEqual(result["send_result"].get("streamed_count"), 2)
+
+    def test_intentionally_repeated_speech_sentences_are_both_delivered(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "index": 0, "text": "好。"}
+                yield {"type": "speech_segment", "index": 1, "text": "好。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "好。好。",
+                        "speech_segments": ["好。", "好。"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_repeated_speech",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "强调一下"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["好。"], ["好。"]])
+
+    def test_final_retry_preserves_one_unsent_repeated_sentence_occurrence(self) -> None:
+        self.assertEqual(_filter_unsent_reply_messages(["好。", "好。"], ["好。"]), ["好。"])
+
+    def test_failed_immediate_sentence_send_is_retried_from_final_speech(self) -> None:
+        class FailFirstGateway(FakeQQGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.immediate_attempts: list[str] = []
+
+            def send_reply(self, context, message: str) -> dict:
+                clean = str(message or "").strip()
+                self.immediate_attempts.append(clean)
+                return {"ok": False, "reason": "onebot_send_failed", "message": clean}
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "index": 0, "text": "第一句。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "第一句。",
+                        "speech_segments": ["第一句。"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FailFirstGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_retry_failed_stream",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "说一句"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.immediate_attempts, ["第一句。"])
+        self.assertEqual(gateway.text_sends, [["第一句。"]])
+        self.assertEqual(result["reply_messages"], ["第一句。"])
+        self.assertTrue(result["send_result"]["ok"])
 
     def test_auto_mode_sends_native_tool_preface_before_final_reply(self) -> None:
         class FakeEngine:

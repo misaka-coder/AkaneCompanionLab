@@ -391,6 +391,46 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(events[1]["text"], "我查一下资料。")
         self.assertEqual(events[3]["phase"], "tool_call")
 
+    def test_parser_streamed_native_preface_is_not_emitted_twice(self) -> None:
+        harness = _Harness(
+            [
+                _tool_round_output(
+                    "我查一下资料。",
+                    "load_material",
+                    "call-1",
+                    native_preface="我查一下资料。",
+                ),
+                _speech_output("查到了。"),
+            ]
+        )
+        original_stream = harness.engine._stream_final_response
+
+        def stream_with_parser_preface(**kwargs: object):
+            generator = original_stream(**kwargs)
+            try:
+                first = next(generator)
+            except StopIteration as stop:
+                return stop.value
+            yield first
+            while True:
+                try:
+                    event = next(generator)
+                except StopIteration as stop:
+                    output = dict(stop.value)
+                    if output.get("_native_preface_text"):
+                        yield {"type": "speech_segment", "index": 0, "text": output["_native_preface_text"]}
+                        output["_native_preface_streamed"] = True
+                    return output
+                yield event
+
+        harness.engine._stream_final_response = stream_with_parser_preface
+        events = harness.run_stream(harness.payload())
+
+        self.assertEqual(
+            [event.get("text") for event in events if event.get("type") == "speech_segment"],
+            ["我查一下资料。"],
+        )
+
     def test_final_ui_and_final_payload_contract(self) -> None:
         harness = _Harness(self._two_round_script())
         events = harness.run_stream(harness.payload())
