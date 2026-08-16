@@ -2798,6 +2798,8 @@ class NapCatQQGateway:
                 file_ref = event.get("file") if isinstance(event.get("file"), dict) else {}
                 path = str(file_ref.get("absolute_path") or "").strip()
                 name = str(file_ref.get("name") or file_ref.get("title") or Path(path).name).strip()
+                mime_type = str(file_ref.get("mime_type") or "").strip().lower()
+                ext = Path(name or path).suffix.lower().lstrip(".")
                 if path:
                     target = {
                         "generated_id": str(file_ref.get("generated_id") or "").strip(),
@@ -2816,6 +2818,11 @@ class NapCatQQGateway:
                         ).strip(),
                         "path": path,
                         "name": name or Path(path).name,
+                        "is_image": ext in {"png", "jpg", "jpeg", "webp", "gif"}
+                        or mime_type.startswith("image/"),
+                        "is_audio": ext in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
+                        or mime_type.startswith("audio/"),
+                        "delivery_mode": str(event.get("delivery_mode") or "file").strip().lower(),
                     }
                     identity = self._qq_file_delivery_target_identity(target)
                     if identity in seen_targets:
@@ -2843,7 +2850,6 @@ class NapCatQQGateway:
                     "is_audio": ext.lower() in {"mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"}
                     or mime_type.startswith("audio/"),
                     "delivery_mode": str(event.get("delivery_mode") or "file").strip().lower(),
-                    "delivery_scope": str(event.get("delivery_scope") or "").strip().lower(),
                 }
                 identity = self._qq_file_delivery_target_identity(target)
                 if identity in seen_targets:
@@ -2879,49 +2885,63 @@ class NapCatQQGateway:
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for target in targets:
-            if bool(target.get("is_image")):
-                result = self.send_image(
+            delivery_mode = str(target.get("delivery_mode") or "file").strip().lower()
+            if delivery_mode not in {"file", "voice", "both"}:
+                delivery_mode = "file"
+            is_audio = bool(target.get("is_audio"))
+            if delivery_mode in {"voice", "both"} and not is_audio:
+                result = {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": "voice_delivery_requires_audio",
+                    "delivery_mode": delivery_mode,
+                }
+            elif bool(target.get("is_image")):
+                result = dict(self.send_image(
                     context,
                     image_path=str(target.get("path") or ""),
                     name=str(target.get("name") or ""),
-                )
-            elif bool(target.get("is_audio")) and str(target.get("delivery_scope") or "") == "cover_song":
-                delivery_mode = str(target.get("delivery_mode") or "voice").strip().lower()
+                ))
+                result["delivery_mode"] = "file"
+            elif is_audio:
                 if delivery_mode == "both":
-                    voice_result = self.send_voice(
+                    voice_result = dict(self.send_voice(
                         context,
                         audio_path=str(target.get("path") or ""),
                         name=str(target.get("name") or ""),
-                    )
-                    file_result = self.send_file(
+                    ))
+                    file_result = dict(self.send_file(
                         context,
                         file_path=str(target.get("path") or ""),
                         name=str(target.get("name") or ""),
-                    )
+                    ))
                     result = {
                         "ok": bool(voice_result.get("ok")) and bool(file_result.get("ok")),
-                        "mode": "both",
+                        "delivery_mode": "both",
                         "voice_result": voice_result,
                         "file_result": file_result,
                     }
                 elif delivery_mode == "file":
-                    result = self.send_file(
+                    result = dict(self.send_file(
                         context,
                         file_path=str(target.get("path") or ""),
                         name=str(target.get("name") or ""),
-                    )
+                    ))
+                    result["delivery_mode"] = "file"
                 else:
-                    result = self.send_voice(
+                    result = dict(self.send_voice(
                         context,
                         audio_path=str(target.get("path") or ""),
                         name=str(target.get("name") or ""),
-                    )
+                    ))
+                    result["delivery_mode"] = "voice"
             else:
-                result = self.send_file(
+                result = dict(self.send_file(
                     context,
                     file_path=str(target.get("path") or ""),
                     name=str(target.get("name") or ""),
-                )
+                ))
+                result["delivery_mode"] = "file"
             result["generated_id"] = str(target.get("generated_id") or "")
             results.append(result)
         all_ok = bool(results) and all(bool(result.get("ok")) for result in results)

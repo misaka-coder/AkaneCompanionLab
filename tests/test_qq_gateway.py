@@ -2625,6 +2625,121 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["file"], str(output_path))
         self.assertEqual(payload["name"], "video.mp4")
 
+    def test_generic_audio_file_ready_can_use_qq_voice_delivery(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_FILE_GROUP_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "audio-voice-ready-1",
+                "raw_message": "用语音发给我",
+            }
+        )
+        event = {
+            "type": "file_ready",
+            "send_to_user": True,
+            "delivery_mode": "voice",
+            "file": {
+                "source_type": "generated",
+                "source_id": "generated::voice",
+                "generated_id": "generated::voice",
+                "handle": "gen_007",
+                "absolute_path": "C:/tmp/voice.mp3",
+                "name": "voice.mp3",
+                "mime_type": "audio/mpeg",
+            },
+        }
+
+        with (
+            patch.object(gateway, "send_voice", return_value={"ok": True, "status": "sent"}) as send_voice,
+            patch.object(gateway, "send_file") as send_file,
+        ):
+            result = gateway.send_generated_files(context, [event])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["results"][0]["delivery_mode"], "voice")
+        send_voice.assert_called_once_with(context, audio_path="C:/tmp/voice.mp3", name="voice.mp3")
+        send_file.assert_not_called()
+
+    def test_generic_audio_file_ready_both_mode_attempts_voice_and_file(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "audio-both-ready-1",
+                "raw_message": "语音和文件都发",
+            }
+        )
+        event = {
+            "type": "file_ready",
+            "send_to_user": True,
+            "delivery_mode": "both",
+            "file": {
+                "source_type": "attachment",
+                "source_id": "attachment::audio",
+                "handle": "audio_001",
+                "absolute_path": "C:/tmp/song.flac",
+                "name": "song.flac",
+                "mime_type": "audio/flac",
+            },
+        }
+
+        with (
+            patch.object(gateway, "send_voice", return_value={"ok": True, "status": "sent"}) as send_voice,
+            patch.object(gateway, "send_file", return_value={"ok": True, "status": "sent"}) as send_file,
+        ):
+            result = gateway.send_generated_files(context, [event])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["results"][0]["delivery_mode"], "both")
+        send_voice.assert_called_once()
+        send_file.assert_called_once()
+
+    def test_generic_non_audio_voice_request_fails_without_transport(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "message_id": "document-voice-ready-1",
+                "raw_message": "用语音发文档",
+            }
+        )
+        event = {
+            "type": "file_ready",
+            "send_to_user": True,
+            "delivery_mode": "voice",
+            "file": {
+                "source_type": "generated",
+                "source_id": "generated::doc",
+                "generated_id": "generated::doc",
+                "handle": "gen_008",
+                "absolute_path": "C:/tmp/report.md",
+                "name": "report.md",
+                "mime_type": "text/markdown",
+            },
+        }
+
+        with (
+            patch.object(gateway, "send_voice") as send_voice,
+            patch.object(gateway, "send_file") as send_file,
+        ):
+            result = gateway.send_generated_files(context, [event])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["results"][0]["reason"], "voice_delivery_requires_audio")
+        send_voice.assert_not_called()
+        send_file.assert_not_called()
+
     def test_send_generated_files_deduplicates_same_attachment_within_one_delivery_batch(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(

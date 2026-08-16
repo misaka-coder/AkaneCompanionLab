@@ -376,7 +376,7 @@ class CoverSongTests(unittest.TestCase):
 
         self.assertEqual(fake_service.kwargs["delivery"], "voice")
         self.assertEqual(result.stream_events[0]["delivery_mode"], "voice")
-        self.assertEqual(result.stream_events[0]["delivery_scope"], "cover_song")
+        self.assertNotIn("delivery_scope", result.stream_events[0])
 
     def test_cover_song_tool_is_latent_without_media_or_cache(self) -> None:
         selection = CapabilityRegistry().select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
@@ -436,7 +436,7 @@ class CoverSongTests(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertEqual(request.call_args.kwargs["timeout"], 2.0)
 
-    def test_qq_cover_delivery_scope_can_send_voice_without_generic_file_wording(self) -> None:
+    def test_qq_audio_delivery_mode_can_send_cover_as_voice(self) -> None:
         gateway = NapCatQQGateway()
         context = QQMessageContext(
             should_respond=True,
@@ -450,7 +450,6 @@ class CoverSongTests(unittest.TestCase):
         event = {
             "type": "generated_file_ready",
             "send_to_user": True,
-            "delivery_scope": "cover_song",
             "delivery_mode": "voice",
             "generated_file": {
                 "generated_id": "generated::1",
@@ -485,7 +484,6 @@ class CoverSongTests(unittest.TestCase):
         event = {
             "type": "generated_file_ready",
             "send_to_user": True,
-            "delivery_scope": "cover_song",
             "delivery_mode": "both",
             "generated_file": {
                 "generated_id": "generated::1",
@@ -502,7 +500,7 @@ class CoverSongTests(unittest.TestCase):
             result = gateway.send_generated_files(context, [event])
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["results"][0]["mode"], "both")
+        self.assertEqual(result["results"][0]["delivery_mode"], "both")
         self.assertNotIn(private_path, repr(result))
         send_voice.assert_called_once()
         send_file.assert_called_once()

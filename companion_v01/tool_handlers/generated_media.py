@@ -772,7 +772,6 @@ class CoverSongToolHandler(BaseToolHandler):
                     "generated_file": generated,
                     "send_to_user": bool(result.get("send_to_user")),
                     "delivery_mode": str(result.get("delivery_mode") or delivery),
-                    "delivery_scope": "cover_song",
                     "client_mode": str(context.client_mode or ""),
                 }
             )
