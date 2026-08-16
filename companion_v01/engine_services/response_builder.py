@@ -640,6 +640,11 @@ def prepare_context(
     effective_post_user_turns = [
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
+    surface_active_turns = [
+        dict(turn) for turn in list(provider_projection.get("active_turn_messages") or []) if isinstance(turn, dict)
+    ]
+    if projection_authoritative and surface_active_turns:
+        effective_post_user_turns = surface_active_turns
     system_prompt_override = prompt_profile.system_prompt_override
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
@@ -1021,10 +1026,10 @@ def _build_memcore_provider_history(
     if _memory_backend() != "memcore":
         return {"ok": False, "status": "migration_window", "reason": "legacy_memory_backend"}
     manager = getattr(engine, "memcore_manager", None)
-    build_projection = getattr(manager, "build_context_projection", None)
+    build_surface = getattr(manager, "build_context_surface", None)
     runtime = getattr(engine, "llm", None)
     protocol_getter = getattr(runtime, "chat_provider_protocol", None)
-    if not callable(build_projection) or not callable(protocol_getter):
+    if not callable(build_surface) or not callable(protocol_getter):
         return {"ok": False, "status": "unavailable", "reason": "projection_read_dependencies_unavailable"}
     if not str(current_source_id or "").strip():
         return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
@@ -1036,21 +1041,23 @@ def _build_memcore_provider_history(
             )
             or ""
         ).strip().lower()
-        projection: dict[str, Any] = {}
+        surface: dict[str, Any] = {}
         for _attempt in range(2):
-            candidate = build_projection(
+            candidate = build_surface(
                 provider_profile=protocol,
+                current_source_id=current_source_id,
+                active_turn_messages=[],
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
             )
-            projection = candidate if isinstance(candidate, dict) else {}
-            if projection.get("ok"):
+            surface = candidate if isinstance(candidate, dict) else {}
+            if surface.get("ok"):
                 break
-            if str(projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS:
+            if str(surface.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS:
                 break
-        if not isinstance(projection, dict) or not projection.get("ok"):
-            migration_reason = str((projection or {}).get("reason") or "")
+        if not isinstance(surface, dict) or not surface.get("ok"):
+            migration_reason = str((surface or {}).get("reason") or "")
             if migration_reason in PROJECTION_READ_MIGRATION_REASONS:
                 return {"ok": False, "status": "migration_window", "reason": migration_reason}
             return {
@@ -1058,75 +1065,55 @@ def _build_memcore_provider_history(
                 "status": "unavailable",
                 "reason": "projection_build_failed",
                 "detail": _safe_projection_failure_code(
-                    (projection or {}).get("reason") or (projection or {}).get("status"),
+                    (surface or {}).get("reason") or (surface or {}).get("status"),
                 ),
             }
         current_sid = str(current_source_id).strip()
-        current_source_visible = False
-        current_turn_id = ""
-        current_turn_metadata_present = False
-        projection_messages = list(projection.get("messages") or [])
-        for message in projection_messages:
-            if not isinstance(message, dict):
-                return {"ok": False, "status": "failed", "reason": "projection_message_invalid"}
-            source_ids = [str(item or "").strip() for item in list(message.get("source_ids") or [])]
-            if current_sid in source_ids:
-                current_source_visible = True
-                current_turn_metadata_present = "turn_id" in message
-                current_turn_id = str(message.get("turn_id") or "").strip()
-                break
-        if not current_source_visible:
-            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
-        if current_turn_metadata_present and not current_turn_id:
-            return {"ok": False, "status": "failed", "reason": "current_turn_id_missing"}
-
-        history_turns: list[dict[str, Any]] = []
-        history_source_ids: list[str] = []
-        current_turn_messages: list[dict[str, Any]] = []
-        excluded = {
-            str(source_id or "").strip()
-            for source_id in list(exclude_source_ids or [])
-            if str(source_id or "").strip()
+        history_turns = [dict(item) for item in list(surface.get("history_messages") or []) if isinstance(item, dict)]
+        current_payload = surface.get("current_message")
+        current_ids = {
+            str(item or "").strip()
+            for item in (list(surface.get("message_source_ids") or [])[len(history_turns)] if current_payload else [])
+            if str(item or "").strip()
         }
-        for message in projection_messages:
-            if not isinstance(message, dict):
-                return {"ok": False, "status": "failed", "reason": "projection_message_invalid"}
-            source_ids = [str(item or "").strip() for item in list(message.get("source_ids") or [])]
-            message_turn_id = str(message.get("turn_id") or "").strip()
-            is_current_turn = bool(current_turn_id and message_turn_id == current_turn_id)
-            if is_current_turn or current_sid in source_ids or (not current_turn_id and excluded.intersection(source_ids)):
-                current_turn_messages.append(
-                    {
-                        "turn_id": message_turn_id or current_turn_id,
-                        "payload": dict(message.get("payload") or {}),
-                        "source_ids": source_ids,
-                        "projection_index": int(message.get("projection_index", -1)),
-                        "projection_status": str(message.get("projection_status") or "complete"),
-                        "projection_version": int(message.get("projection_version") or 1),
-                    }
-                )
-                continue
-            payload = dict(message.get("payload") or {})
-            role = str(payload.get("role") or "").strip().lower()
-            if role not in {"user", "assistant", "tool"}:
-                return {"ok": False, "status": "failed", "reason": "projection_message_unsupported"}
-            history_turns.append(payload)
-            history_source_ids.extend(source_id for source_id in source_ids if source_id)
+        current_source_visible = bool(current_sid and current_sid in current_ids)
+        if current_sid and not current_source_visible:
+            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
+        active_start = len(history_turns) + (1 if current_payload else 0)
+        source_ids = list(surface.get("message_source_ids") or [])
+        active_payloads = [dict(item) for item in list(surface.get("active_turn_messages") or []) if isinstance(item, dict)]
+        active_ids = source_ids[active_start : active_start + len(active_payloads)]
+        current_turn_messages: list[dict[str, Any]] = []
+        if current_payload is not None and isinstance(current_payload, dict):
+            current_turn_messages.append({"payload": dict(current_payload), "source_ids": list(current_ids)})
+        current_turn_messages.extend(
+            {"payload": payload, "source_ids": list(active_ids[index]) if index < len(active_ids) else []}
+            for index, payload in enumerate(active_payloads)
+        )
+        history_source_ids = [
+            str(source_id)
+            for group in source_ids[: len(history_turns)]
+            for source_id in group
+            if str(source_id or "").strip()
+        ]
         return {
             "ok": True,
             "status": "active",
             "reason": "",
-            "provider_profile": str(projection.get("provider_profile") or ""),
+            "provider_profile": str(surface.get("provider_profile") or ""),
             "history_turns": history_turns,
-            "current_turn_id": current_turn_id,
+            "current_turn_id": str(surface.get("current_turn_id") or ""),
             "current_turn_messages": current_turn_messages,
+            "current_message": dict(current_payload) if isinstance(current_payload, dict) else None,
+            "active_turn_messages": active_payloads,
             "source_ids": list(dict.fromkeys(history_source_ids)),
             "source_count": len(set(history_source_ids)),
             "message_count": len(history_turns),
-            "stable_prefix_hash": str(projection.get("stable_prefix_hash") or ""),
-            "projection_version": int(projection.get("projection_version") or 0),
-            "compaction_generation": int(projection.get("compaction_generation") or 0),
-            "projection_generation": int(projection.get("projection_generation") or 0),
+            "stable_prefix_hash": str(surface.get("projection_hash") or ""),
+            "projection_version": int(surface.get("projection_version") or 1),
+            "compaction_generation": int(surface.get("compaction_generation") or 0),
+            "projection_generation": int(surface.get("projection_generation") or 0),
+            "has_compact_history": bool(surface.get("has_compact_history")),
             "current_source_visible": True,
         }
     except Exception as exc:

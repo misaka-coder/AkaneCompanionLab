@@ -241,6 +241,40 @@ class _PromptContextMemcoreManager:
             }
         )
 
+    def build_context_surface(self, **kwargs) -> dict[str, object]:
+        projection = self.build_context_projection(**kwargs)
+        if not projection.get("ok"):
+            return dict(projection)
+        records = [item for item in list(projection.get("messages") or []) if isinstance(item, dict)]
+        current_id = str(kwargs.get("current_source_id") or "")
+        current_index = next(
+            (index for index, item in enumerate(records) if current_id in list(item.get("source_ids") or [])),
+            None,
+        )
+        history = [dict(item.get("payload") or {}) for item in records[:current_index]] if current_index is not None else [
+            dict(item.get("payload") or {}) for item in records
+        ]
+        current = dict(records[current_index].get("payload") or {}) if current_index is not None else None
+        active = [dict(item.get("payload") or {}) for item in records[current_index + 1 :]] if current_index is not None else []
+        return {
+            "ok": True,
+            "status": "ok",
+            "version": "context_surface_v1",
+            "provider_profile": str(projection.get("provider_profile") or "openai_chat"),
+            "history_messages": history,
+            "current_message": current,
+            "active_turn_messages": active,
+            "message_source_ids": [list(item.get("source_ids") or []) for item in records],
+            "projection_hash": str(projection.get("stable_prefix_hash") or "hash"),
+            "projection_generation": int(projection.get("projection_generation") or 0),
+            "projection_version": int(projection.get("projection_version") or 1),
+            "compaction_generation": int(projection.get("compaction_generation") or 0),
+            "has_compact_history": bool(projection.get("has_compact_history")),
+            "current_turn_id": str(
+                records[current_index].get("turn_id") or ""
+            ) if current_index is not None else "",
+        }
+
     def compare_context_projection(self, **kwargs) -> dict[str, object]:
         self.compare_calls.append(dict(kwargs))
         return {
@@ -900,6 +934,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
+                surface = manager.build_context_surface(
+                    provider_profile="responses",
+                    current_source_id="projection-stimulus",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
                 comparison = manager.compare_context_projection(
                     provider_profile="responses",
                     actual_history_messages=list(projection["payloads"]),
@@ -935,6 +976,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 manager.close()
 
         self.assertTrue(projection["ok"], projection)
+        self.assertTrue(surface["ok"], surface)
+        self.assertEqual(surface["messages"], [surface["current_message"]])
+        self.assertEqual(surface["message_source_ids"], [["projection-stimulus"]])
         self.assertEqual(projection["provider_profile"], "openai_chat")
         self.assertEqual(projection["source_ids"], ["projection-stimulus"])
         self.assertRegex(projection["stable_prefix_hash"], r"^[a-f0-9]{64}$")

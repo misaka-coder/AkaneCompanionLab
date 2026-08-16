@@ -29,7 +29,10 @@ MEMCORE_PROVIDER_PROFILE_ALIASES = {
     "openai": "openai_chat",
     "openai_chat": "openai_chat",
     "native_openai": "openai_chat",
+    "openai_responses": "openai_responses",
     "responses": "openai_chat",
+    "deepseek": "deepseek_chat",
+    "deepseek_chat": "deepseek_chat",
     "ollama": "openai_chat",
     # GeminiNativeCompatClient accepts the same OpenAI-shaped message history
     # as the rest of Akane and converts it only at the final wire boundary.
@@ -1893,6 +1896,76 @@ class MemcoreManager:
                 "projection_version": 0,
                 "compaction_generation": 0,
                 "projection_generation": 0,
+            }
+
+    def build_context_surface(
+        self,
+        *,
+        provider_profile: str,
+        current_source_id: str = "",
+        active_turn_messages: list[dict[str, Any]] | None = None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        """Expose the same stable Context Contract used by external hosts."""
+
+        operation = "build_context_surface"
+        profile = resolve_memcore_provider_profile(provider_profile)
+        if not profile:
+            return {
+                **self._status(operation, False, "invalid_provider_profile", reason="provider_profile_unsupported"),
+                "version": "context_surface_v1",
+                "provider_profile": "",
+                "history_messages": [],
+                "current_message": None,
+                "active_turn_messages": [],
+                "projection_hash": "",
+                "projection_generation": 0,
+                "diagnostics": [],
+            }
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "version": "context_surface_v1",
+                "provider_profile": profile,
+                "history_messages": [],
+                "current_message": None,
+                "active_turn_messages": [],
+                "projection_hash": "",
+                "projection_generation": 0,
+                "diagnostics": [],
+            }
+        try:
+            surface = system.build_context_surface(
+                session_id=session_id,
+                provider_profile=profile,
+                current_source_id=str(current_source_id or "").strip() or None,
+                active_turn_messages=tuple(active_turn_messages or ()),
+            )
+            return {
+                **self._status(operation, True, "ok"),
+                **surface.as_dict(),
+                "messages": [dict(message) for message in surface.messages],
+            }
+        except Exception:
+            logger.warning("memcore context surface failed error_type=%s", "surface_build")
+            return {
+                **self._status(operation, False, "failed", reason="context_surface_build_failed"),
+                "version": "context_surface_v1",
+                "provider_profile": profile,
+                "history_messages": [],
+                "current_message": None,
+                "active_turn_messages": [],
+                "projection_hash": "",
+                "projection_generation": 0,
+                "diagnostics": [],
             }
 
     def run_legacy_path_projection_migration(self, *, dry_run: bool = False) -> dict[str, Any]:
