@@ -135,21 +135,21 @@ class StreamFinalNonstreamFallbackTests(unittest.TestCase):
         self.assertIn("chat_stream_nonstream_fallbacks", llm.recorded_metrics)
         self.assertIn("chat_stream_nonstream_recoveries", llm.recorded_metrics)
 
-    def test_stream_error_after_uncommitted_speech_uses_nonstream_recovery(self):
+    def test_stream_error_after_speech_does_not_issue_duplicate_nonstream_request(self):
         llm = _FakeLLM(
             stream_events=[{"type": "speech_segment", "text": "已经发给用户的部分文本。"}],
             stream_parsed=self.fallback,
             stream_error="502 Bad Gateway",
-            nonstream_result={"speech": "非流式恢复后的正常答复。", "tool_call": None},
+            nonstream_result={"speech": "不应发送的重复答复。", "tool_call": None},
         )
         engine = self._build_engine(llm)
 
         events, result = self._run(engine)
 
-        self.assertEqual(len(llm.nonstream_calls), 1)
-        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
-        self.assertEqual(result["speech"], "非流式恢复后的正常答复。")
-        self.assertNotIn("_transient_final_failure", result)
+        self.assertEqual(len(llm.nonstream_calls), 0)
+        self.assertEqual(events[1], {"type": "speech_segment", "text": "已经发给用户的部分文本。"})
+        self.assertEqual(events[-1]["type"], "stream_error")
+        self.assertTrue(result["_transient_final_failure"])
 
     def test_stream_and_nonstream_failure_keep_structured_fallback(self):
         llm = _FakeLLM(
