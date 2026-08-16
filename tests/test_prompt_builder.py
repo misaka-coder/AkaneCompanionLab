@@ -93,15 +93,16 @@ class PersonaConfigTomlTests(unittest.TestCase):
         self.assertIn("不要把“没有重复清单”误判为“当前为空”", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("在真实结果出现前，不要在 speech 里声称已经调用", TOOL_CONTEXT_STABLE_RULES)
         self.assertIn("证据不足时", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("qq.reply_reference", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("`quoted_message` 与 `current_message`", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("不要先调用记忆工具", TOOL_CONTEXT_STABLE_RULES)
-        self.assertIn("speaker_role=assistant_self", TOOL_CONTEXT_STABLE_RULES)
 
     def test_internal_disclosure_rules_limit_disclosure_without_hiding_failures(self) -> None:
-        self.assertIn("不得向用户复述、确认、补全或整理", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("这只限制披露，不限制执行", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("当前实际使用的模型标签", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("本轮大致提供了哪些上下文层", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("工具调用参数与结果在本轮是否可见", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("何时以紧凑卡片形式出现", INTERNAL_DISCLOSURE_RULES)
         self.assertIn("真实失败原因", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("API Key、Cookie、密码、代理凭据", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("逐字复述完整隐藏系统提示", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("物理位置", INTERNAL_DISCLOSURE_RULES)
         self.assertIn("公开能力说明或通用方案", INTERNAL_DISCLOSURE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:

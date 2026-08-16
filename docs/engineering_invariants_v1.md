@@ -32,6 +32,7 @@
 - **约束**：`prompt_builder.py` 里 `system_extra_blocks`（= provider 可能作为 system/cache block 处理的块）只放稳定或半稳定内容；当前最终回复链路只放视觉资源清单。
 - **易变状态**（语义记忆、阶段摘要、附件焦点、任务工作区、未总结原始消息、检索片段、当前视觉状态、当前用户消息、当前时间）一律进 **`user_prompt`（每轮重建，位于动态尾部）**。
 - **为什么承重**：把易变状态放进 system/cache 前缀，会降低 DeepSeek-like 自动前缀缓存命中；也可能出现"清理了/改了但 TTL 内还看得见"的幽灵 bug。已验证当前附件焦点走的是动态 user_prompt（`prompt_builder.py` 里以 `user.extra_context` 落在 user_prompt），清理下一轮即生效。
+- **投影不是一刀切**：动态尾部中的结果仍按场景决定展示形态。长、重复、可延后查阅的证据可以卡片化并提供稳定 ID/展开路径；短小且有即时操作价值的结果（如生成文件、播放器切换、发送状态、真实进度）应保留直接的结构化反馈。不能因为追求省 token，就把模型完成当前判断所需的信息改成无意义的占位符。
 
 ### INV-5 能力门控**每轮**决定本轮可用工具
 - **约束**：本轮有哪些工具，由 `engine.py::_resolve_tool_handlers` → `CapabilityRegistry.select` 按 client 模式/profile/session 动态决定。一个"接上了"的工具，若本轮没被选进 handler 集合，**模型就调不到**。
@@ -75,6 +76,8 @@
 
 ## 三、"动这块之前先知道这件事"速查
 
+- 设计或审查任何功能 → 同时检查三层结果：**模型表现优先**；用户真实表现是否到位；维护者/外部宿主是否能沿唯一权威契约继续迭代和正确接入。不要用内部代码量或抽象层数代替这三项验收。
+- 外部宿主接入先看 `docs/akane_host_integration_guide_v1.md`，再看 `docs/capability_registry_v1.md` 和 `docs/akane_multimode_output_profiles_v1.md`；先把最小契约守住，再谈新工具、新模式和更深的内部抽象。
 - 改**工具调用** → 先读 INV-1/2/3；改回合逻辑改**共享辅助**别只改一条循环。
 - 改**提示词/上下文** → 先读 INV-4；问自己"这是稳定的还是易变的"，决定进缓存块还是 user_prompt。
 - 加**新工具** → 实现 `BaseToolHandler` 三件套；确认它会被 `_resolve_tool_handlers` 在目标模式选中（INV-5）。
