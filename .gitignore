@@ -59,9 +59,14 @@ tmp_*.wav
 # Local model / tool scratch space
 .cache/
 .codex/
+.claude/settings.json
 .claude/settings.local.json
 models/
 downloads/
+
+# Local diagnostic/recovery archives
+qq-tool-fix-*.tar
+maintenance/_temporary_deepseek_cloud_switch.py
 
 # User-provided media assets (keep local, do not track in repo)
 web/assets/bgm/
