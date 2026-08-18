@@ -1263,6 +1263,7 @@ class CareRuntimeStore:
         item_id = str(item_id or "").strip()
         effects = dict(item_effects or {})
         count = max(1, min(99, int(count or 1)))
+        source_key = str(source or "direct_feed").strip() or "direct_feed"
         now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
         with self._lock:
             state = self._load()
@@ -1370,16 +1371,18 @@ class CareRuntimeStore:
                 effects = dict(effects, _resolved_aff_delta=aff_delta)
             _detect_and_store_tier_event(relation, aff_before, current_aff)
             relation["qq_affection"] = current_aff
-            # Record first-ever feed anchor (only written once)
-            anchors = relation.setdefault("anchors", {})
-            if "first_fed" not in anchors:
-                anchors["first_fed"] = {"name": item_name, "ms": now_ms}
+            # Poke consumption is already represented by its QQ event; it is
+            # not a first-feed relationship anchor.
+            if source_key == "direct_feed":
+                anchors = relation.setdefault("anchors", {})
+                if "first_fed" not in anchors:
+                    anchors["first_fed"] = {"name": item_name, "ms": now_ms}
             relation["updated_at"] = now_ms
             self._record_care_event(
                 state,
                 {
                     "event_id": str(event_id or ""),
-                    "source": str(source or "direct_feed"),
+                    "source": source_key,
                     "kind": "inventory_consume",
                     "status": "ok",
                     "profile_user_id": profile_user_id,
@@ -1677,7 +1680,8 @@ class CareRuntimeStore:
                 )
 
             if outcome_kind == "lottery":
-                lottery = self.draw_fortune_slip(
+                lottery = self._draw_fortune_slip_on_state(
+                    state,
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     relation_user_id=relation_user_id,
@@ -1720,6 +1724,73 @@ class CareRuntimeStore:
                 relation_user_id=relation_user_id or profile_user_id,
                 now_ms=now_ms,
             )}
+
+    def _draw_fortune_slip_on_state(
+        self,
+        state: dict[str, Any],
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        slip_cost: int = 5,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Resolve and apply one fortune draw without persisting the state."""
+        fortunes = [
+            {"name": "大吉", "prob": 0.10, "coins_delta": 25, "affection_delta": 3},
+            {"name": "中吉", "prob": 0.25, "coins_delta": 12, "affection_delta": 0},
+            {"name": "小吉", "prob": 0.30, "coins_delta": 6, "affection_delta": 0},
+            {"name": "末吉", "prob": 0.25, "coins_delta": 0, "affection_delta": 0},
+            {"name": "凶", "prob": 0.10, "coins_delta": -3, "affection_delta": 0},
+        ]
+        slip_cost = max(1, int(slip_cost))
+        rel_key = relation_user_id or profile_user_id
+        relation = self._relation_entry(
+            state, character_pack_id=character_pack_id, relation_user_id=rel_key
+        )
+        coins_before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
+        if coins_before < slip_cost:
+            return {
+                "status": "insufficient_coins",
+                "coins_before": coins_before,
+                "coins_needed": slip_cost,
+            }
+
+        roll = random.random()
+        cumulative = 0.0
+        fortune = fortunes[-1]
+        for candidate in fortunes:
+            cumulative += candidate["prob"]
+            if roll < cumulative:
+                fortune = candidate
+                break
+
+        net_coins = fortune["coins_delta"] - slip_cost
+        new_coins = max(0, min(999999, coins_before + net_coins))
+        relation["qq_coins"] = new_coins
+        if fortune["affection_delta"] != 0:
+            aff_before = _bounded_int(relation.get("qq_affection"), 0, 100, fallback=10)
+            aff_after = max(0, min(100, aff_before + fortune["affection_delta"]))
+            _detect_and_store_tier_event(relation, aff_before, aff_after)
+            relation["qq_affection"] = aff_after
+        relation["updated_at"] = now_ms
+        return {
+            "status": "ok",
+            "fortune": fortune["name"],
+            "coins_delta": fortune["coins_delta"],
+            "affection_delta": fortune["affection_delta"],
+            "slip_cost": slip_cost,
+            "net_coins": net_coins,
+            "coins_before": coins_before,
+            "coins_after": new_coins,
+            "snapshot": self._snapshot(
+                state,
+                character_pack_id=character_pack_id,
+                client_mode="qq_text",
+                relation_user_id=rel_key,
+                now_ms=now_ms,
+            ),
+        }
 
     def _relation_entry(
         self,
@@ -1958,67 +2029,20 @@ class CareRuntimeStore:
           末吉 25% → 0 return
           凶   10% → -3 extra coins (total loss = cost + 3)
         """
-        FORTUNES = [
-            {"name": "大吉", "prob": 0.10, "coins_delta": 25, "affection_delta": 3},
-            {"name": "中吉", "prob": 0.25, "coins_delta": 12, "affection_delta": 0},
-            {"name": "小吉", "prob": 0.30, "coins_delta": 6,  "affection_delta": 0},
-            {"name": "末吉", "prob": 0.25, "coins_delta": 0,  "affection_delta": 0},
-            {"name": "凶",   "prob": 0.10, "coins_delta": -3, "affection_delta": 0},
-        ]
-        slip_cost = max(1, int(slip_cost))
         now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
-        rel_key = relation_user_id or profile_user_id
         with self._lock:
             state = self._load()
-            relation = self._relation_entry(
-                state, character_pack_id=character_pack_id, relation_user_id=rel_key
-            )
-            coins_before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
-            if coins_before < slip_cost:
-                return {
-                    "status": "insufficient_coins",
-                    "coins_before": coins_before,
-                    "coins_needed": slip_cost,
-                }
-            # Roll fortune
-            roll = random.random()
-            cumulative = 0.0
-            fortune = FORTUNES[-1]
-            for f in FORTUNES:
-                cumulative += f["prob"]
-                if roll < cumulative:
-                    fortune = f
-                    break
-            # Apply coin effects: deduct cost then add fortune reward
-            net_coins = fortune["coins_delta"] - slip_cost
-            new_coins = max(0, min(999999, coins_before + net_coins))
-            relation["qq_coins"] = new_coins
-            # Apply affection
-            if fortune["affection_delta"] != 0:
-                aff_before_f = _bounded_int(relation.get("qq_affection"), 0, 100, fallback=10)
-                aff_after_f = max(0, min(100, aff_before_f + fortune["affection_delta"]))
-                _detect_and_store_tier_event(relation, aff_before_f, aff_after_f)
-                relation["qq_affection"] = aff_after_f
-            relation["updated_at"] = now_ms
-            self._save(state)
-            snapshot = self._snapshot(
+            result = self._draw_fortune_slip_on_state(
                 state,
+                profile_user_id=profile_user_id,
                 character_pack_id=character_pack_id,
-                client_mode="qq_text",
-                relation_user_id=rel_key,
+                relation_user_id=relation_user_id,
+                slip_cost=slip_cost,
                 now_ms=now_ms,
             )
-            return {
-                "status": "ok",
-                "fortune": fortune["name"],
-                "coins_delta": fortune["coins_delta"],
-                "affection_delta": fortune["affection_delta"],
-                "slip_cost": slip_cost,
-                "net_coins": net_coins,
-                "coins_before": coins_before,
-                "coins_after": new_coins,
-                "snapshot": snapshot,
-            }
+            if result.get("status") == "ok":
+                self._save(state)
+            return result
 
     def claim_daily_offering(
         self,

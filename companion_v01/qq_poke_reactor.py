@@ -106,7 +106,7 @@ class PokeEventReactor:
             return {
                 "outcome_kind": outcome_kind,
                 "variant": str(
-                    self._rng.choice(("躲开了这一下", "装作没有被戳到", "被戳得晃了晃", "突然安静下来"))
+                    self._rng.choice(("这一戳被你躲开了", "你装作没有被戳到", "你被戳得晃了晃", "你突然安静下来"))
                 ),
             }
 

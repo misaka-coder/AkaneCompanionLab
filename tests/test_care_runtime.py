@@ -822,6 +822,84 @@ class CareRuntimeGameplayTests(unittest.TestCase):
             )
             self.assertEqual(use2["status"], "not_in_inventory")
 
+    def test_only_direct_feed_sets_first_fed_anchor(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            store.sync_from_client(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                client_mode="desktop_pet",
+                care_payload={"enabled": True, "hunger": 40, "energy": 60, "coins": 50, "affection": 30},
+                now_ms=1000,
+            )
+            store.buy_to_inventory(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                item_id="teamango",
+                item_name="三色团子",
+                price=0,
+                count=2,
+                item_effects={"hunger": 20},
+                now_ms=2000,
+            )
+
+            poke_result = store.use_from_inventory(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                item_id="teamango",
+                item_effects={"hunger": 20},
+                source="poke_consume",
+                event_id="poke-anchor-test",
+                now_ms=3000,
+            )
+            self.assertEqual(poke_result["status"], "ok")
+            self.assertNotIn("first_fed", poke_result["snapshot"]["anchors"])
+
+            feed_result = store.use_from_inventory(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                item_id="teamango",
+                item_effects={"hunger": 20},
+                source="direct_feed",
+                now_ms=4000,
+            )
+            self.assertEqual(feed_result["status"], "ok")
+            self.assertEqual(feed_result["snapshot"]["anchors"]["first_fed"]["name"], "三色团子")
+
+    def test_poke_lottery_persists_state_and_event_with_one_save(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            self._give_coins(store, 20)
+            with mock.patch("companion_v01.care_runtime.random.random", return_value=0.05), mock.patch.object(
+                store, "_save", wraps=store._save
+            ) as save:
+                result = store.apply_poke_plan(
+                    profile_user_id=self._PROFILE,
+                    character_pack_id=self._CHAR,
+                    relation_user_id=self._REL,
+                    plan={"outcome_kind": "lottery"},
+                    event_id="poke-lottery-save-test",
+                    scope_key="reimu_demo|private:111|actor:111",
+                    now_ms=2000,
+                )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["fortune"], "大吉")
+            self.assertEqual(save.call_count, 1)
+            duplicate = store.apply_poke_plan(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                plan={"outcome_kind": "lottery"},
+                event_id="poke-lottery-save-test",
+                scope_key="reimu_demo|private:111|actor:111",
+                now_ms=2001,
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+
     def test_use_from_inventory_insufficient_count_leaves_state_unchanged(self) -> None:
         """背包数量不足时 insufficient_count，饥饿/精力不变。"""
         with TemporaryDirectory() as tmp:

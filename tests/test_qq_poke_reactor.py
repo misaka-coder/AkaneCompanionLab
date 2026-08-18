@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
 from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.qq_poke_reactor import PokeEventReactor
 
 
 class FixedPokeReactor:
@@ -15,6 +16,14 @@ class FixedPokeReactor:
 
     def plan(self, *, snapshot: dict, shop_items: list[dict]) -> dict:
         return dict(self.plan_value)
+
+
+class VariantRng:
+    def random(self) -> float:
+        return 0.93
+
+    def choice(self, values):
+        return values[0]
 
 
 def _poke_event(message_id: str, *, group_id: int = 0) -> dict:
@@ -91,7 +100,7 @@ class QQPokeReactorTests(unittest.TestCase):
             self.assertEqual(outcome.status, "ok")
             self.assertIn("戳了戳你", outcome.memory_text)
             self.assertIn("从我的背包里偷吃了三色团子 x2", outcome.memory_text)
-            self.assertIn("三色团子已真实消耗", outcome.prompt_text)
+            self.assertNotIn("已真实消耗", outcome.prompt_text)
             self.assertIn("饥饿值 +40", outcome.prompt_text)
             self.assertIn("精力值 +8", outcome.prompt_text)
             self.assertIn("QQ 好感 +8", outcome.prompt_text)
@@ -133,6 +142,8 @@ class QQPokeReactorTests(unittest.TestCase):
             first = gateway.handle_poke_event(first_context, first_event, care_module=module, now_ms=3000)
             self.assertEqual(first.status, "ok")
             self.assertIn("金币 +2", first.prompt_text)
+            self.assertIn("顺手往休比的口袋里塞了2枚金币", first.memory_text)
+            self.assertNotIn("余额发生了变化", first.memory_text)
 
             second_event = _poke_event("poke-coin-2", group_id=10001)
             second_gateway = NapCatQQGateway(
@@ -152,6 +163,11 @@ class QQPokeReactorTests(unittest.TestCase):
                 )["coins"],
                 2,
             )
+
+    def test_variant_plan_uses_a_complete_recipient_fact(self) -> None:
+        plan = PokeEventReactor(rng=VariantRng()).plan(snapshot={"coins": 0}, shop_items=[])
+        self.assertEqual(plan["outcome_kind"], "variant")
+        self.assertEqual(plan["variant"], "这一戳被你躲开了")
 
 
 if __name__ == "__main__":

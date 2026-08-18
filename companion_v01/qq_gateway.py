@@ -3570,6 +3570,7 @@ class NapCatQQGateway:
                         relation_user_id=relation_user_id,
                         item_id=item_id,
                         item_effects=body_effects,
+                        source="offering",
                         now_ms=ts_ms,
                     )
                     if use_result["status"] == "not_in_inventory":
@@ -4346,7 +4347,7 @@ def _render_poke_mutation_outcome(
     if outcome_kind == "consume_inventory_item":
         item_desc = f"{item_name} x{count}" if count > 1 else item_name
         memory_text = f"刚才发生的互动：{actor_label}戳了戳你，你从{owner}背包里偷吃了{item_desc}。"
-        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"{item_name}已真实消耗。"]
+        fact_lines = [memory_text.removeprefix("刚才发生的互动：")]
         if seasonal_note:
             fact_lines.append(seasonal_note)
         fact_lines.append(f"实际效果：{_render_poke_effects(result)}。")
@@ -4370,7 +4371,14 @@ def _render_poke_mutation_outcome(
         mutation = result.get("mutation") if isinstance(result.get("mutation"), dict) else {}
         actual_delta = int(mutation.get("actual_delta") or 0)
         delta_text = _signed_number(actual_delta)
-        memory_text = f"刚才发生的互动：{actor_label}戳了戳你，{owner}余额发生了变化：金币 {delta_text}。"
+        amount = abs(actual_delta)
+        if actual_delta > 0:
+            scene = f"{actor_label}戳了戳你，你顺手往{owner}口袋里塞了{amount}枚金币。"
+        elif actual_delta < 0:
+            scene = f"{actor_label}戳了戳你，{owner}口袋里的{amount}枚金币被你顺走了。"
+        else:
+            scene = f"{actor_label}戳了戳你，{owner}口袋里的金币没有变化。"
+        memory_text = f"刚才发生的互动：{scene}"
         fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
         mutations = [dict(mutation)]
     elif outcome_kind == "lottery":
@@ -4610,51 +4618,3 @@ def _format_effects_summary(effects: dict[str, Any]) -> str:
     if effects.get("random_affection"):
         parts.append("好感随机±")
     return "  ".join(parts)
-
-
-def _build_item_effect_reaction_hint(
-    *,
-    item_name: str,
-    effects_applied: dict[str, Any],
-    hunger: int,
-    energy: int,
-) -> str:
-    """Build an explicit LLM-facing reaction hint for special item effects."""
-    hints: list[str] = []
-    if "energy_set" in effects_applied:
-        target = int(effects_applied.get("energy_set", energy))
-        if target >= 80:
-            hints.append(
-                f"特别说明：「{item_name}」刚刚让精力恢复到 {target}/100；"
-                "这不是普通闲聊，回复里必须明显表现出困意被驱散、眼神清醒或精神突然回来的身体反应。"
-            )
-        elif target <= 20:
-            hints.append(
-                f"特别说明：「{item_name}」刚刚让精力降到 {target}/100；回复里必须表现出明显犯困、反应变慢或想休息。"
-            )
-    if "hunger_set" in effects_applied:
-        target = int(effects_applied.get("hunger_set", hunger))
-        if target <= 20:
-            hints.append(
-                f"特别说明：「{item_name}」刚刚让饥饿降到 {target}/100；"
-                "0/100 不是不饿，而是饿到极限、胃里空得发慌；"
-                "回复里必须表现出突然非常饿、注意力被吃的占住，可以直接要吃的。"
-                "禁止说“不饿了”“胃不叫了”“饿感消失”或“空但不饿”。"
-            )
-        elif target >= 80:
-            hints.append(
-                f"特别说明：「{item_name}」刚刚让饥饿恢复到 {target}/100；回复里必须表现出胃里踏实、被喂饱或状态回稳。"
-            )
-    if effects_applied.get("random_vitals"):
-        hints.append(
-            f"特别说明：「{item_name}」刚刚触发随机体征变化；"
-            "回复里要承认身体状态发生了不可预测的变化，并按当前饥饿/精力结果反应。"
-        )
-    if effects_applied.get("random_affection"):
-        hints.append(
-            f"特别说明：「{item_name}」刚刚触发随机好感变化；"
-            "回复里可以表现出对这个道具效果的意外，但不要忽略当前状态变化。"
-        )
-    if hints:
-        hints.append("可以吐槽道具来路或用户乱来，但不能只有吐槽；必须把道具造成的身体变化演出来。")
-    return "".join(hints)
