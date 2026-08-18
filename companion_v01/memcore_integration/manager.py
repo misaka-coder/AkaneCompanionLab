@@ -1943,7 +1943,21 @@ class MemcoreManager:
                 "diagnostics": [],
             }
         try:
-            surface = system.build_context_surface(
+            surface_builder = getattr(system, "build_context_surface", None)
+            if not callable(surface_builder):
+                projection = self.build_context_projection(
+                    provider_profile=profile,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
+                return self._surface_from_legacy_projection(
+                    projection,
+                    provider_profile=profile,
+                    current_source_id=current_source_id,
+                    active_turn_messages=active_turn_messages,
+                )
+            surface = surface_builder(
                 session_id=session_id,
                 provider_profile=profile,
                 current_source_id=str(current_source_id or "").strip() or None,
@@ -1967,6 +1981,115 @@ class MemcoreManager:
                 "projection_generation": 0,
                 "diagnostics": [],
             }
+
+    def _surface_from_legacy_projection(
+        self,
+        projection: dict[str, Any],
+        *,
+        provider_profile: str,
+        current_source_id: str,
+        active_turn_messages: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Adapt the installed pre-surface MemCore contract during migration."""
+
+        operation = "build_context_surface"
+        if not bool(projection.get("ok")):
+            return {
+                **self._status(
+                    operation,
+                    False,
+                    str(projection.get("status") or "failed"),
+                    reason=str(projection.get("reason") or "projection_build_failed"),
+                ),
+                "version": "context_surface_v1",
+                "provider_profile": str(projection.get("provider_profile") or provider_profile),
+                "history_messages": [],
+                "current_message": None,
+                "active_turn_messages": [],
+                "message_source_ids": [],
+                "projection_hash": "",
+                "projection_generation": 0,
+                "diagnostics": ["legacy_context_projection_adapter"],
+            }
+
+        records = [
+            dict(item)
+            for item in list(projection.get("messages") or [])
+            if isinstance(item, dict)
+        ]
+        current_id = str(current_source_id or "").strip()
+        current_index = next(
+            (
+                index
+                for index, item in enumerate(records)
+                if current_id and current_id in {
+                    str(source_id or "").strip()
+                    for source_id in list(item.get("source_ids") or [])
+                }
+            ),
+            None,
+        )
+        history_records = records if current_index is None else records[:current_index]
+        current_record = records[current_index] if current_index is not None else None
+        active_records = [] if current_index is None else records[current_index + 1 :]
+        active = [
+            dict(item.get("payload") or {})
+            for item in active_records
+            if isinstance(item.get("payload"), dict)
+        ]
+        active_payloads = [
+            dict(item)
+            for item in list(active_turn_messages or [])
+            if isinstance(item, dict)
+        ]
+        message_source_ids = [
+            [str(source_id or "") for source_id in list(item.get("source_ids") or []) if str(source_id or "")]
+            for item in history_records
+        ]
+        current_message = (
+            dict(current_record.get("payload") or {})
+            if isinstance(current_record, dict) and isinstance(current_record.get("payload"), dict)
+            else None
+        )
+        if current_record is not None:
+            message_source_ids.append(
+                [
+                    str(source_id or "")
+                    for source_id in list(current_record.get("source_ids") or [])
+                    if str(source_id or "")
+                ]
+            )
+        message_source_ids.extend(
+            [
+                [
+                    str(source_id or "")
+                    for source_id in list(item.get("source_ids") or [])
+                    if str(source_id or "")
+                ]
+                for item in active_records
+            ]
+        )
+        message_source_ids.extend([[] for _ in active_payloads])
+        return {
+            **self._status(operation, True, "ok"),
+            "version": "context_surface_v1",
+            "provider_profile": str(projection.get("provider_profile") or provider_profile),
+            "history_messages": [
+                dict(item.get("payload") or {})
+                for item in history_records
+                if isinstance(item.get("payload"), dict)
+            ],
+            "current_message": current_message,
+            "active_turn_messages": [*active, *active_payloads],
+            "message_source_ids": message_source_ids,
+            "current_turn_id": str((current_record or {}).get("turn_id") or ""),
+            "projection_hash": str(projection.get("stable_prefix_hash") or ""),
+            "projection_version": int(projection.get("projection_version") or 1),
+            "projection_generation": int(projection.get("projection_generation") or 0),
+            "compaction_generation": int(projection.get("compaction_generation") or 0),
+            "has_compact_history": bool(projection.get("has_compact_history")),
+            "diagnostics": ["legacy_context_projection_adapter"],
+        }
 
     def run_legacy_path_projection_migration(self, *, dry_run: bool = False) -> dict[str, Any]:
         """Explicit pre-traffic maintenance: migrate legacy path-damage projections.

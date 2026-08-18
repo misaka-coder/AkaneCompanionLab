@@ -996,6 +996,66 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("history_messages", recorded)
         self.assertNotIn("stable system prefix", repr(recorded))
 
+    def test_context_surface_adapts_legacy_projection_system(self) -> None:
+        class LegacyProjectionSystem:
+            def build_context_projection(self, *, provider_profile: str):
+                self.provider_profile = provider_profile
+                return SimpleNamespace(
+                    provider_profile=provider_profile,
+                    messages=[
+                        SimpleNamespace(
+                            turn_id="turn-history",
+                            payload={"role": "assistant", "content": "旧回复"},
+                            source_ids=("history-source",),
+                            payload_hash="history-hash",
+                            projection_status="complete",
+                            projection_index=0,
+                            projection_version=1,
+                        ),
+                        SimpleNamespace(
+                            turn_id="turn-current",
+                            payload={"role": "user", "content": "当前消息"},
+                            source_ids=("current-source",),
+                            payload_hash="current-hash",
+                            projection_status="complete",
+                            projection_index=1,
+                            projection_version=1,
+                        ),
+                    ],
+                    payloads=[
+                        {"role": "assistant", "content": "旧回复"},
+                        {"role": "user", "content": "当前消息"},
+                    ],
+                    stable_prefix_hash="a" * 64,
+                    projection_version=1,
+                    compaction_generation=2,
+                    projection_generation=3,
+                    has_compact_history=False,
+                )
+
+        manager = MemcoreManager.__new__(MemcoreManager)
+        manager._reason = ""
+        system = LegacyProjectionSystem()
+        manager._get_system_or_none = lambda **_kwargs: system
+
+        surface = manager.build_context_surface(
+            provider_profile="responses",
+            current_source_id="current-source",
+            active_turn_messages=[{"role": "user", "content": "工具轮消息"}],
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+        )
+
+        self.assertTrue(surface["ok"], surface)
+        self.assertEqual(system.provider_profile, "openai_chat")
+        self.assertEqual(surface["history_messages"], [{"role": "assistant", "content": "旧回复"}])
+        self.assertEqual(surface["current_message"], {"role": "user", "content": "当前消息"})
+        self.assertEqual(surface["active_turn_messages"], [{"role": "user", "content": "工具轮消息"}])
+        self.assertEqual(surface["message_source_ids"], [["history-source"], ["current-source"], []])
+        self.assertEqual(surface["current_turn_id"], "turn-current")
+        self.assertEqual(surface["diagnostics"], ["legacy_context_projection_adapter"])
+
     def test_real_request_observer_freezes_actual_user_and_raw_assistant_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
