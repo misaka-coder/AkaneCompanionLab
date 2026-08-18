@@ -416,10 +416,10 @@ class QQFeedItemPromptTests(unittest.TestCase):
             self.assertIsInstance(feed_result, dict)
             self.assertTrue(feed_result["_llm_passthrough"])
             self.assertEqual(feed_result["turn_message"], "刚才发生的互动：休比投喂了你「逆转卡」。")
-            self.assertIn("休比此刻给了你", feed_result["qq_action_note"])
+            self.assertIn("休比投喂了你", feed_result["qq_action_note"])
             self.assertIn("逆转卡", feed_result["qq_action_note"])
-            self.assertIn("把饥饿值和精力值交换了", feed_result["qq_action_note"])
-            self.assertIn("不要理解成用户说反了", feed_result["qq_action_note"])
+            self.assertIn("饥饿值与精力值互换", feed_result["qq_action_note"])
+            self.assertNotIn("不要理解成用户说反了", feed_result["qq_action_note"])
             self.assertIn("饥饿 88/100，精力 9/100", feed_result["qq_action_note"])
 
     def test_energy_full_charm_note_requires_visible_recovery(self) -> None:
@@ -468,9 +468,9 @@ class QQFeedItemPromptTests(unittest.TestCase):
             self.assertTrue(feed_result["_llm_passthrough"])
             note = feed_result["qq_action_note"]
             self.assertIn("精力满格符", note)
-            self.assertIn("精力恢复到 100/100", note)
-            self.assertIn("必须明显表现出困意被驱散", note)
-            self.assertIn("不能只有吐槽", note)
+            self.assertIn("精力值设为 100/100", note)
+            self.assertNotIn("必须明显表现出困意被驱散", note)
+            self.assertNotIn("不能只有吐槽", note)
             self.assertIn("饥饿 45/100，精力 100/100", note)
 
     def test_hunger_zero_card_note_prevents_not_hungry_wording(self) -> None:
@@ -519,10 +519,10 @@ class QQFeedItemPromptTests(unittest.TestCase):
             self.assertTrue(feed_result["_llm_passthrough"])
             note = feed_result["qq_action_note"]
             self.assertIn("饥饿置零卡", note)
-            self.assertIn("0/100 不是不饿", note)
-            self.assertIn("饿到极限", note)
-            self.assertIn("禁止说", note)
-            self.assertIn("胃不叫了", note)
+            self.assertIn("饥饿值设为 0/100", note)
+            self.assertNotIn("饿到极限", note)
+            self.assertNotIn("禁止说", note)
+            self.assertNotIn("胃不叫了", note)
             self.assertIn("饥饿 0/100，精力 70/100", note)
 
 

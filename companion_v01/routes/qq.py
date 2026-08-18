@@ -2120,6 +2120,70 @@ def build_qq_router(
             _qq_turn_extra_context_note = ""
             _qq_native_user_images: list[dict[str, Any]] = []
 
+            if context.reason == "qq_poke":
+                _care_module_getter = getattr(engine, "get_care_module", None)
+                _care_module = _care_module_getter() if callable(_care_module_getter) else None
+                _char_resources = getattr(engine, "desktop_pet_character_resources", None)
+                _shop_items = (
+                    _char_resources.load_care_shop_items(context.character_pack_id)
+                    if _care_module is not None
+                    and _care_module.enabled
+                    and _char_resources
+                    and context.character_pack_id
+                    else None
+                )
+                poke_handler = getattr(qq_gateway, "handle_poke_event", None)
+                poke_outcome = (
+                    await asyncio.to_thread(
+                        poke_handler,
+                        context,
+                        event,
+                        care_module=_care_module,
+                        shop_items=_shop_items,
+                        now_ms=int(event.get("time") or time.time()) * 1000,
+                    )
+                    if callable(poke_handler)
+                    else None
+                )
+                if poke_outcome is not None and str(getattr(poke_outcome, "status", "") or "") == "duplicate":
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=True)
+                    log_event(
+                        "qq_poke_duplicate",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        event_id=str(getattr(poke_outcome, "event_id", "") or ""),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "duplicate",
+                            "reason": "poke_event_already_applied",
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+                        }
+                    )
+                if poke_outcome is not None:
+                    _qq_turn_message_override = str(getattr(poke_outcome, "memory_text", "") or "").strip()
+                    _qq_action_note = str(getattr(poke_outcome, "prompt_text", "") or "").strip()
+                    if str(getattr(poke_outcome, "status", "") or "") == "failed":
+                        log_event(
+                            "qq_poke_reactor_failed",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            event_id=str(getattr(poke_outcome, "event_id", "") or ""),
+                            reason=str(getattr(poke_outcome, "reason", "") or "state_apply_failed"),
+                        )
+                    else:
+                        log_event(
+                            "qq_poke_reactor",
+                            session_id=context.session_id,
+                            profile_user_id=context.profile_user_id,
+                            event_id=str(getattr(poke_outcome, "event_id", "") or ""),
+                            outcome_kind=str(getattr(poke_outcome, "outcome_kind", "") or "plain"),
+                            outcome_status=str(getattr(poke_outcome, "status", "") or "ok"),
+                        )
+
             group_vision_command_result = qq_gateway.handle_group_vision_command(
                 context,
                 sender_role=_qq_sender_role(event),
@@ -2621,6 +2685,9 @@ def build_qq_router(
                     # Economy action processed; hand off to LLM for the actual reply
                     economy_note = str(economy_command_result.get("qq_action_note") or "").strip()
                     _qq_action_note = "\n".join(part for part in [_qq_action_note, economy_note] if part)
+                    economy_turn_message = str(economy_command_result.get("turn_message") or "").strip()
+                    if economy_turn_message:
+                        _qq_turn_message_override = economy_turn_message
                     # fall through to LLM pipeline below
                 else:
                     reply = str(economy_command_result.get("reply") or "").strip()

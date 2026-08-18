@@ -2361,7 +2361,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertNotIn(f"QQ {QQ_USER_FIXTURE_ID}", turn_payload["extra_context"])
         self.assertIn("我就是本轮戳一戳的发送者", turn_payload["extra_context"])
         self.assertIn("戳了戳你", turn_payload["extra_context"])
-        self.assertIn("请优先依据本轮 QQ 事件里的发送者标识来回应", turn_payload["extra_context"])
+        self.assertNotIn("请优先依据本轮 QQ 事件里的发送者标识来回应", turn_payload["extra_context"])
         poke_logs = [payload for event_name, payload in log_calls if event_name == "qq_poke_context"]
         self.assertEqual(len(poke_logs), 1)
         self.assertEqual(poke_logs[0]["event_sender_id"], str(QQ_USER_FIXTURE_ID))

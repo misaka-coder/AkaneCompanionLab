@@ -17,6 +17,7 @@ from typing import Any
 SCHEMA_VERSION = "akane.care_runtime.v2"
 DESKTOP_AUTHORITY_VERSION = 1
 MAX_DESKTOP_INVENTORY_ITEMS = 128
+MAX_CARE_EVENT_LEDGER = 2048
 
 DEFAULT_CHECKIN_COINS = 10
 # Passive energy recovery per hour (server-side, QQ mode only): 30/h = 1 point per 2 minutes
@@ -1148,6 +1149,9 @@ class CareRuntimeStore:
         count: int = 1,
         item_effects: dict[str, Any] | None = None,
         item_category: str = "",
+        item_metadata: dict[str, Any] | None = None,
+        source: str = "direct_purchase",
+        event_id: str = "",
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Deduct coins and place item(s) in user's personal inventory. Does not apply item effects."""
@@ -1186,14 +1190,43 @@ class CareRuntimeStore:
                 inventory[item_id]["count"] = inventory[item_id].get("count", 0) + count
                 if item_effects:
                     inventory[item_id]["effects"] = dict(item_effects)
+                if isinstance(item_metadata, dict):
+                    for key in ("seasonal", "seasonal_label", "seasonal_emoji"):
+                        if key in item_metadata:
+                            inventory[item_id][key] = item_metadata[key]
+                sources = inventory[item_id].get("acquisition_sources")
+                if not isinstance(sources, dict):
+                    sources = {}
+                    inventory[item_id]["acquisition_sources"] = sources
+                sources[source] = int(sources.get(source) or 0) + count
             else:
                 entry_data: dict[str, Any] = {"name": item_name, "count": count}
                 if item_effects:
                     entry_data["effects"] = dict(item_effects)
                 if item_category:
                     entry_data["category"] = str(item_category)
+                if isinstance(item_metadata, dict):
+                    for key in ("seasonal", "seasonal_label", "seasonal_emoji"):
+                        if key in item_metadata:
+                            entry_data[key] = item_metadata[key]
+                entry_data["acquisition_sources"] = {source: count}
                 inventory[item_id] = entry_data
             relation["updated_at"] = now_ms
+            self._record_care_event(
+                state,
+                {
+                    "event_id": str(event_id or ""),
+                    "source": str(source or "direct_purchase"),
+                    "kind": "inventory_grant",
+                    "profile_user_id": profile_user_id,
+                    "character_pack_id": character_pack_id,
+                    "relation_user_id": relation_user_id or profile_user_id,
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "count": count,
+                    "timestamp_ms": now_ms,
+                },
+            )
             self._save(state)
             return {
                 "status": "ok",
@@ -1220,6 +1253,10 @@ class CareRuntimeStore:
         item_id: str,
         item_effects: dict[str, Any] | None = None,
         count: int = 1,
+        source: str = "direct_feed",
+        event_id: str = "",
+        scope_key: str = "",
+        group_scope_key: str = "",
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         """Consume item(s) from user's inventory and apply scaled effects to shared body."""
@@ -1229,6 +1266,10 @@ class CareRuntimeStore:
         now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
         with self._lock:
             state = self._load()
+            if event_id:
+                previous = self._find_care_event(state, event_id)
+                if previous is not None:
+                    return {"status": "duplicate", "event_id": event_id, "event": previous}
             body = self._body_entry(state, character_pack_id=character_pack_id)
             relation = self._relation_entry(
                 state,
@@ -1276,6 +1317,13 @@ class CareRuntimeStore:
             # ── Apply effects ─────────────────────────────────────────
             hunger_now = _bounded_int(body.get("hunger"), 0, 100, fallback=55)
             energy_now = _bounded_int(body.get("energy"), 0, 100, fallback=70)
+            aff_before = _bounded_int(relation.get("qq_affection"), 0, 100, fallback=10)
+            state_before = {
+                "hunger": hunger_now,
+                "energy": energy_now,
+                "affection": aff_before,
+                "coins": _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0),
+            }
 
             # Additive
             for key in ("hunger", "energy"):
@@ -1310,7 +1358,6 @@ class CareRuntimeStore:
             body["updated_at"] = now_ms
 
             # Affection
-            aff_before = _bounded_int(relation.get("qq_affection"), 0, 100, fallback=10)
             current_aff = aff_before
             if "affection" in effects:
                 current_aff = max(0, min(100, current_aff + int(effects["affection"]) * count))
@@ -1328,6 +1375,25 @@ class CareRuntimeStore:
             if "first_fed" not in anchors:
                 anchors["first_fed"] = {"name": item_name, "ms": now_ms}
             relation["updated_at"] = now_ms
+            self._record_care_event(
+                state,
+                {
+                    "event_id": str(event_id or ""),
+                    "source": str(source or "direct_feed"),
+                    "kind": "inventory_consume",
+                    "status": "ok",
+                    "profile_user_id": profile_user_id,
+                    "character_pack_id": character_pack_id,
+                    "relation_user_id": relation_user_id or profile_user_id,
+                    "scope_key": str(scope_key or ""),
+                    "group_scope_key": str(group_scope_key or ""),
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "count": count,
+                    "effects_applied": dict(effects),
+                    "timestamp_ms": now_ms,
+                },
+            )
             self._save(state)
             return {
                 "status": "ok",
@@ -1335,6 +1401,7 @@ class CareRuntimeStore:
                 "item_name": item_name,
                 "count_used": count,
                 "effects_applied": effects,
+                "state_before": state_before,
                 "snapshot": self._snapshot(
                     state,
                     character_pack_id=character_pack_id,
@@ -1343,6 +1410,316 @@ class CareRuntimeStore:
                     now_ms=now_ms,
                 ),
             }
+
+    def grant_to_inventory(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        item_id: str,
+        item_name: str,
+        count: int = 1,
+        item_effects: dict[str, Any] | None = None,
+        item_category: str = "",
+        item_metadata: dict[str, Any] | None = None,
+        source: str = "poke_drop",
+        event_id: str = "",
+        scope_key: str = "",
+        group_scope_key: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Grant inventory items without routing the action through purchase."""
+        item_id = str(item_id or "").strip()
+        item_name = str(item_name or item_id).strip()
+        count = max(1, min(99, int(count or 1)))
+        if not item_id:
+            return {"status": "invalid_item"}
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        with self._lock:
+            state = self._load()
+            if event_id:
+                previous = self._find_care_event(state, event_id)
+                if previous is not None:
+                    return {"status": "duplicate", "event_id": event_id, "event": previous}
+            relation = self._relation_entry(
+                state,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id or profile_user_id,
+            )
+            inventory = relation.setdefault("inventory", {})
+            entry = inventory.get(item_id)
+            if not isinstance(entry, dict):
+                entry = {"name": item_name, "count": 0}
+                inventory[item_id] = entry
+            entry["name"] = item_name
+            entry["count"] = min(999, int(entry.get("count") or 0) + count)
+            if item_effects:
+                entry["effects"] = dict(item_effects)
+            if item_category:
+                entry["category"] = str(item_category)
+            if isinstance(item_metadata, dict):
+                for key in ("seasonal", "seasonal_label", "seasonal_emoji"):
+                    if key in item_metadata:
+                        entry[key] = item_metadata[key]
+            sources = entry.get("acquisition_sources")
+            if not isinstance(sources, dict):
+                sources = {}
+                entry["acquisition_sources"] = sources
+            source_key = str(source or "poke_drop")
+            sources[source_key] = int(sources.get(source_key) or 0) + count
+            relation["updated_at"] = now_ms
+            mutation = {
+                "kind": "inventory_grant",
+                "item_id": item_id,
+                "item_name": item_name,
+                "count": count,
+                "source": source_key,
+                "inventory_count": entry["count"],
+            }
+            self._record_care_event(
+                state,
+                {
+                    "event_id": str(event_id or ""),
+                    "source": source_key,
+                    "kind": "inventory_grant",
+                    "status": "ok",
+                    "profile_user_id": profile_user_id,
+                    "character_pack_id": character_pack_id,
+                    "relation_user_id": relation_user_id or profile_user_id,
+                    "scope_key": str(scope_key or ""),
+                    "group_scope_key": str(group_scope_key or ""),
+                    "mutation": mutation,
+                    "timestamp_ms": now_ms,
+                },
+            )
+            self._save(state)
+            return {
+                "status": "ok",
+                "mutation": mutation,
+                "snapshot": self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id or profile_user_id,
+                    now_ms=now_ms,
+                ),
+            }
+
+    def adjust_qq_coins(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        amount: int,
+        source: str = "poke",
+        event_id: str = "",
+        scope_key: str = "",
+        group_scope_key: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Apply a signed coin delta to one QQ relation."""
+        amount = int(amount or 0)
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        with self._lock:
+            state = self._load()
+            if event_id:
+                previous = self._find_care_event(state, event_id)
+                if previous is not None:
+                    return {"status": "duplicate", "event_id": event_id, "event": previous}
+            relation = self._relation_entry(
+                state,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id or profile_user_id,
+            )
+            before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
+            after = _bounded_int(before + amount, 0, 999999)
+            actual_delta = after - before
+            relation["qq_coins"] = after
+            relation["updated_at"] = now_ms
+            mutation = {
+                "kind": "coin_change",
+                "requested_delta": amount,
+                "actual_delta": actual_delta,
+                "coins_before": before,
+                "coins_after": after,
+                "source": str(source or "poke"),
+            }
+            self._record_care_event(
+                state,
+                {
+                    "event_id": str(event_id or ""),
+                    "source": str(source or "poke"),
+                    "kind": "coin_change",
+                    "status": "ok",
+                    "profile_user_id": profile_user_id,
+                    "character_pack_id": character_pack_id,
+                    "relation_user_id": relation_user_id or profile_user_id,
+                    "scope_key": str(scope_key or ""),
+                    "group_scope_key": str(group_scope_key or ""),
+                    "mutation": mutation,
+                    "timestamp_ms": now_ms,
+                },
+            )
+            self._save(state)
+            return {
+                "status": "ok",
+                "mutation": mutation,
+                "snapshot": self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id or profile_user_id,
+                    now_ms=now_ms,
+                ),
+            }
+
+    def apply_poke_plan(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        plan: dict[str, Any],
+        event_id: str,
+        scope_key: str,
+        group_scope_key: str = "",
+        cooldown_ms: int = 30_000,
+        group_cooldown_ms: int = 2_000,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically apply a resolved poke plan with replay and cooldown guards."""
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        plan = dict(plan or {})
+        outcome_kind = str(plan.get("outcome_kind") or "plain")
+        stateful = outcome_kind in {
+            "coin_change",
+            "grant_inventory_item",
+            "consume_inventory_item",
+            "lottery",
+        }
+        with self._lock:
+            state = self._load()
+            previous = self._find_care_event(state, event_id)
+            if previous is not None:
+                return {"status": "duplicate", "event": previous}
+            if stateful and self._poke_cooldown_active(
+                state,
+                scope_key=scope_key,
+                group_scope_key=group_scope_key,
+                now_ms=now_ms,
+                cooldown_ms=max(0, int(cooldown_ms or 0)),
+                group_cooldown_ms=max(0, int(group_cooldown_ms or 0)),
+            ):
+                event = {
+                    "event_id": event_id,
+                    "source": "poke",
+                    "kind": "poke_cooldown",
+                    "status": "cooldown",
+                    "scope_key": scope_key,
+                    "group_scope_key": group_scope_key,
+                    "timestamp_ms": now_ms,
+                }
+                self._record_care_event(state, event)
+                self._save(state)
+                return {"status": "cooldown", "event": event}
+
+            if outcome_kind == "consume_inventory_item":
+                item = plan.get("item") if isinstance(plan.get("item"), dict) else {}
+                result = self.use_from_inventory(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    item_id=str(plan.get("item_id") or ""),
+                    item_effects=dict(item.get("effects") or {}),
+                    count=int(plan.get("count") or 1),
+                    source="poke_consume",
+                    event_id=event_id,
+                    scope_key=scope_key,
+                    group_scope_key=group_scope_key,
+                    now_ms=now_ms,
+                )
+                if result.get("status") == "ok":
+                    result["outcome_kind"] = outcome_kind
+                return result
+
+            if outcome_kind == "grant_inventory_item":
+                item = plan.get("item") if isinstance(plan.get("item"), dict) else {}
+                return self.grant_to_inventory(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    item_id=str(item.get("id") or ""),
+                    item_name=str(item.get("name") or item.get("id") or "物品"),
+                    count=int(plan.get("count") or 1),
+                    item_effects=dict(item.get("effects") or {}),
+                    item_category=str(item.get("category") or ""),
+                    item_metadata=item,
+                    source="poke_drop",
+                    event_id=event_id,
+                    scope_key=scope_key,
+                    group_scope_key=group_scope_key,
+                    now_ms=now_ms,
+                )
+
+            if outcome_kind == "coin_change":
+                return self.adjust_qq_coins(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    amount=int(plan.get("coin_delta") or 0),
+                    source="poke",
+                    event_id=event_id,
+                    scope_key=scope_key,
+                    group_scope_key=group_scope_key,
+                    now_ms=now_ms,
+                )
+
+            if outcome_kind == "lottery":
+                lottery = self.draw_fortune_slip(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    slip_cost=5,
+                    now_ms=now_ms,
+                )
+                if lottery.get("status") != "ok":
+                    return lottery
+                event = {
+                    "event_id": event_id,
+                    "source": "poke",
+                    "kind": "lottery",
+                    "status": "ok",
+                    "scope_key": scope_key,
+                    "group_scope_key": group_scope_key,
+                    "mutation": dict(lottery),
+                    "timestamp_ms": now_ms,
+                }
+                self._record_care_event(state, event)
+                self._save(state)
+                lottery["outcome_kind"] = outcome_kind
+                return lottery
+
+            event = {
+                "event_id": event_id,
+                "source": "poke",
+                "kind": outcome_kind,
+                "status": "ok",
+                "scope_key": scope_key,
+                "group_scope_key": group_scope_key,
+                "variant": str(plan.get("variant") or ""),
+                "timestamp_ms": now_ms,
+            }
+            self._record_care_event(state, event)
+            self._save(state)
+            return {"status": "ok", "outcome_kind": outcome_kind, "event": event, "snapshot": self._snapshot(
+                state,
+                character_pack_id=character_pack_id,
+                client_mode="qq_text",
+                relation_user_id=relation_user_id or profile_user_id,
+                now_ms=now_ms,
+            )}
 
     def _relation_entry(
         self,
@@ -1759,6 +2136,64 @@ class CareRuntimeStore:
                 relation_user_id=profile_user_id,
                 now_ms=now_ms,
             )
+
+    @staticmethod
+    def _find_care_event(state: dict[str, Any], event_id: str) -> dict[str, Any] | None:
+        target = str(event_id or "").strip()
+        if not target:
+            return None
+        events = state.get("care_events")
+        if not isinstance(events, list):
+            return None
+        for event in reversed(events):
+            if isinstance(event, dict) and str(event.get("event_id") or "") == target:
+                return dict(event)
+        return None
+
+    @staticmethod
+    def _record_care_event(state: dict[str, Any], event: dict[str, Any]) -> None:
+        events = state.setdefault("care_events", [])
+        if not isinstance(events, list):
+            events = []
+            state["care_events"] = events
+        event_id = str(event.get("event_id") or "").strip()
+        if event_id and CareRuntimeStore._find_care_event(state, event_id) is not None:
+            return
+        events.append(dict(event))
+        if len(events) > MAX_CARE_EVENT_LEDGER:
+            del events[:-MAX_CARE_EVENT_LEDGER]
+
+    @staticmethod
+    def _poke_cooldown_active(
+        state: dict[str, Any],
+        *,
+        scope_key: str,
+        group_scope_key: str,
+        now_ms: int,
+        cooldown_ms: int,
+        group_cooldown_ms: int,
+    ) -> bool:
+        events = state.get("care_events")
+        if not isinstance(events, list):
+            return False
+        for event in reversed(events):
+            if not isinstance(event, dict) or event.get("source") != "poke":
+                continue
+            if event.get("status") != "ok":
+                continue
+            if event.get("kind") not in {"coin_change", "inventory_grant", "inventory_consume", "lottery"}:
+                continue
+            previous_ms = int(event.get("timestamp_ms") or 0)
+            if previous_ms <= 0:
+                continue
+            elapsed = now_ms - previous_ms
+            if event.get("scope_key") == scope_key and elapsed < cooldown_ms:
+                return True
+            if group_scope_key and event.get("group_scope_key") == group_scope_key and elapsed < group_cooldown_ms:
+                return True
+            if elapsed > max(cooldown_ms, group_cooldown_ms):
+                break
+        return False
 
     def _load(self) -> dict[str, Any]:
         if self._state is not None:

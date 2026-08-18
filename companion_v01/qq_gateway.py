@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import threading
@@ -43,6 +44,7 @@ from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECK
 from .deployment_security import QQChannelRuntimeConfig
 from .model_service_config import normalize_provider_model_id
 from .onebot_transport import OneBotActionTransport
+from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 
 
 QQ_TEXT_CAPABILITIES = (
@@ -407,6 +409,7 @@ class NapCatQQGateway:
         channel_config: QQChannelRuntimeConfig | None = None,
         default_character_pack_id: str = "",
         wake_words: tuple[str, ...] | list[str] | None = None,
+        poke_reactor: PokeEventReactor | None = None,
     ) -> None:
         self._channel_config = channel_config
         transport_config = channel_config or QQChannelRuntimeConfig(
@@ -426,6 +429,7 @@ class NapCatQQGateway:
         self._wake_words = _normalize_qq_wake_words(wake_words)
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
         self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
+        self.poke_reactor = poke_reactor or PokeEventReactor()
         self._group_trigger = GroupTriggerPolicy(bot_account_id=self.bot_qq)
         require_self_id = self._channel_config.require_self_id if self._channel_config is not None else False
         self._event_admission = OneBotEventAdmission(
@@ -985,8 +989,7 @@ class NapCatQQGateway:
                 chat_model_override=chat_model_override,
                 session_id=session_id,
             )
-            + f"\n本轮 QQ 事件：{actor_label}双击头像戳了戳你；{actor_label}就是本轮戳一戳的发送者，请把它当作一次真实互动回应。"
-            + "\n若历史记忆、旧聊天记录或用户转述里出现“有人戳了戳你”这类模糊说法，请优先依据本轮 QQ 事件里的发送者标识来回应。",
+            + f"\n本轮 QQ 事件：{actor_label}双击头像戳了戳你；{actor_label}就是本轮戳一戳的发送者。",
         )
 
     def context_from_delivery_context(self, value: dict[str, Any]) -> QQMessageContext | None:
@@ -3073,6 +3076,108 @@ class NapCatQQGateway:
                     return {"action": "offering", "item_name": item_name}
         return None
 
+    def handle_poke_event(
+        self,
+        context: "QQMessageContext",
+        event: dict[str, Any],
+        *,
+        care_module: CareModulePort | None = None,
+        shop_items: list[dict[str, Any]] | None = None,
+        now_ms: int | None = None,
+    ) -> PokeOutcome | None:
+        """Resolve and apply a QQ poke side effect, then describe only its facts."""
+        if str(getattr(context, "reason", "") or "") != "qq_poke":
+            return None
+
+        actor_label = _poke_actor_label(context)
+        base_text = f"{actor_label}在 QQ 里戳了戳你的头像。"
+        event_id = self.poke_event_id(event, context=context)
+        plain = lambda *, status="ok", reason="", variant="": _build_poke_outcome(
+            actor_label=actor_label,
+            outcome_kind="variant" if variant else "plain",
+            event_id=event_id,
+            memory_text=(f"刚才发生的互动：{base_text}" if not variant else f"刚才发生的互动：{actor_label}戳了戳你，{variant}。"),
+            prompt_text=(f"【本轮戳一戳结果】{actor_label}戳了戳你，{variant}。" if variant else ""),
+            status=status,
+            reason=reason,
+        )
+
+        if care_module is None:
+            care_module = CareModulePort.disabled("not_configured")
+        care_runtime = care_module.runtime
+        if care_runtime is None:
+            return plain(status="disabled", reason=care_module.reason or "feature_disabled")
+
+        items = _merge_shop_items(DEFAULT_CARE_SHOP_ITEMS, shop_items or [])
+        items = _merge_shop_items(items, get_seasonal_shop_items())
+        profile_user_id = str(context.profile_user_id or "")
+        character_pack_id = str(context.character_pack_id or "")
+        relation_user_id = f"qq:{context.user_id}" if context.user_id else f"qq:{profile_user_id}"
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        scope_key, group_scope_key = _poke_scope_keys(context)
+        try:
+            snapshot = care_runtime.snapshot_for_client(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                client_mode="qq_text",
+                relation_user_id=relation_user_id,
+                now_ms=timestamp_ms,
+            )
+            plan = self.poke_reactor.plan(snapshot=snapshot, shop_items=items)
+            outcome_kind = str(plan.get("outcome_kind") or "plain")
+            if outcome_kind == "plain":
+                return plain(reason=str(plan.get("fallback_reason") or ""))
+            apply_result = care_runtime.apply_poke_plan(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id,
+                plan=plan,
+                event_id=event_id,
+                scope_key=scope_key,
+                group_scope_key=group_scope_key,
+                cooldown_ms=30_000,
+                group_cooldown_ms=2_000,
+                now_ms=timestamp_ms,
+            )
+            apply_status = str(apply_result.get("status") or "error")
+            if apply_status == "duplicate":
+                return _build_poke_outcome(
+                    actor_label=actor_label,
+                    outcome_kind=outcome_kind,
+                    event_id=event_id,
+                    memory_text="",
+                    prompt_text="",
+                    status="duplicate",
+                    reason="event_already_applied",
+                )
+            if apply_status == "cooldown":
+                return plain(status="cooldown", reason="stateful_event_cooldown")
+            if apply_status != "ok":
+                return plain(status="failed", reason=apply_status)
+            if outcome_kind == "variant":
+                return plain(variant=str(plan.get("variant") or "发生了奇怪的反应"))
+            return _render_poke_mutation_outcome(
+                actor_label=actor_label,
+                plan=plan,
+                result=apply_result,
+                event_id=event_id,
+            )
+        except Exception as exc:
+            return plain(status="failed", reason=f"{exc.__class__.__name__}:{exc}")
+
+    @staticmethod
+    def poke_event_id(event: dict[str, Any], *, context: "QQMessageContext") -> str:
+        """Build a stable replay key from the character, scope, actor, and event."""
+        raw_fingerprint = str(event.get("message_id") or event.get("event_id") or "").strip()
+        if not raw_fingerprint:
+            raw_fingerprint = hashlib.sha256(
+                json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        scope = f"group:{int(context.group_id)}" if context.is_group else f"private:{int(context.user_id)}"
+        actor = str(int(context.user_id or 0))
+        character = _safe_character_pack_id(context.character_pack_id) or "default_character"
+        return f"{character}|{scope}|actor:{actor}|event:{raw_fingerprint}"
+
     def handle_economy_command(
         self,
         context: "QQMessageContext",
@@ -3246,6 +3351,7 @@ class NapCatQQGateway:
                     count=qty,
                     item_effects=dict(matched.get("effects") or {}),
                     item_category=str(matched.get("category") or ""),
+                    item_metadata=matched,
                     now_ms=ts_ms,
                 )
                 if result["status"] == "insufficient_coins":
@@ -3360,54 +3466,26 @@ class NapCatQQGateway:
                         "status": "insufficient_count",
                     }
                 snap = result["snapshot"]
-                h = int(snap.get("hunger") or 0)
-                e = int(snap.get("energy") or 0)
-                eff_str = _format_applied_effects_note(result["effects_applied"], qty)
-                eff_note = f"（{eff_str}）" if eff_str else ""
-                if h < 15:
-                    hunger_desc = "极度饥饿"
-                elif h < 30:
-                    hunger_desc = "很饿"
-                elif h < 50:
-                    hunger_desc = "有些饿"
-                else:
-                    hunger_desc = ""
-                if e < 15:
-                    energy_desc = "精疲力竭"
-                elif e < 30:
-                    energy_desc = "很疲倦"
-                elif e < 50:
-                    energy_desc = "有些累"
-                else:
-                    energy_desc = ""
-                state_parts = [s for s in (hunger_desc, energy_desc) if s]
-                state_desc = "、".join(state_parts) if state_parts else "状态还行"
                 qty_str = f" x{qty}" if qty > 1 else ""
-                effect_context = _build_item_effect_reaction_hint(
-                    item_name=item_name_display,
-                    effects_applied=result["effects_applied"],
-                    hunger=h,
-                    energy=e,
-                )
-                if result["effects_applied"].get("hunger_energy_swap"):
-                    effect_context += (
-                        f"特别说明：这是「{item_name_display}」刚刚生效，把饥饿值和精力值交换了；"
-                        "不要理解成用户说反了，也不要说“你把饥饿和精力对调了”。"
-                    )
                 _feed_actor = context.sender_label or ("我" if not context.is_group else "用户")
+                feed_memory = f"刚才发生的互动：{_feed_actor}投喂了你「{item_name_display}」{qty_str}。"
+                feed_facts = [
+                    feed_memory.removeprefix("刚才发生的互动："),
+                    f"「{item_name_display}」已真实消耗。",
+                    f"实际效果：{_render_poke_effects(result)}。",
+                    f"投喂后状态：饥饿 {int(snap.get('hunger') or 0)}/100，精力 {int(snap.get('energy') or 0)}/100。",
+                ]
+                if isinstance(matched, dict):
+                    seasonal_note = _poke_seasonal_note(matched)
+                    if seasonal_note:
+                        feed_facts.insert(2, seasonal_note)
                 note = (
-                    f"【最新投喂】{_feed_actor}此刻给了你「{item_name_display}」{qty_str}{eff_note}。"
-                    f"{effect_context}"
-                    f"投喂后你的状态：饥饿 {h}/100，精力 {e}/100（{state_desc}）。"
-                    f"请用符合你当前状态和性格的方式回应——把真实感受说出来，"
-                    f"不只是念出食物名字，也不要假装特别感动。"
-                    f"这是此刻刚发生的投喂，与历史对话无关。"
+                    "【本轮投喂结果】\n" + "\n".join(feed_facts)
                 )
-                _feed_turn_msg = f"刚才发生的互动：{_feed_actor}投喂了你「{item_name_display}」。"
                 return {
                     "_llm_passthrough": True,
                     "qq_action_note": note,
-                    "turn_message": _feed_turn_msg,
+                    "turn_message": feed_memory,
                     "ok": True,
                     "status": "ok",
                 }
@@ -3429,38 +3507,16 @@ class NapCatQQGateway:
                         "status": "insufficient_coins",
                     }
                 fortune = result["fortune"]
-                net = result["net_coins"]
                 coins_after = result["coins_after"]
                 aff_delta = result["affection_delta"]
 
-                # Build LLM note based on fortune
-                if fortune == "大吉":
-                    reaction_hint = (
-                        "你可以显得很自信甚至有点得意——'神社的神力当然灵验'，但保持傲娇，不要过分热情。"
-                        f"用户好感也因此上升了（+{aff_delta}）。"
-                    )
-                elif fortune == "中吉":
-                    reaction_hint = "平静地告知结果就好，可以说'中吉也挺不错的'或者淡淡地点头表示满意。"
-                elif fortune == "小吉":
-                    reaction_hint = "小吉而已，可以说几乎回本了，语气平淡，不至于失落，也不必假装很好。"
-                elif fortune == "末吉":
-                    reaction_hint = (
-                        "末吉，什么都没得到。可以安慰两句'末吉不是坏签'，"
-                        "也可以直接说'运气就这样，下次再来'，不必太尴尬。"
-                    )
-                else:  # 凶
-                    reaction_hint = (
-                        "用户抽到了凶签，还额外损失了3金币。"
-                        "你可以用你的方式解释——'凶签是在提醒你注意些什么'，"
-                        "或者有点幸灾乐祸，或者尴尬地为神社辩护，"
-                        "但不要太过份，给个台阶下。"
-                    )
-
-                coin_desc = f"+{net} 金币" if net > 0 else (f"{net} 金币" if net < 0 else "金币不变")
+                actual_coin_delta = int(coins_after) - int(result.get("coins_before") or 0)
+                effect_parts = [f"金币 {_signed_number(actual_coin_delta)}"]
+                if aff_delta:
+                    effect_parts.append(f"QQ 好感 {_signed_number(aff_delta)}")
                 note = (
-                    f"【御神签结果】用户花了 {SLIP_COST} 金币抽了一签，结果是【{fortune}】"
-                    f"（{coin_desc}，当前 {coins_after} 金币）。{reaction_hint}"
-                    f"用你的语气宣布签运结果，把这件事说得有点仪式感，但别假装是大事。"
+                    f"【本轮抽签结果】用户花费 {SLIP_COST} 金币抽了一签，结果是【{fortune}】。"
+                    f"实际效果：{'，'.join(effect_parts)}；当前金币 {coins_after}。"
                 )
                 return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
 
@@ -3532,23 +3588,26 @@ class NapCatQQGateway:
                         item_effects={"affection": affection_effect},
                         now_ms=ts_ms,
                     )
-                    eff_parts = []
-                    for k, label in (("hunger", "饥饿"), ("energy", "精力"), ("affection", "好感")):
-                        v = int(effects.get(k) or 0)
-                        if v:
-                            eff_parts.append(f"{label}+{v}")
-                    eff_note = "（" + "、".join(eff_parts) + "）" if eff_parts else ""
-                    if result.get("daily_bonus"):
-                        note = (
-                            f"【最新供奉】用户此刻向博丽神社供奉了「{matched['name']}」{eff_note}，"
-                            f"这是今天的第一次供奉，请自然地回应。"
-                        )
-                    else:
-                        note = (
-                            f"【供奉通知】用户再次供奉「{matched['name']}」{eff_note}，"
-                            f"今日好感奖励已领取，但诚意依旧在。"
-                        )
-                    return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": result["status"]}
+                    daily_affection = int(result.get("affection_granted") or 0)
+                    body_effect = _render_poke_effects(use_result)
+                    offering_memory = f"刚才发生的互动：用户供奉了「{matched['name']}」。"
+                    offering_facts = [
+                        f"用户供奉了「{matched['name']}」，该物品已真实消耗。",
+                        f"物品效果：{body_effect}。",
+                        f"本次供奉实际增加 QQ 好感 {_signed_number(daily_affection)}。",
+                        f"这是当天第{'一次' if result.get('daily_bonus') else '二次及以后'}供奉。",
+                    ]
+                    seasonal_note = _poke_seasonal_note(matched)
+                    if seasonal_note:
+                        offering_facts.insert(1, seasonal_note)
+                    note = "【本轮供奉结果】\n" + "\n".join(offering_facts)
+                    return {
+                        "_llm_passthrough": True,
+                        "qq_action_note": note,
+                        "turn_message": offering_memory,
+                        "ok": True,
+                        "status": result["status"],
+                    }
 
                 # Free offering (no item)
                 result = care_runtime.claim_daily_offering(
@@ -3562,14 +3621,18 @@ class NapCatQQGateway:
                     now_ms=ts_ms,
                 )
                 aff_now = result["snapshot"]["affection"]
-                if result.get("daily_bonus"):
-                    note = (
-                        f"【最新供奉】用户此刻虔诚地向博丽神社供奉（好感+3，当前 {aff_now}/100），"
-                        f"这是今天的第一次供奉，请自然地回应。"
-                    )
-                else:
-                    note = f"【供奉通知】用户今日再次来供奉，今日好感奖励已领取，但依然来了（当前好感 {aff_now}/100）。"
-                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": result["status"]}
+                note = (
+                    "【本轮供奉结果】\n"
+                    f"用户进行了{'当天第一次' if result.get('daily_bonus') else '当天再次'}供奉。\n"
+                    f"实际效果：QQ 好感 {_signed_number(int(result.get('affection_granted') or 0))}，当前 QQ 好感 {aff_now}/100。"
+                )
+                return {
+                    "_llm_passthrough": True,
+                    "qq_action_note": note,
+                    "turn_message": "刚才发生的互动：用户向神社进行了供奉。",
+                    "ok": True,
+                    "status": result["status"],
+                }
 
         except Exception as exc:
             return {"ok": False, "reply": "养成系统暂时出错，请稍后再试。", "status": "error", "error": str(exc)}
@@ -4225,6 +4288,164 @@ def _item_usable_in_qq(item: dict[str, Any]) -> bool:
     return "qq" in [str(u).lower() for u in usable_in]
 
 
+def _poke_actor_label(context: QQMessageContext) -> str:
+    if not context.is_group:
+        return "我"
+    return context.sender_label or (f"QQ {context.user_id}" if context.user_id else "这位 QQ 用户")
+
+
+def _poke_scope_keys(context: QQMessageContext) -> tuple[str, str]:
+    character = _safe_character_pack_id(context.character_pack_id) or "default_character"
+    if context.is_group:
+        return (
+            f"{character}|group:{int(context.group_id)}|actor:{int(context.user_id)}",
+            f"{character}|group:{int(context.group_id)}",
+        )
+    return f"{character}|private:{int(context.user_id)}|actor:{int(context.user_id)}", ""
+
+
+def _build_poke_outcome(
+    *,
+    actor_label: str,
+    outcome_kind: str,
+    event_id: str,
+    memory_text: str,
+    prompt_text: str,
+    mutations: list[dict[str, Any]] | None = None,
+    status: str = "ok",
+    reason: str = "",
+) -> PokeOutcome:
+    return PokeOutcome(
+        event_kind="qq_poke",
+        source="poke",
+        actor_label=actor_label,
+        outcome_kind=outcome_kind,
+        memory_text=memory_text,
+        prompt_text=prompt_text,
+        mutations=tuple(dict(item) for item in (mutations or []) if isinstance(item, dict)),
+        status=status,
+        reason=reason,
+        event_id=event_id,
+    )
+
+
+def _render_poke_mutation_outcome(
+    *,
+    actor_label: str,
+    plan: dict[str, Any],
+    result: dict[str, Any],
+    event_id: str,
+) -> PokeOutcome:
+    outcome_kind = str(plan.get("outcome_kind") or "plain")
+    item = plan.get("item") if isinstance(plan.get("item"), dict) else {}
+    count = max(1, int(plan.get("count") or 1))
+    item_name = str(item.get("name") or plan.get("item_id") or "物品")
+    owner = "我的" if actor_label == "我" else f"{actor_label}的"
+    seasonal_note = _poke_seasonal_note(item)
+
+    if outcome_kind == "consume_inventory_item":
+        item_desc = f"{item_name} x{count}" if count > 1 else item_name
+        memory_text = f"刚才发生的互动：{actor_label}戳了戳你，你从{owner}背包里偷吃了{item_desc}。"
+        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"{item_name}已真实消耗。"]
+        if seasonal_note:
+            fact_lines.append(seasonal_note)
+        fact_lines.append(f"实际效果：{_render_poke_effects(result)}。")
+        mutations = [
+            {
+                "kind": "inventory_consume",
+                "item_id": str(result.get("item_id") or plan.get("item_id") or ""),
+                "item_name": item_name,
+                "count": int(result.get("count_used") or count),
+                "effects_applied": dict(result.get("effects_applied") or {}),
+            }
+        ]
+    elif outcome_kind == "grant_inventory_item":
+        item_desc = f"{item_name} x{count}" if count > 1 else item_name
+        memory_text = f"刚才发生的互动：{actor_label}戳了戳你，{item_desc}落进了{owner}背包。"
+        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"{item_desc}已加入{owner}背包。"]
+        if seasonal_note:
+            fact_lines.append(seasonal_note)
+        mutations = [dict(result.get("mutation") or {})]
+    elif outcome_kind == "coin_change":
+        mutation = result.get("mutation") if isinstance(result.get("mutation"), dict) else {}
+        actual_delta = int(mutation.get("actual_delta") or 0)
+        delta_text = _signed_number(actual_delta)
+        memory_text = f"刚才发生的互动：{actor_label}戳了戳你，{owner}余额发生了变化：金币 {delta_text}。"
+        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
+        mutations = [dict(mutation)]
+    elif outcome_kind == "lottery":
+        fortune = str(result.get("fortune") or "未知")
+        net_coins = int(result.get("coins_after") or 0) - int(result.get("coins_before") or 0)
+        affection_delta = int(result.get("affection_delta") or 0)
+        memory_text = f"刚才发生的互动：{actor_label}戳了戳你，触发了一次抽签，结果是{fortune}。"
+        effects = [f"金币 {_signed_number(net_coins)}"]
+        if affection_delta:
+            effects.append(f"QQ 好感 {_signed_number(affection_delta)}")
+        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：{'，'.join(effects)}。"]
+        mutations = [
+            {
+                "kind": "lottery",
+                "fortune": fortune,
+                "net_coins": net_coins,
+                "affection_delta": affection_delta,
+            }
+        ]
+    else:
+        return _build_poke_outcome(
+            actor_label=actor_label,
+            outcome_kind="plain",
+            event_id=event_id,
+            memory_text=f"刚才发生的互动：{actor_label}在 QQ 里戳了戳你的头像。",
+            prompt_text="",
+        )
+
+    return _build_poke_outcome(
+        actor_label=actor_label,
+        outcome_kind=outcome_kind,
+        event_id=event_id,
+        memory_text=memory_text,
+        prompt_text="【本轮戳一戳结果】\n" + "\n".join(fact_lines),
+        mutations=mutations,
+    )
+
+
+def _render_poke_effects(result: dict[str, Any]) -> str:
+    effects = dict(result.get("effects_applied") or {})
+    before = result.get("state_before") if isinstance(result.get("state_before"), dict) else {}
+    snapshot = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else {}
+    parts: list[str] = []
+    labels = (("hunger", "饥饿值"), ("energy", "精力值"), ("affection", "QQ 好感"))
+    for key, label in labels:
+        if f"{key}_set" in effects:
+            parts.append(f"{label}设为 {int(snapshot.get(key) or effects[f'{key}_set'])}/100")
+            continue
+        if key not in effects and not (
+            (key == "affection" and effects.get("random_affection"))
+            or (key in {"hunger", "energy"} and effects.get("random_vitals"))
+        ):
+            continue
+        old_value = int(before.get(key) or 0)
+        new_value = int(snapshot.get(key) or 0)
+        delta = new_value - old_value
+        if delta:
+            parts.append(f"{label} {_signed_number(delta)}")
+    if effects.get("hunger_energy_swap"):
+        parts.append("饥饿值与精力值互换")
+    return "，".join(parts) or "数值未变化"
+
+
+def _poke_seasonal_note(item: dict[str, Any]) -> str:
+    if not bool(item.get("seasonal")):
+        return ""
+    label = str(item.get("seasonal_label") or "限定")
+    return f"这是{label}限定商品。"
+
+
+def _signed_number(value: int) -> str:
+    value = int(value or 0)
+    return f"+{value}" if value > 0 else str(value)
+
+
 def _normalize_mface_payload(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -4389,38 +4610,6 @@ def _format_effects_summary(effects: dict[str, Any]) -> str:
     if effects.get("random_affection"):
         parts.append("好感随机±")
     return "  ".join(parts)
-
-
-def _format_applied_effects_note(effects_applied: dict[str, Any], count: int) -> str:
-    """Format what actually happened after item use, including resolved random values."""
-    parts: list[str] = []
-    hunger = int(effects_applied.get("hunger") or 0) * count
-    energy = int(effects_applied.get("energy") or 0) * count
-    affection = int(effects_applied.get("affection") or 0) * count
-    if hunger:
-        parts.append(f"饥饿{'+' if hunger > 0 else ''}{hunger}")
-    if energy:
-        parts.append(f"精力{'+' if energy > 0 else ''}{energy}")
-    if affection:
-        parts.append(f"好感{'+' if affection > 0 else ''}{affection}")
-    if "hunger_set" in effects_applied:
-        parts.append(f"饥饿→{int(effects_applied['hunger_set'])}")
-    if "energy_set" in effects_applied:
-        parts.append(f"精力→{int(effects_applied['energy_set'])}")
-    if "affection_set" in effects_applied:
-        parts.append(f"好感→{int(effects_applied['affection_set'])}")
-    if effects_applied.get("hunger_energy_swap"):
-        parts.append("饥饿⇄精力已互换")
-    h_delta = effects_applied.get("_resolved_h_delta")
-    e_delta = effects_applied.get("_resolved_e_delta")
-    aff_delta = effects_applied.get("_resolved_aff_delta")
-    if h_delta is not None:
-        parts.append(f"饥饿{'+' if int(h_delta) > 0 else ''}{int(h_delta)}（随机）")
-    if e_delta is not None:
-        parts.append(f"精力{'+' if int(e_delta) > 0 else ''}{int(e_delta)}（随机）")
-    if aff_delta is not None:
-        parts.append(f"好感{'+' if int(aff_delta) > 0 else ''}{int(aff_delta)}（随机）")
-    return "、".join(parts)
 
 
 def _build_item_effect_reaction_hint(
