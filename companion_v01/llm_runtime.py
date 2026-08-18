@@ -42,8 +42,9 @@ logger = logging.getLogger("akane.llm_runtime")
 
 # MemCore summaries are infrastructure work, not user-facing chat.  They use
 # the per-Bot chat credentials (which are known to be live) while keeping a
-# stable, capable model instead of inheriting a stale AUX/DeepSeek setting.
-MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-sol"
+# stable, cost-conscious model instead of inheriting a stale AUX/DeepSeek
+# setting.  This is infrastructure summarization, not user-facing chat.
+MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-luna"
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
