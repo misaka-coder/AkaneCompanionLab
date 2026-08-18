@@ -265,6 +265,16 @@ class _PromptContextMemcoreManager:
             "current_message": current,
             "active_turn_messages": active,
             "message_source_ids": [list(item.get("source_ids") or []) for item in records],
+            "message_projection_metadata": [
+                {
+                    "turn_id": str(item.get("turn_id") or ""),
+                    "source_ids": list(item.get("source_ids") or []),
+                    "projection_index": int(item.get("projection_index", index)),
+                    "projection_status": str(item.get("projection_status") or "complete"),
+                    "projection_version": int(item.get("projection_version") or 1),
+                }
+                for index, item in enumerate(records)
+            ],
             "projection_hash": str(projection.get("stable_prefix_hash") or "hash"),
             "projection_generation": int(projection.get("projection_generation") or 0),
             "projection_version": int(projection.get("projection_version") or 1),
@@ -1203,6 +1213,117 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(payloads[1], {"role": "assistant", "content": '{"speech":"第一答","memory_metadata":{}}'})
         self.assertNotIn("本轮状态", repr(payloads))
         self.assertEqual(generation_context["memcore_request_projection"]["status"], "recorded")
+
+    def test_context_surface_metadata_freezes_actual_request_without_version_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "poke-user", "content": "刚才发生了一次戳一戳。", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                engine.llm = SimpleNamespace(
+                    supports_request_observer=True,
+                    chat_provider_protocol=lambda **_kwargs: "openai_chat",
+                )
+                engine.memcore_manager = manager
+                with patch.object(config, "MEMORY_BACKEND", "memcore"):
+                    projection_read = response_builder._build_memcore_provider_history(
+                        engine,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        current_source_id="poke-user",
+                        chat_model_override="",
+                    )
+
+                self.assertTrue(projection_read["ok"], projection_read)
+                current = projection_read["current_turn_messages"]
+                self.assertEqual(len(current), 1)
+                self.assertEqual(current[0]["projection_index"], 0)
+                self.assertGreaterEqual(current[0]["projection_version"], 1)
+
+                generation_context = {"memcore_projection_read": projection_read}
+                observer = engine._build_memcore_request_observer(
+                    generation_context=generation_context,
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                actual_user = {"role": "user", "content": "provider-visible poke prompt"}
+                recorded = observer(
+                    {
+                        "protocol": "openai_chat",
+                        "model_route": {"protocol": "openai_chat", "model": "safe-model"},
+                        "system_prefix": "stable system",
+                        "tool_schema": [],
+                        "history_messages": [actual_user],
+                        "persistent_turn_messages": [actual_user],
+                        "audit_history_messages": [actual_user],
+                    }
+                )
+                self.assertTrue(recorded["ok"], recorded)
+                frozen = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        current_projection = next(
+            message for message in frozen["messages"] if message.get("turn_id") == opened["turn_id"]
+        )
+        self.assertEqual(current_projection["payload"], actual_user)
+        self.assertEqual(current_projection["projection_status"], "request_frozen")
+        self.assertEqual(
+            current_projection["projection_version"],
+            current[0]["projection_version"],
+        )
+
+    def test_context_surface_without_projection_metadata_is_not_defaulted_to_v1(self) -> None:
+        surface = {
+            "ok": True,
+            "status": "ok",
+            "version": "context_surface_v1",
+            "provider_profile": "openai_chat",
+            "history_messages": [],
+            "current_message": {"role": "user", "content": "current"},
+            "active_turn_messages": [],
+            "message_source_ids": [["current-source"]],
+            "current_turn_id": "turn-current",
+            "projection_hash": "a" * 64,
+            "projection_version": 2,
+            "projection_generation": 1,
+        }
+        engine = SimpleNamespace(
+            memcore_manager=SimpleNamespace(build_context_surface=lambda **_kwargs: dict(surface)),
+            llm=SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "openai_chat"),
+        )
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder._build_memcore_provider_history(
+                engine,
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                current_source_id="current-source",
+                chat_model_override="",
+            )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "context_surface_projection_metadata_missing")
 
     def test_legacy_json_tool_round_freezes_the_real_linear_provider_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

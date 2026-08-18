@@ -64,6 +64,7 @@ PACKAGES: tuple[PackageSpec, ...] = (
             "coerce_memory_metadata",
             "memory_metadata_has_signal",
             "CONTEXT_SURFACE_VERSION",
+            "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
             "MemorySystem.build_context_surface",
         ),
     ),

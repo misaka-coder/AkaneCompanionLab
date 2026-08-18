@@ -1081,15 +1081,69 @@ def _build_memcore_provider_history(
             return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
         active_start = len(history_turns) + (1 if current_payload else 0)
         source_ids = list(surface.get("message_source_ids") or [])
+        projection_metadata = [
+            dict(item)
+            for item in list(surface.get("message_projection_metadata") or [])
+            if isinstance(item, dict)
+        ]
+        expected_message_count = len(history_turns) + (1 if current_payload else 0) + len(
+            list(surface.get("active_turn_messages") or [])
+        )
+        if len(projection_metadata) != expected_message_count:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "context_surface_projection_metadata_missing",
+            }
         active_payloads = [dict(item) for item in list(surface.get("active_turn_messages") or []) if isinstance(item, dict)]
         active_ids = source_ids[active_start : active_start + len(active_payloads)]
         current_turn_messages: list[dict[str, Any]] = []
         if current_payload is not None and isinstance(current_payload, dict):
-            current_turn_messages.append({"payload": dict(current_payload), "source_ids": list(current_ids)})
+            current_metadata = projection_metadata[len(history_turns)]
+            metadata_source_ids = {
+                str(item or "").strip()
+                for item in list(current_metadata.get("source_ids") or [])
+                if str(item or "").strip()
+            }
+            if metadata_source_ids != current_ids:
+                return {
+                    "ok": False,
+                    "status": "unavailable",
+                    "reason": "context_surface_projection_metadata_mismatch",
+                }
+            current_turn_messages.append(
+                {
+                    "payload": dict(current_payload),
+                    "source_ids": list(current_ids),
+                    "projection_index": int(current_metadata.get("projection_index", -1)),
+                    "projection_status": str(current_metadata.get("projection_status") or "complete"),
+                    "projection_version": int(current_metadata.get("projection_version") or 0),
+                }
+            )
         current_turn_messages.extend(
-            {"payload": payload, "source_ids": list(active_ids[index]) if index < len(active_ids) else []}
+            {
+                "payload": payload,
+                "source_ids": list(active_ids[index]) if index < len(active_ids) else [],
+                "projection_index": int(projection_metadata[active_start + index].get("projection_index", -1)),
+                "projection_status": str(
+                    projection_metadata[active_start + index].get("projection_status") or "complete"
+                ),
+                "projection_version": int(
+                    projection_metadata[active_start + index].get("projection_version") or 0
+                ),
+            }
             for index, payload in enumerate(active_payloads)
         )
+        if any(
+            int(message.get("projection_index", -1)) < 0 or int(message.get("projection_version") or 0) < 1
+            for message in current_turn_messages
+            if message.get("source_ids")
+        ):
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "context_surface_projection_metadata_invalid",
+            }
         history_source_ids = [
             str(source_id)
             for group in source_ids[: len(history_turns)]
