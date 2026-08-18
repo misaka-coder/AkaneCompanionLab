@@ -48,7 +48,9 @@ def build_akane_llm_client(llm: Any) -> Any:
             while attempts < max_attempts:
                 attempts += 1
                 try:
-                    data = self.runtime.call_aux_json(
+                    call_memcore = getattr(self.runtime, "call_memcore_json", None)
+                    call = call_memcore if callable(call_memcore) else self.runtime.call_aux_json
+                    data = call(
                         system_prompt=str(request.system_prompt or ""),
                         user_prompt=str(request.user_prompt or ""),
                         fallback=fallback,

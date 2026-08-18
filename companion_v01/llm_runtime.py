@@ -40,6 +40,11 @@ from .tool_invocation import TOOL_SOURCE_FIELD
 
 logger = logging.getLogger("akane.llm_runtime")
 
+# MemCore summaries are infrastructure work, not user-facing chat.  They use
+# the per-Bot chat credentials (which are known to be live) while keeping a
+# stable, capable model instead of inheriting a stale AUX/DeepSeek setting.
+MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-sol"
+
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 SECRET_PATTERNS = (
@@ -903,6 +908,35 @@ class LLMRuntime:
         self._record_metric("aux_json_calls")
         return self._call_json(
             bundle=self.aux,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            fallback=fallback,
+            temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
+        )
+
+    def call_memcore_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: dict[str, Any],
+        temperature: float = 0.2,
+        prompt_cache_key: str = "",
+    ) -> dict[str, Any]:
+        """Run MemCore's infrastructure JSON task on this Bot's live chat API.
+
+        The AUX slot is independently configurable and may point at an
+        exhausted provider.  MemCore must not inherit that operational failure
+        when the Bot's own chat route is healthy, so this path reuses the
+        per-Bot chat client/key/base/protocol and pins the summary model.
+        """
+        self._record_metric("aux_json_calls")
+        with self._bundle_lock:
+            chat = self.chat
+        bundle = ModelBundle(client=chat.client, model=MEMCORE_SUMMARY_MODEL_NAME)
+        return self._call_json(
+            bundle=bundle,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             fallback=fallback,

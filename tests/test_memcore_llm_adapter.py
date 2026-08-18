@@ -21,7 +21,42 @@ class _JSONRuntime:
         return result
 
 
+class _MemcoreJSONRuntime(_JSONRuntime):
+    def __init__(self, results: list[object]) -> None:
+        super().__init__(results)
+        self.memcore_calls = 0
+        self.aux_calls = 0
+
+    def call_memcore_json(self, **_kwargs):
+        self.memcore_calls += 1
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def call_aux_json(self, **_kwargs):
+        self.aux_calls += 1
+        raise AssertionError("MemCore must not use the stale AUX route when the dedicated route exists")
+
+
 class MemcoreLLMAdapterTests(unittest.TestCase):
+    def test_json_call_prefers_dedicated_memcore_route(self) -> None:
+        runtime = _MemcoreJSONRuntime([{"summary": "usable"}])
+        client = build_akane_llm_client(runtime)
+
+        result = client.call(
+            LLMRequest(
+                task_type=TaskType.SUMMARY,
+                system_prompt="system",
+                user_prompt="user",
+                fallback={"summary": ""},
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(runtime.memcore_calls, 1)
+        self.assertEqual(runtime.aux_calls, 0)
+
     @patch("companion_v01.memcore_integration.adapters.time.sleep")
     def test_json_call_retries_fallback_and_reports_actual_attempts(self, _sleep) -> None:
         fallback = {"summary": ""}
