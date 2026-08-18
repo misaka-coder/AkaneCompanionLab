@@ -996,7 +996,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("history_messages", recorded)
         self.assertNotIn("stable system prefix", repr(recorded))
 
-    def test_context_surface_adapts_legacy_projection_system(self) -> None:
+    def test_context_surface_rejects_legacy_projection_system(self) -> None:
         class LegacyProjectionSystem:
             def build_context_projection(self, *, provider_profile: str):
                 self.provider_profile = provider_profile
@@ -1047,21 +1047,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
             character_pack_id="char",
         )
 
-        self.assertTrue(surface["ok"], surface)
-        self.assertEqual(system.provider_profile, "openai_chat")
-        self.assertEqual(surface["history_messages"], [{"role": "assistant", "content": "旧回复"}])
-        self.assertEqual(surface["current_message"], {"role": "user", "content": "当前消息"})
-        self.assertEqual(surface["active_turn_messages"], [{"role": "user", "content": "工具轮消息"}])
-        self.assertEqual(
-            surface["messages"],
-            [
-                {"role": "user", "content": "当前消息"},
-                {"role": "user", "content": "工具轮消息"},
-            ],
-        )
-        self.assertEqual(surface["message_source_ids"], [["history-source"], ["current-source"], []])
-        self.assertEqual(surface["current_turn_id"], "turn-current")
-        self.assertEqual(surface["diagnostics"], ["legacy_context_projection_adapter"])
+        self.assertFalse(surface["ok"], surface)
+        self.assertEqual(surface["status"], "unavailable")
+        self.assertEqual(surface["reason"], "context_surface_contract_missing")
+        self.assertEqual(surface["history_messages"], [])
+        self.assertIsNone(surface["current_message"])
+        self.assertEqual(surface["active_turn_messages"], [])
+        self.assertFalse(hasattr(system, "provider_profile"))
 
     def test_real_request_observer_freezes_actual_user_and_raw_assistant_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

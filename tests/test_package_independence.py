@@ -72,6 +72,37 @@ class PackageIndependenceContractTests(unittest.TestCase):
         self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
         self.assertEqual(errors, ["memcore:runtime_contract_missing:memory_metadata_has_signal"])
 
+    def test_packaged_dependency_audit_rejects_missing_nested_runtime_contract(self) -> None:
+        spec = check_packaged_dependencies.PackageSpec(
+            "memcore",
+            "memcore",
+            ("MemorySystem.build_context_surface",),
+        )
+        artifact = SimpleNamespace(version=VERSION, ok=True, reason="")
+        legacy_memory_system = type("LegacyMemorySystem", (), {})
+        with (
+            mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
+            mock.patch.object(
+                check_packaged_dependencies.importlib.metadata,
+                "distribution",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                check_packaged_dependencies,
+                "audit_distribution_artifact",
+                return_value=artifact,
+            ),
+            mock.patch.object(
+                check_packaged_dependencies.importlib,
+                "import_module",
+                return_value=SimpleNamespace(MemorySystem=legacy_memory_system),
+            ),
+        ):
+            installed, errors = check_packaged_dependencies.audit_installed_packages()
+
+        self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
+        self.assertEqual(errors, ["memcore:runtime_contract_missing:MemorySystem.build_context_surface"])
+
     def test_packaged_speech_audit_rejects_pre_call_scoped_adapter(self) -> None:
         spec = check_packaged_dependencies.PackageSpec(
             "capcore-adapter-speech",

@@ -59,7 +59,13 @@ PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec(
         "memcore",
         "memcore",
-        ("build_native_memory_tool_specs", "coerce_memory_metadata", "memory_metadata_has_signal"),
+        (
+            "build_native_memory_tool_specs",
+            "coerce_memory_metadata",
+            "memory_metadata_has_signal",
+            "CONTEXT_SURFACE_VERSION",
+            "MemorySystem.build_context_surface",
+        ),
     ),
     PackageSpec(
         "voicecore",
@@ -92,9 +98,14 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
         except Exception as exc:  # pragma: no cover - exercised by bootstrap failures
             errors.append(f"{spec.distribution}:import_failed:{exc.__class__.__name__}")
             continue
-        missing_attributes = tuple(
-            attribute for attribute in spec.required_attributes if not hasattr(module, attribute)
-        )
+        missing_attributes: list[str] = []
+        for attribute_path in spec.required_attributes:
+            target = module
+            for segment in attribute_path.split("."):
+                if not hasattr(target, segment):
+                    missing_attributes.append(attribute_path)
+                    break
+                target = getattr(target, segment)
         if missing_attributes:
             errors.append(f"{spec.distribution}:runtime_contract_missing:{','.join(missing_attributes)}")
         if spec.distribution == "capcore-adapter-speech":
