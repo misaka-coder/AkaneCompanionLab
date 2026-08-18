@@ -2081,6 +2081,10 @@ class MemcoreManager:
             ],
             "current_message": current_message,
             "active_turn_messages": [*active, *active_payloads],
+            "messages": [
+                *([dict(current_message)] if isinstance(current_message, dict) else []),
+                *[dict(item) for item in [*active, *active_payloads] if isinstance(item, dict)],
+            ],
             "message_source_ids": message_source_ids,
             "current_turn_id": str((current_record or {}).get("turn_id") or ""),
             "projection_hash": str(projection.get("stable_prefix_hash") or ""),

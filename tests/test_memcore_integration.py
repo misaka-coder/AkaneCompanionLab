@@ -1052,6 +1052,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(surface["history_messages"], [{"role": "assistant", "content": "旧回复"}])
         self.assertEqual(surface["current_message"], {"role": "user", "content": "当前消息"})
         self.assertEqual(surface["active_turn_messages"], [{"role": "user", "content": "工具轮消息"}])
+        self.assertEqual(
+            surface["messages"],
+            [
+                {"role": "user", "content": "当前消息"},
+                {"role": "user", "content": "工具轮消息"},
+            ],
+        )
         self.assertEqual(surface["message_source_ids"], [["history-source"], ["current-source"], []])
         self.assertEqual(surface["current_turn_id"], "turn-current")
         self.assertEqual(surface["diagnostics"], ["legacy_context_projection_adapter"])
