@@ -1,6 +1,6 @@
 # Project Workspace 与 Agent 工具链可靠性收口执行单 V1
 
-> 状态：待执行，先审查后实施
+> 状态：核心执行完成，未部署；验收与剩余边界见 `project_workspace_and_agent_tooling_closure_v1_report.md`
 > 日期：2026-08-19
 > 范围：Akane 宿主、MemCore 通用接入面、Web Search 执行链路
 > 部署：本执行单完成并通过 repair pass 前禁止部署
