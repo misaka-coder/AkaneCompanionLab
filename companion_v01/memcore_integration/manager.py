@@ -2092,6 +2092,7 @@ class MemcoreManager:
         provider_profile: str,
         turn_messages: list[dict[str, Any]],
         history_messages: list[dict[str, Any]],
+        history_message_indexes: list[int] | None = None,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
@@ -2140,6 +2141,11 @@ class MemcoreManager:
                 provider_profile=profile,
                 turn_messages=prepared,
                 history_messages=[dict(message) for message in list(history_messages or [])],
+                history_message_indexes=(
+                    [int(index) for index in history_message_indexes]
+                    if history_message_indexes is not None
+                    else None
+                ),
                 audit_history_messages=(
                     [dict(message) for message in list(audit_history_messages or [])]
                     if audit_history_messages is not None
@@ -2174,6 +2180,63 @@ class MemcoreManager:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore request projection failed: %s", reason)
             return self._status(operation, False, "failed", reason=reason)
+
+    def bind_request_projection_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        active_turn_id: str,
+    ) -> dict[str, Any]:
+        """Expose MemCore's generic source-turn binding without host grouping."""
+
+        operation = "bind_request_projection_messages"
+        if not self.available or self._memcore_module is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        binder = getattr(self._memcore_module, "bind_request_projection_messages", None)
+        if not callable(binder):
+            return self._status(operation, False, "unavailable", reason="request_binding_api_unavailable")
+        try:
+            result = binder(messages, active_turn_id=active_turn_id)
+        except Exception as exc:
+            logger.warning("memcore %s failed: %s", operation, exc.__class__.__name__)
+            return self._status(operation, False, "failed", reason="request_binding_failed")
+        if not bool(getattr(result, "ok", False)):
+            return self._status(
+                operation,
+                False,
+                str(getattr(result, "status", "rejected") or "rejected"),
+                reason=str(getattr(result, "reason", "request_binding_rejected") or "request_binding_rejected"),
+            )
+        active_group = getattr(result, "active_group", None)
+        groups = []
+        for group in tuple(getattr(result, "groups", ()) or ()):
+            groups.append(
+                {
+                    "turn_id": str(getattr(group, "turn_id", "") or ""),
+                    "relation": str(getattr(group, "relation", "") or ""),
+                    "request_indexes": [int(index) for index in tuple(getattr(group, "request_indexes", ()) or ())],
+                }
+            )
+        active_messages = []
+        for message in tuple(getattr(active_group, "messages", ()) or ()):
+            active_messages.append(
+                {
+                    "payload": dict(getattr(message, "payload", {}) or {}),
+                    "source_ids": list(getattr(message, "source_ids", ()) or ()),
+                    "turn_id": str(getattr(message, "source_turn_id", "") or ""),
+                    "projection_index": int(getattr(message, "projection_index", -1)),
+                    "projection_status": str(getattr(message, "projection_status", "complete") or "complete"),
+                    "projection_version": int(getattr(message, "projection_version", 0)),
+                    "request_index": int(getattr(message, "request_index", -1)),
+                }
+            )
+        return {
+            **self._status(operation, True, "bound"),
+            "active_turn_id": str(active_turn_id or "").strip(),
+            "active_messages": active_messages,
+            "active_request_indexes": [int(index) for index in tuple(active_group.request_indexes or ())],
+            "groups": groups,
+        }
 
     def compare_context_projection(
         self,

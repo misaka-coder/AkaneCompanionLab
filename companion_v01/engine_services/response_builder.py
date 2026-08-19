@@ -1115,6 +1115,7 @@ def _build_memcore_provider_history(
                 {
                     "payload": dict(current_payload),
                     "source_ids": list(current_ids),
+                    "turn_id": str(current_metadata.get("turn_id") or ""),
                     "projection_index": int(current_metadata.get("projection_index", -1)),
                     "projection_status": str(current_metadata.get("projection_status") or "complete"),
                     "projection_version": int(current_metadata.get("projection_version") or 0),
@@ -1124,6 +1125,7 @@ def _build_memcore_provider_history(
             {
                 "payload": payload,
                 "source_ids": list(active_ids[index]) if index < len(active_ids) else [],
+                "turn_id": str(projection_metadata[active_start + index].get("turn_id") or ""),
                 "projection_index": int(projection_metadata[active_start + index].get("projection_index", -1)),
                 "projection_status": str(
                     projection_metadata[active_start + index].get("projection_status") or "complete"

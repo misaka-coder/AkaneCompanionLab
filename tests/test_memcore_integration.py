@@ -38,6 +38,7 @@ from companion_v01.tool_runtime import (
     ToolExecutionResult,
     ToolFollowupEnvelope,
 )
+from memcore import bind_request_projection_messages
 
 
 class _FakeLLM:
@@ -60,6 +61,30 @@ def _blocking_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 _REAL_IMPORT = builtins.__import__
+
+
+def _bind_test_request_projection_messages(*, messages, active_turn_id):
+    result = bind_request_projection_messages(messages, active_turn_id=active_turn_id)
+    if not result.ok:
+        return {"ok": False, "status": result.status, "reason": result.reason}
+    active = result.active_group
+    return {
+        "ok": True,
+        "status": "bound",
+        "active_messages": [
+            {
+                "payload": dict(message.payload),
+                "source_ids": list(message.source_ids),
+                "turn_id": message.source_turn_id,
+                "projection_index": message.projection_index,
+                "projection_status": message.projection_status,
+                "projection_version": message.projection_version,
+                "request_index": message.request_index,
+            }
+            for message in active.messages
+        ],
+        "active_request_indexes": list(active.request_indexes),
+    }
 
 
 def _ts(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:
@@ -1213,6 +1238,88 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(payloads[1], {"role": "assistant", "content": '{"speech":"第一答","memory_metadata":{}}'})
         self.assertNotIn("本轮状态", repr(payloads))
         self.assertEqual(generation_context["memcore_request_projection"]["status"], "recorded")
+
+    def test_provider_history_keeps_standalone_material_but_freezes_only_active_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "binding-user", "content": "结合材料回答", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="binding-session",
+                    character_pack_id="char",
+                )
+                material = manager.import_legacy_message(
+                    {"source_id": "binding-material", "content": "独立材料正文", "timestamp": 101},
+                    role="user",
+                    profile_user_id="u1",
+                    session_id="binding-session",
+                    character_pack_id="char",
+                )
+                self.assertTrue(material["ok"], material)
+                engine = SimpleNamespace(
+                    memcore_manager=manager,
+                    llm=SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "responses"),
+                )
+                with patch.object(response_builder, "_memory_backend", return_value="memcore"):
+                    projection_read = response_builder._build_memcore_provider_history(
+                        engine,
+                        profile_user_id="u1",
+                        session_id="binding-session",
+                        character_pack_id="char",
+                        current_source_id="binding-user",
+                        chat_model_override="",
+                    )
+
+                self.assertTrue(projection_read["ok"], projection_read)
+                descriptors = projection_read["current_turn_messages"]
+                self.assertEqual(len(descriptors), 2)
+                self.assertEqual(descriptors[0]["turn_id"], opened["turn_id"])
+                self.assertNotEqual(descriptors[1]["turn_id"], opened["turn_id"])
+                actual = [dict(message["payload"]) for message in descriptors]
+
+                request_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                request_engine.llm = SimpleNamespace(supports_request_observer=True)
+                request_engine.memcore_manager = manager
+                generation_context = {"memcore_projection_read": projection_read}
+                observer = request_engine._build_memcore_request_observer(
+                    generation_context=generation_context,
+                    profile_user_id="u1",
+                    session_id="binding-session",
+                    character_pack_id="char",
+                )
+                observed = observer(
+                    {
+                        "protocol": "responses",
+                        "persistent_turn_messages": actual,
+                        "audit_history_messages": actual,
+                        "model_route": {"model": "test"},
+                        "system_prefix": "stable",
+                        "tool_schema": [],
+                    }
+                )
+
+                self.assertTrue(observed["ok"], observed)
+                self.assertEqual(generation_context["memcore_request_projection"]["projection_count"], 1)
+                rebound = manager.bind_request_projection_messages(
+                    messages=[{**descriptor, "payload": actual[index]} for index, descriptor in enumerate(descriptors)],
+                    active_turn_id=opened["turn_id"],
+                )
+                self.assertEqual(rebound["active_request_indexes"], [0])
+                self.assertEqual(
+                    [(group["relation"], group["request_indexes"]) for group in rebound["groups"]],
+                    [("active", [0]), ("standalone", [1])],
+                )
+            finally:
+                manager.close()
 
     def test_context_surface_metadata_freezes_actual_request_without_version_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2394,6 +2501,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_proactive_request_projection_failure_returns_memcore_error_not_persona_fallback(self) -> None:
         class RejectingManager:
+            bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
+
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
@@ -2474,6 +2583,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_memcore_final_retry_keeps_user_payload_and_adds_ephemeral_repair_tail(self) -> None:
         class RecordingManager:
+            bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
+
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
@@ -2588,6 +2699,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_visual_tool_followup_reuses_turn_frozen_user_prompt_and_appends_tools(self) -> None:
         class RecordingManager:
+            bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
+
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
@@ -2761,6 +2874,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_memcore_stream_retry_keeps_projection_and_adds_ephemeral_repair_tail(self) -> None:
         class RecordingManager:
+            bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
+
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
@@ -2896,6 +3011,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
     def test_stream_transport_fallback_stops_when_second_projection_record_is_rejected(self) -> None:
         class FlakyManager:
+            bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
+
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 

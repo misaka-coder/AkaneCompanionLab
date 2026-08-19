@@ -6075,8 +6075,9 @@ class AkaneMemoryEngine:
             return None
         manager = getattr(self, "memcore_manager", None)
         recorder = getattr(manager, "record_request_projection", None)
+        binder = getattr(manager, "bind_request_projection_messages", None)
         projection_read = generation_context.get("memcore_projection_read")
-        if not callable(recorder) or not isinstance(projection_read, dict):
+        if not callable(recorder) or not callable(binder) or not isinstance(projection_read, dict):
             return None
         turn_id = str(projection_read.get("current_turn_id") or "").strip()
         current_messages = [
@@ -6087,9 +6088,10 @@ class AkaneMemoryEngine:
         if not turn_id or not current_messages:
             return None
         frozen_turn_messages: list[dict[str, Any]] = []
+        frozen_request_indexes: list[int] = []
 
         def observe(request: dict[str, Any]) -> dict[str, Any]:
-            nonlocal frozen_turn_messages
+            nonlocal frozen_turn_messages, frozen_request_indexes
             if not isinstance(request, dict):
                 return {"ok": False, "status": "failed", "reason": "request_observation_invalid"}
             persistent_messages = [
@@ -6145,12 +6147,34 @@ class AkaneMemoryEngine:
                             "source_ids": source_ids,
                         }
                     )
-                frozen_turn_messages = prepared
+                binding = binder(messages=prepared, active_turn_id=turn_id)
+                if not isinstance(binding, dict) or not binding.get("ok"):
+                    detail = str((binding or {}).get("reason") or "request_binding_failed")
+                    return {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "context_authority_failed",
+                        "detail": detail,
+                    }
+                frozen_turn_messages = [
+                    dict(message)
+                    for message in list(binding.get("active_messages") or [])
+                    if isinstance(message, dict)
+                ]
+                frozen_request_indexes = [int(index) for index in list(binding.get("active_request_indexes") or [])]
+                if not frozen_turn_messages or len(frozen_request_indexes) != len(frozen_turn_messages):
+                    return {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "context_authority_failed",
+                        "detail": "active_turn_binding_invalid",
+                    }
             result = recorder(
                 turn_id=turn_id,
                 provider_profile=str(request.get("protocol") or ""),
                 turn_messages=[dict(message) for message in frozen_turn_messages],
-                history_messages=[dict(message.get("payload") or {}) for message in frozen_turn_messages],
+                history_messages=[dict(message) for message in persistent_messages],
+                history_message_indexes=list(frozen_request_indexes),
                 audit_history_messages=[
                     dict(message)
                     for message in list(request.get("audit_history_messages") or [])
@@ -6187,10 +6211,24 @@ class AkaneMemoryEngine:
                     )
                 }
                 return {"ok": True, "status": "recorded"}
+            failure_reason = str((result or {}).get("reason") or "request_projection_record_failed")
+            if failure_reason.startswith("projection_audit_"):
+                logger.warning("memcore audit persistence failed reason=%s", failure_reason)
+                generation_context["memcore_request_projection"] = {
+                    "status": "degraded",
+                    "reason": "audit_persistence_failed",
+                    "detail": failure_reason,
+                }
+                return {
+                    "ok": True,
+                    "status": "degraded",
+                    "reason": "audit_persistence_failed",
+                }
             return {
                 "ok": False,
                 "status": str((result or {}).get("status") or "failed"),
-                "reason": str((result or {}).get("reason") or "request_projection_record_failed"),
+                "reason": "context_authority_failed",
+                "detail": failure_reason,
             }
 
         return observe
