@@ -1,6 +1,9 @@
 ---
 name: media-inspect-convert
 description: Use when exec_run is available and the user needs to inspect audio/video metadata or convert, trim, resample, change speed, normalize volume, or re-encode an existing media resource.
+metadata:
+  required_tools:
+    - exec_run
 ---
 
 # Media Inspect & Convert

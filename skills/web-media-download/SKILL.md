@@ -1,6 +1,9 @@
 ---
 name: web-media-download
 description: Use when exec_run is available and the user wants to find, download, save, or deliver a public web video or audio item from a URL, shortened share link, page title, BV/AV id, or other public media identifier.
+metadata:
+  required_tools:
+    - exec_run
 ---
 
 # Web Media Download
@@ -78,6 +81,7 @@ registered artifact.
   when both are requested the two delivery calls may be made together.
 - Treat the delivery tool result as authoritative. A failed card, voice, or file
   delivery is feedback for the next model step; it must not be described as success.
+  A successful delivery result proves queueing, not final client receipt.
 - If the user only asked to identify or inspect a link, do not send a file
   automatically.
 - On failure, keep the useful canonical id/URL visible, explain the actual

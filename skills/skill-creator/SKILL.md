@@ -1,6 +1,11 @@
 ---
 name: skill-creator
 description: Use when the user asks Akane to create, install, revise, or package an Akane Skill; guides concise progressive instructions, references, scripts, validation, and hot publication.
+metadata:
+  required_tools:
+    - exec_run
+    - load_skill
+    - manage_skill
 ---
 
 # Akane Skill Creator

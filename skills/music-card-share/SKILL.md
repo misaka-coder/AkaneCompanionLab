@@ -1,6 +1,9 @@
 ---
 name: music-card-share
 description: Use when exec_run is available and the user wants to find a NetEase or QQ Music track, send a NetEase native card, or resolve a public audio URL for QQ voice.
+metadata:
+  required_tools:
+    - exec_run
 ---
 
 # Music Share

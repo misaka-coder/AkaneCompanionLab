@@ -193,8 +193,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
         "按需续读。需要命令读取已有材料时用 input_resources 声明句柄与命令工作区内的 as 相对路径，"
         "输入会复制进本次运行的独立工作区，且 input_resources 不能与 cwd 同时使用。需要命令产出文件时用"
-        "output_globs 声明相对当前目录的输出；它可以与工作区相对 cwd 一起使用，直接登记现有项目目录中"
-        "本次新建或变更的产物。省略 cwd 时使用本次受管临时目录，不要切换到 /tmp 等外部目录。命令完成后"
+        "output_globs 声明相对当前目录的输出；它可以与 cwd=alias:project 一起使用，直接登记所选项目中"
+        "本次新建或变更的产物。带 input_resources，或省略 cwd 但声明 output_globs 时，使用本次受管临时目录；"
+        "既无资源参数又省略 cwd 时，使用受信任执行工作区根。不要切换到 /tmp 等外部目录。命令完成后"
         "只登记明确声明的输出为 gen_*，再用 send_file 交付。执行失败、超时或取消都会明确返回对应状态，"
         "不会声称成功；登记失败也会与命令成功明确区分。"
     ),
@@ -211,8 +212,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "maxLength": EXEC_CWD_MAX_CHARS,
                 "description": (
-                    "工作区内相对路径或挂载别名（可选），默认工作区根。"
-                    "使用 input_resources 时必须省略 cwd；output_globs 可与工作区相对 cwd 同用。"
+                    "启动目录（可选）：受信任执行工作区内相对路径或挂载别名。编程项目使用 alias:project。"
+                    "使用 input_resources 时必须省略 cwd；output_globs 可与 alias:project 同用。"
+                    "既无资源参数又省略时使用受信任执行工作区根；省略但声明 output_globs 时使用本次临时目录。"
                 ),
             },
             "timeout_seconds": {
@@ -258,7 +260,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "maxItems": 32,
                 "description": (
                     "可选：命令完成后要登记为 gen_* 的输出路径 glob。路径相对本次受管当前目录；"
-                    "与工作区相对 cwd 同用时只登记本次新建或变更的匹配文件；否则命令必须把产物写在"
+                    "与 cwd=alias:project 同用时只登记本次新建或变更的匹配文件；否则命令必须把产物写在"
                     "本次临时目录内。不要写到 /tmp 等外部目录。全部展开并去重，只登记明确声明的输出。"
                 ),
             },

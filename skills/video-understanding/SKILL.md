@@ -1,6 +1,10 @@
 ---
 name: video-understanding
 description: Use when the user asks what a video actually shows or says — what happened in it, what people or objects appear, what happens at a specific time, actions, scene changes, subtitles, spoken content, or a summary/timeline of the video — and a video attachment is available in the current session.
+metadata:
+  required_tools:
+    - exec_run
+    - load_material
 ---
 
 # Video Understanding

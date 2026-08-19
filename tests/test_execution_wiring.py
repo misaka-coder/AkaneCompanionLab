@@ -235,7 +235,7 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("发现并直接使用宿主绝对路径", instruction)
         self.assertIn("不要因此假装无法查看或操作宿主文件", instruction)
         self.assertIn("input_resources 与 cwd 互斥", instruction)
-        self.assertIn("output_globs 可以与工作区相对 cwd 一起使用", instruction)
+        self.assertIn("output_globs 可以与 cwd=alias:project 一起使用", instruction)
         self.assertIn("本次新建或变更的产物", instruction)
         self.assertIn("当前执行宿主 platform=", instruction)
         self.assertIn("默认命令 Shell=", instruction)

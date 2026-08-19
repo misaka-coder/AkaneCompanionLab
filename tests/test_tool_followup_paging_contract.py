@@ -53,11 +53,11 @@ class ShapeToolFollowupContractTests(unittest.TestCase):
         )
         self.assertEqual(shape_tool_followup(envelope, tool_type="read_workspace"), "完整页")
 
-    def test_unmigrated_oversize_result_still_hits_8000_insurance(self) -> None:
+    def test_plain_oversize_internal_result_is_not_globally_truncated(self) -> None:
         content = "行\n" + "\n".join(f"第{i}行" + "长" * 40 for i in range(2000))
         shaped = shape_tool_followup(content, tool_type="list_workspace")
-        self.assertLess(len(shaped), 9000)
-        self.assertIn("已截断", shaped)
+        self.assertEqual(shaped, content)
+        self.assertNotIn("已截断", shaped)
 
     def test_empty_success_has_stable_placeholder(self) -> None:
         shaped = shape_tool_followup("", tool_type="send_file")

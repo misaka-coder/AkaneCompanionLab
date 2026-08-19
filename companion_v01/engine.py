@@ -8102,9 +8102,14 @@ class AkaneMemoryEngine:
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
         skill_catalog = ""
-        if "load_skill" in tuple(getattr(selection, "tool_names", ()) or ()):
+        if "load_skill" in ready_tool_names:
             try:
-                skill_catalog = str(self._get_skill_registry().prompt_catalog() or "").strip()
+                skill_catalog = str(
+                    self._get_skill_registry().prompt_catalog(
+                        available_tool_names=set(ready_tool_names),
+                    )
+                    or ""
+                ).strip()
             except Exception as exc:
                 logger.warning("skill catalog projection failed: %s", type(exc).__name__)
                 skill_catalog = "【可按需加载的 Skills】\n- Skill 目录当前读取失败，本轮不要假装已经加载 Skill。"

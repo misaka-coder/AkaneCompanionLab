@@ -351,29 +351,10 @@ class ShapeToolFollowupTests(unittest.TestCase):
             text,
         )
 
-    def test_oversize_result_is_truncated_with_marker(self) -> None:
+    def test_oversize_internal_result_passes_through_without_shared_character_cut(self) -> None:
         big = "\n".join(f"line {i} " + "x" * 50 for i in range(2000))
-        shaped = tool_orchestration_engine.shape_tool_followup(
-            big, tool_type="web_search", max_chars=1000
-        )
-        self.assertLess(len(shaped), len(big))
-        self.assertIn("已截断", shaped)
-        self.assertIn("web_search", shaped)
-        # The marker is honest about magnitude: it reports the full size so the
-        # model can gauge how far to narrow its next call, not just what was shown.
-        self.assertIn(f"共约 {len(big)} 字", shaped)
-        self.assertIn("省略约", shaped)
-        # Truncation prefers a newline boundary, so no line is cut mid-way.
-        body = shaped.split("\n…（")[0]
-        self.assertTrue(big.startswith(body))
-
-    def test_floor_protects_against_tiny_limits(self) -> None:
-        big = "y" * 5000
-        shaped = tool_orchestration_engine.shape_tool_followup(
-            big, tool_type="t", max_chars=10
-        )
-        # limit is floored at 500, so we keep a usable preview, not 10 chars.
-        self.assertGreater(len(shaped), 400)
+        shaped = tool_orchestration_engine.shape_tool_followup(big, tool_type="web_search")
+        self.assertEqual(shaped, big)
 
     def test_producer_bounded_envelope_is_not_truncated_again(self) -> None:
         content = "完整逻辑单元\n" + ("证据" * 6000)
@@ -388,24 +369,22 @@ class ShapeToolFollowupTests(unittest.TestCase):
         shaped = tool_orchestration_engine.shape_tool_followup(
             envelope,
             tool_type="read_memory_timeline",
-            max_chars=1000,
         )
 
         self.assertEqual(shaped, content)
         self.assertNotIn("已截断", shaped)
 
-    def test_unbounded_envelope_keeps_legacy_safety_shaping(self) -> None:
+    def test_unbounded_envelope_is_not_treated_as_permission_to_truncate(self) -> None:
         content = "x" * 5000
         envelope = ToolFollowupEnvelope(content=content)
 
         shaped = tool_orchestration_engine.shape_tool_followup(
             envelope,
             tool_type="web_search",
-            max_chars=1000,
         )
 
-        self.assertLess(len(shaped), len(content))
-        self.assertIn("已截断", shaped)
+        self.assertEqual(shaped, content)
+        self.assertNotIn("已截断", shaped)
 
     def test_generated_file_event_adds_handle_receipt_only_when_missing(self) -> None:
         events = [

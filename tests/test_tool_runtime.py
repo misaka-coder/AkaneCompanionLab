@@ -433,6 +433,37 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
 
         self.assertEqual(result.stream_events[0]["provider"], "eastmoney_public_market")
 
+    def test_unpaged_adapter_oversize_result_returns_structured_limit_error(self) -> None:
+        class FakeAdapter:
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                return CapabilityResult(is_error=False, content="字" * 70_000, status="ok")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={"defaultMode": "trusted_auto_allow"},
+            )
+            handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=FakeAdapter(),
+                descriptor=self._descriptor(risk="low", confirm="never"),
+                config_base_dir=temp_dir,
+            )
+            result = handler.execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(result.stream_events[0]["status"], "error")
+        self.assertEqual(result.stream_events[0]["reason"], "result_limit_exceeded")
+        self.assertEqual(result.state_updates["adapter_capability_reason"], "result_limit_exceeded")
+        self.assertIn('"actual_chars":70002', result.followup_context)
+        self.assertIn('"max_chars":65536', result.followup_context)
+        self.assertIn('"recommended_action":"narrow_query_or_use_provider_paging"', result.followup_context)
+        self.assertNotIn("字字字字字", result.followup_context)
+        self.assertTrue(result.followup_envelope.producer_bounded)
+
 
 class WebSearchToolHandlerTests(unittest.TestCase):
     def _context(self) -> ToolExecutionContext:

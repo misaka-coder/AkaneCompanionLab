@@ -251,9 +251,6 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
         return f"{tool_type} {details!r}"[:500]
 
 
-DEFAULT_MAX_TOOL_FOLLOWUP_CHARS = 8000
-
-
 def append_structured_artifact_receipts(
     followup_context: Any,
     *,
@@ -310,7 +307,6 @@ def shape_tool_followup(
     followup_context: Any,
     *,
     tool_type: str,
-    max_chars: int | None = None,
 ) -> str:
     """Discipline the tool result text fed back to the model (Claude Code-aligned).
 
@@ -321,14 +317,11 @@ def shape_tool_followup(
       make some models end the turn with no output).
     - producer-bounded envelope -> preserve the producer's complete logical
       units and continuation cursor instead of applying another character cut.
-    - otherwise over-size -> truncate at a newline boundary with an honest marker that
-      reports the full size and how much was omitted, so a huge result can't
-      blow up the next round's context AND the model can gauge how far to narrow
-      its next call (showing chars-only, without the total, left it guessing).
+    - all other internal results -> preserve them unchanged. Long-result producers
+      own paging; this shared boundary must not silently remove evidence.
 
-    Only the tool's own text is bounded here; no paths are introduced. A
-    producer-bounded result is trusted only for sizing/continuation ownership;
-    storage-boundary secret/path sanitization still runs independently.
+    No paths are introduced here. Producer-owned continuation and independent
+    storage-boundary secret/path sanitization remain separate contracts.
     """
     tool_name = str(tool_type or "tool").strip() or "tool"
     envelope = followup_context if isinstance(followup_context, ToolFollowupEnvelope) else None
@@ -344,29 +337,7 @@ def shape_tool_followup(
             )
         else:
             return text
-    limit = (
-        int(max_chars)
-        if max_chars
-        else int(
-            getattr(config, "MAX_TOOL_FOLLOWUP_CHARS", DEFAULT_MAX_TOOL_FOLLOWUP_CHARS)
-            or DEFAULT_MAX_TOOL_FOLLOWUP_CHARS
-        )
-    )
-    limit = max(500, limit)
-    if len(text) <= limit:
-        return text
-    total = len(text)
-    truncated = text[:limit]
-    cut = truncated.rfind("\n")
-    if cut > limit * 0.6:
-        truncated = truncated[:cut]
-    truncated = truncated.rstrip()
-    shown = len(truncated)
-    omitted = max(0, total - shown)
-    return (
-        f"{truncated}\n…（{tool_name} 结果共约 {total} 字，已截断，仅展示前 {shown} 字"
-        f"（省略约 {omitted} 字）；如需被省略的部分，请缩小范围、加过滤条件或分页再调用。）"
-    )
+    return text
 
 
 def build_multi_tool_followup_context(

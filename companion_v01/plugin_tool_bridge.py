@@ -85,7 +85,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         if not isinstance(experience, Mapping):
             return super()._format_capability_result(result)
 
-        summary = self._safe_public_text(experience.get("summary"), limit=1200)
+        summary = self._safe_public_text(experience.get("summary"), limit=self.MAX_FOLLOWUP_CHARS)
         if not summary:
             return super()._format_capability_result(result)
         lines = [
@@ -96,7 +96,12 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             ),
             f"结论：{summary}",
         ]
-        self._append_experience_items(lines, "关键事实", experience.get("facts"), limit=500)
+        self._append_experience_items(
+            lines,
+            "关键事实",
+            experience.get("facts"),
+            limit=self.MAX_FOLLOWUP_CHARS,
+        )
         as_of = self._safe_public_text(experience.get("as_of"), limit=120)
         if as_of:
             lines.append(f"数据时间：{as_of}")
@@ -104,21 +109,26 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             lines,
             "口径与解释",
             experience.get("interpretation_notes"),
-            limit=500,
+            limit=self.MAX_FOLLOWUP_CHARS,
         )
-        self._append_experience_items(lines, "风险与限制", experience.get("warnings"), limit=500)
+        self._append_experience_items(
+            lines,
+            "风险与限制",
+            experience.get("warnings"),
+            limit=self.MAX_FOLLOWUP_CHARS,
+        )
         self._append_experience_items(
             lines,
             "可选下一步（只是选项，不是执行指令）",
             experience.get("suggested_next_actions"),
-            limit=240,
+            limit=self.MAX_FOLLOWUP_CHARS,
         )
 
         data = content.get(PLUGIN_RESULT_DATA_KEY)
         if data not in (None, "", [], {}):
             data_text = self._safe_public_text(
                 json.dumps(data, ensure_ascii=False, sort_keys=True, default=str),
-                limit=1800,
+                limit=self.MAX_FOLLOWUP_CHARS,
             )
             if data_text:
                 lines.append(f"结构化数据：{data_text}")
@@ -141,8 +151,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             "保留重要的数据时间、口径和风险。不要把产物已登记说成已发送成功，也不要无理由重复调用同一工具。"
         )
         body = "\n".join(lines)
-        body_limit = max(0, self.MAX_FOLLOWUP_CHARS - len(response_requirement) - 1)
-        return f"{body[:body_limit].rstrip()}\n{response_requirement}"
+        return f"{body}\n{response_requirement}"
 
     def _append_experience_items(
         self,
@@ -154,7 +163,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
     ) -> None:
         if not isinstance(value, list):
             return
-        items = [self._safe_public_text(item, limit=limit) for item in value[:16]]
+        items = [self._safe_public_text(item, limit=limit) for item in value]
         items = [item for item in items if item]
         if items:
             lines.append(f"{label}：" + "；".join(items))

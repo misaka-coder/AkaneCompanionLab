@@ -27,6 +27,7 @@ from .core import (
     BaseToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolFollowupEnvelope,
     ToolMetadata,
 )
 
@@ -128,7 +129,7 @@ class DesktopSatelliteToolHandler(BaseToolHandler):
 
 
 class AdapterCapabilityToolHandler(BaseToolHandler):
-    MAX_FOLLOWUP_CHARS = 6000
+    MAX_FOLLOWUP_CHARS = 64 * 1024
 
     def __init__(
         self,
@@ -242,7 +243,12 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return self._failure(str(exc) or "adapter_protocol_error")
         except Exception:
             return self._failure("adapter_invoke_failed")
+        result_size = self._capability_result_size_chars(result)
+        if result_size > self.MAX_FOLLOWUP_CHARS:
+            return self._result_limit_exceeded(actual_chars=result_size)
         followup = self._format_capability_result(result)
+        if len(followup) > self.MAX_FOLLOWUP_CHARS:
+            return self._result_limit_exceeded(actual_chars=len(followup))
         is_error = bool(getattr(result, "is_error", False))
         status = self._safe_public_text(getattr(result, "status", ""), limit=80) if is_error else "ok"
         status = status or ("error" if is_error else "ok")
@@ -266,6 +272,12 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             tool_type=self.tool_type,
             stream_events=[event],
             followup_context=followup,
+            followup_envelope=ToolFollowupEnvelope(
+                content=followup,
+                producer_bounded=True,
+                complete=True,
+                diagnostics={"adapter_result_chars": result_size},
+            ),
             state_updates=state_updates,
         )
         return self._finalize_execution_result(
@@ -378,34 +390,86 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             },
         )
 
+    def _result_limit_exceeded(self, *, actual_chars: int) -> ToolExecutionResult:
+        payload = {
+            "status": "error",
+            "reason": "result_limit_exceeded",
+            "actual_chars": max(0, int(actual_chars)),
+            "max_chars": self.MAX_FOLLOWUP_CHARS,
+            "recommended_action": "narrow_query_or_use_provider_paging",
+        }
+        feedback = (
+            f"{self._source_label()}返回结果超过未分页第三方能力的最终保险上限。"
+            f"实际返回数据：{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}。"
+            "请缩小查询范围、增加过滤条件，或改用该 provider 的分页参数；不要声称已经读取完整结果。"
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "adapter_capability_failed",
+                    "capabilityId": self.tool_type,
+                    "status": "error",
+                    "reason": "result_limit_exceeded",
+                    "actualChars": payload["actual_chars"],
+                    "maxChars": payload["max_chars"],
+                }
+            ],
+            followup_context=feedback,
+            followup_envelope=ToolFollowupEnvelope(
+                content=feedback,
+                producer_bounded=True,
+                complete=True,
+                diagnostics=payload,
+            ),
+            state_updates={
+                "adapter_capability_status": "error",
+                "adapter_capability_id": self.tool_type,
+                "adapter_capability_reason": "result_limit_exceeded",
+            },
+        )
+
+    @staticmethod
+    def _capability_result_size_chars(result: Any) -> int:
+        content = getattr(result, "content", None)
+        try:
+            return len(json.dumps(content, ensure_ascii=False, sort_keys=True, default=str))
+        except Exception:
+            return len(str(content or ""))
+
     def _format_capability_result(self, result: Any) -> str:
         content = getattr(result, "content", None)
         if isinstance(content, Mapping):
             pieces: list[str] = []
             raw_content = content.get("content")
             if isinstance(raw_content, list):
-                for item in raw_content[:8]:
+                for item in raw_content:
                     if not isinstance(item, Mapping):
                         continue
                     if str(item.get("type") or "").strip() == "text":
-                        text = self._safe_public_text(item.get("text"), limit=1200)
+                        text = self._safe_public_text(item.get("text"), limit=self.MAX_FOLLOWUP_CHARS)
                         if text:
                             pieces.append(text)
                     elif item.get("type"):
                         pieces.append(f"[{self._safe_public_text(item.get('type'), limit=40)} content]")
             if not pieces:
-                pieces.append(self._safe_public_text(json.dumps(content, ensure_ascii=False, default=str), limit=4000))
+                pieces.append(
+                    self._safe_public_text(
+                        json.dumps(content, ensure_ascii=False, default=str),
+                        limit=self.MAX_FOLLOWUP_CHARS,
+                    )
+                )
             body = "\n".join(piece for piece in pieces if piece).strip()
         else:
-            body = self._safe_public_text(str(content or ""), limit=4000)
+            body = self._safe_public_text(str(content or ""), limit=self.MAX_FOLLOWUP_CHARS)
         if not body:
             body = f"({self._source_label()}没有返回可读内容。)"
         if bool(getattr(result, "is_error", False)):
             status = self._safe_public_text(getattr(result, "status", ""), limit=80) or "error"
             reason = self._safe_public_text(getattr(result, "reason", ""), limit=120)
             label = f"{status}/{reason}" if reason else status
-            return f"{self._source_label()}返回业务错误（{label}）：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
-        return f"{self._source_label()}返回：\n{body[: self.MAX_FOLLOWUP_CHARS]}"
+            return f"{self._source_label()}返回业务错误（{label}）：\n{body}"
+        return f"{self._source_label()}返回：\n{body}"
 
     def _source_label(self) -> str:
         raw = getattr(self.descriptor, "raw", None)

@@ -58,50 +58,69 @@ class CodingProjectSkillTests(unittest.TestCase):
         )
 
     def test_catalog_first_round_exposes_only_routing_metadata(self) -> None:
-        catalog = self.registry.prompt_catalog()
+        catalog = self.registry.prompt_catalog(
+            available_tool_names={
+                "manage_project_workspace",
+                "workspace_write",
+                "workspace_patch",
+                "exec_run",
+                "exec_status",
+                "exec_cancel",
+            }
+        )
         self.assertIn("coding-project", catalog)
-        self.assertIn("executable program", catalog)
-        self.assertIn("Skip for one-off short text", catalog)
-        self.assertNotIn("Verification levels", catalog)
-        self.assertNotIn("Honest ability check first", catalog)
+        self.assertIn("executable programs", catalog)
+        self.assertIn("Skip one-off text", catalog)
+        self.assertNotIn("Establish the project authority", catalog)
         entry = self.registry.snapshot().by_name()["coding-project"]
         self.assertEqual(entry.source, "bundled")
         self.assertEqual(entry.execution_cwd, "alias:bundled_skills")
+        self.assertEqual(
+            entry.required_tools,
+            (
+                "manage_project_workspace",
+                "workspace_write",
+                "workspace_patch",
+                "exec_run",
+                "exec_status",
+                "exec_cancel",
+            ),
+        )
+
+    def test_catalog_hides_skill_when_project_toolchain_is_incomplete(self) -> None:
+        catalog = self.registry.prompt_catalog(
+            available_tool_names={"load_skill", "exec_run", "exec_status", "exec_cancel"}
+        )
+        self.assertNotIn("coding-project：", catalog)
+        self.assertNotIn("workspace_write", catalog)
 
     def test_load_skill_returns_the_full_closed_loop(self) -> None:
         content = self.registry.load("coding-project").content
         for marker in (
-            "Honest ability check first",
-            "Scope an acceptable MVP and keep going",
-            "Check the environment, never assume",
-            "Read before editing; preserve real failure status",
-            "Build incrementally, edit locally",
-            "Keep long tasks observable",
-            "Verification levels",
-            "Web deliverables must match the deployment reality",
-            "Delivery: queued is not received",
-            "Failures drive the next step",
+            "Establish the project authority",
+            "Scope a verifiable increment",
+            "Write through project tools",
+            "Execute and diagnose honestly",
+            "Verify and deliver",
         ):
             self.assertIn(marker, content)
-        self.assertIn("未运行验证", content)
+        self.assertIn('manage_project_workspace(action="current")', content)
+        self.assertIn('cwd="alias:project"', content)
+        self.assertIn("workspace_write", content)
+        self.assertIn("workspace_patch", content)
+        self.assertIn("base_hash_mismatch", content)
+        self.assertIn("command_too_long", content)
         self.assertIn("$LASTEXITCODE", content)
         self.assertIn('$ErrorActionPreference = "Stop"', content)
         self.assertIn("node --check file.js", content)
         self.assertIn("python -m py_compile", content)
-        self.assertIn("Pointer Lock", content)
         self.assertIn("已进入发送队列", content)
-        self.assertIn("does not expose a\n  JavaScript console", content)
-        self.assertIn("One failed command is evidence for the next step", content)
-        self.assertIn("briefly tell the user the concrete next step", content)
-        self.assertIn("Fix the root cause with the smallest coherent change", content)
-        self.assertIn("Run the narrowest relevant check", content)
-        self.assertIn("project's workspace-relative `cwd`", content)
-        self.assertIn("without\n  copying the project", content)
+        self.assertIn("Do not transport source through Shell", content)
+        self.assertIn("complete logical pages", content)
 
     def test_skill_declares_no_permission_upgrade_or_new_tools(self) -> None:
         content = self.registry.load("coding-project").content
-        self.assertIn("not new tools and not a permission upgrade", content)
-        self.assertIn("existing `exec_run`", content)
+        self.assertIn("adds no tools or\npermissions", content)
         from companion_v01.execution_specs import EXEC_TOOL_SPECS
 
         before = [spec.capability_id for spec in EXEC_TOOL_SPECS]
@@ -115,13 +134,13 @@ class CodingProjectSkillTests(unittest.TestCase):
         original = skill_path.read_text(encoding="utf-8")
         try:
             skill_path.write_text(
-                original.replace("Verification levels", "Verification tiers"),
+                original.replace("Verify and deliver", "Verify and ship"),
                 encoding="utf-8",
             )
-            self.assertIn("Verification tiers", self.registry.load("coding-project").content)
+            self.assertIn("Verify and ship", self.registry.load("coding-project").content)
         finally:
             skill_path.write_text(original, encoding="utf-8")
-        self.assertIn("Verification levels", self.registry.load("coding-project").content)
+        self.assertIn("Verify and deliver", self.registry.load("coding-project").content)
 
 
 class ToolDescriptionBoundaryTests(unittest.TestCase):

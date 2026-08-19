@@ -441,7 +441,7 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.is_error)
                 self.assertEqual(result.reason, expected_reason)
 
-    async def test_large_experience_keeps_akane_response_requirements(self) -> None:
+    async def test_large_valid_experience_is_not_cut_at_legacy_6000_chars(self) -> None:
         self.adapter.result = CapabilityResult(
             is_error=False,
             status="ok",
@@ -468,12 +468,16 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertLessEqual(len(result.followup_context), handler.MAX_FOLLOWUP_CHARS)
+        self.assertEqual(result.state_updates["adapter_capability_status"], "ok")
+        self.assertGreater(len(result.followup_context), 6000)
+        self.assertIn("证据 0", result.followup_context)
+        self.assertIn("证据 15", result.followup_context)
         self.assertTrue(
             result.followup_context.endswith(
                 "不要把产物已登记说成已发送成功，也不要无理由重复调用同一工具。"
             )
         )
+        self.assertTrue(result.followup_envelope.producer_bounded)
 
 
 class TrustedReadNetworkPolicyTests(unittest.TestCase):

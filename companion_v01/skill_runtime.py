@@ -24,6 +24,7 @@ import yaml
 
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+SKILL_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SKILL_MAX_DESCRIPTION_CHARS = 512
 SKILL_MAX_INSTRUCTION_BYTES = 256 * 1024
 SKILL_MAX_RESOURCE_BYTES = 256 * 1024
@@ -55,6 +56,7 @@ class SkillEntry:
     instructions: str
     instruction_sha256: str
     files: tuple[str, ...]
+    required_tools: tuple[str, ...] = ()
 
     @property
     def revision(self) -> str:
@@ -110,7 +112,26 @@ def _clean_description(value: Any) -> str:
     return text
 
 
-def _parse_skill_markdown(path: Path) -> tuple[str, str, str]:
+def _parse_required_tools(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise SkillError("skill_required_tools_list_required")
+    tools: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, str):
+            raise SkillError("skill_required_tool_invalid")
+        tool_name = raw.strip()
+        if not SKILL_TOOL_NAME_RE.fullmatch(tool_name):
+            raise SkillError("skill_required_tool_invalid", detail=tool_name[:80])
+        if tool_name not in seen:
+            seen.add(tool_name)
+            tools.append(tool_name)
+    return tuple(tools)
+
+
+def _parse_skill_markdown(path: Path) -> tuple[str, str, str, tuple[str, ...]]:
     try:
         raw_bytes = path.read_bytes()
     except OSError as exc:
@@ -137,11 +158,17 @@ def _parse_skill_markdown(path: Path) -> tuple[str, str, str]:
     if not SKILL_NAME_RE.fullmatch(name):
         raise SkillError("skill_name_invalid")
     description = _clean_description(metadata.get("description"))
+    skill_metadata = metadata.get("metadata")
+    if skill_metadata is None:
+        skill_metadata = {}
+    if not isinstance(skill_metadata, dict):
+        raise SkillError("skill_metadata_object_required")
+    required_tools = _parse_required_tools(skill_metadata.get("required_tools"))
     body = "\n".join(lines[end + 1 :]).strip()
     if not body:
         raise SkillError("skill_instructions_required")
     digest = hashlib.sha256(raw_bytes).hexdigest()
-    return name, description, body
+    return name, description, body, required_tools
 
 
 def _safe_relative_file(root: Path, relative: str) -> Path:
@@ -187,7 +214,7 @@ def _entry_from_dir(root: Path, *, source: str, enforce_directory_name: bool = T
     skill_path = root / SKILL_FILE_NAME
     if not skill_path.is_file() or skill_path.is_symlink():
         raise SkillError("skill_file_missing")
-    name, description, body = _parse_skill_markdown(skill_path)
+    name, description, body, required_tools = _parse_skill_markdown(skill_path)
     if enforce_directory_name and name != root.name:
         raise SkillError("skill_name_directory_mismatch", detail=f"{root.name}!={name}")
     files = tuple(
@@ -203,6 +230,7 @@ def _entry_from_dir(root: Path, *, source: str, enforce_directory_name: bool = T
         instructions=body,
         instruction_sha256=hashlib.sha256(skill_path.read_bytes()).hexdigest(),
         files=files,
+        required_tools=required_tools,
     )
 
 
@@ -272,22 +300,35 @@ class SkillRegistry:
                         merged[entry.name] = entry
             entries = tuple(sorted(merged.values(), key=lambda item: item.name.casefold()))
             catalog_material = json.dumps(
-                [(entry.name, entry.description, entry.source) for entry in entries],
+                [
+                    (entry.name, entry.description, entry.source, entry.required_tools)
+                    for entry in entries
+                ],
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
             revision = hashlib.sha256(catalog_material.encode("utf-8")).hexdigest()[:16]
             return SkillSnapshot(entries=entries, catalog_revision=revision, diagnostics=tuple(diagnostics))
 
-    def prompt_catalog(self) -> str:
+    def prompt_catalog(self, *, available_tool_names: Iterable[str] | None = None) -> str:
         snapshot = self.snapshot()
+        available = (
+            None
+            if available_tool_names is None
+            else {str(item).strip() for item in available_tool_names if str(item).strip()}
+        )
+        visible_entries = tuple(
+            entry
+            for entry in snapshot.entries
+            if available is None or set(entry.required_tools).issubset(available)
+        )
         lines = [
             f"【可按需加载的 Skills（目录版本 {snapshot.catalog_revision}）】",
             "Skill 是任务操作手册，不会增加权限或自动执行代码。任务明确匹配某项描述时，先调用 load_skill 读取完整说明；不要一次加载所有 Skill。",
         ]
         used = len("\n".join(lines))
         included = 0
-        for entry in snapshot.entries:
+        for entry in visible_entries:
             line = f"- {entry.name}：{entry.description}"
             if included >= SKILL_MAX_PROMPT_ITEMS or used + len(line) + 1 > SKILL_MAX_PROMPT_CHARS:
                 break
@@ -296,8 +337,10 @@ class SkillRegistry:
             included += 1
         if not snapshot.entries:
             lines.append("- 当前没有已安装的 Skill。")
-        elif included < len(snapshot.entries):
-            lines.append(f"- 目录已截到 {included}/{len(snapshot.entries)} 项；可用 load_skill 按已知名称打开。")
+        elif not visible_entries:
+            lines.append("- 当前工具集合没有可加载的 Skill。")
+        elif included < len(visible_entries):
+            lines.append(f"- 目录已截到 {included}/{len(visible_entries)} 项；可用 load_skill 按已知名称打开。")
         if snapshot.diagnostics:
             fallback_count = sum(item.get("fallback") == "last_good" for item in snapshot.diagnostics)
             ignored_count = len(snapshot.diagnostics) - fallback_count

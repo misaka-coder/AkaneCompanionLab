@@ -20,11 +20,28 @@ from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.skills import LoadSkillToolHandler, ManageSkillToolHandler
 
 
-def _write_skill(root: Path, name: str, description: str, body: str, *, resource: str = "") -> Path:
+def _write_skill(
+    root: Path,
+    name: str,
+    description: str,
+    body: str,
+    *,
+    resource: str = "",
+    required_tools: tuple[str, ...] = (),
+) -> Path:
     skill_dir = root / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n",
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        + (
+            "metadata:\n  required_tools:\n"
+            + "".join(f"    - {tool}\n" for tool in required_tools)
+            if required_tools
+            else ""
+        )
+        + f"---\n\n{body}\n",
         encoding="utf-8",
     )
     if resource:
@@ -63,6 +80,69 @@ class SkillRuntimeTests(unittest.TestCase):
         catalog = self.registry.prompt_catalog()
         self.assertLess(catalog.index("alpha"), catalog.index("zeta"))
         self.assertNotIn(str(self.root), catalog)
+
+    def test_catalog_filters_skills_by_required_tools_without_affecting_explicit_load(self) -> None:
+        _write_skill(
+            self.bundled,
+            "coding",
+            "Coding workflow.",
+            "Use exec_run.",
+            required_tools=("workspace_write", "exec_run"),
+        )
+        _write_skill(self.bundled, "notes", "Notes workflow.", "Write notes.")
+
+        missing = self.registry.prompt_catalog(available_tool_names={"load_skill", "workspace_write"})
+        available = self.registry.prompt_catalog(
+            available_tool_names={"load_skill", "workspace_write", "exec_run"}
+        )
+
+        self.assertNotIn("coding：", missing)
+        self.assertIn("notes：", missing)
+        self.assertIn("coding：", available)
+        self.assertEqual(self.registry.load("coding").status, "loaded")
+
+    def test_required_tools_are_deduplicated_and_change_catalog_revision(self) -> None:
+        skill_dir = _write_skill(
+            self.managed,
+            "demo",
+            "Stable routing.",
+            "body",
+            required_tools=("exec_run", "exec_run"),
+        )
+        first = self.registry.snapshot()
+        self.assertEqual(first.by_name()["demo"].required_tools, ("exec_run",))
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: Stable routing.\nmetadata:\n  required_tools:\n    - workspace_write\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        second = self.registry.snapshot()
+        self.assertNotEqual(first.catalog_revision, second.catalog_revision)
+
+    def test_invalid_required_tools_metadata_is_rejected(self) -> None:
+        for index, metadata in enumerate(
+            (
+                "metadata:\n  required_tools: exec_run",
+                "metadata:\n  required_tools:\n    - 123",
+                "metadata:\n  required_tools:\n    - Bad Tool",
+                "metadata: not-an-object",
+            )
+        ):
+            skill_dir = self.managed / f"bad-{index}"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: bad-{index}\ndescription: Invalid dependency.\n{metadata}\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+        snapshot = self.registry.snapshot()
+        self.assertEqual(snapshot.entries, ())
+        self.assertEqual(
+            {item["reason"] for item in snapshot.diagnostics},
+            {
+                "skill_required_tools_list_required",
+                "skill_required_tool_invalid",
+                "skill_metadata_object_required",
+            },
+        )
 
     def test_managed_skill_overrides_same_named_bundled_skill(self) -> None:
         _write_skill(self.bundled, "demo", "Bundled demo.", "bundled body")
