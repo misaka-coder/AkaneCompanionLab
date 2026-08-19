@@ -947,7 +947,9 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(readiness["transport"], "rest")
             self.assertEqual(result.state_updates["web_search_status"], "ok")
             self.assertIn("REST 降级结果", result.followup_context)
-            self.assertEqual(caller.calls, 1)
+            # Readiness diagnosed the earlier failure, but does not bypass the
+            # configured MCP transport on the real execution attempt.
+            self.assertEqual(caller.calls, 2)
             self.assertEqual(
                 rest.calls,
                 [

@@ -117,8 +117,10 @@ class ServerLocalOfferIndexTests(unittest.TestCase):
             )
         )
 
-    def test_transient_unavailable_status_does_not_remove_configured_tool_schema(self) -> None:
-        handler = _StatusHandler({"enabled": False, "status": "checking", "reason": "probe_pending"})
+    def test_configured_offer_keeps_execution_available_while_probe_is_checking(self) -> None:
+        handler = _StatusHandler(
+            {"offered": True, "enabled": True, "status": "checking", "reason": "probe_pending"}
+        )
         index = ServerLocalOfferIndex()
         index.replace_handlers({"web_search": handler})
         registry = CapabilityRegistry(
@@ -144,9 +146,18 @@ class ServerLocalOfferIndexTests(unittest.TestCase):
             session_id="conversation",
         )
 
-        self.assertEqual(selection.tool_names, ())
+        self.assertEqual(selection.tool_names, ("web_search",))
         self.assertEqual(selection.schema_tool_names, ("web_search",))
-        self.assertIn("unavailable", {item.state for item in selection.disclosures})
+        self.assertIn("ready", {item.state for item in selection.disclosures})
+
+    def test_explicitly_disabled_offer_stays_unavailable(self) -> None:
+        handler = _StatusHandler(
+            {"offered": False, "enabled": False, "status": "disabled", "reason": "search_disabled"}
+        )
+        index = ServerLocalOfferIndex()
+        index.register("web_search", handler)
+
+        self.assertFalse(index.is_offered("web_search"))
 
 
 if __name__ == "__main__":

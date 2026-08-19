@@ -7,6 +7,7 @@ import unittest
 
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.web_browser import WebSearchToolHandler
+from companion_v01.local_capability_config import save_mcp_server_config
 
 
 class FakeSearchRestClient:
@@ -79,6 +80,99 @@ class WebSearchPagedTests(unittest.TestCase):
         # re-query happened with the original arguments
         self.assertEqual(client.calls[0], ("search", {"query": "q", "max_results": 10}))
         self.assertEqual(client.calls[1], client.calls[0])
+
+    def test_markdown_fourteen_results_are_normalized_without_raw_clipping(self) -> None:
+        markdown = "\n\n".join(
+            f"{index}. [结果 {index}](https://example.com/{index})\n摘要 {index}，包含完整证据。"
+            for index in range(1, 15)
+        )
+        client = FakeSearchRestClient({"markdown": {"results": markdown}})
+        handler = self._handler(client)
+
+        result = handler.execute(
+            call=handler.normalize_call({"type": "web_search", "query": "markdown"}) or {},
+            context=_context(),
+        )
+
+        self.assertEqual(result.followup_envelope.diagnostics["entry_count"], 14)
+        self.assertIn("结果 14", result.followup_context)
+        self.assertNotIn("[truncated]", result.followup_context)
+        self.assertNotIn("没有拿到可用搜索结果", result.followup_context)
+
+    def test_unstructured_markdown_is_returned_as_lossless_paged_raw_document(self) -> None:
+        raw = "# 搜索服务原始回答\n" + "\n".join(f"证据行 {index} {'字' * 120}" for index in range(900))
+        client = FakeSearchRestClient({"raw": {"results": raw}})
+        handler = self._handler(client)
+
+        first = handler.execute(
+            call=handler.normalize_call({"type": "web_search", "query": "raw"}) or {},
+            context=_context(),
+        )
+        self.assertEqual(first.followup_envelope.diagnostics["format"], "markdown_raw")
+        self.assertFalse(first.followup_envelope.complete)
+        self.assertNotIn("[truncated]", first.followup_context)
+        cursor = first.followup_envelope.continuation["cursor"]
+        pages = [first.followup_context]
+        while cursor:
+            page = handler.execute(call={"type": "web_search", "cursor": cursor}, context=_context())
+            pages.append(page.followup_context)
+            cursor = (page.followup_envelope.continuation or {}).get("cursor")
+        joined = "\n".join(pages)
+        self.assertIn("证据行 0", joined)
+        self.assertIn("证据行 899", joined)
+
+    def test_explicit_empty_result_is_no_results_not_parse_failure(self) -> None:
+        handler = self._handler(FakeSearchRestClient({"empty": {"results": []}}))
+        result = handler.execute(
+            call=handler.normalize_call({"type": "web_search", "query": "empty"}) or {},
+            context=_context(),
+        )
+
+        self.assertEqual(result.state_updates["web_search_status"], "no_results")
+        self.assertEqual(result.followup_envelope.diagnostics["status"], "no_results")
+
+    def test_mcp_error_result_falls_back_to_rest_on_the_same_execution(self) -> None:
+        class ErrorMcpCaller:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def __call__(self, **_kwargs):
+                self.calls += 1
+                return {"isError": True, "content": [{"type": "text", "text": "provider_timeout"}]}
+
+        with tempfile.TemporaryDirectory(prefix="akane_ws_fallback_") as temp_dir:
+            save_mcp_server_config(
+                base_dir=temp_dir,
+                profile_user_id="p1",
+                server_id="anysearch",
+                payload={
+                    "enabled": True,
+                    "displayName": "AnySearch",
+                    "command": "configured-anysearch",
+                    "args": [],
+                    "cwd": temp_dir,
+                },
+            )
+            rest = FakeSearchRestClient(
+                {"fallback": {"results": [{"title": "REST 结果", "url": "https://example.com/fallback"}]}}
+            )
+            mcp = ErrorMcpCaller()
+            handler = WebSearchToolHandler(
+                config_base_dir=temp_dir,
+                mcp_tool_caller=mcp,
+                anysearch_rest_client=rest,
+                readiness_probe_in_background=True,
+            )
+
+            result = handler.execute(
+                call=handler.normalize_call({"type": "web_search", "query": "fallback"}) or {},
+                context=_context(),
+            )
+
+            self.assertEqual(mcp.calls, 1)
+            self.assertIn("REST 结果", result.followup_context)
+            self.assertEqual(result.followup_envelope.diagnostics["providers_attempted"], ["mcp", "rest"])
+            self.assertTrue(result.followup_envelope.diagnostics["fallback_used"])
 
     def test_search_result_change_returns_structured_content_changed(self) -> None:
         client = FakeSearchRestClient({"q": {"results": [

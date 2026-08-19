@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote_plus, urlparse
 
 import config
@@ -1111,7 +1111,7 @@ class WebSearchToolHandler(BaseToolHandler):
             server_id=self.server_id,
         )
         if server and not bool(server.get("enabled")):
-            return {"enabled": False, "status": "disabled", "reason": "anysearch_disabled"}
+            return {"offered": False, "enabled": False, "status": "disabled", "reason": "anysearch_disabled"}
 
         if not _mcp_server_has_transport_config(server):
             return self._rest_capability_status(runtime_profile_user_id)
@@ -1133,6 +1133,7 @@ class WebSearchToolHandler(BaseToolHandler):
                         daemon=True,
                     ).start()
                 return {
+                    "offered": True,
                     "enabled": True,
                     "status": "checking",
                     "reason": "anysearch_probe_pending",
@@ -1159,6 +1160,7 @@ class WebSearchToolHandler(BaseToolHandler):
                         daemon=True,
                     ).start()
                 return {
+                    "offered": True,
                     "enabled": True,
                     "status": "checking",
                     "reason": "anysearch_rest_probe_pending",
@@ -1352,51 +1354,60 @@ class WebSearchToolHandler(BaseToolHandler):
         action = str(call.get("action") or "search").strip()
         arguments = self._build_mcp_arguments(call)
         use_mcp = _mcp_server_has_transport_config(server)
-        if use_mcp and server:
-            cached_status = self._cached_server_readiness(runtime_profile_user_id, server)
-            if bool(cached_status and cached_status.get("enabled")) and cached_status.get("transport") == "rest":
-                use_mcp = False
         redaction_terms = self._redaction_terms_for_server(server) if server else []
-        try:
-            if use_mcp:
-                result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
-            else:
-                result = self.anysearch_rest_client.call(action=action, arguments=arguments)
-        except AnySearchRestError as exc:
-            return self._failure(exc.reason, "AnySearch 官方 HTTPS 搜索调用失败。")
-        except McpStdioDiscoveryError as exc:
-            mcp_reason = self._safe_mcp_failure_reason(exc)
-            if use_mcp and server:
-                self._remember_server_failure(runtime_profile_user_id, server, reason=mcp_reason)
-            if action not in {"search", "batch_search"}:
-                return self._failure(mcp_reason, "AnySearch MCP 调用失败或超时。")
+        providers_attempted: list[str] = []
+        fallback_used = False
+        mcp_failure_reason = ""
+        result: Any = None
+        if use_mcp and server:
+            providers_attempted.append("mcp")
             try:
-                result = self.anysearch_rest_client.call(action=action, arguments=arguments)
-            except AnySearchRestError as rest_exc:
-                return self._failure(rest_exc.reason, "AnySearch MCP 与官方 HTTPS 搜索均不可用。")
+                result = self._run_coro_blocking(self._call_mcp(server=server, tool_name=action, arguments=arguments))
+                if self._mcp_result_is_error(result):
+                    payload = self._extract_payload(result, redaction_terms=redaction_terms)
+                    detail = self._payload_to_text(payload, redaction_terms=redaction_terms)
+                    mcp_failure_reason = self._mcp_tool_error_reason(result=result, detail=detail)
+            except McpStdioDiscoveryError as exc:
+                mcp_failure_reason = self._safe_mcp_failure_reason(exc)
             except Exception:
-                return self._failure("anysearch_rest_failed", "AnySearch MCP 与官方 HTTPS 搜索均不可用。")
-            use_mcp = False
-            if server:
+                mcp_failure_reason = "mcp_call_failed"
+            if mcp_failure_reason:
+                self._remember_server_failure(runtime_profile_user_id, server, reason=mcp_failure_reason)
+                if action not in {"search", "batch_search"}:
+                    return self._mcp_tool_failure(
+                        action=action,
+                        result=result if isinstance(result, Mapping) else {"reason": mcp_failure_reason},
+                        redaction_terms=redaction_terms,
+                        profile_user_id=runtime_profile_user_id,
+                    )
+                fallback_used = True
+                providers_attempted.append("rest")
+                try:
+                    result = self.anysearch_rest_client.call(action=action, arguments=arguments)
+                except AnySearchRestError as rest_exc:
+                    return self._failure(
+                        rest_exc.reason,
+                        f"AnySearch MCP（{mcp_failure_reason}）与官方 HTTPS 搜索均不可用。",
+                    )
+                except Exception:
+                    return self._failure(
+                        "anysearch_rest_failed",
+                        f"AnySearch MCP（{mcp_failure_reason}）与官方 HTTPS 搜索均不可用。",
+                    )
+                use_mcp = False
                 self._remember_server_rest_fallback(
                     runtime_profile_user_id,
                     server,
-                    mcp_reason=mcp_reason,
+                    mcp_reason=mcp_failure_reason,
                 )
-        except Exception:
-            if use_mcp and server:
-                self._remember_server_failure(runtime_profile_user_id, server, reason="mcp_call_failed")
-                return self._failure("mcp_call_failed", "AnySearch MCP 调用失败。")
-            return self._failure("anysearch_rest_failed", "AnySearch 官方 HTTPS 搜索调用失败。")
-        if self._mcp_result_is_error(result):
-            if use_mcp and server:
-                self._remember_server_ready(runtime_profile_user_id, server)
-            return self._mcp_tool_failure(
-                action=action,
-                result=result,
-                redaction_terms=redaction_terms,
-                profile_user_id=runtime_profile_user_id,
-            )
+        else:
+            providers_attempted.append("rest")
+            try:
+                result = self.anysearch_rest_client.call(action=action, arguments=arguments)
+            except AnySearchRestError as exc:
+                return self._failure(exc.reason, "AnySearch 官方 HTTPS 搜索调用失败。")
+            except Exception:
+                return self._failure("anysearch_rest_failed", "AnySearch 官方 HTTPS 搜索调用失败。")
         if use_mcp and server:
             self._remember_server_ready(runtime_profile_user_id, server)
 
@@ -1410,10 +1421,13 @@ class WebSearchToolHandler(BaseToolHandler):
                 result=result if isinstance(result, dict) else {},
                 redaction_terms=redaction_terms,
                 start_entry=start_entry,
+                start_offset=start_offset,
                 expected_fingerprint=expected_fingerprint,
                 owner_binding=owner_binding,
                 profile_user_id=runtime_profile_user_id,
                 coverage_status=coverage_status,
+                providers_attempted=providers_attempted,
+                fallback_used=fallback_used,
             )
         if action == "extract":
             return self._paged_extract_result(
@@ -1455,7 +1469,7 @@ class WebSearchToolHandler(BaseToolHandler):
             "action": action,
             "arguments": dict(payload.get("args") or {}),
             "start_entry": int(payload.get("s") or 0) if action in {"search", "batch_search"} else 0,
-            "start_offset": int(payload.get("o") or 0) if action in {"extract", "get_sub_domains"} else 0,
+            "start_offset": int(payload.get("o") or 0),
             "fingerprint": str(payload.get("f") or ""),
         }
 
@@ -1493,7 +1507,7 @@ class WebSearchToolHandler(BaseToolHandler):
 
     def _search_evidence_entries(self, payload: Any, *, redaction_terms: list[str]) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
-        for item in self._coerce_search_results(payload)[: self.MAX_RESULTS]:
+        for item in self._coerce_search_results(payload):
             title = self._sanitize_output(
                 str(item.get("title") or item.get("name") or "无标题"), redaction_terms=redaction_terms
             )[:160]
@@ -1513,15 +1527,33 @@ class WebSearchToolHandler(BaseToolHandler):
             date = self._search_result_date_hint(item)
             if date:
                 date = self._sanitize_output(date, redaction_terms=redaction_terms)[:160]
-            entries.append({"title": title, "url": url, "snippet": snippet, "date": date})
+            source = self._sanitize_output(
+                str(item.get("source") or item.get("site") or item.get("provider") or ""),
+                redaction_terms=redaction_terms,
+            )[:160]
+            if not source and url:
+                source = str(urlparse(url).hostname or "")[:160]
+            entries.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "source": source,
+                    "published_at": date,
+                }
+            )
         return entries
 
     def _render_search_entry(self, index: int, entry: Mapping[str, Any]) -> str:
         lines = [f"{index}. {str(entry.get('title') or '')}"]
         if entry.get("url"):
             lines.append(f"   URL: {str(entry.get('url') or '')}")
-        if entry.get("date"):
-            lines.append("   来源日期字段（需结合正文判断含义）: " + str(entry.get("date") or ""))
+        if entry.get("source"):
+            lines.append(f"   来源: {str(entry.get('source') or '')}")
+        if entry.get("published_at"):
+            lines.append(
+                "   来源日期字段（需结合正文判断含义）: " + str(entry.get("published_at") or "")
+            )
         if entry.get("snippet"):
             lines.append(f"   摘要: {str(entry.get('snippet') or '')}")
         return "\n".join(lines)
@@ -1538,6 +1570,9 @@ class WebSearchToolHandler(BaseToolHandler):
         owner_binding: str,
         profile_user_id: str,
         coverage_status: str,
+        start_offset: int = 0,
+        providers_attempted: Sequence[str] = (),
+        fallback_used: bool = False,
     ) -> ToolExecutionResult:
         from ..paged_reading import (
             make_paged_cursor,
@@ -1548,6 +1583,58 @@ class WebSearchToolHandler(BaseToolHandler):
         payload = self._extract_payload(result, redaction_terms=redaction_terms)
         entries = self._search_evidence_entries(payload, redaction_terms=redaction_terms)
         fingerprint = self._web_evidence_fingerprint(json.dumps(entries, ensure_ascii=False, sort_keys=True))
+
+        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
+        lines = ["【AnySearch 联网搜索结果】"]
+        if query_label:
+            lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
+        if self._search_needs_broader_coverage(query_label):
+            lines.append(
+                "覆盖提醒：这是时间范围、新闻汇总或多来源核验请求。若当前结果只覆盖单一日期或单一来源，当前任务尚未完成；"
+                "请继续 batch_search（拆分日期、语言或来源）并对关键页面 extract。某个查询失败时优先换查询词或来源，不要直接放弃整个检索。"
+            )
+        lines.extend(
+            [
+                "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
+                "搜索摘要不是规范化行情快照。涉及时效性结论时，应从结果正文明确核对内容日期、来源时区和交易状态；只有时分没有日期、日期冲突或含义不明时，应继续提取正文或交叉搜索，仍不明确就降低置信度，不能擅自称为“今天盘中”或“今天收盘”。",
+            ]
+        )
+        if not entries:
+            raw_text = self._payload_to_text(payload, redaction_terms=redaction_terms)
+            if self._search_payload_is_explicitly_empty(payload) or not raw_text or raw_text in {"[]", "{}", "null"}:
+                lines.append("本次搜索真实返回 0 条结果。可以调整查询词、日期范围或来源后重试；不要编造结果。")
+                content = "\n".join(lines)
+                return self._web_page_result(
+                    content=content,
+                    complete=True,
+                    continuation=None,
+                    diagnostics={
+                        "status": "no_results",
+                        "action": action,
+                        "entry_count": 0,
+                        "complete": True,
+                        "providers_attempted": list(providers_attempted),
+                        "fallback_used": bool(fallback_used),
+                    },
+                    profile_user_id=profile_user_id,
+                    coverage_status=coverage_status,
+                    status="no_results",
+                )
+            return self._paged_raw_search_result(
+                action=action,
+                call=call,
+                raw_text=raw_text,
+                header_lines=lines,
+                start_offset=start_offset,
+                expected_fingerprint=expected_fingerprint,
+                owner_binding=owner_binding,
+                profile_user_id=profile_user_id,
+                coverage_status=coverage_status,
+                providers_attempted=providers_attempted,
+                fallback_used=fallback_used,
+            )
+        if start_offset:
+            return self._cursor_failure("cursor_invalid", "结构化搜索结果不能使用 raw 文档偏移")
         if expected_fingerprint and fingerprint != expected_fingerprint:
             content = page_failure_feedback(
                 status="content_changed",
@@ -1567,37 +1654,6 @@ class WebSearchToolHandler(BaseToolHandler):
                     continuation=None,
                     diagnostics={"status": "content_changed"},
                 ),
-            )
-
-        query_label = str(call.get("query") or " / ".join(str(item) for item in call.get("queries") or [])).strip()
-        lines = ["【AnySearch 联网搜索结果】"]
-        if query_label:
-            lines.append(f"查询：{self._sanitize_output(query_label, redaction_terms=redaction_terms)[:240]}")
-        if self._search_needs_broader_coverage(query_label):
-            lines.append(
-                "覆盖提醒：这是时间范围、新闻汇总或多来源核验请求。若当前结果只覆盖单一日期或单一来源，当前任务尚未完成；"
-                "请继续 batch_search（拆分日期、语言或来源）并对关键页面 extract。某个查询失败时优先换查询词或来源，不要直接放弃整个检索。"
-            )
-        lines.extend(
-            [
-                "证据口径：当前消息时间和本次检索时间只表示何时提问或查询，不能充当网页内容、行情数据或事件本身的日期。",
-                "搜索摘要不是规范化行情快照。涉及时效性结论时，应从结果正文明确核对内容日期、来源时区和交易状态；只有时分没有日期、日期冲突或含义不明时，应继续提取正文或交叉搜索，仍不明确就降低置信度，不能擅自称为“今天盘中”或“今天收盘”。",
-            ]
-        )
-        if not entries:
-            raw_text = self._payload_to_text(payload, redaction_terms=redaction_terms)
-            lines.append("没有拿到可用搜索结果。")
-            if raw_text:
-                lines.append(self._clip(raw_text, 1200))
-            lines.append("请只基于这些公开搜索结果回答；没查到或不确定的部分要明确说明。")
-            content = "\n".join(lines)
-            return self._web_page_result(
-                content=content,
-                complete=True,
-                continuation=None,
-                diagnostics={"action": action, "entry_count": 0, "complete": True},
-                profile_user_id=profile_user_id,
-                coverage_status=coverage_status,
             )
         budget = 32_000
         shown = 0
@@ -1645,6 +1701,88 @@ class WebSearchToolHandler(BaseToolHandler):
                 "shown_entries": shown_count,
                 "start_entry": start_entry,
                 "complete": complete,
+                "providers_attempted": list(providers_attempted),
+                "fallback_used": bool(fallback_used),
+            },
+            profile_user_id=profile_user_id,
+            coverage_status=coverage_status,
+        )
+
+    def _paged_raw_search_result(
+        self,
+        *,
+        action: str,
+        call: Mapping[str, Any],
+        raw_text: str,
+        header_lines: list[str],
+        start_offset: int,
+        expected_fingerprint: str,
+        owner_binding: str,
+        profile_user_id: str,
+        coverage_status: str,
+        providers_attempted: list[str],
+        fallback_used: bool,
+    ) -> ToolExecutionResult:
+        from ..paged_reading import (
+            FIRST_PAGE_BUDGET_CHARS,
+            FIRST_PAGE_BUDGET_LINES,
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            json_payload,
+            make_paged_cursor,
+            slice_page,
+        )
+
+        fingerprint = self._web_evidence_fingerprint(raw_text)
+        if expected_fingerprint and fingerprint != expected_fingerprint:
+            return self._cursor_failure("content_changed", "重新检索得到的原始文档与上一页不一致")
+        budget_chars, budget_lines = (
+            (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
+            if not expected_fingerprint
+            else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
+        )
+        page_text, next_offset, total_chars = slice_page(
+            raw_text,
+            start=start_offset,
+            budget_chars=budget_chars,
+            budget_lines=budget_lines,
+        )
+        complete = next_offset >= total_chars
+        lines = [*header_lines, "结果格式：markdown_raw（保留服务返回的原始公开文档）", "原始搜索文档：", page_text]
+        continuation = None
+        if not complete:
+            cursor = make_paged_cursor(
+                tool="we",
+                binding=owner_binding,
+                payload=json_payload(
+                    {
+                        "a": action,
+                        "args": {str(key): value for key, value in dict(call).items() if key != "type" and value not in (None, "")},
+                        "o": next_offset,
+                        "f": fingerprint,
+                    }
+                ),
+            )
+            continuation = {"type": self.tool_type, "cursor": cursor}
+            lines.append(
+                f"原始文档已展示 {next_offset}/{total_chars} 字；够用即可回答，需要后续时调用 "
+                f'web_search(cursor="{cursor}")。'
+            )
+        else:
+            lines.append(f"已读完本次返回的原始搜索文档（共 {total_chars} 字）。")
+        return self._web_page_result(
+            content="\n".join(lines),
+            complete=complete,
+            continuation=continuation,
+            diagnostics={
+                "status": "ok",
+                "action": action,
+                "format": "markdown_raw",
+                "shown_chars": len(page_text),
+                "total_chars": total_chars,
+                "complete": complete,
+                "providers_attempted": list(providers_attempted),
+                "fallback_used": bool(fallback_used),
             },
             profile_user_id=profile_user_id,
             coverage_status=coverage_status,
@@ -1857,6 +1995,7 @@ class WebSearchToolHandler(BaseToolHandler):
         diagnostics: Mapping[str, Any],
         profile_user_id: str = "",
         coverage_status: str = "not_required",
+        status: str = "ok",
     ) -> ToolExecutionResult:
         return ToolExecutionResult(
             tool_type="web_search",
@@ -1864,7 +2003,7 @@ class WebSearchToolHandler(BaseToolHandler):
                 {
                     "type": "web_search_completed",
                     "provider": "anysearch",
-                    "status": "ok",
+                    "status": str(status or "ok"),
                     "complete": bool(complete),
                 }
             ],
@@ -1877,7 +2016,7 @@ class WebSearchToolHandler(BaseToolHandler):
                 diagnostics=dict(diagnostics),
             ),
             state_updates={
-                "web_search_status": "ok",
+                "web_search_status": str(status or "ok"),
                 "web_search_provider": "anysearch",
                 "web_search_profile_user_id": str(profile_user_id or ""),
                 "web_search_coverage_status": str(coverage_status or ""),
@@ -2016,6 +2155,7 @@ class WebSearchToolHandler(BaseToolHandler):
     def _stable_configured_status(status: Mapping[str, Any]) -> dict[str, Any]:
         result = dict(status)
         raw_enabled = bool(result.get("enabled"))
+        result["offered"] = True
         result["enabled"] = True
         if str(result.get("status") or "") != "checking":
             result["healthy"] = raw_enabled
@@ -2131,6 +2271,10 @@ class WebSearchToolHandler(BaseToolHandler):
                 value = payload.get(key)
                 if isinstance(value, list):
                     return [dict(item) for item in value if isinstance(item, Mapping)]
+                if isinstance(value, str):
+                    parsed = self._parse_markdown_search_results(value)
+                    if parsed:
+                        return parsed
             if any(key in payload for key in ("title", "url", "link", "snippet", "content")):
                 return [dict(payload)]
         if isinstance(payload, list):
@@ -2141,7 +2285,72 @@ class WebSearchToolHandler(BaseToolHandler):
                 elif isinstance(item, str):
                     results.append({"title": item})
             return results
+        if isinstance(payload, str):
+            return self._parse_markdown_search_results(payload)
         return []
+
+    def _parse_markdown_search_results(self, value: str) -> list[dict[str, Any]]:
+        """Parse common Markdown search lists without discarding the raw fallback."""
+
+        entries: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        snippet_lines: list[str] = []
+        pending_title = ""
+
+        def flush() -> None:
+            nonlocal current, snippet_lines
+            if current is None:
+                return
+            snippet = "\n".join(line for line in snippet_lines if line).strip()
+            if snippet:
+                current["snippet"] = snippet
+            entries.append(current)
+            current = None
+            snippet_lines = []
+
+        for raw_line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            line = raw_line.strip()
+            if not line or line.startswith("```"):
+                continue
+            link = re.search(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", line)
+            if link:
+                flush()
+                title = re.sub(r"^\s*(?:[-*+]\s*|\d+[.)]\s*)", "", link.group(1)).strip()
+                current = {"title": title or "无标题", "url": link.group(2).strip()}
+                tail = (line[: link.start()] + " " + line[link.end() :]).strip(" -*:—")
+                tail = re.sub(r"^\d+[.)]\s*", "", tail).strip()
+                if tail:
+                    snippet_lines.append(tail)
+                pending_title = ""
+                continue
+            url_match = re.match(r"^(?:url|链接|网址)\s*[:：]\s*(https?://\S+)$", line, re.IGNORECASE)
+            if url_match:
+                flush()
+                current = {"title": pending_title or "无标题", "url": url_match.group(1).rstrip(".,)）")}
+                pending_title = ""
+                continue
+            heading = re.sub(r"^#{1,6}\s*", "", line).strip()
+            heading = re.sub(r"^\s*(?:[-*+]\s*|\d+[.)]\s*)", "", heading).strip()
+            if current is None and (line.startswith("#") or re.match(r"^\d+[.)]\s+", line)):
+                pending_title = heading
+                continue
+            if current is not None:
+                cleaned = re.sub(r"^(?:摘要|snippet|description)\s*[:：]\s*", "", line, flags=re.IGNORECASE)
+                if cleaned and not cleaned.startswith("---"):
+                    snippet_lines.append(cleaned)
+        flush()
+        return entries
+
+    @staticmethod
+    def _search_payload_is_explicitly_empty(payload: Any) -> bool:
+        if payload in (None, "", [], {}):
+            return True
+        if not isinstance(payload, Mapping):
+            return False
+        for key in ("results", "items", "data"):
+            if key in payload:
+                return payload.get(key) in (None, "", [], {})
+        return False
 
     def _search_result_date_hint(self, item: Mapping[str, Any]) -> str:
         for key in (

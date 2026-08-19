@@ -2334,9 +2334,9 @@ _SERVER_OFFER_READY_STATUSES: frozenset[str] = frozenset(
 class ServerLocalOfferIndex:
     """Lightweight per-process offer index backed by capability_status() probes.
 
-    Handlers are registered by tool_id. is_offered() returns True only when the
-    most recent probe returned an enabled/ready status. Results are cached with
-    separate TTLs for ready (15 s) and unavailable (5 s) outcomes.
+    Handlers are registered by tool_id. A handler may explicitly return an
+    ``offered`` configuration fact when transient readiness must not control
+    execution authority. Other handlers retain the enabled/ready contract.
     """
 
     def __init__(
@@ -2449,6 +2449,8 @@ class ServerLocalOfferIndex:
         if isinstance(result, bool):
             return result
         if isinstance(result, Mapping):
+            if isinstance(result.get("offered"), bool):
+                return bool(result.get("offered"))
             if result.get("enabled") is not True:
                 return False
             status = str(result.get("status") or "").strip().lower()
