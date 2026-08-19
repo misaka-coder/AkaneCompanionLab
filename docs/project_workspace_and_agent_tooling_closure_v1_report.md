@@ -1,7 +1,7 @@
 # Project Workspace 与 Agent 工具链可靠性收口 V1 - 封板报告
 
 > 日期：2026-08-20
-> 状态：核心链路完成，未部署
+> 状态：执行单完成，未部署
 > 范围：Akane、MemCore 公共 request-binding API、Web Search、Coding Skill
 
 ## 1. 修改、净行数与提交
@@ -9,11 +9,15 @@
 Akane 运行时代码与 Skills 合计 `+1979/-299`；测试和执行文档另计。MemCore 生产代码
 `+147/-5`，测试 `+154/-0`。
 
+桌面 picker repair slice 另计：Python 生产代码 `+329/-15`，Tauri/桌面前端生产代码
+`+447/-2`（Cargo.lock 不计），测试 `+196/-0`。
+
 - `217998a`：Shell/toolchain 与结构化拒绝。
 - `3b46105`：持久 Project Workspace、write/patch 与 `alias:project`。
 - `add3116`：Akane 按 source turn 绑定 provider request。
 - `0e13da9`：Web Search 真实执行、fallback、规范化与分页。
 - `873a6a6`：Skill 依赖、Coding Skill、cwd 描述和长结果旧逻辑清理。
+- `f4b07b0`：桌面原生目录选择器、宿主授权绑定与外部项目执行桥。
 - MemCore `7327996`：宿主无关 request-binding API。
 - 执行文档：`71136df`。
 
@@ -46,16 +50,20 @@ MemCore settlement 的 `256 bytes / 0.5 savings ratio` 未改变。
 ## 4. 创建、选择、复用与归档
 
 三端均由同一模型工具 `manage_project_workspace` 完成 `current/list/create/select/archive`。create 自动
-选中；select 使用稳定 workspace ID；archive 清除选择但不删除文件。
+选中；select 使用稳定 workspace ID；archive 清除选择但不删除文件。桌面“手边物品”窗口另有宿主
+管理面：可创建受管项目、查看/选择/archive，也可通过 Tauri 原生目录选择器绑定已有目录。
 
-当前桌宠尚无“操作系统目录选择器绑定任意已有目录”入口。桌面模型可创建和选择受管项目，但已有
-外部目录不能原地绑定。这是独立 UI + 授权桥切片，不能通过接受模型提供绝对路径来伪装完成。
+绑定时绝对路径只存在于 Tauri 命令、已鉴权的本地 desktop-only 后端入口和宿主内部数据库；浏览器
+JS、模型工具参数、公共项目记录、日志与 snapshot 均不出现该路径。重复绑定同一目录恢复并选择同一
+`proj_*`，不会生成第二条项目权威记录；取消 picker 不产生写入。
 
 ## 5. release/source/venv 写入边界
 
-项目记录只存 `Projects/proj_*` 相对引用，根必须落在 execution workspace 的专用 `Projects/` 下；
-`..`、绝对路径、盘符、符号链接/重解析逃逸均拒绝。Project Workspace 不扫描宿主，也不能选择
-release、source checkout、共享 venv、数据库或缓存目录。
+受管项目记录只存 `Projects/proj_*` 相对引用，根必须落在 execution workspace 的专用 `Projects/`
+下。桌面绑定项目使用 `root_kind=host_bound` 的宿主内部根引用，但只能来自原生 picker，模型不能提交
+绝对路径。源码 checkout、active release、共享 venv、instance data/state/log/cache/run、数据库和
+execution workspace 均列为受保护根；选择其自身、子目录或包含这些根的父目录都会被拒绝。运行时还
+会重新验证规范路径，目录失效或被替换为链接后清除选择并返回 `workspace_missing`。
 
 ## 6. write/patch 最终契约
 
@@ -176,14 +184,21 @@ provider 原始顺序完整保留；final 后才由 MemCore 统一选择 full/in
   175 passed。
 - 19 个变更生产 Python 文件 `py_compile` 通过；6 个 bundled Skill quick validator 通过；
   `git diff --check` 通过。
+- 桌面 picker repair slice：Project/Execution/Resources/Routes 聚焦矩阵 193 passed、1 platform skip；
+  Rust 23 passed；picker 专属 Python/前端契约 14 passed；`npm run build` 与 control-center action smoke 通过；
+  默认桌面和 390x844 视口实际渲染通过。`cargo fmt --check` 只报告 `main.rs` 三处本轮前既有格式漂移，
+  本轮新增 Rust 块已按 rustfmt 输出整理，未顺手修改无关行。
 
 ## 19. 真实表现 smoke
 
 本地隔离 smoke 已通过：中文项目名创建；private A 创建后 private B 自动复用；write + hash-guarded
 patch 后真实文件为 v1/v2 两行；`exec_run(cwd="alias:project")` 真实完成并看到 v2；70k 输出两页完整。
+桌面绑定测试另覆盖中文+空格目录、重复绑定幂等、公共结果无路径、write 落到绑定目录、外部项目子目录
+通过宿主授权 mount 执行、目录失效清除选择、非桌面调用拒绝、受保护根拒绝和管理鉴权。
 
 群成员隔离、archive、路径逃逸、checking 搜索、14 条 Markdown 与 synthetic turn 由真实 handler/provider
-request 测试覆盖。未运行真实 QQ 私聊/群聊、桌宠人工 UI、云端或付费 provider smoke；未部署。
+request 测试覆盖。桌面页面已在 390x844 与默认桌面 viewport 实际渲染，无横向溢出；原生 picker 的
+人工点击仍未运行。未运行真实 QQ 私聊/群聊、云端或付费 provider smoke；未部署。
 
 ## 20. schema/cache 影响
 
@@ -191,6 +206,10 @@ request 测试覆盖。未运行真实 QQ 私聊/群聊、桌宠人工 UI、云�
 `exec_run` 仅描述与错误反馈收紧。Web Search schema 参数不增加第二套协议。Skill catalog revision 现在包含
 required-tools metadata，首次启用会产生一次目录 revision 变化。工具 schema/hash 会随新增工具一次性变化；
 MemCore settlement/cache key 与阈值未改。
+
+桌面绑定切片为 `project_workspaces` 前向增加 `root_kind` 与 `host_root_path` 两列；旧行默认
+`root_kind=managed`，无数据重写。`host_root_path` 是宿主内部列，不进入模型 schema。Tauri 增加
+`tauri-plugin-dialog` 和两个自有 command；模型工具 schema 与 MemCore cache key 不再变化。
 
 ## 21. WIP 与产物
 
@@ -200,11 +219,13 @@ cache、wheel、build/dist、node_modules 或 smoke 临时项目；临时目录�
 
 ## 22. 风险、回滚与部署
 
-剩余风险：桌宠缺少任意已有目录的显式 picker/bind 授权桥；云端 PATH 和真实 QQ actor 流尚未 smoke；
-第三方未分页 Adapter 超 64 KiB 会诚实拒绝，需 provider 自身增加 paging；Akane 全套仍有五项既有失败。
+剩余风险：原生目录 picker 尚未人工点击 smoke；云端 PATH 和真实 QQ actor 流尚未 smoke；第三方未分页
+Adapter 超 64 KiB 会诚实拒绝，需 provider 自身增加 paging；Akane 全套仍有五项既有失败。桌面前端
+全文件契约本轮仍复现其中两项既有 realtime voice/TTS 漂移，本切片专属契约通过。
 
 回滚可按提交独立进行：Shell `217998a`、Project Workspace `3b46105`、MemCore Akane adapter `add3116`
 + MemCore API `7327996`、Search `0e13da9`、Prompt/Skill `873a6a6`。Project schema 回滚不删除项目文件。
+桌面绑定可独立回滚 `f4b07b0`；新增列可保留不读，已绑定外部目录不会被删除或复制。
 
 **未部署。** 部署应单独执行 wheel 同步、release 构建、数据库前向迁移、服务重启和 QQ/云端 smoke；
 失败时关闭对应 capability offer，不能恢复旧歧义路径。
