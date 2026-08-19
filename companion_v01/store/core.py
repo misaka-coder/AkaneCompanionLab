@@ -452,6 +452,8 @@ class MemoryStore:
                     actor_scope TEXT NOT NULL DEFAULT '',
                     state TEXT NOT NULL DEFAULT 'active',
                     root_relpath TEXT NOT NULL,
+                    root_kind TEXT NOT NULL DEFAULT 'managed',
+                    host_root_path TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     archived_at INTEGER NOT NULL DEFAULT 0
@@ -466,6 +468,18 @@ class MemoryStore:
                     updated_at INTEGER NOT NULL
                 );
                 """
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="project_workspaces",
+                column_name="root_kind",
+                column_definition="TEXT NOT NULL DEFAULT 'managed'",
+            )
+            self._ensure_column(
+                conn=conn,
+                table_name="project_workspaces",
+                column_name="host_root_path",
+                column_definition="TEXT NOT NULL DEFAULT ''",
             )
             self._ensure_column(
                 conn=conn,
@@ -3729,6 +3743,8 @@ class MemoryStore:
         owner_id: str,
         actor_scope: str,
         root_relpath: str,
+        root_kind: str = "managed",
+        host_root_path: str = "",
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         now_ts = int(timestamp or time.time())
@@ -3740,6 +3756,8 @@ class MemoryStore:
             "actor_scope": str(actor_scope),
             "state": "active",
             "root_relpath": str(root_relpath),
+            "root_kind": str(root_kind),
+            "host_root_path": str(host_root_path),
             "created_at": now_ts,
             "updated_at": now_ts,
             "archived_at": 0,
@@ -3749,12 +3767,14 @@ class MemoryStore:
                 """
                 INSERT INTO project_workspaces (
                     workspace_id, display_name, owner_kind, owner_id, actor_scope,
-                    state, root_relpath, created_at, updated_at, archived_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    state, root_relpath, root_kind, host_root_path,
+                    created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(payload[key] for key in (
                     "workspace_id", "display_name", "owner_kind", "owner_id", "actor_scope",
-                    "state", "root_relpath", "created_at", "updated_at", "archived_at",
+                    "state", "root_relpath", "root_kind", "host_root_path",
+                    "created_at", "updated_at", "archived_at",
                 )),
             )
         return payload

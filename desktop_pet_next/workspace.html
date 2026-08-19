@@ -21,6 +21,21 @@
 
       <section id="workspace-alert" class="workspace-alert" hidden></section>
 
+      <section class="project-workspace-panel" aria-labelledby="project-workspace-title">
+        <header>
+          <div>
+            <h2 id="project-workspace-title">当前项目</h2>
+            <p id="project-workspace-summary">正在读取项目工作区</p>
+          </div>
+          <button id="bind-project-directory" class="primary-button" type="button">绑定现有目录</button>
+        </header>
+        <form id="create-project-form" class="project-create-row">
+          <input id="project-display-name" type="text" maxlength="80" autocomplete="off" placeholder="新项目名称" aria-label="新项目名称" />
+          <button type="submit">创建受管项目</button>
+        </form>
+        <div id="project-workspace-list" class="project-workspace-list" aria-live="polite"></div>
+      </section>
+
       <section class="metric-grid" aria-label="手边物品统计">
         <article class="metric">
           <span>文件</span>

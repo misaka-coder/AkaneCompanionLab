@@ -5,10 +5,11 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
+import sys
 import threading
 import time
 import uuid
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .store import MemoryStore
 
@@ -17,6 +18,8 @@ PROJECT_WRITE_MAX_CHARS = 256 * 1024
 PROJECT_PATCH_MAX_CHARS = 256 * 1024
 _PROJECT_ID_RE = re.compile(r"^proj_[a-f0-9]{32}$")
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_ROOT_KIND_MANAGED = "managed"
+_ROOT_KIND_HOST_BOUND = "host_bound"
 
 
 class ProjectWorkspaceError(ValueError):
@@ -46,10 +49,28 @@ class ProjectWorkspaceService:
     workspace id and the dynamic ``alias:project`` execution alias.
     """
 
-    def __init__(self, *, store: MemoryStore, execution_workspace_root: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        store: MemoryStore,
+        execution_workspace_root: str | Path,
+        protected_roots: Iterable[str | Path] = (),
+    ) -> None:
         self.store = store
         self.execution_workspace_root = Path(execution_workspace_root).resolve()
         self.projects_root = (self.execution_workspace_root / "Projects").resolve()
+        default_protected = (
+            Path(__file__).resolve().parents[1],
+            Path(sys.prefix).resolve(),
+            Path(self.store.base_dir).resolve(),
+        )
+        self.protected_roots = tuple(
+            dict.fromkeys(
+                Path(item).expanduser().resolve(strict=False)
+                for item in (*default_protected, *protected_roots)
+                if str(item or "").strip()
+            )
+        )
         self._lock = threading.RLock()
         self._ensure_root()
 
@@ -105,6 +126,60 @@ class ProjectWorkspaceService:
                 raise
         return self._public_record(record, selected=True)
 
+    def bind_existing(
+        self,
+        *,
+        scope: ProjectWorkspaceScope,
+        host_directory: str | Path,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        if scope.owner_kind != "desktop":
+            raise ProjectWorkspaceError("host_binding_desktop_only")
+        root = self._validate_host_binding_root(host_directory)
+        name = self._display_name(display_name or root.name)
+        canonical = os.path.normcase(str(root))
+        with self._lock:
+            existing_records = self.store.list_project_workspaces(
+                owner_kind=scope.owner_kind,
+                owner_id=scope.owner_id,
+                actor_scope=scope.actor_scope,
+                include_archived=True,
+            )
+            for existing in existing_records:
+                if str(existing.get("root_kind") or _ROOT_KIND_MANAGED) != _ROOT_KIND_HOST_BOUND:
+                    continue
+                existing_path = os.path.normcase(str(existing.get("host_root_path") or ""))
+                if existing_path != canonical:
+                    continue
+                if str(existing.get("state") or "") != "active":
+                    existing = self.store.update_project_workspace_state(
+                        workspace_id=str(existing["workspace_id"]),
+                        state="active",
+                    ) or existing
+                self.store.set_project_workspace_selection(
+                    selection_key=scope.selection_key,
+                    workspace_id=str(existing["workspace_id"]),
+                )
+                result = self._public_record(existing, selected=True)
+                result["already_bound"] = True
+                return result
+            workspace_id = "proj_" + uuid.uuid4().hex
+            record = self.store.add_project_workspace(
+                workspace_id=workspace_id,
+                display_name=name,
+                owner_kind=scope.owner_kind,
+                owner_id=scope.owner_id,
+                actor_scope=scope.actor_scope,
+                root_relpath="",
+                root_kind=_ROOT_KIND_HOST_BOUND,
+                host_root_path=str(root),
+            )
+            self.store.set_project_workspace_selection(
+                selection_key=scope.selection_key,
+                workspace_id=workspace_id,
+            )
+        return self._public_record(record, selected=True)
+
     def list(self, *, scope: ProjectWorkspaceScope, include_archived: bool = False) -> dict[str, Any]:
         selected_id = self.store.get_project_workspace_selection(selection_key=scope.selection_key)
         records = self.store.list_project_workspaces(
@@ -113,10 +188,20 @@ class ProjectWorkspaceService:
             actor_scope=scope.actor_scope,
             include_archived=include_archived,
         )
+        public_records = [
+            self._public_record(item, selected=item["workspace_id"] == selected_id)
+            for item in records
+        ]
+        if selected_id and not any(item["selected"] for item in public_records):
+            self.store.clear_project_workspace_selection(
+                selection_key=scope.selection_key,
+                workspace_id=selected_id,
+            )
+            selected_id = ""
         return {
             "status": "ok",
             "selected_workspace_id": selected_id,
-            "workspaces": [self._public_record(item, selected=item["workspace_id"] == selected_id) for item in records],
+            "workspaces": public_records,
         }
 
     def select(self, *, scope: ProjectWorkspaceScope, workspace_id: str) -> dict[str, Any]:
@@ -159,6 +244,7 @@ class ProjectWorkspaceService:
         *,
         scope: ProjectWorkspaceScope,
         alias_value: str,
+        execution_provider: Any | None = None,
     ) -> str:
         raw = str(alias_value or "").strip()
         if raw != "alias:project" and not raw.startswith("alias:project/"):
@@ -171,8 +257,26 @@ class ProjectWorkspaceService:
             workspace_id=str(selected["workspace_id"]),
             require_active=True,
         )
-        root_relpath = str(record["root_relpath"])
         suffix = raw[len("alias:project") :].lstrip("/")
+        root_kind = str(record.get("root_kind") or _ROOT_KIND_MANAGED)
+        if root_kind == _ROOT_KIND_HOST_BOUND:
+            root = self._root_from_record(record, require_exists=True)
+            binder = getattr(execution_provider, "bind_authorized_mount", None)
+            if not callable(binder):
+                raise ProjectWorkspaceError("host_bound_execution_unavailable")
+            mount_name = f"project_{str(record['workspace_id'])[5:29]}"
+            try:
+                binder(mount_name, root)
+            except (OSError, ValueError) as exc:
+                raise ProjectWorkspaceError("host_bound_execution_unavailable") from exc
+            if suffix:
+                suffix = self._relative_path(suffix).as_posix()
+                target = self._safe_child(root, suffix)
+                if not target.is_dir():
+                    raise ProjectWorkspaceError("cwd_not_found")
+                return f"alias:{mount_name}/{suffix}"
+            return f"alias:{mount_name}"
+        root_relpath = str(record["root_relpath"])
         if suffix:
             suffix = self._relative_path(suffix).as_posix()
             target = self._safe_child(self._root_from_record(record, require_exists=True), suffix)
@@ -331,10 +435,58 @@ class ProjectWorkspaceService:
         return record
 
     def _root_from_record(self, record: Mapping[str, Any], *, require_exists: bool) -> Path:
-        root = self._root_from_relpath(str(record.get("root_relpath") or ""))
+        root_kind = str(record.get("root_kind") or _ROOT_KIND_MANAGED)
+        if root_kind == _ROOT_KIND_HOST_BOUND:
+            raw = str(record.get("host_root_path") or "").strip()
+            source = Path(raw).expanduser()
+            root = source.resolve(strict=False)
+            source_absolute = source.absolute()
+            if (
+                not raw
+                or not root.is_absolute()
+                or source.is_symlink()
+                or os.path.normcase(str(root)) != os.path.normcase(str(source_absolute))
+            ):
+                raise ProjectWorkspaceError("invalid_workspace_root")
+        elif root_kind == _ROOT_KIND_MANAGED:
+            root = self._root_from_relpath(str(record.get("root_relpath") or ""))
+        else:
+            raise ProjectWorkspaceError("invalid_workspace_root")
         if require_exists and (not root.is_dir() or root.is_symlink()):
             raise ProjectWorkspaceError("workspace_missing")
         return root
+
+    def _validate_host_binding_root(self, value: str | Path) -> Path:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ProjectWorkspaceError("host_directory_required")
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            raise ProjectWorkspaceError("host_directory_must_be_absolute")
+        try:
+            root = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise ProjectWorkspaceError("host_directory_missing") from exc
+        if not root.is_dir() or root.is_symlink():
+            raise ProjectWorkspaceError("host_directory_invalid")
+        if self._paths_overlap(root, self.execution_workspace_root):
+            raise ProjectWorkspaceError("host_directory_managed_by_runtime")
+        if any(self._paths_overlap(root, protected) for protected in self.protected_roots):
+            raise ProjectWorkspaceError("host_directory_protected")
+        return root
+
+    @staticmethod
+    def _paths_overlap(left: Path, right: Path) -> bool:
+        try:
+            left.relative_to(right)
+            return True
+        except ValueError:
+            pass
+        try:
+            right.relative_to(left)
+            return True
+        except ValueError:
+            return False
 
     def _root_from_relpath(self, value: str) -> Path:
         relative = PurePosixPath(str(value or ""))
@@ -390,15 +542,21 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("display_name_too_long", max_chars=80, actual_chars=len(name))
         return name
 
-    @staticmethod
-    def _public_record(record: Mapping[str, Any], *, selected: bool) -> dict[str, Any]:
+    def _public_record(self, record: Mapping[str, Any], *, selected: bool) -> dict[str, Any]:
+        root_kind = str(record.get("root_kind") or _ROOT_KIND_MANAGED)
+        try:
+            available = self._root_from_record(record, require_exists=True).is_dir()
+        except ProjectWorkspaceError:
+            available = False
         return {
             "workspace_id": str(record.get("workspace_id") or ""),
             "display_name": str(record.get("display_name") or ""),
             "owner_kind": str(record.get("owner_kind") or ""),
             "state": str(record.get("state") or ""),
-            "selected": bool(selected),
-            "alias": "alias:project" if selected and str(record.get("state") or "") == "active" else "",
+            "root_kind": root_kind,
+            "available": available,
+            "selected": bool(selected and available),
+            "alias": "alias:project" if selected and available and str(record.get("state") or "") == "active" else "",
             "created_at": int(record.get("created_at") or 0),
             "updated_at": int(record.get("updated_at") or 0),
         }

@@ -1205,6 +1205,23 @@ class PetReachGestureT5ContractTests(unittest.TestCase):
         self.assertLess(unavailable_pos, reach_pos)
 
 
+class ProjectWorkspacePickerContractTests(unittest.TestCase):
+    def test_host_path_stays_inside_tauri_and_public_ui_uses_project_ids(self) -> None:
+        root = Path(__file__).parent.parent
+        workspace_html = (root / "desktop_pet_next" / "workspace.html").read_text(encoding="utf-8")
+        workspace_js = (root / "desktop_pet_next" / "src" / "workspace.js").read_text(encoding="utf-8")
+        tauri_source = (root / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+
+        self.assertIn('id="bind-project-directory"', workspace_html)
+        self.assertIn('invoke("bind_project_directory")', workspace_js)
+        self.assertIn('invoke("manage_project_workspaces"', workspace_js)
+        self.assertNotIn('"host_directory":', workspace_js)
+        self.assertNotIn("hostDirectory", workspace_js)
+        self.assertIn("blocking_pick_folder", tauri_source)
+        self.assertIn('"host_directory": directory.to_string_lossy()', tauri_source)
+        self.assertIn("project_binding_requires_local_backend", tauri_source)
+
+
 class ListeningTogetherT6FrontendContractTests(unittest.TestCase):
     """T6A: Verify mood phrase display wiring in control-center-lab.js."""
 

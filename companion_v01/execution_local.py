@@ -216,6 +216,21 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecutionAvailability(enabled=False, status="unavailable", reason="workspace_missing")
         return ExecutionAvailability(enabled=True, status="ready", reason="")
 
+    def bind_authorized_mount(self, name: str, path: str | Path) -> None:
+        """Bind a host-authorized directory without exposing it to tool arguments."""
+
+        clean_name = str(name or "").strip()
+        if not _ALIAS_RE.fullmatch(clean_name):
+            raise ValueError("invalid_execution_mount_alias")
+        target = Path(path).expanduser().resolve(strict=True)
+        if not target.is_dir() or target.is_symlink():
+            raise ValueError("execution_mount_directory_missing")
+        with self._lock:
+            existing = self.mounts.get(clean_name)
+            if existing is not None and existing != target:
+                raise ValueError("execution_mount_alias_conflict")
+            self.mounts[clean_name] = target
+
     def model_environment(self) -> dict[str, Any]:
         """Return non-sensitive host facts used to guide command generation."""
 
@@ -455,13 +470,26 @@ class TrustedLocalExecutor(ExecutionProvider):
         if len(raw) > EXEC_CWD_MAX_CHARS:
             raise ExecutionPathError("cwd_too_long")
         if raw.startswith(_ALIAS_PREFIX):
-            name = raw[len(_ALIAS_PREFIX) :].strip()
+            alias_value = raw[len(_ALIAS_PREFIX) :].strip().replace("\\", "/")
+            name, _, suffix = alias_value.partition("/")
             if not name or name not in self.mounts:
                 raise ExecutionPathError("unknown_mount_alias")
             resolved = self.mounts[name]
             if not resolved.is_dir():
                 raise ExecutionPathError("mount_directory_missing")
-            return resolved
+            if not suffix:
+                return resolved
+            suffix_path = Path(suffix)
+            if suffix_path.is_absolute() or ".." in suffix_path.parts:
+                raise ExecutionPathError("path_traversal_not_allowed")
+            candidate = (resolved / suffix_path).resolve(strict=False)
+            try:
+                candidate.relative_to(resolved)
+            except ValueError:
+                raise ExecutionPathError("path_escapes_mount") from None
+            if not candidate.is_dir():
+                raise ExecutionPathError("cwd_not_found")
+            return candidate
         candidate_path = Path(raw)
         if candidate_path.is_absolute():
             raise ExecutionPathError("absolute_path_not_allowed")

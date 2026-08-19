@@ -7908,6 +7908,14 @@ class AkaneMemoryEngine:
             service = ProjectWorkspaceService(
                 store=self.store,
                 execution_workspace_root=workspace_root,
+                protected_roots=(
+                    self.runtime_layout.data_root,
+                    self.runtime_layout.users_data_dir,
+                    self.runtime_layout.state_dir,
+                    self.runtime_layout.logs_dir,
+                    self.runtime_layout.cache_dir,
+                    self.runtime_layout.run_dir,
+                ) if getattr(self, "runtime_layout", None) is not None else (),
             )
         except Exception as exc:
             logger.warning("project workspace service disabled: %s", type(exc).__name__)

@@ -131,6 +131,99 @@ button:disabled:hover {
   background: rgb(255 255 255 / 0.48);
 }
 
+.project-workspace-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgb(111 158 202 / 0.28);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.52);
+}
+
+.project-workspace-panel > header,
+.project-workspace-row,
+.project-create-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-workspace-panel h2 {
+  margin: 0;
+  color: #314052;
+  font-size: 15px;
+}
+
+.project-workspace-panel p,
+.project-workspace-row span {
+  margin: 2px 0 0;
+  color: rgb(49 64 82 / 0.62);
+  font-size: 11px;
+}
+
+.project-create-row input {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgb(136 162 198 / 0.38);
+  border-radius: 6px;
+  color: #314052;
+  background: rgb(255 255 255 / 0.76);
+}
+
+.project-workspace-list {
+  display: grid;
+  gap: 6px;
+}
+
+.project-workspace-row {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgb(136 162 198 / 0.18);
+  border-radius: 6px;
+  background: rgb(247 250 254 / 0.72);
+}
+
+.project-workspace-row.is-selected {
+  border-color: rgb(74 142 129 / 0.38);
+  background: rgb(235 248 244 / 0.74);
+}
+
+.project-workspace-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.project-workspace-row > div:last-child {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-workspace-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #314052;
+  font-size: 13px;
+}
+
+.project-current-badge {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #2c665c !important;
+  background: rgb(74 142 129 / 0.14);
+}
+
+.project-workspace-empty {
+  padding: 8px 2px;
+  text-align: center;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -482,6 +575,20 @@ button:disabled:hover {
 @media (max-width: 620px) {
   .workspace-shell {
     padding: 14px;
+  }
+
+  .project-workspace-panel > header,
+  .project-create-row,
+  .project-workspace-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-workspace-panel > header button,
+  .project-create-row button,
+  .project-create-row input,
+  .project-workspace-row > div:last-child {
+    width: 100%;
   }
 
   .workspace-header {

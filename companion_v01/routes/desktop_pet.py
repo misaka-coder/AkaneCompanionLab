@@ -12,6 +12,9 @@ from urllib.parse import quote
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+from ..deployment_security import AdminWriteAuth
+from ..project_workspace import ProjectWorkspaceError
+
 
 LogEvent = Callable[..., None]
 ResolveIdentityFromQuery = Callable[[Request], tuple[str, str]]
@@ -28,8 +31,100 @@ def build_desktop_pet_router(
     log_event: LogEvent,
     resolve_identity_from_query: ResolveIdentityFromQuery,
     resolve_identity_from_payload: ResolveIdentityFromPayload,
+    admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    desktop_admin_auth = admin_auth or AdminWriteAuth.local_compatibility()
+
+    @router.post("/desktop-pet/project-workspaces/action")
+    async def desktop_pet_project_workspace_action(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        authorization = desktop_admin_auth.authorize(request)
+        if not authorization.ok:
+            runtime_metrics.observe_request(
+                "desktop_pet_project_workspace_action",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            return JSONResponse(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"ok": False, "status": "rejected", "reason": "invalid_payload"},
+                status_code=400,
+            )
+        session_id, profile_user_id = resolve_identity_from_payload(payload)
+        action = str(payload.get("action") or "").strip().lower()
+        try:
+            service = engine._get_project_workspace_service()
+            if service is None:
+                raise ProjectWorkspaceError("project_workspace_unconfigured")
+            scope = service.scope_for(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_mode="desktop_pet",
+            )
+            if action == "list":
+                result = service.list(scope=scope, include_archived=bool(payload.get("include_archived")))
+            elif action == "current":
+                result = {"status": "ok", "workspace": service.current(scope=scope)}
+            elif action == "create":
+                result = service.create(scope=scope, display_name=str(payload.get("display_name") or ""))
+            elif action == "bind":
+                result = service.bind_existing(
+                    scope=scope,
+                    host_directory=str(payload.get("host_directory") or ""),
+                    display_name=str(payload.get("display_name") or ""),
+                )
+            elif action == "select":
+                result = service.select(scope=scope, workspace_id=str(payload.get("workspace_id") or ""))
+            elif action == "archive":
+                result = service.archive(scope=scope, workspace_id=str(payload.get("workspace_id") or ""))
+            else:
+                raise ProjectWorkspaceError("unknown_project_workspace_action")
+        except ProjectWorkspaceError as exc:
+            runtime_metrics.observe_request(
+                "desktop_pet_project_workspace_action",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            return JSONResponse(
+                {"ok": False, "status": "rejected", "reason": exc.reason, **exc.details},
+                status_code=409,
+                headers={"Cache-Control": "no-store"},
+            )
+        except Exception as exc:
+            runtime_metrics.observe_request(
+                "desktop_pet_project_workspace_action",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "desktop_pet_project_workspace_action_error",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                error_type=type(exc).__name__,
+            )
+            return JSONResponse(
+                {"ok": False, "status": "failed", "reason": "project_workspace_action_failed"},
+                status_code=500,
+                headers={"Cache-Control": "no-store"},
+            )
+        runtime_metrics.observe_request(
+            "desktop_pet_project_workspace_action",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            ok=True,
+        )
+        return JSONResponse(
+            {"ok": True, "action": action, "result": result},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.post("/desktop-pet/care/snapshot")
     async def desktop_pet_care_snapshot(request: Request):

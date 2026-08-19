@@ -19,6 +19,11 @@ const els = {
   refresh: document.querySelector("#refresh-workspace"),
   close: document.querySelector("#close-workspace"),
   alert: document.querySelector("#workspace-alert"),
+  projectSummary: document.querySelector("#project-workspace-summary"),
+  projectList: document.querySelector("#project-workspace-list"),
+  bindProjectDirectory: document.querySelector("#bind-project-directory"),
+  createProjectForm: document.querySelector("#create-project-form"),
+  projectDisplayName: document.querySelector("#project-display-name"),
   fileCount: document.querySelector("#file-count"),
   outputCount: document.querySelector("#output-count"),
   taskCount: document.querySelector("#task-count"),
@@ -35,6 +40,7 @@ let loading = false;
 let refreshTimer = 0;
 let verifiedBindingKey = "";
 let verifiedBindingAt = 0;
+let projectBusy = false;
 const itemMap = new Map();
 
 boot();
@@ -53,6 +59,21 @@ function bindUi() {
   });
   els.clearFiles?.addEventListener("click", () => {
     void clearWorkspaceFiles();
+  });
+  els.bindProjectDirectory?.addEventListener("click", () => {
+    void bindProjectDirectory();
+  });
+  els.createProjectForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void createManagedProject();
+  });
+  els.projectList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-project-action]");
+    if (!button) return;
+    const action = String(button.dataset.projectAction || "");
+    const workspaceId = String(button.dataset.workspaceId || "");
+    if (action === "select") void runProjectAction("select", workspaceId);
+    if (action === "archive") void archiveProject(workspaceId);
   });
   els.close.addEventListener("click", () => {
     void closeWindow();
@@ -197,19 +218,24 @@ async function refreshWorkspace({ reload = true } = {}) {
 
   try {
     if (reload || !state) await reloadState();
+    const projectRefresh = refreshProjectWorkspaces();
     const sessionId = String(state?.sessionId || "").trim();
     if (!sessionId) {
+      await projectRefresh;
       renderEmpty("会话还没准备好，先在桌宠里发一条消息。");
       setStatus("等待会话");
       return;
     }
 
-    const payload = await fetchWorkspaceSummary({
+    const [payload] = await Promise.all([
+      fetchWorkspaceSummary({
       backendUrl: state?.backendUrl || DEFAULT_BACKEND_URL,
       boundBotId: state?.boundBotId || state?.instanceId || "",
       profileUserId: state?.profileUserId || PROFILE_USER_ID,
       sessionId
-    });
+      }),
+      projectRefresh
+    ]);
     renderPayload(payload || {});
     setUpdated(Date.now());
     setStatus("已刷新");
@@ -223,6 +249,184 @@ async function refreshWorkspace({ reload = true } = {}) {
     els.refresh.disabled = false;
     updateWorkspaceActions();
   }
+}
+
+async function refreshProjectWorkspaces() {
+  if (!els.projectList) return;
+  try {
+    const payload = await invoke("manage_project_workspaces", {
+      action: "list",
+      workspace_id: null,
+      display_name: null,
+      include_archived: false
+    });
+    if (!payload?.ok) throw new Error(projectReasonLabel(payload?.reason));
+    renderProjectWorkspaces(payload.result || {});
+  } catch (error) {
+    els.projectSummary.textContent = "项目工作区暂时不可用";
+    els.projectList.replaceChildren(buildProjectEmpty(`读取失败：${formatError(error)}`));
+  }
+}
+
+function renderProjectWorkspaces(payload) {
+  const workspaces = Array.isArray(payload?.workspaces) ? payload.workspaces : [];
+  const selectedId = String(payload?.selected_workspace_id || "");
+  const selected = workspaces.find((item) => String(item.workspace_id || "") === selectedId && item.available !== false);
+  els.projectSummary.textContent = selected
+    ? `${selected.display_name || "未命名项目"} · ${selected.root_kind === "host_bound" ? "已绑定目录" : "Akane 受管目录"}`
+    : "尚未选择项目，编程任务会先请你创建或选择";
+  els.projectList.replaceChildren();
+  if (!workspaces.length) {
+    els.projectList.append(buildProjectEmpty("还没有项目。可以创建新项目，或绑定电脑上的现有目录。"));
+    return;
+  }
+  for (const item of workspaces) {
+    const row = document.createElement("article");
+    row.className = "project-workspace-row";
+    if (item.selected) row.classList.add("is-selected");
+    const body = document.createElement("div");
+    const title = buildText("strong", String(item.display_name || "未命名项目"));
+    const meta = buildText(
+      "span",
+      item.available === false
+        ? "目录当前不可访问"
+        : item.root_kind === "host_bound" ? "电脑上的现有目录" : "Akane 受管项目"
+    );
+    body.append(title, meta);
+    const actions = document.createElement("div");
+    if (!item.selected) {
+      actions.append(buildProjectButton("选择", "select", item.workspace_id, item.available === false));
+    } else {
+      const current = buildText("span", "当前");
+      current.className = "project-current-badge";
+      actions.append(current);
+    }
+    actions.append(buildProjectButton("归档", "archive", item.workspace_id, false));
+    row.append(body, actions);
+    els.projectList.append(row);
+  }
+}
+
+function buildProjectEmpty(message) {
+  const empty = document.createElement("p");
+  empty.className = "project-workspace-empty";
+  empty.textContent = message;
+  return empty;
+}
+
+function buildProjectButton(label, action, workspaceId, disabled) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.dataset.projectAction = action;
+  button.dataset.workspaceId = String(workspaceId || "");
+  button.dataset.permanentDisabled = disabled ? "true" : "false";
+  button.disabled = Boolean(disabled || projectBusy);
+  return button;
+}
+
+async function bindProjectDirectory() {
+  if (projectBusy) return;
+  projectBusy = true;
+  updateProjectBusyState();
+  try {
+    const payload = await invoke("bind_project_directory");
+    if (payload?.status === "cancelled") {
+      setStatus("已取消选择目录");
+      return;
+    }
+    if (!payload?.ok) throw new Error(projectReasonLabel(payload?.reason));
+    setStatus(payload.result?.already_bound ? "已切换到这个项目" : "已绑定并选择项目");
+    await refreshProjectWorkspaces();
+  } catch (error) {
+    setAlert(`绑定项目失败：${formatError(error)}`, "error");
+    setStatus("绑定失败");
+  } finally {
+    projectBusy = false;
+    updateProjectBusyState();
+  }
+}
+
+async function createManagedProject() {
+  if (projectBusy) return;
+  const displayName = String(els.projectDisplayName?.value || "").trim();
+  if (!displayName) {
+    els.projectDisplayName?.focus();
+    return;
+  }
+  projectBusy = true;
+  updateProjectBusyState();
+  try {
+    const payload = await invoke("manage_project_workspaces", {
+      action: "create",
+      workspace_id: null,
+      display_name: displayName,
+      include_archived: false
+    });
+    if (!payload?.ok) throw new Error(projectReasonLabel(payload?.reason));
+    els.projectDisplayName.value = "";
+    setStatus("已创建并选择项目");
+    await refreshProjectWorkspaces();
+  } catch (error) {
+    setAlert(`创建项目失败：${formatError(error)}`, "error");
+    setStatus("创建失败");
+  } finally {
+    projectBusy = false;
+    updateProjectBusyState();
+  }
+}
+
+async function runProjectAction(action, workspaceId) {
+  if (projectBusy || !workspaceId) return;
+  projectBusy = true;
+  updateProjectBusyState();
+  try {
+    const payload = await invoke("manage_project_workspaces", {
+      action,
+      workspace_id: workspaceId,
+      display_name: null,
+      include_archived: false
+    });
+    if (!payload?.ok) throw new Error(projectReasonLabel(payload?.reason));
+    setStatus(action === "select" ? "已切换项目" : "项目已归档");
+    await refreshProjectWorkspaces();
+  } catch (error) {
+    setAlert(`项目操作失败：${formatError(error)}`, "error");
+    setStatus("项目操作失败");
+  } finally {
+    projectBusy = false;
+    updateProjectBusyState();
+  }
+}
+
+async function archiveProject(workspaceId) {
+  if (!workspaceId || !confirm("归档这个项目？文件不会被删除，之后仍可重新绑定或恢复。")) return;
+  await runProjectAction("archive", workspaceId);
+}
+
+function updateProjectBusyState() {
+  if (els.bindProjectDirectory) els.bindProjectDirectory.disabled = projectBusy;
+  if (els.projectDisplayName) els.projectDisplayName.disabled = projectBusy;
+  const submit = els.createProjectForm?.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = projectBusy;
+  for (const button of els.projectList?.querySelectorAll("button") || []) {
+    button.disabled = projectBusy || button.dataset.permanentDisabled === "true";
+  }
+}
+
+function projectReasonLabel(reason) {
+  const labels = {
+    project_binding_requires_local_backend: "绑定现有目录只支持纯本地后端",
+    host_directory_protected: "不能把 Akane 源码、运行数据或 Python 环境绑定为项目",
+    host_directory_managed_by_runtime: "这个目录已经属于 Akane 的受管工作区",
+    host_directory_missing: "所选目录已经不存在",
+    host_directory_invalid: "所选位置不是可用目录",
+    workspace_missing: "项目目录当前不可访问",
+    project_workspace_unconfigured: "项目工作区尚未启用",
+    admin_auth_required: "本地管理授权不可用",
+    picker_cancelled: "已取消选择目录"
+  };
+  return labels[String(reason || "")] || String(reason || "project_workspace_failed");
 }
 
 async function fetchWorkspaceSummary({ backendUrl, boundBotId, profileUserId, sessionId }) {

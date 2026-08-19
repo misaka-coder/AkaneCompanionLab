@@ -16,6 +16,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 sha2 = "0.10"
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-http = "2"
+tauri-plugin-dialog = "2"
 futures-util = "0.3"
 tokio = { version = "1", features = ["sync", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }

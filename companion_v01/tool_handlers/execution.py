@@ -497,7 +497,11 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                     client_mode=context.client_mode,
                     actor_stable_id=str(request_context.get("actor_stable_id") or ""),
                 )
-                cwd = service.execution_cwd(scope=scope, alias_value=cwd)
+                cwd = service.execution_cwd(
+                    scope=scope,
+                    alias_value=cwd,
+                    execution_provider=provider,
+                )
                 call = {**call, "cwd": cwd}
             except ProjectWorkspaceError as exc:
                 return self._project_rejected(exc.reason)

@@ -67,6 +67,7 @@ def build_bot_runtime_routers(
             log_event=log_event,
             resolve_identity_from_query=resolve_identity_from_query,
             resolve_identity_from_payload=resolve_identity_from_payload,
+            admin_auth=runtime.admin_write_auth,
         ),
         build_petdesk_router(
             engine=engine,

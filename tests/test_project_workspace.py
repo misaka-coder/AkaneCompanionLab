@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from companion_v01.project_workspace import ProjectWorkspaceError, ProjectWorkspaceService
+from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.execution import ExecRunToolHandler
 from companion_v01.tool_handlers.project_workspace import (
@@ -103,6 +104,77 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.current(scope=self.private))
         physical = self.execution_root / "Projects" / created["workspace_id"] / "src" / "main.js"
         self.assertTrue(physical.is_file())
+
+    def test_desktop_host_binding_is_private_idempotent_and_executable(self) -> None:
+        desktop = self.service.scope_for(
+            profile_user_id="alice",
+            session_id="desktop-a",
+            client_mode="desktop_pet",
+        )
+        external = self.root / "外部 项目"
+        external.mkdir()
+        (external / "src").mkdir()
+        bound = self.service.bind_existing(scope=desktop, host_directory=external)
+        rebound = self.service.bind_existing(scope=desktop, host_directory=external)
+
+        self.assertEqual(bound["workspace_id"], rebound["workspace_id"])
+        self.assertTrue(rebound["already_bound"])
+        self.assertEqual(bound["root_kind"], "host_bound")
+        self.assertTrue(bound["available"])
+        self.assertNotIn(str(external), str(bound))
+        self.assertNotIn("host_root_path", bound)
+        self.service.write(scope=desktop, path="src/main.js", content="console.log('bound');\n")
+        self.assertEqual(
+            (external / "src" / "main.js").read_text(encoding="utf-8"),
+            "console.log('bound');\n",
+        )
+
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs",
+        )
+        cwd = self.service.execution_cwd(
+            scope=desktop,
+            alias_value="alias:project/src",
+            execution_provider=provider,
+        )
+        self.assertTrue(cwd.startswith("alias:project_"))
+        self.assertEqual(provider._resolve_workdir(cwd), (external / "src").resolve())
+
+    def test_host_binding_rejects_non_desktop_and_protected_or_managed_roots(self) -> None:
+        external = self.root / "safe-project"
+        external.mkdir()
+        with self.assertRaisesRegex(ProjectWorkspaceError, "host_binding_desktop_only"):
+            self.service.bind_existing(scope=self.private, host_directory=external)
+
+        desktop = self.service.scope_for(
+            profile_user_id="alice",
+            session_id="desktop-a",
+            client_mode="desktop_pet",
+        )
+        with self.assertRaisesRegex(ProjectWorkspaceError, "host_directory_managed_by_runtime"):
+            self.service.bind_existing(scope=desktop, host_directory=self.execution_root)
+        with self.assertRaisesRegex(ProjectWorkspaceError, "host_directory_protected"):
+            self.service.bind_existing(scope=desktop, host_directory=Path(__file__).resolve().parents[1])
+
+    def test_missing_bound_directory_clears_selection_without_leaking_path(self) -> None:
+        desktop = self.service.scope_for(
+            profile_user_id="alice",
+            session_id="desktop-a",
+            client_mode="desktop_pet",
+        )
+        external = self.root / "temporary-project"
+        external.mkdir()
+        bound = self.service.bind_existing(scope=desktop, host_directory=external)
+        external.rmdir()
+
+        self.assertIsNone(self.service.current(scope=desktop))
+        listed = self.service.list(scope=desktop)["workspaces"][0]
+        self.assertEqual(listed["workspace_id"], bound["workspace_id"])
+        self.assertFalse(listed["available"])
+        self.assertFalse(listed["selected"])
+        self.assertNotIn(str(external), str(listed))
+        self.assertEqual(self.service.list(scope=desktop)["selected_workspace_id"], "")
 
     def test_write_is_atomic_hash_guarded_and_confined(self) -> None:
         self.service.create(scope=self.private, display_name="Writer")
