@@ -159,7 +159,15 @@ COMMON_TOOL_NAMES = (
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
-EXEC_TOOL_NAMES = ("exec_run", "exec_status", "exec_cancel", "manage_skill")
+EXEC_TOOL_NAMES = (
+    "manage_project_workspace",
+    "workspace_write",
+    "workspace_patch",
+    "exec_run",
+    "exec_status",
+    "exec_cancel",
+    "manage_skill",
+)
 DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
@@ -2737,7 +2745,9 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "桌宠本机模式下，当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
+                    "桌宠本机模式下，编程项目先用 manage_project_workspace 选择持久项目，源码用 workspace_write/"
+                    "workspace_patch 修改，构建、测试和其他命令再用 exec_run(cwd='alias:project')；"
+                    "当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
                     "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
                     "只有宿主在本机启用执行时这项能力才会出现；需要创建或更新 Skill 时，可在执行工作区写草稿后用 manage_skill 原子发布；"
                     "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录。"
@@ -2752,7 +2762,9 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "当前 QQ 会话已由主人开放 Shell；当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
+                    "当前 QQ 会话已由主人开放 Shell；编程项目先用 manage_project_workspace 选择持久项目，源码用"
+                    " workspace_write/workspace_patch 修改，构建与测试用 exec_run(cwd='alias:project')；"
+                    "当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
                     "不会隐式访问聊天成员的个人电脑。主人还可把执行工作区中的 Skill 草稿用 manage_skill 原子发布；"
                     "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录；"

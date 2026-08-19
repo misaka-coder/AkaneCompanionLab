@@ -443,6 +443,28 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_task_workspace_events_profile_session_status
                 ON task_workspace_events(profile_user_id, session_id, status, created_at ASC);
+
+                CREATE TABLE IF NOT EXISTS project_workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    owner_kind TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    actor_scope TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT 'active',
+                    root_relpath TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    archived_at INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_workspaces_owner_state
+                ON project_workspaces(owner_kind, owner_id, actor_scope, state, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS project_workspace_selections (
+                    selection_key TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             self._ensure_column(
@@ -774,6 +796,12 @@ class MemoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_task_workspace_events_profile_session_status
                 ON task_workspace_events(profile_user_id, session_id, status, created_at ASC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_workspaces_owner_state
+                ON project_workspaces(owner_kind, owner_id, actor_scope, state, updated_at DESC)
                 """
             )
             self._normalize_legacy_gift_rows(conn=conn)
@@ -3691,6 +3719,145 @@ class MemoryStore:
                 (str(profile_user_id), str(session_id), normalized_source_id),
             ).fetchone()
         return self._row_to_desktop_music_timeline(dict(row)) if row else None
+
+    def add_project_workspace(
+        self,
+        *,
+        workspace_id: str,
+        display_name: str,
+        owner_kind: str,
+        owner_id: str,
+        actor_scope: str,
+        root_relpath: str,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        now_ts = int(timestamp or time.time())
+        payload = {
+            "workspace_id": str(workspace_id),
+            "display_name": str(display_name),
+            "owner_kind": str(owner_kind),
+            "owner_id": str(owner_id),
+            "actor_scope": str(actor_scope),
+            "state": "active",
+            "root_relpath": str(root_relpath),
+            "created_at": now_ts,
+            "updated_at": now_ts,
+            "archived_at": 0,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_workspaces (
+                    workspace_id, display_name, owner_kind, owner_id, actor_scope,
+                    state, root_relpath, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload[key] for key in (
+                    "workspace_id", "display_name", "owner_kind", "owner_id", "actor_scope",
+                    "state", "root_relpath", "created_at", "updated_at", "archived_at",
+                )),
+            )
+        return payload
+
+    def get_project_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_workspaces WHERE workspace_id = ? LIMIT 1",
+                (str(workspace_id or "").strip(),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_project_workspaces(
+        self,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        actor_scope: str,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT * FROM project_workspaces "
+            "WHERE owner_kind = ? AND owner_id = ? AND actor_scope = ?"
+        )
+        params: list[Any] = [str(owner_kind), str(owner_id), str(actor_scope)]
+        if not include_archived:
+            query += " AND state = 'active'"
+        query += " ORDER BY updated_at DESC, created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_project_workspace_state(
+        self,
+        *,
+        workspace_id: str,
+        state: str,
+        timestamp: int | None = None,
+    ) -> dict[str, Any] | None:
+        clean_state = str(state or "").strip()
+        if clean_state not in {"active", "archived"}:
+            raise ValueError("invalid_project_workspace_state")
+        now_ts = int(timestamp or time.time())
+        archived_at = now_ts if clean_state == "archived" else 0
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE project_workspaces
+                SET state = ?, updated_at = ?, archived_at = ?
+                WHERE workspace_id = ?
+                """,
+                (clean_state, now_ts, archived_at, str(workspace_id or "").strip()),
+            )
+            row = conn.execute(
+                "SELECT * FROM project_workspaces WHERE workspace_id = ? LIMIT 1",
+                (str(workspace_id or "").strip(),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_project_workspace_selection(
+        self,
+        *,
+        selection_key: str,
+        workspace_id: str,
+        timestamp: int | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_workspace_selections (selection_key, workspace_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(selection_key) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    updated_at = excluded.updated_at
+                """,
+                (str(selection_key), str(workspace_id), int(timestamp or time.time())),
+            )
+
+    def get_project_workspace_selection(self, *, selection_key: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT workspace_id FROM project_workspace_selections WHERE selection_key = ? LIMIT 1",
+                (str(selection_key),),
+            ).fetchone()
+        return str(row["workspace_id"] or "") if row else ""
+
+    def clear_project_workspace_selection(
+        self,
+        *,
+        selection_key: str,
+        workspace_id: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            if workspace_id:
+                conn.execute(
+                    "DELETE FROM project_workspace_selections WHERE selection_key = ? AND workspace_id = ?",
+                    (str(selection_key), str(workspace_id)),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM project_workspace_selections WHERE selection_key = ?",
+                    (str(selection_key),),
+                )
 
     def add_task_workspace(
         self,

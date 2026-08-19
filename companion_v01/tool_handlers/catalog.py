@@ -58,6 +58,11 @@ from .memory import (
     RetrieveMemoryToolHandler,
 )
 from .music import SendAudioToolHandler, SendMusicCardToolHandler
+from .project_workspace import (
+    ManageProjectWorkspaceToolHandler,
+    WorkspacePatchToolHandler,
+    WorkspaceWriteToolHandler,
+)
 from .skills import LoadSkillToolHandler, ManageSkillToolHandler
 from .web_browser import (
     BrowserPageToolHandler,
@@ -102,6 +107,7 @@ def build_builtin_tool_handlers(
     skill_registry: Any | None = None,
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
+    project_workspace_service: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
@@ -261,6 +267,7 @@ def build_builtin_tool_handlers(
             config_base_dir=capability_config_base_dir,
             approval_store=approval_store,
             resource_bridge=resource_bridge,
+            project_workspace_service=project_workspace_service,
         )
         handlers["exec_status"] = ExecStatusToolHandler(
             execution_provider=execution_provider,
@@ -276,6 +283,12 @@ def build_builtin_tool_handlers(
         )
         if skill_registry is not None:
             handlers["manage_skill"] = ManageSkillToolHandler(registry=skill_registry)
+        if project_workspace_service is not None:
+            handlers["manage_project_workspace"] = ManageProjectWorkspaceToolHandler(
+                service=project_workspace_service
+            )
+            handlers["workspace_write"] = WorkspaceWriteToolHandler(service=project_workspace_service)
+            handlers["workspace_patch"] = WorkspacePatchToolHandler(service=project_workspace_service)
     if image_generation_service is not None:
         handlers["generate_image"] = GenerateImageToolHandler(
             image_generation_service=image_generation_service,

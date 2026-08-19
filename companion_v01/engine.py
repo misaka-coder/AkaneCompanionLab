@@ -7856,6 +7856,30 @@ class AkaneMemoryEngine:
             pass
         return provider
 
+    def _get_project_workspace_service(self) -> Any | None:
+        service = getattr(self, "project_workspace_service", None)
+        if service is not None:
+            return service
+        provider = self._build_execution_provider()
+        workspace_root = getattr(provider, "workspace_root", None) if provider is not None else None
+        if workspace_root is None:
+            return None
+        try:
+            from .project_workspace import ProjectWorkspaceService
+
+            service = ProjectWorkspaceService(
+                store=self.store,
+                execution_workspace_root=workspace_root,
+            )
+        except Exception as exc:
+            logger.warning("project workspace service disabled: %s", type(exc).__name__)
+            return None
+        try:
+            setattr(self, "project_workspace_service", service)
+        except Exception:
+            pass
+        return service
+
     def _build_tool_handlers(self) -> dict[str, BaseToolHandler]:
         from .tool_handlers.catalog import build_builtin_tool_handlers
 
@@ -7877,6 +7901,7 @@ class AkaneMemoryEngine:
             attachment_service=self._get_attachment_inbox_service(),
             image_material_resolver=self._get_image_material_resolver(),
             task_workspace_service=self._get_task_workspace_service(),
+            project_workspace_service=self._get_project_workspace_service(),
             workspace_file_service=self._get_workspace_file_service(),
             attachment_ingest_service=self._get_attachment_ingest_service(),
             generated_file_service=self._get_generated_file_service(),

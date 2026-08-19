@@ -61,6 +61,11 @@ from ..capability_registry import (
 )
 from ..execution_specs import EXEC_CANCEL_TOOL_SPEC, EXEC_RUN_TOOL_SPEC, EXEC_STATUS_TOOL_SPEC
 from ..skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
+from ..project_workspace_specs import (
+    MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,
+    WORKSPACE_PATCH_TOOL_SPEC,
+    WORKSPACE_WRITE_TOOL_SPEC,
+)
 
 
 @dataclass(frozen=True)
@@ -832,6 +837,21 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="control",
         default_round_budget=4,
     ),
+    "manage_project_workspace": ToolMetadata(
+        family="project_workspace",
+        operation="control",
+        default_round_budget=4,
+    ),
+    "workspace_write": ToolMetadata(
+        family="project_workspace",
+        operation="control",
+        default_round_budget=8,
+    ),
+    "workspace_patch": ToolMetadata(
+        family="project_workspace",
+        operation="control",
+        default_round_budget=8,
+    ),
 }
 
 
@@ -890,6 +910,9 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "exec_cancel": EXEC_CANCEL_TOOL_SPEC,
     "load_skill": LOAD_SKILL_TOOL_SPEC,
     "manage_skill": MANAGE_SKILL_TOOL_SPEC,
+    "manage_project_workspace": MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,
+    "workspace_write": WORKSPACE_WRITE_TOOL_SPEC,
+    "workspace_patch": WORKSPACE_PATCH_TOOL_SPEC,
 }
 
 

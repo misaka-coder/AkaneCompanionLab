@@ -58,6 +58,7 @@ from ..execution_specs import (
     EXEC_STATUS_TOOL_SPEC,
     EXEC_STATUS_TIMED_OUT,
 )
+from ..project_workspace import ProjectWorkspaceError, ProjectWorkspaceService
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 
 
@@ -77,11 +78,13 @@ class _ExecToolHandlerBase(BaseToolHandler):
         config_base_dir: Any = None,
         approval_store: Any = None,
         resource_bridge: ExecutionResourceBridge | None = None,
+        project_workspace_service: ProjectWorkspaceService | None = None,
     ) -> None:
         self.execution_provider = execution_provider
         self.config_base_dir = config_base_dir
         self.approval_store = approval_store
         self.resource_bridge = resource_bridge
+        self.project_workspace_service = project_workspace_service
 
     def _owner(self, context: ToolExecutionContext) -> ExecutionRunOwner:
         provider = self.execution_provider
@@ -283,6 +286,31 @@ class _ExecToolHandlerBase(BaseToolHandler):
             },
         )
 
+    def _project_rejected(self, reason: str) -> ToolExecutionResult:
+        clean_reason = str(reason or "project_workspace_rejected")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "capability_execution_result",
+                    "tool_type": self.tool_type,
+                    "status": "rejected",
+                    "reason": clean_reason,
+                }
+            ],
+            followup_context=(
+                f"这次命令没有执行：{clean_reason}。编程任务请先用 manage_project_workspace 选择或创建项目，"
+                "再用 cwd=alias:project；不要猜测服务器目录。"
+            ),
+            state_updates={
+                "capability_execution": {
+                    "tool_type": self.tool_type,
+                    "status": "rejected",
+                    "reason": clean_reason,
+                }
+            },
+        )
+
     def _enrich_resources(self, mapped: Any, registration: dict[str, Any]) -> Any:
         if not isinstance(registration, dict):
             return mapped
@@ -456,6 +484,22 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return self._unavailable_result("execution_provider_unconfigured")
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
+        if cwd == "alias:project" or cwd.startswith("alias:project/"):
+            service = self.project_workspace_service
+            if service is None:
+                return self._project_rejected("project_workspace_unconfigured")
+            request_context = context.request_context if isinstance(context.request_context, dict) else {}
+            try:
+                scope = service.scope_for(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    client_mode=context.client_mode,
+                    actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+                )
+                cwd = service.execution_cwd(scope=scope, alias_value=cwd)
+                call = {**call, "cwd": cwd}
+            except ProjectWorkspaceError as exc:
+                return self._project_rejected(exc.reason)
         if not command or len(command) > EXEC_COMMAND_MAX_CHARS or len(cwd) > EXEC_CWD_MAX_CHARS:
             return self._mapped_result(
                 execute_exec_run(
