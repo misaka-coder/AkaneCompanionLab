@@ -35,17 +35,27 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _context(*, session_id: str = "private-a", actor_stable_id: str = "") -> ToolExecutionContext:
+    def _context(
+        *,
+        session_id: str = "private-a",
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
+    ) -> ToolExecutionContext:
+        request_context = {}
+        if actor_stable_id:
+            request_context["actor_stable_id"] = actor_stable_id
+        if actor_profile_user_id:
+            request_context["actor_profile_user_id"] = actor_profile_user_id
         return ToolExecutionContext(
             profile_user_id="alice",
             session_id=session_id,
             now_ts=0,
             visual_payload={},
             client_mode="qq",
-            request_context={"actor_stable_id": actor_stable_id} if actor_stable_id else {},
+            request_context=request_context,
         )
 
-    def test_create_select_and_cross_conversation_scope(self) -> None:
+    def test_catalog_crosses_conversations_but_selection_does_not(self) -> None:
         created = self.service.create(scope=self.private, display_name="Demo Project")
         other_session = self.service.scope_for(
             profile_user_id="alice",
@@ -54,14 +64,17 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         )
 
         current = self.service.current(scope=other_session)
+        listed = self.service.list(scope=other_session)
 
-        self.assertEqual(current["workspace_id"], created["workspace_id"])
-        self.assertEqual(current["alias"], "alias:project")
-        self.assertNotIn(str(self.execution_root), str(current))
+        self.assertIsNone(current)
+        self.assertEqual([item["workspace_id"] for item in listed["workspaces"]], [created["workspace_id"]])
+        selected = self.service.select(scope=other_session, workspace_id=created["workspace_id"])
+        self.assertEqual(selected["alias"], "alias:project")
+        self.assertNotIn(str(self.execution_root), str(selected))
         cwd = self.service.execution_cwd(scope=other_session, alias_value="alias:project")
         self.assertEqual(cwd, f"Projects/{created['workspace_id']}")
 
-    def test_group_scope_requires_actor_and_isolates_members_and_groups(self) -> None:
+    def test_qq_catalog_follows_actor_across_private_and_groups(self) -> None:
         with self.assertRaisesRegex(ProjectWorkspaceError, "group_actor_required"):
             self.service.scope_for(
                 profile_user_id="group-profile",
@@ -73,26 +86,76 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             session_id="qq_group_shared_100",
             client_mode="qq",
             actor_stable_id="qq:1",
+            actor_profile_user_id="alice",
         )
         bob = self.service.scope_for(
             profile_user_id="group-profile",
             session_id="qq_group_shared_100",
             client_mode="qq",
             actor_stable_id="qq:2",
+            actor_profile_user_id="bob",
         )
         other_group = self.service.scope_for(
             profile_user_id="group-profile",
             session_id="qq_group_shared_200",
             client_mode="qq",
             actor_stable_id="qq:1",
+            actor_profile_user_id="alice",
         )
         created = self.service.create(scope=alice, display_name="Alice Project")
 
         self.assertEqual(self.service.list(scope=bob)["workspaces"], [])
-        self.assertEqual(self.service.list(scope=other_group)["workspaces"], [])
-        for scope in (bob, other_group):
-            with self.assertRaisesRegex(ProjectWorkspaceError, "workspace_not_found"):
-                self.service.select(scope=scope, workspace_id=created["workspace_id"])
+        self.assertEqual(self.service.list(scope=other_group)["workspaces"][0]["workspace_id"], created["workspace_id"])
+        self.assertEqual(self.service.list(scope=self.private)["workspaces"][0]["workspace_id"], created["workspace_id"])
+        with self.assertRaisesRegex(ProjectWorkspaceError, "workspace_not_found"):
+            self.service.select(scope=bob, workspace_id=created["workspace_id"])
+        self.assertIsNone(self.service.current(scope=other_group))
+
+    def test_real_qq_text_mode_shares_catalog_across_private_and_multiple_groups(self) -> None:
+        private = self.service.scope_for(
+            profile_user_id="qq_10003",
+            session_id="qq_pri_10003",
+            client_mode="qq_text",
+        )
+        group_a = self.service.scope_for(
+            profile_user_id="qq_group_shared_20001",
+            session_id="qq_group_shared_20001",
+            client_mode="qq_text",
+            actor_stable_id="qq:10003",
+            actor_profile_user_id="qq_10003",
+        )
+        group_b = self.service.scope_for(
+            profile_user_id="qq_group_shared_20002",
+            session_id="qq_group_shared_20002",
+            client_mode="qq_text",
+            actor_stable_id="qq:10003",
+            actor_profile_user_id="qq_10003",
+        )
+        created = self.service.create(scope=private, display_name="Cross Channel")
+
+        for scope in (group_a, group_b):
+            self.assertEqual(self.service.list(scope=scope)["workspaces"][0]["workspace_id"], created["workspace_id"])
+            self.assertIsNone(self.service.current(scope=scope))
+        self.service.select(scope=group_a, workspace_id=created["workspace_id"])
+        self.assertEqual(self.service.current(scope=group_a)["workspace_id"], created["workspace_id"])
+        self.assertIsNone(self.service.current(scope=group_b))
+        self.assertEqual(self.service.current(scope=private)["workspace_id"], created["workspace_id"])
+
+    def test_legacy_private_catalog_migration_is_idempotent(self) -> None:
+        legacy = self.service.scope_for(
+            profile_user_id="alice",
+            session_id="legacy-private",
+            client_mode="legacy",
+        )
+        created = self.service.create(scope=legacy, display_name="Legacy Project")
+
+        first = self.service.list(scope=self.private)
+        second = self.service.list(scope=self.private)
+
+        self.assertEqual(first["workspaces"][0]["workspace_id"], created["workspace_id"])
+        self.assertEqual(second, first)
+        record = self.store.get_project_workspace(created["workspace_id"])
+        self.assertEqual(record["owner_kind"], "qq_user")
 
     def test_archive_clears_selection_without_deleting_files(self) -> None:
         created = self.service.create(scope=self.private, display_name="Keep Files")
@@ -141,11 +204,12 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertTrue(cwd.startswith("alias:project_"))
         self.assertEqual(provider._resolve_workdir(cwd), (external / "src").resolve())
 
-    def test_host_binding_rejects_non_desktop_and_protected_or_managed_roots(self) -> None:
+    def test_host_binding_accepts_qq_but_rejects_protected_or_managed_roots(self) -> None:
         external = self.root / "safe-project"
         external.mkdir()
-        with self.assertRaisesRegex(ProjectWorkspaceError, "host_binding_desktop_only"):
-            self.service.bind_existing(scope=self.private, host_directory=external)
+        opened = self.service.bind_existing(scope=self.private, host_directory=external)
+        self.assertEqual(opened["root_kind"], "host_bound")
+        self.assertNotIn(str(external), str(opened))
 
         desktop = self.service.scope_for(
             profile_user_id="alice",
@@ -155,7 +219,21 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectWorkspaceError, "host_directory_managed_by_runtime"):
             self.service.bind_existing(scope=desktop, host_directory=self.execution_root)
         with self.assertRaisesRegex(ProjectWorkspaceError, "host_directory_protected"):
-            self.service.bind_existing(scope=desktop, host_directory=Path(__file__).resolve().parents[1])
+            self.service.bind_existing(scope=desktop, host_directory=Path(self.store.base_dir))
+
+    def test_host_binding_allows_project_parent_that_contains_internal_subdirectory(self) -> None:
+        host_root = self.root / "host-repository"
+        internal = host_root / ".akane-state"
+        internal.mkdir(parents=True)
+        service = ProjectWorkspaceService(
+            store=self.store,
+            execution_workspace_root=self.execution_root,
+            protected_roots=(internal,),
+        )
+
+        opened = service.bind_existing(scope=self.private, host_directory=host_root)
+
+        self.assertEqual(opened["root_kind"], "host_bound")
 
     def test_missing_bound_directory_clears_selection_without_leaking_path(self) -> None:
         desktop = self.service.scope_for(
@@ -249,6 +327,11 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             call={"type": "manage_project_workspace", "action": "create", "display_name": "Tool Project"},
             context=self._context(),
         )
+        workspace_id = created.state_updates["project_workspace"]["workspace_id"]
+        selected = manage.execute(
+            call={"type": "manage_project_workspace", "action": "select", "workspace_id": workspace_id},
+            context=self._context(session_id="private-b"),
+        )
         written = write.execute(
             call={"type": "workspace_write", "path": "main.js", "content": "let x = 1;\n"},
             context=self._context(session_id="private-b"),
@@ -262,15 +345,54 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(created.stream_events[0]["status"], "succeeded")
+        self.assertEqual(selected.stream_events[0]["status"], "succeeded")
         self.assertEqual(written.stream_events[0]["status"], "succeeded")
         self.assertEqual(patched.stream_events[0]["status"], "succeeded")
         self.assertIn('"path":"main.js"', written.followup_context)
+
+    def test_manage_handler_opens_existing_host_directory(self) -> None:
+        external = self.root / "existing-project"
+        external.mkdir()
+        manage = ManageProjectWorkspaceToolHandler(service=self.service)
+        normalized = manage.normalize_call(
+            {
+                "type": "manage_project_workspace",
+                "action": "open",
+                "path": str(external),
+                "display_name": "Existing Project",
+            }
+        )
+
+        self.assertIsNotNone(normalized)
+        result = manage.execute(call=normalized, context=self._context())
+
+        state = result.state_updates["project_workspace"]
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(state["display_name"], "Existing Project")
+        self.assertEqual(state["root_kind"], "host_bound")
+        self.assertNotIn(str(external), result.followup_context)
+
+    def test_manage_workspace_schema_exposes_open_path_contract(self) -> None:
+        spec = ManageProjectWorkspaceToolHandler(service=self.service).tool_spec()
+        schema = spec.input_schema
+
+        self.assertEqual(
+            schema["properties"]["action"]["enum"],
+            ["list", "create", "open", "select", "archive", "current"],
+        )
+        self.assertIn("path", schema["properties"])
 
     def test_exec_alias_project_resolves_before_provider_dispatch(self) -> None:
         from types import SimpleNamespace
         from unittest.mock import patch
 
         created = self.service.create(scope=self.private, display_name="Exec Project")
+        other_scope = self.service.scope_for(
+            profile_user_id="alice",
+            session_id="private-b",
+            client_mode="qq",
+        )
+        self.service.select(scope=other_scope, workspace_id=created["workspace_id"])
         provider = SimpleNamespace(provider_id="local")
         handler = ExecRunToolHandler(
             execution_provider=provider,

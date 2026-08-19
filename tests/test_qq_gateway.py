@@ -112,6 +112,15 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertEqual(messages, ["第一句", "第二句"])
 
+    def test_actor_profile_identity_is_stable_across_private_and_group_routing(self) -> None:
+        gateway = NapCatQQGateway()
+
+        self.assertEqual(gateway.resolve_actor_profile_user_id(user_id=QQ_MASTER_FIXTURE_ID), "master")
+        self.assertEqual(
+            gateway.resolve_actor_profile_user_id(user_id=QQ_USER_FIXTURE_ID),
+            f"qq_{QQ_USER_FIXTURE_ID}",
+        )
+
     def test_render_reply_messages_appends_code_to_last_segment(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -595,9 +604,11 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.sender_label, "休比")
         self.assertEqual(payload["message"], "【休比】你好")
         self.assertEqual(payload["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(payload["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["actor_display_name"], "休比")
         self.assertEqual(payload["actor_platform"], "qq")
         self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(payload["qq_delivery_context"]["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
         self.assertEqual(payload["extra_context"], "qq.reply_delivery: auto")
         self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
@@ -627,6 +638,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertNotIn("transient_user_message", payload)
         self.assertEqual(payload["client_mode"], "qq_text")
         self.assertNotIn("actor_stable_id", payload)
+        self.assertNotIn("actor_profile_user_id", payload)
         self.assertNotIn("actor_display_name", payload)
         self.assertIn("我就是本轮戳一戳的发送者", payload["extra_context"])
         self.assertIn("戳了戳你", payload["extra_context"])

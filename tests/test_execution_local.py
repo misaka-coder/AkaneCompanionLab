@@ -181,13 +181,12 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIn(str(subdir.resolve()), start.stdout)
 
-    def test_absolute_cwd_rejected(self) -> None:
+    def test_absolute_cwd_uses_host_permissions(self) -> None:
         executor = self._executor()
         target = str(Path(tempfile.gettempdir()))
-        start = executor.run(owner=self.owner, command="echo hi", cwd=target, initial_wait_seconds=1)
-        self.assertEqual(start.status, EXEC_STATUS_FAILED)
-        self.assertIn("invalid_execution_cwd", start.reason)
-        self.assertIn("absolute_path_not_allowed", start.reason)
+        start = executor.run(owner=self.owner, command=_current_dir_command(), cwd=target, initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn(str(Path(target).resolve()), start.stdout)
 
     def test_traversal_cwd_rejected(self) -> None:
         executor = self._executor()
@@ -227,7 +226,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         with self.assertRaises(ExecutionPathError):
             executor._resolve_workdir("escape")
 
-    # -- environment allowlist --------------------------------------------------------
+    # -- environment inheritance / optional allowlist --------------------------------
 
     def test_env_allowlist_blocks_unspecified_vars(self) -> None:
         os.environ["AKANE_EXEC_TEST_SECRET"] = "s3cr3t_value"
@@ -247,16 +246,16 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIn("s3cr3t_value", start.stdout)
 
-    def test_host_env_is_not_inherited_wholesale(self) -> None:
+    def test_explicit_allowlist_mode_does_not_inherit_unspecified_host_values(self) -> None:
         os.environ["AKANE_EXEC_TEST_SECRET"] = "s3cr3t_value"
         self.addCleanup(lambda: os.environ.pop("AKANE_EXEC_TEST_SECRET", None))
         executor = self._executor(allowed_env_names={"PATH"})
         start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=1)
         self.assertNotIn("s3cr3t_value", start.stdout)
 
-    def test_managed_temp_variables_follow_command_workdir(self) -> None:
-        subdir = self.workspace / "job"
-        subdir.mkdir()
+    def test_managed_temp_variables_only_follow_resource_run_workdir(self) -> None:
+        subdir = self.workspace / ".akane_exec_runs" / ("execrun_" + "1" * 32)
+        subdir.mkdir(parents=True)
         executor = self._executor(allowed_env_names={"PATH", "TEMP", "TMP"})
 
         env = executor._build_env(workdir=subdir)
@@ -264,6 +263,75 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(Path(env["TMPDIR"]), subdir.resolve())
         self.assertEqual(Path(env["TMP"]), subdir.resolve())
         self.assertEqual(Path(env["TEMP"]), subdir.resolve())
+
+    def test_default_environment_inherits_normal_host_values_and_scrubs_credentials(self) -> None:
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(self.root if hasattr(self, "root") else self.workspace.parent),
+                "SDK_ROOT": "toolchain-home",
+                "GIT_AUTHOR_NAME": "Akane",
+                "SSH_AUTH_SOCK": "agent.sock",
+                "SERVICE_API_TOKEN": "must-not-leak",
+                "AKANE_DATA_ROOT": "must-not-leak-either",
+            }
+        )
+
+        env = executor._build_env()
+
+        self.assertEqual(env["SDK_ROOT"], "toolchain-home")
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Akane")
+        self.assertEqual(env["SSH_AUTH_SOCK"], "agent.sock")
+        self.assertNotIn("SERVICE_API_TOKEN", env)
+        self.assertNotIn("AKANE_DATA_ROOT", env)
+
+    def test_default_environment_preserves_host_temp_and_cache_configuration(self) -> None:
+        host_cache = str(self.workspace.parent / "host-cache")
+        host_temp = str(self.workspace.parent / "host-temp")
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "TEMP": host_temp,
+                "TMP": host_temp,
+                "PIP_CACHE_DIR": host_cache,
+                "npm_config_cache": host_cache,
+                "PNPM_HOME": host_cache,
+                "COREPACK_HOME": host_cache,
+                "npm_config_store_dir": host_cache,
+                "XDG_CACHE_HOME": host_cache,
+            }
+        )
+
+        env = executor._build_env(workdir=self.workspace)
+
+        self.assertEqual(env["TEMP"], host_temp)
+        self.assertEqual(env["TMP"], host_temp)
+        self.assertEqual(env["PIP_CACHE_DIR"], host_cache)
+        self.assertEqual(env["npm_config_cache"], host_cache)
+        self.assertNotIn("NPM_CONFIG_CACHE", env)
+        self.assertEqual(env["PNPM_HOME"], host_cache)
+        self.assertEqual(env["COREPACK_HOME"], host_cache)
+        self.assertEqual(env["npm_config_store_dir"], host_cache)
+        self.assertNotIn("NPM_CONFIG_STORE_DIR", env)
+        if os.name != "nt":
+            self.assertEqual(env["XDG_CACHE_HOME"], host_cache)
+
+    def test_version_probe_uses_same_home_and_version_manager_environment(self) -> None:
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": "host-home",
+                "NVM_DIR": "host-nvm",
+                "SERVICE_API_KEY": "must-not-leak",
+            }
+        )
+
+        env = executor._version_probe_env("probe-path")
+
+        self.assertEqual(env["PATH"], "probe-path")
+        self.assertEqual(env["HOME"], "host-home")
+        self.assertEqual(env["NVM_DIR"], "host-nvm")
+        self.assertNotIn("SERVICE_API_KEY", env)
 
     def test_available_optional_proxy_is_injected_without_allowlisting(self) -> None:
         executor = self._executor(
@@ -292,7 +360,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertNotIn("HTTPS_PROXY", env)
         self.assertNotIn("ALL_PROXY", env)
 
-    def test_python_user_site_and_pip_cache_are_isolated_inside_workspace(self) -> None:
+    def test_explicit_allowlist_mode_uses_managed_python_user_site_and_cache(self) -> None:
         outside = str(Path(self._tmp.name) / "host-userbase")
         executor = self._executor(
             allowed_env_names={"PATH", "PYTHONUSERBASE", "PIP_REQUIRE_VIRTUALENV"},
@@ -316,6 +384,18 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         )
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertEqual(Path(start.stdout.strip()), executor.python_user_base)
+
+    def test_node_and_package_caches_are_shared_by_the_host_executor(self) -> None:
+        executor = self._executor(host_env={"PATH": os.environ.get("PATH", "")})
+        env = executor._build_env()
+
+        self.assertEqual(Path(env["NPM_CONFIG_CACHE"]), executor.npm_cache_dir)
+        self.assertEqual(Path(env["PNPM_HOME"]), executor.pnpm_home)
+        self.assertEqual(Path(env["COREPACK_HOME"]), executor.corepack_home)
+        self.assertEqual(Path(env["NPM_CONFIG_STORE_DIR"]), executor.pnpm_store_dir)
+        storage = executor.model_environment()["dependency_storage"]
+        self.assertEqual(storage["runtime"], "host_path")
+        self.assertEqual(storage["pnpm_store"], "host_shared_content_addressed")
 
     # -- ownership / provider scope ---------------------------------------------------
 

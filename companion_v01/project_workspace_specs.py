@@ -9,16 +9,23 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_project_workspace",
     display_name="Manage coding project workspace",
     description=(
-        "List, create, select, or archive a durable coding project. A selected project is exposed to "
-        "exec_run as alias:project. Project identity is stable across conversations within the same owner scope."
+        "List, create, open, select, or archive a durable coding project directory. The catalog follows the "
+        "same user across QQ private and group conversations while the current selection stays conversation-local. "
+        "Open registers an existing host directory; a selected project is exposed to exec_run as alias:project."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "action": {"type": "string", "enum": ["list", "create", "select", "archive", "current"]},
+            "action": {"type": "string", "enum": ["list", "create", "open", "select", "archive", "current"]},
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
             "display_name": {"type": "string", "minLength": 1, "maxLength": 80},
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "description": "open 时使用的真实宿主绝对目录；必须先由 Shell 输出确认，不要猜测。",
+            },
             "include_archived": {"type": "boolean"},
         },
         "required": ["action"],
@@ -40,8 +47,8 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_workspace_state",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=32 * 1024,

@@ -181,11 +181,11 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     capability_id=EXEC_RUN_TOOL_NAME,
     display_name="Run a command in the trusted execution workspace",
     description=(
-        "使用拥有当前宿主用户权限的受信任执行器运行命令或脚本；它不是 Shell 沙箱。cwd 与宿主文件引用"
-        "只能使用工作区相对路径或已配置的挂载别名，但命令本身仍可能访问该用户有权访问的其他资源。"
-        "普通主机管理或文件任务没有使用 input_resources/output_globs 时，命令可以先从真实输出发现并使用"
-        "宿主绝对路径；不要因 cwd 字段只接受相对路径就假装看不到或无法操作宿主文件。"
-        "环境变量由宿主执行器按白名单注入，本工具不接受环境变量。短命令在本轮直接返回最终状态；"
+        "使用拥有当前宿主用户权限的受信任执行器运行命令或脚本；它不是 Shell 沙箱。cwd 可以使用工作区"
+        "相对路径、已配置挂载别名或真实存在的宿主绝对目录，访问范围由宿主用户权限决定。先用 pwd/find 等"
+        "真实输出发现目录，不要猜测路径。"
+        "默认继承宿主的普通环境变量与 PATH，凭据类和 Akane 内部变量会被移除；本工具不接受临时环境变量参数。"
+        "短命令在本轮直接返回最终状态；"
         "超过初始等待窗口仍存活的命令返回 run_id 与 running 状态，之后用 exec_status 查询进度、"
         "exec_cancel 停止；running 是命令仍在执行的正常状态，不是失败。安装、构建等长任务不要接会"
         "抑制或缓冲实时输出的过滤管道；多步骤命令要按当前 Shell 显式保留并检查每一步失败状态，"
@@ -212,8 +212,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "maxLength": EXEC_CWD_MAX_CHARS,
                 "description": (
-                    "启动目录（可选）：受信任执行工作区内相对路径或挂载别名。编程项目使用 alias:project。"
+                    "启动目录（可选）：工作区相对路径、挂载别名或真实宿主绝对目录。编程项目优先使用 alias:project。"
                     "使用 input_resources 时必须省略 cwd；output_globs 可与 alias:project 同用。"
+                    "宿主绝对 cwd 不直接支持 output_globs；先将目录注册为项目再登记产物。"
                     "既无资源参数又省略时使用受信任执行工作区根；省略但声明 output_globs 时使用本次临时目录。"
                 ),
             },
@@ -260,7 +261,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "maxItems": 32,
                 "description": (
                     "可选：命令完成后要登记为 gen_* 的输出路径 glob。路径相对本次受管当前目录；"
-                    "与 cwd=alias:project 同用时只登记本次新建或变更的匹配文件；否则命令必须把产物写在"
+                    "与 cwd=alias:project 同用时只登记本次新建或变更的匹配文件；宿主绝对 cwd 不支持直接登记。"
+                    "否则命令必须把产物写在"
                     "本次临时目录内。不要写到 /tmp 等外部目录。全部展开并去重，只登记明确声明的输出。"
                 ),
             },

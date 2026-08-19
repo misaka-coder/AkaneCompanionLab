@@ -1,18 +1,19 @@
 """TrustedLocalExecutor: the Phase 2 local execution provider.
 
 Deliberately named "Trusted", not "Sandbox": this provider runs commands with
-the host user's permissions from a constrained working directory. It is not an
-OS sandbox — command text can still reach anything that user can reach. The
-tool contract constrains ``cwd`` and the inherited environment, not paths
-embedded in the command itself.
+the host user's permissions. It is not an OS sandbox: both command arguments
+and an explicit absolute ``cwd`` can reach directories available to that host
+user. The inherited environment remains deliberately bounded.
 
 Security model (Phase 2 scope; approval wiring lands in Phase 3):
 
-* ``cwd`` resolves only inside ``workspace_root`` or an explicitly configured
-  mount alias; absolute paths and ``..`` are rejected. Symlinks that escape the
-  workspace are rejected via ``resolve()`` containment.
-* the child environment is rebuilt from an explicit allowlist of names, never
-  inherited from the host wholesale.
+* relative ``cwd`` stays inside ``workspace_root``; mount aliases resolve to
+  host-authorized roots; an absolute ``cwd`` uses normal host permissions and
+  must already exist as a directory.
+* by default, child processes inherit the host user's ordinary environment so
+  PATH, HOME and version-manager configuration work like a normal coding
+  agent. Credential-like names and Akane-internal variables are removed. A
+  host may opt into the older explicit-allowlist mode through configuration.
 * cancellation is confirmed only after the process group is gone; a request
   alone is never reported as success (``cancel_failed`` otherwise).
 * there is no command blacklist — command risk classification and ``ask``
@@ -100,18 +101,8 @@ _PROXY_ENV_NAMES = (
     "https_proxy",
     "all_proxy",
 )
-
-# A conservative default: only names a command generally needs to run. Host
-# config supplies the authoritative allowlist; the model never sees these names.
-DEFAULT_ALLOWED_ENV_NAMES: tuple[str, ...] = (
-    "PATH",
-    "SystemRoot",
-    "COMSPEC",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "HOME",
-)
+_SENSITIVE_ENV_NAME_RE = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
+_HOST_INTERNAL_ENV_PREFIXES = ("AKANE_",)
 
 
 class ExecutionPathError(Exception):
@@ -144,7 +135,7 @@ def _split_windows_command_line(command: str) -> list[str] | None:
 
 
 class TrustedLocalExecutor(ExecutionProvider):
-    """Local process provider: real subprocesses in a constrained workspace."""
+    """Local process provider with the host user's real filesystem authority."""
 
     def __init__(
         self,
@@ -170,7 +161,8 @@ class TrustedLocalExecutor(ExecutionProvider):
         if not self.run_log_dir.is_dir():
             raise ValueError("execution_run_log_directory_required")
         self.provider_id = str(provider_id or "").strip() or "local"
-        allowed = {str(name or "").strip() for name in (allowed_env_names or DEFAULT_ALLOWED_ENV_NAMES)}
+        self.inherit_scrubbed_host_env = allowed_env_names is None
+        allowed = {str(name or "").strip() for name in (allowed_env_names or ())}
         self.allowed_env_names = {name for name in allowed if name}
         self.host_env = dict(host_env) if host_env is not None else dict(os.environ)
         self.proxy_url = str(proxy_url or "").strip()
@@ -178,14 +170,18 @@ class TrustedLocalExecutor(ExecutionProvider):
         self._proxy_probe_lock = threading.Lock()
         self._proxy_probe_at = 0.0
         self._proxy_probe_result = False
-        # Keep packages installed by model-authored commands away from the
-        # Python user-site used by the Akane host process. This is a durable
-        # execution environment, not a sandbox: commands may still explicitly
-        # access anything the host user can access, but ordinary `pip install`
-        # and subsequent `python` calls stay inside the execution workspace.
+        # These are host-executor shared caches, not project runtimes. Normal
+        # full-access execution keeps the user's own Python/Node toolchains;
+        # the Python user base below is only for explicit restricted mode.
         runtime_root = self.workspace_root / ".runtime"
+        self.runtime_root = runtime_root
         self.python_user_base = runtime_root / "python_userbase"
         self.pip_cache_dir = runtime_root / "pip_cache"
+        self.shared_cache_root = runtime_root / "cache"
+        self.npm_cache_dir = runtime_root / "npm_cache"
+        self.pnpm_store_dir = runtime_root / "pnpm_store"
+        self.pnpm_home = runtime_root / "pnpm_home"
+        self.corepack_home = runtime_root / "corepack_home"
         self.mounts: dict[str, Path] = {}
         for raw_name, raw_path in (mounts or {}).items():
             name = str(raw_name or "").strip()
@@ -249,24 +245,48 @@ class TrustedLocalExecutor(ExecutionProvider):
                 "preferred_script_shell": "/bin/sh",
             }
         environment["toolchain"] = self._toolchain_manifest()
+        environment["dependency_storage"] = {
+            "runtime": "host_path",
+            "download_cache": "host_shared",
+            "pnpm_store": "host_shared_content_addressed",
+            "project_resolution": "ecosystem_native",
+        }
+        environment["host_access"] = {
+            "filesystem": "host_user_permissions",
+            "absolute_cwd": "supported",
+            "environment": "ambient_non_secret",
+        }
         return environment
 
     def _toolchain_manifest(self) -> dict[str, dict[str, str]]:
-        manifest: dict[str, dict[str, str]] = {
-            "python": {
-                "status": "available",
-                "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-            }
-        }
-        path_value = str(self.host_env.get("PATH") or "")
+        manifest: dict[str, dict[str, str]] = {}
+        path_value = self._managed_path_value()
         probes = {
+            "python": (("python", "python3"), "--version"),
             "node": ("node", "--version"),
             "npm": ("npm", "--version"),
+            "pnpm": ("pnpm", "--version"),
+            "bun": ("bun", "--version"),
+            "uv": ("uv", "--version"),
             "git": ("git", "--version"),
             "rg": ("rg", "--version"),
+            "go": ("go", "version"),
+            "cargo": ("cargo", "--version"),
+            "rustc": ("rustc", "--version"),
+            "java": ("java", "-version"),
+            "dotnet": ("dotnet", "--version"),
+            "cmake": ("cmake", "--version"),
+            "ninja": ("ninja", "--version"),
+            "gcc": ("gcc", "--version"),
+            "clang": ("clang", "--version"),
+            "ffmpeg": ("ffmpeg", "-version"),
         }
-        for name, (binary, version_arg) in probes.items():
-            executable = shutil.which(binary, path=path_value)
+        for name, (binary_value, version_arg) in probes.items():
+            binaries = binary_value if isinstance(binary_value, tuple) else (binary_value,)
+            executable = next(
+                (candidate for binary in binaries if (candidate := shutil.which(binary, path=path_value))),
+                None,
+            )
             if not executable:
                 manifest[name] = {"status": "unavailable", "version": ""}
                 continue
@@ -290,12 +310,77 @@ class TrustedLocalExecutor(ExecutionProvider):
         return manifest
 
     def _version_probe_env(self, path_value: str) -> dict[str, str]:
-        env = {"PATH": path_value}
-        for name in ("SystemRoot", "COMSPEC", "PATHEXT"):
-            value = self.host_env.get(name)
-            if value:
+        env = self._inherited_environment()
+        env["PATH"] = path_value
+        return env
+
+    def _inherited_environment(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        host_values = self.host_env
+        if self.inherit_scrubbed_host_env:
+            for raw_name, raw_value in host_values.items():
+                name = str(raw_name or "")
+                upper = name.upper()
+                if (
+                    raw_value is None
+                    or _SENSITIVE_ENV_NAME_RE.search(name)
+                    or any(upper.startswith(prefix) for prefix in _HOST_INTERNAL_ENV_PREFIXES)
+                ):
+                    continue
+                env[name] = str(raw_value)
+            return env
+        if os.name == "nt":
+            folded = {str(key).casefold(): (str(key), value) for key, value in host_values.items()}
+            for name in sorted(self.allowed_env_names):
+                original_and_value = folded.get(name.casefold())
+                if original_and_value is None:
+                    continue
+                output_name, value = original_and_value
+                if value is not None:
+                    env[output_name] = str(value)
+            return env
+        for name in sorted(self.allowed_env_names):
+            value = host_values.get(name)
+            if value is not None:
                 env[name] = str(value)
         return env
+
+    @staticmethod
+    def _set_env_default(
+        env: dict[str, str],
+        name: str,
+        value: str,
+        *,
+        aliases: Sequence[str] = (),
+    ) -> bool:
+        candidates = (name, *aliases)
+        if os.name == "nt":
+            existing = {key.casefold() for key in env}
+            if any(candidate.casefold() in existing for candidate in candidates):
+                return False
+        elif any(candidate in env for candidate in candidates):
+            return False
+        env[name] = value
+        return True
+
+    def _managed_path_entries(self) -> list[Path]:
+        entries: list[Path] = []
+        if os.name == "nt":
+            python_bin = self.python_user_base / f"Python{sys.version_info.major}{sys.version_info.minor}" / "Scripts"
+        else:
+            python_bin = self.python_user_base / "bin"
+        if not self.inherit_scrubbed_host_env:
+            entries.append(python_bin)
+        if self.pnpm_home.is_dir():
+            entries.append(self.pnpm_home)
+        return entries
+
+    def _managed_path_value(self, existing_path: str | None = None) -> str:
+        inherited = str(self.host_env.get("PATH") or "") if existing_path is None else str(existing_path or "")
+        entries = [str(item) for item in self._managed_path_entries()]
+        if inherited:
+            entries.append(inherited)
+        return os.pathsep.join(entries)
 
     def run(
         self,
@@ -492,7 +577,13 @@ class TrustedLocalExecutor(ExecutionProvider):
             return candidate
         candidate_path = Path(raw)
         if candidate_path.is_absolute():
-            raise ExecutionPathError("absolute_path_not_allowed")
+            try:
+                candidate = candidate_path.expanduser().resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise ExecutionPathError("cwd_not_found") from None
+            if not candidate.is_dir():
+                raise ExecutionPathError("cwd_not_found")
+            return candidate
         if ".." in candidate_path.parts:
             raise ExecutionPathError("path_traversal_not_allowed")
         candidate = (self.workspace_root / candidate_path).resolve(strict=False)
@@ -505,45 +596,43 @@ class TrustedLocalExecutor(ExecutionProvider):
         return candidate
 
     def _build_env(self, *, workdir: Path | None = None) -> dict[str, str]:
-        env: dict[str, str] = {}
-        host_values = self.host_env
-        if os.name == "nt":
-            folded = {str(key).casefold(): (str(key), value) for key, value in host_values.items()}
-        else:
-            folded = {}
-        for name in sorted(self.allowed_env_names):
-            if os.name == "nt":
-                original_and_value = folded.get(name.casefold())
-                if original_and_value is None:
-                    continue
-                output_name, value = original_and_value
-            else:
-                output_name, value = name, host_values.get(name)
-            if value is not None:
-                env[output_name] = str(value)
-        # Keep conventional temporary-directory usage inside the command's
-        # actual managed cwd.  Resource-mode commands can therefore use their
-        # normal temp variables without escaping output_globs registration.
-        managed_tmp = str((workdir or self.workspace_root).resolve())
-        env["TMPDIR"] = managed_tmp
-        env["TMP"] = managed_tmp
-        env["TEMP"] = managed_tmp
-        self.python_user_base.mkdir(parents=True, exist_ok=True)
-        self.pip_cache_dir.mkdir(parents=True, exist_ok=True)
-        env["PYTHONUSERBASE"] = str(self.python_user_base)
-        env["PIP_USER"] = "1"
-        env["PIP_CACHE_DIR"] = str(self.pip_cache_dir)
-        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-        # PYTHONNOUSERSITE treats even "0" as enabled, so absence is the only
-        # correct value for this managed user-site environment.
-        env.pop("PYTHONNOUSERSITE", None)
-        env.pop("PIP_REQUIRE_VIRTUALENV", None)
-        if os.name == "nt":
-            scripts_dir = self.python_user_base / f"Python{sys.version_info.major}{sys.version_info.minor}" / "Scripts"
-        else:
-            scripts_dir = self.python_user_base / "bin"
+        env = self._inherited_environment()
+        # Resource-mode commands own this directory and must keep temporary
+        # artifacts inside it. Ordinary host/project commands retain the
+        # user's real temp environment like a normal local coding agent.
+        effective_workdir = (workdir or self.workspace_root).resolve()
+        try:
+            relative_workdir = effective_workdir.relative_to(self.workspace_root)
+        except ValueError:
+            relative_workdir = None
+        if relative_workdir is not None and relative_workdir.parts[:1] == (".akane_exec_runs",):
+            managed_tmp = str(effective_workdir)
+            env["TMPDIR"] = managed_tmp
+            env["TMP"] = managed_tmp
+            env["TEMP"] = managed_tmp
+        managed_defaults = (
+            ("PIP_CACHE_DIR", self.pip_cache_dir, ()),
+            ("NPM_CONFIG_CACHE", self.npm_cache_dir, ("npm_config_cache",)),
+            ("PNPM_HOME", self.pnpm_home, ()),
+            ("COREPACK_HOME", self.corepack_home, ()),
+            ("NPM_CONFIG_STORE_DIR", self.pnpm_store_dir, ("npm_config_store_dir",)),
+        )
+        for name, directory, aliases in managed_defaults:
+            if self._set_env_default(env, name, str(directory), aliases=aliases):
+                directory.mkdir(parents=True, exist_ok=True)
+        self._set_env_default(env, "PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        if os.name != "nt" and self._set_env_default(env, "XDG_CACHE_HOME", str(self.shared_cache_root)):
+            self.shared_cache_root.mkdir(parents=True, exist_ok=True)
+        if not self.inherit_scrubbed_host_env:
+            self.python_user_base.mkdir(parents=True, exist_ok=True)
+            env["PYTHONUSERBASE"] = str(self.python_user_base)
+            env["PIP_USER"] = "1"
+            # PYTHONNOUSERSITE treats even "0" as enabled, so absence is the
+            # only correct value for this explicitly managed user-site mode.
+            env.pop("PYTHONNOUSERSITE", None)
+            env.pop("PIP_REQUIRE_VIRTUALENV", None)
         existing_path = str(env.get("PATH") or "")
-        env["PATH"] = str(scripts_dir) + (os.pathsep + existing_path if existing_path else "")
+        env["PATH"] = self._managed_path_value(existing_path)
         if self.proxy_url:
             # A configured optional proxy is host-owned state, not part of the
             # model tool schema or command arguments. Never leave stale proxy

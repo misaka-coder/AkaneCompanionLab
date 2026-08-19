@@ -19,15 +19,22 @@ permissions; use only the tools visible in the current request.
 ## Establish the project authority
 
 - Call `manage_project_workspace(action="current")` before editing. Continue in the
-  selected project when it matches the request; otherwise list, select, or create one.
-- The selected Project Workspace is the coding authority across conversations.
+  selected project when it matches the request; otherwise list, select, create, or open one.
+- The project catalog follows the same user across QQ private and group conversations.
+  The current selection is conversation-local so concurrent tasks cannot switch each
+  other's directory. A new conversation may need `list` then `select` even though the
+  project already exists.
+- The selected Project Workspace is the file-editing authority, not a filesystem sandbox.
   `workspace:/` is a material-reading namespace, not the project, and task-workspace
   records are not a filesystem.
 - Use project-relative paths in file tools and `cwd="alias:project"` for project
-  commands. Do not guess a project from the process directory, old releases, previous
-  command paths, or unrelated files.
-- An archived or missing project is not writable. Follow the structured reason and
-  select or create a valid project instead of searching the host for a substitute.
+  commands. Shell can inspect every host directory available to its operating-system
+  user. Discover real directories with `pwd`, `find`, or the platform equivalent; never
+  guess. Register an existing directory with `manage_project_workspace(action="open")`
+  before using project file tools there.
+- An archived or missing registered project is not writable through project file tools.
+  Follow the structured reason, then select/create a project or open a real existing
+  directory. Do not invent a substitute path.
 
 ## Scope a verifiable increment
 
@@ -53,9 +60,18 @@ permissions; use only the tools visible in the current request.
 ## Execute and diagnose honestly
 
 - Read the real platform, Shell, and toolchain manifest in the `exec_run` instruction.
-  Probe only project-specific dependencies; do not infer global tools from vendored
-  binaries in an old project.
-- Run project commands with `cwd="alias:project"`. Shell is for inspect/build/run/test,
+  Language runtimes, version managers, and general CLIs come from the host PATH. Never
+  download or unpack a runtime inside a project to work around an unavailable toolchain;
+  report the structured blocker so the host can be provisioned once.
+- Keep dependency manifests and lock files per project, but use the package manager's
+  host-shared cache/store. Respect an existing Node project's `packageManager` field and
+  lock file; for a new Node project, prefer `pnpm` when available because its
+  content-addressed store avoids physically duplicating packages while each project's
+  dependency graph remains version-correct. For Python, Rust, Go, Java, and other
+  ecosystems, respect the existing project environment and lock files; create a new
+  project-local environment only when version isolation is actually required.
+- Run registered project commands with `cwd="alias:project"`; for host inspection or
+  administration, an absolute cwd discovered from real output is valid. Shell is for inspect/build/run/test,
   not source transfer. A rejected `command_too_long` means use `workspace_write` or
   `workspace_patch`, not retry a differently quoted giant command.
 - Preserve dependent-step failures. Use `&&` or explicit status checks on POSIX/cmd.

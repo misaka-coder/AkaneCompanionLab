@@ -24,6 +24,7 @@ profile/session/provider that started the run and do not ask.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import config
@@ -263,6 +264,11 @@ class _ExecToolHandlerBase(BaseToolHandler):
 
     def _resource_rejected(self, reason: str) -> ToolExecutionResult:
         clean_reason = str(reason or "execution_resources_rejected")
+        guidance = (
+            "先用 manage_project_workspace(action=open) 注册该目录，再以 cwd=alias:project 重试产物登记。"
+            if clean_reason == "absolute_cwd_output_registration_unsupported"
+            else "请检查资源句柄、目标相对路径与输出声明后调整。"
+        )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[
@@ -274,7 +280,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 }
             ],
             followup_context=(
-                f"这次命令没有执行：资源暂存被拒绝（{clean_reason}）。请检查资源句柄、目标相对路径与输出声明后调整，"
+                f"这次命令没有执行：资源暂存被拒绝（{clean_reason}）。{guidance}"
                 "不要声称命令已经执行或文件已经生成。"
             ),
             state_updates={
@@ -367,22 +373,40 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         command_shell = str(environment.get("command_shell") or "宿主默认 Shell")
         script_shell = str(environment.get("preferred_script_shell") or command_shell)
         raw_toolchain = environment.get("toolchain") if isinstance(environment.get("toolchain"), dict) else {}
+        dependency_storage = (
+            environment.get("dependency_storage")
+            if isinstance(environment.get("dependency_storage"), dict)
+            else {}
+        )
         toolchain_parts: list[str] = []
-        for name in ("python", "node", "npm", "git", "rg"):
+        preferred_tools = (
+            "python", "node", "npm", "pnpm", "bun", "uv", "git", "rg", "go", "cargo",
+            "rustc", "java", "dotnet", "cmake", "ninja", "gcc", "clang", "ffmpeg",
+        )
+        tool_names = [name for name in preferred_tools if name in raw_toolchain]
+        tool_names.extend(sorted(name for name in raw_toolchain if name not in preferred_tools))
+        for name in tool_names:
             item = raw_toolchain.get(name) if isinstance(raw_toolchain.get(name), dict) else {}
             status = str(item.get("status") or "unavailable")
             version = " ".join(str(item.get("version") or "").split())[:80]
             toolchain_parts.append(f"{name}={version if status == 'available' and version else status}")
         toolchain_text = ",".join(toolchain_parts)
+        dependency_text = ",".join(
+            f"{key}={str(value)}" for key, value in sorted(dependency_storage.items()) if str(value)
+        )
         return (
             "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本；命令参数字段名是 command（不是 cmd）。"
             f"当前执行宿主 platform={platform}，默认命令 Shell={command_shell}，脚本优先使用 {script_shell}；"
             f"toolchain={toolchain_text}；"
+            f"dependency_storage={dependency_text or 'unknown'}；"
             "请按当前宿主生成命令，不要把 PowerShell、POSIX shell 或 macOS 专用命令混用。"
-            "cwd 只能用受信任执行工作区相对路径或挂载别名；编程项目固定使用 alias:project，"
-            "不接受绝对路径，但这只是启动目录字段的契约，不是 Shell 沙箱。普通主机管理/文件任务未使用"
-            "input_resources/output_globs 时，命令可以从 pwd、find 等真实结果发现并直接使用宿主绝对路径；"
-            "不要因此假装无法查看或操作宿主文件。环境变量由宿主按白名单注入，不接受环境变量参数。短命令直接返回结果；"
+            "这是宿主权限执行器，不是 Shell 沙箱。"
+            "cwd 可用工作区相对路径、挂载别名或真实宿主绝对目录；编程项目优先使用 alias:project。"
+            "先从 pwd、find 等真实结果发现并直接使用宿主绝对路径，不要猜测，也不要因此假装无法查看或操作宿主文件。"
+            "语言运行时、版本管理器和通用 CLI 来自宿主 PATH，"
+            "普通环境变量按本机继承但密钥与 Akane 内部变量不会注入。不要把运行时下载到项目目录；"
+            "包下载缓存按宿主共享，项目依赖按各生态的清单与锁文件解析。"
+            "本工具不接受临时环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "running 是正常状态，不是失败。安装、构建等长任务不要接会抑制或缓冲实时输出的过滤管道；"
             "多步骤命令要按当前 Shell 显式保留并检查每一步失败状态，不要用最后一步成功掩盖前面的失败。"
@@ -390,6 +414,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
             "输入会复制进本次运行的独立工作区，因此 input_resources 与 cwd 互斥；"
             "output_globs 可以与 cwd=alias:project 一起使用，直接登记所选项目中本次新建或变更的产物；"
+            "宿主绝对 cwd 可用于检查、构建和测试；若要登记其产物，先用 manage_project_workspace(open) 注册并改用 alias:project；"
             "使用 input_resources 或省略 cwd 只声明 output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管临时目录，"
             "既无 input_resources/output_globs 又省略 cwd 时，则从受信任执行工作区根启动；"
             "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
@@ -496,6 +521,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                     session_id=context.session_id,
                     client_mode=context.client_mode,
                     actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+                    actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
                 )
                 cwd = service.execution_cwd(
                     scope=scope,
@@ -521,6 +547,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             args_preview["input_resources"] = input_resources
         if output_globs:
             args_preview["output_globs"] = output_globs
+        if output_globs and cwd and Path(cwd).is_absolute() and not input_resources:
+            return self._resource_rejected("absolute_cwd_output_registration_unsupported")
         decision = self._permission_decision(context, args_preview)
         if not decision.allowed:
             if decision.requires_user_decision:

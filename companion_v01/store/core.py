@@ -3807,6 +3807,39 @@ class MemoryStore:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def reassign_project_workspaces(
+        self,
+        *,
+        from_owner_kind: str,
+        from_owner_id: str,
+        from_actor_scope: str,
+        to_owner_kind: str,
+        to_owner_id: str,
+        to_actor_scope: str,
+        timestamp: int | None = None,
+    ) -> int:
+        """Move one exact legacy catalog to a new ownership identity."""
+
+        now_ts = int(timestamp or time.time())
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE project_workspaces
+                SET owner_kind = ?, owner_id = ?, actor_scope = ?, updated_at = ?
+                WHERE owner_kind = ? AND owner_id = ? AND actor_scope = ?
+                """,
+                (
+                    str(to_owner_kind),
+                    str(to_owner_id),
+                    str(to_actor_scope),
+                    now_ts,
+                    str(from_owner_kind),
+                    str(from_owner_id),
+                    str(from_actor_scope),
+                ),
+            )
+            return max(0, int(cursor.rowcount or 0))
+
     def update_project_workspace_state(
         self,
         *,

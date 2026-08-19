@@ -34,10 +34,12 @@ class ProjectWorkspaceScope:
     owner_kind: str
     owner_id: str
     actor_scope: str
+    selection_scope: str = ""
 
     @property
     def selection_key(self) -> str:
-        payload = f"{self.owner_kind}\x1f{self.owner_id}\x1f{self.actor_scope}".encode("utf-8")
+        base = f"{self.owner_kind}\x1f{self.owner_id}\x1f{self.actor_scope}"
+        payload = (base if not self.selection_scope else f"{base}\x1f{self.selection_scope}").encode("utf-8")
         return "project-selection:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -60,7 +62,6 @@ class ProjectWorkspaceService:
         self.execution_workspace_root = Path(execution_workspace_root).resolve()
         self.projects_root = (self.execution_workspace_root / "Projects").resolve()
         default_protected = (
-            Path(__file__).resolve().parents[1],
             Path(sys.prefix).resolve(),
             Path(self.store.base_dir).resolve(),
         )
@@ -81,14 +82,24 @@ class ProjectWorkspaceService:
         session_id: str,
         client_mode: str,
         actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
     ) -> ProjectWorkspaceScope:
         profile = str(profile_user_id or "").strip()
         session = str(session_id or "").strip()
         actor = str(actor_stable_id or "").strip()
+        actor_profile = str(actor_profile_user_id or "").strip()
         mode = str(client_mode or "").strip().lower()
         if not profile:
             raise ProjectWorkspaceError("workspace_owner_required")
-        if mode == "qq" and session.startswith("qq_group_shared_"):
+        if mode.startswith("qq"):
+            if session.startswith("qq_group_shared_"):
+                if not actor:
+                    raise ProjectWorkspaceError("group_actor_required")
+                if not actor_profile:
+                    raise ProjectWorkspaceError("group_actor_profile_required")
+                return ProjectWorkspaceScope("qq_user", actor_profile, "", session)
+            return ProjectWorkspaceScope("qq_user", actor_profile or profile, "", session)
+        if session.startswith("qq_group_shared_"):
             if not actor:
                 raise ProjectWorkspaceError("group_actor_required")
             return ProjectWorkspaceScope("group", session, actor)
@@ -97,6 +108,7 @@ class ProjectWorkspaceService:
         return ProjectWorkspaceScope("private", profile, "")
 
     def create(self, *, scope: ProjectWorkspaceScope, display_name: str) -> dict[str, Any]:
+        self._prepare_scope(scope)
         name = self._display_name(display_name)
         workspace_id = "proj_" + uuid.uuid4().hex
         root_relpath = f"Projects/{workspace_id}"
@@ -133,8 +145,7 @@ class ProjectWorkspaceService:
         host_directory: str | Path,
         display_name: str = "",
     ) -> dict[str, Any]:
-        if scope.owner_kind != "desktop":
-            raise ProjectWorkspaceError("host_binding_desktop_only")
+        self._prepare_scope(scope)
         root = self._validate_host_binding_root(host_directory)
         name = self._display_name(display_name or root.name)
         canonical = os.path.normcase(str(root))
@@ -181,6 +192,7 @@ class ProjectWorkspaceService:
         return self._public_record(record, selected=True)
 
     def list(self, *, scope: ProjectWorkspaceScope, include_archived: bool = False) -> dict[str, Any]:
+        self._prepare_scope(scope)
         selected_id = self.store.get_project_workspace_selection(selection_key=scope.selection_key)
         records = self.store.list_project_workspaces(
             owner_kind=scope.owner_kind,
@@ -205,6 +217,7 @@ class ProjectWorkspaceService:
         }
 
     def select(self, *, scope: ProjectWorkspaceScope, workspace_id: str) -> dict[str, Any]:
+        self._prepare_scope(scope)
         record = self._owned_record(scope=scope, workspace_id=workspace_id, require_active=True)
         self._root_from_record(record, require_exists=True)
         self.store.set_project_workspace_selection(
@@ -214,6 +227,7 @@ class ProjectWorkspaceService:
         return self._public_record(record, selected=True)
 
     def archive(self, *, scope: ProjectWorkspaceScope, workspace_id: str) -> dict[str, Any]:
+        self._prepare_scope(scope)
         record = self._owned_record(scope=scope, workspace_id=workspace_id, require_active=False)
         if str(record.get("state") or "") == "archived":
             return self._public_record(record, selected=False)
@@ -228,6 +242,7 @@ class ProjectWorkspaceService:
         return self._public_record(updated or record, selected=False)
 
     def current(self, *, scope: ProjectWorkspaceScope) -> dict[str, Any] | None:
+        self._prepare_scope(scope)
         workspace_id = self.store.get_project_workspace_selection(selection_key=scope.selection_key)
         if not workspace_id:
             return None
@@ -403,6 +418,7 @@ class ProjectWorkspaceService:
         scope: ProjectWorkspaceScope,
         workspace_id: str,
     ) -> tuple[dict[str, Any], Path]:
+        self._prepare_scope(scope)
         resolved_id = str(workspace_id or "").strip()
         if not resolved_id:
             resolved_id = self.store.get_project_workspace_selection(selection_key=scope.selection_key)
@@ -410,6 +426,22 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("workspace_not_selected")
         record = self._owned_record(scope=scope, workspace_id=resolved_id, require_active=True)
         return record, self._root_from_record(record, require_exists=True)
+
+    def _prepare_scope(self, scope: ProjectWorkspaceScope) -> None:
+        if scope.owner_kind != "qq_user":
+            return
+        # Early Project Workspace releases stored private QQ catalogs as
+        # ``private/<profile>``. That identity is unambiguous and can be moved
+        # safely. Group-wide legacy catalogs are deliberately not guessed:
+        # their original creator was not stored by the broken runtime path.
+        self.store.reassign_project_workspaces(
+            from_owner_kind="private",
+            from_owner_id=scope.owner_id,
+            from_actor_scope="",
+            to_owner_kind=scope.owner_kind,
+            to_owner_id=scope.owner_id,
+            to_actor_scope=scope.actor_scope,
+        )
 
     def _owned_record(
         self,
@@ -469,21 +501,16 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("host_directory_missing") from exc
         if not root.is_dir() or root.is_symlink():
             raise ProjectWorkspaceError("host_directory_invalid")
-        if self._paths_overlap(root, self.execution_workspace_root):
+        if self._path_is_within(root, self.execution_workspace_root):
             raise ProjectWorkspaceError("host_directory_managed_by_runtime")
-        if any(self._paths_overlap(root, protected) for protected in self.protected_roots):
+        if any(self._path_is_within(root, protected) for protected in self.protected_roots):
             raise ProjectWorkspaceError("host_directory_protected")
         return root
 
     @staticmethod
-    def _paths_overlap(left: Path, right: Path) -> bool:
+    def _path_is_within(candidate: Path, root: Path) -> bool:
         try:
-            left.relative_to(right)
-            return True
-        except ValueError:
-            pass
-        try:
-            right.relative_to(left)
+            candidate.relative_to(root)
             return True
         except ValueError:
             return False

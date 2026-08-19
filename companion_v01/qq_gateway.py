@@ -297,6 +297,7 @@ class QQMessageContext:
     group_id: int = 0
     session_id: str = ""
     profile_user_id: str = ""
+    actor_profile_user_id: str = ""
     clean_message: str = ""
     raw_message: str = ""
     extra_context: str = ""
@@ -327,6 +328,8 @@ class QQMessageContext:
             payload["message_addressing"] = self._message_addressing()
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
+            if self.actor_profile_user_id:
+                payload["actor_profile_user_id"] = self.actor_profile_user_id
             payload["actor_display_name"] = self.sender_label
             payload["actor_platform"] = "qq"
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
@@ -387,6 +390,8 @@ class QQMessageContext:
         }
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
+            if self.actor_profile_user_id:
+                payload["actor_profile_user_id"] = self.actor_profile_user_id
             payload["actor_display_name"] = self.sender_label
             payload["actor_platform"] = "qq"
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
@@ -842,6 +847,7 @@ class NapCatQQGateway:
             return QQMessageContext(False, "empty_message")
         mentions_bot = inbound.mentioned_bot
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
+        actor_profile_user_id = self.resolve_actor_profile_user_id(user_id=user_id)
         sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
         if sender_label:
             self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
@@ -893,6 +899,7 @@ class NapCatQQGateway:
                     group_id=group_id,
                     session_id=session_id,
                     profile_user_id=profile_user_id,
+                    actor_profile_user_id=actor_profile_user_id,
                     clean_message=clean_message,
                     raw_message=raw_message,
                     sender_label=sender_label,
@@ -915,6 +922,7 @@ class NapCatQQGateway:
             group_id=group_id,
             session_id=session_id,
             profile_user_id=profile_user_id,
+            actor_profile_user_id=actor_profile_user_id,
             clean_message=clean_message,
             raw_message=raw_message,
             sender_label=sender_label,
@@ -955,6 +963,7 @@ class NapCatQQGateway:
         group_id = self._safe_int(inbound.conversation.id) if inbound.conversation.kind == "group" else 0
         is_group = bool(group_id)
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
+        actor_profile_user_id = self.resolve_actor_profile_user_id(user_id=user_id)
         sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
         if sender_label:
             self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
@@ -972,6 +981,7 @@ class NapCatQQGateway:
             group_id=group_id,
             session_id=session_id,
             profile_user_id=profile_user_id,
+            actor_profile_user_id=actor_profile_user_id,
             clean_message=clean_message,
             raw_message="[QQ戳一戳]",
             sender_label=sender_label,
@@ -1007,6 +1017,10 @@ class NapCatQQGateway:
             group_id=self._safe_int(value.get("group_id")),
             session_id=str(value.get("session_id") or ""),
             profile_user_id=str(value.get("profile_user_id") or ""),
+            actor_profile_user_id=(
+                str(value.get("actor_profile_user_id") or "").strip()
+                or self.resolve_actor_profile_user_id(user_id=self._safe_int(value.get("user_id")))
+            ),
             clean_message=str(value.get("clean_message") or ""),
             raw_message=str(value.get("raw_message") or ""),
             sender_label=str(value.get("sender_label") or ""),
@@ -2604,6 +2618,12 @@ class NapCatQQGateway:
         if self.master_qq and user_text == self.master_qq:
             return "master", "master"
         return f"qq_pri_{user_id}", f"qq_{user_id}"
+
+    def resolve_actor_profile_user_id(self, *, user_id: int) -> str:
+        user_text = str(user_id or "")
+        if self.master_qq and user_text == self.master_qq:
+            return "master"
+        return f"qq_{user_id}" if user_id else ""
 
     def resolve_sender_label(self, *, event: dict[str, Any], user_id: int) -> str:
         sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}

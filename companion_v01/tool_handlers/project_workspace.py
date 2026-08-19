@@ -25,6 +25,7 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
             session_id=context.session_id,
             client_mode=context.client_mode,
             actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+            actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
         )
 
     def _result(self, payload: Mapping[str, Any]) -> ToolExecutionResult:
@@ -72,8 +73,9 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_project_workspace：管理持久编程项目。开始多文件/可执行项目时先 current/list；"
-            "没有合适项目就 create，继续旧项目时按 workspace_id select。选中后 Shell 的 cwd 使用 alias:project。"
+            "- manage_project_workspace：管理当前用户跨私聊/群聊共享的持久项目目录。开始多文件/可执行项目时先 current/list；"
+            "没有合适项目就 create，继续旧项目时按 workspace_id select；已有宿主目录用 open 注册。"
+            "当前选择按会话隔离，选中后 Shell 的 cwd 使用 alias:project。"
             "archive 只归档，不删除项目文件。"
         )
 
@@ -81,7 +83,7 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
         if not isinstance(value, dict) or str(value.get("type") or "") != self.tool_type:
             return None
         action = str(value.get("action") or "").strip()
-        if action not in {"list", "create", "select", "archive", "current"}:
+        if action not in {"list", "create", "open", "select", "archive", "current"}:
             return None
         normalized = {"type": self.tool_type, "action": action}
         if action == "create":
@@ -89,6 +91,14 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
             if not name:
                 return None
             normalized["display_name"] = name
+        if action == "open":
+            path = str(value.get("path") or "").strip()
+            if not path:
+                return None
+            normalized["path"] = path
+            display_name = str(value.get("display_name") or "").strip()
+            if display_name:
+                normalized["display_name"] = display_name
         if action in {"select", "archive"}:
             workspace_id = str(value.get("workspace_id") or "").strip()
             if not workspace_id:
@@ -103,6 +113,17 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
         action = str(call.get("action") or "")
         if action == "create":
             return self._execute(lambda: {"status": "succeeded", **self.service.create(scope=scope(), display_name=call["display_name"])})
+        if action == "open":
+            return self._execute(
+                lambda: {
+                    "status": "succeeded",
+                    **self.service.bind_existing(
+                        scope=scope(),
+                        host_directory=call["path"],
+                        display_name=str(call.get("display_name") or ""),
+                    ),
+                }
+            )
         if action == "select":
             return self._execute(lambda: {"status": "succeeded", **self.service.select(scope=scope(), workspace_id=call["workspace_id"])})
         if action == "archive":

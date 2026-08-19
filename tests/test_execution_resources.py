@@ -430,6 +430,25 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         self.assertIsNotNone(normalized)
         self.assertEqual(normalized["cwd"], "subdir")
 
+    def test_absolute_cwd_with_output_globs_is_structurally_rejected(self) -> None:
+        absolute = str(self.harness.root.resolve())
+        result = self.handler.execute(
+            call={
+                "type": "exec_run",
+                "command": "echo hi",
+                "cwd": absolute,
+                "output_globs": ["out.txt"],
+            },
+            context=_context(),
+        )
+
+        self.assertEqual(result.stream_events[0]["status"], "blocked")
+        self.assertEqual(
+            result.stream_events[0]["reason"],
+            "absolute_cwd_output_registration_unsupported",
+        )
+        self.assertIn("manage_project_workspace(action=open)", result.followup_context)
+
     def test_input_resources_still_reject_cwd(self) -> None:
         normalized = self.handler.normalize_call(
             {
