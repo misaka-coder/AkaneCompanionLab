@@ -731,7 +731,8 @@ class ExecOrchestrationTests(unittest.TestCase):
         missing_owner = execute_exec_run(provider, owner=None, command="echo")  # type: ignore[arg-type]
         self.assertEqual(missing_owner.event_status, EXEC_STATUS_EXECUTION_UNKNOWN)
         empty = execute_exec_run(provider, owner=OWNER, command="")
-        self.assertEqual(empty.event_status, EXEC_STATUS_EXECUTION_UNKNOWN)
+        self.assertEqual(empty.event_status, "rejected")
+        self.assertEqual(empty.reason, "command_required")
         self.assertFalse(provider.run_called)
 
 

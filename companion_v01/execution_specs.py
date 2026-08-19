@@ -143,6 +143,7 @@ _EXEC_RUN_STATUS_ENUM: list[str] = [
     EXEC_STATUS_RUNNING,
     EXEC_STATUS_UNAVAILABLE,
     EXEC_STATUS_EXECUTION_UNKNOWN,
+    "rejected",
 ]
 # Explicit, deterministic order (never derived from a set) so the projected
 # schema and the real request-body tools prefix stay byte-identical across turns.
@@ -280,6 +281,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "description": "完整输出已真实保存时返回的不透明引用；绝不包含宿主绝对路径。",
             },
             "reason": {"type": "string"},
+            "max_chars": {"type": _null_or_integer()},
+            "actual_chars": {"type": _null_or_integer()},
+            "recommended_action": {"type": _null_or_string()},
             "started_at": {"type": _null_or_number(), "description": "命令启动 epoch 秒。"},
             "finished_at": {"type": _null_or_number(), "description": "命令进入终态的 epoch 秒。"},
             "observed_at": {"type": _null_or_number(), "description": "本次工具观察 epoch 秒。"},

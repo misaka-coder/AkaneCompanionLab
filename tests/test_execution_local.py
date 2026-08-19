@@ -105,6 +105,13 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(environment["platform"], expected)
         self.assertIn("command_shell", environment)
         self.assertIn("preferred_script_shell", environment)
+        self.assertIn("toolchain", environment)
+        manifest = environment["toolchain"]
+        self.assertEqual(manifest["python"]["status"], "available")
+        self.assertTrue(manifest["python"]["version"])
+        for name in ("node", "npm", "git", "rg"):
+            self.assertIn(manifest[name]["status"], {"available", "unavailable"})
+            self.assertNotIn("path", manifest[name])
         self.assertNotIn(str(self.workspace), str(environment))
 
     def test_model_environment_distinguishes_linux_and_macos(self) -> None:

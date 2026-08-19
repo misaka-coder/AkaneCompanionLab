@@ -598,6 +598,56 @@ def _unknown_mapped(reason: str, *, run_start: ExecRunStart | None = None) -> Ex
     )
 
 
+def _rejected_mapped(
+    reason: str,
+    *,
+    max_chars: int | None = None,
+    actual_chars: int | None = None,
+    recommended_action: str = "",
+) -> ExecMappedResult:
+    clean_reason = _sanitize_model_text(str(reason or "execution_request_rejected"))
+    data = {
+        "status": "rejected",
+        "run_id": "",
+        "exit_code": None,
+        "stdout": "",
+        "stderr": "",
+        "next_cursor": None,
+        "output_ref": None,
+        "reason": clean_reason,
+        "max_chars": max_chars,
+        "actual_chars": actual_chars,
+        "recommended_action": str(recommended_action or "") or None,
+    }
+    if clean_reason == "command_too_long":
+        feedback = (
+            f"这次命令没有执行：command_too_long（max_chars={max_chars}，actual_chars={actual_chars}）。"
+            "源码或长文本请改用 workspace_write / workspace_patch；Shell 只用于构建、运行和测试。"
+        )
+    elif clean_reason == "command_required":
+        feedback = "这次命令没有执行：command_required。请提供非空 command。"
+    elif clean_reason == "cwd_too_long":
+        feedback = (
+            f"这次命令没有执行：cwd_too_long（max_chars={max_chars}，actual_chars={actual_chars}）。"
+            "请使用短的工作区相对路径或挂载别名。"
+        )
+    else:
+        feedback = f"这次命令没有执行：{clean_reason}。请修正参数后再试，不要声称已经执行。"
+    return ExecMappedResult(
+        envelope_status="error",
+        event_status="rejected",
+        reason=clean_reason,
+        model_feedback=feedback,
+        data=data,
+        event={
+            "type": "capability_execution_result",
+            "tool_type": EXEC_RUN_TOOL_NAME,
+            "status": "rejected",
+            "reason": clean_reason,
+        },
+    )
+
+
 def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
     if not isinstance(run_start, ExecRunStart):
         return _unknown_mapped("invalid_provider_result")
@@ -718,8 +768,21 @@ def execute_exec_run(
     clean_run_id = str(run_id or "").strip()
     if not isinstance(owner, ExecutionRunOwner):
         return _unknown_mapped("execution_owner_required")
-    if not clean_command or len(clean_command) > EXEC_COMMAND_MAX_CHARS or len(clean_cwd) > EXEC_CWD_MAX_CHARS:
-        return _unknown_mapped("execution_request_invalid")
+    if not clean_command:
+        return _rejected_mapped("command_required")
+    if len(clean_command) > EXEC_COMMAND_MAX_CHARS:
+        return _rejected_mapped(
+            "command_too_long",
+            max_chars=EXEC_COMMAND_MAX_CHARS,
+            actual_chars=len(clean_command),
+            recommended_action="workspace_write_or_patch",
+        )
+    if len(clean_cwd) > EXEC_CWD_MAX_CHARS:
+        return _rejected_mapped(
+            "cwd_too_long",
+            max_chars=EXEC_CWD_MAX_CHARS,
+            actual_chars=len(clean_cwd),
+        )
     if clean_run_id and not _RUN_ID_RE.fullmatch(clean_run_id):
         return _unknown_mapped("invalid_execution_run_id")
     try:

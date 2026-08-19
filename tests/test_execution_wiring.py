@@ -16,7 +16,7 @@ from companion_v01.capability_registry import CapabilitySelection, ExecutorBroke
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.execution_run import ExecutionAvailability, ExecRunStart, make_cursor, new_run_id
-from companion_v01.execution_specs import EXEC_STATUS_RUNNING
+from companion_v01.execution_specs import EXEC_COMMAND_MAX_CHARS, EXEC_STATUS_RUNNING
 from companion_v01.capcore_runtime import manual_permission_request, resolve_permission_for_profile
 from companion_v01.local_capability_config import (
     get_approval_policy_config,
@@ -124,6 +124,34 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertTrue(result.state_updates["capability_execution"]["run_id"].startswith("execrun_"))
         self.assertEqual(result.state_updates["capability_execution"]["output_ref"].startswith("runlog:"), True)
+
+    def test_exec_run_rejects_long_command_with_actionable_limits(self) -> None:
+        self._set_policy("trusted_auto_allow")
+        command = "x" * (EXEC_COMMAND_MAX_CHARS + 17)
+
+        result = self._handler().execute(
+            call={"type": "exec_run", "command": command},
+            context=_context(),
+        )
+
+        event = result.stream_events[0]
+        state = result.state_updates["capability_execution"]
+        self.assertEqual(event["status"], "rejected")
+        self.assertEqual(event["reason"], "command_too_long")
+        self.assertEqual(state["status"], "rejected")
+        self.assertEqual(state["max_chars"], EXEC_COMMAND_MAX_CHARS)
+        self.assertEqual(state["actual_chars"], len(command))
+        self.assertEqual(state["recommended_action"], "workspace_write_or_patch")
+        self.assertIn("workspace_write", result.followup_context)
+        self.assertNotIn("无法确认", result.followup_context)
+
+    def test_exec_prompt_exposes_real_toolchain_manifest_without_paths(self) -> None:
+        instruction = self._handler().build_prompt_instruction()
+
+        self.assertIn("toolchain=", instruction)
+        for name in ("python", "node", "npm", "git", "rg"):
+            self.assertIn(name + "=", instruction)
+        self.assertNotIn(str(self.base_dir), instruction)
 
     def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:
         saved = save_capability_approval_mode(

@@ -47,6 +47,8 @@ from ..execution_run import (
 from ..execution_specs import (
     ARTIFACT_STATUS_NOT_REQUESTED,
     ARTIFACT_STATUS_REGISTRATION_FAILED,
+    EXEC_COMMAND_MAX_CHARS,
+    EXEC_CWD_MAX_CHARS,
     EXEC_CANCEL_TOOL_SPEC,
     EXEC_RUN_TOOL_SPEC,
     EXEC_STATUS_CANCELLED,
@@ -173,6 +175,9 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 "observed_at": data.get("observed_at"),
             }
         }
+        for key in ("max_chars", "actual_chars", "recommended_action"):
+            if data.get(key) is not None:
+                state_updates["capability_execution"][key] = data.get(key)
         if data.get("generated_resources"):
             state_updates["capability_execution"]["generated_resources"] = list(data.get("generated_resources") or [])
         if data.get("artifact_status"):
@@ -333,9 +338,18 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         platform = str(environment.get("platform") or "当前宿主")
         command_shell = str(environment.get("command_shell") or "宿主默认 Shell")
         script_shell = str(environment.get("preferred_script_shell") or command_shell)
+        raw_toolchain = environment.get("toolchain") if isinstance(environment.get("toolchain"), dict) else {}
+        toolchain_parts: list[str] = []
+        for name in ("python", "node", "npm", "git", "rg"):
+            item = raw_toolchain.get(name) if isinstance(raw_toolchain.get(name), dict) else {}
+            status = str(item.get("status") or "unavailable")
+            version = " ".join(str(item.get("version") or "").split())[:80]
+            toolchain_parts.append(f"{name}={version if status == 'available' and version else status}")
+        toolchain_text = ",".join(toolchain_parts)
         return (
             "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本；命令参数字段名是 command（不是 cmd）。"
             f"当前执行宿主 platform={platform}，默认命令 Shell={command_shell}，脚本优先使用 {script_shell}；"
+            f"toolchain={toolchain_text}；"
             "请按当前宿主生成命令，不要把 PowerShell、POSIX shell 或 macOS 专用命令混用。"
             "cwd 只能用工作区相对路径或挂载别名，"
             "不接受绝对路径，但这只是启动目录字段的契约，不是 Shell 沙箱。普通主机管理/文件任务未使用"
@@ -442,6 +456,15 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return self._unavailable_result("execution_provider_unconfigured")
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
+        if not command or len(command) > EXEC_COMMAND_MAX_CHARS or len(cwd) > EXEC_CWD_MAX_CHARS:
+            return self._mapped_result(
+                execute_exec_run(
+                    provider,
+                    owner=self._owner(context),
+                    command=command,
+                    cwd=cwd,
+                )
+            )
         input_resources = call.get("input_resources")
         output_globs = call.get("output_globs")
         args_preview = {"command": command, "cwd": cwd}

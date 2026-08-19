@@ -42,6 +42,7 @@ from ctypes import wintypes
 import ntpath
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -215,22 +216,71 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecutionAvailability(enabled=False, status="unavailable", reason="workspace_missing")
         return ExecutionAvailability(enabled=True, status="ready", reason="")
 
-    def model_environment(self) -> dict[str, str]:
+    def model_environment(self) -> dict[str, Any]:
         """Return non-sensitive host facts used to guide command generation."""
 
         if os.name == "nt":
             path_value = str(self.host_env.get("PATH") or "")
             has_pwsh = any((Path(part) / "pwsh.exe").is_file() for part in path_value.split(os.pathsep) if part)
-            return {
+            environment: dict[str, Any] = {
                 "platform": "windows",
                 "command_shell": "cmd.exe",
                 "preferred_script_shell": "pwsh" if has_pwsh else "powershell.exe",
             }
-        return {
-            "platform": "macos" if sys.platform == "darwin" else "linux",
-            "command_shell": "/bin/sh",
-            "preferred_script_shell": "/bin/sh",
+        else:
+            environment = {
+                "platform": "macos" if sys.platform == "darwin" else "linux",
+                "command_shell": "/bin/sh",
+                "preferred_script_shell": "/bin/sh",
+            }
+        environment["toolchain"] = self._toolchain_manifest()
+        return environment
+
+    def _toolchain_manifest(self) -> dict[str, dict[str, str]]:
+        manifest: dict[str, dict[str, str]] = {
+            "python": {
+                "status": "available",
+                "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            }
         }
+        path_value = str(self.host_env.get("PATH") or "")
+        probes = {
+            "node": ("node", "--version"),
+            "npm": ("npm", "--version"),
+            "git": ("git", "--version"),
+            "rg": ("rg", "--version"),
+        }
+        for name, (binary, version_arg) in probes.items():
+            executable = shutil.which(binary, path=path_value)
+            if not executable:
+                manifest[name] = {"status": "unavailable", "version": ""}
+                continue
+            try:
+                completed = subprocess.run(
+                    [executable, version_arg],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                    env=self._version_probe_env(path_value),
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                )
+                first_line = (completed.stdout or completed.stderr or "").splitlines()[0].strip()[:120]
+                manifest[name] = {
+                    "status": "available" if completed.returncode == 0 else "unavailable",
+                    "version": first_line if completed.returncode == 0 else "",
+                }
+            except (OSError, subprocess.SubprocessError, IndexError):
+                manifest[name] = {"status": "unavailable", "version": ""}
+        return manifest
+
+    def _version_probe_env(self, path_value: str) -> dict[str, str]:
+        env = {"PATH": path_value}
+        for name in ("SystemRoot", "COMSPEC", "PATHEXT"):
+            value = self.host_env.get(name)
+            if value:
+                env[name] = str(value)
+        return env
 
     def run(
         self,
