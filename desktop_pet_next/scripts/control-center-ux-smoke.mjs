@@ -12,8 +12,9 @@ const codexDir = resolve(projectRoot, ".codex");
 // ---------------------------------------------------------------------------
 
 const REQUIRED_HTML = "dist/control-center-lab.html";
+const V2_CANDIDATE_HTML = "dist/control-center-v2.html";
 
-for (const rel of [REQUIRED_HTML]) {
+for (const rel of [REQUIRED_HTML, V2_CANDIDATE_HTML]) {
   const abs = resolve(projectRoot, rel);
   assert.ok(existsSync(abs), `UX: built artifact ${rel} should exist`);
 }
@@ -52,12 +53,19 @@ for (const rel of [builtAssetRefs.css, builtAssetRefs.js]) {
 }
 console.log("3/6 built CSS has scrollbar prevention and disabled action styling");
 
+{
+  const htmlContent = readFileSync(resolve(projectRoot, V2_CANDIDATE_HTML), "utf8");
+  assert.ok(htmlContent.includes('id="app"'), "UX: V2 candidate should have #app mounting point");
+  assert.ok(/controlCenterV2Candidate-[^"]+\.js/.test(htmlContent), "UX: V2 candidate should reference its JS entry");
+  assert.ok(/controlCenterV2Candidate-[^"]+\.css/.test(htmlContent), "UX: V2 candidate should reference its CSS entry");
+}
+
 // ---------------------------------------------------------------------------
 // 4. Built JS contains key action IDs and nav labels
 // ---------------------------------------------------------------------------
 
 {
-  const jsContent = readFileSync(resolve(projectRoot, builtAssetRefs.js), "utf8");
+  const jsContent = readBuiltJsGraph(builtAssetRefs.js);
 
   // Window buttons must exist in the JS bundle
   const windowActionIds = ["window.minimize", "window.maximize", "window.close"];
@@ -180,4 +188,28 @@ function findBuiltControlCenterAssets() {
     css: `dist${cssMatch[1]}`,
     js: `dist${jsMatch[1]}`,
   };
+}
+
+function readBuiltJsGraph(entryRel) {
+  const visited = new Set();
+  const chunks = [];
+
+  function visit(rel) {
+    const normalized = rel.replaceAll("\\", "/");
+    if (visited.has(normalized)) return;
+    visited.add(normalized);
+    const absolute = resolve(projectRoot, normalized);
+    assert.ok(existsSync(absolute), `UX: imported JS chunk ${normalized} should exist`);
+    const content = readFileSync(absolute, "utf8");
+    chunks.push(content);
+    const importPattern = /(?:from\s*|import\s*)["'](\.\/[^"']+\.js)["']/g;
+    for (const match of content.matchAll(importPattern)) {
+      const imported = resolve(dirname(absolute), match[1]);
+      const relative = imported.slice(projectRoot.length + 1).replaceAll("\\", "/");
+      visit(relative);
+    }
+  }
+
+  visit(entryRel);
+  return chunks.join("\n");
 }

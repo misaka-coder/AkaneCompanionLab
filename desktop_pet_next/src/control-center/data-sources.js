@@ -80,6 +80,7 @@ const settingsCommandByActionId = Object.freeze({
 });
 const tauriInvokeByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
+  [CONTROL_CENTER_ACTIONS.characterOpenWorkshop]: "open_workshop_window",
   [CONTROL_CENTER_ACTIONS.characterOpenPackFolder]: "open_character_packs_folder",
   [CONTROL_CENTER_ACTIONS.windowClose]: "close_window"
 });
@@ -117,6 +118,24 @@ export function createControlCenterDataSource(options = {}) {
     return createTauriControlCenterSource(options);
   }
   return createMockControlCenterSource(options.mockData || mockData);
+}
+
+export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
+  const raw = rawSnapshot && typeof rawSnapshot === "object" && !Array.isArray(rawSnapshot) ? rawSnapshot : {};
+  return {
+    sourceKind: raw.sourceKind || "unknown",
+    backendUrl: raw.backendUrl || null,
+    fallbackReason: raw.fallbackReason || null,
+    generatedAt: raw.generatedAt || new Date().toISOString(),
+    controlCenterRuntime: raw.controlCenterRuntime || {},
+    overviewRuntime: raw.overviewRuntime || {},
+    characterRuntime: raw.characterRuntime || {},
+    voiceRuntime: raw.voiceRuntime || {},
+    perceptionRuntime: raw.perceptionRuntime || {},
+    musicRuntime: raw.musicRuntime || {},
+    abilitiesRuntime: raw.abilitiesRuntime || {},
+    advancedRuntime: raw.advancedRuntime || {}
+  };
 }
 
 export function createMockControlCenterSource(data = mockData) {

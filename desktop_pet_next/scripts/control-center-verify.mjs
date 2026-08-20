@@ -10,12 +10,16 @@ const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const REQUIRED_FILES = [
   "control-center-lab.html",
+  "control-center-v2.html",
   "src/control-center-lab.js",
   "src/control-center-lab.css",
   "src/control-center/action-router.js",
   "src/control-center/action-surface-contract.js",
   "src/control-center/data-sources.js",
   "src/control-center/data-adapter.js",
+  "src/control-center-v2/index.js",
+  "src/control-center-v2/bridge.js",
+  "src/control-center-v2/view-model.js",
   "scripts/control-center-action-bridge-smoke.mjs",
   "scripts/control-center-runtime-probe.mjs",
   "scripts/control-center-ux-smoke.mjs",
@@ -99,6 +103,9 @@ checkRequiredFiles();
 
 // 2. Action bridge smoke
 runStep("smoke actions", ["run", "smoke:control-center-actions"]);
+
+// 2b. V2 real-view-model and action-feedback contract
+runStep("smoke V2", ["run", "smoke:control-center-v2"]);
 
 // 3. Runtime probe
 runStep("runtime probe", ["run", "probe:control-center-runtime"]);

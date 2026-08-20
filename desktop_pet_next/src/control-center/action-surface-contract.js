@@ -25,6 +25,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("overview", CONTROL_CENTER_ACTIONS.chatNew, "settings-command", "newSession"),
   bridged("overview", CONTROL_CENTER_ACTIONS.chatStop, "settings-command", "stopReply"),
   bridged("overview", CONTROL_CENTER_ACTIONS.workspaceOpen, "tauri-invoke", "open_workspace_window"),
+  bridged("overview", CONTROL_CENTER_ACTIONS.characterOpenWorkshop, "tauri-invoke", "open_workshop_window"),
   bridged("overview", CONTROL_CENTER_ACTIONS.voiceSetTtsEnabled, "settings-command", "setVoiceEnabled"),
   bridged("overview", CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled, "settings-command", "setVoiceInputEnabled"),
   bridged("overview", CONTROL_CENTER_ACTIONS.musicPrevious, "settings-command", "previousMusic"),

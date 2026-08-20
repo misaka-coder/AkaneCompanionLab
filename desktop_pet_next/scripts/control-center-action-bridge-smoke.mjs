@@ -51,6 +51,7 @@ const bridgedActionCases = [
   { id: CONTROL_CENTER_ACTIONS.chatNew, payload: {}, context: { source: "smoke" }, emit: "newSession" },
   { id: CONTROL_CENTER_ACTIONS.chatStop, payload: {}, context: {}, emit: "stopReply" },
   { id: CONTROL_CENTER_ACTIONS.workspaceOpen, payload: {}, context: {}, invoke: "open_workspace_window" },
+  { id: CONTROL_CENTER_ACTIONS.characterOpenWorkshop, payload: {}, context: {}, invoke: "open_workshop_window" },
   { id: CONTROL_CENTER_ACTIONS.voiceTest, payload: {}, context: {}, emit: "testTts" },
   { id: CONTROL_CENTER_ACTIONS.voiceStop, payload: {}, context: {}, emit: "stopTts" },
   {
