@@ -188,8 +188,9 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- workspace_patch：对当前持久项目中的既有 UTF-8 文件应用 unified diff。"
-            "所有 hunk 先校验再提交；失败时不会留下半应用结果。可用 expected_files 绑定每个文件的旧 sha256。"
+            "- workspace_patch：对当前持久项目中的 UTF-8 文件应用 unified diff。"
+            "支持修改、新建、删除和重命名；所有 hunk 先校验再提交，失败时不会留下半应用结果。"
+            "可用 expected_files 绑定既有文件的旧 sha256。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

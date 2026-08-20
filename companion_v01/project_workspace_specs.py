@@ -105,8 +105,9 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_patch",
     display_name="Apply a unified diff atomically",
     description=(
-        "Apply a unified diff to existing UTF-8 files in the selected project. All hunks are validated before "
-        "commit; a failed file or hunk leaves every target unchanged."
+        "Apply a unified diff atomically to selected project files. Supports update, create, delete, and rename "
+        "operations for UTF-8 files. All paths, hashes, and hunks are validated before commit; any failure leaves "
+        "every target unchanged."
     ),
     input_schema={
         "type": "object",
@@ -127,7 +128,31 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
             "status": {"type": "string", "enum": ["succeeded", "failed", "rejected"]},
             "reason": {"type": "string"},
             "workspace_id": {"type": "string"},
-            "files": {"type": "array", "items": {"type": "object"}},
+            "files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {"type": "string"},
+                        "source_path": {
+                            "type": "string",
+                            "description": "Original project-relative path for rename operations.",
+                        },
+                        "operation": {
+                            "type": "string",
+                            "enum": ["update", "create", "delete", "rename"],
+                        },
+                        "bytes": {"type": "integer", "minimum": 0},
+                        "sha256": {
+                            "type": "string",
+                            "pattern": "^$|^[a-f0-9]{64}$",
+                            "description": "Result SHA-256, or an empty string after deletion.",
+                        },
+                    },
+                    "required": ["path", "operation", "bytes", "sha256"],
+                },
+            },
         },
         "required": ["status"],
         "additionalProperties": True,
@@ -136,8 +161,8 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=32 * 1024,

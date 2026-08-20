@@ -8070,6 +8070,39 @@ class AkaneMemoryEngine:
             session_id=session_id,
         )
 
+    @staticmethod
+    def _build_execution_host_context(handler: Any) -> str:
+        """Render one compact host fact block shared by native and legacy tools."""
+
+        provider = getattr(handler, "execution_provider", None) if handler is not None else None
+        describe = getattr(provider, "prompt_environment", None)
+        if not callable(describe):
+            describe = getattr(provider, "model_environment", None)
+        if not callable(describe):
+            return ""
+        try:
+            environment = dict(describe() or {})
+        except Exception:
+            return ""
+        platform = str(environment.get("platform") or "host")
+        command_shell = str(environment.get("command_shell") or "host-default")
+        script_shell = str(environment.get("preferred_script_shell") or command_shell)
+        host_access = environment.get("host_access") if isinstance(environment.get("host_access"), dict) else {}
+        filesystem = str(host_access.get("filesystem") or "host_user_permissions")
+        absolute_cwd = str(host_access.get("absolute_cwd") or "supported")
+        dependency_storage = (
+            environment.get("dependency_storage")
+            if isinstance(environment.get("dependency_storage"), dict)
+            else {}
+        )
+        runtime = str(dependency_storage.get("runtime") or "host_path")
+        return (
+            "【执行宿主】"
+            f"platform={platform}; command_shell={command_shell}; script_shell={script_shell}; "
+            f"filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}. "
+            "普通环境与 PATH 按宿主继承，凭据类和 Akane 内部变量除外；依赖缓存共享，项目依赖遵循清单与锁文件。"
+        )
+
     def _build_tool_prompt_context(
         self,
         *,
@@ -8099,6 +8132,7 @@ class AkaneMemoryEngine:
             capability_selection=selection,
         )
         ready_tool_names = tuple(handlers)
+        execution_handler = handlers.get("exec_run")
         raw_disclosures = tuple(getattr(selection, "disclosures", ()) or ())
         disclosures = (
             resolve_capability_disclosures(selection, available_tool_names=ready_tool_names)
@@ -8109,6 +8143,7 @@ class AkaneMemoryEngine:
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
+        execution_host_context = self._build_execution_host_context(execution_handler)
         skill_catalog = ""
         if "load_skill" in ready_tool_names:
             try:
@@ -8167,7 +8202,7 @@ class AkaneMemoryEngine:
                     "本轮可直接调用的工具及参数以请求中实际附带的工具定义为准；"
                     "不要把这些工具手写进最终 JSON 的兼容 tool_call 字段。"
                 )
-                return "\n\n".join(part for part in (skill_catalog, direct_hint) if part)
+                return "\n\n".join(part for part in (execution_host_context, skill_catalog, direct_hint) if part)
             if not disclosures and not capability_hints and not media_routing:
                 return "当前没有可用工具，tool_call 固定为 null。"
             parts: list[str] = []
@@ -8176,9 +8211,13 @@ class AkaneMemoryEngine:
                 parts.extend([skill_catalog, ""])
             parts.extend(media_routing)
             parts.append("当前没有需要展开的具体工具，tool_call 固定为 null。")
+            if execution_host_context:
+                parts.insert(0, execution_host_context)
             return "\n".join(parts)
 
         lines: list[str] = []
+        if execution_host_context:
+            lines.extend([execution_host_context, ""])
         append_capability_context(lines)
         if skill_catalog:
             lines.extend([skill_catalog, ""])

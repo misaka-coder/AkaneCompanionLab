@@ -228,7 +228,14 @@ class TrustedLocalExecutor(ExecutionProvider):
             self.mounts[clean_name] = target
 
     def model_environment(self) -> dict[str, Any]:
-        """Return non-sensitive host facts used to guide command generation."""
+        """Return non-sensitive host facts plus the diagnostic toolchain manifest."""
+
+        environment = self.prompt_environment()
+        environment["toolchain"] = self._toolchain_manifest()
+        return environment
+
+    def prompt_environment(self) -> dict[str, Any]:
+        """Return stable host facts without spawning version-probe processes."""
 
         if os.name == "nt":
             path_value = str(self.host_env.get("PATH") or "")
@@ -244,7 +251,6 @@ class TrustedLocalExecutor(ExecutionProvider):
                 "command_shell": "/bin/sh",
                 "preferred_script_shell": "/bin/sh",
             }
-        environment["toolchain"] = self._toolchain_manifest()
         environment["dependency_storage"] = {
             "runtime": "host_path",
             "download_cache": "host_shared",

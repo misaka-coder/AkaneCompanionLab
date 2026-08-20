@@ -13,7 +13,7 @@ from unittest.mock import patch
 from capcore import PermissionDecision
 
 from companion_v01.capability_registry import CapabilitySelection, ExecutorBroker
-from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.engine import AkaneMemoryEngine, FINAL_PROMPT_CACHE_LAYOUT_VERSION
 from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.execution_run import ExecutionAvailability, ExecRunStart, make_cursor, new_run_id
 from companion_v01.execution_specs import EXEC_COMMAND_MAX_CHARS, EXEC_STATUS_RUNNING
@@ -145,13 +145,97 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("workspace_write", result.followup_context)
         self.assertNotIn("无法确认", result.followup_context)
 
-    def test_exec_prompt_exposes_real_toolchain_manifest_without_paths(self) -> None:
+    def test_exec_prompt_is_compact_and_defers_exact_versions_to_real_probes(self) -> None:
         instruction = self._handler().build_prompt_instruction()
 
-        self.assertIn("toolchain=", instruction)
-        for name in ("python", "node", "npm", "git", "rg"):
-            self.assertIn(name + "=", instruction)
+        self.assertIn("上方宿主事实", instruction)
+        self.assertIn("精确运行时版本需要时先用命令探测", instruction)
+        self.assertNotIn("toolchain=", instruction)
+        self.assertNotIn("unavailable", instruction)
         self.assertNotIn(str(self.base_dir), instruction)
+
+    def test_native_and_legacy_tool_context_share_one_execution_host_block(self) -> None:
+        provider = SimpleNamespace(
+            model_environment=lambda: {
+                "platform": "linux",
+                "command_shell": "/bin/sh",
+                "preferred_script_shell": "/bin/bash",
+                "toolchain": {"node": {"status": "unavailable", "version": ""}},
+                "host_access": {
+                    "filesystem": "host_user_permissions",
+                    "absolute_cwd": "supported",
+                },
+                "dependency_storage": {"runtime": "host_path"},
+            }
+        )
+        handler = ExecRunToolHandler(execution_provider=provider, config_base_dir=self.base_dir)
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=("exec_run",),
+            module_names=(),
+            resolved_handlers={"exec_run": handler},
+        )
+        fake_engine = SimpleNamespace(
+            _resolve_tool_handlers=lambda **_kwargs: {"exec_run": handler},
+            _build_execution_host_context=AkaneMemoryEngine._build_execution_host_context,
+        )
+
+        native = AkaneMemoryEngine._build_tool_prompt_context(
+            fake_engine,
+            allow_tool_call=True,
+            exclude_tool_types={"exec_run"},
+            capability_selection=selection,
+            include_capability_status=False,
+        )
+        legacy = AkaneMemoryEngine._build_tool_prompt_context(
+            fake_engine,
+            allow_tool_call=True,
+            capability_selection=selection,
+            include_capability_status=False,
+        )
+
+        for value in (native, legacy):
+            self.assertEqual(value.count("【执行宿主】"), 1)
+            self.assertIn("platform=linux", value)
+            self.assertIn("command_shell=/bin/sh", value)
+            self.assertNotIn("toolchain=", value)
+            self.assertNotIn("node=unavailable", value)
+        self.assertNotIn("- exec_run：", native)
+        self.assertIn("- exec_run：", legacy)
+
+    def test_execution_host_context_ignores_volatile_diagnostics_and_cache_layout_is_unchanged(self) -> None:
+        stable = {
+            "platform": "windows",
+            "command_shell": "pwsh",
+            "preferred_script_shell": "pwsh",
+            "host_access": {"filesystem": "host_user_permissions", "absolute_cwd": "supported"},
+            "dependency_storage": {"runtime": "host_path"},
+        }
+        first = SimpleNamespace(
+            execution_provider=SimpleNamespace(
+                prompt_environment=lambda: {
+                    **stable,
+                    "toolchain": {"node": {"version": "22.1.0"}},
+                    "diagnostic_timestamp": 1,
+                }
+            )
+        )
+        second = SimpleNamespace(
+            execution_provider=SimpleNamespace(
+                prompt_environment=lambda: {
+                    **stable,
+                    "toolchain": {"node": {"version": "99.0.0"}},
+                    "diagnostic_timestamp": 999,
+                }
+            )
+        )
+
+        self.assertEqual(
+            AkaneMemoryEngine._build_execution_host_context(first),
+            AkaneMemoryEngine._build_execution_host_context(second),
+        )
+        self.assertNotIn("22.1.0", AkaneMemoryEngine._build_execution_host_context(first))
+        self.assertEqual(FINAL_PROMPT_CACHE_LAYOUT_VERSION, "responses-unified-timeline-v3")
 
     def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:
         saved = save_capability_approval_mode(
@@ -232,14 +316,12 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         instruction = self._handler().build_prompt_instruction()
 
         self.assertIn("不是 Shell 沙箱", instruction)
-        self.assertIn("发现并直接使用宿主绝对路径", instruction)
-        self.assertIn("不要因此假装无法查看或操作宿主文件", instruction)
+        self.assertIn("真实宿主绝对目录", instruction)
+        self.assertIn("真实输出发现路径", instruction)
         self.assertIn("input_resources 与 cwd 互斥", instruction)
         self.assertIn("output_globs 可以与 cwd=alias:project 一起使用", instruction)
         self.assertIn("本次新建或变更的产物", instruction)
-        self.assertIn("当前执行宿主 platform=", instruction)
-        self.assertIn("默认命令 Shell=", instruction)
-        self.assertIn("不要把 PowerShell、POSIX shell 或 macOS 专用命令混用", instruction)
+        self.assertIn("上方宿主事实", instruction)
         self.assertIn("先用只读命令核对真实目标", instruction)
         self.assertIn("与自己向用户说明的范围完全一致", instruction)
         self.assertIn("timed_out/failed", instruction)

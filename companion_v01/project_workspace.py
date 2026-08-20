@@ -366,36 +366,93 @@ class ProjectWorkspaceService:
             )
         record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
         file_patches = self._parse_unified_diff(text)
-        expected = {self._relative_path(key).as_posix(): str(value or "").lower() for key, value in dict(expected_files or {}).items()}
-        prepared: list[tuple[Path, PurePosixPath, bytes, bytes]] = []
+        expected = {
+            self._relative_path(key).as_posix(): str(value or "").lower()
+            for key, value in dict(expected_files or {}).items()
+        }
+        prepared: list[dict[str, Any]] = []
+        affected: dict[str, tuple[Path, bool, bytes]] = {}
         with self._lock:
             for file_patch in file_patches:
+                operation = str(file_patch.get("operation") or "update")
+                old_relative = self._relative_path(file_patch["old_path"]) if file_patch.get("old_path") else None
                 relative = self._relative_path(file_patch["path"])
+                source_relative = old_relative or relative
+                source = self._safe_child(root, source_relative.as_posix())
                 target = self._safe_child(root, relative.as_posix())
-                if not target.exists():
-                    raise ProjectWorkspaceError("source_missing", path=relative.as_posix())
-                if target.is_symlink() or not target.is_file():
+                source_exists = source.exists()
+                target_exists = target.exists()
+                if source_exists and (source.is_symlink() or not source.is_file()):
+                    raise ProjectWorkspaceError("path_conflict", path=source_relative.as_posix())
+                if operation == "create" and target_exists:
                     raise ProjectWorkspaceError("path_conflict", path=relative.as_posix())
-                original = target.read_bytes()
+                if operation in {"update", "delete", "rename"} and not source_exists:
+                    raise ProjectWorkspaceError("source_missing", path=source_relative.as_posix())
+                if operation == "rename" and target_exists:
+                    raise ProjectWorkspaceError("path_conflict", path=relative.as_posix())
+                original = source.read_bytes() if source_exists else b""
                 self._check_expected_hash(
                     current=original,
-                    expected_sha256=expected.get(relative.as_posix(), ""),
-                    exists=True,
+                    expected_sha256=expected.get(source_relative.as_posix(), expected.get(relative.as_posix(), "")),
+                    exists=source_exists,
                 )
                 try:
                     original_text = original.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    raise ProjectWorkspaceError("source_not_utf8", path=relative.as_posix()) from exc
-                updated_text = self._apply_hunks(original_text, file_patch["hunks"], path=relative.as_posix())
-                prepared.append((target, relative, original, updated_text.encode("utf-8")))
-            committed: list[tuple[Path, bytes]] = []
+                    raise ProjectWorkspaceError("source_not_utf8", path=source_relative.as_posix()) from exc
+                updated = self._apply_hunks(
+                    original_text,
+                    file_patch["hunks"],
+                    path=source_relative.as_posix(),
+                ).encode("utf-8")
+                if operation == "delete" and updated:
+                    raise ProjectWorkspaceError("delete_patch_not_empty", path=source_relative.as_posix())
+                for item_path, item_relative in ((source, source_relative), (target, relative)):
+                    key = item_relative.as_posix()
+                    if key not in affected:
+                        affected[key] = (
+                            item_path,
+                            item_path.exists(),
+                            item_path.read_bytes() if item_path.is_file() else b"",
+                        )
+                prepared.append(
+                    {
+                        "operation": operation,
+                        "source": source,
+                        "target": target,
+                        "source_relative": source_relative,
+                        "relative": relative,
+                        "updated": updated,
+                    }
+                )
+            mutated: list[str] = []
             try:
-                for target, _relative, original, updated in prepared:
-                    self._atomic_write(target, updated)
-                    committed.append((target, original))
+                for item in prepared:
+                    if item["operation"] != "delete":
+                        self._atomic_write(item["target"], item["updated"])
+                        mutated.append(item["relative"].as_posix())
+                    if item["operation"] in {"delete", "rename"}:
+                        item["source"].unlink()
+                        mutated.append(item["source_relative"].as_posix())
             except Exception as exc:
-                for target, original in reversed(committed):
-                    self._atomic_write(target, original)
+                rollback_failed: list[str] = []
+                for key in reversed(tuple(dict.fromkeys(mutated))):
+                    path, existed, original = affected[key]
+                    try:
+                        if existed:
+                            self._atomic_write(path, original)
+                        elif path.exists() or path.is_symlink():
+                            path.unlink()
+                            self._prune_empty_parents(path.parent, root=root)
+                    except Exception:
+                        rollback_failed.append(key)
+                if rollback_failed:
+                    original_reason = exc.reason if isinstance(exc, ProjectWorkspaceError) else "write_failed"
+                    raise ProjectWorkspaceError(
+                        "rollback_failed",
+                        original_reason=original_reason,
+                        failed_paths=rollback_failed,
+                    ) from exc
                 if isinstance(exc, ProjectWorkspaceError):
                     raise
                 raise ProjectWorkspaceError("write_failed") from exc
@@ -404,11 +461,13 @@ class ProjectWorkspaceService:
             "workspace_id": str(record["workspace_id"]),
             "files": [
                 {
-                    "path": relative.as_posix(),
-                    "bytes": len(updated),
-                    "sha256": hashlib.sha256(updated).hexdigest(),
+                    "path": item["relative"].as_posix(),
+                    "operation": item["operation"],
+                    "bytes": len(item["updated"]),
+                    "sha256": "" if item["operation"] == "delete" else hashlib.sha256(item["updated"]).hexdigest(),
+                    **({"source_path": item["source_relative"].as_posix()} if item["operation"] == "rename" else {}),
                 }
-                for _target, relative, _original, updated in prepared
+                for item in prepared
             ],
         }
 
@@ -621,6 +680,16 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("write_failed") from exc
 
     @staticmethod
+    def _prune_empty_parents(directory: Path, *, root: Path) -> None:
+        current = directory
+        while current != root:
+            try:
+                current.rmdir()
+            except OSError:
+                return
+            current = current.parent
+
+    @staticmethod
     def _parse_unified_diff(text: str) -> list[dict[str, Any]]:
         lines = text.splitlines(keepends=True)
         patches: list[dict[str, Any]] = []
@@ -635,12 +704,21 @@ class ProjectWorkspaceService:
                 raise ProjectWorkspaceError("patch_parse_failed")
             new_path = lines[index][4:].strip().split("\t", 1)[0]
             index += 1
-            if old_path == "/dev/null" or new_path == "/dev/null":
-                raise ProjectWorkspaceError("patch_create_delete_unsupported")
-            path = new_path[2:] if new_path.startswith("b/") else new_path
-            old_normalized = old_path[2:] if old_path.startswith("a/") else old_path
-            if path != old_normalized:
-                raise ProjectWorkspaceError("patch_rename_unsupported")
+            old_normalized = (
+                None if old_path == "/dev/null" else (old_path[2:] if old_path.startswith("a/") else old_path)
+            )
+            path = None if new_path == "/dev/null" else (new_path[2:] if new_path.startswith("b/") else new_path)
+            if not old_normalized and not path:
+                raise ProjectWorkspaceError("patch_path_missing")
+            operation = (
+                "create"
+                if not old_normalized
+                else "delete"
+                if not path
+                else "rename"
+                if old_normalized != path
+                else "update"
+            )
             hunks: list[dict[str, Any]] = []
             while index < len(lines) and not lines[index].startswith("--- "):
                 match = _HUNK_RE.match(lines[index])
@@ -669,12 +747,20 @@ class ProjectWorkspaceService:
                     hunk["lines"].append(line)
                     index += 1
                 hunks.append(hunk)
-            if not hunks:
+            if not hunks and operation == "update":
                 raise ProjectWorkspaceError("patch_parse_failed", path=path)
-            patches.append({"path": path, "hunks": hunks})
+            patches.append(
+                {
+                    "operation": operation,
+                    "old_path": old_normalized,
+                    "path": path or old_normalized,
+                    "hunks": hunks,
+                }
+            )
         if not patches:
             raise ProjectWorkspaceError("patch_parse_failed")
         paths = [item["path"] for item in patches]
+        paths.extend(item["old_path"] for item in patches if item.get("old_path") != item.get("path"))
         if len(paths) != len(set(paths)):
             raise ProjectWorkspaceError("duplicate_patch_target")
         return patches

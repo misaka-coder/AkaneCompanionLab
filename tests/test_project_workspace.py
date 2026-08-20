@@ -319,6 +319,165 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual((project / "a.txt").read_text(encoding="utf-8"), "alpha\ngamma\n")
         self.assertEqual((project / "b.txt").read_text(encoding="utf-8"), "one\nthree\n")
 
+    def test_patch_atomically_creates_deletes_and_renames_utf8_files(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Full Patch")
+        self.service.write(scope=self.private, path="old.txt", content="old\n")
+        self.service.write(scope=self.private, path="remove.txt", content="remove\n")
+        patch = """--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++new
+--- a/old.txt
++++ b/moved.txt
+@@ -1 +1 @@
+-old
++moved
+--- a/remove.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-remove
+"""
+
+        result = self.service.patch(scope=self.private, patch_text=patch)
+
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual((project / "new.txt").read_text(encoding="utf-8"), "new\n")
+        self.assertEqual((project / "moved.txt").read_text(encoding="utf-8"), "moved\n")
+        self.assertFalse((project / "old.txt").exists())
+        self.assertFalse((project / "remove.txt").exists())
+        self.assertEqual(
+            [item["operation"] for item in result["files"]],
+            ["create", "rename", "delete"],
+        )
+        self.assertEqual(result["files"][1]["source_path"], "old.txt")
+        self.assertEqual(result["files"][2]["sha256"], "")
+
+    def test_patch_supports_content_preserving_rename(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Rename Patch")
+        self.service.write(scope=self.private, path="before.txt", content="same\n")
+
+        result = self.service.patch(
+            scope=self.private,
+            patch_text="--- a/before.txt\n+++ b/nested/after.txt\n",
+        )
+
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertFalse((project / "before.txt").exists())
+        self.assertEqual((project / "nested" / "after.txt").read_text(encoding="utf-8"), "same\n")
+        self.assertEqual(result["files"][0]["operation"], "rename")
+
+    def test_patch_target_conflict_leaves_every_file_unchanged(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Conflict Patch")
+        self.service.write(scope=self.private, path="a.txt", content="a\n")
+        self.service.write(scope=self.private, path="occupied.txt", content="occupied\n")
+        patch = """--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-a
++changed
+--- a/a.txt
++++ b/occupied.txt
+@@ -1 +1 @@
+-a
++moved
+"""
+
+        with self.assertRaisesRegex(ProjectWorkspaceError, "duplicate_patch_target"):
+            self.service.patch(scope=self.private, patch_text=patch)
+
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual((project / "a.txt").read_text(encoding="utf-8"), "a\n")
+        self.assertEqual((project / "occupied.txt").read_text(encoding="utf-8"), "occupied\n")
+
+    def test_patch_commit_failure_restores_deleted_and_created_files(self) -> None:
+        from unittest.mock import patch as mock_patch
+
+        created = self.service.create(scope=self.private, display_name="Rollback Patch")
+        self.service.write(scope=self.private, path="remove.txt", content="remove\n")
+        self.service.write(scope=self.private, path="keep.txt", content="keep\n")
+        patch = """--- a/remove.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-remove
+--- /dev/null
++++ b/generated/new.txt
+@@ -0,0 +1 @@
++new
+--- a/keep.txt
++++ b/keep.txt
+@@ -1 +1 @@
+-keep
++changed
+"""
+        real_write = self.service._atomic_write
+        calls = 0
+
+        def fail_second_write(target, data):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated commit failure")
+            return real_write(target, data)
+
+        with mock_patch.object(self.service, "_atomic_write", side_effect=fail_second_write):
+            with self.assertRaisesRegex(ProjectWorkspaceError, "write_failed"):
+                self.service.patch(scope=self.private, patch_text=patch)
+
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual((project / "remove.txt").read_text(encoding="utf-8"), "remove\n")
+        self.assertEqual((project / "keep.txt").read_text(encoding="utf-8"), "keep\n")
+        self.assertFalse((project / "generated").exists())
+
+    def test_patch_reports_rollback_failure_without_hiding_commit_reason(self) -> None:
+        from unittest.mock import patch as mock_patch
+
+        created = self.service.create(scope=self.private, display_name="Rollback Failure")
+        self.service.write(scope=self.private, path="remove.txt", content="remove\n")
+        self.service.write(scope=self.private, path="keep.txt", content="keep\n")
+        patch = """--- a/remove.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-remove
+--- a/keep.txt
++++ b/keep.txt
+@@ -1 +1 @@
+-keep
++changed
+"""
+
+        with mock_patch.object(self.service, "_atomic_write", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(ProjectWorkspaceError) as raised:
+                self.service.patch(scope=self.private, patch_text=patch)
+
+        self.assertEqual(raised.exception.reason, "rollback_failed")
+        self.assertEqual(raised.exception.details["original_reason"], "write_failed")
+        self.assertEqual(raised.exception.details["failed_paths"], ["remove.txt"])
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertFalse((project / "remove.txt").exists())
+        self.assertEqual((project / "keep.txt").read_text(encoding="utf-8"), "keep\n")
+
+    def test_workspace_patch_schema_and_native_projection_expose_all_operations(self) -> None:
+        from companion_v01.native_tool_schema import build_openai_native_tool_specs
+
+        handler = WorkspacePatchToolHandler(service=self.service)
+        spec = handler.tool_spec()
+        item_schema = spec.output_schema["properties"]["files"]["items"]
+
+        self.assertEqual(spec.spec_version, "1.1.0")
+        self.assertEqual(spec.schema_version, 2)
+        self.assertEqual(
+            item_schema["properties"]["operation"]["enum"],
+            ["update", "create", "delete", "rename"],
+        )
+        self.assertIn("source_path", item_schema["properties"])
+        native = build_openai_native_tool_specs(
+            {"workspace_patch": handler},
+            allowed_tool_names={"workspace_patch"},
+        )[0]["function"]
+        self.assertEqual(native["parameters"], spec.input_schema)
+        for operation in ("update", "create", "delete", "rename"):
+            self.assertIn(operation, native["description"])
+
     def test_model_handlers_share_the_service_contract(self) -> None:
         manage = ManageProjectWorkspaceToolHandler(service=self.service)
         write = WorkspaceWriteToolHandler(service=self.service)

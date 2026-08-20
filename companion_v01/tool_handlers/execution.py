@@ -362,50 +362,11 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return EXEC_RUN_TOOL_SPEC
 
     def build_prompt_instruction(self) -> str:
-        environment = {}
-        describe_environment = getattr(self.execution_provider, "model_environment", None)
-        if callable(describe_environment):
-            try:
-                environment = dict(describe_environment() or {})
-            except Exception:
-                environment = {}
-        platform = str(environment.get("platform") or "当前宿主")
-        command_shell = str(environment.get("command_shell") or "宿主默认 Shell")
-        script_shell = str(environment.get("preferred_script_shell") or command_shell)
-        raw_toolchain = environment.get("toolchain") if isinstance(environment.get("toolchain"), dict) else {}
-        dependency_storage = (
-            environment.get("dependency_storage")
-            if isinstance(environment.get("dependency_storage"), dict)
-            else {}
-        )
-        toolchain_parts: list[str] = []
-        preferred_tools = (
-            "python", "node", "npm", "pnpm", "bun", "uv", "git", "rg", "go", "cargo",
-            "rustc", "java", "dotnet", "cmake", "ninja", "gcc", "clang", "ffmpeg",
-        )
-        tool_names = [name for name in preferred_tools if name in raw_toolchain]
-        tool_names.extend(sorted(name for name in raw_toolchain if name not in preferred_tools))
-        for name in tool_names:
-            item = raw_toolchain.get(name) if isinstance(raw_toolchain.get(name), dict) else {}
-            status = str(item.get("status") or "unavailable")
-            version = " ".join(str(item.get("version") or "").split())[:80]
-            toolchain_parts.append(f"{name}={version if status == 'available' and version else status}")
-        toolchain_text = ",".join(toolchain_parts)
-        dependency_text = ",".join(
-            f"{key}={str(value)}" for key, value in sorted(dependency_storage.items()) if str(value)
-        )
         return (
-            "- exec_run：以宿主用户权限在受信任执行工作区运行命令或脚本；命令参数字段名是 command（不是 cmd）。"
-            f"当前执行宿主 platform={platform}，默认命令 Shell={command_shell}，脚本优先使用 {script_shell}；"
-            f"toolchain={toolchain_text}；"
-            f"dependency_storage={dependency_text or 'unknown'}；"
-            "请按当前宿主生成命令，不要把 PowerShell、POSIX shell 或 macOS 专用命令混用。"
-            "这是宿主权限执行器，不是 Shell 沙箱。"
+            "- exec_run：以宿主用户权限运行命令或脚本，不是 Shell 沙箱；命令参数字段名是 command（不是 cmd）。"
+            "平台、Shell、绝对 cwd 与依赖存储见上方宿主事实；精确运行时版本需要时先用命令探测。"
             "cwd 可用工作区相对路径、挂载别名或真实宿主绝对目录；编程项目优先使用 alias:project。"
-            "先从 pwd、find 等真实结果发现并直接使用宿主绝对路径，不要猜测，也不要因此假装无法查看或操作宿主文件。"
-            "语言运行时、版本管理器和通用 CLI 来自宿主 PATH，"
-            "普通环境变量按本机继承但密钥与 Akane 内部变量不会注入。不要把运行时下载到项目目录；"
-            "包下载缓存按宿主共享，项目依赖按各生态的清单与锁文件解析。"
+            "先从 pwd、find 等真实输出发现路径，不要猜测。不要把运行时下载到项目目录；依赖按项目清单/锁文件解析。"
             "本工具不接受临时环境变量参数。短命令直接返回结果；"
             "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
             "running 是正常状态，不是失败。安装、构建等长任务不要接会抑制或缓冲实时输出的过滤管道；"

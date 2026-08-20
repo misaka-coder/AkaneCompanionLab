@@ -114,6 +114,15 @@ class TrustedLocalExecutorTests(unittest.TestCase):
             self.assertNotIn("path", manifest[name])
         self.assertNotIn(str(self.workspace), str(environment))
 
+    def test_prompt_environment_does_not_probe_tool_versions(self) -> None:
+        executor = self._executor()
+
+        with patch.object(executor, "_toolchain_manifest", side_effect=AssertionError("must not probe")):
+            environment = executor.prompt_environment()
+
+        self.assertNotIn("toolchain", environment)
+        self.assertEqual(environment["host_access"]["absolute_cwd"], "supported")
+
     def test_model_environment_distinguishes_linux_and_macos(self) -> None:
         executor = self._executor()
         for platform_name, expected in (("linux", "linux"), ("darwin", "macos")):
