@@ -309,11 +309,40 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertIn("node_modules/", listed_paths)
         self.assertNotIn("node_modules/pkg/index.js", listed_paths)
         self.assertNotIn(".hidden.py", listed_paths)
+        self.assertEqual(listed["pruned_directories"], 1)
         self.assertEqual([(item["path"], item["line"]) for item in searched["matches"]], [("src/app.py", 2)])
         self.assertTrue(searched["scan_complete"])
         self.assertEqual(read["lines"], ["def alpha():", "    return 'Needle'"])
         self.assertEqual(read["sha256"], hashlib.sha256(b"def alpha():\n    return 'Needle'\n").hexdigest())
         self.assertNotIn(str(project), str(listed))
+
+    def test_project_inspect_handler_discloses_scan_boundaries(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Inspection Disclosure")
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        (project / "binary.dat").write_bytes(b"\x00\xffbinary")
+        (project / "__pycache__").mkdir()
+        (project / "__pycache__" / "cached.pyc").write_bytes(b"\x00cache")
+
+        handler = ProjectInspectToolHandler(service=self.service)
+        list_call = handler.normalize_call(
+            {"type": "project_inspect", "action": "list", "path": ".", "max_depth": 2}
+        )
+        search_call = handler.normalize_call(
+            {
+                "type": "project_inspect",
+                "action": "search",
+                "path": ".",
+                "query": "needle",
+                "include": "*",
+            }
+        )
+
+        listed = handler.execute(call=list_call, context=self._context())
+        searched = handler.execute(call=search_call, context=self._context())
+
+        self.assertIn("未递归标准缓存/构建目录 1 个", listed.followup_context)
+        self.assertIn("扫描：0 个 UTF-8 文本文件 / 0 字节；跳过二进制 1 个", searched.followup_context)
+        self.assertEqual(searched.followup_envelope.diagnostics["skipped_binary"], 1)
 
     def test_project_inspect_rejects_escape_and_binary_text(self) -> None:
         created = self.service.create(scope=self.private, display_name="Inspector Limits")

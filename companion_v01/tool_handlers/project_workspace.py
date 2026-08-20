@@ -292,9 +292,15 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             end += 1
         complete = end >= len(items)
         lines = [f"【{heading}】", f"项目：{data['workspace_id']}  路径：{data['path']}"]
+        if action == "list":
+            lines.append(
+                f"遍历：{data.get('visited_entries', 0)} 个条目，最大深度 {data.get('max_depth', 0)}；"
+                f"未递归标准缓存/构建目录 {data.get('pruned_directories', 0)} 个"
+            )
         if action == "search":
             lines.append(
-                f"查询：{data['query']}  文件过滤：{data['include']}  扫描：{data['scanned_files']} 文件 / {data['scanned_bytes']} 字节"
+                f"查询：{data['query']}  文件过滤：{data['include']}  扫描：{data['scanned_files']} 个 UTF-8 文本文件 / {data['scanned_bytes']} 字节；"
+                f"跳过二进制 {data.get('skipped_binary', 0)} 个，超大文件 {data.get('skipped_too_large', 0)} 个"
             )
         lines.extend(rows or ["(没有匹配结果)"])
         if not bool(data.get("scan_complete", True)):
@@ -323,6 +329,9 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                 "shown_through": end,
                 "total": len(items),
                 "scan_complete": bool(data.get("scan_complete", True)),
+                "skipped_binary": int(data.get("skipped_binary", 0)),
+                "skipped_too_large": int(data.get("skipped_too_large", 0)),
+                "pruned_directories": int(data.get("pruned_directories", 0)),
             },
         )
 

@@ -305,6 +305,7 @@ class ProjectWorkspaceService:
         entries: list[dict[str, Any]] = []
         scan_complete = True
         visited_entries = 0
+        pruned_directories = 0
         stack: list[tuple[Path, int]] = [(base, 0)]
         while stack:
             directory, depth = stack.pop()
@@ -339,6 +340,8 @@ class ProjectWorkspaceService:
                             "modified_ns": int(stat.st_mtime_ns),
                         }
                     )
+                if is_dir and depth < depth_limit and name in _INSPECTION_SKIPPED_DIRECTORIES:
+                    pruned_directories += 1
                 if is_dir and depth < depth_limit and name not in _INSPECTION_SKIPPED_DIRECTORIES:
                     stack.append((child, depth + 1))
         entries.sort(key=lambda item: str(item["path"]).casefold())
@@ -354,6 +357,7 @@ class ProjectWorkspaceService:
             "entries": entries,
             "scan_complete": scan_complete,
             "visited_entries": visited_entries,
+            "pruned_directories": pruned_directories,
             "fingerprint": fingerprint,
         }
 
