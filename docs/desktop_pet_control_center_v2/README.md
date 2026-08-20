@@ -1,10 +1,10 @@
 # Desktop Pet Control Center V2
 
-Status: design contract, interactive prototype, and componentized V2 candidate covering Overview, Chat, Character & Appearance, and Abilities & Permissions. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
+Status: design contract, interactive prototype, and componentized V2 candidate covering Overview, Chat, Character & Appearance, Voice & Wake, and Abilities & Permissions. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
 
 This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
 
-The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Overview, Chat, Character & Appearance, and the first Abilities & Permissions slice are implemented. Device-local presentation preferences cover system/dark/light mode, restrained accent presets, font presets, panel opacity, background dimming, glass blur, reduced motion, plus independent avatar/portrait/background framing. These preferences never rewrite character assets or compete with workshop calibration. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
+The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Overview, Chat, Character & Appearance, Voice & Wake, and the first Abilities & Permissions slice are implemented. The voice page uses the existing TTS/ASR settings and waits for live playback confirmation; it deliberately keeps character imagery in the shared rail instead of repeating a portrait on every page. Device-local presentation preferences cover system/dark/light mode, restrained accent presets, font presets, panel opacity, background dimming, glass blur, reduced motion, plus independent avatar/portrait/background framing. These preferences never rewrite character assets or compete with workshop calibration. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
 
 ## Files
 
@@ -70,5 +70,6 @@ Manual acceptance for this stage:
 7. Pack, outfit, and expression changes confirm only after the desktop-pet snapshot reports the requested value; otherwise the UI reports an unconfirmed execution.
 8. Abilities & Permissions reads the real capability catalog, shows the current safety boundary, and changes approval mode only through the profile approval-policy route.
 9. Full authoring, uploads, and framing calibration remain in the character workshop instead of creating a second character-pack authority.
+10. Voice toggles, volume, speed, wake settings, preview, and stop use the existing settings-command bridge; preview reports success only after the live snapshot shows playback.
 
-This test path is not a production cutover. V2 currently covers Overview and Character & Appearance; the legacy settings entry remains authoritative until the remaining configuration pages are rebuilt and the old renderer can be deleted rather than kept in parallel.
+This test path is not a production cutover. The legacy settings entry remains authoritative until System & Diagnostics and the remaining acceptance gates are complete and the old renderer can be deleted rather than kept in parallel.

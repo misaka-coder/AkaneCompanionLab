@@ -14,7 +14,7 @@ V2 remains the production-shaped candidate. `control-center-lab.html` is still t
 | Chat | implemented | scoped session history + `sendChatMessage` / stop / new-session commands | keep; add history paging later |
 | Character & Appearance | implemented | character runtime/resource manifest + workshop/folder/switch actions | keep; workshop remains authoring authority |
 | Abilities & Permissions | first production slice implemented | `abilitiesRuntime` from `/capabilities`; `abilities.approvalPolicy.save` | expand only behind existing provider/MCP/workflow actions |
-| Chat & Voice | missing | `voiceRuntime` plus existing voice settings commands | next page slice |
+| Voice & Wake | implemented | `voiceRuntime` + Tauri live snapshot + existing voice settings commands | keep; character workshop remains voice-profile authority |
 | System & Diagnostics | missing | health/diagnostics/metrics + existing advanced commands | follow after voice |
 
 Music stays in Overview and the quick card until its real feature density requires a separate V2 page. Desktop sensing belongs with Abilities & Permissions or System & Diagnostics; it should not become another top-level page by default.
@@ -41,7 +41,7 @@ Music stays in Overview and the quick card until its real feature density requir
 ## Recommended order
 
 1. Abilities & Permissions summary and approval mode.
-2. Chat & Voice with real TTS/ASR toggles, volume/speed, wake settings, and short test feedback.
+2. Voice & Wake with real TTS/ASR toggles, volume/speed, wake settings, and observed short-test feedback. (complete)
 3. System & Diagnostics with connection, memory/storage, recent failures, and recovery actions.
 4. Tauri acceptance pass and snapshot/action parity report.
 5. Production cutover plus legacy renderer deletion/thin-adapter conversion.

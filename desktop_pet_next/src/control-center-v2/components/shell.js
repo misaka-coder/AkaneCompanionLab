@@ -3,6 +3,7 @@ import { renderCharacterAppearance } from "./appearance.js";
 import { renderAbilities } from "./abilities.js";
 import { renderChat } from "./chat.js";
 import { renderOverview } from "./overview.js";
+import { renderVoice } from "./voice.js";
 
 export function renderControlCenterShell(root, state) {
   const vm = state.viewModel;
@@ -14,6 +15,8 @@ export function renderControlCenterShell(root, state) {
     ? "把这里变成她的空间"
     : activePage === "abilities"
       ? "能力清楚，权限也清楚"
+    : activePage === "voice"
+      ? "声音顺手，状态也诚实"
     : activePage === "chat"
       ? "聊过的话，都留在这里"
       : "今天想让她做什么？";
@@ -25,6 +28,7 @@ export function renderControlCenterShell(root, state) {
           ${renderNavItem("overview", "⌂", "总览", activePage)}
           ${renderNavItem("chat", "◌", "聊天", activePage)}
           ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
+          ${renderNavItem("voice", "♪", "语音与唤醒", activePage)}
           ${renderNavItem("abilities", "⌁", "能力与权限", activePage)}
         </nav>
         <div class="rail-spacer"></div>
@@ -56,6 +60,7 @@ export function renderControlCenterShell(root, state) {
 function renderPage(activePage, state) {
   if (activePage === "chat") return renderChat(state);
   if (activePage === "appearance") return renderCharacterAppearance(state);
+  if (activePage === "voice") return renderVoice(state);
   if (activePage === "abilities") return renderAbilities(state);
   return renderOverview(state);
 }

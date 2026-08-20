@@ -24,6 +24,15 @@ const OBSERVED_ACTION_IDS = new Set([
   "chat.send",
   "chat.stop",
   "music.pause",
+  "voice.test",
+  "voice.stop",
+  "voice.previewPlay",
+  "voice.setTtsEnabled",
+  "voice.setAsrEnabled",
+  "voice.setVolume",
+  "voice.setSpeed",
+  "voice.setWakeWord",
+  "voice.setWakeSensitivity",
   "character.selectPack",
   "character.setOutfit",
   "character.previewEmotion",
@@ -31,6 +40,7 @@ const OBSERVED_ACTION_IDS = new Set([
 ]);
 const ACTION_CONFIRM_TIMEOUT_MS = 1800;
 const CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS = 4000;
+const VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS = 12000;
 
 export function createControlCenterBridge(options = {}) {
   const isTauri = options.isTauri ?? Boolean(window.__TAURI_INTERNALS__);
@@ -217,7 +227,11 @@ export function createControlCenterBridge(options = {}) {
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
-  const timeoutMs = actionId === "character.selectPack" ? CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS : ACTION_CONFIRM_TIMEOUT_MS;
+  const timeoutMs = voicePlaybackAction(actionId)
+    ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS
+    : actionId === "character.selectPack"
+      ? CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS
+      : ACTION_CONFIRM_TIMEOUT_MS;
   while (Date.now() - startedAt < timeoutMs) {
     const current = readCurrentSnapshot();
     if (current !== beforeSnapshot && isObservedActionConfirmation(actionId, beforeSnapshot, current, payload)) {
@@ -226,6 +240,10 @@ async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, rea
     await new Promise((resolve) => window.setTimeout(resolve, 60));
   }
   return false;
+}
+
+function voicePlaybackAction(actionId) {
+  return actionId === "voice.test" || actionId === "voice.previewPlay";
 }
 
 async function createSourceOptions({ isTauri }) {

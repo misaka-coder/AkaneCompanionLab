@@ -20,6 +20,8 @@ let chatDraft = "";
 let chatScrollTop = 0;
 let chatWasAtBottom = true;
 let lastChatMessageId = "";
+let voicePreviewDraft = "";
+let wakeWordDraft = "";
 let livePresentationPreferences = null;
 let framingDrag = null;
 const systemThemeQuery = window.matchMedia?.("(prefers-color-scheme: light)") || null;
@@ -114,12 +116,27 @@ root.addEventListener("click", (event) => {
   }
   const actionButton = event.target.closest("[data-action]");
   if (!actionButton || actionButton.disabled) return;
-  const value = String(actionButton.dataset.actionValue || "").trim();
-  void runAction(actionButton.dataset.action, value ? { value } : {});
+  const actionId = actionButton.dataset.action;
+  if (actionId === "voice.previewPlay") {
+    const previewInput = root.querySelector("[data-voice-preview-input]");
+    const text = String(previewInput?.value || voicePreviewDraft).trim();
+    void runAction(actionId, text ? { text } : {});
+    return;
+  }
+  const value = actionValueFromButton(actionButton);
+  void runAction(actionId, value === undefined ? {} : { value });
 });
 
 root.addEventListener("input", (event) => {
   if (event.target.matches("[data-chat-input]")) chatDraft = event.target.value;
+  if (event.target.matches("[data-voice-preview-input]")) voicePreviewDraft = event.target.value;
+  if (event.target.matches("[data-wake-word-input]")) wakeWordDraft = event.target.value;
+  if (event.target.matches("[data-voice-range]")) {
+    const field = event.target.dataset.voiceRange;
+    const value = Number(event.target.value);
+    const label = root.querySelector(`[data-voice-range-value="${field}"]`);
+    if (label) label.textContent = field === "volume" ? `${Math.round(value)}%` : String(value);
+  }
   if (event.target.matches("[data-presentation-range]")) {
     const field = event.target.dataset.presentationRange;
     const value = Number(event.target.value);
@@ -136,6 +153,9 @@ root.addEventListener("input", (event) => {
 });
 
 root.addEventListener("change", (event) => {
+  if (event.target.matches('[data-voice-range="volume"]')) {
+    void runAction("voice.setVolume", { value: Number(event.target.value) / 100 });
+  }
   if (event.target.matches("[data-presentation-range]") && livePresentationPreferences) {
     updatePresentationPreferences(livePresentationPreferences);
   }
@@ -166,6 +186,18 @@ root.addEventListener("keydown", (event) => {
 });
 
 root.addEventListener("submit", (event) => {
+  const wakeWordForm = event.target.closest("[data-wake-word-form]");
+  if (wakeWordForm) {
+    event.preventDefault();
+    const input = wakeWordForm.querySelector("[data-wake-word-input]");
+    const value = String(input?.value || wakeWordDraft).trim();
+    if (!value) return;
+    wakeWordDraft = value;
+    void runAction("voice.setWakeWord", { value }).then((result) => {
+      if (result?.ok) wakeWordDraft = "";
+    });
+    return;
+  }
   const form = event.target.closest("[data-chat-form]");
   if (!form) return;
   event.preventDefault();
@@ -276,12 +308,20 @@ function render(state) {
   }
   const currentInput = root.querySelector("[data-chat-input]");
   if (currentInput) chatDraft = currentInput.value;
+  const currentVoicePreview = root.querySelector("[data-voice-preview-input]");
+  if (currentVoicePreview) voicePreviewDraft = currentVoicePreview.value;
+  const currentWakeWord = root.querySelector("[data-wake-word-input]");
+  if (currentWakeWord && currentWakeWord.value !== state.viewModel?.voice?.wakeWord) wakeWordDraft = currentWakeWord.value;
 
   renderControlCenterShell(root, state);
   applyPresentationPreferences(livePresentationPreferences || state.presentationPreferences);
 
   const nextInput = root.querySelector("[data-chat-input]");
   if (nextInput) nextInput.value = chatDraft;
+  const nextVoicePreview = root.querySelector("[data-voice-preview-input]");
+  if (nextVoicePreview) nextVoicePreview.value = voicePreviewDraft;
+  const nextWakeWord = root.querySelector("[data-wake-word-input]");
+  if (nextWakeWord && wakeWordDraft) nextWakeWord.value = wakeWordDraft;
   const nextViewport = root.querySelector("[data-chat-viewport]");
   if (!nextViewport) return;
   const messages = state.viewModel?.chat?.messages || [];
@@ -365,6 +405,14 @@ function updateAction(actionId, value) {
     else delete actionStates[actionId];
     return { ...state, actionStates };
   });
+}
+
+function actionValueFromButton(button) {
+  if (!Object.hasOwn(button.dataset, "actionValue")) return undefined;
+  const value = String(button.dataset.actionValue || "").trim();
+  if (button.dataset.actionValueType === "boolean") return value === "true";
+  if (button.dataset.actionValueType === "number") return Number(value);
+  return value;
 }
 
 function friendlyError(error) {

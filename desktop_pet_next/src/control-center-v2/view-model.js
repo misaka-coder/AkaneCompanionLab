@@ -25,6 +25,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
+  const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
   const instanceLabel = text(petState.instanceId) || text(raw.controlCenterRuntime?.health?.data?.instance_id) || "本地实例";
   const chat = normalizeChatSession(raw.chatSession, {
     sessionId: text(petState.sessionId),
@@ -64,6 +65,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     music,
     recentOutputs: outputs,
     abilities,
+    voice,
     abilityLabels: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
     actions: {
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
@@ -80,6 +82,15 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
       "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
+      "voice.test": voiceActionAvailability(voice.controlsAvailable && !voice.speaking, "当前正在播放语音"),
+      "voice.stop": voiceActionAvailability(voice.controlsAvailable && voice.speaking, "当前没有正在播放的语音"),
+      "voice.previewPlay": voiceActionAvailability(voice.controlsAvailable && !voice.speaking, "当前正在播放语音"),
+      "voice.setTtsEnabled": voiceActionAvailability(voice.controlsAvailable),
+      "voice.setAsrEnabled": voiceActionAvailability(voice.controlsAvailable),
+      "voice.setVolume": voiceActionAvailability(voice.controlsAvailable),
+      "voice.setSpeed": voiceActionAvailability(voice.controlsAvailable),
+      "voice.setWakeWord": voiceActionAvailability(voice.controlsAvailable),
+      "voice.setWakeSensitivity": voiceActionAvailability(voice.controlsAvailable),
       "music.pause": { available: music.available, reason: "当前没有可控制的音乐" },
       "window.minimize": { available: true, reason: "" },
       "window.maximize": { available: true, reason: "" },
@@ -141,6 +152,30 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const afterPlayback = `${Boolean(afterActive.musicPlaying)}:${Boolean(afterActive.musicPaused)}`;
     return beforePlayback !== afterPlayback;
   }
+  if (actionId === "voice.test" || actionId === "voice.previewPlay") {
+    return !Boolean(beforeActive.speaking) && Boolean(afterActive.speaking);
+  }
+  if (actionId === "voice.stop") {
+    return Boolean(beforeActive.speaking) && !Boolean(afterActive.speaking);
+  }
+  if (actionId === "voice.setTtsEnabled") {
+    return typeof afterState.voiceEnabled === "boolean" && afterState.voiceEnabled === Boolean(payload.value);
+  }
+  if (actionId === "voice.setAsrEnabled") {
+    return typeof afterState.voiceInputEnabled === "boolean" && afterState.voiceInputEnabled === Boolean(payload.value);
+  }
+  if (actionId === "voice.setVolume") {
+    return numbersClose(afterState.voiceVolume, payload.value);
+  }
+  if (actionId === "voice.setSpeed") {
+    return text(afterState.voiceSpeed) === text(payload.value);
+  }
+  if (actionId === "voice.setWakeWord") {
+    return text(afterState.wakeWord) === text(payload.value);
+  }
+  if (actionId === "voice.setWakeSensitivity") {
+    return text(afterState.wakeSensitivity) === text(payload.value);
+  }
   const expected = text(payload.value);
   if (actionId === "character.selectPack") {
     const beforePack = text(beforeState.characterPackId) || text(asObject(before.character).packId);
@@ -158,6 +193,81 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     return Boolean(afterExpression && afterExpression !== beforeExpression && (!expected || afterExpression === expected));
   }
   return true;
+}
+
+function normalizeVoiceRuntime(value, live, connected) {
+  const source = asObject(value);
+  const tts = asObject(source.tts);
+  const asr = asObject(source.asr);
+  const liveState = asObject(live.state);
+  const active = asObject(live.active);
+  const providerTts = normalizeVoiceProvider(tts.providerStatus, "TTS 语音输出");
+  const providerAsr = normalizeVoiceProvider(asr.providerStatus, "ASR 语音输入");
+  const liveVolume = Number(liveState.voiceVolume);
+  const volume = Number.isFinite(liveVolume)
+    ? liveVolume * 100
+    : finiteNumber(tts.volume, 80);
+  const liveSnapshotAvailable = Boolean(connected && Object.keys(liveState).length);
+  return {
+    available: connected && Object.keys(source).length > 0,
+    controlsAvailable: liveSnapshotAvailable,
+    controlsUnavailableReason: connected ? "请在桌面端控制中心中调整" : "桌宠尚未连接",
+    speaking: Boolean(active.speaking),
+    inputState: text(active.voiceInput) || (asr.enabled ? "idle" : "disabled"),
+    queueLength: Math.max(0, Math.round(finiteNumber(asObject(live.tts).queueLength, 0))),
+    tts: {
+      enabled: typeof liveState.voiceEnabled === "boolean" ? liveState.voiceEnabled : Boolean(tts.enabled),
+      volume: Math.max(0, Math.min(100, Math.round(volume))),
+      speed: text(liveState.voiceSpeed) || text(tts.speed) || "1.00x",
+      provider: providerTts
+    },
+    asr: {
+      enabled: typeof liveState.voiceInputEnabled === "boolean" ? liveState.voiceInputEnabled : Boolean(asr.enabled),
+      provider: providerAsr
+    },
+    wakeWord: text(liveState.wakeWord) || text(source.wakeWord) || "Akane",
+    wakeSensitivity: text(liveState.wakeSensitivity) || text(source.wakeSensitivity) || "中等",
+    diagnostics: normalizeVoiceDiagnostics(source.diagnostics)
+  };
+}
+
+function normalizeVoiceProvider(value, fallbackLabel) {
+  const source = asObject(value);
+  const status = text(source.status);
+  const activeName = text(source.activeProviderName);
+  return {
+    name: activeName || text(source.requestedProviderName) || fallbackLabel,
+    status: status || (activeName ? "ready" : "unknown"),
+    statusLabel: text(source.statusLabel) || (activeName ? "已就绪" : "待确认"),
+    reason: text(source.reasonLabel) || text(source.reason),
+    ready: status === "ready" || Boolean(!status && activeName)
+  };
+}
+
+function normalizeVoiceDiagnostics(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 8).map((item) => {
+    const source = asObject(item);
+    return {
+      label: text(source.label),
+      value: text(source.value),
+      tone: ["good", "warning", "danger", "muted"].includes(text(source.tone)) ? text(source.tone) : "muted"
+    };
+  }).filter((item) => item.label && item.value);
+}
+
+function voiceActionAvailability(available, unavailableReason = "请在桌面端控制中心中调整") {
+  return { available: Boolean(available), reason: available ? "" : unavailableReason };
+}
+
+function numbersClose(left, right) {
+  const a = Number(left);
+  const b = Number(right);
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.001;
+}
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function normalizeChatSession(value, options = {}) {

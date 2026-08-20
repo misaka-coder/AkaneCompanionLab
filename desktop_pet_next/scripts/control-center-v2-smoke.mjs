@@ -8,6 +8,7 @@ import {
 import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
 import { renderAbilities } from "../src/control-center-v2/components/abilities.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
+import { renderVoice } from "../src/control-center-v2/components/voice.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
   loadPresentationPreferences,
@@ -96,6 +97,24 @@ const rawSnapshot = {
     },
     calls: [{ time: "14:20", module: "能力注册表", description: "已同步 24 项能力", status: "成功", method: "能力目录" }]
   },
+  voiceRuntime: {
+    tts: {
+      enabled: true,
+      volume: 82,
+      speed: "1.15x",
+      providerStatus: { status: "ready", statusLabel: "已就绪", activeProviderName: "GPT-SoVITS" }
+    },
+    asr: {
+      enabled: true,
+      providerStatus: { status: "degraded", statusLabel: "已降级", activeProviderName: "本地 ASR", reasonLabel: "使用本地通道" }
+    },
+    wakeWord: "Akane",
+    wakeSensitivity: "中等",
+    diagnostics: [
+      { label: "整体状态", value: "正常运行", tone: "good" },
+      { label: "响应延迟", value: "420 ms", tone: "good" }
+    ]
+  },
   chatSession: {
     session: { session_id: "session-chat", display_title: "下午的对话" },
     messages: [
@@ -114,11 +133,23 @@ const rawSnapshot = {
 };
 
 const runtimeSnapshot = {
-  state: { instanceId: "desktop-local", sessionId: "session-chat", characterPackId: "test_character", outfit: "default" },
+  state: {
+    instanceId: "desktop-local",
+    sessionId: "session-chat",
+    characterPackId: "test_character",
+    outfit: "default",
+    voiceEnabled: true,
+    voiceInputEnabled: true,
+    voiceVolume: 0.82,
+    voiceSpeed: "1.15x",
+    wakeWord: "Akane",
+    wakeSensitivity: "中等"
+  },
   currentExpression: { id: "happy", name: "开心", image: "https://127.0.0.1/assets/happy.png" },
   runtimeStatus: "正在整理文件",
   runtimeMode: "thinking",
-  active: { sending: true, speaking: false, replyDisplayActive: false }
+  active: { sending: true, speaking: false, voiceInput: "idle", replyDisplayActive: false },
+  tts: { active: false, queueLength: 0 }
 };
 
 const viewModel = createControlCenterViewModel(rawSnapshot, runtimeSnapshot);
@@ -141,6 +172,12 @@ assert.equal(viewModel.abilities.availability, 86);
 assert.equal(viewModel.abilities.modules.length, 2);
 assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
 assert.equal(viewModel.abilities.integrations.length, 3);
+assert.equal(viewModel.voice.available, true);
+assert.equal(viewModel.voice.controlsAvailable, true);
+assert.equal(viewModel.voice.tts.provider.name, "GPT-SoVITS");
+assert.equal(viewModel.voice.tts.volume, 82);
+assert.equal(viewModel.voice.asr.provider.status, "degraded");
+assert.equal(viewModel.voice.wakeSensitivity, "中等");
 assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
 assert.equal(viewModel.chat.title, "下午的对话");
 assert.equal(viewModel.chat.messages.length, 3);
@@ -151,9 +188,31 @@ assert.equal(viewModel.actions["character.openWorkshop"].available, true);
 assert.equal(viewModel.actions["character.selectPack"].available, true);
 assert.equal(viewModel.actions["character.setOutfit"].available, true);
 assert.equal(viewModel.actions["character.previewEmotion"].available, true);
+assert.equal(viewModel.actions["voice.previewPlay"].available, true);
+assert.equal(viewModel.actions["voice.stop"].available, false);
+assert.equal(viewModel.actions["voice.setTtsEnabled"].available, true);
 assert.equal(viewModel.actions["window.minimize"].available, true);
 assert.equal(viewModel.actions["window.maximize"].available, true);
 assert.equal(viewModel.actions["window.close"].available, true);
+
+const liveVoiceOverride = createControlCenterViewModel(rawSnapshot, {
+  ...runtimeSnapshot,
+  state: {
+    ...runtimeSnapshot.state,
+    voiceEnabled: false,
+    voiceInputEnabled: false,
+    voiceVolume: 0.47,
+    voiceSpeed: "0.85x",
+    wakeWord: "灵梦",
+    wakeSensitivity: "低"
+  }
+});
+assert.equal(liveVoiceOverride.voice.tts.enabled, false);
+assert.equal(liveVoiceOverride.voice.asr.enabled, false);
+assert.equal(liveVoiceOverride.voice.tts.volume, 47);
+assert.equal(liveVoiceOverride.voice.tts.speed, "0.85x");
+assert.equal(liveVoiceOverride.voice.wakeWord, "灵梦");
+assert.equal(liveVoiceOverride.voice.wakeSensitivity, "低");
 
 const runtimeOnly = createControlCenterRuntimeSnapshot({
   ...rawSnapshot,
@@ -225,6 +284,42 @@ assert.equal(isObservedActionConfirmation(
   },
   { text: "你好" }
 ), false);
+
+assert.equal(isObservedActionConfirmation(
+  "voice.previewPlay",
+  { active: { speaking: false } },
+  { active: { speaking: true } },
+  { text: "试听" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "voice.stop",
+  { active: { speaking: true } },
+  { active: { speaking: false } }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "voice.setTtsEnabled",
+  { state: { voiceEnabled: true } },
+  { state: { voiceEnabled: false } },
+  { value: false }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "voice.setTtsEnabled",
+  { state: { voiceEnabled: true } },
+  { state: {} },
+  { value: false }
+), false);
+assert.equal(isObservedActionConfirmation(
+  "voice.setVolume",
+  { state: { voiceVolume: 0.82 } },
+  { state: { voiceVolume: 0.64 } },
+  { value: 0.64 }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "voice.setWakeWord",
+  { state: { wakeWord: "Akane" } },
+  { state: { wakeWord: "灵梦" } },
+  { value: "灵梦" }
+), true);
 assert.equal(isObservedActionConfirmation(
   "chat.new",
   { state: { sessionId: "session-a" } },
@@ -380,6 +475,17 @@ assert.match(abilitiesHtml, /data-approval-mode="trusted_auto_allow"/);
 assert.match(abilitiesHtml, /硬安全边界始终保留/);
 assert.match(abilitiesHtml, /AnySearch/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
+
+const voiceHtml = renderVoice({ viewModel, actionStates: {}, phase: "ready" });
+assert.match(voiceHtml, /让她听见，也让她说出来/);
+assert.match(voiceHtml, /GPT-SoVITS/);
+assert.match(voiceHtml, /data-action="voice\.setTtsEnabled"/);
+assert.match(voiceHtml, /data-action-value-type="boolean"/);
+assert.match(voiceHtml, /data-voice-range="volume"/);
+assert.match(voiceHtml, /data-wake-word-form/);
+assert.match(voiceHtml, /data-voice-preview-form/);
+assert.match(voiceHtml, /打开角色工坊/);
+assert.doesNotMatch(voiceHtml, /portrait|hero-image|character-preview/);
 
 const chatRequests = [];
 const chatSource = createBackendControlCenterSource({
