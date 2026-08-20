@@ -741,6 +741,9 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
     def test_manage_workspace_schema_exposes_open_path_contract(self) -> None:
         spec = ManageProjectWorkspaceToolHandler(service=self.service).tool_spec()
         schema = spec.input_schema
+        self.assertIn("requires display_name", spec.description)
+        self.assertIn("Desktop", spec.description)
+        self.assertIn("Do not use name", schema["properties"]["display_name"]["description"])
 
         self.assertEqual(
             schema["properties"]["action"]["enum"],

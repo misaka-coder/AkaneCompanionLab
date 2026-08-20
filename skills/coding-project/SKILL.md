@@ -31,8 +31,10 @@ permissions; use only the tools visible in the current request.
 - Use project-relative paths in file tools and `cwd="alias:project"` for project
   commands. Shell can inspect every host directory available to its operating-system
   user. Discover real directories with `pwd`, `find`, or the platform equivalent; never
-  guess. Register an existing directory with `manage_project_workspace(action="open")`
-  before using project file tools there.
+  guess. `create` makes a host-managed project and takes `display_name`; when the user
+  names Desktop or another host location, discover/create that real directory with Shell,
+  then register it with `manage_project_workspace(action="open", path=...)` before using
+  project file tools there.
 - An archived or missing registered project is not writable through project file tools.
   Follow the structured reason, then select/create a project or open a real existing
   directory. Do not invent a substitute path.

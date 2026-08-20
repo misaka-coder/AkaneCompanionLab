@@ -76,7 +76,8 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- manage_project_workspace：管理当前用户跨私聊/群聊共享的持久项目目录。开始多文件/可执行项目时先 current/list；"
-            "没有合适项目就 create，继续旧项目时按 workspace_id select；已有宿主目录用 open 注册。"
+            "没有合适项目就 create（只需 display_name），继续旧项目时按 workspace_id select。create 建宿主管理项目；"
+            "用户指定桌面或其它真实位置时，先用 Shell 确认/创建绝对目录，再用 open（path，可选 display_name）注册。"
             "当前选择按会话隔离，选中后 Shell 的 cwd 使用 alias:project。"
             "archive 只归档，不删除项目文件。"
         )

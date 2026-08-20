@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 import config
+from capcore import validate_tool_spec_args
 
 from .client_protocol import ClientProtocolContext
 from .client_protocol import ClientMode
@@ -792,21 +793,86 @@ def validate_tool_invocation(
             ),
         )
 
+    spec = None
+    try:
+        spec_getter = getattr(handler, "tool_spec", None)
+        spec = spec_getter() if callable(spec_getter) else None
+    except Exception:
+        spec = None
+
     try:
         normalized_candidate = handler.normalize_call(candidate_call)
     except Exception:
         normalized_candidate = None
     if normalized_candidate is None:
+        try:
+            schema_validation = validate_tool_spec_args(spec, invocation.arguments) if spec is not None else None
+        except Exception:
+            schema_validation = None
         return ValidationResult.fail(
             "bad_args",
-            (
-                f"你对工具「{tool_type}」的调用参数不完整或格式不对，系统无法执行，已被忽略"
-                f"（你提交的是：{describe_tool_call_for_prompt(candidate_call)}）。"
-                "请对照本轮 schema 修正参数，并通过该工具本轮实际提供的通道重试；"
-                "如果不再需要工具，保持兼容 tool_call 为 null 并直接回复主人。"
+            _tool_schema_rejection_message(
+                tool_type=tool_type,
+                candidate_call=candidate_call,
+                spec=spec,
+                errors=schema_validation.errors
+                if schema_validation is not None and not schema_validation.ok
+                else (),
+                conditional_rule_failed=schema_validation is None or schema_validation.ok,
             ),
         )
     return ValidationResult.success()
+
+
+def _tool_schema_rejection_message(
+    *,
+    tool_type: str,
+    candidate_call: Mapping[str, Any],
+    spec: Any,
+    errors: Iterable[Any],
+    conditional_rule_failed: bool = False,
+) -> str:
+    schema = getattr(spec, "input_schema", None)
+    schema = schema if isinstance(schema, Mapping) else {}
+    properties = schema.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    required = schema.get("required")
+    required = [str(item) for item in required] if isinstance(required, (list, tuple)) else []
+    allowed = sorted(str(item) for item in properties)[:32]
+    error_payload = []
+    for error in list(errors)[:12]:
+        error_payload.append(
+            {
+                "code": str(getattr(error, "code", "validation_failed") or "validation_failed"),
+                "field": str(getattr(error, "argument", "") or ""),
+                "detail": str(getattr(error, "detail", "") or "")[:240],
+            }
+        )
+    diagnostics = {
+        "reason": "conditional_fields_invalid" if conditional_rule_failed else "schema_validation_failed",
+        "errors": error_payload,
+        "required_fields": required,
+        "allowed_fields": allowed,
+    }
+    field_hints = {}
+    for name in allowed:
+        field_schema = properties.get(name)
+        description = field_schema.get("description") if isinstance(field_schema, Mapping) else ""
+        if isinstance(description, str) and description.strip():
+            field_hints[name] = description.strip()[:240]
+        if len(field_hints) >= 12:
+            break
+    if field_hints:
+        diagnostics["field_hints"] = field_hints
+    if len(properties) > len(allowed):
+        diagnostics["allowed_fields_truncated"] = True
+    return (
+        f"你对工具「{tool_type}」的调用没有通过参数校验，系统没有执行。"
+        f"结构化诊断：{json.dumps(diagnostics, ensure_ascii=False, separators=(',', ':'))}。"
+        f"你提交的是：{describe_tool_call_for_prompt(candidate_call)}。"
+        "请只使用本轮 schema 声明的字段修正调用；不要猜测别名，也不要重复未改变的失败参数。"
+        "如果不再需要工具，保持兼容 tool_call 为 null 并直接回复主人。"
+    )
 
 
 def validate_legacy_tool_call(

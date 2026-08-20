@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from capcore import CapabilityToolSpec
+
 from companion_v01 import tool_orchestration_engine
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import (
@@ -286,6 +288,105 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertFalse(validation.ok)
         self.assertEqual(validation.code, "bad_args")
         self.assertIn("参数", validation.message)
+
+    def test_tool_spec_bad_args_return_precise_schema_diagnostics(self) -> None:
+        class SchemaHandler:
+            tool_type = "manage_project_workspace"
+
+            def tool_spec(self):
+                return CapabilityToolSpec(
+                    capability_id=self.tool_type,
+                    display_name="Manage project workspace",
+                    description="Manage project workspace.",
+                    input_schema={
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "action": {"type": "string", "enum": ["create", "current"]},
+                            "display_name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Required for create; do not use name.",
+                            },
+                        },
+                        "required": ["action"],
+                    },
+                    risk="medium",
+                    confirm="never",
+                    effects=("filesystem_write",),
+                    visible_in=("desktop",),
+                )
+
+            def normalize_call(self, value):
+                if value.get("action") == "create" and value.get("display_name"):
+                    return dict(value)
+                return None
+
+        handler = SchemaHandler()
+        engine = FakeEngine(RecordingHandler())
+        engine._resolve_tool_handlers = lambda **_kwargs: {handler.tool_type: handler}
+
+        validation = tool_orchestration_engine.validate_legacy_tool_call(
+            engine,
+            {
+                "type": handler.tool_type,
+                "action": "create",
+                "name": "Demo",
+                "goal": "build it",
+            },
+            profile_user_id="alice",
+            session_id="s1",
+        )
+
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.code, "bad_args")
+        self.assertIn('"code":"unknown_argument"', validation.message)
+        self.assertIn('"field":"name"', validation.message)
+        self.assertIn('"field":"goal"', validation.message)
+        self.assertIn('"allowed_fields":["action","display_name"]', validation.message)
+        self.assertIn('"field_hints":{"display_name":"Required for create; do not use name."}', validation.message)
+
+    def test_schema_valid_but_action_invalid_reports_conditional_rule(self) -> None:
+        class ConditionalHandler:
+            tool_type = "conditional_tool"
+
+            def tool_spec(self):
+                return CapabilityToolSpec(
+                    capability_id=self.tool_type,
+                    display_name="Conditional",
+                    description="Conditional fields.",
+                    input_schema={
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "action": {"type": "string", "enum": ["create"]},
+                            "display_name": {"type": "string"},
+                        },
+                        "required": ["action"],
+                    },
+                    risk="low",
+                    confirm="never",
+                    effects=(),
+                    visible_in=("desktop",),
+                )
+
+            def normalize_call(self, _value):
+                return None
+
+        handler = ConditionalHandler()
+        engine = FakeEngine(RecordingHandler())
+        engine._resolve_tool_handlers = lambda **_kwargs: {handler.tool_type: handler}
+
+        validation = tool_orchestration_engine.validate_legacy_tool_call(
+            engine,
+            {"type": handler.tool_type, "action": "create"},
+            profile_user_id="alice",
+            session_id="s1",
+        )
+
+        self.assertFalse(validation.ok)
+        self.assertIn('"reason":"conditional_fields_invalid"', validation.message)
+        self.assertIn('"allowed_fields":["action","display_name"]', validation.message)
 
     def test_rejection_message_still_comes_from_validation(self) -> None:
         engine = FakeEngine(RecordingHandler())

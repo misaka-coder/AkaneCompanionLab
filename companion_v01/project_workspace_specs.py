@@ -11,15 +11,26 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "List, create, open, select, or archive a durable coding project directory. The catalog follows the "
         "same user across QQ private and group conversations while the current selection stays conversation-local. "
-        "Open registers an existing host directory; a selected project is exposed to exec_run as alias:project."
+        "Create makes a host-managed project and requires display_name. Open registers a real existing host directory "
+        "and requires path; use open, not create, when the user specifies Desktop or another host location. A selected "
+        "project is exposed to exec_run as alias:project."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "action": {"type": "string", "enum": ["list", "create", "open", "select", "archive", "current"]},
+            "action": {
+                "type": "string",
+                "enum": ["list", "create", "open", "select", "archive", "current"],
+                "description": "Operation selector; each action uses only its declared action-specific fields.",
+            },
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
-            "display_name": {"type": "string", "minLength": 1, "maxLength": 80},
+            "display_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "Required for create; optional label for open. Do not use name, title, goal, or steps.",
+            },
             "path": {
                 "type": "string",
                 "minLength": 1,
