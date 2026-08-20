@@ -4076,6 +4076,9 @@ class AkaneMemoryEngine:
                     # A new user instruction starts a fresh action allowance
                     # inside the same durable turn.  Repeating a read/test that
                     # was already used before the steer can now be legitimate.
+                    # Steering never closes the tool surface: the next model
+                    # decision keeps the same channel permissions and all
+                    # completed tool evidence from this open turn.
                     seen_tool_calls.clear()
                     allowed_repeat_tool_calls.clear()
                     final_output = yield from self._generate_round(

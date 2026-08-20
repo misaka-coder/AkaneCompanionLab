@@ -1830,12 +1830,15 @@ def build_qq_router(
             channel="qq",
         )
         if steer_result.get("ok"):
-            acknowledgement = "收到，这条调整会在下一步执行前交给我。"
-            send_result = await asyncio.to_thread(qq_gateway.send_reply, context, acknowledgement)
             return {
-                "frame": {"status": "steer_accepted", "speech": acknowledgement},
-                "reply_messages": [acknowledgement],
-                "send_result": send_result,
+                "frame": {"status": "steer_accepted", "speech": ""},
+                "reply_messages": [],
+                "send_result": {
+                    "ok": True,
+                    "status": "suppressed",
+                    "reason": "steer_accepted_without_visible_ack",
+                    "results": [],
+                },
             }
         async with turn_coordinator.hold(
             context.profile_user_id,

@@ -7052,11 +7052,6 @@ async function submitTurnSteer(message) {
       setRuntimeStatus(text, { mode: "error" });
       return false;
     }
-    showBubbleText("已加入当前任务，会在下一步执行前看到。", {
-      transient: true,
-      durationMs: 1800,
-      kind: "status"
-    });
     setRuntimeStatus("已追加任务要求", { mode: "working" });
     return true;
   } catch (error) {

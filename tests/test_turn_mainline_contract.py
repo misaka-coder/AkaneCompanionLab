@@ -73,6 +73,7 @@ class _ScriptedOutputs:
     def __init__(self, outputs: list[dict[str, object]]) -> None:
         self.outputs = list(outputs)
         self.generation_calls: list[dict[str, object]] = []
+        self.generation_kwargs: list[dict[str, object]] = []
 
     def _next(self) -> dict[str, object]:
         if not self.outputs:
@@ -82,9 +83,11 @@ class _ScriptedOutputs:
         return output
 
     def sync_gen(self, **kwargs: object) -> dict[str, object]:
+        self.generation_kwargs.append(dict(kwargs))
         return self._next()
 
     def stream_gen(self, **kwargs: object):
+        self.generation_kwargs.append(dict(kwargs))
         output = self._next()
         yield {"type": "turn_start", "speaker": "Akane"}
         return output
@@ -348,6 +351,13 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(append_call["user_record"]["source_id"], "steer-1")
         self.assertEqual(append_call["actor_stable_id"], "qq:1")
         self.assertEqual([item.get("role") for item in harness.store.messages[:2]], ["user", "user"])
+        self.assertEqual(len(harness.script.generation_kwargs), 2)
+        self.assertTrue(harness.script.generation_kwargs[0]["allow_tool_call"])
+        self.assertTrue(harness.script.generation_kwargs[1]["allow_tool_call"])
+        self.assertEqual(
+            harness.script.generation_kwargs[1]["post_user_turns"] or [],
+            harness.script.generation_kwargs[0]["post_user_turns"] or [],
+        )
 
     def test_stop_request_aborts_open_turn_without_delivering_stale_final(self) -> None:
         harness = _Harness([_speech_output("这条不应该交付。")])
