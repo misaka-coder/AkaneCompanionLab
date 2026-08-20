@@ -202,7 +202,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .theme-mode button:hover { color: var(--text); }
 .theme-mode button.is-active { color: #fff; background: rgb(var(--accent-rgb) / 0.32); box-shadow: 0 6px 18px rgb(var(--accent-rgb) / 0.13); }
 
-.chat-layout { display: grid; grid-template-columns: minmax(280px, 0.68fr) minmax(520px, 1.32fr); gap: 16px; min-height: 650px; }
+.chat-layout { display: grid; grid-template-columns: minmax(280px, 0.68fr) minmax(520px, 1.32fr); gap: 16px; height: clamp(600px, calc(100vh - 240px), 720px); min-height: 0; }
 .presence-card, .conversation-card { min-width: 0; overflow: hidden; border-radius: 22px; }
 .presence-card { display: grid; grid-template-rows: auto minmax(320px, 1fr) auto; }
 .presence-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 0 18px; border-bottom: 1px solid var(--line); color: var(--text-soft); font-size: 9px; }
@@ -333,9 +333,9 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   .hero { grid-template-columns: 1fr; }
   .portrait-stage { min-height: 340px; }
   .overview-grid, .appearance-grid { grid-template-columns: 1fr; }
-  .chat-layout { grid-template-columns: 1fr; min-height: 0; }
+  .chat-layout { grid-template-columns: 1fr; height: auto; min-height: 0; }
   .presence-card { grid-template-rows: auto minmax(340px, 1fr) auto; }
-  .conversation-card { min-height: 650px; }
+  .conversation-card { height: 650px; min-height: 0; }
   .preview-canvas { min-height: 560px; }
 }
 
@@ -368,8 +368,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   .chat-layout, .chat-layout.is-presence-collapsed { grid-template-columns: 1fr; min-height: 0; }
   .presence-card { min-height: 460px; }
   .chat-layout.is-presence-collapsed .presence-card { display: none; }
-  .conversation-card { min-height: 660px; }
-  .message-scroll { min-height: 480px; }
+  .conversation-card { height: min(660px, calc(100vh - 84px)); min-height: 560px; }
+  .message-scroll { min-height: 0; }
   .message-row { max-width: 92%; }
   .composer { grid-template-columns: 34px minmax(0, 1fr) 42px; padding-inline: 10px; }
   .composer-icon { width: 34px; height: 34px; }

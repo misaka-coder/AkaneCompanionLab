@@ -196,6 +196,8 @@ It must not create a second competing character body:
 
 User and character bubbles may have separate theme tokens. User avatar is a user preference, while the character avatar comes from the active character pack. Both use independent non-destructive framing.
 
+The chat frame has a stable viewport: its header and composer remain fixed while only the message list scrolls. New content auto-scrolls only when the user is already near the bottom; otherwise the current reading position is preserved and an unread indicator is shown. Older history loads incrementally, and very long sessions may virtualize message rows without changing the authoritative message order.
+
 ## 10. Performance and motion gates
 
 - Render shell/navigation from local state without waiting for backend health.
@@ -233,3 +235,17 @@ The prototype does not replace `control-center-lab.html`. Reintegration proceeds
 5. Existing action bridge and runtime probe tests have a migration plan.
 6. Build, UX smoke, narrow viewport, slow/failure, character switch, and manual Tauri checks pass.
 7. Old render paths are deleted or reduced to thin adapters; no permanent V1/V2 dual authority.
+
+## 13. Production component boundary
+
+The prototype is intentionally self-contained; production must not grow as another single HTML/JS/CSS authority. The minimum boundary is:
+
+- `ControlCenterShell`: navigation, page composition, overlays, toast region;
+- `ControlCenterStore`: one normalized snapshot plus action states;
+- `ControlCenterBridge`: the only UI-facing adapter for host/Tauri/backend operations;
+- pages: Overview, Chat, Character & Appearance, Abilities, Diagnostics;
+- reusable primitives: panel, status chip, action button, scroll region, empty/error state;
+- domain components: message list, composer, presence camera, asset framing editor, media control;
+- theme tokens: colors, typography, spacing, radius, opacity, motion, and contrast modes.
+
+Page and visual components receive data and emit intents. They do not call Tauri or backend routes directly, own a second copy of conversation truth, or infer success from a request being queued. Framework choice is secondary to these boundaries; a production slice may use small ES modules first, but it must not add new features to the existing monolithic control-center file.
