@@ -133,7 +133,10 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="status_choices",
                     text=(
-                        "status 通常输出 final；如果你主动给用户提供可选项，也可以输出 choice。\n"
+                        "任务已完成，或存在本轮工具无法解决的真实阻塞时，status 输出 final。"
+                        "如果当前用户任务仍可在本轮继续、但这一帧没有发出下一项真实工具调用，status 输出 continue；"
+                        "宿主会在同一用户回合要求你继续，不能用 continue 等待用户再次催促，也不能把未验证事项写成通过。\n"
+                        "如果你主动给用户提供可选项，也可以输出 choice。\n"
                         "choices 必须是 JSON 数组；没有选项时输出空数组。\n"
                         "每个选项都应是包含 id 和 text 的对象，text 要短一些。"
                     ),

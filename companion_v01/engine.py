@@ -3871,6 +3871,7 @@ class AkaneMemoryEngine:
                 current_budget=max_tool_rounds,
             )
         tool_round_index = 0
+        empty_continuation_attempts = 0
         provider_output_raw = ""
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
@@ -3982,6 +3983,60 @@ class AkaneMemoryEngine:
                 }
             if not tool_calls:
                 if not rejections:
+                    if self._final_output_requests_continuation(final_output):
+                        tool_round_index += 1
+                        can_continue = (
+                            tool_round_index <= emergency_tool_rounds
+                            and empty_continuation_attempts < 2
+                        )
+                        if can_continue:
+                            empty_continuation_attempts += 1
+                            tool_followups.append(
+                                "模型声明当前用户请求仍可在本轮继续，但这一帧没有发出下一项工具调用。"
+                                "请立即执行下一项必要操作；不要重复已经完成的工具。"
+                                "只有任务已完成，或存在本轮工具无法解决的真实阻塞时，才用 status=final 诚实收口。"
+                            )
+                        else:
+                            tool_followups.append(
+                                "同回合继续请求已经有界重试，但模型仍没有发出可执行工具。"
+                                "本次不要再调用工具；请基于已有真实结果说明当前完成度与阻塞，"
+                                "不得把未验证事项写成通过，并将 status 设为 final。"
+                            )
+                        final_output = yield from self._generate_round(
+                            mode=mode,
+                            session_id=session_id,
+                            profile_user_id=profile_user_id,
+                            user_message=user_message,
+                            recent_raw=recent_raw_for_turn,
+                            recent_episodic_summaries=recent_episodic_summaries,
+                            recent_semantic_summaries=recent_semantic_summaries,
+                            confirmed_snippets=confirmed_snippets,
+                            now_ts=now_ts,
+                            current_visual_payload=payload.get("current_visual"),
+                            extra_user_context=self._build_tool_round_extra_context(
+                                turn_extra_user_context=turn_extra_user_context,
+                                tool_followups=tool_followups,
+                                allow_more=can_continue,
+                                stop_reason="" if can_continue else "continuation_not_actionable",
+                            ),
+                            client_context=client_context,
+                            resource_manifest=turn_resource_manifest,
+                            character_pack_id=turn_character_pack_id,
+                            user_images=turn_user_images,
+                            allow_tool_call=can_continue,
+                            final_debug_enabled=final_debug_enabled,
+                            chat_model_override=chat_model_override,
+                            execution_target=turn_execution_target,
+                            post_user_turns=tool_history_turns,
+                            prompt_exclude_source_ids=prompt_exclude_source_ids,
+                            domain_profile_id=turn_domain_profile_id,
+                            prompt_scope=prompt_scope,
+                            stable_system_context=plugin_stable_system_context,
+                            request_projection_state=request_projection_state,
+                        )
+                        if can_continue:
+                            continue
+                        final_output["status"] = "final"
                     break
                 allow_retry = self._record_tool_call_rejection(
                     final_output=final_output,
@@ -4143,6 +4198,7 @@ class AkaneMemoryEngine:
                 execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
+            empty_continuation_attempts = 0
             for completed_result in batch_results:
                 envelope = getattr(completed_result, "followup_envelope", None)
                 continuation = getattr(envelope, "continuation", None)
@@ -6592,6 +6648,12 @@ class AkaneMemoryEngine:
         )
         tool_followups.append(rejection)
         return tool_round_index < max_tool_rounds - 1
+
+    @staticmethod
+    def _final_output_requests_continuation(final_output: Any) -> bool:
+        if not isinstance(final_output, Mapping):
+            return False
+        return str(final_output.get("status") or "").strip().lower() == "continue"
 
     @staticmethod
     def _tool_call_rejection_log_fields(

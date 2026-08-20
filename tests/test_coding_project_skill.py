@@ -117,6 +117,14 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn("已进入发送队列", content)
         self.assertIn("Do not transport source through Shell", content)
         self.assertIn("complete logical pages", content)
+        self.assertIn("supports update,\n  create, delete, and rename", content)
+        self.assertIn("rollback_failed", content)
+        self.assertIn("Probe exact tool availability", content)
+        self.assertIn("A command snippet is not an automated test suite", content)
+        self.assertIn("assert the intended\n  intermediate state", content)
+        self.assertIn('status="continue"', content)
+        self.assertNotIn("V1 patching does not create", content)
+        self.assertNotIn("toolchain manifest in the `exec_run` instruction", content)
 
     def test_skill_declares_no_permission_upgrade_or_new_tools(self) -> None:
         content = self.registry.load("coding-project").content

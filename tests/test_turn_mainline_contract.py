@@ -17,6 +17,10 @@ def _speech_output(speech: str) -> dict[str, object]:
     return {"speech": speech, "emotion": "neutral", "memory_metadata": {}}
 
 
+def _continue_output(speech: str) -> dict[str, object]:
+    return {**_speech_output(speech), "status": "continue"}
+
+
 def _tool_round_output(speech: str, kind: str, call_id: str, *, native_preface: str = "") -> dict[str, object]:
     output = _speech_output(speech)
     output[NATIVE_TOOL_CALLS_FIELD] = [_tool_call(kind, call_id)]
@@ -320,6 +324,39 @@ class TurnMainlineContractTests(unittest.TestCase):
         roles = [str(message.get("role")) for message in harness.store.messages]
         self.assertEqual(roles, ["user", "assistant", "assistant", "assistant"])
         self.assertEqual(len(harness.store.eval_turns), 1)
+
+    def test_explicit_continue_without_tool_stays_in_same_user_turn(self) -> None:
+        harness = _Harness(
+            [
+                _continue_output("基础代码写完了，但验收还没跑完。"),
+                _tool_round_output("我继续跑验收。", "exec_run", "call-continue-1"),
+                _speech_output("验收完成。"),
+            ]
+        )
+
+        result = harness.run_sync(harness.payload(message="完成这个编程任务"))
+
+        self.assertEqual(result.get("speech"), "验收完成。")
+        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 1)
+        self.assertEqual(len(harness.script.generation_calls), 3)
+        self.assertEqual(len(harness.store.eval_turns), 1)
+
+    def test_repeated_empty_continue_is_bounded_and_forced_to_honest_final(self) -> None:
+        harness = _Harness(
+            [
+                _continue_output("还要继续。"),
+                _continue_output("仍要继续。"),
+                _continue_output("还是要继续。"),
+                _continue_output("目前没有发出可执行操作，现有进度尚未完成。"),
+            ]
+        )
+
+        result = harness.run_sync(harness.payload(message="完成这个编程任务"))
+
+        self.assertEqual(result.get("speech"), "目前没有发出可执行操作，现有进度尚未完成。")
+        self.assertEqual(result.get("status"), "final")
+        self.assertEqual(len(harness.script.generation_calls), 4)
+        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 0)
 
     def test_producer_continuation_may_repeat_the_same_observation_call(self) -> None:
         repeated_call = _tool_call("poll_status", "same-call")
