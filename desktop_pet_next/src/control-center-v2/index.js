@@ -14,6 +14,11 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const pageButton = event.target.closest("[data-page]");
+  if (pageButton) {
+    store.patch({ activePage: pageButton.dataset.page || "overview" });
+    return;
+  }
   const refreshButton = event.target.closest("[data-refresh]");
   if (refreshButton) {
     void refresh();
@@ -21,7 +26,8 @@ root.addEventListener("click", (event) => {
   }
   const actionButton = event.target.closest("[data-action]");
   if (!actionButton || actionButton.disabled) return;
-  void runAction(actionButton.dataset.action);
+  const value = String(actionButton.dataset.actionValue || "").trim();
+  void runAction(actionButton.dataset.action, value ? { value } : {});
 });
 
 void bridge.start().catch((error) => {
@@ -45,7 +51,7 @@ async function refresh() {
   }
 }
 
-async function runAction(actionId) {
+async function runAction(actionId, payload = {}) {
   const current = store.getState().actionStates[actionId];
   if (current?.phase === "pressed" || current?.phase === "pending") return;
   updateAction(actionId, { phase: "pressed", label: "已按下", detail: "" });
@@ -53,7 +59,7 @@ async function runAction(actionId) {
   updateAction(actionId, { phase: "pending", label: "处理中", detail: "" });
   let result;
   try {
-    result = await bridge.runAction(actionId);
+    result = await bridge.runAction(actionId, payload);
   } catch (error) {
     result = { ok: false, status: "failed", reason: friendlyError(error) };
   }

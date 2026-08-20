@@ -17,6 +17,9 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const emotionName = text(expression.name) || text(asObject(runtime.emotion).name) || text(petState.currentEmotion);
   const portrait = safeAssetUrl(text(expression.image) || text(asObject(runtime.emotion).image) || firstActiveEmotionImage(characterRuntime));
   const hero = safeAssetUrl(text(characterRuntime.hero));
+  const availablePacks = normalizeAvailablePacks(characterRuntime.availablePacks, text(characterRuntime.selectedPackId) || text(petState.characterPackId));
+  const outfits = normalizeVisualChoices(characterRuntime.outfits, text(petState.outfit), "服装");
+  const emotions = normalizeVisualChoices(characterRuntime.emotions, emotionName || text(petState.currentEmotion), "表情");
   const activity = deriveActivity(live, connected);
   const music = deriveMusic(nowPlaying, musicRuntime);
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
@@ -43,7 +46,12 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
         portrait,
         hero
       },
-      resourceWarnings: warnings
+      resourceWarnings: warnings,
+      availablePacks,
+      outfits,
+      emotions,
+      packInfo: normalizePackInfo(characterRuntime.packInfo),
+      completeness: finitePercent(characterRuntime.completeness)
     },
     activity,
     music,
@@ -55,6 +63,10 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "workspace.open": { available: true, reason: "" },
       "character.openWorkshop": { available: true, reason: "" },
       "character.openPackFolder": { available: true, reason: "" },
+      "character.selectPack": { available: connected && availablePacks.length > 0, reason: connected ? "没有可切换的角色包" : "桌宠尚未连接" },
+      "character.setOutfit": { available: connected && outfits.length > 0, reason: connected ? "当前角色没有服装资源" : "桌宠尚未连接" },
+      "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
+      "character.refresh": { available: connected, reason: "桌宠尚未连接" },
       "music.pause": { available: music.available, reason: "当前没有可控制的音乐" },
       "window.minimize": { available: true, reason: "" },
       "window.maximize": { available: true, reason: "" },
@@ -86,7 +98,7 @@ export function normalizeActionPresentation(result) {
   return { phase: "failed", label: "操作失败", detail: text(value.reason) || text(value.error) || status };
 }
 
-export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnapshot) {
+export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnapshot, payload = {}) {
   const before = asObject(beforeSnapshot);
   const after = asObject(afterSnapshot);
   const beforeState = asObject(before.state);
@@ -107,6 +119,22 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const beforePlayback = `${Boolean(beforeActive.musicPlaying)}:${Boolean(beforeActive.musicPaused)}`;
     const afterPlayback = `${Boolean(afterActive.musicPlaying)}:${Boolean(afterActive.musicPaused)}`;
     return beforePlayback !== afterPlayback;
+  }
+  const expected = text(payload.value);
+  if (actionId === "character.selectPack") {
+    const beforePack = text(beforeState.characterPackId) || text(asObject(before.character).packId);
+    const afterPack = text(afterState.characterPackId) || text(asObject(after.character).packId);
+    return Boolean(afterPack && afterPack !== beforePack && (!expected || afterPack === expected));
+  }
+  if (actionId === "character.setOutfit") {
+    const beforeOutfit = text(beforeState.outfit);
+    const afterOutfit = text(afterState.outfit);
+    return Boolean(afterOutfit && afterOutfit !== beforeOutfit && (!expected || afterOutfit === expected));
+  }
+  if (actionId === "character.previewEmotion") {
+    const beforeExpression = text(asObject(before.currentExpression).id) || text(asObject(before.currentExpression).name) || text(beforeState.currentEmotion);
+    const afterExpression = text(asObject(after.currentExpression).id) || text(asObject(after.currentExpression).name) || text(afterState.currentEmotion);
+    return Boolean(afterExpression && afterExpression !== beforeExpression && (!expected || afterExpression === expected));
   }
   return true;
 }
@@ -150,6 +178,44 @@ function normalizeCharacterWarnings(characterRuntime) {
   const warning = asObject(characterRuntime.warning);
   if (!text(warning.headline)) return [];
   return /良好|已加载/.test(text(warning.headline)) ? [] : [text(warning.headline), text(warning.body)].filter(Boolean);
+}
+
+function normalizeAvailablePacks(value, activePackId) {
+  const active = text(activePackId);
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const source = asObject(item);
+    const id = text(source.id) || text(source.packId) || text(source.pack_id);
+    if (!id) return null;
+    return {
+      id,
+      displayName: text(source.appName) || text(source.name) || id,
+      description: [text(source.defaultOutfit), text(source.defaultEmotion)].filter(Boolean).join(" · ") || text(source.schemaVersion),
+      selected: active ? id === active : Boolean(source.selected)
+    };
+  }).filter(Boolean);
+}
+
+function normalizeVisualChoices(value, activeValue, fallbackLabel) {
+  const active = text(activeValue).toLowerCase();
+  return (Array.isArray(value) ? value : []).map((item, index) => {
+    const source = asObject(item);
+    const id = text(source.id) || text(source.name) || `${fallbackLabel}_${index + 1}`;
+    const name = text(source.name) || id;
+    const current = Boolean(source.current) || Boolean(active && (id.toLowerCase() === active || name.toLowerCase() === active));
+    return { id, name, image: safeAssetUrl(text(source.image)), current };
+  });
+}
+
+function normalizePackInfo(value) {
+  return (Array.isArray(value) ? value : []).map((item) => ({
+    label: text(item?.label),
+    value: text(item?.value)
+  })).filter((item) => item.label && item.value);
+}
+
+function finitePercent(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : null;
 }
 
 function firstActiveEmotionImage(characterRuntime) {

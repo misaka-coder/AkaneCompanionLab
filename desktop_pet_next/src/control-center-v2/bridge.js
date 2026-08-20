@@ -4,6 +4,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import { createControlCenterActionRouter } from "../control-center/action-router.js";
 import {
+  buildCharacterRuntimePatchFromSettingsSnapshot,
   buildMusicRuntimePatch,
   CONTROL_CENTER_SOURCE_KIND,
   createControlCenterDataSource,
@@ -18,8 +19,17 @@ import {
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
-const OBSERVED_ACTION_IDS = new Set(["chat.new", "chat.stop", "music.pause"]);
+const OBSERVED_ACTION_IDS = new Set([
+  "chat.new",
+  "chat.stop",
+  "music.pause",
+  "character.selectPack",
+  "character.setOutfit",
+  "character.previewEmotion",
+  "character.refresh"
+]);
 const ACTION_CONFIRM_TIMEOUT_MS = 1800;
+const CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS = 4000;
 
 export function createControlCenterBridge(options = {}) {
   const isTauri = options.isTauri ?? Boolean(window.__TAURI_INTERNALS__);
@@ -36,7 +46,7 @@ export function createControlCenterBridge(options = {}) {
   function publish() {
     if (!rawSnapshot) return;
     const viewModel = createControlCenterViewModel(withBridgeStatus(
-      withLiveMusic(rawSnapshot, runtimeSnapshot),
+      withLiveRuntime(rawSnapshot, runtimeSnapshot),
       liveSnapshotStatus,
       liveSnapshotError
     ), runtimeSnapshot);
@@ -82,7 +92,7 @@ export function createControlCenterBridge(options = {}) {
       rawSnapshot = createControlCenterRuntimeSnapshot(next);
       publish();
       return createControlCenterViewModel(withBridgeStatus(
-        withLiveMusic(rawSnapshot, runtimeSnapshot),
+        withLiveRuntime(rawSnapshot, runtimeSnapshot),
         liveSnapshotStatus,
         liveSnapshotError
       ), runtimeSnapshot);
@@ -101,7 +111,7 @@ export function createControlCenterBridge(options = {}) {
     const beforeRuntimeSnapshot = runtimeSnapshot;
     let result = await actionRouter.run(actionId, payload, { source: "control-center-v2" });
     if (result.ok && OBSERVED_ACTION_IDS.has(actionId)) {
-      const confirmed = await waitForRuntimeConfirmation(actionId, beforeRuntimeSnapshot, () => runtimeSnapshot);
+      const confirmed = await waitForRuntimeConfirmation(actionId, payload, beforeRuntimeSnapshot, () => runtimeSnapshot);
       result = confirmed
         ? { ...result, status: "completed", observed: true }
         : {
@@ -145,11 +155,12 @@ export function createControlCenterBridge(options = {}) {
   return { start, refresh, runAction, subscribe, stop };
 }
 
-async function waitForRuntimeConfirmation(actionId, beforeSnapshot, readCurrentSnapshot) {
+async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < ACTION_CONFIRM_TIMEOUT_MS) {
+  const timeoutMs = actionId === "character.selectPack" ? CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS : ACTION_CONFIRM_TIMEOUT_MS;
+  while (Date.now() - startedAt < timeoutMs) {
     const current = readCurrentSnapshot();
-    if (current !== beforeSnapshot && isObservedActionConfirmation(actionId, beforeSnapshot, current)) {
+    if (current !== beforeSnapshot && isObservedActionConfirmation(actionId, beforeSnapshot, current, payload)) {
       return true;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 60));
@@ -243,13 +254,18 @@ async function emitMainEvent(payload) {
   }
 }
 
-function withLiveMusic(rawSnapshot, runtimeSnapshot) {
-  if (!runtimeSnapshot?.music) return rawSnapshot;
-  const musicRuntime = buildMusicRuntimePatch({
+function withLiveRuntime(rawSnapshot, runtimeSnapshot) {
+  if (!runtimeSnapshot) return rawSnapshot;
+  const musicRuntime = runtimeSnapshot.music ? buildMusicRuntimePatch({
     musicSnapshot: runtimeSnapshot.music,
     petState: runtimeSnapshot.state || {}
-  });
-  return musicRuntime ? { ...rawSnapshot, musicRuntime } : rawSnapshot;
+  }) : null;
+  const characterPatch = buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot);
+  return {
+    ...rawSnapshot,
+    ...(musicRuntime ? { musicRuntime } : {}),
+    ...(characterPatch ? { characterRuntime: { ...rawSnapshot.characterRuntime, ...characterPatch } } : {})
+  };
 }
 
 function withBridgeStatus(rawSnapshot, status, error) {

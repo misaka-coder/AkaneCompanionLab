@@ -1,10 +1,10 @@
 # Desktop Pet Control Center V2
 
-Status: design contract, interactive prototype, and componentized V2 Overview candidate. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
+Status: design contract, interactive prototype, and componentized V2 Overview plus Character & Appearance candidate. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
 
 This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
 
-The first production-shaped slice now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. It does not use the old control center's mock page skeleton. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
+The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Overview and Character & Appearance are implemented. It does not use the old control center's mock page skeleton. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
 
 ## Files
 
@@ -12,8 +12,8 @@ The first production-shaped slice now lives behind `desktop_pet_next/control-cen
 - `prototype/index.html` — overview, character/appearance, and chat-history prototype.
 - `prototype/styles.css` — glass shell, responsive layout, motion, and theme tokens.
 - `prototype/app.js` — local-only light/dark themes, framing editor, chat simulation, navigation, and honest simulated action states.
-- `../../desktop_pet_next/control-center-v2.html` — Vite candidate entry; not currently opened by the settings window.
-- `../../desktop_pet_next/src/control-center-v2/` — componentized shell, Overview, store, host bridge, and real-snapshot view model.
+- `../../desktop_pet_next/control-center-v2.html` — Vite candidate entry; opened by the settings window only through the explicit V2 test launcher.
+- `../../desktop_pet_next/src/control-center-v2/` — componentized shell, Overview, Character & Appearance, shared action primitive, store, host bridge, and real-snapshot view model.
 
 ## Local preview
 
@@ -65,5 +65,8 @@ Manual acceptance for this stage:
 3. “新对话” and “停止回复” only report confirmation after a settings snapshot shows the corresponding state change.
 4. “打开工作区”, “角色工坊”, and “角色包目录” open their real host targets.
 5. Music controls report failure or unconfirmed execution honestly when no controllable session exists.
+6. Character & Appearance reads the current pack, outfit, expressions, portrait, and resource health from real snapshots.
+7. Pack, outfit, and expression changes confirm only after the desktop-pet snapshot reports the requested value; otherwise the UI reports an unconfirmed execution.
+8. Full authoring, uploads, and framing calibration remain in the character workshop instead of creating a second character-pack authority.
 
-This test path is not a production cutover. V2 currently covers the Overview slice only; the legacy settings entry remains authoritative until the remaining configuration pages are rebuilt and the old renderer can be deleted rather than kept in parallel.
+This test path is not a production cutover. V2 currently covers Overview and Character & Appearance; the legacy settings entry remains authoritative until the remaining configuration pages are rebuilt and the old renderer can be deleted rather than kept in parallel.

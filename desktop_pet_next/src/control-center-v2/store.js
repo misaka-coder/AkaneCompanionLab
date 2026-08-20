@@ -23,6 +23,7 @@ export function createControlCenterStore(initialState) {
 
 export function createInitialControlCenterState() {
   return {
+    activePage: "overview",
     phase: "connecting",
     refreshedAt: 0,
     error: "",

@@ -1,4 +1,5 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
+import { renderActionButton } from "./action-button.js";
 
 export function renderOverview(state) {
   const vm = state.viewModel;
@@ -26,10 +27,10 @@ export function renderOverview(state) {
             <i aria-hidden="true"></i>
           </div>
           <div class="quick-actions">
-            ${actionButton(state, vm, "chat.new", "＋", "新对话", "primary")}
-            ${actionButton(state, vm, "workspace.open", "▱", "打开手边")}
-            ${actionButton(state, vm, "character.openWorkshop", "◇", "角色工坊")}
-            ${actionButton(state, vm, "character.openPackFolder", "⌁", "角色文件夹")}
+            ${renderActionButton(state, vm, "chat.new", "＋", "新对话", "primary")}
+            ${renderActionButton(state, vm, "workspace.open", "▱", "打开手边")}
+            ${renderActionButton(state, vm, "character.openWorkshop", "◇", "角色工坊")}
+            ${renderActionButton(state, vm, "character.openPackFolder", "⌁", "角色文件夹")}
           </div>
         </div>
         <div class="portrait-stage">
@@ -65,7 +66,7 @@ function renderMusic(state, vm) {
       <div class="music-row">
         <span class="cover-fallback" aria-hidden="true">♫</span>
         <span class="track"><strong>${escapeHtml(vm.music.title)}</strong><small>${escapeHtml(vm.music.artist || vm.music.detail || "当前媒体")}</small></span>
-        ${actionButton(state, vm, "music.pause", playing ? "Ⅱ" : "▶", playing ? "暂停" : "播放", "media")}
+        ${renderActionButton(state, vm, "music.pause", playing ? "Ⅱ" : "▶", playing ? "暂停" : "播放", "media")}
       </div>
     </section>`;
 }
@@ -82,15 +83,6 @@ function renderRecent(vm) {
 function renderResourceState(character) {
   if (!character.resourceWarnings.length) return "";
   return `<section class="resource-card glass-panel"><p class="eyebrow">RESOURCE</p><h3>角色资源需要处理</h3><ul>${character.resourceWarnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
-}
-
-function actionButton(state, vm, actionId, icon, label, tone = "soft") {
-  const action = vm.actions[actionId] || { available: false, reason: "当前不可用" };
-  const actionState = state.actionStates[actionId];
-  const pending = actionState?.phase === "pressed" || actionState?.phase === "pending";
-  const displayLabel = pending ? "处理中…" : actionState?.phase === "confirmed" ? actionState.label : label;
-  const title = action.available ? actionState?.detail || label : action.reason;
-  return `<button class="action-button is-${tone}${pending ? " is-pending" : ""}" type="button" data-action="${escapeHtml(actionId)}" title="${escapeHtml(title)}" ${action.available && !pending ? "" : "disabled"}><span aria-hidden="true">${escapeHtml(icon)}</span><b>${escapeHtml(displayLabel)}</b></button>`;
 }
 
 function renderUnavailable(state) {

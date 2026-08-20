@@ -5,6 +5,7 @@ import {
   isObservedActionConfirmation,
   normalizeActionPresentation
 } from "../src/control-center-v2/view-model.js";
+import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
 import { createControlCenterRuntimeSnapshot } from "../src/control-center/data-sources.js";
 
 const rawSnapshot = {
@@ -24,6 +25,20 @@ const rawSnapshot = {
     selectedPack: "测试角色",
     selectedPackId: "test_character",
     hero: "https://127.0.0.1/assets/hero.png",
+    availablePacks: [
+      { id: "test_character", appName: "测试角色", defaultOutfit: "default", selected: true },
+      { id: "second_character", appName: "另一位角色", defaultOutfit: "casual" }
+    ],
+    outfits: [
+      { id: "default", name: "默认服装", image: "https://127.0.0.1/assets/default.png", current: true },
+      { id: "casual", name: "日常服装", image: "https://127.0.0.1/assets/casual.png" }
+    ],
+    emotions: [
+      { id: "happy", name: "开心", image: "https://127.0.0.1/assets/happy.png", current: true },
+      { id: "thinking", name: "思考", image: "https://127.0.0.1/assets/thinking.png" }
+    ],
+    packInfo: [{ label: "版本", value: "0.2" }],
+    completeness: 100,
     warning: { headline: "资源状态良好", body: "已加载统一资源清单" },
     emotions: [{ current: true, image: "https://127.0.0.1/assets/happy.png" }]
   },
@@ -47,12 +62,20 @@ assert.equal(viewModel.shell.instanceLabel, "desktop-local");
 assert.equal(viewModel.character.displayName, "测试角色");
 assert.equal(viewModel.character.emotion, "开心");
 assert.equal(viewModel.character.resourceWarnings.length, 0);
+assert.equal(viewModel.character.availablePacks.length, 2);
+assert.equal(viewModel.character.availablePacks[0].selected, true);
+assert.equal(viewModel.character.outfits[0].current, true);
+assert.equal(viewModel.character.emotions[0].current, true);
+assert.equal(viewModel.character.completeness, 100);
 assert.equal(viewModel.activity.phase, "thinking");
 assert.equal(viewModel.activity.label, "正在整理文件");
 assert.equal(viewModel.music.playback, "playing");
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
 assert.equal(viewModel.actions["chat.stop"].available, true);
 assert.equal(viewModel.actions["character.openWorkshop"].available, true);
+assert.equal(viewModel.actions["character.selectPack"].available, true);
+assert.equal(viewModel.actions["character.setOutfit"].available, true);
+assert.equal(viewModel.actions["character.previewEmotion"].available, true);
 assert.equal(viewModel.actions["window.minimize"].available, true);
 assert.equal(viewModel.actions["window.maximize"].available, true);
 assert.equal(viewModel.actions["window.close"].available, true);
@@ -129,5 +152,43 @@ assert.equal(isObservedActionConfirmation(
   { state: { sessionId: "session-a" } },
   { state: { sessionId: "session-a" } }
 ), false);
+
+assert.equal(isObservedActionConfirmation(
+  "character.selectPack",
+  { state: { characterPackId: "test_character" } },
+  { state: { characterPackId: "second_character" } },
+  { value: "second_character" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "character.setOutfit",
+  { state: { outfit: "default" } },
+  { state: { outfit: "casual" } },
+  { value: "casual" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "character.previewEmotion",
+  { currentExpression: { id: "happy" } },
+  { currentExpression: { id: "thinking" } },
+  { value: "thinking" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "character.selectPack",
+  { state: { characterPackId: "test_character" } },
+  { state: { characterPackId: "unexpected_character" } },
+  { value: "second_character" }
+), false);
+
+const appearanceHtml = renderCharacterAppearance({
+  viewModel,
+  actionStates: {},
+  phase: "ready"
+});
+assert.match(appearanceHtml, /另一位角色/);
+assert.match(appearanceHtml, /character\.selectPack/);
+assert.match(appearanceHtml, /data-action-value="second_character"/);
+assert.match(appearanceHtml, /日常服装/);
+assert.match(appearanceHtml, /data-action-value="casual"/);
+assert.match(appearanceHtml, /character\.previewEmotion/);
+assert.doesNotMatch(appearanceHtml, /Akane Default/);
 
 console.log("control-center V2 smoke passed");

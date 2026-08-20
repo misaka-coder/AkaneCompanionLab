@@ -20,6 +20,8 @@ const REQUIRED_FILES = [
   "src/control-center-v2/index.js",
   "src/control-center-v2/bridge.js",
   "src/control-center-v2/view-model.js",
+  "src/control-center-v2/components/action-button.js",
+  "src/control-center-v2/components/appearance.js",
   "scripts/control-center-action-bridge-smoke.mjs",
   "scripts/control-center-runtime-probe.mjs",
   "scripts/control-center-ux-smoke.mjs",

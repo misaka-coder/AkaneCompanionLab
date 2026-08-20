@@ -1,4 +1,5 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
+import { renderCharacterAppearance } from "./appearance.js";
 import { renderOverview } from "./overview.js";
 
 export function renderControlCenterShell(root, state) {
@@ -6,11 +7,16 @@ export function renderControlCenterShell(root, state) {
   const character = vm?.character;
   const avatarStyle = safeStyleUrl(character?.visuals?.avatar);
   const connected = vm?.shell?.connectionStatus || state.phase;
+  const activePage = state.activePage || "overview";
+  const pageTitle = activePage === "appearance" ? "把这里变成她的空间" : "今天想让她做什么？";
   root.innerHTML = `
     <main class="ccv2-shell" data-connection="${escapeHtml(connected)}">
       <aside class="ccv2-rail">
         <div class="ccv2-brand"><span class="brand-mark">A</span><span><strong>桌宠控制中心</strong><small>V2 候选实现</small></span></div>
-        <nav aria-label="控制中心导航"><button class="nav-item is-active" type="button"><span aria-hidden="true">⌂</span><b>总览</b></button></nav>
+        <nav aria-label="控制中心导航">
+          ${renderNavItem("overview", "⌂", "总览", activePage)}
+          ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
+        </nav>
         <div class="rail-spacer"></div>
         <div class="migration-note"><i></i><span><strong>真实数据模式</strong><small>没有演示状态和假按钮</small></span></div>
         <div class="rail-character">
@@ -20,7 +26,7 @@ export function renderControlCenterShell(root, state) {
       </aside>
       <section class="ccv2-surface">
         <header class="ccv2-topbar" data-tauri-drag-region>
-          <div data-tauri-drag-region><p class="eyebrow" data-tauri-drag-region>DESKTOP COMPANION</p><h1 id="ccv2-page-title" data-tauri-drag-region>今天想让她做什么？</h1></div>
+          <div data-tauri-drag-region><p class="eyebrow" data-tauri-drag-region>DESKTOP COMPANION</p><h1 id="ccv2-page-title" data-tauri-drag-region>${pageTitle}</h1></div>
           <div class="topbar-actions">
             <span class="connection-chip" title="${escapeHtml(vm?.shell?.connectionDetail || "")}"><i></i><span>${escapeHtml(vm?.shell?.connectionDetail || vm?.shell?.connectionLabel || "正在连接")}</span></span>
             <button class="round-button${state.phase === "refreshing" ? " is-spinning" : ""}" type="button" data-refresh aria-label="刷新真实状态" title="刷新真实状态">↻</button>
@@ -31,10 +37,15 @@ export function renderControlCenterShell(root, state) {
             </span>
           </div>
         </header>
-        <div class="ccv2-scroll">${renderOverview(state)}</div>
+        <div class="ccv2-scroll">${activePage === "appearance" ? renderCharacterAppearance(state) : renderOverview(state)}</div>
         <div class="toast-region" aria-live="polite">${renderToast(state)}</div>
       </section>
     </main>`;
+}
+
+function renderNavItem(pageId, icon, label, activePage) {
+  const active = pageId === activePage;
+  return `<button class="nav-item${active ? " is-active" : ""}" type="button" data-page="${pageId}" aria-label="${label}"${active ? ' aria-current="page"' : ""}><span aria-hidden="true">${icon}</span><b>${label}</b></button>`;
 }
 
 function renderWindowButton(state, actionId, label, icon, className = "") {
