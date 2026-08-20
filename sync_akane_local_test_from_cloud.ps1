@@ -98,22 +98,70 @@ $projectEnvFile = Join-Path $projectDir ".env"
 if (Test-Path -LiteralPath $projectEnvFile -PathType Leaf) {
     $null = Import-AkaneEnvFile -Path $projectEnvFile
 }
-$pinAiApiKey = [Environment]::GetEnvironmentVariable("PINAI_API_KEY", "Process")
-if ([string]::IsNullOrWhiteSpace($pinAiApiKey)) {
-    $pinAiApiKey = [Environment]::GetEnvironmentVariable("CHAT_API_KEY", "Process")
-}
-if ([string]::IsNullOrWhiteSpace($pinAiApiKey)) {
+$candidateApiKeys = @(
+    [Environment]::GetEnvironmentVariable("PINAI_API_KEY", "Process"),
+    [Environment]::GetEnvironmentVariable("CHAT_API_KEY", "Process"),
+    [Environment]::GetEnvironmentVariable("IMAGE_GENERATION_API_KEY", "Process")
+) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+if ($candidateApiKeys.Count -eq 0) {
     throw "local_pinai_api_key_missing"
+}
+
+$requestedChatModel = "gpt-5.6-luna"
+$configuredChatModel = [Environment]::GetEnvironmentVariable("CHAT_MODEL_NAME", "Process")
+$configuredChatProtocol = [Environment]::GetEnvironmentVariable("CHAT_API_PROTOCOL", "Process")
+$configuredChatBaseUrl = [Environment]::GetEnvironmentVariable("CHAT_BASE_URL", "Process")
+$localChatModel = $requestedChatModel
+$localChatProtocol = "openai"
+$localChatBaseUrl = "https://api.pinaic.com/v1"
+$pinAiApiKey = [string]$candidateApiKeys[0]
+try {
+    $lunaKey = $null
+    foreach ($candidateApiKey in $candidateApiKeys) {
+        try {
+            $modelsResponse = Invoke-WebRequest `
+                -Uri "$localChatBaseUrl/models" `
+                -Method Get `
+                -Headers @{ Authorization = "Bearer $candidateApiKey" } `
+                -TimeoutSec 10 `
+                -UseBasicParsing
+            $modelPayload = $modelsResponse.Content | ConvertFrom-Json
+            $availableModels = @($modelPayload.data | ForEach-Object { [string]$_.id })
+            if ($availableModels -contains $requestedChatModel) {
+                $lunaKey = [string]$candidateApiKey
+                break
+            }
+        } catch {
+            continue
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($lunaKey)) {
+        $pinAiApiKey = $lunaKey
+    } else {
+        if ([string]::IsNullOrWhiteSpace($configuredChatModel) -or [string]::IsNullOrWhiteSpace($configuredChatBaseUrl)) {
+            throw "local_pinai_luna_unavailable_and_fallback_missing"
+        }
+        $localChatModel = $configuredChatModel.Trim()
+        $localChatProtocol = if ([string]::IsNullOrWhiteSpace($configuredChatProtocol)) { "auto" } else { $configuredChatProtocol.Trim() }
+        $localChatBaseUrl = $configuredChatBaseUrl.Trim()
+        Write-Host "[WARN] No local PinAI key provides gpt-5.6-luna; using the configured local chat model instead."
+    }
+} catch {
+    if ($_.Exception.Message -eq "local_pinai_luna_unavailable_and_fallback_missing") {
+        throw
+    }
+    Write-Host "[WARN] PinAI model availability check failed; keeping the requested Luna route."
 }
 
 $lines = New-Object System.Collections.Generic.List[string]
 foreach ($name in @("CHAT", "TEXT", "AUX")) {
     $lines.Add("${name}_API_KEY=$pinAiApiKey")
-    $lines.Add("${name}_API_PROTOCOL=openai")
-    $lines.Add("${name}_BASE_URL=https://api.pinaic.com/v1")
-    $lines.Add("${name}_MODEL_NAME=gpt-5.6-luna")
+    $lines.Add("${name}_API_PROTOCOL=$localChatProtocol")
+    $lines.Add("${name}_BASE_URL=$localChatBaseUrl")
+    $lines.Add("${name}_MODEL_NAME=$localChatModel")
 }
 $lines.Add("CHAT_SUPPORTS_IMAGES=false")
+$lines.Add("MEMCORE_SUMMARY_MODEL_NAME=$localChatModel")
 
 foreach ($name in $allowlist) {
     if ($name -eq "CHAT_SUPPORTS_IMAGES" -or $name -eq "MEMCORE_OPERATION_PROJECTION_POLICY") {
@@ -154,7 +202,8 @@ if ($null -ne $icacls -and -not [string]::IsNullOrWhiteSpace([string]$env:USERNA
 }
 
 Write-Host "[OK] Cloud-aligned local-test provider profile saved."
-Write-Host "[INFO] Chat/text/aux model: gpt-5.6-luna"
+Write-Host "[INFO] Chat/text/aux model: $localChatModel"
+Write-Host "[INFO] MemCore summary model: $localChatModel"
 Write-Host "[INFO] Vision model: $([string]$payload.VISION_MODEL_NAME)"
 Write-Host "[INFO] Shell execution: $([string]$payload.EXECUTION_ENABLED)"
 Write-Host "[INFO] MemCore tool-result settlement: compact_after_terminal"

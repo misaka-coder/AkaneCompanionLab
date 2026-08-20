@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -44,7 +45,7 @@ logger = logging.getLogger("akane.llm_runtime")
 # the per-Bot chat credentials (which are known to be live) while keeping a
 # stable, cost-conscious model instead of inheriting a stale AUX/DeepSeek
 # setting.  This is infrastructure summarization, not user-facing chat.
-MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-luna"
+MEMCORE_SUMMARY_MODEL_NAME = str(os.getenv("MEMCORE_SUMMARY_MODEL_NAME") or "gpt-5.6-luna").strip()
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
