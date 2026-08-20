@@ -2,14 +2,14 @@
 
 Status: design contract and interactive prototype only. It is not wired into the production control center.
 
-This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, theme behavior, and action feedback before production reintegration.
+This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
 
 ## Files
 
 - `contract.md` — product boundary, information architecture, runtime data contract, interaction states, and migration gates.
-- `prototype/index.html` — overview and character/appearance prototype.
+- `prototype/index.html` — overview, character/appearance, and chat-history prototype.
 - `prototype/styles.css` — glass shell, responsive layout, motion, and theme tokens.
-- `prototype/app.js` — local-only theme controls, image previews, navigation, and honest simulated action states.
+- `prototype/app.js` — local-only light/dark themes, framing editor, chat simulation, navigation, and honest simulated action states.
 
 ## Local preview
 

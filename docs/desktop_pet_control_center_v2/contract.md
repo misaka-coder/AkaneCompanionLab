@@ -35,11 +35,11 @@ Production navigation should converge to five destinations:
 |---|---|---|
 | Overview | active character, connection, current activity, music, recent delivery, common actions | activity details and last error |
 | Character & Appearance | quick switch, asset preview, theme, opacity, scale, font | open workshop, open pack folder, validate/reload assets |
-| Dialogue & Voice | bubble behavior, streaming, TTS, voice assignment | provider configuration and test playback |
+| Chat & Voice | durable chat history, composer, bubble behavior, streaming, TTS, voice assignment | provider configuration and test playback |
 | Abilities & Permissions | available capabilities, approvals, local execution/workspace access | provider/workflow configuration and failure reasons |
 | System & Diagnostics | instance, memory, storage health, updates | logs, advanced settings, recovery actions |
 
-Only Overview and Character & Appearance enter the first interactive prototype. The other destinations must not enter production until their real data/action boundaries are mapped.
+Overview, Character & Appearance, and the core Chat history surface enter the interactive prototype. Advanced voice, abilities, and diagnostics must not enter production until their real data/action boundaries are mapped.
 
 Music is a shared runtime capability. It belongs in the quick card and Overview unless its real feature density later justifies a dedicated page.
 
@@ -64,6 +64,19 @@ type ControlCenterCharacterVisuals = {
 ```
 
 Future character-pack metadata may declare these slots, but physical host paths stay behind Tauri/resource handles. The UI receives safe asset URLs or bytes, never database/cache paths.
+
+Every visual slot also owns non-destructive framing metadata. The original file is never rewritten just because the user changes its presentation:
+
+```ts
+type AssetFraming = {
+  x: number;      // normalized offset, independent of viewport pixels
+  y: number;
+  scale: number;
+  anchor?: "center" | "bottom" | "top";
+};
+```
+
+Avatar, portrait, background, and user avatar framing are stored independently. The editor must show each real target aspect ratio, support drag and zoom, expose reset/fit actions, and preserve a readable safe area.
 
 Fallback order:
 
@@ -166,7 +179,24 @@ Supported user-facing controls:
 
 The shell uses theme tokens rather than arbitrary CSS injection. Text contrast must remain readable over every background. Large images receive cached thumbnails for lists and reuse decoded resources while switching pages.
 
-## 9. Performance and motion gates
+Theme mode supports dark, light, and follow-system. A character pack may recommend theme tokens, but explicit user choices win. Theme and framing previews may be local drafts; production save must use the existing character-pack/settings authority and report failure honestly.
+
+## 9. Chat surface contract
+
+The dedicated chat surface solves the desktop bubble's deliberate ephemerality: it retains the visible conversation history, supports user and character avatars, and renders the same authoritative reply segments as the pet bubble.
+
+It must not create a second competing character body:
+
+- the desktop pet remains the full-body ambient presence;
+- the chat panel uses a crop-aware bust/portrait camera for emotion and activity;
+- the presence panel can be collapsed while history and composer remain usable;
+- expression, thinking, tool use, approval, delivery, and failure states may affect the portrait/status treatment but must not become repeated synthetic chat messages;
+- intermediate narration appears as a message only when it is part of the model's real user-visible speech;
+- opening the chat panel never duplicates or replays already delivered bubbles.
+
+User and character bubbles may have separate theme tokens. User avatar is a user preference, while the character avatar comes from the active character pack. Both use independent non-destructive framing.
+
+## 10. Performance and motion gates
 
 - Render shell/navigation from local state without waiting for backend health.
 - Hydrate status cards independently; no full-page loading gate.
@@ -178,7 +208,7 @@ The shell uses theme tokens rather than arbitrary CSS injection. Text contrast m
 - Respect `prefers-reduced-motion`.
 - Slow, failed, repeated, and cancelled requests remain operable and visible.
 
-## 10. Empty, slow, and failure states
+## 11. Empty, slow, and failure states
 
 Required states before production replacement:
 
@@ -192,7 +222,7 @@ Required states before production replacement:
 - character switch during loading;
 - repeated click while an action is pending.
 
-## 11. Production migration gates
+## 12. Production migration gates
 
 The prototype does not replace `control-center-lab.html`. Reintegration proceeds only after:
 
