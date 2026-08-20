@@ -106,6 +106,8 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn('$requestedChatModel = "gpt-5.6-luna"', source)
         self.assertIn('$localChatProtocol = "openai"', source)
         self.assertIn('$lines.Add("MEMCORE_SUMMARY_MODEL_NAME=$localChatModel")', source)
+        self.assertIn('$lines.Add("EMBEDDING_PROVIDER=hashed")', source)
+        self.assertIn('$lines.Add("ENABLE_NATIVE_TOOL_DECISION=false")', source)
         self.assertIn("/models", source)
         self.assertIn("$localChatModel", source)
         self.assertIn("local_pinai_api_key_missing", source)

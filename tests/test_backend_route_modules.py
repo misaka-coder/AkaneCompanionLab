@@ -683,6 +683,46 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(stream_lines[-1]["partial"]["speech"], "echo: hi")
         self.assertEqual(guard.released, 2)
 
+    def test_think_stream_closes_engine_iterator_when_response_is_closed(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        guard = FakeGuard()
+        close_events: list[str] = []
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                del payload
+                try:
+                    yield {"type": "ui", "emotion": "normal"}
+                    yield {"type": "final", "payload": {"speech": "ok", "emotion": "normal"}}
+                finally:
+                    close_events.append("closed")
+
+        router = build_think_router(
+            engine=FakeEngine(),
+            public_guard=guard,
+            runtime_metrics=runtime,
+            log_event=lambda *_args, **_kwargs: None,
+        )
+        endpoint = next(route.endpoint for route in router.routes if getattr(route, "path", "") == "/think")
+
+        async def exercise_disconnect() -> None:
+            body = json.dumps({"user_id": "desktop", "message": "hi"}).encode()
+
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            response = await endpoint(Request({"type": "http", "method": "POST", "path": "/think", "headers": []}, receive))
+            first = json.loads((await response.body_iterator.__anext__()).strip())
+            second = json.loads((await response.body_iterator.__anext__()).strip())
+            await response.body_iterator.aclose()
+            self.assertEqual(first["type"], "stream_start")
+            self.assertEqual(second["type"], "ui")
+
+        asyncio.run(exercise_disconnect())
+        self.assertEqual(close_events, ["closed"])
+        self.assertEqual(guard.released, 1)
+        self.assertEqual(runtime.observed, [("think_stream", False)])
+
     def test_think_router_invalid_payload_does_not_call_engine(self) -> None:
         runtime = FakeRuntimeMetrics()
         app = FastAPI()

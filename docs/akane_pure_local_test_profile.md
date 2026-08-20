@@ -10,7 +10,7 @@
 - QQ channel 固定关闭，避免本地测试进程与线上 Bot 同时消费消息。
 - 命名实例需要的管理凭据与 Satellite 凭据在每次启动时临时生成，只在本地后端与桌宠子进程间共享，不写入 `.env`、日志或实例清单。
 - Prompt、角色包、Skill 和生产代码来自当前工作区；模型、视觉和 env 级 TTS 默认值复用项目根目录 `.env`。
-- 若存在 `%LOCALAPPDATA%\Akane\local-test-runtime\config\cloud-aligned.env`，它会在项目 `.env` 之后加载。纯本地测试档优先让 Chat/Text/Aux 走 PinAI `gpt-5.6-luna`；启动同步会先检查当前账户是否提供该模型，若没有则回退到项目 `.env` 中的聊天模型，并让 MemCore 总结使用同一实际模型；视觉模型、Shell 和 Memory backend 则与云端当前运行配置对齐；该私密文件不在仓库内。
+- 若存在 `%LOCALAPPDATA%\Akane\local-test-runtime\config\cloud-aligned.env`，它会在项目 `.env` 之后加载。纯本地测试档优先让 Chat/Text/Aux 走 PinAI `gpt-5.6-luna`；启动同步会先检查当前账户是否提供该模型，若没有则回退到项目 `.env` 中的聊天模型，并让 MemCore 总结使用同一实际模型；本地桌宠保持 Chat Completions，但默认关闭 native tool decision，避免普通聊天被慢工具回合拖到桌面 HTTP 超时；本地隔离档还使用轻量 hashed embedding，避免新会话同步加载并重建大型本地向量模型，MemCore 本身仍然启用；视觉模型、Shell 和 Memory backend 则与云端当前运行配置对齐；该私密文件不在仓库内。
 - 内部 Python 包按相邻源码仓库的 Git 提交指纹对齐；提交变化时会在本机缓存中重建 wheel 并更新 `.venv`，日常启动不会重复构建。
 - 新建的纯本地测试档首次启动默认使用“完全访问”，避免桌宠主界面无法承接逐次审批；这只作用于回环地址上的隔离 `local-test` 实例，且不会跳过 URL、路径、密钥等硬安全校验。之后在“设置 → 能力 → 安全边界”做出的选择会被保留，启动器不会反复覆盖。
 - 这是“Akane 宿主纯本地”，不是“模型离线运行”。若 `.env` 指向 DeepSeek、Gemini 等远程 provider，模型请求仍需要联网。

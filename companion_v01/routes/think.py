@@ -64,14 +64,22 @@ def build_think_router(
             )
             raise HTTPException(status_code=429, detail=guard_decision.message)
 
-        def _stream():
+        def _advance_stream(stream: Any) -> tuple[bool, Any]:
+            try:
+                return True, next(stream)
+            except StopIteration:
+                return False, None
+
+        async def _stream():
             started_at = time.perf_counter()
             partial = {
                 "emotion": "",
                 "speech": "",
                 "event_count": 0,
             }
+            turn_stream = None
             ok = False
+            disconnected = False
             yield json.dumps(
                 {
                     "type": "stream_start",
@@ -80,7 +88,16 @@ def build_think_router(
                 ensure_ascii=False,
             ) + "\n"
             try:
-                for event in engine.process_turn_stream(payload):
+                # Keep an explicit handle so a client-side abort closes the
+                # engine stream in the same response cleanup path.  Relying on
+                # generator garbage collection can inject GeneratorExit into
+                # the inner stream from a different context, leaving an open
+                # MemCore turn behind for the next desktop-pet message.
+                turn_stream = engine.process_turn_stream(payload)
+                while True:
+                    has_event, event = await asyncio.to_thread(_advance_stream, turn_stream)
+                    if not has_event:
+                        break
                     partial["event_count"] = int(partial.get("event_count", 0)) + 1
                     event_type = str(event.get("type") or "")
                     if event_type == "ui":
@@ -102,6 +119,9 @@ def build_think_router(
                             partial["speech"] = str(final_payload.get("speech") or partial.get("speech") or "")
                     yield json.dumps(event, ensure_ascii=False) + "\n"
                 ok = True
+            except (GeneratorExit, asyncio.CancelledError):
+                disconnected = True
+                raise
             except Exception as exc:
                 yield json.dumps(
                     {
@@ -116,19 +136,26 @@ def build_think_router(
                 ) + "\n"
                 log_event("think_stream_error", session_id=str(payload.get("user_id") or ""), message=str(exc), partial=partial)
             finally:
+                close_stream = getattr(turn_stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception as exc:
+                        logger.warning("think stream cleanup failed: %s", type(exc).__name__)
                 if guard_decision.acquired:
                     public_guard.release()
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request("think_stream", duration_ms=duration_ms, ok=ok)
-                yield json.dumps(
-                    {
-                        "type": "stream_end",
-                        "contract_version": DESKTOP_PET_CONTRACT_VERSION,
-                        "status": "ok" if ok else "error",
-                        "partial": partial,
-                    },
-                    ensure_ascii=False,
-                ) + "\n"
+                if not disconnected:
+                    yield json.dumps(
+                        {
+                            "type": "stream_end",
+                            "contract_version": DESKTOP_PET_CONTRACT_VERSION,
+                            "status": "ok" if ok else "error",
+                            "partial": partial,
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
 
         return StreamingResponse(
             _stream(),

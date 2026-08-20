@@ -162,6 +162,16 @@ foreach ($name in @("CHAT", "TEXT", "AUX")) {
 }
 $lines.Add("CHAT_SUPPORTS_IMAGES=false")
 $lines.Add("MEMCORE_SUMMARY_MODEL_NAME=$localChatModel")
+# The isolated desktop profile must not synchronously load/reindex the large
+# local sentence-transformer model when a new chat session opens. MemCore
+# remains enabled; only its local retrieval embedding uses the lightweight
+# deterministic fallback so ordinary Chat Completions turns can start promptly.
+$lines.Add("EMBEDDING_PROVIDER=hashed")
+# The local desktop pet is a conversational Chat client.  Keep provider/model
+# selection on the Chat Completions path, but do not expose the full native
+# tool fabric to ordinary pet turns: a slow or speculative tool round can
+# outlive the desktop HTTP client and look like a provider outage.
+$lines.Add("ENABLE_NATIVE_TOOL_DECISION=false")
 
 foreach ($name in $allowlist) {
     if ($name -eq "CHAT_SUPPORTS_IMAGES" -or $name -eq "MEMCORE_OPERATION_PROJECTION_POLICY") {
