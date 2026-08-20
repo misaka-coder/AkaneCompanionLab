@@ -15,6 +15,7 @@ import {
   createControlCenterViewModel,
   isObservedActionConfirmation
 } from "./view-model.js";
+import { modelServiceOperation, runModelServiceBridgeAction } from "./model-service.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
@@ -36,6 +37,7 @@ const OBSERVED_ACTION_IDS = new Set([
   "perception.runDiagnostics",
   "advanced.setHitTestEnabled",
   "advanced.setHitboxOverlay",
+  "settings.selectBot",
   "character.selectPack",
   "character.setOutfit",
   "character.previewEmotion",
@@ -102,7 +104,15 @@ export function createControlCenterBridge(options = {}) {
       if (!source || typeof source.readSnapshot !== "function") {
         throw new Error("control_center_snapshot_source_unavailable");
       }
-      const next = await source.readSnapshot();
+      const [next, modelRuntime, botCatalog] = await Promise.all([
+        source.readSnapshot(),
+        typeof source.readModelService === "function"
+          ? source.readModelService().catch(() => null)
+          : Promise.resolve(null),
+        typeof source.readBotCatalog === "function"
+          ? source.readBotCatalog().catch(() => null)
+          : Promise.resolve(null)
+      ]);
       if (!next) {
         const reason = source.getFallbackReason?.() || source.fallbackReason || "snapshot_unavailable";
         throw new Error(String(reason));
@@ -110,6 +120,8 @@ export function createControlCenterBridge(options = {}) {
       const chatSession = await readChatSessionForRuntime();
       rawSnapshot = {
         ...createControlCenterRuntimeSnapshot(next),
+        modelRuntime: modelRuntime || rawSnapshot?.modelRuntime || {},
+        botCatalog: botCatalog || rawSnapshot?.botCatalog || {},
         ...(chatSession ? { chatSession } : {})
       };
       publish();
@@ -131,7 +143,9 @@ export function createControlCenterBridge(options = {}) {
       return { ok: false, status: "not-available", actionId, reason: "control_center_bridge_not_started" };
     }
     const beforeRuntimeSnapshot = runtimeSnapshot;
-    let result = await actionRouter.run(actionId, payload, { source: "control-center-v2" });
+    let result = modelServiceOperation(actionId)
+      ? await runModelServiceBridgeAction(source, actionId, payload)
+      : await actionRouter.run(actionId, payload, { source: "control-center-v2" });
     if (result.ok && OBSERVED_ACTION_IDS.has(actionId)) {
       const confirmed = await waitForRuntimeConfirmation(actionId, payload, beforeRuntimeSnapshot, () => runtimeSnapshot);
       result = confirmed
@@ -144,6 +158,11 @@ export function createControlCenterBridge(options = {}) {
             observed: false,
             refresh: false
           };
+    }
+    if (result.ok && actionId === "settings.selectBot") {
+      const sourceOptions = await createSourceOptions({ isTauri });
+      source = createControlCenterDataSource(sourceOptions);
+      actionRouter = createControlCenterActionRouter({ dataSource: source });
     }
     if (result.refresh) {
       if (isTauri) {

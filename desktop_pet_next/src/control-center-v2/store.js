@@ -23,9 +23,9 @@ export function createControlCenterStore(initialState) {
   };
 }
 
-export function createInitialControlCenterState() {
+export function createInitialControlCenterState(options = {}) {
   return {
-    activePage: "overview",
+    activePage: options.activePage || "overview",
     phase: "connecting",
     refreshedAt: 0,
     error: "",
@@ -34,6 +34,8 @@ export function createInitialControlCenterState() {
     presentationPackId: "",
     presentationPreferences: DEFAULT_PRESENTATION_PREFERENCES,
     framingTarget: "portrait",
-    presentationNotice: null
+    presentationNotice: null,
+    modelDraft: null,
+    modelModels: []
   };
 }

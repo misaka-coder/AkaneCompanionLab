@@ -3,6 +3,7 @@ import { renderCharacterAppearance } from "./appearance.js";
 import { renderAbilities } from "./abilities.js";
 import { renderChat } from "./chat.js";
 import { renderOverview } from "./overview.js";
+import { renderModelService } from "./model.js";
 import { renderVoice } from "./voice.js";
 import { renderSystem } from "./system.js";
 
@@ -18,6 +19,8 @@ export function renderControlCenterShell(root, state) {
       ? "能力清楚，权限也清楚"
     : activePage === "voice"
       ? "声音顺手，状态也诚实"
+    : activePage === "model"
+      ? "模型连得上，配置也说得清"
     : activePage === "system"
       ? "看得懂，也修得动"
     : activePage === "chat"
@@ -26,12 +29,13 @@ export function renderControlCenterShell(root, state) {
   root.innerHTML = `
     <main class="ccv2-shell" data-connection="${escapeHtml(connected)}">
       <aside class="ccv2-rail">
-        <div class="ccv2-brand"><span class="brand-mark">A</span><span><strong>桌宠控制中心</strong><small>V2 候选实现</small></span></div>
+        <div class="ccv2-brand"><span class="brand-mark">A</span><span><strong>桌宠控制中心</strong><small>真实运行设置</small></span></div>
         <nav aria-label="控制中心导航">
           ${renderNavItem("overview", "⌂", "总览", activePage)}
           ${renderNavItem("chat", "◌", "聊天", activePage)}
           ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
           ${renderNavItem("voice", "♪", "语音与唤醒", activePage)}
+          ${renderNavItem("model", "◇", "模型服务", activePage)}
           ${renderNavItem("abilities", "⌁", "能力与权限", activePage)}
           ${renderNavItem("system", "⚙", "系统与诊断", activePage)}
         </nav>
@@ -65,6 +69,7 @@ function renderPage(activePage, state) {
   if (activePage === "chat") return renderChat(state);
   if (activePage === "appearance") return renderCharacterAppearance(state);
   if (activePage === "voice") return renderVoice(state);
+  if (activePage === "model") return renderModelService(state);
   if (activePage === "abilities") return renderAbilities(state);
   if (activePage === "system") return renderSystem(state);
   return renderOverview(state);

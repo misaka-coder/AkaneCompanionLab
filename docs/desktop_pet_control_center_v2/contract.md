@@ -181,7 +181,7 @@ The shell uses theme tokens rather than arbitrary CSS injection. Text contrast m
 
 Theme mode supports dark, light, and follow-system. A character pack may recommend theme tokens, but explicit user choices win. Theme and framing previews may be local drafts; production save must use the existing character-pack/settings authority and report failure honestly.
 
-The current V2 candidate intentionally keeps shell presentation preferences instance-scoped on the local device. It stores theme/accent/font/opacity/dimming/blur/motion globally for that bound instance and framing separately per character pack. This is not character-pack authoring: the original assets and the desktop pet's calibrated layout remain unchanged, and a failed local write is shown as a failure rather than a saved state.
+Production V2 intentionally keeps shell presentation preferences instance-scoped on the local device. It stores theme/accent/font/opacity/dimming/blur/motion globally for that bound instance and framing separately per character pack. This is not character-pack authoring: the original assets and the desktop pet's calibrated layout remain unchanged, and a failed local write is shown as a failure rather than a saved state.
 
 ## 9. Chat surface contract
 
@@ -228,7 +228,7 @@ Required states before production replacement:
 
 ## 12. Production migration gates
 
-The prototype does not replace `control-center-lab.html`. Reintegration proceeds only after:
+Production reintegration completed on 2026-08-21 after:
 
 1. Overview and Character & Appearance are accepted visually.
 2. Every displayed field maps to a real snapshot source or honest empty state.

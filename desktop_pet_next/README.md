@@ -128,8 +128,8 @@ npm run build
 
 The settings window has one implementation: `control-center-lab.html`. The
 `settings.html` path is only a compatibility redirect for stale links and must
-not own features. `npm run dev:control-center` remains available as an explicit
-control-center development entry. Settings and workspace windows are
+not own features. `control-center-v2.html` is also a compatibility redirect;
+the canonical page loads `src/control-center-v2/index.js` directly. Settings and workspace windows are
 non-topmost so the pet keeps its always-on-top priority.
 
 ### Control Center Verification Matrix

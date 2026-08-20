@@ -12,7 +12,6 @@ const REQUIRED_FILES = [
   "control-center-lab.html",
   "control-center-v2.html",
   "src/control-center-lab.js",
-  "src/control-center-lab.css",
   "src/control-center/action-router.js",
   "src/control-center/action-surface-contract.js",
   "src/control-center/data-sources.js",
@@ -22,6 +21,8 @@ const REQUIRED_FILES = [
   "src/control-center-v2/view-model.js",
   "src/control-center-v2/components/action-button.js",
   "src/control-center-v2/components/appearance.js",
+  "src/control-center-v2/components/model.js",
+  "src/control-center-v2/model-service.js",
   "scripts/control-center-action-bridge-smoke.mjs",
   "scripts/control-center-runtime-probe.mjs",
   "scripts/control-center-ux-smoke.mjs",
@@ -30,6 +31,7 @@ const REQUIRED_FILES = [
 const FORBIDDEN_LEGACY_FILES = [
   "src/settings.js",
   "src/settings.css",
+  "src/control-center-lab.css",
 ];
 
 function checkRequiredFiles() {

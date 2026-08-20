@@ -12,9 +12,9 @@ const codexDir = resolve(projectRoot, ".codex");
 // ---------------------------------------------------------------------------
 
 const REQUIRED_HTML = "dist/control-center-lab.html";
-const V2_CANDIDATE_HTML = "dist/control-center-v2.html";
+const V2_COMPATIBILITY_HTML = "dist/control-center-v2.html";
 
-for (const rel of [REQUIRED_HTML, V2_CANDIDATE_HTML]) {
+for (const rel of [REQUIRED_HTML, V2_COMPATIBILITY_HTML]) {
   const abs = resolve(projectRoot, rel);
   assert.ok(existsSync(abs), `UX: built artifact ${rel} should exist`);
 }
@@ -45,19 +45,16 @@ for (const rel of [builtAssetRefs.css, builtAssetRefs.js]) {
 {
   const cssContent = readFileSync(resolve(projectRoot, builtAssetRefs.css), "utf8");
   assert.ok(cssContent.includes("overflow:hidden"), "UX: CSS should have overflow:hidden on shell/body");
-  assert.ok(cssContent.includes("overflow-x:hidden"), "UX: CSS should have overflow-x:hidden on body");
-  assert.ok(cssContent.includes("action-unavailable"), "UX: CSS should style [data-action-unavailable]");
   assert.ok(cssContent.includes("not-allowed"), "UX: CSS should show not-allowed cursor on disabled actions");
-  assert.ok(cssContent.includes("pointer-events:none"), "UX: CSS should disable pointer events on :disabled buttons");
   assert.ok(cssContent.includes("button:disabled"), "UX: CSS should have button:disabled selector");
 }
 console.log("3/6 built CSS has scrollbar prevention and disabled action styling");
 
 {
-  const htmlContent = readFileSync(resolve(projectRoot, V2_CANDIDATE_HTML), "utf8");
-  assert.ok(htmlContent.includes('id="app"'), "UX: V2 candidate should have #app mounting point");
-  assert.ok(/controlCenterV2Candidate-[^"]+\.js/.test(htmlContent), "UX: V2 candidate should reference its JS entry");
-  assert.ok(/controlCenterV2Candidate-[^"]+\.css/.test(htmlContent), "UX: V2 candidate should reference its CSS entry");
+  const htmlContent = readFileSync(resolve(projectRoot, V2_COMPATIBILITY_HTML), "utf8");
+  assert.ok(htmlContent.includes("control-center-lab.html"), "UX: V2 compatibility entry should redirect to the canonical control center");
+  assert.ok(htmlContent.includes("window.location.replace"), "UX: V2 compatibility entry should preserve query/hash with a script redirect");
+  assert.ok(!htmlContent.includes('id="app"'), "UX: V2 compatibility entry must not own a second renderer");
 }
 
 // ---------------------------------------------------------------------------
@@ -75,17 +72,14 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
   console.log("4/6 window chrome action IDs present in bundle");
 
   // Nav page labels
-  const navLabels = ["总览", "模型", "角色", "语音", "音乐", "桌面感知", "能力", "高级"];
+  const navLabels = ["总览", "聊天", "角色与外观", "语音与唤醒", "模型服务", "能力与权限", "系统与诊断"];
   for (const label of navLabels) {
     assert.ok(jsContent.includes(label), `UX: JS bundle should render nav item "${label}"`);
   }
-  for (const label of ["产品化状态", "开源前验收", "这些不是要隐藏的功能"]) {
-    assert.ok(jsContent.includes(label), `UX: JS bundle should render productization label "${label}"`);
+  for (const label of ["真实数据模式", "连接模型服务", "密钥不会出现在快照和日志里"]) {
+    assert.ok(jsContent.includes(label), `UX: JS bundle should render production label "${label}"`);
   }
-  for (const label of ["MCP 配置向导", "添加自定义 stdio", "保存并发现工具", "HTTP / Streamable", "默认不进提示词"]) {
-    assert.ok(jsContent.includes(label), `UX: JS bundle should render MCP manager label "${label}"`);
-  }
-  console.log("5/6 all 8 nav page labels present in bundle");
+  console.log("5/6 all 7 production destinations present in bundle");
 }
 
 // ---------------------------------------------------------------------------

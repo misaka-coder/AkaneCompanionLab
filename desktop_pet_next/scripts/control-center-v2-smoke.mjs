@@ -10,6 +10,14 @@ import { renderAbilities } from "../src/control-center-v2/components/abilities.j
 import { renderChat } from "../src/control-center-v2/components/chat.js";
 import { renderVoice } from "../src/control-center-v2/components/voice.js";
 import { renderSystem } from "../src/control-center-v2/components/system.js";
+import { renderModelService } from "../src/control-center-v2/components/model.js";
+import { renderOverview } from "../src/control-center-v2/components/overview.js";
+import {
+  createModelServiceDraft,
+  modelServicePayload,
+  MODEL_SERVICE_ACTIONS,
+  runModelServiceBridgeAction
+} from "../src/control-center-v2/model-service.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
   loadPresentationPreferences,
@@ -28,6 +36,7 @@ import {
 const rawSnapshot = {
   sourceKind: "backend",
   fallbackReason: null,
+  controlCenterV2: { liveSnapshotStatus: "connected" },
   generatedAt: "2026-08-20T08:00:00.000Z",
   controlCenterRuntime: {
     health: { ok: true, status: 200, data: { instance_id: "desktop-local" } },
@@ -35,6 +44,29 @@ const rawSnapshot = {
     workspace: { ok: true, status: 200, data: { ok: true } },
     metrics: { ok: true, status: 200, data: "akane_tracemalloc_current_bytes 120000" },
     capabilitiesCatalog: { ok: true, status: "available", data: { ok: true } }
+  },
+  modelRuntime: {
+    status: "configured",
+    source: "local_file",
+    providerId: "deepseek",
+    protocol: "openai",
+    baseUrl: "https://api.deepseek.com/v1",
+    chatModel: "deepseek-chat",
+    hasApiKey: true,
+    useForVision: true,
+    visionModel: "vision-model",
+    timeoutSeconds: 120,
+    providers: [
+      { id: "deepseek", label: "DeepSeek", protocol: "openai", baseUrl: "https://api.deepseek.com/v1" },
+      { id: "ollama", label: "Ollama", protocol: "ollama", baseUrl: "http://127.0.0.1:11434/v1", apiKeyRequired: false }
+    ]
+  },
+  botCatalog: {
+    defaultBotId: "bot-main",
+    bots: [
+      { botId: "bot-main", displayName: "主桌宠", available: true, default: true },
+      { botId: "bot-work", displayName: "工作桌宠", available: true }
+    ]
   },
   overviewRuntime: {
     shell: { status: "在线" },
@@ -159,6 +191,7 @@ const rawSnapshot = {
 const runtimeSnapshot = {
   state: {
     instanceId: "desktop-local",
+    boundBotId: "bot-main",
     sessionId: "session-chat",
     characterPackId: "test_character",
     outfit: "default",
@@ -182,6 +215,9 @@ const runtimeSnapshot = {
 const viewModel = createControlCenterViewModel(rawSnapshot, runtimeSnapshot);
 assert.equal(viewModel.shell.connected, true);
 assert.equal(viewModel.shell.instanceLabel, "desktop-local");
+assert.equal(viewModel.bots.activeId, "bot-main");
+assert.equal(viewModel.bots.items.length, 2);
+assert.equal(viewModel.actions["settings.selectBot"].available, true);
 assert.equal(viewModel.character.displayName, "测试角色");
 assert.equal(viewModel.character.emotion, "开心");
 assert.equal(viewModel.character.resourceWarnings.length, 0);
@@ -193,12 +229,18 @@ assert.equal(viewModel.character.completeness, 100);
 assert.equal(viewModel.activity.phase, "thinking");
 assert.equal(viewModel.activity.label, "正在整理文件");
 assert.equal(viewModel.music.playback, "playing");
+assert.match(renderOverview({ viewModel, actionStates: {} }), /data-bound-bot-select/);
+assert.match(renderOverview({ viewModel, actionStates: {} }), /class="mood-line"/);
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
 assert.equal(viewModel.abilities.available, true);
 assert.equal(viewModel.abilities.availability, 86);
 assert.equal(viewModel.abilities.modules.length, 2);
 assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
 assert.equal(viewModel.abilities.integrations.length, 3);
+assert.equal(viewModel.model.available, true);
+assert.equal(viewModel.model.providerId, "deepseek");
+assert.equal(viewModel.model.hasApiKey, true);
+assert.equal(viewModel.model.providers.length, 2);
 assert.equal(viewModel.voice.available, true);
 assert.equal(viewModel.voice.controlsAvailable, true);
 assert.equal(viewModel.voice.tts.provider.name, "GPT-SoVITS");
@@ -215,6 +257,9 @@ assert.equal(viewModel.system.settings[0].enabled, true);
 assert.equal(viewModel.system.settings[1].enabled, false);
 assert.equal(viewModel.system.hasEventSource, false);
 assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
+assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.models].available, true);
+assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.test].available, true);
+assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.save].available, true);
 assert.equal(viewModel.chat.title, "下午的对话");
 assert.equal(viewModel.chat.messages.length, 3);
 assert.equal(viewModel.chat.messages[2].intermediate, true);
@@ -303,6 +348,11 @@ assert.deepEqual(normalizeActionPresentation({ ok: false, status: "failed", erro
   phase: "failed",
   label: "操作失败",
   detail: "permission_denied"
+});
+assert.deepEqual(normalizeActionPresentation({ ok: false, status: "failed", reason: "admin_auth_required" }), {
+  phase: "failed",
+  label: "操作失败",
+  detail: "此操作只能从桌面控制中心执行"
 });
 assert.deepEqual(normalizeActionPresentation({ ok: true, status: "executed", actionId: "advanced.resetWindow" }), {
   phase: "unknown",
@@ -421,6 +471,12 @@ assert.equal(isObservedActionConfirmation(
   { state: { characterPackId: "unexpected_character" } },
   { value: "second_character" }
 ), false);
+assert.equal(isObservedActionConfirmation(
+  "settings.selectBot",
+  { state: { boundBotId: "bot-main" } },
+  { state: { boundBotId: "bot-work" } },
+  { value: "bot-work" }
+), true);
 
 const appearanceHtml = renderCharacterAppearance({
   viewModel,
@@ -531,6 +587,33 @@ assert.match(abilitiesHtml, /data-approval-mode="trusted_auto_allow"/);
 assert.match(abilitiesHtml, /硬安全边界始终保留/);
 assert.match(abilitiesHtml, /AnySearch/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
+
+const modelDraft = createModelServiceDraft(viewModel.model);
+const modelHtml = renderModelService({ viewModel, actionStates: {}, phase: "ready", modelDraft, modelModels: [] });
+assert.match(modelHtml, /把她连接到真正的模型/);
+assert.match(modelHtml, /data-model-field="apiKey"/);
+assert.match(modelHtml, /已保存，留空表示继续使用原密钥/);
+assert.match(modelHtml, /data-action="model\.models"/);
+assert.match(modelHtml, /data-action="model\.test"/);
+assert.match(modelHtml, /data-action="model\.save"/);
+assert.doesNotMatch(modelHtml, /secret|sk-/i);
+assert.equal(modelServicePayload({ ...modelDraft, standaloneVision: false }).visionApiKey, undefined);
+
+const modelActionCalls = [];
+const modelSource = {
+  async runModelServiceAction(operation, payload) {
+    modelActionCalls.push({ operation, payload });
+    return { ok: true, status: operation === "save" ? "configured" : "available", models: operation === "models" ? ["model-a"] : undefined };
+  }
+};
+const modelProbeResult = await runModelServiceBridgeAction(modelSource, MODEL_SERVICE_ACTIONS.models, modelServicePayload(modelDraft));
+assert.equal(modelProbeResult.ok, true);
+assert.equal(modelProbeResult.refresh, false);
+assert.deepEqual(modelProbeResult.models, ["model-a"]);
+const modelSaveResult = await runModelServiceBridgeAction(modelSource, MODEL_SERVICE_ACTIONS.save, modelServicePayload(modelDraft));
+assert.equal(modelSaveResult.status, "configured");
+assert.equal(modelSaveResult.refresh, true);
+assert.deepEqual(modelActionCalls.map((item) => item.operation), ["models", "save"]);
 
 const voiceHtml = renderVoice({ viewModel, actionStates: {}, phase: "ready" });
 assert.match(voiceHtml, /让她听见，也让她说出来/);

@@ -202,7 +202,8 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 | File | Responsibility |
 |------|---------------|
 | `index.html` | Main pet window HTML. Mounts `#app`, loads `main.js`. |
-| `control-center-lab.html` | Default control center HTML. Mounts `#app`, loads `control-center-lab.js`. |
+| `control-center-lab.html` | Sole production control center HTML. Mounts `#app`, loads `src/control-center-v2/index.js`. |
+| `control-center-v2.html` | Compatibility redirect to `control-center-lab.html`; preserves query/hash and owns no renderer. |
 | `settings.html` | Compatibility redirect to `control-center-lab.html`; owns no settings behavior. |
 | `workspace.html` | Workspace (hand-side items) window. Loads `workspace.js`. |
 | `vite.config.js` | Vite build configuration. Multi-page: index, settings, workspace, control-center-lab. |
@@ -218,17 +219,18 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 | `src/styles.css` | Main pet window styles. |
 | `src/workspace.css` | Workspace window styles. |
 
-### Control Center Lab (New, Beta)
+### Control Center (Production V2)
 
 | File | Responsibility |
 |------|---------------|
-| `src/control-center-lab.js` | **New control center (~2270 lines).** Full SPA with 7 pages (Overview, Character, Voice, Music, Perception, Abilities, Advanced). Initializes from mock data, then hydrates from backend snapshot + Tauri `load_pet_state`. Manages action routing, local optimistic state, scroll positions, page navigation. Features: action feedback (onAfterAction → snapshot refresh), live emotion preview sync (normalizeEmotionCards from manifest), recent outputs card, music recommendations projection. |
-| `src/control-center-lab.css` | Control center styles (~5400 lines). Layout, glass cards, sky background, media queries. |
+| `src/control-center-lab.js` | Two-line compatibility adapter for stale imports; owns no behavior. |
+| `src/control-center-v2/` | Production component/store/bridge implementation. Seven destinations: Overview, Chat, Character & Appearance, Voice & Wake, Model Service, Abilities & Permissions, System & Diagnostics. Uses real backend/Tauri state, observed action confirmation, honest empty/failure states, presentation preferences, and Bot rebinding. |
+| `src/control-center-v2/styles.css` | Production control-center styles, themes, wide/narrow layouts, reduced motion, framing, and action states. |
 | `src/control-center/action-router.js` | `CONTROL_CENTER_ACTIONS` (77 action ID constants), `CONTROL_CENTER_BRIDGED_ACTION_IDS` (44 bridged), `createControlCenterActionRouter` — action dispatch: registered handler → dataSource → not-implemented. |
 | `src/control-center/action-surface-contract.js` | Machine-readable catalog: every action ID classified as `bridged` (44), `client-handled` (3), or `deferred` (31). Exports `getUncataloguedBridgedActionIds()`. |
 | `src/control-center/data-sources.js` | Data source factory: `createMockControlCenterSource`, `createTauriControlCenterSource`, `createBackendControlCenterSource`. Unified snapshot pipeline (`tryReadUnifiedSnapshot`), individual endpoint fallback. 8 `build*RuntimePatch` functions (health, overview, character, voice, perception, music, advanced, recentOutputs). Prometheus metrics parser. Action execution via `runTauriControlCenterAction`. Emotion card resolution from manifest via `normalizeEmotionCards`/`findManifestEntry`. |
 | `src/control-center/data-adapter.js` | `createControlCenterSnapshot(raw)` — normalizes raw source data into typed `ControlCenterSnapshot`. 7 `adapt*Page` functions, `patchRowsByLabel`, label-based patching for overview/advanced. |
-| `src/control-center/mock-data.js` | Default mock data for ALL 7 pages. Fallback when backend is unavailable. |
+| `src/control-center/mock-data.js` | Legacy adapter/probe fixture only; production V2 never renders it as fallback. |
 | `src/control-center/action-helpers.js` | `createControlCenterActionPayloadFromDataset` — converts `data-*` attributes to structured action payloads. `secondsFromIntervalLabel`. |
 | `src/control-center/snapshot-schema.js` | `CONTROL_CENTER_SCHEMA_VERSION`, `CONTROL_CENTER_PAGE_IDS`, `isKnownControlCenterPage`. |
 

@@ -1,4 +1,6 @@
-const SUCCESS_STATUSES = new Set(["executed", "completed", "available", "already-playing", "already-paused", "already-stopped"]);
+import { MODEL_SERVICE_ACTIONS, normalizeModelServiceRuntime } from "./model-service.js";
+
+const SUCCESS_STATUSES = new Set(["executed", "completed", "available", "connected", "configured", "already-playing", "already-paused", "already-stopped"]);
 
 export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null) {
   const raw = asObject(rawSnapshot);
@@ -25,6 +27,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
+  const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
   const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
   const system = normalizeSystemRuntime(raw, live, {
     connected,
@@ -38,6 +41,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     characterName: displayName,
     characterAvatar: portrait
   });
+  const bots = normalizeBotCatalog(raw.botCatalog, text(petState.boundBotId));
 
   return {
     shell: {
@@ -68,9 +72,11 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     },
     activity,
     chat,
+    bots,
     music,
     recentOutputs: outputs,
     abilities,
+    model,
     voice,
     system,
     abilityLabels: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
@@ -82,6 +88,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       },
       "chat.stop": { available: connected && Boolean(active.sending || active.replyDisplayActive), reason: "当前没有进行中的回复" },
       "workspace.open": { available: true, reason: "" },
+      "settings.selectBot": { available: connected && liveSnapshotStatus === "connected" && bots.items.length > 1, reason: connected ? "没有其他可切换的 Bot" : "桌宠尚未连接" },
       "character.openWorkshop": { available: true, reason: "" },
       "character.openPackFolder": { available: true, reason: "" },
       "character.selectPack": { available: connected && availablePacks.length > 0, reason: connected ? "没有可切换的角色包" : "桌宠尚未连接" },
@@ -89,6 +96,9 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
       "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
+      [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
+      [MODEL_SERVICE_ACTIONS.test]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
+      [MODEL_SERVICE_ACTIONS.save]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
       "voice.test": voiceActionAvailability(voice.controlsAvailable && !voice.speaking, "当前正在播放语音"),
       "voice.stop": voiceActionAvailability(voice.controlsAvailable && voice.speaking, "当前没有正在播放的语音"),
       "voice.previewPlay": voiceActionAvailability(voice.controlsAvailable && !voice.speaking, "当前正在播放语音"),
@@ -120,7 +130,7 @@ export function normalizeActionPresentation(result) {
     return { phase: "confirmed", label: "已完成", detail: "" };
   }
   if (status === "execution_unknown" || status === "unknown") {
-    const reason = text(value.reason) || text(value.error);
+    const reason = friendlyActionDetail(text(value.reason) || text(value.error));
     return {
       phase: "unknown",
       label: "已发送，未确认",
@@ -128,12 +138,20 @@ export function normalizeActionPresentation(result) {
     };
   }
   if (status === "not-implemented" || status === "not-available") {
-    return { phase: "failed", label: "当前不可用", detail: text(value.reason) || "该入口尚未接通" };
+    return { phase: "failed", label: "当前不可用", detail: friendlyActionDetail(text(value.reason)) || "该入口尚未接通" };
   }
   if (value.ok) {
     return { phase: "confirmed", label: status === "mocked" ? "仅模拟" : "已完成", detail: "" };
   }
-  return { phase: "failed", label: "操作失败", detail: text(value.reason) || text(value.error) || status };
+  return { phase: "failed", label: "操作失败", detail: friendlyActionDetail(text(value.reason) || text(value.error) || status) };
+}
+
+function friendlyActionDetail(value) {
+  return {
+    admin_auth_required: "此操作只能从桌面控制中心执行",
+    request_failed: "请求没有完成，请检查服务连接后重试",
+    "request-failed": "请求没有完成，请检查服务连接后重试"
+  }[value] || value;
 }
 
 export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnapshot, payload = {}) {
@@ -195,6 +213,9 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   }
   if (actionId === "advanced.setHitboxOverlay") {
     return typeof afterState.hitboxOverlay === "boolean" && afterState.hitboxOverlay === Boolean(payload.value);
+  }
+  if (actionId === "settings.selectBot") {
+    return Boolean(text(afterState.boundBotId) && text(afterState.boundBotId) === text(payload.value));
   }
   const expected = text(payload.value);
   if (actionId === "character.selectPack") {
@@ -633,6 +654,24 @@ function normalizeCharacterWarnings(characterRuntime) {
   const warning = asObject(characterRuntime.warning);
   if (!text(warning.headline)) return [];
   return /良好|已加载/.test(text(warning.headline)) ? [] : [text(warning.headline), text(warning.body)].filter(Boolean);
+}
+
+function normalizeBotCatalog(value, activeBotId) {
+  const source = asObject(value);
+  const active = text(activeBotId) || text(source.defaultBotId) || text(source.default_bot_id);
+  const items = (Array.isArray(source.bots) ? source.bots : []).map((item) => {
+    const entry = asObject(item);
+    const id = text(entry.botId) || text(entry.bot_id);
+    if (!id) return null;
+    return {
+      id,
+      displayName: text(entry.displayName) || text(entry.display_name) || id,
+      available: entry.available !== false,
+      isDefault: Boolean(entry.default),
+      selected: id === active
+    };
+  }).filter(Boolean);
+  return { activeId: active, items };
 }
 
 function normalizeAvailablePacks(value, activePackId) {

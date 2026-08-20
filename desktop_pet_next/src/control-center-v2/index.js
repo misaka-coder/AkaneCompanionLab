@@ -3,6 +3,12 @@ import { renderControlCenterShell } from "./components/shell.js";
 import { createInitialControlCenterState, createControlCenterStore } from "./store.js";
 import { normalizeActionPresentation } from "./view-model.js";
 import {
+  applyModelProvider,
+  createModelServiceDraft,
+  modelServicePayload,
+  MODEL_SERVICE_ACTIONS
+} from "./model-service.js";
+import {
   loadPresentationPreferences,
   normalizePresentationPreferences,
   presentationCssVariables,
@@ -14,7 +20,7 @@ import {
 import "./styles.css";
 
 const root = document.querySelector("#app");
-const store = createControlCenterStore(createInitialControlCenterState());
+const store = createControlCenterStore(createInitialControlCenterState({ activePage: initialPageFromLocation() }));
 const bridge = createControlCenterBridge();
 let chatDraft = "";
 let chatScrollTop = 0;
@@ -24,6 +30,8 @@ let voicePreviewDraft = "";
 let wakeWordDraft = "";
 let livePresentationPreferences = null;
 let framingDrag = null;
+let renderedPage = "";
+const pageScrollTop = new Map();
 const systemThemeQuery = window.matchMedia?.("(prefers-color-scheme: light)") || null;
 
 store.subscribe((state) => render(state));
@@ -31,6 +39,7 @@ bridge.subscribe((viewModel) => {
   store.patch((state) => {
     const packId = String(viewModel?.character?.packId || "default").trim() || "default";
     const packChanged = state.presentationPackId !== packId;
+    const firstModelRead = !state.modelDraft && viewModel?.model?.available;
     if (packChanged) livePresentationPreferences = null;
     return {
       ...state,
@@ -41,7 +50,8 @@ bridge.subscribe((viewModel) => {
       presentationPackId: packId,
       presentationPreferences: packChanged
         ? loadPresentationPreferences(packId)
-        : state.presentationPreferences
+        : state.presentationPreferences,
+      modelDraft: firstModelRead ? createModelServiceDraft(viewModel.model) : state.modelDraft
     };
   });
 });
@@ -50,6 +60,19 @@ root.addEventListener("click", (event) => {
   const approvalButton = event.target.closest("button[data-approval-mode]");
   if (approvalButton && !approvalButton.disabled) {
     void runAction("abilities.approvalPolicy.save", { defaultMode: approvalButton.dataset.approvalMode });
+    return;
+  }
+  const modelToggle = event.target.closest("button[data-model-toggle]");
+  if (modelToggle && !modelToggle.disabled) {
+    const draft = readModelServiceForm(store.getState().modelDraft);
+    const field = modelToggle.dataset.modelToggle;
+    store.patch({ modelDraft: { ...draft, [field]: !Boolean(draft[field]) } });
+    return;
+  }
+  const modelActionButton = event.target.closest("button[data-action^='model.']");
+  if (modelActionButton && !modelActionButton.disabled) {
+    const actionId = modelActionButton.dataset.action;
+    void runModelAction(actionId);
     return;
   }
   const themeButton = event.target.closest("button[data-theme-mode]");
@@ -127,6 +150,13 @@ root.addEventListener("click", (event) => {
   void runAction(actionId, value === undefined ? {} : { value });
 });
 
+root.addEventListener("change", (event) => {
+  const botSelect = event.target.closest("[data-bound-bot-select]");
+  if (botSelect && !botSelect.disabled) {
+    void runAction("settings.selectBot", { value: botSelect.value, botId: botSelect.value });
+  }
+});
+
 root.addEventListener("input", (event) => {
   if (event.target.matches("[data-chat-input]")) chatDraft = event.target.value;
   if (event.target.matches("[data-voice-preview-input]")) voicePreviewDraft = event.target.value;
@@ -153,6 +183,15 @@ root.addEventListener("input", (event) => {
 });
 
 root.addEventListener("change", (event) => {
+  if (event.target.matches('[data-model-field="providerId"]')) {
+    const state = store.getState();
+    const draft = readModelServiceForm(state.modelDraft);
+    store.patch({
+      modelDraft: applyModelProvider(state.viewModel?.model, draft, event.target.value),
+      modelModels: []
+    });
+    return;
+  }
   if (event.target.matches('[data-voice-range="volume"]')) {
     void runAction("voice.setVolume", { value: Number(event.target.value) / 100 });
   }
@@ -300,7 +339,28 @@ async function runAction(actionId, payload = {}) {
   return result;
 }
 
+async function runModelAction(actionId) {
+  const state = store.getState();
+  const draft = readModelServiceForm(state.modelDraft);
+  store.patch({ modelDraft: draft });
+  const result = await runAction(actionId, modelServicePayload(draft));
+  if (actionId === MODEL_SERVICE_ACTIONS.models && result?.ok) {
+    const models = Array.isArray(result.models) ? result.models.map((item) => String(item || "").trim()).filter(Boolean) : [];
+    const nextDraft = { ...draft };
+    if (!nextDraft.chatModel && models.length) nextDraft.chatModel = models[0];
+    store.patch({ modelDraft: nextDraft, modelModels: models });
+  } else if (actionId === MODEL_SERVICE_ACTIONS.save && result?.ok) {
+    store.patch({
+      modelDraft: createModelServiceDraft(store.getState().viewModel?.model || draft),
+      modelModels: []
+    });
+  }
+  return result;
+}
+
 function render(state) {
+  const currentPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
+  if (currentPageViewport && renderedPage) pageScrollTop.set(renderedPage, currentPageViewport.scrollTop);
   const currentViewport = root.querySelector("[data-chat-viewport]");
   if (currentViewport) {
     chatScrollTop = currentViewport.scrollTop;
@@ -313,7 +373,18 @@ function render(state) {
   const currentWakeWord = root.querySelector("[data-wake-word-input]");
   if (currentWakeWord && currentWakeWord.value !== state.viewModel?.voice?.wakeWord) wakeWordDraft = currentWakeWord.value;
 
-  renderControlCenterShell(root, state);
+  const modelDraft = state.activePage === "model" && root.querySelector("[data-model-form]")
+    ? readModelServiceForm(state.modelDraft)
+    : state.modelDraft;
+
+  renderControlCenterShell(root, modelDraft === state.modelDraft ? state : { ...state, modelDraft });
+  const nextPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
+  if (nextPageViewport) {
+    const desiredScrollTop = pageScrollTop.get(state.activePage) || 0;
+    const maximumScrollTop = Math.max(0, nextPageViewport.scrollHeight - nextPageViewport.clientHeight);
+    nextPageViewport.scrollTop = Math.min(desiredScrollTop, maximumScrollTop);
+  }
+  renderedPage = state.activePage;
   applyPresentationPreferences(livePresentationPreferences || state.presentationPreferences);
 
   const nextInput = root.querySelector("[data-chat-input]");
@@ -413,6 +484,34 @@ function actionValueFromButton(button) {
   if (button.dataset.actionValueType === "boolean") return value === "true";
   if (button.dataset.actionValueType === "number") return Number(value);
   return value;
+}
+
+function readModelServiceForm(fallback = {}) {
+  const read = (field) => root.querySelector(`[data-model-field="${field}"]`);
+  return {
+    ...createModelServiceDraft(fallback),
+    ...fallback,
+    providerId: String(read("providerId")?.value ?? fallback.providerId ?? "openai_compatible"),
+    protocol: String(store.getState().viewModel?.model?.providers?.find((item) => item.id === String(read("providerId")?.value ?? fallback.providerId))?.protocol || fallback.protocol || "openai"),
+    baseUrl: String(read("baseUrl")?.value ?? fallback.baseUrl ?? "").trim(),
+    apiKey: String(read("apiKey")?.value ?? fallback.apiKey ?? "").trim(),
+    chatModel: String(read("chatModel")?.value ?? fallback.chatModel ?? "").trim(),
+    visionModel: String(read("visionModel")?.value ?? fallback.visionModel ?? "").trim(),
+    visionBaseUrl: String(read("visionBaseUrl")?.value ?? fallback.visionBaseUrl ?? "").trim(),
+    visionApiKey: String(read("visionApiKey")?.value ?? fallback.visionApiKey ?? "").trim(),
+    visionApiProtocol: String(read("visionApiProtocol")?.value ?? fallback.visionApiProtocol ?? "openai"),
+    timeoutSeconds: Number(read("timeoutSeconds")?.value ?? fallback.timeoutSeconds ?? 120)
+  };
+}
+
+function initialPageFromLocation() {
+  const page = new URLSearchParams(window.location.search).get("page") || "overview";
+  return {
+    character: "appearance",
+    advanced: "system",
+    diagnostics: "system",
+    model: "model"
+  }[page] || (["overview", "chat", "appearance", "voice", "abilities", "system", "model"].includes(page) ? page : "overview");
 }
 
 function friendlyError(error) {

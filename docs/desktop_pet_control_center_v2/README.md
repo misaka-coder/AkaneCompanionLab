@@ -1,10 +1,10 @@
 # Desktop Pet Control Center V2
 
-Status: design contract, interactive prototype, and componentized V2 candidate covering Overview, Chat, Character & Appearance, Voice & Wake, Abilities & Permissions, and System & Diagnostics. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
+Status: production control center, cut over on 2026-08-21. It covers Overview, Chat, Character & Appearance, Voice & Wake, Model Service, Abilities & Permissions, and System & Diagnostics.
 
-This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
+The canonical settings entry is `desktop_pet_next/control-center-lab.html`. It loads the componentized V2 implementation directly. `settings.html` and `control-center-v2.html` are compatibility redirects and own no settings behavior.
 
-The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. All six planned destinations are implemented. The voice page uses the existing TTS/ASR settings and waits for live playback confirmation; it deliberately keeps character imagery in the shared rail instead of repeating a portrait on every page. System & Diagnostics presents real source availability, runtime metrics, resource/provider issues, recovery actions, and interaction-boundary controls. The backend snapshot no longer fabricates health-check timestamps into a log timeline or exports future-only Live2D status. Device-local presentation preferences cover system/dark/light mode, restrained accent presets, font presets, panel opacity, background dimming, glass blur, reduced motion, plus independent avatar/portrait/background framing. These preferences never rewrite character assets or compete with workshop calibration. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
+The implementation has a small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Model settings use the existing admin bridge without returning saved keys. Bot switching rebinds the data source only after the desktop snapshot confirms the requested Bot. Voice preview and character changes also require observed runtime confirmation. System & Diagnostics never invents a log timeline. Device-local presentation preferences never rewrite character assets or compete with workshop calibration.
 
 ## Files
 
@@ -13,7 +13,8 @@ The production-shaped candidate now lives behind `desktop_pet_next/control-cente
 - `prototype/index.html` — overview, character/appearance, and chat-history prototype.
 - `prototype/styles.css` — glass shell, responsive layout, motion, and theme tokens.
 - `prototype/app.js` — local-only light/dark themes, framing editor, chat simulation, navigation, and honest simulated action states.
-- `../../desktop_pet_next/control-center-v2.html` — Vite candidate entry; opened by the settings window only through the explicit V2 test launcher.
+- `../../desktop_pet_next/control-center-lab.html` — canonical Vite/Tauri settings entry.
+- `../../desktop_pet_next/control-center-v2.html` — stale-link compatibility redirect to the canonical entry.
 - `../../desktop_pet_next/src/control-center-v2/` — componentized shell, Overview, Character & Appearance, shared action primitive, store, host bridge, and real-snapshot view model.
 
 ## Local preview
@@ -32,7 +33,7 @@ http://127.0.0.1:4177/docs/desktop_pet_control_center_v2/prototype/
 
 The prototype uses existing sample assets from `desktop_pet_next` to demonstrate slots. Selecting a local image only previews it in the current browser session; it does not edit a character pack.
 
-## V2 candidate preview
+## Production V2 preview
 
 From `desktop_pet_next`:
 
@@ -40,24 +41,19 @@ From `desktop_pet_next`:
 npm run dev
 ```
 
-Open `http://127.0.0.1:1420/control-center-v2.html`. When the local backend is not running, the candidate deliberately shows a reconnectable empty state instead of sample data. In Tauri it also subscribes to the existing settings snapshot event for current activity, expression, and music state.
+Open `http://127.0.0.1:1420/control-center-lab.html`. When the local backend is not running, the page deliberately shows a reconnectable empty state instead of sample data. In Tauri it also subscribes to the existing settings snapshot event for current activity, expression, and music state.
 
-## Real Tauri test path
+## Real Tauri path
 
 From `desktop_pet_next`:
 
 ```powershell
-npm run dev:control-center-v2
+npm run tauri -- dev
 ```
 
-This starts the normal desktop-pet development runtime and opens V2 in the real frameless `settings` window. The window keeps the established `settings` label, so snapshot events, commands, folder entrances, the character workshop, music control, and window controls use the production bridge instead of a second test-only protocol.
+This starts the normal desktop-pet development runtime. The production frameless `settings` window uses the established `settings` label, so snapshot events, commands, folder entrances, the character workshop, music control, and window controls use the production bridge.
 
-The selector is intentionally opt-in and process-local:
-
-- this command sets `AKANE_CONTROL_CENTER_ENTRY=v2` only for its Tauri child process;
-- ordinary `npm run tauri -- dev`, release startup, and packaged builds still open `control-center-lab.html`;
-- an empty or unknown selector also falls back to `control-center-lab.html`;
-- `AKANE_OPEN_MODEL_SETTINGS` continues to select the legacy model page unless V2 was explicitly selected.
+There is no implementation selector. `AKANE_OPEN_MODEL_SETTINGS=1` selects `control-center-lab.html?page=model`; all other settings launches select `control-center-lab.html`.
 
 Manual acceptance for this stage:
 
@@ -73,4 +69,4 @@ Manual acceptance for this stage:
 10. Voice toggles, volume, speed, wake settings, preview, and stop use the existing settings-command bridge; preview reports success only after the live snapshot shows playback.
 11. System & Diagnostics distinguishes backend health from desktop live-state availability, exposes no sensitive paths, and leaves recent events empty until a real event source exists.
 
-This test path is not a production cutover. The legacy settings entry remains authoritative until the real Tauri acceptance/parity pass is complete and the old renderer can be deleted rather than kept in parallel.
+The 2026-08-21 acceptance pass covered real Tauri connection loss, window chrome, drag/minimize/maximize/restore, workspace/workshop/folder entrances, repeated action pending state, slow model discovery, model secret masking, model deep-link startup, and canonical entry startup.

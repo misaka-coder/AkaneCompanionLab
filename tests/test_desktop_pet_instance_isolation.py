@@ -124,7 +124,7 @@ class DesktopPetInstanceIsolationTests(unittest.TestCase):
 
     def test_tauri_mutable_artifacts_and_admin_secret_stay_instance_bound(self) -> None:
         tauri_source = (ROOT / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
-        control_center_source = (ROOT / "desktop_pet_next" / "src" / "control-center-lab.js").read_text(
+        control_center_source = (ROOT / "desktop_pet_next" / "src" / "control-center-v2" / "bridge.js").read_text(
             encoding="utf-8"
         )
         workshop_source = (ROOT / "desktop_pet_next" / "src" / "workshop.js").read_text(encoding="utf-8")

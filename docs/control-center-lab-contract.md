@@ -1,5 +1,7 @@
 # Akane Control Center Lab Data Contract
 
+> Production note (2026-08-21): `control-center-lab.html` now loads the componentized implementation in `src/control-center-v2/` directly. `src/control-center-lab.js` is a stale-import thin adapter and the former monolithic stylesheet has been deleted. Sections below that describe the mock-first monolith are retained only as migration history and are not current UI authority. Current product status and acceptance evidence live in `desktop_pet_control_center_v2/README.md` and `production_gap_audit.md`.
+
 This document describes the backend data boundary for `desktop_pet_next/control-center-lab.html`.
 
 ## Default Entry

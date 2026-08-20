@@ -27,6 +27,7 @@ export function renderOverview(state) {
             <span><small>当前活动</small><strong>${escapeHtml(vm.activity.label)}</strong>${vm.activity.detail ? `<em>${escapeHtml(vm.activity.detail)}</em>` : ""}</span>
             <i aria-hidden="true"></i>
           </div>
+          ${renderBotSelector(state, vm)}
           <div class="quick-actions">
             ${renderActionButton(state, vm, "chat.new", "＋", "新对话", "primary")}
             ${renderActionButton(state, vm, "workspace.open", "▱", "打开手边")}
@@ -51,6 +52,20 @@ export function renderOverview(state) {
     </section>`;
 }
 
+function renderBotSelector(state, vm) {
+  const bots = vm.bots?.items || [];
+  if (bots.length < 2) return "";
+  const actionState = state.actionStates["settings.selectBot"];
+  const pending = ["pressed", "pending"].includes(actionState?.phase);
+  return `
+    <label class="bot-selector">
+      <span><small>当前桌宠 Bot</small><em>聊天、记忆与能力随 Bot 切换</em></span>
+      <select data-bound-bot-select${pending ? " disabled" : ""}>
+        ${bots.map((bot) => `<option value="${escapeHtml(bot.id)}"${bot.selected ? " selected" : ""}${!bot.available && !bot.selected ? " disabled" : ""}>${escapeHtml(bot.displayName)}${bot.isDefault ? " · 默认" : !bot.available ? " · 不可用" : ""}</option>`).join("")}
+      </select>
+    </label>`;
+}
+
 function renderAvatar(character) {
   const style = safeStyleUrl(character.visuals.avatar);
   return style
@@ -61,15 +76,26 @@ function renderAvatar(character) {
 function renderMusic(state, vm) {
   if (!vm.music.available) return "";
   const playing = vm.music.playback === "playing";
+  const moodLine = moodPhraseFromEmotion(vm.character.emotion);
   return `
     <section class="music-card glass-panel">
       <div class="card-head"><div><p class="eyebrow">NOW PLAYING</p><h3>陪伴播放</h3></div><span class="mini-chip">${playing ? "正在播放" : vm.music.playback === "paused" ? "已暂停" : "已停止"}</span></div>
       <div class="music-row">
         <span class="cover-fallback" aria-hidden="true">♫</span>
-        <span class="track"><strong>${escapeHtml(vm.music.title)}</strong><small>${escapeHtml(vm.music.artist || vm.music.detail || "当前媒体")}</small></span>
+        <span class="track"><strong>${escapeHtml(vm.music.title)}</strong><small>${escapeHtml(vm.music.artist || vm.music.detail || "当前媒体")}</small>${moodLine ? `<small class="mood-line">${escapeHtml(moodLine)}</small>` : ""}</span>
         ${renderActionButton(state, vm, "music.pause", playing ? "Ⅱ" : "▶", playing ? "暂停" : "播放", "media")}
       </div>
     </section>`;
+}
+
+function moodPhraseFromEmotion(name) {
+  const normalized = String(name || "").toLowerCase().trim();
+  return {
+    开心: "她好像挺开心的～", 高兴: "她好像挺高兴的～", 兴奋: "她好像很兴奋", 开朗: "她心情看起来不错",
+    温柔: "她好像很温柔", 平静: "她安静地在听", 默然: "她安静地在听", 思考: "她好像在想什么",
+    沉思: "她好像在想什么", 好奇: "她好像很好奇", 害羞: "她有点害羞", 难过: "她好像有点难过",
+    委屈: "她好像有点委屈", 无聊: "她好像有点无聊"
+  }[normalized] || "";
 }
 
 function renderRecent(vm) {
