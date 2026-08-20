@@ -9,6 +9,7 @@ import { renderCharacterAppearance } from "../src/control-center-v2/components/a
 import { renderAbilities } from "../src/control-center-v2/components/abilities.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
 import { renderVoice } from "../src/control-center-v2/components/voice.js";
+import { renderSystem } from "../src/control-center-v2/components/system.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
   loadPresentationPreferences,
@@ -29,7 +30,11 @@ const rawSnapshot = {
   fallbackReason: null,
   generatedAt: "2026-08-20T08:00:00.000Z",
   controlCenterRuntime: {
-    health: { ok: true, data: { instance_id: "desktop-local" } }
+    health: { ok: true, status: 200, data: { instance_id: "desktop-local" } },
+    diagnostics: { ok: true, status: 200, data: { status: "ok" } },
+    workspace: { ok: true, status: 200, data: { ok: true } },
+    metrics: { ok: true, status: 200, data: "akane_tracemalloc_current_bytes 120000" },
+    capabilitiesCatalog: { ok: true, status: "available", data: { ok: true } }
   },
   overviewRuntime: {
     shell: { status: "在线" },
@@ -115,6 +120,25 @@ const rawSnapshot = {
       { label: "响应延迟", value: "420 ms", tone: "good" }
     ]
   },
+  advancedRuntime: {
+    systemStrip: {
+      "运行中": { tone: "green" },
+      "CPU": { value: "18%" },
+      "内存": { value: "42%" },
+      "网络": { value: "良好", tone: "green" }
+    },
+    coreSettings: [
+      { id: "hitTest", enabled: true },
+      { id: "hitbox", enabled: false }
+    ],
+    diagnostics: {
+      metrics: {
+        "应用状态": { value: "运行中", tone: "green" },
+        "后端健康": { value: "良好", tone: "green" },
+        "内存占用": { value: "117.2 KB" }
+      }
+    }
+  },
   chatSession: {
     session: { session_id: "session-chat", display_title: "下午的对话" },
     messages: [
@@ -143,13 +167,16 @@ const runtimeSnapshot = {
     voiceVolume: 0.82,
     voiceSpeed: "1.15x",
     wakeWord: "Akane",
-    wakeSensitivity: "中等"
+    wakeSensitivity: "中等",
+    hitTestEnabled: true,
+    hitboxOverlay: false
   },
   currentExpression: { id: "happy", name: "开心", image: "https://127.0.0.1/assets/happy.png" },
   runtimeStatus: "正在整理文件",
   runtimeMode: "thinking",
   active: { sending: true, speaking: false, voiceInput: "idle", replyDisplayActive: false },
-  tts: { active: false, queueLength: 0 }
+  tts: { active: false, queueLength: 0 },
+  resource: { health: "online", source: "character-pack", healthMessage: "" }
 };
 
 const viewModel = createControlCenterViewModel(rawSnapshot, runtimeSnapshot);
@@ -178,6 +205,15 @@ assert.equal(viewModel.voice.tts.provider.name, "GPT-SoVITS");
 assert.equal(viewModel.voice.tts.volume, 82);
 assert.equal(viewModel.voice.asr.provider.status, "degraded");
 assert.equal(viewModel.voice.wakeSensitivity, "中等");
+assert.equal(viewModel.system.available, true);
+assert.equal(viewModel.system.overallTone, "warning");
+assert.equal(viewModel.system.issues.some((item) => item.title.includes("本地 ASR")), true);
+assert.equal(viewModel.system.services.length, 5);
+assert.equal(viewModel.system.services.every((item) => item.ready), true);
+assert.equal(viewModel.system.metrics.some((item) => item.label === "CPU" && item.value === "18%"), true);
+assert.equal(viewModel.system.settings[0].enabled, true);
+assert.equal(viewModel.system.settings[1].enabled, false);
+assert.equal(viewModel.system.hasEventSource, false);
 assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
 assert.equal(viewModel.chat.title, "下午的对话");
 assert.equal(viewModel.chat.messages.length, 3);
@@ -191,6 +227,9 @@ assert.equal(viewModel.actions["character.previewEmotion"].available, true);
 assert.equal(viewModel.actions["voice.previewPlay"].available, true);
 assert.equal(viewModel.actions["voice.stop"].available, false);
 assert.equal(viewModel.actions["voice.setTtsEnabled"].available, true);
+assert.equal(viewModel.actions["perception.runDiagnostics"].available, true);
+assert.equal(viewModel.actions["advanced.setHitTestEnabled"].available, true);
+assert.equal(viewModel.actions["advanced.setHitboxOverlay"].available, true);
 assert.equal(viewModel.actions["window.minimize"].available, true);
 assert.equal(viewModel.actions["window.maximize"].available, true);
 assert.equal(viewModel.actions["window.close"].available, true);
@@ -265,6 +304,11 @@ assert.deepEqual(normalizeActionPresentation({ ok: false, status: "failed", erro
   label: "操作失败",
   detail: "permission_denied"
 });
+assert.deepEqual(normalizeActionPresentation({ ok: true, status: "executed", actionId: "advanced.resetWindow" }), {
+  phase: "unknown",
+  label: "重置请求已发送",
+  detail: "请观察桌宠窗口是否已经恢复"
+});
 
 assert.equal(isObservedActionConfirmation(
   "chat.send",
@@ -319,6 +363,18 @@ assert.equal(isObservedActionConfirmation(
   { state: { wakeWord: "Akane" } },
   { state: { wakeWord: "灵梦" } },
   { value: "灵梦" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "advanced.setHitTestEnabled",
+  { state: { hitTestEnabled: true } },
+  { state: { hitTestEnabled: false } },
+  { value: false }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "advanced.setHitboxOverlay",
+  { state: { hitboxOverlay: false } },
+  { state: { hitboxOverlay: true } },
+  { value: true }
 ), true);
 assert.equal(isObservedActionConfirmation(
   "chat.new",
@@ -486,6 +542,16 @@ assert.match(voiceHtml, /data-wake-word-form/);
 assert.match(voiceHtml, /data-voice-preview-form/);
 assert.match(voiceHtml, /打开角色工坊/);
 assert.doesNotMatch(voiceHtml, /portrait|hero-image|character-preview/);
+
+const systemHtml = renderSystem({ viewModel, actionStates: {}, phase: "ready" });
+assert.match(systemHtml, /先看结论，再处理问题/);
+assert.match(systemHtml, /核心服务/);
+assert.match(systemHtml, /data-action="perception\.runDiagnostics"/);
+assert.match(systemHtml, /data-action="advanced\.setHitTestEnabled"/);
+assert.match(systemHtml, /data-action="advanced\.setHitboxOverlay"/);
+assert.match(systemHtml, /没有结构化事件来源/);
+assert.match(systemHtml, /不会用健康检查结果拼出假日志/);
+assert.doesNotMatch(systemHtml, /Health check passed|Backend connected|Live2D|api_key|local_path|cached_path/);
 
 const chatRequests = [];
 const chatSource = createBackendControlCenterSource({

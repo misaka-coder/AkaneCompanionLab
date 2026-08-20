@@ -623,13 +623,9 @@ function makeSnapshotFetch({
     assert.ok(!mod.title.includes("_"), "1.53 module title should not contain underscores");
   }
 
-  // Advanced logs from runtime timeline
-  assert.ok(Array.isArray(advanced.diagnostics.logs), "1.54 advanced diagnostics logs should be an array");
-  assert.ok(advanced.diagnostics.logs.length > 0, "1.55 advanced diagnostics logs should have entries");
-  const firstLog = advanced.diagnostics.logs[0];
-  assert.ok(typeof firstLog.time === "string", "1.56 advanced log entry should have time string");
-  assert.ok(typeof firstLog.level === "string", "1.57 advanced log entry should have level string");
-  assert.ok(typeof firstLog.message === "string", "1.58 advanced log entry should have message string");
+  // The runtime must not fabricate a timeline from health-check timestamps.
+  assert.equal(Object.hasOwn(raw.advancedRuntime.diagnostics, "logs"), false, "1.54 runtime diagnostics should not fabricate log entries");
+  assert.equal(Object.hasOwn(raw.advancedRuntime, "live2d"), false, "1.55 runtime diagnostics should not expose future-only Live2D placeholders");
 
   // Advanced ability overview from tool names
   assert.ok(advanced.abilityOverview.length > 0, "1.59 advanced abilityOverview should be populated");
@@ -720,13 +716,6 @@ function makeSnapshotFetch({
   // Advanced: systemStrip has "运行中" status from runtime
   const runningStrip = advanced.systemStrip.find((s) => s.label && s.label.includes("运行"));
   assert.ok(runningStrip, "1.93 advanced systemStrip should have 运行中 row");
-
-  // Advanced: diagnostics logs are runtime-generated timeline entries
-  assert.ok(advanced.diagnostics.logs.length > 0, "1.94 advanced diagnostics logs should be populated");
-  for (const log of advanced.diagnostics.logs) {
-    assert.equal(typeof log.time, "string", "1.95 advanced log entry should have time string");
-    assert.equal(typeof log.message, "string", "1.96 advanced log entry should have message string");
-  }
 
   // Advanced: diagnostics metrics patched by label — "应用状态" from runtime
   const appStatusMetric = advanced.diagnostics.metrics.find((m) => m.label && m.label.includes("应用状态"));
@@ -1086,7 +1075,7 @@ console.log(
     "perception featureCards/enabled, " +
     "music runtime fallback (mock nowPlaying/playlist/mode preserved), " +
     "abilities modules/user-facing/safety/overview, " +
-    "advanced systemStrip/diagnostics metrics/logs/abilityOverview, " +
+    "advanced systemStrip/diagnostics metrics/no fabricated logs/abilityOverview, " +
     "no sensitive fields, " +
     "provider raw data shape, " +
     "overview statusItems/connectionRows/pack, " +
@@ -1094,7 +1083,7 @@ console.log(
     "voice tts/asr/enabled/diagnostics, " +
     "perception all 4 cards enabled, " +
     "abilities safety/items/module fields, " +
-    "advanced pid/python/systemStrip/logs/metrics), " +
+    "advanced pid/python/systemStrip/no future placeholders/metrics), " +
     "2 partial degradation, " +
     "3 bad snapshot fallback, " +
     "4 all unavailable null, " +

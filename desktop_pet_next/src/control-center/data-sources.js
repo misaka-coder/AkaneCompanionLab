@@ -2550,24 +2550,8 @@ function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText
     "内存占用": { value: memoryDisplay }
   };
 
-  // diagnostics.logs — generate status sync timeline
-  const baseTime = diagnosticsData.server_time
-    ? new Date(Number(diagnosticsData.server_time) * 1000)
-    : new Date();
-  const logs = generateAdvancedSyncLogs(baseTime, serviceOk);
-
   // abilityOverview — derived from tool names
   const abilityOverview = buildAdvancedAbilityOverview(tools);
-
-  // live2d — reserved status only
-  const live2d = {
-    rows: [
-      { label: "模型", value: serviceOk ? "等待加载" : "未就绪" },
-      { label: "动作", value: "静态立绘" },
-      { label: "渲染器", value: "预留 · 待接入" },
-      { label: "物理", value: "预留 · 待接入" }
-    ]
-  };
 
   const coreSettings = [
     { id: "hitTest", enabled: Boolean(petState?.hitTestEnabled) },
@@ -2577,33 +2561,9 @@ function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText
   return {
     systemStrip,
     coreSettings,
-    diagnostics: { metrics: diagnosticsMetrics, logs },
-    live2d,
+    diagnostics: { metrics: diagnosticsMetrics },
     abilityOverview
   };
-}
-
-function generateAdvancedSyncLogs(baseTime, serviceOk) {
-  const pad = (v) => String(v).padStart(2, "0");
-  const fmt = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-  if (!serviceOk) return [{ time: fmt(baseTime), level: "WARN", message: "[Service] Backend not connected" }];
-
-  const entries = [
-    { offset: -12, level: "INFO", message: "[Service] Health check passed" },
-    { offset: -8, level: "INFO", message: "[Sensing] Config loaded" },
-    { offset: -5, level: "INFO", message: "[Security] Policy checked" },
-    { offset: -3, level: "INFO", message: "[Workspace] Summary synced" },
-    { offset: -1, level: "INFO", message: "[Capability] Registry synced" },
-    { offset: 0, level: "INFO", message: "[Service] Backend connected" }
-  ];
-
-  const logs = [];
-  for (const entry of entries) {
-    const t = new Date(baseTime);
-    t.setSeconds(t.getSeconds() + entry.offset);
-    logs.push({ time: fmt(t), level: entry.level, message: entry.message });
-  }
-  return logs;
 }
 
 function buildAdvancedAbilityOverview(tools) {

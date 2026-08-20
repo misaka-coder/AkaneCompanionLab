@@ -4,6 +4,7 @@ import { renderAbilities } from "./abilities.js";
 import { renderChat } from "./chat.js";
 import { renderOverview } from "./overview.js";
 import { renderVoice } from "./voice.js";
+import { renderSystem } from "./system.js";
 
 export function renderControlCenterShell(root, state) {
   const vm = state.viewModel;
@@ -17,6 +18,8 @@ export function renderControlCenterShell(root, state) {
       ? "能力清楚，权限也清楚"
     : activePage === "voice"
       ? "声音顺手，状态也诚实"
+    : activePage === "system"
+      ? "看得懂，也修得动"
     : activePage === "chat"
       ? "聊过的话，都留在这里"
       : "今天想让她做什么？";
@@ -30,6 +33,7 @@ export function renderControlCenterShell(root, state) {
           ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
           ${renderNavItem("voice", "♪", "语音与唤醒", activePage)}
           ${renderNavItem("abilities", "⌁", "能力与权限", activePage)}
+          ${renderNavItem("system", "⚙", "系统与诊断", activePage)}
         </nav>
         <div class="rail-spacer"></div>
         <div class="migration-note"><i></i><span><strong>真实数据模式</strong><small>没有演示状态和假按钮</small></span></div>
@@ -62,6 +66,7 @@ function renderPage(activePage, state) {
   if (activePage === "appearance") return renderCharacterAppearance(state);
   if (activePage === "voice") return renderVoice(state);
   if (activePage === "abilities") return renderAbilities(state);
+  if (activePage === "system") return renderSystem(state);
   return renderOverview(state);
 }
 
