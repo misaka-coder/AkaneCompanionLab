@@ -23,6 +23,7 @@ const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
 export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("settings", CONTROL_CENTER_ACTIONS.settingsSelectBot, "settings-command", "setBoundBot"),
   bridged("overview", CONTROL_CENTER_ACTIONS.chatNew, "settings-command", "newSession"),
+  bridged("chat", CONTROL_CENTER_ACTIONS.chatSend, "settings-command", "sendChatMessage"),
   bridged("overview", CONTROL_CENTER_ACTIONS.chatStop, "settings-command", "stopReply"),
   bridged("overview", CONTROL_CENTER_ACTIONS.workspaceOpen, "tauri-invoke", "open_workspace_window"),
   bridged("overview", CONTROL_CENTER_ACTIONS.characterOpenWorkshop, "tauri-invoke", "open_workshop_window"),

@@ -1,6 +1,7 @@
 export const CONTROL_CENTER_ACTIONS = Object.freeze({
   settingsSelectBot: "settings.selectBot",
   chatNew: "chat.new",
+  chatSend: "chat.send",
   chatStop: "chat.stop",
   workspaceOpen: "workspace.open",
   characterOpenWorkshop: "character.openWorkshop",
@@ -101,6 +102,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
 export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.settingsSelectBot,
   CONTROL_CENTER_ACTIONS.chatNew,
+  CONTROL_CENTER_ACTIONS.chatSend,
   CONTROL_CENTER_ACTIONS.chatStop,
   CONTROL_CENTER_ACTIONS.workspaceOpen,
   CONTROL_CENTER_ACTIONS.characterOpenWorkshop,

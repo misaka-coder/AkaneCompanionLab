@@ -49,6 +49,13 @@ const router = createControlCenterActionRouter({
 
 const bridgedActionCases = [
   { id: CONTROL_CENTER_ACTIONS.chatNew, payload: {}, context: { source: "smoke" }, emit: "newSession" },
+  {
+    id: CONTROL_CENTER_ACTIONS.chatSend,
+    payload: { text: "从控制中心发送" },
+    context: { source: "control-center-v2" },
+    emit: "sendChatMessage",
+    value: "从控制中心发送"
+  },
   { id: CONTROL_CENTER_ACTIONS.chatStop, payload: {}, context: {}, emit: "stopReply" },
   { id: CONTROL_CENTER_ACTIONS.workspaceOpen, payload: {}, context: {}, invoke: "open_workspace_window" },
   { id: CONTROL_CENTER_ACTIONS.characterOpenWorkshop, payload: {}, context: {}, invoke: "open_workshop_window" },

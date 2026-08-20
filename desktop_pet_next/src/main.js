@@ -1911,6 +1911,40 @@ async function handleSettingsCommand(payload) {
     case "newSession":
       await startNewSession();
       break;
+    case "sendChatMessage": {
+      const text = String(payload.value ?? payload.text ?? "").trim();
+      if (!text) {
+        lastSettingsCommandResult = {
+          command,
+          ok: false,
+          status: "invalid-payload",
+          reason: "message_required",
+          at: Date.now()
+        };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      if (sending) {
+        lastSettingsCommandResult = {
+          command,
+          ok: false,
+          status: "busy",
+          reason: "reply_in_progress",
+          at: Date.now()
+        };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      lastSettingsCommandResult = {
+        command,
+        ok: true,
+        status: "accepted",
+        messageLength: text.length,
+        at: Date.now()
+      };
+      void sendMessage(text);
+      break;
+    }
     case "reloadResources":
       await reloadCharacterResources({ userTriggered: true });
       break;

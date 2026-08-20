@@ -1,5 +1,6 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
 import { renderCharacterAppearance } from "./appearance.js";
+import { renderChat } from "./chat.js";
 import { renderOverview } from "./overview.js";
 
 export function renderControlCenterShell(root, state) {
@@ -8,13 +9,18 @@ export function renderControlCenterShell(root, state) {
   const avatarStyle = safeStyleUrl(character?.visuals?.avatar);
   const connected = vm?.shell?.connectionStatus || state.phase;
   const activePage = state.activePage || "overview";
-  const pageTitle = activePage === "appearance" ? "把这里变成她的空间" : "今天想让她做什么？";
+  const pageTitle = activePage === "appearance"
+    ? "把这里变成她的空间"
+    : activePage === "chat"
+      ? "聊过的话，都留在这里"
+      : "今天想让她做什么？";
   root.innerHTML = `
     <main class="ccv2-shell" data-connection="${escapeHtml(connected)}">
       <aside class="ccv2-rail">
         <div class="ccv2-brand"><span class="brand-mark">A</span><span><strong>桌宠控制中心</strong><small>V2 候选实现</small></span></div>
         <nav aria-label="控制中心导航">
           ${renderNavItem("overview", "⌂", "总览", activePage)}
+          ${renderNavItem("chat", "◌", "聊天", activePage)}
           ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
         </nav>
         <div class="rail-spacer"></div>
@@ -37,10 +43,16 @@ export function renderControlCenterShell(root, state) {
             </span>
           </div>
         </header>
-        <div class="ccv2-scroll">${activePage === "appearance" ? renderCharacterAppearance(state) : renderOverview(state)}</div>
+        <div class="ccv2-scroll${activePage === "chat" ? " is-chat" : ""}">${renderPage(activePage, state)}</div>
         <div class="toast-region" aria-live="polite">${renderToast(state)}</div>
       </section>
     </main>`;
+}
+
+function renderPage(activePage, state) {
+  if (activePage === "chat") return renderChat(state);
+  if (activePage === "appearance") return renderCharacterAppearance(state);
+  return renderOverview(state);
 }
 
 function renderNavItem(pageId, icon, label, activePage) {

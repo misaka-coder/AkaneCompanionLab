@@ -7,13 +7,25 @@ import "./styles.css";
 const root = document.querySelector("#app");
 const store = createControlCenterStore(createInitialControlCenterState());
 const bridge = createControlCenterBridge();
+let chatDraft = "";
+let chatScrollTop = 0;
+let chatWasAtBottom = true;
+let lastChatMessageId = "";
 
-store.subscribe((state) => renderControlCenterShell(root, state));
+store.subscribe((state) => render(state));
 bridge.subscribe((viewModel) => {
   store.patch({ phase: "ready", error: "", viewModel, refreshedAt: Date.now() });
 });
 
 root.addEventListener("click", (event) => {
+  const jumpButton = event.target.closest("[data-chat-jump-latest]");
+  if (jumpButton) {
+    const viewport = root.querySelector("[data-chat-viewport]");
+    if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    jumpButton.hidden = true;
+    chatWasAtBottom = true;
+    return;
+  }
   const pageButton = event.target.closest("[data-page]");
   if (pageButton) {
     store.patch({ activePage: pageButton.dataset.page || "overview" });
@@ -29,6 +41,45 @@ root.addEventListener("click", (event) => {
   const value = String(actionButton.dataset.actionValue || "").trim();
   void runAction(actionButton.dataset.action, value ? { value } : {});
 });
+
+root.addEventListener("input", (event) => {
+  if (event.target.matches("[data-chat-input]")) chatDraft = event.target.value;
+});
+
+root.addEventListener("keydown", (event) => {
+  if (!event.target.matches("[data-chat-input]") || event.isComposing) return;
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    event.target.closest("form")?.requestSubmit();
+  }
+});
+
+root.addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-chat-form]");
+  if (!form) return;
+  event.preventDefault();
+  const input = form.querySelector("[data-chat-input]");
+  const text = String(input?.value || chatDraft).trim();
+  if (!text) return;
+  chatDraft = text;
+  void runAction("chat.send", { text }).then((result) => {
+    if (result?.ok) chatDraft = "";
+    const latestInput = root.querySelector("[data-chat-input]");
+    if (latestInput) {
+      latestInput.value = chatDraft;
+      if (!result?.ok) latestInput.focus();
+    }
+  });
+});
+
+root.addEventListener("scroll", (event) => {
+  if (!event.target.matches?.("[data-chat-viewport]")) return;
+  const viewport = event.target;
+  chatScrollTop = viewport.scrollTop;
+  chatWasAtBottom = isNearBottom(viewport);
+  const jumpButton = root.querySelector("[data-chat-jump-latest]");
+  if (jumpButton && chatWasAtBottom) jumpButton.hidden = true;
+}, true);
 
 void bridge.start().catch((error) => {
   store.patch({ phase: "failed", error: friendlyError(error), viewModel: null });
@@ -53,7 +104,7 @@ async function refresh() {
 
 async function runAction(actionId, payload = {}) {
   const current = store.getState().actionStates[actionId];
-  if (current?.phase === "pressed" || current?.phase === "pending") return;
+  if (current?.phase === "pressed" || current?.phase === "pending") return null;
   updateAction(actionId, { phase: "pressed", label: "已按下", detail: "" });
   await new Promise((resolve) => requestAnimationFrame(resolve));
   updateAction(actionId, { phase: "pending", label: "处理中", detail: "" });
@@ -71,6 +122,40 @@ async function runAction(actionId, payload = {}) {
       updateAction(actionId, null);
     }
   }, presentation.phase === "confirmed" ? 1800 : 5000);
+  return result;
+}
+
+function render(state) {
+  const currentViewport = root.querySelector("[data-chat-viewport]");
+  if (currentViewport) {
+    chatScrollTop = currentViewport.scrollTop;
+    chatWasAtBottom = isNearBottom(currentViewport);
+  }
+  const currentInput = root.querySelector("[data-chat-input]");
+  if (currentInput) chatDraft = currentInput.value;
+
+  renderControlCenterShell(root, state);
+
+  const nextInput = root.querySelector("[data-chat-input]");
+  if (nextInput) nextInput.value = chatDraft;
+  const nextViewport = root.querySelector("[data-chat-viewport]");
+  if (!nextViewport) return;
+  const messages = state.viewModel?.chat?.messages || [];
+  const nextLastId = messages.at(-1)?.id || "";
+  const hasNewMessage = Boolean(lastChatMessageId && nextLastId && nextLastId !== lastChatMessageId);
+  if (!lastChatMessageId || chatWasAtBottom) {
+    nextViewport.scrollTop = nextViewport.scrollHeight;
+    chatWasAtBottom = true;
+  } else {
+    nextViewport.scrollTop = chatScrollTop;
+    const jumpButton = root.querySelector("[data-chat-jump-latest]");
+    if (jumpButton) jumpButton.hidden = !hasNewMessage;
+  }
+  lastChatMessageId = nextLastId;
+}
+
+function isNearBottom(viewport) {
+  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 72;
 }
 
 function updateAction(actionId, value) {

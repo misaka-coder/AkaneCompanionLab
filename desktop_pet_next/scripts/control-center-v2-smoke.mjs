@@ -6,7 +6,11 @@ import {
   normalizeActionPresentation
 } from "../src/control-center-v2/view-model.js";
 import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
-import { createControlCenterRuntimeSnapshot } from "../src/control-center/data-sources.js";
+import { renderChat } from "../src/control-center-v2/components/chat.js";
+import {
+  createBackendControlCenterSource,
+  createControlCenterRuntimeSnapshot
+} from "../src/control-center/data-sources.js";
 
 const rawSnapshot = {
   sourceKind: "backend",
@@ -45,11 +49,26 @@ const rawSnapshot = {
   musicRuntime: {
     nowPlaying: { title: "星河", artist: "本地媒体", playing: true },
     bottomStatus: "正在播放"
+  },
+  chatSession: {
+    session: { session_id: "session-chat", display_title: "下午的对话" },
+    messages: [
+      { source_id: "msg-user", seq_no: 1, role: "user", content: "今天一起做什么？", timestamp: 1787198400 },
+      { source_id: "msg-assistant", seq_no: 2, role: "assistant", content: "先把界面做舒服。", timestamp: 1787198460 },
+      {
+        source_id: "msg-progress",
+        seq_no: 3,
+        role: "assistant",
+        content: "我正在检查现有页面。",
+        timestamp: 1787198520,
+        memory_metadata: { turn_role: "intermediate" }
+      }
+    ]
   }
 };
 
 const runtimeSnapshot = {
-  state: { instanceId: "desktop-local", characterPackId: "test_character", outfit: "default" },
+  state: { instanceId: "desktop-local", sessionId: "session-chat", characterPackId: "test_character", outfit: "default" },
   currentExpression: { id: "happy", name: "开心", image: "https://127.0.0.1/assets/happy.png" },
   runtimeStatus: "正在整理文件",
   runtimeMode: "thinking",
@@ -71,6 +90,10 @@ assert.equal(viewModel.activity.phase, "thinking");
 assert.equal(viewModel.activity.label, "正在整理文件");
 assert.equal(viewModel.music.playback, "playing");
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
+assert.equal(viewModel.chat.title, "下午的对话");
+assert.equal(viewModel.chat.messages.length, 3);
+assert.equal(viewModel.chat.messages[2].intermediate, true);
+assert.equal(viewModel.actions["chat.send"].available, false);
 assert.equal(viewModel.actions["chat.stop"].available, true);
 assert.equal(viewModel.actions["character.openWorkshop"].available, true);
 assert.equal(viewModel.actions["character.selectPack"].available, true);
@@ -133,6 +156,24 @@ assert.deepEqual(normalizeActionPresentation({ ok: false, status: "failed", erro
 });
 
 assert.equal(isObservedActionConfirmation(
+  "chat.send",
+  { active: { sending: false } },
+  {
+    active: { sending: true },
+    settingsCommandResult: { command: "sendChatMessage", status: "accepted" }
+  },
+  { text: "你好" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "chat.send",
+  { active: { sending: false } },
+  {
+    active: { sending: false },
+    settingsCommandResult: { command: "sendChatMessage", status: "busy" }
+  },
+  { text: "你好" }
+), false);
+assert.equal(isObservedActionConfirmation(
   "chat.new",
   { state: { sessionId: "session-a" } },
   { state: { sessionId: "session-b" } }
@@ -190,5 +231,48 @@ assert.match(appearanceHtml, /日常服装/);
 assert.match(appearanceHtml, /data-action-value="casual"/);
 assert.match(appearanceHtml, /character\.previewEmotion/);
 assert.doesNotMatch(appearanceHtml, /Akane Default/);
+
+const chatHtml = renderChat({
+  viewModel,
+  actionStates: {},
+  phase: "ready"
+});
+assert.match(chatHtml, /下午的对话/);
+assert.match(chatHtml, /今天一起做什么/);
+assert.match(chatHtml, /先把界面做舒服/);
+assert.match(chatHtml, /data-chat-viewport/);
+assert.match(chatHtml, /data-chat-form/);
+assert.match(chatHtml, /data-action="chat\.new"/);
+assert.doesNotMatch(chatHtml, /假消息|演示消息/);
+
+const chatRequests = [];
+const chatSource = createBackendControlCenterSource({
+  baseUrl: "http://127.0.0.1:9999",
+  expectedInstanceId: "desktop-local",
+  sessionId: "session-original",
+  profileUserId: "master",
+  characterPackId: "test_character",
+  fetchImpl: async (url, init = {}) => {
+    chatRequests.push({ url: String(url), init });
+    if (String(url).includes("/health")) {
+      return new Response(JSON.stringify({ status: "ok", root_binding: "valid", instance_id: "desktop-local" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify({
+      session: { session_id: "session-live" },
+      messages: [{ role: "assistant", content: "真实历史" }]
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+});
+const liveChatSession = await chatSource.readChatSession({ sessionId: "session-live", characterPackId: "second_character" });
+assert.equal(liveChatSession.messages[0].content, "真实历史");
+const chatRequestBody = JSON.parse(chatRequests.find((item) => item.url.includes("/sessions/ensure")).init.body);
+assert.equal(chatRequestBody.session_id, "session-live");
+assert.equal(chatRequestBody.character_pack_id, "second_character");
 
 console.log("control-center V2 smoke passed");

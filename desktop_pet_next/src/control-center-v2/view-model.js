@@ -25,6 +25,11 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const instanceLabel = text(petState.instanceId) || text(raw.controlCenterRuntime?.health?.data?.instance_id) || "本地实例";
+  const chat = normalizeChatSession(raw.chatSession, {
+    sessionId: text(petState.sessionId),
+    characterName: displayName,
+    characterAvatar: portrait
+  });
 
   return {
     shell: {
@@ -54,11 +59,16 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       completeness: finitePercent(characterRuntime.completeness)
     },
     activity,
+    chat,
     music,
     recentOutputs: outputs,
     abilities: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
     actions: {
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
+      "chat.send": {
+        available: connected && liveSnapshotStatus === "connected" && !Boolean(active.sending),
+        reason: !connected ? "桌宠尚未连接" : liveSnapshotStatus !== "connected" ? "请在桌面端窗口中发送" : "正在回复，请稍后再发"
+      },
       "chat.stop": { available: connected && Boolean(active.sending || active.replyDisplayActive), reason: "当前没有进行中的回复" },
       "workspace.open": { available: true, reason: "" },
       "character.openWorkshop": { available: true, reason: "" },
@@ -111,6 +121,14 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const afterSession = text(afterState.sessionId);
     return Boolean(beforeSession && afterSession && beforeSession !== afterSession);
   }
+  if (actionId === "chat.send") {
+    const commandResult = asObject(after.settingsCommandResult);
+    return (
+      text(commandResult.command) === "sendChatMessage" &&
+      text(commandResult.status) === "accepted" &&
+      Boolean(afterActive.sending)
+    );
+  }
   if (actionId === "chat.stop") {
     const wasActive = Boolean(beforeActive.sending || beforeActive.replyDisplayActive);
     return wasActive && !afterActive.sending && !afterActive.replyDisplayActive;
@@ -137,6 +155,46 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     return Boolean(afterExpression && afterExpression !== beforeExpression && (!expected || afterExpression === expected));
   }
   return true;
+}
+
+function normalizeChatSession(value, options = {}) {
+  const source = asObject(value);
+  const session = asObject(source.session);
+  const expectedSessionId = text(options.sessionId);
+  const actualSessionId = text(session.session_id) || text(session.sessionId);
+  const matchesCurrentSession = !expectedSessionId || !actualSessionId || expectedSessionId === actualSessionId;
+  const messages = matchesCurrentSession
+    ? (Array.isArray(source.messages) ? source.messages : [])
+      .map((item) => normalizeChatMessage(item))
+      .filter(Boolean)
+    : [];
+  return {
+    sessionId: actualSessionId || expectedSessionId,
+    title: matchesCurrentSession
+      ? text(session.display_title) || text(session.displayTitle) || "当前对话"
+      : "正在切换会话",
+    messages,
+    characterName: text(options.characterName) || "桌宠",
+    characterAvatar: safeAssetUrl(text(options.characterAvatar)),
+    hasHistory: messages.length > 0,
+    matchesCurrentSession
+  };
+}
+
+function normalizeChatMessage(value) {
+  const source = asObject(value);
+  const role = text(source.role).toLowerCase();
+  const content = text(source.content);
+  if (!content || !["user", "assistant"].includes(role)) return null;
+  const metadata = asObject(source.memory_metadata);
+  const timestamp = Number(source.timestamp);
+  return {
+    id: text(source.source_id) || `${role}-${text(source.seq_no)}-${timestamp || 0}`,
+    role,
+    content,
+    timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0,
+    intermediate: text(metadata.turn_role).toLowerCase() === "intermediate"
+  };
 }
 
 function deriveActivity(runtimeSnapshot, connected) {

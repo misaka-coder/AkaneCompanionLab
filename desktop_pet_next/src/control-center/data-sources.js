@@ -38,6 +38,7 @@ const tauriInvokeOnlyActionIds = new Set([
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot",
   [CONTROL_CENTER_ACTIONS.chatNew]: "newSession",
+  [CONTROL_CENTER_ACTIONS.chatSend]: "sendChatMessage",
   [CONTROL_CENTER_ACTIONS.chatStop]: "stopReply",
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
   [CONTROL_CENTER_ACTIONS.voiceTest]: "testTts",
@@ -433,6 +434,32 @@ export function createBackendControlCenterSource(options = {}) {
           petState
         })
       };
+    },
+    async readChatSession(overrides = {}) {
+      if (typeof fetchImpl !== "function") return null;
+      const health = await ensureVerifiedBackend();
+      if (!health) return null;
+      const requestedSessionId = String(overrides.sessionId || sessionId).trim() || sessionId;
+      const requestedCharacterPackId = String(overrides.characterPackId ?? characterPackId).trim();
+      try {
+        const response = await fetchImpl(buildBackendUrl(botBaseUrl, "/sessions/ensure", { t: String(Date.now()) }), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({
+            user_id: requestedSessionId,
+            session_id: requestedSessionId,
+            real_user_id: profileUserId,
+            client_mode: client,
+            ...(requestedCharacterPackId ? { character_pack_id: requestedCharacterPackId } : {})
+          })
+        });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        return payload && typeof payload === "object" ? payload : null;
+      } catch {
+        return null;
+      }
     },
     async readModelService() {
       if (typeof fetchImpl !== "function") return null;

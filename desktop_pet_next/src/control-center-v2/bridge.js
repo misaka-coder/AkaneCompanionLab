@@ -21,6 +21,7 @@ const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const OBSERVED_ACTION_IDS = new Set([
   "chat.new",
+  "chat.send",
   "chat.stop",
   "music.pause",
   "character.selectPack",
@@ -40,6 +41,9 @@ export function createControlCenterBridge(options = {}) {
   let runtimeSnapshot = null;
   let disposeRuntimeListener = null;
   let refreshPromise = null;
+  let chatRefreshPromise = null;
+  let chatRefreshTimer = 0;
+  let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
   let liveSnapshotError = "";
 
@@ -65,6 +69,7 @@ export function createControlCenterBridge(options = {}) {
           liveSnapshotStatus = runtimeSnapshot ? "connected" : "connecting";
           liveSnapshotError = "";
           publish();
+          scheduleChatRefresh();
         });
         await emitMainEvent({ command: "requestSnapshot" });
       } catch (error) {
@@ -89,7 +94,11 @@ export function createControlCenterBridge(options = {}) {
         const reason = source.getFallbackReason?.() || source.fallbackReason || "snapshot_unavailable";
         throw new Error(String(reason));
       }
-      rawSnapshot = createControlCenterRuntimeSnapshot(next);
+      const chatSession = await readChatSessionForRuntime();
+      rawSnapshot = {
+        ...createControlCenterRuntimeSnapshot(next),
+        ...(chatSession ? { chatSession } : {})
+      };
       publish();
       return createControlCenterViewModel(withBridgeStatus(
         withLiveRuntime(rawSnapshot, runtimeSnapshot),
@@ -147,12 +156,63 @@ export function createControlCenterBridge(options = {}) {
   }
 
   function stop() {
+    window.clearTimeout(chatRefreshTimer);
+    chatRefreshTimer = 0;
     disposeRuntimeListener?.();
     disposeRuntimeListener = null;
     listeners.clear();
   }
 
   return { start, refresh, runAction, subscribe, stop };
+
+  function scheduleChatRefresh() {
+    const state = runtimeSnapshot?.state && typeof runtimeSnapshot.state === "object" ? runtimeSnapshot.state : {};
+    const active = runtimeSnapshot?.active && typeof runtimeSnapshot.active === "object" ? runtimeSnapshot.active : {};
+    const commandResult = runtimeSnapshot?.settingsCommandResult && typeof runtimeSnapshot.settingsCommandResult === "object"
+      ? runtimeSnapshot.settingsCommandResult
+      : {};
+    const signature = [
+      state.sessionId || "",
+      state.characterPackId || "",
+      Boolean(active.sending),
+      Boolean(active.replyDisplayActive),
+      runtimeSnapshot?.runtimeMode || "",
+      commandResult.command || "",
+      commandResult.at || ""
+    ].join(":");
+    if (!signature || signature === lastChatRuntimeSignature) return;
+    lastChatRuntimeSignature = signature;
+    window.clearTimeout(chatRefreshTimer);
+    chatRefreshTimer = window.setTimeout(() => {
+      chatRefreshTimer = 0;
+      void refreshChatSession();
+    }, active.sending ? 260 : 80);
+  }
+
+  async function refreshChatSession() {
+    if (chatRefreshPromise) return chatRefreshPromise;
+    chatRefreshPromise = (async () => {
+      const chatSession = await readChatSessionForRuntime();
+      if (!chatSession || !rawSnapshot) return null;
+      rawSnapshot = { ...rawSnapshot, chatSession };
+      publish();
+      return chatSession;
+    })();
+    try {
+      return await chatRefreshPromise;
+    } finally {
+      chatRefreshPromise = null;
+    }
+  }
+
+  async function readChatSessionForRuntime() {
+    if (!source || typeof source.readChatSession !== "function") return null;
+    const liveState = runtimeSnapshot?.state && typeof runtimeSnapshot.state === "object" ? runtimeSnapshot.state : {};
+    return source.readChatSession({
+      sessionId: liveState.sessionId,
+      characterPackId: liveState.characterPackId
+    });
+  }
 }
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
