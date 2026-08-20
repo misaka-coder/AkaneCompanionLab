@@ -262,7 +262,7 @@ async function createSourceOptions({ isTauri }) {
   const instanceId = String(petState.instanceId || "").trim();
   const hostId = String(petState.hostId || instanceId).trim();
   const boundBotId = String(petState.boundBotId || instanceId).trim();
-  if (hostId) bindInstanceStorage(hostId);
+  bindInstanceStorage(hostId || "local-default");
 
   return {
     kind: CONTROL_CENTER_SOURCE_KIND.backend,

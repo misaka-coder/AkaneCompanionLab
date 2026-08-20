@@ -1,3 +1,5 @@
+import { DEFAULT_PRESENTATION_PREFERENCES } from "./presentation-preferences.js";
+
 export function createControlCenterStore(initialState) {
   let state = initialState;
   const listeners = new Set();
@@ -28,6 +30,9 @@ export function createInitialControlCenterState() {
     refreshedAt: 0,
     error: "",
     viewModel: null,
-    actionStates: {}
+    actionStates: {},
+    presentationPackId: "",
+    presentationPreferences: DEFAULT_PRESENTATION_PREFERENCES,
+    framingTarget: "portrait"
   };
 }

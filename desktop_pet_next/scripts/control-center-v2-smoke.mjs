@@ -7,6 +7,16 @@ import {
 } from "../src/control-center-v2/view-model.js";
 import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
+import { bindInstanceStorage } from "../src/instance-storage.js";
+import {
+  loadPresentationPreferences,
+  normalizePresentationPreferences,
+  presentationCssVariables,
+  resetPresentationFrame,
+  resolveThemeMode,
+  savePresentationPreferences,
+  updatePresentationFrame
+} from "../src/control-center-v2/presentation-preferences.js";
 import {
   createBackendControlCenterSource,
   createControlCenterRuntimeSnapshot
@@ -230,7 +240,52 @@ assert.match(appearanceHtml, /data-action-value="second_character"/);
 assert.match(appearanceHtml, /日常服装/);
 assert.match(appearanceHtml, /data-action-value="casual"/);
 assert.match(appearanceHtml, /character\.previewEmotion/);
+assert.match(appearanceHtml, /data-theme-mode="system"/);
+assert.match(appearanceHtml, /data-theme-mode="light"/);
+assert.match(appearanceHtml, /data-framing-stage/);
+assert.match(appearanceHtml, /data-framing-target="portrait"/);
 assert.doesNotMatch(appearanceHtml, /Akane Default/);
+assert.doesNotMatch(appearanceHtml, /<html[^>]*data-theme-mode/);
+
+const normalizedPresentation = normalizePresentationPreferences({
+  themeMode: "LIGHT",
+  frames: {
+    avatar: { x: -20, y: 125, scale: 4 },
+    portrait: { x: 80, y: 40, scale: 1.35 }
+  }
+});
+assert.deepEqual(normalizedPresentation.frames.avatar, { x: 0, y: 100, scale: 2 });
+assert.deepEqual(normalizedPresentation.frames.background, { x: 50, y: 50, scale: 1 });
+assert.equal(normalizedPresentation.themeMode, "light");
+assert.equal(resolveThemeMode("system", true), "light");
+assert.equal(resolveThemeMode("system", false), "dark");
+assert.equal(resolveThemeMode("invalid", false), "dark");
+assert.deepEqual(presentationCssVariables(normalizedPresentation), {
+  "--cc-avatar-x": "0%",
+  "--cc-avatar-y": "100%",
+  "--cc-avatar-size": "200%",
+  "--cc-portrait-shift-x": "15%",
+  "--cc-portrait-shift-y": "-27%",
+  "--cc-portrait-scale": "1.35",
+  "--cc-background-x": "50%",
+  "--cc-background-y": "50%",
+  "--cc-background-scale": "1"
+});
+const movedPresentation = updatePresentationFrame(normalizedPresentation, "background", { x: 72.5, scale: 1.2 });
+assert.deepEqual(movedPresentation.frames.background, { x: 72.5, y: 50, scale: 1.2 });
+assert.deepEqual(resetPresentationFrame(movedPresentation, "background").frames.background, { x: 50, y: 50, scale: 1 });
+
+const storageValues = new Map();
+const fakeStorage = {
+  getItem(key) { return storageValues.has(key) ? storageValues.get(key) : null; },
+  setItem(key, value) { storageValues.set(key, String(value)); },
+  removeItem(key) { storageValues.delete(key); }
+};
+bindInstanceStorage("presentation-smoke");
+assert.equal(savePresentationPreferences("pack-a", movedPresentation, { storage: fakeStorage }), true);
+assert.deepEqual(loadPresentationPreferences("pack-a", { storage: fakeStorage }), movedPresentation);
+assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).frames.background.x, 50);
+assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).themeMode, "light");
 
 const chatHtml = renderChat({
   viewModel,

@@ -11,7 +11,8 @@ export function renderOverview(state) {
 
   return `
     <section class="ccv2-overview" aria-labelledby="ccv2-page-title">
-      <div class="ccv2-hero glass-panel"${heroStyle ? ` style="--hero-image:${heroStyle}"` : ""}>
+      <div class="ccv2-hero glass-panel">
+        ${heroStyle ? `<div class="hero-background" style="--hero-image:${heroStyle}"></div>` : ""}
         <div class="ccv2-hero-copy">
           <div class="identity-row">
             ${renderAvatar(character)}

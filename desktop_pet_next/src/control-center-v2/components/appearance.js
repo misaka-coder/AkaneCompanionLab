@@ -1,5 +1,6 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
 import { actionPhase, renderActionButton } from "./action-button.js";
+import { renderPresentationControls } from "./presentation-controls.js";
 
 export function renderCharacterAppearance(state) {
   const vm = state.viewModel;
@@ -23,7 +24,8 @@ export function renderCharacterAppearance(state) {
       </div>
 
       <div class="appearance-layout">
-        <section class="character-preview glass-panel"${backgroundStyle ? ` style="--appearance-background:${backgroundStyle}"` : ""}>
+        <section class="character-preview glass-panel">
+          ${backgroundStyle ? `<div class="appearance-background" style="--appearance-background:${backgroundStyle}"></div>` : ""}
           <div class="preview-wash"></div>
           <div class="preview-copy">
             <span class="preview-status"><i></i>${escapeHtml(vm.shell.connected ? "实时资源" : "离线预览")}</span>
@@ -45,6 +47,7 @@ export function renderCharacterAppearance(state) {
         </section>
 
         <div class="appearance-settings">
+          ${renderPresentationControls(state, character)}
           ${renderPackPicker(state, vm, character)}
           ${renderOutfitPicker(state, vm, character)}
           ${renderEmotionPicker(state, vm, character)}
