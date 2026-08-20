@@ -68,6 +68,6 @@ function renderWindowButton(state, actionId, label, icon, className = "") {
 
 function renderToast(state) {
   const entries = Object.values(state.actionStates).filter((item) => item?.phase === "failed" || item?.phase === "unknown");
-  const latest = entries.at(-1);
+  const latest = state.presentationNotice || entries.at(-1);
   return latest ? `<div class="toast is-${escapeHtml(latest.phase)}"><strong>${escapeHtml(latest.label)}</strong>${latest.detail ? `<span>${escapeHtml(latest.detail)}</span>` : ""}</div>` : "";
 }

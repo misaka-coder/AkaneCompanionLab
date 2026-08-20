@@ -242,6 +242,12 @@ assert.match(appearanceHtml, /data-action-value="casual"/);
 assert.match(appearanceHtml, /character\.previewEmotion/);
 assert.match(appearanceHtml, /data-theme-mode="system"/);
 assert.match(appearanceHtml, /data-theme-mode="light"/);
+assert.match(appearanceHtml, /data-accent-preset="sakura"/);
+assert.match(appearanceHtml, /data-font-preset="rounded"/);
+assert.match(appearanceHtml, /data-presentation-range="surfaceOpacity"/);
+assert.match(appearanceHtml, /data-presentation-range="backgroundDim"/);
+assert.match(appearanceHtml, /data-presentation-range="blurAmount"/);
+assert.match(appearanceHtml, /data-presentation-toggle="reducedMotion"/);
 assert.match(appearanceHtml, /data-framing-stage/);
 assert.match(appearanceHtml, /data-framing-target="portrait"/);
 assert.doesNotMatch(appearanceHtml, /Akane Default/);
@@ -249,6 +255,12 @@ assert.doesNotMatch(appearanceHtml, /<html[^>]*data-theme-mode/);
 
 const normalizedPresentation = normalizePresentationPreferences({
   themeMode: "LIGHT",
+  accentPreset: "sakura",
+  fontPreset: "serif",
+  surfaceOpacity: 20,
+  backgroundDim: 95,
+  blurAmount: 12.4,
+  reducedMotion: true,
   frames: {
     avatar: { x: -20, y: 125, scale: 4 },
     portrait: { x: 80, y: 40, scale: 1.35 }
@@ -257,10 +269,19 @@ const normalizedPresentation = normalizePresentationPreferences({
 assert.deepEqual(normalizedPresentation.frames.avatar, { x: 0, y: 100, scale: 2 });
 assert.deepEqual(normalizedPresentation.frames.background, { x: 50, y: 50, scale: 1 });
 assert.equal(normalizedPresentation.themeMode, "light");
+assert.equal(normalizedPresentation.accentPreset, "sakura");
+assert.equal(normalizedPresentation.fontPreset, "serif");
+assert.equal(normalizedPresentation.surfaceOpacity, 55);
+assert.equal(normalizedPresentation.backgroundDim, 80);
+assert.equal(normalizedPresentation.blurAmount, 12.4);
+assert.equal(normalizedPresentation.reducedMotion, true);
 assert.equal(resolveThemeMode("system", true), "light");
 assert.equal(resolveThemeMode("system", false), "dark");
 assert.equal(resolveThemeMode("invalid", false), "dark");
 assert.deepEqual(presentationCssVariables(normalizedPresentation), {
+  "--cc-surface-alpha": "0.55",
+  "--cc-background-dim": "0.8",
+  "--cc-backdrop-blur": "12px",
   "--cc-avatar-x": "0%",
   "--cc-avatar-y": "100%",
   "--cc-avatar-size": "200%",
@@ -286,6 +307,15 @@ assert.equal(savePresentationPreferences("pack-a", movedPresentation, { storage:
 assert.deepEqual(loadPresentationPreferences("pack-a", { storage: fakeStorage }), movedPresentation);
 assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).frames.background.x, 50);
 assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).themeMode, "light");
+assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).accentPreset, "sakura");
+assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).fontPreset, "serif");
+assert.equal(loadPresentationPreferences("pack-b", { storage: fakeStorage }).reducedMotion, true);
+
+const throwingStorage = {
+  getItem() { return null; },
+  setItem() { throw new Error("quota_exceeded"); }
+};
+assert.equal(savePresentationPreferences("pack-a", movedPresentation, { storage: throwingStorage }), false);
 
 const chatHtml = renderChat({
   viewModel,

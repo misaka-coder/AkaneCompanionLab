@@ -18,13 +18,36 @@ export function renderPresentationControls(state, character) {
     <section class="appearance-card presentation-card glass-panel">
       <div class="appearance-card-head">
         <div><p class="eyebrow">INTERFACE THEME</p><h3>界面主题</h3></div>
-        <span class="mini-chip">仅这台设备</span>
+        <span class="mini-chip">设备级 · 自动保存</span>
       </div>
       <div class="theme-segment" role="group" aria-label="界面主题">
         ${renderThemeButton("system", "跟随系统", preferences.themeMode)}
         ${renderThemeButton("dark", "深色", preferences.themeMode)}
         ${renderThemeButton("light", "浅色", preferences.themeMode)}
       </div>
+      <div class="presentation-field">
+        <span><strong>强调色</strong><small>按钮、状态和选中项</small></span>
+        <div class="accent-options" role="group" aria-label="强调色">
+          ${renderAccentButton("violet", "紫罗兰", preferences.accentPreset)}
+          ${renderAccentButton("sakura", "樱粉", preferences.accentPreset)}
+          ${renderAccentButton("sky", "晴空", preferences.accentPreset)}
+          ${renderAccentButton("mint", "薄荷", preferences.accentPreset)}
+        </div>
+      </div>
+      <div class="presentation-field">
+        <span><strong>界面字体</strong><small>只影响控制中心</small></span>
+        <div class="font-options" role="group" aria-label="界面字体">
+          ${renderFontButton("system", "清晰", preferences.fontPreset)}
+          ${renderFontButton("rounded", "圆润", preferences.fontPreset)}
+          ${renderFontButton("serif", "文艺", preferences.fontPreset)}
+        </div>
+      </div>
+      ${renderRange("surfaceOpacity", "面板透明度", preferences.surfaceOpacity, 55, 96, "%")}
+      ${renderRange("backgroundDim", "背景压暗", preferences.backgroundDim, 0, 80, "%")}
+      ${renderRange("blurAmount", "玻璃模糊", preferences.blurAmount, 0, 36, " px")}
+      <button class="motion-toggle${preferences.reducedMotion ? " is-selected" : ""}" type="button" data-presentation-toggle="reducedMotion" aria-pressed="${preferences.reducedMotion ? "true" : "false"}">
+        <span><strong>减弱动效</strong><small>减少转场、呼吸和位移动画</small></span><i aria-hidden="true"></i>
+      </button>
     </section>
 
     <section class="appearance-card presentation-card glass-panel">
@@ -54,4 +77,19 @@ export function renderPresentationControls(state, character) {
 function renderThemeButton(mode, label, activeMode) {
   const selected = mode === activeMode;
   return `<button type="button" data-theme-mode="${mode}" class="${selected ? "is-selected" : ""}"${selected ? ' aria-pressed="true"' : ' aria-pressed="false"'}>${label}</button>`;
+}
+
+function renderAccentButton(id, label, activeId) {
+  const selected = id === activeId;
+  return `<button type="button" data-accent-preset="${id}" class="accent-${id}${selected ? " is-selected" : ""}" aria-label="${label}" title="${label}" aria-pressed="${selected ? "true" : "false"}"><i></i></button>`;
+}
+
+function renderFontButton(id, label, activeId) {
+  const selected = id === activeId;
+  return `<button type="button" data-font-preset="${id}" class="${selected ? "is-selected" : ""}" aria-pressed="${selected ? "true" : "false"}">${label}</button>`;
+}
+
+function renderRange(id, label, value, min, max, unit) {
+  const number = Number(value);
+  return `<label class="presentation-range"><span><strong>${label}</strong><small data-presentation-value="${id}">${Math.round(number)}${unit}</small></span><input type="range" min="${min}" max="${max}" step="1" value="${Math.round(number)}" data-presentation-range="${id}" data-presentation-unit="${unit}" aria-label="${label}" /></label>`;
 }

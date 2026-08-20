@@ -1,12 +1,21 @@
 import { getInstanceStorageItem, setInstanceStorageItem } from "../instance-storage.js";
 
-const THEME_STORAGE_KEY = "controlCenterV2.presentation.theme";
+const GLOBAL_STORAGE_KEY = "controlCenterV2.presentation.preferences";
+const LEGACY_THEME_STORAGE_KEY = "controlCenterV2.presentation.theme";
 const FRAME_STORAGE_PREFIX = "controlCenterV2.presentation.frame";
 const THEME_MODES = new Set(["system", "dark", "light"]);
+const ACCENT_PRESETS = new Set(["violet", "sakura", "sky", "mint"]);
+const FONT_PRESETS = new Set(["system", "rounded", "serif"]);
 const FRAME_TARGETS = new Set(["avatar", "portrait", "background"]);
 
 export const DEFAULT_PRESENTATION_PREFERENCES = Object.freeze({
   themeMode: "system",
+  accentPreset: "violet",
+  fontPreset: "system",
+  surfaceOpacity: 78,
+  backgroundDim: 42,
+  blurAmount: 24,
+  reducedMotion: false,
   frames: Object.freeze({
     avatar: Object.freeze({ x: 50, y: 50, scale: 1 }),
     portrait: Object.freeze({ x: 50, y: 100, scale: 1 }),
@@ -15,7 +24,14 @@ export const DEFAULT_PRESENTATION_PREFERENCES = Object.freeze({
 });
 
 export function loadPresentationPreferences(packId, options = {}) {
-  const themeMode = normalizeThemeMode(getInstanceStorageItem(THEME_STORAGE_KEY, options));
+  const rawGlobal = getInstanceStorageItem(GLOBAL_STORAGE_KEY, options);
+  let globalValue = null;
+  try {
+    globalValue = rawGlobal ? JSON.parse(rawGlobal) : null;
+  } catch {
+    globalValue = null;
+  }
+  const legacyThemeMode = getInstanceStorageItem(LEGACY_THEME_STORAGE_KEY, options);
   const rawFrame = getInstanceStorageItem(frameStorageKey(packId), options);
   let frameValue = null;
   try {
@@ -23,14 +39,31 @@ export function loadPresentationPreferences(packId, options = {}) {
   } catch {
     frameValue = null;
   }
-  return normalizePresentationPreferences({ themeMode, frames: frameValue });
+  return normalizePresentationPreferences({
+    ...(globalValue && typeof globalValue === "object" ? globalValue : {}),
+    themeMode: globalValue?.themeMode || legacyThemeMode,
+    frames: frameValue
+  });
 }
 
 export function savePresentationPreferences(packId, preferences, options = {}) {
   const normalized = normalizePresentationPreferences(preferences);
-  const themeSaved = setInstanceStorageItem(THEME_STORAGE_KEY, normalized.themeMode, options);
-  const frameSaved = setInstanceStorageItem(frameStorageKey(packId), JSON.stringify(normalized.frames), options);
-  return themeSaved && frameSaved;
+  const globalValue = {
+    themeMode: normalized.themeMode,
+    accentPreset: normalized.accentPreset,
+    fontPreset: normalized.fontPreset,
+    surfaceOpacity: normalized.surfaceOpacity,
+    backgroundDim: normalized.backgroundDim,
+    blurAmount: normalized.blurAmount,
+    reducedMotion: normalized.reducedMotion
+  };
+  try {
+    const globalSaved = setInstanceStorageItem(GLOBAL_STORAGE_KEY, JSON.stringify(globalValue), options);
+    const frameSaved = setInstanceStorageItem(frameStorageKey(packId), JSON.stringify(normalized.frames), options);
+    return globalSaved && frameSaved;
+  } catch {
+    return false;
+  }
 }
 
 export function normalizePresentationPreferences(value = {}) {
@@ -38,6 +71,12 @@ export function normalizePresentationPreferences(value = {}) {
   const sourceFrames = source.frames && typeof source.frames === "object" ? source.frames : {};
   return {
     themeMode: normalizeThemeMode(source.themeMode),
+    accentPreset: normalizeEnum(source.accentPreset, ACCENT_PRESETS, DEFAULT_PRESENTATION_PREFERENCES.accentPreset),
+    fontPreset: normalizeEnum(source.fontPreset, FONT_PRESETS, DEFAULT_PRESENTATION_PREFERENCES.fontPreset),
+    surfaceOpacity: clampNumber(source.surfaceOpacity, 55, 96, DEFAULT_PRESENTATION_PREFERENCES.surfaceOpacity),
+    backgroundDim: clampNumber(source.backgroundDim, 0, 80, DEFAULT_PRESENTATION_PREFERENCES.backgroundDim),
+    blurAmount: clampNumber(source.blurAmount, 0, 36, DEFAULT_PRESENTATION_PREFERENCES.blurAmount),
+    reducedMotion: source.reducedMotion === true,
     frames: {
       avatar: normalizeFrame(sourceFrames.avatar, DEFAULT_PRESENTATION_PREFERENCES.frames.avatar),
       portrait: normalizeFrame(sourceFrames.portrait, DEFAULT_PRESENTATION_PREFERENCES.frames.portrait),
@@ -76,6 +115,9 @@ export function presentationCssVariables(preferences) {
   const portrait = normalized.frames.portrait;
   const background = normalized.frames.background;
   return {
+    "--cc-surface-alpha": String(Math.round(normalized.surfaceOpacity) / 100),
+    "--cc-background-dim": String(Math.round(normalized.backgroundDim) / 100),
+    "--cc-backdrop-blur": `${Math.round(normalized.blurAmount)}px`,
     "--cc-avatar-x": `${avatar.x}%`,
     "--cc-avatar-y": `${avatar.y}%`,
     "--cc-avatar-size": `${Math.round(avatar.scale * 1000) / 10}%`,
@@ -91,6 +133,11 @@ export function presentationCssVariables(preferences) {
 function normalizeThemeMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return THEME_MODES.has(normalized) ? normalized : DEFAULT_PRESENTATION_PREFERENCES.themeMode;
+}
+
+function normalizeEnum(value, allowed, fallback) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : fallback;
 }
 
 function normalizeFrameTarget(value) {

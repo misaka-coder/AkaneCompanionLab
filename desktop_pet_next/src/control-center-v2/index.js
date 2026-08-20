@@ -53,6 +53,31 @@ root.addEventListener("click", (event) => {
     });
     return;
   }
+  const accentButton = event.target.closest("button[data-accent-preset]");
+  if (accentButton) {
+    updatePresentationPreferences({
+      ...store.getState().presentationPreferences,
+      accentPreset: accentButton.dataset.accentPreset
+    });
+    return;
+  }
+  const fontButton = event.target.closest("button[data-font-preset]");
+  if (fontButton) {
+    updatePresentationPreferences({
+      ...store.getState().presentationPreferences,
+      fontPreset: fontButton.dataset.fontPreset
+    });
+    return;
+  }
+  const presentationToggle = event.target.closest("button[data-presentation-toggle]");
+  if (presentationToggle) {
+    const field = presentationToggle.dataset.presentationToggle;
+    if (field === "reducedMotion") {
+      const preferences = store.getState().presentationPreferences;
+      updatePresentationPreferences({ ...preferences, reducedMotion: !preferences.reducedMotion });
+    }
+    return;
+  }
   const targetButton = event.target.closest("[data-framing-target]");
   if (targetButton) {
     store.patch({ framingTarget: targetButton.dataset.framingTarget || "portrait" });
@@ -90,6 +115,13 @@ root.addEventListener("click", (event) => {
 
 root.addEventListener("input", (event) => {
   if (event.target.matches("[data-chat-input]")) chatDraft = event.target.value;
+  if (event.target.matches("[data-presentation-range]")) {
+    const field = event.target.dataset.presentationRange;
+    const value = Number(event.target.value);
+    previewPresentationPreferences({ [field]: value });
+    const label = root.querySelector(`[data-presentation-value="${field}"]`);
+    if (label) label.textContent = `${Math.round(value)}${event.target.dataset.presentationUnit || ""}`;
+  }
   if (event.target.matches("[data-framing-scale]")) {
     const scale = Number(event.target.value) / 100;
     previewPresentationFrame({ scale });
@@ -99,6 +131,9 @@ root.addEventListener("input", (event) => {
 });
 
 root.addEventListener("change", (event) => {
+  if (event.target.matches("[data-presentation-range]") && livePresentationPreferences) {
+    updatePresentationPreferences(livePresentationPreferences);
+  }
   if (event.target.matches("[data-framing-scale]") && livePresentationPreferences) {
     updatePresentationPreferences(livePresentationPreferences);
   }
@@ -268,12 +303,27 @@ function previewPresentationFrame(patch) {
   applyPresentationPreferences(livePresentationPreferences);
 }
 
+function previewPresentationPreferences(patch) {
+  const state = store.getState();
+  livePresentationPreferences = normalizePresentationPreferences({
+    ...(livePresentationPreferences || state.presentationPreferences),
+    ...patch
+  });
+  applyPresentationPreferences(livePresentationPreferences);
+}
+
 function updatePresentationPreferences(preferences) {
   const state = store.getState();
   const normalized = normalizePresentationPreferences(preferences);
   livePresentationPreferences = normalized;
-  savePresentationPreferences(state.presentationPackId || "default", normalized);
-  store.patch({ presentationPreferences: normalized });
+  const saved = savePresentationPreferences(state.presentationPackId || "default", normalized);
+  const notice = saved
+    ? { phase: "confirmed", label: "外观设置已保存", detail: "仅应用于这台设备" }
+    : { phase: "failed", label: "外观设置未保存", detail: "本地存储当前不可用" };
+  store.patch({ presentationPreferences: normalized, presentationNotice: notice });
+  window.setTimeout(() => {
+    if (store.getState().presentationNotice === notice) store.patch({ presentationNotice: null });
+  }, saved ? 1600 : 5000);
   livePresentationPreferences = null;
 }
 
@@ -281,6 +331,9 @@ function applyPresentationPreferences(preferences) {
   const resolvedTheme = resolveThemeMode(preferences?.themeMode, Boolean(systemThemeQuery?.matches));
   document.documentElement.dataset.theme = resolvedTheme;
   document.documentElement.dataset.themeMode = preferences?.themeMode || "system";
+  document.documentElement.dataset.accent = preferences?.accentPreset || "violet";
+  document.documentElement.dataset.font = preferences?.fontPreset || "system";
+  document.documentElement.dataset.reducedMotion = preferences?.reducedMotion ? "true" : "false";
   const variables = presentationCssVariables(preferences);
   for (const [name, value] of Object.entries(variables)) {
     document.documentElement.style.setProperty(name, value);

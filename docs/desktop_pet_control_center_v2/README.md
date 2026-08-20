@@ -4,7 +4,7 @@ Status: design contract, interactive prototype, and componentized V2 Overview pl
 
 This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
 
-The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Overview and Character & Appearance are implemented. It does not use the old control center's mock page skeleton. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
+The production-shaped candidate now lives behind `desktop_pet_next/control-center-v2.html`. It has its own small component/store/bridge boundary, reads only real backend and Tauri snapshots, and renders honest connecting, empty, failed, and unavailable states. Overview, Chat, and Character & Appearance are implemented. Device-local presentation preferences cover system/dark/light mode, restrained accent presets, font presets, panel opacity, background dimming, glass blur, reduced motion, plus independent avatar/portrait/background framing. These preferences never rewrite character assets or compete with workshop calibration. The existing settings window remains authoritative until this candidate passes Tauri verification and the legacy renderer can be removed rather than kept as a second implementation.
 
 ## Files
 
@@ -65,7 +65,7 @@ Manual acceptance for this stage:
 3. “新对话” and “停止回复” only report confirmation after a settings snapshot shows the corresponding state change.
 4. “打开工作区”, “角色工坊”, and “角色包目录” open their real host targets.
 5. Music controls report failure or unconfirmed execution honestly when no controllable session exists.
-6. Character & Appearance reads the current pack, outfit, expressions, portrait, and resource health from real snapshots.
+6. Character & Appearance reads the current pack, outfit, expressions, portrait, and resource health from real snapshots; device-local theme/framing changes provide immediate preview and report whether persistence succeeded.
 7. Pack, outfit, and expression changes confirm only after the desktop-pet snapshot reports the requested value; otherwise the UI reports an unconfirmed execution.
 8. Full authoring, uploads, and framing calibration remain in the character workshop instead of creating a second character-pack authority.
 

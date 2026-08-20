@@ -33,6 +33,7 @@ export function createInitialControlCenterState() {
     actionStates: {},
     presentationPackId: "",
     presentationPreferences: DEFAULT_PRESENTATION_PREFERENCES,
-    framingTarget: "portrait"
+    framingTarget: "portrait",
+    presentationNotice: null
   };
 }
