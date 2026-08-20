@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>桌宠控制中心 V2 · 交互原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="scene" aria-hidden="true">
+      <img id="scene-background" src="/desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png" alt="" />
+      <div class="scene-shade"></div>
+    </div>
+
+    <main class="shell" data-page="overview">
+      <aside class="rail" aria-label="控制中心导航">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <span class="brand-copy"><strong>桌宠控制中心</strong><small>交互原型</small></span>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item is-active" type="button" data-page-target="overview" aria-current="page">
+            <span aria-hidden="true">⌂</span><span>总览</span>
+          </button>
+          <button class="nav-item" type="button" data-page-target="appearance">
+            <span aria-hidden="true">✦</span><span>角色与外观</span>
+          </button>
+        </nav>
+
+        <div class="rail-spacer"></div>
+
+        <div class="prototype-note">
+          <span class="note-dot"></span>
+          <p><strong>原型模式</strong><br />不连接后端，不写入角色包</p>
+        </div>
+
+        <div class="mini-character">
+          <img id="rail-avatar" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色头像" />
+          <span><strong id="rail-character-name">当前角色</strong><small>本地预览</small></span>
+        </div>
+      </aside>
+
+      <section class="surface">
+        <header class="topbar">
+          <div>
+            <p class="kicker">DESKTOP COMPANION</p>
+            <h1 id="page-title">今天想让她做什么？</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="connection-chip"><i></i><span>已连接</span></span>
+            <button class="round-button" type="button" data-sim-action="刷新状态" aria-label="刷新状态" title="刷新状态">↻</button>
+          </div>
+        </header>
+
+        <div class="content-scroll">
+          <section class="page is-active" id="page-overview" aria-labelledby="page-title">
+            <div class="hero glass-panel">
+              <div class="hero-copy">
+                <div class="identity-row">
+                  <img id="hero-avatar" class="avatar" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色头像" />
+                  <div>
+                    <p class="kicker">ACTIVE CHARACTER</p>
+                    <h2 id="hero-character-name">当前角色</h2>
+                    <p class="muted">角色包提供头像、立绘、背景与主题；控制中心只负责展示。</p>
+                  </div>
+                </div>
+
+                <div class="activity-card">
+                  <span class="activity-icon" aria-hidden="true">✦</span>
+                  <span><small>当前活动</small><strong id="activity-label">空闲，随时可以开始</strong></span>
+                  <span class="live-pulse" aria-label="状态实时"></span>
+                </div>
+
+                <div class="quick-actions" aria-label="快捷操作">
+                  <button class="primary-action" type="button" data-sim-action="新对话"><span aria-hidden="true">＋</span> 新对话</button>
+                  <button class="soft-action" type="button" data-sim-action="打开角色工坊"><span aria-hidden="true">◇</span> 角色工坊</button>
+                  <button class="soft-action" type="button" data-sim-action="打开角色包文件夹"><span aria-hidden="true">▱</span> 角色文件夹</button>
+                </div>
+              </div>
+
+              <div class="portrait-stage">
+                <div class="portrait-halo"></div>
+                <img id="hero-portrait" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色立绘预览" />
+                <span class="portrait-caption">静态立绘槽 · 可替换为 Live2D 渲染器</span>
+              </div>
+            </div>
+
+            <div class="overview-grid">
+              <section class="music-card glass-panel" aria-labelledby="music-title">
+                <div class="card-heading">
+                  <div><p class="kicker">NOW PLAYING</p><h3 id="music-title">陪伴播放</h3></div>
+                  <span class="tiny-status" id="music-status">已暂停</span>
+                </div>
+                <div class="music-content">
+                  <img src="/desktop_pet_next/src/assets/control-center-lab/covers/akane-night-window.png" alt="歌曲封面示例" />
+                  <div class="track-copy"><strong>示例歌曲</strong><span>角色包不绑定音乐库</span></div>
+                  <button class="media-button" id="play-toggle" type="button" aria-label="播放" aria-pressed="false">
+                    <span class="play-icon" aria-hidden="true"></span>
+                    <span class="button-spinner" aria-hidden="true"></span>
+                  </button>
+                </div>
+              </section>
+
+              <section class="status-card glass-panel" aria-labelledby="status-title">
+                <div class="card-heading"><div><p class="kicker">RECENT</p><h3 id="status-title">最近活动</h3></div></div>
+                <ol class="activity-list">
+                  <li><span class="event-dot is-success"></span><span><strong>角色资源已就绪</strong><small>头像、立绘和背景均可用</small></span></li>
+                  <li><span class="event-dot"></span><span><strong>等待新的任务</strong><small>这里仅显示有意义的状态变化</small></span></li>
+                </ol>
+              </section>
+            </div>
+          </section>
+
+          <section class="page" id="page-appearance" aria-labelledby="appearance-title">
+            <div class="section-heading">
+              <div><p class="kicker">CHARACTER SHELL</p><h2 id="appearance-title">角色与外观</h2><p class="muted">快速预览常用资源；完整人设、表情和校准仍由角色工坊管理。</p></div>
+              <div class="section-actions">
+                <button class="soft-action" type="button" data-sim-action="打开角色工坊">打开角色工坊</button>
+                <button class="soft-action" type="button" data-sim-action="打开角色包文件夹">打开文件夹</button>
+              </div>
+            </div>
+
+            <div class="appearance-grid">
+              <section class="preview-card glass-panel">
+                <div class="preview-canvas">
+                  <img id="preview-background" class="preview-background" src="/desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png" alt="背景预览" />
+                  <div class="preview-shade"></div>
+                  <img id="preview-portrait" class="preview-portrait" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="立绘预览" />
+                  <div class="preview-bubble"><strong>预览效果</strong><span>背景、立绘、字体和玻璃层会在这里即时更新。</span></div>
+                </div>
+                <div class="preview-footer">
+                  <span><i class="ready-dot"></i> 资源预览可用</span>
+                  <button class="text-action" type="button" id="toggle-portrait">隐藏立绘</button>
+                </div>
+              </section>
+
+              <aside class="settings-stack">
+                <section class="settings-card glass-panel">
+                  <div class="card-heading"><div><p class="kicker">ASSET SLOTS</p><h3>角色资源</h3></div><span class="count-pill">3 个槽位</span></div>
+                  <div class="asset-list">
+                    <label class="asset-row">
+                      <img id="asset-avatar-preview" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="头像缩略图" />
+                      <span><strong>头像</strong><small>列表与状态区</small></span>
+                      <span class="pick-label">选择图片</span>
+                      <input id="avatar-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </label>
+                    <label class="asset-row">
+                      <span class="asset-symbol">人</span>
+                      <span><strong>主立绘</strong><small>总览与桌宠预览</small></span>
+                      <span class="pick-label">选择图片</span>
+                      <input id="portrait-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </label>
+                    <label class="asset-row">
+                      <span class="asset-symbol">景</span>
+                      <span><strong>控制中心背景</strong><small>角色空间氛围</small></span>
+                      <span class="pick-label">选择图片</span>
+                      <input id="background-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </label>
+                  </div>
+                </section>
+
+                <section class="settings-card glass-panel">
+                  <div class="card-heading"><div><p class="kicker">THEME</p><h3>界面主题</h3></div><button class="text-action" type="button" id="reset-theme">恢复样例</button></div>
+                  <div class="control-grid">
+                    <label><span>强调色</span><input id="accent-control" type="color" value="#79a6ff" /></label>
+                    <label><span>字体</span><select id="font-control"><option value="system">系统默认</option><option value="soft">柔和圆体</option><option value="serif">文艺衬线</option></select></label>
+                    <label class="range-control"><span>面板透明度 <output id="opacity-output">76%</output></span><input id="opacity-control" type="range" min="58" max="96" value="76" /></label>
+                    <label class="range-control"><span>背景压暗 <output id="shade-output">34%</output></span><input id="shade-control" type="range" min="10" max="68" value="34" /></label>
+                    <label class="range-control"><span>模糊强度 <output id="blur-output">22px</output></span><input id="blur-control" type="range" min="0" max="36" value="22" /></label>
+                  </div>
+                </section>
+              </aside>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
