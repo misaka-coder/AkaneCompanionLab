@@ -24,6 +24,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const music = deriveMusic(nowPlaying, musicRuntime);
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
+  const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
   const instanceLabel = text(petState.instanceId) || text(raw.controlCenterRuntime?.health?.data?.instance_id) || "本地实例";
   const chat = normalizeChatSession(raw.chatSession, {
     sessionId: text(petState.sessionId),
@@ -62,7 +63,8 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     chat,
     music,
     recentOutputs: outputs,
-    abilities: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
+    abilities,
+    abilityLabels: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
     actions: {
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
       "chat.send": {
@@ -77,6 +79,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.setOutfit": { available: connected && outfits.length > 0, reason: connected ? "当前角色没有服装资源" : "桌宠尚未连接" },
       "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
+      "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
       "music.pause": { available: music.available, reason: "当前没有可控制的音乐" },
       "window.minimize": { available: true, reason: "" },
       "window.maximize": { available: true, reason: "" },
@@ -230,6 +233,99 @@ function normalizeRecentOutputs(value) {
     detail: text(item?.subtitle) || text(item?.format) || text(item?.kind),
     status: text(item?.status) || "available"
   }));
+}
+
+function normalizeAbilitiesRuntime(value, connected) {
+  const source = asObject(value);
+  const overview = asObject(source.overview);
+  const safety = asObject(source.safety);
+  const policy = asObject(safety.approvalPolicy);
+  const defaultMode = ["ask_each_time", "trusted_auto_allow"].includes(text(policy.defaultMode))
+    ? text(policy.defaultMode)
+    : "ask_each_time";
+  const availableModes = (Array.isArray(policy.availableModes) ? policy.availableModes : [])
+    .map((item) => {
+      const entry = asObject(item);
+      const id = text(entry.id);
+      if (!["ask_each_time", "trusted_auto_allow"].includes(id)) return null;
+      return {
+        id,
+        label: text(entry.label) || (id === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+        summary: text(entry.summary)
+      };
+    })
+    .filter(Boolean);
+  if (!availableModes.length && connected) {
+    availableModes.push(
+      { id: "ask_each_time", label: "请求批准", summary: "高风险动作执行前先请求确认。" },
+      { id: "trusted_auto_allow", label: "完全访问", summary: "自动允许高风险能力，但保留路径、密钥和边界校验。" }
+    );
+  }
+  return {
+    available: connected && Object.keys(source).length > 0,
+    availability: finitePercent(overview.availability),
+    note: text(overview.note),
+    stats: normalizeLabelValueRows(overview.stats, 4),
+    modules: (Array.isArray(source.modules) ? source.modules : []).map((item) => {
+      const entry = asObject(item);
+      return {
+        title: text(entry.title),
+        description: text(entry.description),
+        permission: text(entry.permission),
+        count: text(entry.count),
+        tone: text(entry.tone) || "blue",
+        statusLabel: text(entry.statusLabel) || "待同步",
+        statusTone: text(entry.statusTone) || "warning"
+      };
+    }).filter((item) => item.title),
+    policy: {
+      defaultMode,
+      label: text(policy.label) || (defaultMode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
+      summary: text(policy.summary),
+      availableModes
+    },
+    safetyStatus: text(safety.status) || (connected ? "已生效" : "待连接"),
+    safetyItems: normalizeLabelValueRows(safety.items, 8),
+    integrations: normalizeAbilityIntegrations(source),
+    calls: (Array.isArray(source.calls) ? source.calls : []).slice(0, 5).map((item) => {
+      const entry = asObject(item);
+      return {
+        time: text(entry.time),
+        module: text(entry.module),
+        description: text(entry.description),
+        status: text(entry.status),
+        method: text(entry.method)
+      };
+    }).filter((item) => item.module || item.description)
+  };
+}
+
+function normalizeAbilityIntegrations(source) {
+  const groups = [
+    ["本地服务", source.providers],
+    ["MCP 工具", source.mcpServers],
+    ["工作流", source.workflows]
+  ];
+  return groups.flatMap(([group, values]) => (Array.isArray(values) ? values : []).map((item) => {
+    const entry = asObject(item);
+    return {
+      group,
+      title: text(entry.title) || text(entry.name) || text(entry.workflowId) || group,
+      status: text(entry.statusLabel) || text(entry.status) || "待同步",
+      detail: text(entry.reason) || text(entry.detail) || text(entry.description),
+      ready: ["ready", "available", "已就绪", "可用"].includes(text(entry.status).toLowerCase()) || /可用|就绪/.test(text(entry.statusLabel))
+    };
+  })).slice(0, 8);
+}
+
+function normalizeLabelValueRows(value, limit) {
+  return (Array.isArray(value) ? value : []).slice(0, limit).map((item) => {
+    const entry = asObject(item);
+    return {
+      label: text(entry.label),
+      value: text(entry.value) || text(entry.status)
+    };
+  }).filter((item) => item.label && item.value);
 }
 
 function normalizeCharacterWarnings(characterRuntime) {

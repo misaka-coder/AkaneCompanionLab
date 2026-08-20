@@ -1,5 +1,6 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
 import { renderCharacterAppearance } from "./appearance.js";
+import { renderAbilities } from "./abilities.js";
 import { renderChat } from "./chat.js";
 import { renderOverview } from "./overview.js";
 
@@ -11,6 +12,8 @@ export function renderControlCenterShell(root, state) {
   const activePage = state.activePage || "overview";
   const pageTitle = activePage === "appearance"
     ? "把这里变成她的空间"
+    : activePage === "abilities"
+      ? "能力清楚，权限也清楚"
     : activePage === "chat"
       ? "聊过的话，都留在这里"
       : "今天想让她做什么？";
@@ -22,6 +25,7 @@ export function renderControlCenterShell(root, state) {
           ${renderNavItem("overview", "⌂", "总览", activePage)}
           ${renderNavItem("chat", "◌", "聊天", activePage)}
           ${renderNavItem("appearance", "✦", "角色与外观", activePage)}
+          ${renderNavItem("abilities", "⌁", "能力与权限", activePage)}
         </nav>
         <div class="rail-spacer"></div>
         <div class="migration-note"><i></i><span><strong>真实数据模式</strong><small>没有演示状态和假按钮</small></span></div>
@@ -52,6 +56,7 @@ export function renderControlCenterShell(root, state) {
 function renderPage(activePage, state) {
   if (activePage === "chat") return renderChat(state);
   if (activePage === "appearance") return renderCharacterAppearance(state);
+  if (activePage === "abilities") return renderAbilities(state);
   return renderOverview(state);
 }
 

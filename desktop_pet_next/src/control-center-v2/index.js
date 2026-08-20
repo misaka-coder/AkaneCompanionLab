@@ -45,6 +45,11 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const approvalButton = event.target.closest("button[data-approval-mode]");
+  if (approvalButton && !approvalButton.disabled) {
+    void runAction("abilities.approvalPolicy.save", { defaultMode: approvalButton.dataset.approvalMode });
+    return;
+  }
   const themeButton = event.target.closest("button[data-theme-mode]");
   if (themeButton) {
     updatePresentationPreferences({

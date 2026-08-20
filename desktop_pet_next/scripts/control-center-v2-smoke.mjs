@@ -6,6 +6,7 @@ import {
   normalizeActionPresentation
 } from "../src/control-center-v2/view-model.js";
 import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
+import { renderAbilities } from "../src/control-center-v2/components/abilities.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
@@ -60,6 +61,41 @@ const rawSnapshot = {
     nowPlaying: { title: "星河", artist: "本地媒体", playing: true },
     bottomStatus: "正在播放"
   },
+  abilitiesRuntime: {
+    overview: {
+      availability: 86,
+      note: "本地能力目录已同步，2 项能力等待配置",
+      stats: [
+        { label: "能力模块", value: "6" },
+        { label: "可用能力", value: "24" },
+        { label: "待完善", value: "2" }
+      ]
+    },
+    modules: [
+      { title: "文件与工作区", description: "材料整理 / 文件交付", permission: "工作区文件访问", count: "8 项能力", tone: "orange", statusLabel: "可用", statusTone: "ready" },
+      { title: "安全与契约", description: "权限确认 / 风险隔离", permission: "安全与确认", count: "3 项能力", tone: "pink", statusLabel: "已生效", statusTone: "ready" }
+    ],
+    providers: [{ title: "本地语音服务", status: "ready", statusLabel: "可用", reason: "已连接" }],
+    mcpServers: [{ title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP" }],
+    workflows: [{ title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定" }],
+    safety: {
+      status: "已生效",
+      approvalPolicy: {
+        defaultMode: "ask_each_time",
+        label: "请求批准",
+        summary: "高风险能力在执行前创建审批请求。",
+        availableModes: [
+          { id: "ask_each_time", label: "请求批准", summary: "高风险动作先确认。" },
+          { id: "trusted_auto_allow", label: "完全访问", summary: "自动允许，但保留硬安全校验。" }
+        ]
+      },
+      items: [
+        { label: "当前审批模式", status: "请求批准" },
+        { label: "密钥与敏感信息", status: "未暴露" }
+      ]
+    },
+    calls: [{ time: "14:20", module: "能力注册表", description: "已同步 24 项能力", status: "成功", method: "能力目录" }]
+  },
   chatSession: {
     session: { session_id: "session-chat", display_title: "下午的对话" },
     messages: [
@@ -100,6 +136,12 @@ assert.equal(viewModel.activity.phase, "thinking");
 assert.equal(viewModel.activity.label, "正在整理文件");
 assert.equal(viewModel.music.playback, "playing");
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
+assert.equal(viewModel.abilities.available, true);
+assert.equal(viewModel.abilities.availability, 86);
+assert.equal(viewModel.abilities.modules.length, 2);
+assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
+assert.equal(viewModel.abilities.integrations.length, 3);
+assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
 assert.equal(viewModel.chat.title, "下午的对话");
 assert.equal(viewModel.chat.messages.length, 3);
 assert.equal(viewModel.chat.messages[2].intermediate, true);
@@ -329,6 +371,15 @@ assert.match(chatHtml, /data-chat-viewport/);
 assert.match(chatHtml, /data-chat-form/);
 assert.match(chatHtml, /data-action="chat\.new"/);
 assert.doesNotMatch(chatHtml, /假消息|演示消息/);
+
+const abilitiesHtml = renderAbilities({ viewModel, actionStates: {}, phase: "ready" });
+assert.match(abilitiesHtml, /她现在能做什么/);
+assert.match(abilitiesHtml, /文件与工作区/);
+assert.match(abilitiesHtml, /data-approval-mode="ask_each_time"/);
+assert.match(abilitiesHtml, /data-approval-mode="trusted_auto_allow"/);
+assert.match(abilitiesHtml, /硬安全边界始终保留/);
+assert.match(abilitiesHtml, /AnySearch/);
+assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
 
 const chatRequests = [];
 const chatSource = createBackendControlCenterSource({
