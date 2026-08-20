@@ -161,6 +161,7 @@ COMMON_TOOL_NAMES = (
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
 EXEC_TOOL_NAMES = (
     "manage_project_workspace",
+    "project_inspect",
     "workspace_write",
     "workspace_patch",
     "exec_run",
@@ -2747,7 +2748,7 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "桌宠本机模式下，编程项目先用 manage_project_workspace 选择持久项目，源码用 workspace_write/"
+                    "桌宠本机模式下，编程项目先用 manage_project_workspace 选择持久项目，读代码用 project_inspect，源码用 workspace_write/"
                     "workspace_patch 修改，构建、测试和其他命令再用 exec_run(cwd='alias:project')；"
                     "当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
                     "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
@@ -2764,7 +2765,7 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "当前 QQ 会话已由主人开放 Shell；编程项目先用 manage_project_workspace 选择持久项目，源码用"
+                    "当前 QQ 会话已由主人开放 Shell；编程项目先用 manage_project_workspace 选择持久项目，读代码用 project_inspect，源码用"
                     " workspace_write/workspace_patch 修改，构建与测试用 exec_run(cwd='alias:project')；"
                     "当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"

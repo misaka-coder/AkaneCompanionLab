@@ -12,7 +12,8 @@ Cursor wire format::
 - ``p1``            cursor schema version (frozen once it enters MemCore history)
 - ``<tool>``        short tool tag, e.g. ``ws`` (read_workspace), ``wl`` (list_workspace),
                     ``we`` (web_search extract/search), ``bp`` (browser_page snapshot),
-                    ``at`` (read_attachment_section), ``gf`` (inspect_generated_file)
+                    ``at`` (read_attachment_section), ``gf`` (inspect_generated_file),
+                    ``pi`` (project_inspect)
 - ``<tag>``         sha256(binding material)[:16]; the binding contains tool + owner
                     (profile/session) + source identity + fingerprint, so a cursor
                     cannot be replayed across sessions or against changed content

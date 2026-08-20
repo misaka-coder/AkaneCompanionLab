@@ -4,6 +4,7 @@ description: Use for building or modifying executable programs, scripts, interac
 metadata:
   required_tools:
     - manage_project_workspace
+    - project_inspect
     - workspace_write
     - workspace_patch
     - exec_run
@@ -40,9 +41,13 @@ permissions; use only the tools visible in the current request.
 
 - For open-ended requests, choose and state a concrete MVP that can be verified now.
   Continue until that scope works or a real external blocker remains.
-- Inspect the selected project before changing it: relevant files, instructions,
-  dependencies, version-control state, and narrow tests. Preserve user work and local
-  conventions.
+- Inspect the selected project before changing it. Use `project_inspect(action="list")`
+  to discover paths, `search` to locate symbols or text with line numbers, and `read`
+  for exact line ranges plus the current SHA-256. Continue a paged result only when the
+  visible evidence is insufficient; repeat its selectors exactly with the opaque cursor.
+  A `stale_cursor` means the source changed, so start a fresh inspection instead of
+  combining old and new pages. Use Shell for version-control state and specialized
+  repository queries, then preserve user work and local conventions.
 
 ## Write through project tools
 

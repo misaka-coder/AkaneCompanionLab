@@ -415,6 +415,55 @@ class ExecHandlerPermissionTests(unittest.TestCase):
 
 
 class ExecCatalogRegistrationTests(unittest.TestCase):
+    def test_catalog_registers_complete_project_tool_surface_with_shared_service(self) -> None:
+        from companion_v01.project_workspace import ProjectWorkspaceService
+        from companion_v01.store import MemoryStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            provider = TrustedLocalExecutor(workspace_root=workspace, run_log_dir=base / "runlogs")
+            service = ProjectWorkspaceService(
+                store=MemoryStore(base / "data"),
+                execution_workspace_root=workspace,
+            )
+            handlers = build_builtin_tool_handlers(
+                store=None,
+                npc_runtime=None,
+                gift_service=None,
+                artifact_service=None,
+                persona_card_service=None,
+                sticker_assets=None,
+                capability_offer_source=None,
+                capability_config_base_dir=None,
+                memory_timeline_service=None,
+                context_libraries=None,
+                attachment_service=None,
+                image_material_resolver=None,
+                task_workspace_service=None,
+                workspace_file_service=None,
+                attachment_ingest_service=None,
+                generated_file_service=None,
+                image_generation_service=None,
+                cover_song_service=None,
+                task_worker_service=None,
+                retrieve_fn=None,
+                describe_scene=None,
+                build_npc_followup_context=None,
+                observe_gift_image_fn=None,
+                execution_provider=provider,
+                project_workspace_service=service,
+            )
+
+            self.assertEqual(
+                [name for name in handlers if name in {"manage_project_workspace", "project_inspect", "workspace_write", "workspace_patch"}],
+                ["manage_project_workspace", "project_inspect", "workspace_write", "workspace_patch"],
+            )
+            self.assertTrue(handlers["project_inspect"].tool_metadata().is_read_only)
+            self.assertIs(handlers["project_inspect"].service, service)
+            self.assertIs(handlers["workspace_patch"].service, service)
+
     def test_catalog_registers_exec_handlers_when_provider_supplied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"

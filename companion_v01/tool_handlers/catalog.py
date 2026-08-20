@@ -60,6 +60,7 @@ from .memory import (
 from .music import SendAudioToolHandler, SendMusicCardToolHandler
 from .project_workspace import (
     ManageProjectWorkspaceToolHandler,
+    ProjectInspectToolHandler,
     WorkspacePatchToolHandler,
     WorkspaceWriteToolHandler,
 )
@@ -287,6 +288,7 @@ def build_builtin_tool_handlers(
             handlers["manage_project_workspace"] = ManageProjectWorkspaceToolHandler(
                 service=project_workspace_service
             )
+            handlers["project_inspect"] = ProjectInspectToolHandler(service=project_workspace_service)
             handlers["workspace_write"] = WorkspaceWriteToolHandler(service=project_workspace_service)
             handlers["workspace_patch"] = WorkspacePatchToolHandler(service=project_workspace_service)
     if image_generation_service is not None:

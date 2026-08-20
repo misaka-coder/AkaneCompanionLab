@@ -61,6 +61,7 @@ class CodingProjectSkillTests(unittest.TestCase):
         catalog = self.registry.prompt_catalog(
             available_tool_names={
                 "manage_project_workspace",
+                "project_inspect",
                 "workspace_write",
                 "workspace_patch",
                 "exec_run",
@@ -79,6 +80,7 @@ class CodingProjectSkillTests(unittest.TestCase):
             entry.required_tools,
             (
                 "manage_project_workspace",
+                "project_inspect",
                 "workspace_write",
                 "workspace_patch",
                 "exec_run",
@@ -107,6 +109,7 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn('manage_project_workspace(action="current")', content)
         self.assertIn('cwd="alias:project"', content)
         self.assertIn("workspace_write", content)
+        self.assertIn("project_inspect", content)
         self.assertIn("workspace_patch", content)
         self.assertIn("base_hash_mismatch", content)
         self.assertIn("command_too_long", content)

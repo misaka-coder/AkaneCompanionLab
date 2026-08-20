@@ -11,6 +11,7 @@ from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.execution import ExecRunToolHandler
 from companion_v01.tool_handlers.project_workspace import (
     ManageProjectWorkspaceToolHandler,
+    ProjectInspectToolHandler,
     WorkspacePatchToolHandler,
     WorkspaceWriteToolHandler,
 )
@@ -280,6 +281,86 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         target = self.execution_root / "Projects" / first["workspace_id"] / "src" / "app.js"
         self.assertEqual(target.read_text(encoding="utf-8"), "two\n")
 
+    def test_project_inspect_lists_searches_and_reads_relative_utf8_source(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Inspector")
+        self.service.write(
+            scope=self.private,
+            path="src/app.py",
+            content="def alpha():\n    return 'Needle'\n",
+        )
+        self.service.write(scope=self.private, path="README.md", content="# Demo\n")
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        (project / ".hidden.py").write_text("Needle hidden\n", encoding="utf-8")
+        (project / "node_modules" / "pkg").mkdir(parents=True)
+        (project / "node_modules" / "pkg" / "index.js").write_text("Needle dependency\n", encoding="utf-8")
+
+        listed = self.service.inspect_list(scope=self.private, path=".", max_depth=3)
+        searched = self.service.inspect_search(
+            scope=self.private,
+            path=".",
+            query="needle",
+            include="*.py",
+            case_sensitive=False,
+        )
+        read = self.service.inspect_read(scope=self.private, path="src/app.py")
+
+        listed_paths = [item["path"] for item in listed["entries"]]
+        self.assertIn("src/app.py", listed_paths)
+        self.assertIn("node_modules/", listed_paths)
+        self.assertNotIn("node_modules/pkg/index.js", listed_paths)
+        self.assertNotIn(".hidden.py", listed_paths)
+        self.assertEqual([(item["path"], item["line"]) for item in searched["matches"]], [("src/app.py", 2)])
+        self.assertTrue(searched["scan_complete"])
+        self.assertEqual(read["lines"], ["def alpha():", "    return 'Needle'"])
+        self.assertEqual(read["sha256"], hashlib.sha256(b"def alpha():\n    return 'Needle'\n").hexdigest())
+        self.assertNotIn(str(project), str(listed))
+
+    def test_project_inspect_rejects_escape_and_binary_text(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Inspector Limits")
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        (project / "binary.dat").write_bytes(b"\x00\xff")
+        (project / "target.txt").write_text("inside\n", encoding="utf-8")
+        with self.assertRaisesRegex(ProjectWorkspaceError, "path_outside_workspace"):
+            self.service.inspect_read(scope=self.private, path="../outside.py")
+        with self.assertRaisesRegex(ProjectWorkspaceError, "source_not_text"):
+            self.service.inspect_read(scope=self.private, path="binary.dat")
+        try:
+            (project / "linked.txt").symlink_to(project / "target.txt")
+        except OSError:
+            pass
+        else:
+            with self.assertRaisesRegex(ProjectWorkspaceError, "path_outside_workspace"):
+                self.service.inspect_read(scope=self.private, path="linked.txt")
+
+    def test_project_inspect_search_reports_regex_and_preview_boundaries(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        self.service.create(scope=self.private, display_name="Search Boundaries")
+        long_line = "prefix " + ("x" * 900) + " NEEDLE"
+        self.service.write(scope=self.private, path="src/long.txt", content=long_line + "\n")
+
+        result = self.service.inspect_search(
+            scope=self.private,
+            query=r"NE+DLE$",
+            include="src/*.txt",
+            regex=True,
+        )
+
+        self.assertEqual(len(result["matches"]), 1)
+        self.assertTrue(result["matches"][0]["preview_truncated"])
+        self.assertEqual(len(result["matches"][0]["text"]), 800)
+        self.assertIn("NEEDLE", result["matches"][0]["text"])
+        self.assertGreater(result["matches"][0]["preview_start_column"], 1)
+        with self.assertRaisesRegex(ProjectWorkspaceError, "invalid_regex"):
+            self.service.inspect_search(scope=self.private, query="[", regex=True)
+        with patch(
+            "companion_v01.project_workspace.regex_engine.compile",
+            return_value=SimpleNamespace(search=lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError())),
+        ):
+            with self.assertRaisesRegex(ProjectWorkspaceError, "search_timeout"):
+                self.service.inspect_search(scope=self.private, query="needle")
+
     def test_multi_file_patch_applies_and_failed_hunk_leaves_every_file_unchanged(self) -> None:
         self.service.create(scope=self.private, display_name="Patcher")
         self.service.write(scope=self.private, path="a.txt", content="alpha\nbeta\n")
@@ -477,6 +558,103 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(native["parameters"], spec.input_schema)
         for operation in ("update", "create", "delete", "rename"):
             self.assertIn(operation, native["description"])
+
+    def test_project_inspect_schema_and_native_projection_expose_one_read_authority(self) -> None:
+        from companion_v01.native_tool_schema import build_openai_native_tool_specs
+
+        handler = ProjectInspectToolHandler(service=self.service)
+        spec = handler.tool_spec()
+        native = build_openai_native_tool_specs(
+            {"project_inspect": handler},
+            allowed_tool_names={"project_inspect"},
+        )[0]["function"]
+
+        self.assertEqual(spec.input_schema["properties"]["action"]["enum"], ["list", "search", "read"])
+        self.assertEqual(native["parameters"], spec.input_schema)
+        self.assertEqual(spec.effects, ())
+        self.assertEqual(spec.idempotency, "read_only")
+
+    def test_project_inspect_handler_pages_long_lines_without_loss_and_detects_changes(self) -> None:
+        self.service.create(scope=self.private, display_name="Paged Inspector")
+        source = "x" * 70_000
+        self.service.write(scope=self.private, path="src/minified.js", content=source)
+        handler = ProjectInspectToolHandler(service=self.service)
+        call = handler.normalize_call(
+            {
+                "type": "project_inspect",
+                "action": "read",
+                "path": "src/minified.js",
+                "start_line": 1,
+                "line_count": 1,
+            }
+        )
+        self.assertIsNotNone(call)
+
+        first = handler.execute(call=call, context=self._context())
+        continuation = dict(first.followup_envelope.continuation or {})
+        second_call = handler.normalize_call(continuation)
+        self.assertFalse(first.followup_envelope.complete)
+        self.assertIsNotNone(second_call)
+        second = handler.execute(call=second_call, context=self._context())
+        self.assertTrue(second.followup_envelope.complete)
+        self.assertIn("1:49991", second.followup_context)
+        first_chunk = first.followup_context.splitlines()[3].split(" | ", 1)[1]
+        second_chunk = second.followup_context.splitlines()[3].split(" | ", 1)[1]
+        self.assertEqual(first_chunk + second_chunk, source)
+
+        self.service.write(scope=self.private, path="src/minified.js", content="changed\n", mode="replace")
+        stale = handler.execute(call=second_call, context=self._context())
+        self.assertIn("stale_cursor", stale.followup_context)
+
+    def test_project_inspect_cursor_is_session_bound_and_does_not_embed_search_query(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Search Paging")
+        project = self.execution_root / "Projects" / created["workspace_id"] / "src"
+        project.mkdir()
+        for index in range(300):
+            (project / f"module_{index:03d}_{'x' * 80}.py").write_text(
+                f"secret-search-phrase = {index}\n", encoding="utf-8"
+            )
+        handler = ProjectInspectToolHandler(service=self.service)
+        call = handler.normalize_call(
+            {
+                "type": "project_inspect",
+                "action": "search",
+                "path": ".",
+                "query": "secret-search-phrase",
+                "include": "*.py",
+            }
+        )
+        first = handler.execute(call=call, context=self._context())
+        continuation = dict(first.followup_envelope.continuation or {})
+        cursor = str(continuation.get("cursor") or "")
+
+        self.assertFalse(first.followup_envelope.complete)
+        self.assertNotIn("secret-search-phrase", bytes.fromhex(cursor.split(".", 3)[3]).decode("utf-8"))
+        foreign = handler.execute(
+            call=handler.normalize_call(continuation),
+            context=self._context(session_id="private-other"),
+        )
+        self.assertIn("cursor_invalid", foreign.followup_context)
+
+    def test_project_inspect_list_cursor_rejects_changed_result(self) -> None:
+        self.service.create(scope=self.private, display_name="List Paging")
+        for index in range(300):
+            self.service.write(
+                scope=self.private,
+                path=f"src/{index:03d}_{'y' * 90}.txt",
+                content="ok\n",
+            )
+        handler = ProjectInspectToolHandler(service=self.service)
+        call = handler.normalize_call(
+            {"type": "project_inspect", "action": "list", "path": ".", "max_depth": 2}
+        )
+        first = handler.execute(call=call, context=self._context())
+        continuation = dict(first.followup_envelope.continuation or {})
+        self.assertFalse(first.followup_envelope.complete)
+
+        self.service.write(scope=self.private, path="src/new.txt", content="new\n")
+        stale = handler.execute(call=handler.normalize_call(continuation), context=self._context())
+        self.assertIn("stale_cursor", stale.followup_context)
 
     def test_model_handlers_share_the_service_contract(self) -> None:
         manage = ManageProjectWorkspaceToolHandler(service=self.service)
