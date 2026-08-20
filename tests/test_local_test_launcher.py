@@ -101,9 +101,11 @@ class LocalTestLauncherTests(unittest.TestCase):
 
     def test_cloud_profile_sync_has_a_narrow_allowlist_and_external_target(self) -> None:
         source = (ROOT / "sync_akane_local_test_from_cloud.ps1").read_text(encoding="utf-8")
-        self.assertIn('GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")', source)
-        self.assertIn("${name}_MODEL_NAME=deepseek-v4-flash", source)
-        self.assertIn("${name}_BASE_URL=https://api.deepseek.com/v1", source)
+        self.assertIn('GetEnvironmentVariable("CHAT_API_KEY", "Process")', source)
+        self.assertIn("${name}_MODEL_NAME=gpt-5.6-luna", source)
+        self.assertIn("${name}_BASE_URL=https://api.pinaic.com/v1", source)
+        self.assertIn("local_pinai_api_key_missing", source)
+        self.assertIn('Import-AkaneEnvFile -Path $projectEnvFile', source)
         self.assertIn('foreach ($name in @("CHAT", "TEXT", "AUX"))', source)
         self.assertIn('"VISION_MODEL_NAME"', source)
         self.assertIn('"EXECUTION_ENABLED"', source)

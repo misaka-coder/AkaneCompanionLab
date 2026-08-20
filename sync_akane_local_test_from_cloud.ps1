@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $projectDir "scripts\akane_instance_launcher.ps1")
 $resolvedDataRoot = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
     $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
     if ([string]::IsNullOrWhiteSpace($localAppData)) {
@@ -93,20 +94,24 @@ foreach ($name in $required) {
     }
 }
 
-$deepSeekApiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process")
-if ([string]::IsNullOrWhiteSpace($deepSeekApiKey)) {
-    $deepSeekApiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+$projectEnvFile = Join-Path $projectDir ".env"
+if (Test-Path -LiteralPath $projectEnvFile -PathType Leaf) {
+    $null = Import-AkaneEnvFile -Path $projectEnvFile
 }
-if ([string]::IsNullOrWhiteSpace($deepSeekApiKey)) {
-    throw "local_deepseek_api_key_missing"
+$pinAiApiKey = [Environment]::GetEnvironmentVariable("PINAI_API_KEY", "Process")
+if ([string]::IsNullOrWhiteSpace($pinAiApiKey)) {
+    $pinAiApiKey = [Environment]::GetEnvironmentVariable("CHAT_API_KEY", "Process")
+}
+if ([string]::IsNullOrWhiteSpace($pinAiApiKey)) {
+    throw "local_pinai_api_key_missing"
 }
 
 $lines = New-Object System.Collections.Generic.List[string]
 foreach ($name in @("CHAT", "TEXT", "AUX")) {
-    $lines.Add("${name}_API_KEY=$deepSeekApiKey")
+    $lines.Add("${name}_API_KEY=$pinAiApiKey")
     $lines.Add("${name}_API_PROTOCOL=openai")
-    $lines.Add("${name}_BASE_URL=https://api.deepseek.com/v1")
-    $lines.Add("${name}_MODEL_NAME=deepseek-v4-flash")
+    $lines.Add("${name}_BASE_URL=https://api.pinaic.com/v1")
+    $lines.Add("${name}_MODEL_NAME=gpt-5.6-luna")
 }
 $lines.Add("CHAT_SUPPORTS_IMAGES=false")
 
@@ -149,7 +154,7 @@ if ($null -ne $icacls -and -not [string]::IsNullOrWhiteSpace([string]$env:USERNA
 }
 
 Write-Host "[OK] Cloud-aligned local-test provider profile saved."
-Write-Host "[INFO] Chat/text/aux model: deepseek-v4-flash"
+Write-Host "[INFO] Chat/text/aux model: gpt-5.6-luna"
 Write-Host "[INFO] Vision model: $([string]$payload.VISION_MODEL_NAME)"
 Write-Host "[INFO] Shell execution: $([string]$payload.EXECUTION_ENABLED)"
 Write-Host "[INFO] MemCore tool-result settlement: compact_after_terminal"
