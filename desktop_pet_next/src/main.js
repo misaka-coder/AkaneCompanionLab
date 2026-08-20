@@ -6800,6 +6800,16 @@ function isUsableForegroundContext(value) {
 
 function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}) {
   const hadActivity = isReplyActive();
+  if (announce && sending) {
+    void requestActiveTurnStop(reason);
+    showBubbleText("正在请求停止当前任务……", {
+      transient: true,
+      durationMs: 1800
+    });
+    setRuntimeStatus("正在请求停止", { mode: "stopping" });
+    updateActivityControls();
+    return true;
+  }
   activeTurnToken += 1;
   sending = false;
 
@@ -6939,6 +6949,10 @@ async function sendMessage(text) {
   if (!trimmed) return;
 
   rememberInputHistory(trimmed);
+  if (sending) {
+    await submitTurnSteer(trimmed);
+    return;
+  }
   interruptReply({ announce: false });
   const turnToken = ++activeTurnToken;
   activeTurnLatencyTrace = createTurnLatencyTrace("user", turnToken, { messageLength: trimmed.length });
@@ -6987,6 +7001,80 @@ async function sendMessage(text) {
       scheduleSettingsSnapshot();
     }
     finishTurnLatencyTrace(turnToken);
+  }
+}
+
+function buildTurnControlPayload(message = "") {
+  return {
+    user_id: state.sessionId,
+    real_user_id: getProfileUserId(),
+    actor_stable_id: `desktop:${getProfileUserId()}`,
+    actor_display_name: "",
+    message: String(message || "").trim(),
+    timestamp: Math.floor(Date.now() / 1000)
+  };
+}
+
+async function postTurnControl(action, message = "") {
+  const response = await backendFetch(
+    buildBackendEndpointUrl(`think_${action}`, `/think/${action}`, { t: Date.now() }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(buildTurnControlPayload(message))
+    }
+  );
+  let result = {};
+  try {
+    result = await response.json();
+  } catch {
+    result = {};
+  }
+  return { response, result };
+}
+
+async function submitTurnSteer(message) {
+  try {
+    const { response, result } = await postTurnControl("steer", message);
+    if (!response.ok || !result?.ok) {
+      restoreFailedInput(message);
+      const reason = String(result?.reason || "active_turn_unavailable");
+      const text = reason === "active_turn_finalizing"
+        ? "当前任务正在收尾，这条还没有加入；我已放回输入框。"
+        : "这条调整暂时没有加入当前任务，我已放回输入框。";
+      showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+      setRuntimeStatus(text, { mode: "error" });
+      return false;
+    }
+    showBubbleText("已加入当前任务，会在下一步执行前看到。", {
+      transient: true,
+      durationMs: 1800,
+      kind: "status"
+    });
+    setRuntimeStatus("已追加任务要求", { mode: "working" });
+    return true;
+  } catch (error) {
+    restoreFailedInput(message);
+    const text = `追加失败：${formatError(error)}`;
+    showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+    setRuntimeStatus(text, { mode: "error" });
+    return false;
+  }
+}
+
+async function requestActiveTurnStop(reason = "user_stopped_reply") {
+  try {
+    const { response, result } = await postTurnControl("stop", reason);
+    if (!response.ok || !result?.ok) {
+      setRuntimeStatus("当前任务未能收到停止请求", { mode: "error" });
+      return false;
+    }
+    setRuntimeStatus("停止请求已送达，等待安全结束", { mode: "stopping" });
+    return true;
+  } catch (error) {
+    setRuntimeStatus(`停止请求失败：${formatError(error)}`, { mode: "error" });
+    return false;
   }
 }
 
@@ -7268,6 +7356,14 @@ async function processThinkStream(stream, turnToken) {
       void handleBrowserOpenEvent(event);
     } else if (type === "assistant_working") {
       showToolWorking(event, { hasShownReply: rendered });
+    } else if (type === "turn_steer_applied") {
+      setRuntimeStatus("已按新增要求继续处理", { mode: "working" });
+    } else if (type === "turn_steer_failed") {
+      setRuntimeStatus("新增要求未能写入当前上下文", { mode: "error" });
+    } else if (type === "turn_stopped") {
+      rendered = true;
+      showBubbleText("当前任务已停止。", { transient: true, durationMs: 1800, kind: "status" });
+      setRuntimeStatus("当前任务已停止", { mode: "stopped" });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       const canonicalSpeech = String(payload?.speech || payload?.text || "").trim();

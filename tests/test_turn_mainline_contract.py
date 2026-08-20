@@ -7,6 +7,7 @@ from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from companion_v01.tool_runtime import ToolExecutionResult, ToolFollowupEnvelope
+from companion_v01.turn_coordination import SteeringInput
 
 
 def _tool_call(kind: str, call_id: str) -> dict[str, object]:
@@ -172,6 +173,9 @@ class _Harness:
         engine._append_memcore_turn_intermediate = record(
             "append_memcore_turn_intermediate"
         )
+        engine._append_memcore_turn_user_input = record(
+            "append_memcore_turn_user_input", {"ok": True, "status": "recorded"}
+        )
         engine._abort_memcore_input_turn = record("abort_memcore_input_turn")
         engine._schedule_memcore_compaction = record("schedule_memcore_compaction")
         engine._schedule_summary_cycle = record("schedule_summary_cycle")
@@ -302,6 +306,120 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertIn("trace_id", sync_result)
         self.assertIn("_debug", stream_final)
         self.assertIn("_debug", sync_result)
+
+    def test_user_steer_is_persisted_and_regenerates_before_stale_final_delivery(self) -> None:
+        harness = _Harness([
+            _speech_output("旧方向已经做完。"),
+            _speech_output("收到调整，我先补测试。"),
+        ])
+
+        class Coordinator:
+            drained = False
+
+            def drain(self, _token: str) -> dict[str, object]:
+                if self.drained:
+                    return {"ok": True, "stop_requested": False, "steers": []}
+                self.drained = True
+                return {
+                    "ok": True,
+                    "stop_requested": False,
+                    "steers": [
+                        SteeringInput(
+                            source_id="steer-1",
+                            content="改一下，先把测试补齐",
+                            timestamp=1_784_016_010,
+                            actor_id="qq:1",
+                            actor_display_name="伙伴",
+                            channel="qq",
+                        )
+                    ],
+                }
+
+            def begin_finalization(self, _token: str) -> dict[str, object]:
+                return {"ok": True, "status": "finalizing", "stop_requested": False, "steers": []}
+
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(_turn_control_id="control-1"))
+
+        self.assertTrue(any(event.get("type") == "turn_steer_applied" for event in events))
+        final = next(event["payload"] for event in events if event.get("type") == "final")
+        self.assertEqual(final["speech"], "收到调整，我先补测试。")
+        append_call = harness.rec["append_memcore_turn_user_input"].calls[0][1]
+        self.assertEqual(append_call["user_record"]["source_id"], "steer-1")
+        self.assertEqual(append_call["actor_stable_id"], "qq:1")
+        self.assertEqual([item.get("role") for item in harness.store.messages[:2]], ["user", "user"])
+
+    def test_stop_request_aborts_open_turn_without_delivering_stale_final(self) -> None:
+        harness = _Harness([_speech_output("这条不应该交付。")])
+
+        class Coordinator:
+            def drain(self, _token: str) -> dict[str, object]:
+                return {"ok": True, "stop_requested": True, "steers": []}
+
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(_turn_control_id="control-stop"))
+
+        self.assertTrue(any(event.get("type") == "turn_stopped" for event in events))
+        self.assertFalse(any(event.get("type") == "final" for event in events))
+        abort_call = harness.rec["abort_memcore_input_turn"].calls[0][1]
+        self.assertEqual(abort_call["reason"], "user_stopped")
+        self.assertEqual(len(harness.store.eval_turns), 0)
+
+    def test_stop_requests_cancellation_for_a_confirmed_running_exec(self) -> None:
+        harness = _Harness([
+            _tool_round_output("开始跑。", "exec_run", "call-run"),
+            _speech_output("还在执行。"),
+        ])
+        executed_types: list[str] = []
+
+        def execute_tool_call(*, tool_call: dict[str, object], **_kwargs: object) -> ToolExecutionResult:
+            tool_type = str(tool_call.get("type") or "")
+            executed_types.append(tool_type)
+            if tool_type == "exec_run":
+                return ToolExecutionResult(
+                    tool_type="exec_run",
+                    followup_context="命令仍在执行",
+                    state_updates={
+                        "capability_execution": {
+                            "tool_type": "exec_run",
+                            "status": "running",
+                            "run_id": "run_12345678",
+                        }
+                    },
+                )
+            return ToolExecutionResult(
+                tool_type="exec_cancel",
+                followup_context="命令已停止",
+                state_updates={
+                    "capability_execution": {
+                        "tool_type": "exec_cancel",
+                        "status": "cancelled",
+                        "run_id": "run_12345678",
+                    }
+                },
+            )
+
+        class Coordinator:
+            polls = 0
+
+            def drain(self, _token: str) -> dict[str, object]:
+                self.polls += 1
+                return {
+                    "ok": True,
+                    "stop_requested": self.polls >= 2,
+                    "steers": [],
+                }
+
+        harness.engine._execute_tool_call = execute_tool_call
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(_turn_control_id="control-stop-run"))
+
+        self.assertEqual(executed_types, ["exec_run", "exec_cancel"])
+        stopped = next(event for event in events if event.get("type") == "turn_stopped")
+        self.assertEqual(
+            stopped["payload"]["execution_cancellations"][0]["capability_execution"]["status"],
+            "cancelled",
+        )
 
     def test_two_tool_rounds_drive_batches_in_order_and_accumulate(self) -> None:
         harness = _Harness(

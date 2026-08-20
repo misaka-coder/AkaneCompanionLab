@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
+from ..turn_coordination import TurnCoordinator
 
 logger = logging.getLogger("akane.think")
 
@@ -24,8 +25,73 @@ def build_think_router(
     public_guard: Any,
     runtime_metrics: Any,
     log_event: LogEvent,
+    turn_coordinator: Any = None,
 ) -> APIRouter:
     router = APIRouter()
+    turn_coordinator = turn_coordinator or TurnCoordinator()
+
+    def _turn_identity(payload: dict[str, Any]) -> tuple[str, str, str]:
+        session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
+        profile_user_id = str(payload.get("real_user_id") or session_id)
+        actor_id = str(payload.get("actor_stable_id") or f"desktop:{profile_user_id}").strip()
+        return profile_user_id, session_id, actor_id
+
+    async def _control_payload(request: Request) -> dict[str, Any] | JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="invalid_json",
+                    message=f"无法读取控制请求：{str(exc)[:160]}",
+                    retryable=False,
+                ),
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="invalid_payload",
+                    message="turn control payload must be a JSON object",
+                    retryable=False,
+                ),
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        return payload
+
+    @router.post("/think/steer")
+    async def steer_turn(request: Request):
+        payload = await _control_payload(request)
+        if isinstance(payload, JSONResponse):
+            return payload
+        profile_user_id, session_id, actor_id = _turn_identity(payload)
+        result = turn_coordinator.offer_steer(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            actor_id=actor_id,
+            content=payload.get("message"),
+            timestamp=int(payload.get("timestamp") or time.time()),
+            actor_display_name=payload.get("actor_display_name"),
+            channel="desktop_pet",
+        )
+        status_code = 202 if result.get("ok") else (409 if result.get("status") == "finalizing" else 404)
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    @router.post("/think/stop")
+    async def stop_turn(request: Request):
+        payload = await _control_payload(request)
+        if isinstance(payload, JSONResponse):
+            return payload
+        profile_user_id, session_id, actor_id = _turn_identity(payload)
+        result = turn_coordinator.request_stop(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        status_code = 202 if result.get("ok") else (409 if result.get("status") == "finalizing" else 404)
+        return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
 
     @router.post("/think")
     async def think(request: Request):
@@ -70,7 +136,7 @@ def build_think_router(
             except StopIteration:
                 return False, None
 
-        async def _stream():
+        async def _stream_active():
             started_at = time.perf_counter()
             partial = {
                 "emotion": "",
@@ -157,6 +223,18 @@ def build_think_router(
                         ensure_ascii=False,
                     ) + "\n"
 
+        async def _stream():
+            profile_user_id, session_id, actor_id = _turn_identity(payload)
+            async with turn_coordinator.hold(
+                profile_user_id,
+                session_id,
+                actor_id=actor_id,
+                channel="desktop_pet",
+            ) as turn_control_id:
+                payload["_turn_control_id"] = turn_control_id
+                async for chunk in _stream_active():
+                    yield chunk
+
         return StreamingResponse(
             _stream(),
             media_type="application/x-ndjson",
@@ -208,8 +286,16 @@ def build_think_router(
                 session_id=str(payload.get("user_id") or ""),
             )
             raise HTTPException(status_code=429, detail=guard_decision.message)
+        profile_user_id, session_id, actor_id = _turn_identity(payload)
         try:
-            frame = await asyncio.to_thread(engine.process_turn, payload)
+            async with turn_coordinator.hold(
+                profile_user_id,
+                session_id,
+                actor_id=actor_id,
+                channel="desktop_pet",
+            ) as turn_control_id:
+                payload["_turn_control_id"] = turn_control_id
+                frame = await asyncio.to_thread(engine.process_turn, payload)
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request("think_once", duration_ms=duration_ms, ok=False)

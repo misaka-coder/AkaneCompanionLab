@@ -1178,6 +1178,88 @@ class AkaneMemoryEngine:
             logger.warning("memcore intermediate append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _append_memcore_turn_user_input(
+        self,
+        *,
+        turn_id: str,
+        user_record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+        actor_stable_id: str,
+        actor_display_name: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None or not str(turn_id or "").strip():
+            return {"ok": False, "status": "unavailable", "reason": "open_memcore_turn_missing"}
+        append_input = getattr(manager, "append_turn_user_input", None)
+        if not callable(append_input):
+            return {"ok": False, "status": "unavailable", "reason": "turn_user_input_append_unavailable"}
+        try:
+            result = append_input(
+                user_record,
+                turn_id=turn_id,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
+            )
+            self._warn_memcore_write_result("turn user input append", result)
+            return result if isinstance(result, dict) else {
+                "ok": False,
+                "status": "failed",
+                "reason": "invalid_turn_user_input_append_result",
+            }
+        except Exception as exc:
+            logger.warning("memcore turn user input append failed: %s", type(exc).__name__)
+            return {"ok": False, "status": "failed", "reason": f"exception_{type(exc).__name__}"}
+
+    def _record_turn_steering_inputs(
+        self,
+        *,
+        steers: list[Any],
+        turn_id: str,
+        recent_raw_for_turn: list[dict[str, Any]],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> tuple[list[str], list[str]]:
+        applied_source_ids: list[str] = []
+        failed_source_ids: list[str] = []
+        for steer in steers:
+            source_id = str(getattr(steer, "source_id", "") or "").strip()
+            content = str(getattr(steer, "content", "") or "").strip()
+            timestamp = int(getattr(steer, "timestamp", 0) or time.time())
+            if not source_id or not content:
+                continue
+            steer_record = self.store.add_message(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                role="user",
+                content=content,
+                timestamp=timestamp,
+                semantic_tags=extract_semantic_tags(content),
+                source_id=source_id,
+            )
+            self._upsert_raw_record(steer_record)
+            recent_raw_for_turn.append(steer_record)
+            append_result = self._append_memcore_turn_user_input(
+                turn_id=turn_id,
+                user_record=steer_record,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                actor_stable_id=str(getattr(steer, "actor_id", "") or ""),
+                actor_display_name=str(getattr(steer, "actor_display_name", "") or ""),
+            )
+            if append_result.get("ok"):
+                applied_source_ids.append(source_id)
+            else:
+                failed_source_ids.append(source_id)
+        return applied_source_ids, failed_source_ids
+
     def _chat_provider_protocol_for_memcore(
         self,
         *,
@@ -3651,6 +3733,7 @@ class AkaneMemoryEngine:
             "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
         )
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
+        turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
         if prompt_scope != "plugin_proactive":
             plugin_stable_system_context = ""
         plugin_external_event = self._pop_plugin_external_event(payload, prompt_scope=prompt_scope)
@@ -3882,7 +3965,151 @@ class AkaneMemoryEngine:
         # new, non-repeated work may grow one round at a time without changing
         # the provider request shape. Only the universal emergency ceiling
         # forces ``tool_choice=none``.
+        deferred_control_snapshot: dict[str, Any] = {}
         while tool_round_index <= emergency_tool_rounds:
+            control_snapshot: dict[str, Any] = deferred_control_snapshot
+            deferred_control_snapshot = {}
+            turn_coordinator = getattr(self, "turn_coordinator", None)
+            if not control_snapshot and turn_control_id and turn_coordinator is not None:
+                control_snapshot = dict(turn_coordinator.drain(turn_control_id) or {})
+            pending_steers = list(control_snapshot.get("steers") or [])
+            if bool(control_snapshot.get("stop_requested")):
+                if pending_steers:
+                    recorded_before_stop, failed_before_stop = self._record_turn_steering_inputs(
+                        steers=pending_steers,
+                        turn_id=memcore_turn_id,
+                        recent_raw_for_turn=recent_raw_for_turn,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
+                    if streaming:
+                        yield {
+                            "type": "turn_steer_recorded_before_stop",
+                            "count": len(recorded_before_stop),
+                            "failed_count": len(failed_before_stop),
+                        }
+                latest_run_status: dict[str, str] = {}
+                for completed_result in tool_results:
+                    updates = getattr(completed_result, "state_updates", None)
+                    execution = updates.get("capability_execution") if isinstance(updates, dict) else None
+                    if not isinstance(execution, dict):
+                        continue
+                    run_id = str(execution.get("run_id") or "").strip()
+                    if run_id:
+                        latest_run_status[run_id] = str(execution.get("status") or "").strip().lower()
+                cancel_calls = [
+                    {"type": "exec_cancel", "run_id": run_id}
+                    for run_id, status in latest_run_status.items()
+                    if status == "running"
+                ]
+                cancellation_results: list[ToolExecutionResult] = []
+                if cancel_calls:
+                    cancellation_results, cancellation_events = self._execute_and_record_tool_batch(
+                        tool_calls=cancel_calls,
+                        final_output=final_output,
+                        provider_output_raw=provider_output_raw,
+                        tool_results=tool_results,
+                        tool_events=tool_events,
+                        tool_followups=tool_followups,
+                        tool_turns=tool_turns,
+                        recent_raw_for_turn=recent_raw_for_turn,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                        now_ts=int(time.time()),
+                        current_user_source_id=str(user_record.get("source_id") or ""),
+                        client_context=client_context,
+                        memory_exclude_source_ids=memory_exclude_source_ids,
+                        request_context=payload,
+                        tool_history_turns=tool_history_turns,
+                        prompt_exclude_source_ids=prompt_exclude_source_ids,
+                        recorded_tool_call_ids=recorded_tool_call_ids,
+                        domain_profile_id=turn_domain_profile_id,
+                        memcore_turn_id=memcore_turn_id,
+                        execution_target=turn_execution_target,
+                    )
+                    if streaming:
+                        for cancellation_event in cancellation_events:
+                            yield cancellation_event
+                if memcore_turn_id and not externally_managed_memcore_turn:
+                    self._abort_memcore_input_turn(
+                        turn_id=memcore_turn_id,
+                        reason="user_stopped",
+                        chat_model_override=chat_model_override,
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                    )
+                stopped_output = {
+                    "status": "stopped",
+                    "reason": "user_stopped",
+                    "speech": "",
+                    "speech_segments": [],
+                    "tool_events": tool_events,
+                    "npc_turns": tool_turns,
+                    "execution_cancellations": [
+                        dict(getattr(result, "state_updates", {}) or {}) for result in cancellation_results
+                    ],
+                    "trace_id": trace_id,
+                }
+                if streaming:
+                    yield {"type": "turn_stopped", "reason": "user_stopped", "payload": stopped_output}
+                return stopped_output
+            if pending_steers:
+                applied_source_ids, failed_source_ids = self._record_turn_steering_inputs(
+                    steers=pending_steers,
+                    turn_id=memcore_turn_id,
+                    recent_raw_for_turn=recent_raw_for_turn,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
+                if streaming:
+                    yield {
+                        "type": "turn_steer_applied" if applied_source_ids else "turn_steer_failed",
+                        "count": len(applied_source_ids),
+                        "failed_count": len(failed_source_ids),
+                    }
+                if applied_source_ids:
+                    empty_continuation_attempts = 0
+                    # A new user instruction starts a fresh action allowance
+                    # inside the same durable turn.  Repeating a read/test that
+                    # was already used before the steer can now be legitimate.
+                    seen_tool_calls.clear()
+                    allowed_repeat_tool_calls.clear()
+                    final_output = yield from self._generate_round(
+                        mode=mode,
+                        session_id=session_id,
+                        profile_user_id=profile_user_id,
+                        user_message=user_message,
+                        recent_raw=recent_raw_for_turn,
+                        recent_episodic_summaries=recent_episodic_summaries,
+                        recent_semantic_summaries=recent_semantic_summaries,
+                        confirmed_snippets=confirmed_snippets,
+                        now_ts=now_ts,
+                        current_visual_payload=payload.get("current_visual"),
+                        extra_user_context=self._build_tool_round_extra_context(
+                            turn_extra_user_context=turn_extra_user_context,
+                            tool_followups=tool_followups,
+                            allow_more=True,
+                        ),
+                        client_context=client_context,
+                        resource_manifest=turn_resource_manifest,
+                        character_pack_id=turn_character_pack_id,
+                        user_images=turn_user_images,
+                        allow_tool_call=True,
+                        final_debug_enabled=final_debug_enabled,
+                        chat_model_override=chat_model_override,
+                        execution_target=turn_execution_target,
+                        post_user_turns=tool_history_turns,
+                        prompt_exclude_source_ids=prompt_exclude_source_ids,
+                        domain_profile_id=turn_domain_profile_id,
+                        prompt_scope=prompt_scope,
+                        stable_system_context=plugin_stable_system_context,
+                        request_projection_state=request_projection_state,
+                    )
+                    continue
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
@@ -4037,6 +4264,11 @@ class AkaneMemoryEngine:
                         if can_continue:
                             continue
                         final_output["status"] = "final"
+                    if turn_control_id and turn_coordinator is not None:
+                        finalization = dict(turn_coordinator.begin_finalization(turn_control_id) or {})
+                        if finalization.get("stop_requested") or finalization.get("steers"):
+                            deferred_control_snapshot = finalization
+                            continue
                     break
                 allow_retry = self._record_tool_call_rejection(
                     final_output=final_output,

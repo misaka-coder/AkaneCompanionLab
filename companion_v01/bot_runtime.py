@@ -46,6 +46,7 @@ from .settings_overrides import (
     set_override,
 )
 from .tts_provider_runtime import resolve_character_tts_client
+from .turn_coordination import TurnCoordinator
 from .voice_runtime import AkaneVoiceRuntimeService
 
 
@@ -87,6 +88,7 @@ class BotRuntime:
     tts_client: EdgeTTSClient
     runtime_metrics: RuntimeMetrics
     public_guard: PublicThinkGuard
+    turn_coordinator: TurnCoordinator
     qq_gateway: NapCatQQGateway | None
     qq_followup_tasks: AsyncTaskSupervisor | None
     config_module: Any = field(repr=False)
@@ -557,6 +559,8 @@ class BotRuntimeFactory:
                 qq_followup_tasks = None
                 plugin_host.bind_notification_port(NullNotificationPort())
 
+            turn_coordinator = TurnCoordinator()
+            engine.turn_coordinator = turn_coordinator
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -597,6 +601,7 @@ class BotRuntimeFactory:
                         )
                     ),
                 ),
+                turn_coordinator=turn_coordinator,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,

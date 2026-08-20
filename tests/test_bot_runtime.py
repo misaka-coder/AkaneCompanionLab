@@ -18,6 +18,7 @@ from companion_v01.instance_profile import instance_context_from_bot_config
 from companion_v01.instance_runtime import bind_instance_runtime
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.settings_overrides import RuntimeConfigView, SettingsOverrideStore
+from companion_v01.turn_coordination import TurnCoordinator
 
 
 class _FakePluginHost:
@@ -97,6 +98,7 @@ def _runtime(bot_id: str = "bot-a") -> tuple[BotRuntime, _FakePluginHost, _FakeE
         tts_client=SimpleNamespace(),
         runtime_metrics=SimpleNamespace(),
         public_guard=SimpleNamespace(),
+        turn_coordinator=TurnCoordinator(),
         qq_gateway=None,
         qq_followup_tasks=followups,
         config_module=SimpleNamespace(),
@@ -141,6 +143,7 @@ def _leased_runtime(root: Path, bot_id: str) -> tuple[BotRuntime, _FakePluginHos
         tts_client=SimpleNamespace(),
         runtime_metrics=SimpleNamespace(),
         public_guard=SimpleNamespace(),
+        turn_coordinator=TurnCoordinator(),
         qq_gateway=None,
         qq_followup_tasks=followups,
         config_module=SimpleNamespace(),

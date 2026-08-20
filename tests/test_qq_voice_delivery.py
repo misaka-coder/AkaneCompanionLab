@@ -72,6 +72,45 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_confirmed_stop_does_not_rerun_turn_or_send_missing_final_notice(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, _payload: dict):
+                yield {
+                    "type": "turn_stopped",
+                    "reason": "user_stopped",
+                    "payload": {
+                        "status": "stopped",
+                        "reason": "user_stopped",
+                        "speech": "",
+                        "tool_events": [],
+                    },
+                }
+
+            def process_turn(self, _payload: dict):
+                raise AssertionError("a confirmed stop must not rerun the user turn")
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(session_id="qq-stop", reply_mode="text"),
+            turn_payload={"user_id": "qq-stop", "message": "long task"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertTrue(result["send_result"]["ok"])
+        self.assertEqual(result["send_result"]["status"], "stopped")
+        self.assertEqual(result["final_failure_notice_result"]["status"], "skipped")
+        self.assertEqual(gateway.text_sends, [])
+
     def test_session_turn_coordinator_serializes_the_same_timeline(self) -> None:
         async def exercise() -> list[str]:
             coordinator = QQSessionTurnCoordinator()

@@ -712,6 +712,52 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_open_turn_user_steer_projects_as_timestamped_user_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "steer-user-1", "content": "先做一个网页", "timestamp": 1_777_777_700},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    actor_stable_id="qq:1",
+                )
+                appended = manager.append_turn_user_input(
+                    {"source_id": "steer-user-2", "content": "改一下，先把测试补齐", "timestamp": 1_777_777_760},
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                    actor_stable_id="qq:1",
+                    actor_display_name="伙伴",
+                )
+                self.assertTrue(appended["ok"], appended)
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        steer_message = next(
+            message for message in projection["messages"] if "steer-user-2" in message.get("source_ids", [])
+        )
+        self.assertEqual(steer_message["payload"]["role"], "user")
+        self.assertIn("改一下，先把测试补齐", str(steer_message["payload"]["content"]))
+        self.assertRegex(str(steer_message["payload"]["content"]), r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]")
+        self.assertEqual(steer_message["turn_id"], opened["turn_id"])
+
     def test_provider_protocol_maps_to_projection_profile_without_bot_specific_branching(self) -> None:
         self.assertEqual(resolve_memcore_provider_profile("openai"), "openai_chat")
         self.assertEqual(resolve_memcore_provider_profile("responses"), "openai_chat")

@@ -707,6 +707,67 @@ class MemcoreManager:
             logger.warning("memcore %s failed: %s", operation, reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=reason)
 
+    def append_turn_user_input(
+        self,
+        record: dict[str, Any],
+        *,
+        turn_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        actor_stable_id: str = "",
+        actor_display_name: str = "",
+    ) -> dict[str, Any]:
+        """Append a real user steer to an already-open model turn.
+
+        It is an intermediate entry in the turn lifecycle, but remains a
+        ``message.user`` event.  Provider projection therefore renders the
+        normal timestamped user message instead of a host-authored system note.
+        """
+
+        operation = "append_turn_user_input"
+        source_id = str((record or {}).get("source_id") or "").strip()
+        resolved_turn_id = str(turn_id or "").strip()
+        if not source_id or not resolved_turn_id:
+            return self._status(
+                operation,
+                False,
+                "invalid_record",
+                source_id=source_id,
+                reason="source_id_and_turn_id_required",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
+        try:
+            entry = self._build_timeline_input(
+                role="user",
+                record=record,
+                actor_stable_id=actor_stable_id,
+                actor_display_name=actor_display_name,
+                turn_role="intermediate",
+            )
+            stored = system.append_entry(entry, turn_id=resolved_turn_id)
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "recorded",
+                    source_id=stored.source_id,
+                    index_status=stored.index_status,
+                ),
+                "turn_id": resolved_turn_id,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
+
     def inspect_turn_source(
         self,
         source_id: str,

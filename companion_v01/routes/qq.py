@@ -4,10 +4,8 @@ import asyncio
 import hashlib
 import json
 import re
-import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -34,6 +32,7 @@ from .voice import (
     _resolve_tts_runtime_provider,
 )
 from ..runtime_settings import runtime_setting
+from ..turn_coordination import TurnCoordinator as QQSessionTurnCoordinator
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -800,41 +799,6 @@ def _normalize_reply_medium(value: Any) -> str:
     return aliases.get(text, "")
 
 
-class QQSessionTurnCoordinator:
-    """Serialize full QQ turns that share one memory/session timeline."""
-
-    def __init__(self) -> None:
-        self._entries: dict[str, tuple[asyncio.Lock, int]] = {}
-        self._registry_lock = threading.Lock()
-
-    def is_busy(self, profile_user_id: Any, session_id: Any) -> bool:
-        key = f"{str(profile_user_id or '').strip()}\0{str(session_id or '').strip()}"
-        with self._registry_lock:
-            entry = self._entries.get(key)
-            return bool(entry is not None and entry[1] > 0 and entry[0].locked())
-
-    @asynccontextmanager
-    async def hold(self, profile_user_id: Any, session_id: Any):
-        key = f"{str(profile_user_id or '').strip()}\0{str(session_id or '').strip()}"
-        with self._registry_lock:
-            entry = self._entries.get(key)
-            lock = entry[0] if entry is not None else asyncio.Lock()
-            users = (entry[1] if entry is not None else 0) + 1
-            self._entries[key] = (lock, users)
-        try:
-            async with lock:
-                yield
-        finally:
-            with self._registry_lock:
-                current = self._entries.get(key)
-                if current is not None and current[0] is lock:
-                    remaining = current[1] - 1
-                    if remaining <= 0:
-                        self._entries.pop(key, None)
-                    else:
-                        self._entries[key] = (lock, remaining)
-
-
 def _streaming_allows_text(reply_mode: str, delivery_hint: str) -> bool:
     mode = _normalize_reply_medium(reply_mode) or "auto"
     hint = _normalize_reply_medium(delivery_hint)
@@ -1303,6 +1267,12 @@ def _process_qq_turn_streaming(
             if len(streamed_messages) > streamed_before:
                 tool_preface_delivered = True
             continue
+        if event_type == "turn_stopped":
+            frame = dict(stream_event.get("payload") or {})
+            frame["_turn_stopped"] = True
+            final_frame_received = True
+            pending_stage_messages = []
+            continue
         if event_type == "final_ui" and isinstance(stream_event.get("payload"), dict):
             frame = dict(stream_event.get("payload") or {})
             final_frame_received = True
@@ -1433,7 +1403,7 @@ def _process_qq_turn_streaming(
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
-    if (
+    if not bool(frame.get("_turn_stopped")) and (
         (not visible_text_delivered and not visible_file_delivered)
         or (not final_frame_received and not visible_file_delivered)
         or (
@@ -1479,6 +1449,14 @@ def _process_qq_turn_streaming(
             "text_result": send_result.get("text_result"),
             "voice_result": send_result.get("voice_result"),
             "final_failure_notice": bool(send_result.get("final_failure_notice")),
+        }
+    if bool(frame.get("_turn_stopped")):
+        send_result = {
+            "ok": True,
+            "status": "stopped",
+            "reason": "user_stopped",
+            "count": 0,
+            "results": [],
         }
 
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
@@ -1677,11 +1655,12 @@ def build_qq_router(
     route_base: str = "/api/qq",
     plugin_command_broker_provider: Callable[[], Any] | None = None,
     thinking_mode_setter: Callable[[str], str] | None = None,
+    turn_coordinator: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
-    turn_coordinator = QQSessionTurnCoordinator()
+    turn_coordinator = turn_coordinator or QQSessionTurnCoordinator()
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1806,7 +1785,65 @@ def build_qq_router(
         event: dict[str, Any],
         turn_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        async with turn_coordinator.hold(context.profile_user_id, context.session_id):
+        qq_user_id = int(getattr(context, "user_id", 0) or 0)
+        actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{context.profile_user_id}"
+        steer_text = str(turn_payload.get("message") or "").strip()
+        stop_requested = str(getattr(context, "clean_message", "") or "").strip().lower() in {
+            "停止",
+            "停下",
+            "停止任务",
+            "取消任务",
+            "先停一下",
+        }
+        if stop_requested:
+            stop_result = turn_coordinator.request_stop(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                actor_id=actor_id,
+            )
+            if stop_result.get("ok"):
+                acknowledgement = "收到，已请求在安全位置停止当前任务。"
+                send_result = await asyncio.to_thread(qq_gateway.send_reply, context, acknowledgement)
+                return {
+                    "frame": {"status": "stop_requested", "speech": acknowledgement},
+                    "reply_messages": [acknowledgement],
+                    "send_result": send_result,
+                }
+            acknowledgement = (
+                "当前任务已经在收尾，来不及再中止了。"
+                if stop_result.get("status") == "finalizing"
+                else "当前没有正在执行的任务。"
+            )
+            send_result = await asyncio.to_thread(qq_gateway.send_reply, context, acknowledgement)
+            return {
+                "frame": {"status": str(stop_result.get("status") or "idle"), "speech": acknowledgement},
+                "reply_messages": [acknowledgement],
+                "send_result": send_result,
+            }
+        steer_result = turn_coordinator.offer_steer(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            actor_id=actor_id,
+            content=steer_text,
+            timestamp=int(event.get("time") or time.time()),
+            actor_display_name=str(getattr(context, "sender_label", "") or ""),
+            channel="qq",
+        )
+        if steer_result.get("ok"):
+            acknowledgement = "收到，这条调整会在下一步执行前交给我。"
+            send_result = await asyncio.to_thread(qq_gateway.send_reply, context, acknowledgement)
+            return {
+                "frame": {"status": "steer_accepted", "speech": acknowledgement},
+                "reply_messages": [acknowledgement],
+                "send_result": send_result,
+            }
+        async with turn_coordinator.hold(
+            context.profile_user_id,
+            context.session_id,
+            actor_id=actor_id,
+            channel="qq",
+        ) as turn_control_id:
+            turn_payload["_turn_control_id"] = turn_control_id
             return await _run_qq_turn_delivery_unlocked(
                 context=context,
                 event=event,
