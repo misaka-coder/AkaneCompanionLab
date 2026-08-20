@@ -19,17 +19,28 @@ export function renderControlCenterShell(root, state) {
         </div>
       </aside>
       <section class="ccv2-surface">
-        <header class="ccv2-topbar">
-          <div><p class="eyebrow">DESKTOP COMPANION</p><h1 id="ccv2-page-title">今天想让她做什么？</h1></div>
+        <header class="ccv2-topbar" data-tauri-drag-region>
+          <div data-tauri-drag-region><p class="eyebrow" data-tauri-drag-region>DESKTOP COMPANION</p><h1 id="ccv2-page-title" data-tauri-drag-region>今天想让她做什么？</h1></div>
           <div class="topbar-actions">
             <span class="connection-chip" title="${escapeHtml(vm?.shell?.connectionDetail || "")}"><i></i><span>${escapeHtml(vm?.shell?.connectionDetail || vm?.shell?.connectionLabel || "正在连接")}</span></span>
             <button class="round-button${state.phase === "refreshing" ? " is-spinning" : ""}" type="button" data-refresh aria-label="刷新真实状态" title="刷新真实状态">↻</button>
+            <span class="window-actions" aria-label="窗口操作">
+              ${renderWindowButton(state, "window.minimize", "最小化", "−")}
+              ${renderWindowButton(state, "window.maximize", "最大化或还原", "□")}
+              ${renderWindowButton(state, "window.close", "关闭", "×", " is-close")}
+            </span>
           </div>
         </header>
         <div class="ccv2-scroll">${renderOverview(state)}</div>
         <div class="toast-region" aria-live="polite">${renderToast(state)}</div>
       </section>
     </main>`;
+}
+
+function renderWindowButton(state, actionId, label, icon, className = "") {
+  const actionState = state.actionStates[actionId];
+  const pending = actionState?.phase === "pressed" || actionState?.phase === "pending";
+  return `<button class="window-button${className}${pending ? " is-pending" : ""}" type="button" data-action="${actionId}" aria-label="${label}" title="${label}"${pending ? " disabled" : ""}>${icon}</button>`;
 }
 
 function renderToast(state) {

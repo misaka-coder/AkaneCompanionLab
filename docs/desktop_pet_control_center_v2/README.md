@@ -1,6 +1,6 @@
 # Desktop Pet Control Center V2
 
-Status: design contract, interactive prototype, and componentized V2 Overview candidate. The candidate is not yet the production settings-window authority.
+Status: design contract, interactive prototype, and componentized V2 Overview candidate. The candidate is available through an explicit Tauri test launcher, but is not yet the production settings-window authority.
 
 This slice intentionally leaves the existing desktop-pet quick card and `desktop_pet_next/control-center-lab.html` unchanged. The prototype is used to settle information hierarchy, character asset slots, non-destructive framing, chat presentation, theme behavior, and action feedback before production reintegration.
 
@@ -40,3 +40,30 @@ npm run dev
 ```
 
 Open `http://127.0.0.1:1420/control-center-v2.html`. When the local backend is not running, the candidate deliberately shows a reconnectable empty state instead of sample data. In Tauri it also subscribes to the existing settings snapshot event for current activity, expression, and music state.
+
+## Real Tauri test path
+
+From `desktop_pet_next`:
+
+```powershell
+npm run dev:control-center-v2
+```
+
+This starts the normal desktop-pet development runtime and opens V2 in the real frameless `settings` window. The window keeps the established `settings` label, so snapshot events, commands, folder entrances, the character workshop, music control, and window controls use the production bridge instead of a second test-only protocol.
+
+The selector is intentionally opt-in and process-local:
+
+- this command sets `AKANE_CONTROL_CENTER_ENTRY=v2` only for its Tauri child process;
+- ordinary `npm run tauri -- dev`, release startup, and packaged builds still open `control-center-lab.html`;
+- an empty or unknown selector also falls back to `control-center-lab.html`;
+- `AKANE_OPEN_MODEL_SETTINGS` continues to select the legacy model page unless V2 was explicitly selected.
+
+Manual acceptance for this stage:
+
+1. V2 opens automatically and can be dragged, minimized, maximized/restored, and closed.
+2. The connection chip and activity state follow the running desktop pet; no sample character or fake activity appears while disconnected.
+3. “新对话” and “停止回复” only report confirmation after a settings snapshot shows the corresponding state change.
+4. “打开工作区”, “角色工坊”, and “角色包目录” open their real host targets.
+5. Music controls report failure or unconfirmed execution honestly when no controllable session exists.
+
+This test path is not a production cutover. V2 currently covers the Overview slice only; the legacy settings entry remains authoritative until the remaining configuration pages are rebuilt and the old renderer can be deleted rather than kept in parallel.

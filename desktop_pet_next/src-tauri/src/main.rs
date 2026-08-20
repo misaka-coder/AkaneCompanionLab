@@ -4065,12 +4065,25 @@ fn close_pet_app(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn settings_window_url() -> &'static str {
-    if env_flag_enabled("AKANE_OPEN_MODEL_SETTINGS") {
+fn settings_window_url_for(entry: Option<&str>, open_model_settings: bool) -> &'static str {
+    if entry
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("v2"))
+    {
+        "control-center-v2.html"
+    } else if open_model_settings {
         "control-center-lab.html?page=model"
     } else {
         "control-center-lab.html"
     }
+}
+
+fn settings_window_url() -> &'static str {
+    let entry = std::env::var("AKANE_CONTROL_CENTER_ENTRY").ok();
+    settings_window_url_for(
+        entry.as_deref(),
+        env_flag_enabled("AKANE_OPEN_MODEL_SETTINGS"),
+    )
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -6603,6 +6616,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_center_v2_requires_an_explicit_entry_selection() {
+        assert_eq!(
+            settings_window_url_for(None, false),
+            "control-center-lab.html"
+        );
+        assert_eq!(
+            settings_window_url_for(Some(""), false),
+            "control-center-lab.html"
+        );
+        assert_eq!(
+            settings_window_url_for(Some("future"), false),
+            "control-center-lab.html"
+        );
+        assert_eq!(
+            settings_window_url_for(Some(" V2 "), false),
+            "control-center-v2.html"
+        );
+        assert_eq!(
+            settings_window_url_for(Some("v2"), true),
+            "control-center-v2.html"
+        );
+        assert_eq!(
+            settings_window_url_for(None, true),
+            "control-center-lab.html?page=model"
+        );
+    }
 
     #[test]
     fn health_binding_rejects_another_instance() {

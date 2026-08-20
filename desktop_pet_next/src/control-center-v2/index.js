@@ -51,7 +51,12 @@ async function runAction(actionId) {
   updateAction(actionId, { phase: "pressed", label: "已按下", detail: "" });
   await new Promise((resolve) => requestAnimationFrame(resolve));
   updateAction(actionId, { phase: "pending", label: "处理中", detail: "" });
-  const result = await bridge.runAction(actionId);
+  let result;
+  try {
+    result = await bridge.runAction(actionId);
+  } catch (error) {
+    result = { ok: false, status: "failed", reason: friendlyError(error) };
+  }
   const presentation = normalizeActionPresentation(result);
   updateAction(actionId, presentation);
   window.setTimeout(() => {

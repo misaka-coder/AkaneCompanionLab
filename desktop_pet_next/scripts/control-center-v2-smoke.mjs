@@ -53,6 +53,9 @@ assert.equal(viewModel.music.playback, "playing");
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
 assert.equal(viewModel.actions["chat.stop"].available, true);
 assert.equal(viewModel.actions["character.openWorkshop"].available, true);
+assert.equal(viewModel.actions["window.minimize"].available, true);
+assert.equal(viewModel.actions["window.maximize"].available, true);
+assert.equal(viewModel.actions["window.close"].available, true);
 
 const runtimeOnly = createControlCenterRuntimeSnapshot({
   ...rawSnapshot,

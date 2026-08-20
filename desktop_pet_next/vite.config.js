@@ -8,6 +8,9 @@ export default defineConfig({
   server: {
     fs: {
       allow: [resolve(__dirname), creatorKitDir]
+    },
+    watch: {
+      ignored: ["**/src-tauri/target/**"]
     }
   },
   build: {

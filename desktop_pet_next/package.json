@@ -24,6 +24,7 @@
     "smoke:control-center-ux": "node ./scripts/control-center-ux-smoke.mjs",
     "verify:control-center": "node ./scripts/control-center-verify.mjs",
     "dev:control-center": "npm run tauri -- dev",
+    "dev:control-center-v2": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-control-center-v2.ps1",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tauri-with-cargo-path.ps1"
   },
   "dependencies": {

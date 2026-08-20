@@ -55,7 +55,10 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "workspace.open": { available: true, reason: "" },
       "character.openWorkshop": { available: true, reason: "" },
       "character.openPackFolder": { available: true, reason: "" },
-      "music.pause": { available: music.available, reason: "当前没有可控制的音乐" }
+      "music.pause": { available: music.available, reason: "当前没有可控制的音乐" },
+      "window.minimize": { available: true, reason: "" },
+      "window.maximize": { available: true, reason: "" },
+      "window.close": { available: true, reason: "" }
     }
   };
 }
