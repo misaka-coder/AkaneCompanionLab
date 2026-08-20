@@ -32,7 +32,7 @@ from .voice import (
     _resolve_tts_runtime_provider,
 )
 from ..runtime_settings import runtime_setting
-from ..turn_coordination import TurnCoordinator as QQSessionTurnCoordinator
+from ..turn_coordination import TurnCoordinator
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -1660,7 +1660,7 @@ def build_qq_router(
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
-    turn_coordinator = turn_coordinator or QQSessionTurnCoordinator()
+    turn_coordinator = turn_coordinator or TurnCoordinator()
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:

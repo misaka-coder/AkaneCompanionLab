@@ -6810,6 +6810,11 @@ function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}
     updateActivityControls();
     return true;
   }
+  if (!announce && sending) {
+    // Lifecycle takeovers still discard local presentation immediately, but
+    // must not leave the host turn alive.
+    void requestActiveTurnStop(reason);
+  }
   activeTurnToken += 1;
   sending = false;
 

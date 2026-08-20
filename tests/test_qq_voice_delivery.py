@@ -10,12 +10,12 @@ from unittest.mock import patch
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import (
-    QQSessionTurnCoordinator,
     _filter_unsent_reply_messages,
     _process_qq_turn_streaming,
     _synthesize_qq_voice_file,
 )
 from companion_v01.runtime_settings import BotSettingsView
+from companion_v01.turn_coordination import TurnCoordinator
 
 
 class FakeTTSClient:
@@ -113,7 +113,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
     def test_session_turn_coordinator_serializes_the_same_timeline(self) -> None:
         async def exercise() -> list[str]:
-            coordinator = QQSessionTurnCoordinator()
+            coordinator = TurnCoordinator()
             entered: list[str] = []
             first_entered = asyncio.Event()
             release_first = asyncio.Event()
@@ -138,7 +138,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
     def test_session_turn_coordinator_keeps_different_timelines_concurrent(self) -> None:
         async def exercise() -> int:
-            coordinator = QQSessionTurnCoordinator()
+            coordinator = TurnCoordinator()
             active = 0
             maximum = 0
             both_entered = asyncio.Event()
