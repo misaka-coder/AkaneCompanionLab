@@ -135,6 +135,7 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn("build_extracted_package_wheelhouse.py", source)
         self.assertIn("--internal-only", source)
         self.assertIn("--force-reinstall", source)
+        self.assertGreaterEqual(source.count("| Out-Host"), 2)
         self.assertIn("browse_memory", source)
         self.assertIn("open_memory", source)
 

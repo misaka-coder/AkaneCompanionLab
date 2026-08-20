@@ -111,7 +111,7 @@ function Sync-AkaneLocalPackages {
     & $python (Join-Path $resolvedProject "scripts\build_extracted_package_wheelhouse.py") `
         --source-root $sourceRoot `
         --output-dir $wheelhouse `
-        --internal-only
+        --internal-only | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "local_package_wheelhouse_build_failed"
     }
@@ -122,7 +122,7 @@ function Sync-AkaneLocalPackages {
         --no-deps `
         --no-index `
         --find-links $wheelhouse `
-        -r (Join-Path $resolvedProject "requirements-packages.txt")
+        -r (Join-Path $resolvedProject "requirements-packages.txt") | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "local_package_install_failed"
     }
