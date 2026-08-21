@@ -2,6 +2,7 @@ import json
 import re
 import uuid
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import requests
 from openai import OpenAI
@@ -66,11 +67,15 @@ def build_llm_client(
     # the backend before the user has a chance to configure credentials via the
     # control center. Use a placeholder so the client can be built; actual API
     # calls will still fail with an auth error if no real key is provided.
+    default_headers = None
+    if str(urlparse(normalized_base_url).hostname or "").strip().lower() == "opencode.ai":
+        default_headers = {"User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0"}
     client = OpenAI(
         api_key=str(api_key or "").strip() or ("ollama" if resolved == "ollama" else "not-configured"),
         base_url=normalized_base_url,
         timeout=timeout,
         max_retries=max_retries,
+        default_headers=default_headers,
     )
     try:
         setattr(client, "_akane_protocol", resolved)

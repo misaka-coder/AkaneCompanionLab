@@ -90,6 +90,33 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(str(client.base_url).rstrip("/"), "http://127.0.0.1:11434/v1")
         self.assertEqual(client.api_key, "ollama")
 
+    def test_opencode_client_uses_edge_compatible_user_agent(self) -> None:
+        with patch("services.llm_client.OpenAI") as openai:
+            build_llm_client(
+                api_key="test-key",
+                base_url="https://opencode.ai/zen/go/v1",
+                protocol="openai",
+                timeout=1.0,
+                max_retries=0,
+            )
+
+        self.assertEqual(
+            openai.call_args.kwargs["default_headers"],
+            {"User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0"},
+        )
+
+    def test_other_openai_compatible_clients_do_not_get_opencode_headers(self) -> None:
+        with patch("services.llm_client.OpenAI") as openai:
+            build_llm_client(
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                protocol="openai",
+                timeout=1.0,
+                max_retries=0,
+            )
+
+        self.assertIsNone(openai.call_args.kwargs["default_headers"])
+
     def test_responses_protocol_normalizes_base_url(self) -> None:
         self.assertEqual(
             normalize_base_url(protocol="responses", base_url="https://api.pinaic.com"),
