@@ -270,8 +270,16 @@ assert.equal(viewModel.character.completeness, 100);
 assert.equal(viewModel.activity.phase, "thinking");
 assert.equal(viewModel.activity.label, "正在整理文件");
 assert.equal(viewModel.music.playback, "playing");
-assert.match(renderOverview({ viewModel, actionStates: {} }), /data-bound-bot-select/);
-assert.match(renderOverview({ viewModel, actionStates: {} }), /class="mood-line"/);
+const overviewHtml = renderOverview({ viewModel, actionStates: {} });
+assert.match(overviewHtml, /data-bound-bot-select/);
+assert.match(overviewHtml, /class="mood-line"/);
+assert.match(overviewHtml, /基础设置已就绪/);
+assert.match(overviewHtml, /class="setup-center glass-panel is-complete"/);
+assert.match(overviewHtml, /data-page="appearance"/);
+assert.match(overviewHtml, /data-page="model"/);
+assert.match(overviewHtml, /data-page="abilities"/);
+assert.match(overviewHtml, /data-page="voice"/);
+assert.doesNotMatch(overviewHtml, /apiKey|baseUrl|local_path|cached_path/);
 assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
 assert.equal(viewModel.abilities.available, true);
 assert.equal(viewModel.abilities.availability, 86);
@@ -293,6 +301,10 @@ assert.equal(viewModel.model.available, true);
 assert.equal(viewModel.model.providerId, "deepseek");
 assert.equal(viewModel.model.hasApiKey, true);
 assert.equal(viewModel.model.providers.length, 2);
+assert.equal(viewModel.setup.coreReadyCount, 3);
+assert.equal(viewModel.setup.coreComplete, true);
+assert.equal(viewModel.setup.optionalReadyCount, 2);
+assert.deepEqual(viewModel.setup.items.map((item) => item.id), ["character", "model", "permissions", "skills", "voice"]);
 assert.equal(viewModel.voice.available, true);
 assert.equal(viewModel.voice.controlsAvailable, true);
 assert.equal(viewModel.voice.tts.provider.name, "GPT-SoVITS");
@@ -335,6 +347,19 @@ assert.equal(viewModel.actions["advanced.setHitboxOverlay"].available, true);
 assert.equal(viewModel.actions["window.minimize"].available, true);
 assert.equal(viewModel.actions["window.maximize"].available, true);
 assert.equal(viewModel.actions["window.close"].available, true);
+
+const incompleteSetup = createControlCenterViewModel({
+  ...rawSnapshot,
+  modelRuntime: { ...rawSnapshot.modelRuntime, status: "unconfigured", chatModel: "" },
+  characterRuntime: {
+    ...rawSnapshot.characterRuntime,
+    warning: { headline: "角色资源需要处理", body: "缺少默认立绘" }
+  },
+  abilitiesRuntime: {}
+}, runtimeSnapshot).setup;
+assert.equal(incompleteSetup.coreReadyCount, 0);
+assert.equal(incompleteSetup.coreComplete, false);
+assert.equal(incompleteSetup.items.find((item) => item.id === "voice").optional, true);
 
 const liveVoiceOverride = createControlCenterViewModel(rawSnapshot, {
   ...runtimeSnapshot,

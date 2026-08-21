@@ -44,12 +44,32 @@ export function renderOverview(state) {
         </div>
       </div>
 
+      ${renderSetupCenter(state, vm)}
+
       <div class="overview-grid">
         ${renderMusic(state, vm)}
         ${renderRecent(vm)}
         ${renderResourceState(character)}
       </div>
     </section>`;
+}
+
+function renderSetupCenter(state, vm) {
+  const setup = vm.setup;
+  if (!setup?.items?.length) return "";
+  const remaining = setup.coreTotal - setup.coreReadyCount;
+  const progress = setup.coreTotal ? Math.round((setup.coreReadyCount / setup.coreTotal) * 100) : 0;
+  return `
+    <details class="setup-center glass-panel${setup.coreComplete ? " is-complete" : ""}"${(state.setupExpanded ?? !setup.coreComplete) ? " open" : ""}>
+      <summary>
+        <span class="setup-progress" style="--setup-progress:${progress}%"><strong>${escapeHtml(`${setup.coreReadyCount}/${setup.coreTotal}`)}</strong></span>
+        <span class="setup-summary-copy"><small>QUICK START</small><strong>${escapeHtml(setup.coreComplete ? "基础设置已就绪" : `还差 ${remaining} 项基础设置`)}</strong><em>${escapeHtml(setup.coreComplete ? `${setup.optionalReadyCount}/${setup.optionalTotal} 项可选增强已启用` : "按真实状态逐项处理，不会自动改动配置")}</em></span>
+        <span class="setup-summary-action">${setup.coreComplete ? "查看入口" : "继续设置"}⌄</span>
+      </summary>
+      <div class="setup-item-grid">
+        ${setup.items.map((item) => `<button class="setup-item is-${escapeHtml(item.status)}" type="button" data-page="${escapeHtml(item.page)}"><i aria-hidden="true">${item.status === "ready" ? "✓" : item.optional ? "＋" : "!"}</i><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail)}</small></span><em>${escapeHtml(item.statusLabel)} →</em></button>`).join("")}
+      </div>
+    </details>`;
 }
 
 function renderBotSelector(state, vm) {

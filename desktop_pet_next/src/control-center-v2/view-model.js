@@ -29,6 +29,15 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
   const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
   const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
+  const setup = deriveSetupReadiness({
+    connected,
+    packId: text(characterRuntime.selectedPackId) || text(petState.characterPackId),
+    displayName,
+    characterWarnings: warnings,
+    model,
+    abilities,
+    voice
+  });
   const system = normalizeSystemRuntime(raw, live, {
     connected,
     liveSnapshotStatus,
@@ -79,6 +88,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     abilities,
     model,
     voice,
+    setup,
     system,
     abilityLabels: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
     actions: {
@@ -137,6 +147,73 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "window.maximize": { available: true, reason: "" },
       "window.close": { available: true, reason: "" }
     }
+  };
+}
+
+function deriveSetupReadiness({ connected, packId, displayName, characterWarnings, model, abilities, voice }) {
+  const hasActiveCharacter = Boolean(packId || (displayName && displayName !== "当前角色"));
+  const characterReady = connected && hasActiveCharacter && !characterWarnings.length;
+  const modelReady = connected && model.configured && Boolean(model.chatModel);
+  const permissionsReady = connected && abilities.available && Boolean(abilities.policy.defaultMode);
+  const skillsReady = connected && abilities.skills.status === "ready" && abilities.skills.total > 0;
+  const voiceReady = connected && Boolean(voice.tts.provider.ready);
+  const items = [
+    {
+      id: "character",
+      label: "角色包",
+      detail: !connected ? "等待桌宠连接" : !hasActiveCharacter ? "还没有选择角色包" : characterWarnings[0] || `${displayName} 已加载`,
+      status: characterReady ? "ready" : "attention",
+      statusLabel: characterReady ? "已就绪" : "去处理",
+      page: "appearance",
+      optional: false
+    },
+    {
+      id: "model",
+      label: "模型服务",
+      detail: modelReady ? [model.providerId, model.chatModel].filter(Boolean).join(" · ") : model.available ? "配置尚未完整保存" : "等待配置可用模型",
+      status: modelReady ? "ready" : "attention",
+      statusLabel: modelReady ? "已连接" : "去配置",
+      page: "model",
+      optional: false
+    },
+    {
+      id: "permissions",
+      label: "能力与权限",
+      detail: permissionsReady ? `${abilities.policy.label} · ${abilities.safetyStatus}` : "能力目录或审批策略尚未同步",
+      status: permissionsReady ? "ready" : "attention",
+      statusLabel: permissionsReady ? "已生效" : "去检查",
+      page: "abilities",
+      optional: false
+    },
+    {
+      id: "skills",
+      label: "Skill 操作手册",
+      detail: skillsReady ? `${abilities.skills.total} 个可用 · ${abilities.skills.managed} 个自定义` : "可按需添加自己的操作手册",
+      status: skillsReady ? "ready" : "optional",
+      statusLabel: skillsReady ? "可使用" : "可选增强",
+      page: "abilities",
+      optional: true
+    },
+    {
+      id: "voice",
+      label: "语音与声线",
+      detail: voiceReady ? `${voice.tts.provider.name} · ${voice.tts.provider.statusLabel}` : voice.tts.provider.reason || "不使用语音也不影响文字聊天",
+      status: voiceReady ? "ready" : "optional",
+      statusLabel: voiceReady ? "可使用" : "可选增强",
+      page: "voice",
+      optional: true
+    }
+  ];
+  const coreItems = items.filter((item) => !item.optional);
+  const coreReadyCount = coreItems.filter((item) => item.status === "ready").length;
+  const optionalReadyCount = items.filter((item) => item.optional && item.status === "ready").length;
+  return {
+    items,
+    coreReadyCount,
+    coreTotal: coreItems.length,
+    coreComplete: coreReadyCount === coreItems.length,
+    optionalReadyCount,
+    optionalTotal: items.length - coreItems.length
   };
 }
 

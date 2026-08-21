@@ -32,6 +32,8 @@ let voiceProfilePreviewAudio = null;
 let livePresentationPreferences = null;
 let framingDrag = null;
 let renderedPage = "";
+let setupExpanded = null;
+let setupCoreComplete = null;
 const pageScrollTop = new Map();
 const openCapabilityPanels = new Set();
 const capabilityFormDrafts = new Map();
@@ -551,6 +553,11 @@ async function runModelAction(actionId) {
 
 function render(state) {
   captureCapabilityUiState();
+  const currentSetupCenter = root.querySelector(".setup-center");
+  if (currentSetupCenter) setupExpanded = currentSetupCenter.open;
+  const nextSetupCoreComplete = Boolean(state.viewModel?.setup?.coreComplete);
+  if (setupCoreComplete === false && nextSetupCoreComplete) setupExpanded = false;
+  setupCoreComplete = state.viewModel?.setup ? nextSetupCoreComplete : null;
   const currentPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (currentPageViewport && renderedPage) pageScrollTop.set(renderedPage, currentPageViewport.scrollTop);
   const currentViewport = root.querySelector("[data-chat-viewport]");
@@ -569,7 +576,8 @@ function render(state) {
     ? readModelServiceForm(state.modelDraft)
     : state.modelDraft;
 
-  renderControlCenterShell(root, modelDraft === state.modelDraft ? state : { ...state, modelDraft });
+  const renderState = modelDraft === state.modelDraft ? state : { ...state, modelDraft };
+  renderControlCenterShell(root, { ...renderState, setupExpanded });
   restoreCapabilityUiState();
   const nextPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (nextPageViewport) {
