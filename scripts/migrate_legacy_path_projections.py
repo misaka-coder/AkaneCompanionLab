@@ -1,4 +1,4 @@
-"""Pre-traffic maintenance: migrate legacy path-damage projections (MemCore V3).
+"""Pre-traffic maintenance: migrate legacy projection damage (MemCore V4).
 
 Run during a release maintenance phase or before the service takes traffic.
 Never run this against a database while the backend is actively serving
@@ -62,6 +62,7 @@ def build_report(db_path: Path, *, apply: bool, timezone: str) -> dict:
             "scanned_memcore_marker_rows",
             "scanned_host_local_path_rows",
             "scanned_host_tmpdir_rows",
+            "scanned_memcore_secret_marker_rows",
             "migrated",
             "version_advanced_only",
             "preserved_irrecoverable_host_redaction",
