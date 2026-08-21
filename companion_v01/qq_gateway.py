@@ -173,6 +173,7 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
 }
 QQ_GROUP_VISION_ENABLE_COMMAND = "识图开"
 QQ_GROUP_VISION_DISABLE_COMMAND = "识图关"
+QQ_GROUP_EMOTION_COMMAND_RE = re.compile(r"^[/／]?emotion(?:\s+(on|off|status|开启|关闭|状态))?$", re.IGNORECASE)
 QQ_CHAT_MODEL_LIST_COMMANDS = {
     "模型列表",
     "可用模型",
@@ -457,6 +458,8 @@ class NapCatQQGateway:
         self._chat_model_lock = threading.RLock()
         self.group_vision_overrides: dict[str, bool] = {}
         self._group_vision_lock = threading.RLock()
+        self.group_emotion_overrides: dict[str, bool] = {}
+        self._group_emotion_lock = threading.RLock()
         self.emotion_mface_state: dict[str, dict[str, Any]] = {}
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
@@ -523,6 +526,16 @@ class NapCatQQGateway:
         with self._group_vision_lock:
             self.group_vision_overrides = group_vision_overrides
 
+        group_emotion_overrides: dict[str, bool] = {}
+        raw_group_emotion = payload.get("group_emotion_overrides")
+        if isinstance(raw_group_emotion, dict):
+            for raw_group_id, raw_enabled in raw_group_emotion.items():
+                group_id = self._safe_int(raw_group_id)
+                if group_id > 0 and raw_enabled is False:
+                    group_emotion_overrides[str(group_id)] = False
+        with self._group_emotion_lock:
+            self.group_emotion_overrides = group_emotion_overrides
+
     def _persist_gateway_state(self) -> bool:
         if self._state_path is None:
             self._state_error = ""
@@ -536,12 +549,15 @@ class NapCatQQGateway:
                 chat_model_overrides = dict(self.chat_model_overrides)
             with self._group_vision_lock:
                 group_vision_overrides = dict(self.group_vision_overrides)
+            with self._group_emotion_lock:
+                group_emotion_overrides = dict(self.group_emotion_overrides)
             payload = {
                 "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
                 "character_pack_overrides": character_overrides,
                 "outfit_overrides": outfit_overrides,
                 "chat_model_overrides": chat_model_overrides,
                 "group_vision_overrides": group_vision_overrides,
+                "group_emotion_overrides": group_emotion_overrides,
                 "updated_at": int(time.time()),
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -576,6 +592,9 @@ class NapCatQQGateway:
     def _persist_group_vision_overrides(self) -> bool:
         return self._persist_gateway_state()
 
+    def _persist_group_emotion_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.bridge_enabled,
@@ -592,6 +611,9 @@ class NapCatQQGateway:
             "active_chat_model_override_count": len(self.chat_model_overrides),
             "disabled_group_vision_count": sum(
                 1 for enabled in self.group_vision_overrides.values() if enabled is False
+            ),
+            "disabled_group_emotion_count": sum(
+                1 for enabled in self.group_emotion_overrides.values() if enabled is False
             ),
             "state_persistence_enabled": self._state_path is not None,
             "state_status": "error"
@@ -789,6 +811,85 @@ class NapCatQQGateway:
             "state_persisted": state_persisted,
         }
 
+    def is_group_emotion_enabled(self, group_id: Any) -> bool:
+        normalized_group_id = self._safe_int(group_id)
+        if normalized_group_id <= 0:
+            return True
+        with self._group_emotion_lock:
+            return self.group_emotion_overrides.get(str(normalized_group_id)) is not False
+
+    def set_group_emotion_enabled(self, group_id: Any, enabled: bool) -> bool:
+        normalized_group_id = self._safe_int(group_id)
+        if normalized_group_id <= 0:
+            return False
+        with self._group_emotion_lock:
+            if enabled:
+                self.group_emotion_overrides.pop(str(normalized_group_id), None)
+            else:
+                self.group_emotion_overrides[str(normalized_group_id)] = False
+        return self._persist_group_emotion_overrides()
+
+    def parse_group_emotion_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        match = QQ_GROUP_EMOTION_COMMAND_RE.fullmatch(text)
+        if not match:
+            return None
+        action = str(match.group(1) or "status").lower()
+        return {"action": {"开启": "on", "关闭": "off", "状态": "status"}.get(action, action)}
+
+    def handle_group_emotion_command(
+        self,
+        context: QQMessageContext,
+        *,
+        sender_role: str = "",
+    ) -> dict[str, Any] | None:
+        command = self.parse_group_emotion_command(context.clean_message)
+        if command is None:
+            return None
+        if not context.is_group or context.group_id <= 0:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "group_only",
+                "reply": "请在群内设置 emotion 图片投递开关。",
+                "emotion_enabled": True,
+            }
+        enabled = self.is_group_emotion_enabled(context.group_id)
+        role = str(sender_role or "").strip().lower()
+        is_master = bool(self.master_qq) and str(context.user_id) == self.master_qq
+        if role not in {"owner", "admin"} and not is_master:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有群主、群管理员或 Akane 主账号可以修改本群 emotion 图片开关。",
+                "emotion_enabled": enabled,
+            }
+        action = str(command.get("action") or "status")
+        if action == "status":
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": f"本群 emotion 图片投递已{'开启' if enabled else '关闭'}。模型仍会正常生成 emotion，桌宠表情不受影响。",
+                "emotion_enabled": enabled,
+            }
+        requested_enabled = action == "on"
+        state_persisted = self.set_group_emotion_enabled(context.group_id, requested_enabled)
+        reply = (
+            "本群 emotion 图片投递已打开。模型 emotion 和桌宠表情保持不变。"
+            if requested_enabled
+            else "本群 emotion 图片投递已关闭。模型仍会正常生成 emotion，桌宠表情不受影响。"
+        )
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "enabled" if requested_enabled else "disabled",
+            "reply": self._append_state_persistence_warning(reply, state_persisted),
+            "emotion_enabled": requested_enabled,
+            "state_persisted": state_persisted,
+        }
+
     def build_message_context(self, event: dict[str, Any]) -> QQMessageContext:
         if str(event.get("post_type") or "").strip().lower() != "message":
             return self.build_notice_context(event)
@@ -857,11 +958,16 @@ class NapCatQQGateway:
         chat_model_override = self.resolve_chat_model_override(session_id)
 
         shell_permission_command = self.parse_shell_permission_command(clean_message)
+        group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_reason = ""
         if is_group and shell_permission_command is not None:
             # Explicit control-plane commands must reach the authorization
             # handler even when the group normally requires @/wake-word.
             group_reason = "qq_shell_permission_command"
+        elif is_group and group_emotion_command is not None:
+            # Emotion delivery is a group control-plane setting too; it must
+            # not require addressing the bot or wake-word admission.
+            group_reason = "qq_group_emotion_command"
         elif is_group:
             trigger = self._group_trigger.evaluate(
                 group_id=str(group_id),
@@ -2731,6 +2837,9 @@ class NapCatQQGateway:
     ) -> str:
         active_reply_mode = _safe_reply_mode(reply_mode, default=self.default_reply_mode)
         lines = [f"qq.reply_delivery: {active_reply_mode}"]
+        master_qq = self.master_qq
+        if master_qq:
+            lines.append(f"qq.master_qq: {master_qq}（主人；群成员或群主身份不能改变这一认定）")
         lines.extend(self.consume_delivery_notes(session_id))
         return "\n".join(lines)
 
@@ -3706,6 +3815,8 @@ class NapCatQQGateway:
         qq_delivery_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send a configured QQ mface based on final_output.emotion."""
+        if context.is_group and not self.is_group_emotion_enabled(context.group_id):
+            return {"ok": True, "status": "skipped", "reason": "group_emotion_disabled"}
         if self._frame_has_artifact_delivery_activity(frame):
             return {"ok": True, "status": "skipped", "reason": "artifact_delivery_turn"}
         emotion = str((frame or {}).get("emotion") or "").strip()
@@ -3763,6 +3874,8 @@ class NapCatQQGateway:
         min_interval_seconds: int = 20,
     ) -> dict[str, Any]:
         """Send the current character pack emotion image as a QQ image fallback."""
+        if context.is_group and not self.is_group_emotion_enabled(context.group_id):
+            return {"ok": True, "status": "skipped", "reason": "group_emotion_disabled"}
         if self._frame_has_artifact_delivery_activity(frame):
             return {"ok": True, "status": "skipped", "reason": "artifact_delivery_turn"}
         emotion = str((frame or {}).get("emotion") or "").strip()

@@ -610,7 +610,8 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
-        self.assertEqual(payload["extra_context"], "qq.reply_delivery: auto")
+        self.assertIn("qq.reply_delivery: auto", payload["extra_context"])
+        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
         self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
         self.assertNotIn(str(QQ_GROUP_FIXTURE_ID), payload["extra_context"])
 
@@ -1052,6 +1053,143 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.reason, "group_passive_observed")
         self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
 
+    def test_group_emotion_command_is_admitted_without_mention(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-emotion-off-bare-1",
+                "raw_message": "/emotion off",
+            }
+        )
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_group_emotion_command")
+        self.assertEqual(gateway.parse_group_emotion_command("／emotion 关闭"), {"action": "off"})
+
+    def test_group_emotion_command_persists_and_master_can_change_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "qq_gateway_state.json"
+            gateway = NapCatQQGateway(state_path=state_path)
+            context = gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_MASTER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-emotion-off-1",
+                    "raw_message": "/emotion off",
+                }
+            )
+
+            result = gateway.handle_group_emotion_command(context, sender_role="member")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "disabled")
+            self.assertFalse(result["emotion_enabled"])
+            self.assertTrue(result["state_persisted"])
+            self.assertIn("模型仍会正常生成 emotion", result["reply"])
+            self.assertFalse(gateway.is_group_emotion_enabled(QQ_GROUP_FIXTURE_ID))
+
+            restored_gateway = NapCatQQGateway(state_path=state_path)
+            self.assertFalse(restored_gateway.is_group_emotion_enabled(QQ_GROUP_FIXTURE_ID))
+            self.assertEqual(restored_gateway.status()["disabled_group_emotion_count"], 1)
+
+            on_context = restored_gateway.build_message_context(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_MASTER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-emotion-on-1",
+                    "raw_message": "/emotion on",
+                }
+            )
+            enabled = restored_gateway.handle_group_emotion_command(on_context, sender_role="member")
+            self.assertTrue(enabled["ok"])
+            self.assertEqual(enabled["status"], "enabled")
+            self.assertTrue(restored_gateway.is_group_emotion_enabled(QQ_GROUP_FIXTURE_ID))
+
+    def test_group_emotion_command_rejects_non_admin_non_master(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_OTHER_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-emotion-forbidden-1",
+                "raw_message": "/emotion off",
+            }
+        )
+
+        result = gateway.handle_group_emotion_command(context, sender_role="member")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "forbidden")
+        self.assertTrue(gateway.is_group_emotion_enabled(QQ_GROUP_FIXTURE_ID))
+
+    def test_group_emotion_delivery_is_suppressed_but_private_delivery_is_unchanged(self) -> None:
+        gateway = NapCatQQGateway()
+        group_context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+        )
+        private_context = QQMessageContext(
+            should_respond=True,
+            reason="test",
+            is_group=False,
+            target_id=QQ_USER_FIXTURE_ID,
+            user_id=QQ_USER_FIXTURE_ID,
+            session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+            profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
+        )
+        self.assertTrue(gateway.set_group_emotion_enabled(QQ_GROUP_FIXTURE_ID, False))
+
+        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
+            group_mface = gateway.send_emotion_mface(
+                group_context,
+                {"speech": "好。", "emotion": "happy"},
+                qq_delivery_config={
+                    "emotion_mfaces": {
+                        "enabled": True,
+                        "map": {"happy": {"emoji_package_id": 123, "emoji_id": "happy-001"}},
+                    }
+                },
+            )
+            image = gateway.send_emotion_image(
+                group_context,
+                {"speech": "好。", "emotion": "happy"},
+                image={"path": "C:/tmp/happy.png", "emotion": "happy"},
+            )
+            private = gateway.send_emotion_mface(
+                private_context,
+                {"speech": "好。", "emotion": "happy"},
+                qq_delivery_config={
+                    "emotion_mfaces": {
+                        "enabled": True,
+                        "map": {"happy": {"emoji_package_id": 123, "emoji_id": "happy-001"}},
+                    }
+                },
+            )
+
+        self.assertEqual(group_mface["reason"], "group_emotion_disabled")
+        self.assertEqual(image["reason"], "group_emotion_disabled")
+        self.assertNotEqual(private["reason"], "group_emotion_disabled")
+        mocked_post.assert_not_called()
+
     @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
     def test_builtin_character_override_persists_across_restart(self) -> None:
         service = FakeCharacterResourceService()
@@ -1416,7 +1554,8 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.reply_mode, "voice")
         self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
         self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
-        self.assertEqual(next_context.extra_context, "qq.reply_delivery: voice")
+        self.assertIn("qq.reply_delivery: voice", next_context.extra_context)
+        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", next_context.extra_context)
 
     def test_chat_model_command_switches_current_qq_session_for_master(self) -> None:
         gateway = NapCatQQGateway()
