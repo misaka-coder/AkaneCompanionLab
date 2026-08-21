@@ -28,6 +28,9 @@ const mcpBackendActionIds = new Set([
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
 ]);
+const approvalRequestBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide
+]);
 const qqBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck
 ]);
@@ -162,7 +165,7 @@ export function createMockControlCenterSource(data = mockData) {
     },
     async runAction(actionId, payload = {}) {
       const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || approvalRequestBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
         return createNotImplementedActionResult(normalizedActionId);
       }
       return {
@@ -548,7 +551,7 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId)) {
+      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || approvalRequestBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId)) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
@@ -558,9 +561,11 @@ export function createBackendControlCenterSource(options = {}) {
             ? runWorkflowBackendAction
             : mcpBackendActionIds.has(normalizedActionId)
               ? runMcpBackendAction
-              : qqBackendActionIds.has(normalizedActionId)
-                ? runQqBackendAction
-                : runApprovalPolicyBackendAction;
+              : approvalRequestBackendActionIds.has(normalizedActionId)
+                ? runApprovalRequestBackendAction
+                : qqBackendActionIds.has(normalizedActionId)
+                  ? runQqBackendAction
+                  : runApprovalPolicyBackendAction;
         return routeAction(fetchImpl, botBaseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
@@ -634,6 +639,34 @@ async function runApprovalPolicyBackendAction(fetchImpl, baseUrl, actionId, payl
     };
   } catch (error) {
     return { ok: false, status: "request-failed", actionId, refresh: false, error: formatDataSourceError(error) };
+  }
+}
+
+async function runApprovalRequestBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const requestId = String(payload.requestId || payload.request_id || "").trim();
+  const decision = String(payload.decision || "").trim().toLowerCase();
+  if (!requestId || !["approved", "denied"].includes(decision)) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "requestId and decision are required" };
+  }
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, `/capabilities/approval-requests/${encodeURIComponent(requestId)}/decision`, params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ decision }),
+      cache: "no-store"
+    });
+    if (response.status === 404 || response.status === 405) return createNotImplementedActionResult(actionId);
+    if (!response.ok) return { ok: false, status: `http-${response.status}`, actionId, requestId, refresh: false };
+    const result = await readActionResponse(response);
+    return {
+      ...result,
+      ok: Boolean(result?.ok),
+      actionId,
+      requestId,
+      refresh: result?.refresh === undefined ? true : Boolean(result.refresh)
+    };
+  } catch (error) {
+    return { ok: false, status: "request-failed", actionId, requestId, refresh: false, error: formatDataSourceError(error) };
   }
 }
 
@@ -2842,6 +2875,8 @@ function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}, appro
   return {
     status: pendingApprovalCount ? `${pendingApprovalCount} 项待确认` : serviceOk ? "已生效" : "待连接",
     approvalPolicy: policy,
+    pendingCount: pendingApprovalCount,
+    approvalRequests: asArray(approvalRequests.approvalRequests),
     items: [
       {
         label: "当前审批模式",

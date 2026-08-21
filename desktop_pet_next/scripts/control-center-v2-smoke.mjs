@@ -113,9 +113,9 @@ const rawSnapshot = {
       { title: "文件与工作区", description: "材料整理 / 文件交付", permission: "工作区文件访问", count: "8 项能力", tone: "orange", statusLabel: "可用", statusTone: "ready" },
       { title: "安全与契约", description: "权限确认 / 风险隔离", permission: "安全与确认", count: "3 项能力", tone: "pink", statusLabel: "已生效", statusTone: "ready" }
     ],
-    providers: [{ title: "本地语音服务", status: "ready", statusLabel: "可用", reason: "已连接" }],
-    mcpServers: [{ title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP" }],
-    workflows: [{ title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定" }],
+    providers: [{ id: "provider.tts.local", title: "本地语音服务", status: "ready", statusLabel: "可用", reason: "已连接", enabled: true, endpoint: "http://127.0.0.1:9880", actionsEnabled: true }],
+    mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
+    workflows: [{ workflowId: "workflow.workshop.portrait.cutout", title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定", enabled: true, configured: true, workflowPath: "workflows/portrait.json", actionsEnabled: true }],
     safety: {
       status: "已生效",
       approvalPolicy: {
@@ -130,7 +130,8 @@ const rawSnapshot = {
       items: [
         { label: "当前审批模式", status: "请求批准" },
         { label: "密钥与敏感信息", status: "未暴露" }
-      ]
+      ],
+      approvalRequests: [{ requestId: "approval_001", title: "执行本地命令", summary: "需要运行项目测试", risk: "high", status: "pending" }]
     },
     calls: [{ time: "14:20", module: "能力注册表", description: "已同步 24 项能力", status: "成功", method: "能力目录" }]
   },
@@ -237,6 +238,10 @@ assert.equal(viewModel.abilities.availability, 86);
 assert.equal(viewModel.abilities.modules.length, 2);
 assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
 assert.equal(viewModel.abilities.integrations.length, 3);
+assert.equal(viewModel.abilities.providers[0].id, "provider.tts.local");
+assert.equal(viewModel.abilities.mcpServers[0].serverId, "anysearch");
+assert.equal(viewModel.abilities.workflows[0].workflowId, "workflow.workshop.portrait.cutout");
+assert.equal(viewModel.abilities.approvalRequests[0].requestId, "approval_001");
 assert.equal(viewModel.model.available, true);
 assert.equal(viewModel.model.providerId, "deepseek");
 assert.equal(viewModel.model.hasApiKey, true);
@@ -257,6 +262,10 @@ assert.equal(viewModel.system.settings[0].enabled, true);
 assert.equal(viewModel.system.settings[1].enabled, false);
 assert.equal(viewModel.system.hasEventSource, false);
 assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
+assert.equal(viewModel.actions["abilities.provider.config.save"].available, true);
+assert.equal(viewModel.actions["abilities.mcp.discover"].available, true);
+assert.equal(viewModel.actions["abilities.workflow.validate"].available, true);
+assert.equal(viewModel.actions["abilities.approvalRequest.decide"].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.models].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.test].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.save].available, true);
@@ -587,6 +596,14 @@ assert.match(abilitiesHtml, /data-approval-mode="ask_each_time"/);
 assert.match(abilitiesHtml, /data-approval-mode="trusted_auto_allow"/);
 assert.match(abilitiesHtml, /硬安全边界始终保留/);
 assert.match(abilitiesHtml, /AnySearch/);
+assert.match(abilitiesHtml, /data-capability-form="provider"/);
+assert.match(abilitiesHtml, /data-capability-form="mcp"/);
+assert.match(abilitiesHtml, /data-capability-form="workflow"/);
+assert.match(abilitiesHtml, /data-action="abilities\.provider\.healthCheck"/);
+assert.match(abilitiesHtml, /data-action="abilities\.mcp\.discover"/);
+assert.match(abilitiesHtml, /data-action="abilities\.workflow\.validate"/);
+assert.match(abilitiesHtml, /data-approval-request="approval_001"/);
+assert.match(abilitiesHtml, /只有填写新的启动命令并保存时/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
 
 const modelDraft = createModelServiceDraft(viewModel.model);

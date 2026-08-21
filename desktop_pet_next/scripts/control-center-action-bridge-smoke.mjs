@@ -855,6 +855,34 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
   assert.equal("token" in saveBody, false, "approval policy save must not forward arbitrary token fields");
 }
 
+// Pending capability approvals use the dedicated decision route and only forward the decision.
+{
+  const fetchCalls = [];
+  const backendSource = createBackendControlCenterSource({
+    baseUrl: "http://approval-request-action-test",
+    sessionId: "desktop",
+    profileUserId: "master",
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ ok: true, status: "approved", requestId: "approval_001" })
+      };
+    }
+  });
+  const result = await backendSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide, {
+    requestId: "approval_001",
+    decision: "approved",
+    token: "must-not-send"
+  });
+  assert.equal(result.status, "approved", "approval request decision should hit its dedicated route");
+  assert.equal(fetchCalls.length, 1, "approval request decision should make one backend request");
+  assert.ok(fetchCalls[0].url.includes("/capabilities/approval-requests/approval_001/decision"));
+  assert.deepEqual(JSON.parse(fetchCalls[0].options.body), { decision: "approved" });
+}
+
 // Workflow binding actions are bridged to dedicated backend routes, not /control-center/actions.
 {
   const fetchCalls = [];
@@ -1335,6 +1363,13 @@ for (const actionId of deferredAbilitiesActionIds) {
   );
   assert.equal(approvalPolicyMockResult.status, "not-implemented", "mock source must not fake approval policy save");
   assert.equal(approvalPolicyMockResult.refresh, false, "mock approval policy save should not request refresh");
+
+  const approvalRequestMockResult = await mockAbRouter.run(
+    CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide,
+    { requestId: "approval_001", decision: "approved" }
+  );
+  assert.equal(approvalRequestMockResult.status, "not-implemented", "mock source must not fake approval decisions");
+  assert.equal(approvalRequestMockResult.refresh, false, "mock approval decisions should not request refresh");
 }
 
 // ---------- deferred advanced + shell actions ----------

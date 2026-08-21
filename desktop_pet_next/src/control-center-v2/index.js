@@ -32,6 +32,8 @@ let livePresentationPreferences = null;
 let framingDrag = null;
 let renderedPage = "";
 const pageScrollTop = new Map();
+const openCapabilityPanels = new Set();
+const capabilityFormDrafts = new Map();
 const systemThemeQuery = window.matchMedia?.("(prefers-color-scheme: light)") || null;
 
 store.subscribe((state) => render(state));
@@ -57,6 +59,14 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const approvalRequestButton = event.target.closest("button[data-approval-request]");
+  if (approvalRequestButton && !approvalRequestButton.disabled) {
+    void runAction("abilities.approvalRequest.decide", {
+      requestId: approvalRequestButton.dataset.approvalRequest,
+      decision: approvalRequestButton.dataset.decision
+    });
+    return;
+  }
   const approvalButton = event.target.closest("button[data-approval-mode]");
   if (approvalButton && !approvalButton.disabled) {
     void runAction("abilities.approvalPolicy.save", { defaultMode: approvalButton.dataset.approvalMode });
@@ -225,6 +235,16 @@ root.addEventListener("keydown", (event) => {
 });
 
 root.addEventListener("submit", (event) => {
+  const capabilityForm = event.target.closest("[data-capability-form]");
+  if (capabilityForm) {
+    event.preventDefault();
+    const actionId = event.submitter?.dataset.action;
+    if (!actionId || event.submitter?.disabled) return;
+    const payload = capabilityFormPayload(capabilityForm, actionId);
+    if (!payload) return;
+    void runAction(actionId, payload);
+    return;
+  }
   const wakeWordForm = event.target.closest("[data-wake-word-form]");
   if (wakeWordForm) {
     event.preventDefault();
@@ -253,6 +273,46 @@ root.addEventListener("submit", (event) => {
     }
   });
 });
+
+function capabilityFormPayload(form, actionId) {
+  const data = new FormData(form);
+  const enabled = data.get("enabled") === "on";
+  if (form.dataset.capabilityForm === "provider") {
+    return {
+      providerId: form.dataset.providerId || "",
+      enabled,
+      endpoint: String(data.get("endpoint") || "").trim()
+    };
+  }
+  if (form.dataset.capabilityForm === "mcp") {
+    const command = String(data.get("command") || "").trim();
+    if (actionId === "abilities.mcp.config.save" && !command) {
+      const commandInput = form.elements.namedItem("command");
+      commandInput?.setCustomValidity("替换 MCP 配置前，请填写完整启动命令。");
+      commandInput?.reportValidity();
+      commandInput?.addEventListener("input", () => commandInput.setCustomValidity(""), { once: true });
+      return null;
+    }
+    return {
+      serverId: form.dataset.serverId || "",
+      enabled,
+      command,
+      displayName: String(data.get("displayName") || "").trim(),
+      cwd: String(data.get("cwd") || "").trim(),
+      args: String(data.get("args") || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    };
+  }
+  if (form.dataset.capabilityForm === "workflow") {
+    return {
+      workflowId: form.dataset.workflowId || "",
+      enabled,
+      workflowPath: String(data.get("workflowPath") || "").trim(),
+      inputImageSlot: String(data.get("inputImageSlot") || "").trim(),
+      outputImageSlot: String(data.get("outputImageSlot") || "").trim()
+    };
+  }
+  return null;
+}
 
 root.addEventListener("scroll", (event) => {
   if (!event.target.matches?.("[data-chat-viewport]")) return;
@@ -359,6 +419,7 @@ async function runModelAction(actionId) {
 }
 
 function render(state) {
+  captureCapabilityUiState();
   const currentPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (currentPageViewport && renderedPage) pageScrollTop.set(renderedPage, currentPageViewport.scrollTop);
   const currentViewport = root.querySelector("[data-chat-viewport]");
@@ -378,6 +439,7 @@ function render(state) {
     : state.modelDraft;
 
   renderControlCenterShell(root, modelDraft === state.modelDraft ? state : { ...state, modelDraft });
+  restoreCapabilityUiState();
   const nextPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (nextPageViewport) {
     const desiredScrollTop = pageScrollTop.get(state.activePage) || 0;
@@ -407,6 +469,37 @@ function render(state) {
     if (jumpButton) jumpButton.hidden = !hasNewMessage;
   }
   lastChatMessageId = nextLastId;
+}
+
+function captureCapabilityUiState() {
+  for (const details of root.querySelectorAll("details[data-capability-key]")) {
+    const key = details.dataset.capabilityKey;
+    if (!key) continue;
+    if (details.open) openCapabilityPanels.add(key);
+    else openCapabilityPanels.delete(key);
+    const form = details.querySelector("[data-capability-form]");
+    if (!form) continue;
+    capabilityFormDrafts.set(key, Array.from(form.elements)
+      .filter((element) => element.name)
+      .map((element) => ({ name: element.name, value: element.value, checked: Boolean(element.checked), type: element.type })));
+  }
+}
+
+function restoreCapabilityUiState() {
+  for (const details of root.querySelectorAll("details[data-capability-key]")) {
+    const key = details.dataset.capabilityKey;
+    if (!key) continue;
+    details.open = openCapabilityPanels.has(key);
+    const draft = capabilityFormDrafts.get(key);
+    if (!draft) continue;
+    const form = details.querySelector("[data-capability-form]");
+    for (const field of draft) {
+      const element = form?.elements.namedItem(field.name);
+      if (!element) continue;
+      if (field.type === "checkbox") element.checked = field.checked;
+      else element.value = field.value;
+    }
+  }
 }
 
 function previewPresentationFrame(patch) {

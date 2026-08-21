@@ -37,7 +37,7 @@ export function renderAbilities(state) {
             <div class="abilities-panel-head"><div><p class="eyebrow">CAPABILITY MODULES</p><h3>能力模块</h3></div><span class="mini-chip">${abilities.modules.length} 个模块</span></div>
             ${abilities.modules.length ? `<div class="ability-module-grid">${abilities.modules.map(renderModule).join("")}</div>` : renderInlineEmpty("当前没有可展示的能力模块")}
           </section>
-          ${renderIntegrations(abilities)}
+          ${renderCapabilityCenter(state, abilities)}
           ${renderCalls(abilities)}
         </div>
 
@@ -54,6 +54,7 @@ export function renderAbilities(state) {
             <div class="abilities-panel-head"><div><p class="eyebrow">SAFETY STATUS</p><h3>当前保护状态</h3></div></div>
             ${abilities.safetyItems.length ? `<dl class="safety-list">${abilities.safetyItems.map((item) => `<div><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}</dd></div>`).join("")}</dl>` : renderInlineEmpty("安全状态尚未同步")}
           </section>
+          ${renderApprovalQueue(state, abilities)}
         </aside>
       </div>
     </section>`;
@@ -68,9 +69,95 @@ function renderModule(item) {
   return `<article class="ability-module" data-tone="${escapeHtml(item.tone)}"><span class="ability-module-mark">${moduleGlyph(item.tone)}</span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p><small>${escapeHtml(item.permission)}</small></div><span class="module-state is-${escapeHtml(item.statusTone)}">${escapeHtml(item.statusLabel)}</span><em>${escapeHtml(item.count)}</em></article>`;
 }
 
-function renderIntegrations(abilities) {
-  if (!abilities.integrations.length) return "";
-  return `<section class="abilities-panel glass-panel"><div class="abilities-panel-head"><div><p class="eyebrow">LOCAL CONNECTIONS</p><h3>本地服务与扩展</h3></div><span class="mini-chip">只读状态</span></div><div class="integration-list">${abilities.integrations.map((item) => `<div class="integration-row"><i class="${item.ready ? "is-ready" : ""}"></i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.group)}${item.detail ? ` · ${escapeHtml(item.detail)}` : ""}</small></span><em>${escapeHtml(item.status)}</em></div>`).join("")}</div></section>`;
+function renderCapabilityCenter(state, abilities) {
+  const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length;
+  if (!total) return "";
+  return `<section class="abilities-panel capability-center glass-panel">
+    <div class="abilities-panel-head"><div><p class="eyebrow">LOCAL CONNECTIONS</p><h3>本地服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
+    <p class="capability-center-intro">常用状态一眼确认，地址、命令与工作流绑定按需展开；保存后会重新读取真实运行状态。</p>
+    <div class="capability-config-stack">
+      ${abilities.providers.map((item) => renderProviderConfig(state, item)).join("")}
+      ${abilities.mcpServers.map((item) => renderMcpConfig(state, item)).join("")}
+      ${abilities.workflows.map((item) => renderWorkflowConfig(state, item)).join("")}
+    </div>
+  </section>`;
+}
+
+function renderProviderConfig(state, item) {
+  const savePhase = actionPhase(state, "abilities.provider.config.save");
+  const healthPhase = actionPhase(state, "abilities.provider.healthCheck");
+  const pending = [savePhase, healthPhase].some((phase) => ["pressed", "pending"].includes(phase));
+  return `<details class="capability-config-card" data-capability-kind="provider" data-capability-key="provider:${escapeHtml(item.id)}">
+    <summary>${capabilitySummary("◉", "本地服务", item.title, item.statusLabel, item.statusTone, item.reason || item.description)}</summary>
+    <form class="capability-config-form" data-capability-form="provider" data-provider-id="${escapeHtml(item.id)}">
+      <label class="capability-toggle"><input type="checkbox" name="enabled"${item.enabled ? " checked" : ""}><span><strong>启用服务</strong><small>${escapeHtml(item.usedByLabel || "供已绑定的能力使用")}</small></span></label>
+      <label class="capability-field"><span>服务地址</span><input name="endpoint" type="url" value="${escapeHtml(item.endpoint || item.defaultEndpoint)}" placeholder="http://127.0.0.1:..." autocomplete="off"></label>
+      <div class="capability-form-actions">
+        <button class="action-button" type="submit" data-action="abilities.provider.healthCheck"${pending || !item.actionsEnabled ? " disabled" : ""}><span>⌁</span><b>${healthPhase === "pending" ? "检查中" : "检查连接"}</b></button>
+        <button class="action-button is-primary" type="submit" data-action="abilities.provider.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "保存配置"}</b></button>
+      </div>
+    </form>
+  </details>`;
+}
+
+function renderMcpConfig(state, item) {
+  const savePhase = actionPhase(state, "abilities.mcp.config.save");
+  const discoverPhase = actionPhase(state, "abilities.mcp.discover");
+  const pending = [savePhase, discoverPhase].some((phase) => ["pressed", "pending"].includes(phase));
+  const tools = item.safeToolLabels.length ? item.safeToolLabels : ["等待工具发现"];
+  return `<details class="capability-config-card" data-capability-kind="mcp" data-capability-key="mcp:${escapeHtml(item.serverId)}">
+    <summary>${capabilitySummary("◇", "MCP 扩展", item.title, item.statusLabel, item.statusTone, item.reason || item.lastDiscoveryLabel)}</summary>
+    <form class="capability-config-form" data-capability-form="mcp" data-server-id="${escapeHtml(item.serverId)}">
+      <div class="capability-tool-row">${tools.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}<em>${item.toolCount} 个工具 · ${escapeHtml(item.approvalLabel || "遵循权限策略")}</em></div>
+      <label class="capability-toggle"><input type="checkbox" name="enabled"${item.enabled ? " checked" : ""}><span><strong>启用 MCP 服务</strong><small>发现到的工具仍受当前审批策略约束</small></span></label>
+      <label class="capability-field"><span>启动命令</span><input name="command" value="" placeholder="${escapeHtml(item.commandName || "例如 npx / python")}" autocomplete="off"></label>
+      <div class="capability-field-grid">
+        <label class="capability-field"><span>显示名称</span><input name="displayName" value="${escapeHtml(item.title)}" autocomplete="off"></label>
+        <label class="capability-field"><span>工作目录 <small>可选</small></span><input name="cwd" value="" placeholder="留空则使用宿主默认目录" autocomplete="off"></label>
+      </div>
+      <label class="capability-field"><span>启动参数 <small>每行一个</small></span><textarea name="args" rows="2" placeholder="例如：&#10;-m&#10;my_mcp_server"></textarea></label>
+      <p class="capability-caution">安全起见不回显完整宿主命令。只有填写新的启动命令并保存时，才会替换现有配置。</p>
+      <div class="capability-form-actions">
+        <button class="action-button" type="submit" data-action="abilities.mcp.discover"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""}><span>↻</span><b>${discoverPhase === "pending" ? "发现中" : "发现工具"}</b></button>
+        <button class="action-button is-primary" type="submit" data-action="abilities.mcp.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "替换配置"}</b></button>
+      </div>
+    </form>
+  </details>`;
+}
+
+function renderWorkflowConfig(state, item) {
+  const savePhase = actionPhase(state, "abilities.workflow.config.save");
+  const validatePhase = actionPhase(state, "abilities.workflow.validate");
+  const pending = [savePhase, validatePhase].some((phase) => ["pressed", "pending"].includes(phase));
+  return `<details class="capability-config-card" data-capability-kind="workflow" data-capability-key="workflow:${escapeHtml(item.workflowId)}">
+    <summary>${capabilitySummary("↳", "本地工作流", item.title, item.statusLabel, item.statusTone, item.detail)}</summary>
+    <form class="capability-config-form" data-capability-form="workflow" data-workflow-id="${escapeHtml(item.workflowId)}">
+      <label class="capability-toggle"><input type="checkbox" name="enabled"${item.enabled ? " checked" : ""}><span><strong>启用工作流</strong><small>${item.executionReady ? "已具备执行条件" : "保存后请先验证绑定"}</small></span></label>
+      <label class="capability-field"><span>工作流文件</span><input name="workflowPath" value="${escapeHtml(item.workflowPath || item.defaultWorkflowPath)}" placeholder="选择或粘贴工作流文件路径" autocomplete="off"></label>
+      <div class="capability-field-grid">
+        <label class="capability-field"><span>输入图像槽位</span><input name="inputImageSlot" value="${escapeHtml(item.inputImageSlot)}" placeholder="input_image"></label>
+        <label class="capability-field"><span>输出图像槽位</span><input name="outputImageSlot" value="${escapeHtml(item.outputImageSlot)}" placeholder="output_image"></label>
+      </div>
+      <div class="capability-form-actions">
+        <button class="action-button" type="submit" data-action="abilities.workflow.validate"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""}><span>⌁</span><b>${validatePhase === "pending" ? "验证中" : "验证绑定"}</b></button>
+        <button class="action-button is-primary" type="submit" data-action="abilities.workflow.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "保存绑定"}</b></button>
+      </div>
+    </form>
+  </details>`;
+}
+
+function capabilitySummary(glyph, group, title, status, tone, detail) {
+  return `<span class="capability-summary-mark" aria-hidden="true">${glyph}</span><span class="capability-summary-copy"><small>${escapeHtml(group)}</small><strong>${escapeHtml(title)}</strong><em>${escapeHtml(detail || "展开查看配置")}</em></span><span class="module-state is-${escapeHtml(tone)}">${escapeHtml(status)}</span><i aria-hidden="true">⌄</i>`;
+}
+
+function renderApprovalQueue(state, abilities) {
+  if (!abilities.approvalRequests.length) return "";
+  const phase = actionPhase(state, "abilities.approvalRequest.decide");
+  const pending = ["pressed", "pending"].includes(phase);
+  return `<section class="permissions-card approval-queue glass-panel">
+    <div class="abilities-panel-head"><div><p class="eyebrow">PENDING APPROVALS</p><h3>等待你的确认</h3></div><span class="policy-status is-attention">${abilities.approvalRequests.length} 项</span></div>
+    <div class="approval-request-list">${abilities.approvalRequests.map((item) => `<article><span class="risk-dot is-${escapeHtml(item.risk)}"></span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary || `${item.requestedBy} 请求执行这项能力`)}</p></div><div class="approval-request-actions"><button type="button" data-approval-request="${escapeHtml(item.requestId)}" data-decision="denied"${pending ? " disabled" : ""}>拒绝</button><button class="is-approve" type="button" data-approval-request="${escapeHtml(item.requestId)}" data-decision="approved"${pending ? " disabled" : ""}>允许</button></div></article>`).join("")}</div>
+  </section>`;
 }
 
 function renderCalls(abilities) {

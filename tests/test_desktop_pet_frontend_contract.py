@@ -61,6 +61,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("hasApiKey", model_page)
         self.assertNotIn("apiKeyValue", model_page)
         self.assertIn("abilities.approvalPolicy.save", abilities_page)
+        self.assertIn('data-capability-form="provider"', abilities_page)
+        self.assertIn('data-capability-form="mcp"', abilities_page)
+        self.assertIn('data-capability-form="workflow"', abilities_page)
+        self.assertIn("abilities.approvalRequest.decide", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("item.actionId", system_page)
 
     def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:

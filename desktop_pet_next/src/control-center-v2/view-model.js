@@ -96,6 +96,13 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
       "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
+      "abilities.approvalRequest.decide": { available: connected && abilities.approvalRequests.length > 0, reason: connected ? "当前没有待确认请求" : "桌宠尚未连接" },
+      "abilities.provider.config.save": capabilityActionAvailability(connected, abilities.providers),
+      "abilities.provider.healthCheck": capabilityActionAvailability(connected, abilities.providers),
+      "abilities.mcp.config.save": capabilityActionAvailability(connected, abilities.mcpServers),
+      "abilities.mcp.discover": capabilityActionAvailability(connected, abilities.mcpServers),
+      "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
+      "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
       [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
       [MODEL_SERVICE_ACTIONS.test]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
       [MODEL_SERVICE_ACTIONS.save]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
@@ -608,6 +615,10 @@ function normalizeAbilitiesRuntime(value, connected) {
     },
     safetyStatus: text(safety.status) || (connected ? "已生效" : "待连接"),
     safetyItems: normalizeLabelValueRows(safety.items, 8),
+    approvalRequests: normalizeApprovalRequests(safety.approvalRequests),
+    providers: normalizeAbilityProviders(source.providers),
+    mcpServers: normalizeAbilityMcpServers(source.mcpServers),
+    workflows: normalizeAbilityWorkflows(source.workflows),
     integrations: normalizeAbilityIntegrations(source),
     calls: (Array.isArray(source.calls) ? source.calls : []).slice(0, 5).map((item) => {
       const entry = asObject(item);
@@ -620,6 +631,85 @@ function normalizeAbilitiesRuntime(value, connected) {
       };
     }).filter((item) => item.module || item.description)
   };
+}
+
+function normalizeApprovalRequests(value) {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const entry = asObject(item);
+    return {
+      requestId: text(entry.requestId),
+      title: text(entry.title) || "能力请求",
+      summary: text(entry.summary) || text(entry.approvalReason),
+      risk: text(entry.risk) || "medium",
+      requestedBy: text(entry.requestedBy) || "Akane",
+      createdAt: text(entry.createdAt),
+      status: text(entry.status) || "pending"
+    };
+  }).filter((item) => item.requestId && item.status === "pending");
+}
+
+function normalizeAbilityProviders(value) {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const entry = asObject(item);
+    return {
+      id: text(entry.id),
+      title: text(entry.title) || text(entry.name) || "本地服务",
+      description: text(entry.description),
+      status: text(entry.status) || "missing_config",
+      statusLabel: text(entry.statusLabel) || "待配置",
+      statusTone: text(entry.statusTone) || "warning",
+      reason: text(entry.reason),
+      enabled: Boolean(entry.enabled),
+      configured: Boolean(entry.configured),
+      endpoint: text(entry.endpoint),
+      defaultEndpoint: text(entry.defaultEndpoint),
+      usedByLabel: text(entry.usedByLabel),
+      actionsEnabled: entry.actionsEnabled !== false && Boolean(text(entry.id))
+    };
+  }).filter((item) => item.title);
+}
+
+function normalizeAbilityMcpServers(value) {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const entry = asObject(item);
+    return {
+      serverId: text(entry.serverId),
+      title: text(entry.title) || "MCP 外部工具",
+      status: text(entry.status) || "missing_config",
+      statusLabel: text(entry.statusLabel) || "待配置",
+      statusTone: text(entry.statusTone) || "warning",
+      reason: text(entry.reason),
+      enabled: Boolean(entry.enabled),
+      configured: Boolean(entry.configured),
+      commandName: text(entry.commandName),
+      toolCount: Number(entry.toolCount || 0),
+      safeToolLabels: (Array.isArray(entry.safeToolLabels) ? entry.safeToolLabels : []).map(text).filter(Boolean),
+      approvalLabel: text(entry.approvalLabel),
+      lastDiscoveryLabel: text(entry.lastDiscoveryLabel),
+      actionsEnabled: entry.actionsEnabled !== false && Boolean(text(entry.serverId))
+    };
+  }).filter((item) => item.title);
+}
+
+function normalizeAbilityWorkflows(value) {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const entry = asObject(item);
+    return {
+      workflowId: text(entry.workflowId) || text(entry.id),
+      title: text(entry.title) || "本地工作流",
+      detail: text(entry.detail),
+      statusLabel: text(entry.statusLabel) || "待配置",
+      statusTone: text(entry.statusTone) || "warning",
+      enabled: Boolean(entry.enabled),
+      configured: Boolean(entry.configured),
+      executionReady: Boolean(entry.executionReady),
+      workflowPath: text(entry.workflowPath),
+      defaultWorkflowPath: text(entry.defaultWorkflowPath),
+      inputImageSlot: text(entry.inputImageSlot),
+      outputImageSlot: text(entry.outputImageSlot),
+      actionsEnabled: entry.actionsEnabled !== false && Boolean(text(entry.workflowId) || text(entry.id))
+    };
+  }).filter((item) => item.title);
 }
 
 function normalizeAbilityIntegrations(source) {
@@ -638,6 +728,11 @@ function normalizeAbilityIntegrations(source) {
       ready: ["ready", "available", "已就绪", "可用"].includes(text(entry.status).toLowerCase()) || /可用|就绪/.test(text(entry.statusLabel))
     };
   })).slice(0, 8);
+}
+
+function capabilityActionAvailability(connected, entries) {
+  const available = connected && entries.some((entry) => entry.actionsEnabled !== false);
+  return { available, reason: connected ? "当前没有可配置的项目" : "桌宠尚未连接" };
 }
 
 function normalizeLabelValueRows(value, limit) {
