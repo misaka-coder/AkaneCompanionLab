@@ -902,9 +902,18 @@ function buildProviderActionBody(actionId, payload = {}) {
       ["promptLang", "promptLang"],
       ["mediaType", "mediaType"],
       ["refAudioPath", "refAudioPath"],
-      ["promptText", "promptText"]
+      ["promptText", "promptText"],
+      ["parallelInfer", "parallelInfer"],
+      ["splitBucket", "splitBucket"],
+      ["batchSize", "batchSize"],
+      ["topK", "topK"],
+      ["topP", "topP"],
+      ["temperature", "temperature"],
+      ["speedFactor", "speedFactor"],
+      ["fragmentInterval", "fragmentInterval"],
+      ["textSplitMethod", "textSplitMethod"]
     ]) {
-      const value = String(payload[payloadKey] || "").trim();
+      const value = payload[payloadKey] === false ? "false" : String(payload[payloadKey] ?? "").trim();
       if (value) body[bodyKey] = value;
     }
     return body;
@@ -924,9 +933,18 @@ function buildProviderActionBody(actionId, payload = {}) {
       ["promptLang", "promptLang"],
       ["mediaType", "mediaType"],
       ["refAudioPath", "refAudioPath"],
-      ["promptText", "promptText"]
+      ["promptText", "promptText"],
+      ["parallelInfer", "parallelInfer"],
+      ["splitBucket", "splitBucket"],
+      ["batchSize", "batchSize"],
+      ["topK", "topK"],
+      ["topP", "topP"],
+      ["temperature", "temperature"],
+      ["speedFactor", "speedFactor"],
+      ["fragmentInterval", "fragmentInterval"],
+      ["textSplitMethod", "textSplitMethod"]
     ]) {
-      const value = String(payload[payloadKey] || "").trim();
+      const value = payload[payloadKey] === false ? "false" : String(payload[payloadKey] ?? "").trim();
       if (value) body[bodyKey] = value;
     }
     return {

@@ -676,6 +676,15 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     mediaType: "wav",
     refAudioPath: "C:\\voices\\reimu_ref.wav",
     promptText: "参考文本",
+    parallelInfer: false,
+    splitBucket: false,
+    batchSize: 1,
+    topK: 8,
+    topP: 0.85,
+    temperature: 0.6,
+    speedFactor: 1,
+    fragmentInterval: 0.3,
+    textSplitMethod: "cut1",
     token: "must-not-send"
   });
   assert.equal(testResult.status, "tts-test-ready", "provider tts test should hit provider tts-test route");
@@ -699,6 +708,15 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     mediaType: "wav",
     refAudioPath: "C:\\voices\\reimu_ref.wav",
     promptText: "参考文本",
+    parallelInfer: false,
+    splitBucket: false,
+    batchSize: 1,
+    topK: 8,
+    topP: 0.85,
+    temperature: 0.6,
+    speedFactor: 1,
+    fragmentInterval: 0.3,
+    textSplitMethod: "cut1",
     token: "must-not-send"
   });
   assert.equal(voiceProfileResult.status, "saved", "provider voice profile save should hit provider voice profile route");
@@ -724,7 +742,16 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
       promptLang: "zh",
       mediaType: "wav",
       refAudioPath: "C:\\voices\\reimu_ref.wav",
-      promptText: "参考文本"
+      promptText: "参考文本",
+      parallelInfer: "false",
+      splitBucket: "false",
+      batchSize: "1",
+      topK: "8",
+      topP: "0.85",
+      temperature: "0.6",
+      speedFactor: "1",
+      fragmentInterval: "0.3",
+      textSplitMethod: "cut1"
     },
     "provider tts test should only send endpoint/text/profile fields"
   );
@@ -748,7 +775,16 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
       promptLang: "zh",
       mediaType: "wav",
       refAudioPath: "C:\\voices\\reimu_ref.wav",
-      promptText: "参考文本"
+      promptText: "参考文本",
+      parallelInfer: "false",
+      splitBucket: "false",
+      batchSize: "1",
+      topK: "8",
+      topP: "0.85",
+      temperature: "0.6",
+      speedFactor: "1",
+      fragmentInterval: "0.3",
+      textSplitMethod: "cut1"
     },
     "provider voice profile save should only send voice profile config fields"
   );

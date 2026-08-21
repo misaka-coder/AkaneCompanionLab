@@ -159,8 +159,8 @@ function renderVoiceProfileEditor(state, vm, provider, draft) {
     <summary><span><small>低频配置</small><strong>${escapeHtml(selectedId ? `调整 ${draft.displayName || existing?.name || selectedId}` : "添加声线档案")}</strong></span><em>展开配置⌄</em></summary>
     <form data-capability-form="voice-profile" data-provider-id="${escapeHtml(provider.id)}">
       <fieldset class="voice-folder-inspector">
-        <legend>从模型目录读取</legend>
-        <label class="is-wide"><span>模型目录</span><input type="text" name="folderPath" value="${escapeHtml(draft.folderPath || "")}" placeholder="例如：D:\\GPT-SoVITS\\voices\\reimu"><small>只在点击检查时读取；不会因为输入路径就自动保存。</small></label>
+        <legend>从声线目录读取</legend>
+        <label class="is-wide"><span>声线资料目录</span><input type="text" name="folderPath" value="${escapeHtml(draft.folderPath || "")}" placeholder="例如：D:\\GPT-SoVITS\\voices\\reimu"><small>读取参考音频与配置建议；检测到的权重不会自动切换正在运行的 GPT-SoVITS 服务。</small></label>
         ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.inspectFolder", "检查目录", "⌕")}
       </fieldset>
       ${state.voiceProfileInspection ? renderInspectionSummary(state.voiceProfileInspection) : ""}
@@ -174,6 +174,20 @@ function renderVoiceProfileEditor(state, vm, provider, draft) {
         <label class="is-wide"><span>参考音频</span><input type="text" name="refAudioPath" value="${escapeHtml(draft.refAudioPath || "")}" placeholder="检查目录后自动填写，或粘贴本机音频路径"><small>${existing?.referenceAudioName ? `已保存 ${escapeHtml(existing.referenceAudioName)}；留空不会清除原值。` : "需要真实可读的本机音频文件。"}</small></label>
         <label class="is-wide"><span>参考文本</span><textarea name="promptText" rows="3" maxlength="1000" placeholder="与参考音频一致的文字；调整已有档案时留空可保留原值。">${escapeHtml(draft.promptText || "")}</textarea></label>
       </div>
+      <details class="voice-inference-settings">
+        <summary><span>高级推理参数</span><small>留空沿用服务默认值</small></summary>
+        <div class="voice-profile-form-grid">
+          <label><span>文本切分</span><input type="text" name="textSplitMethod" value="${escapeHtml(profileValue(draft, existing, "textSplitMethod"))}" maxlength="40" placeholder="例如 cut1"></label>
+          <label><span>批大小</span><input type="number" name="batchSize" value="${escapeHtml(profileValue(draft, existing, "batchSize"))}" min="1" max="32" step="1" placeholder="1"></label>
+          <label><span>Top K</span><input type="number" name="topK" value="${escapeHtml(profileValue(draft, existing, "topK"))}" min="1" max="100" step="1" placeholder="8"></label>
+          <label><span>Top P</span><input type="number" name="topP" value="${escapeHtml(profileValue(draft, existing, "topP"))}" min="0" max="1" step="0.01" placeholder="0.85"></label>
+          <label><span>Temperature</span><input type="number" name="temperature" value="${escapeHtml(profileValue(draft, existing, "temperature"))}" min="0" max="2" step="0.05" placeholder="0.6"></label>
+          <label><span>语速</span><input type="number" name="speedFactor" value="${escapeHtml(profileValue(draft, existing, "speedFactor"))}" min="0.5" max="2" step="0.05" placeholder="1.0"></label>
+          <label><span>片段间隔</span><input type="number" name="fragmentInterval" value="${escapeHtml(profileValue(draft, existing, "fragmentInterval"))}" min="0" max="2" step="0.05" placeholder="0.3"></label>
+          <label><span>并行推理</span><select name="parallelInfer">${booleanSettingOptions(profileValue(draft, existing, "parallelInfer"))}</select></label>
+          <label><span>分桶处理</span><select name="splitBucket">${booleanSettingOptions(profileValue(draft, existing, "splitBucket"))}</select></label>
+        </div>
+      </details>
       <div class="voice-profile-editor-actions">
         ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.save", "保存档案", "✓", "primary")}
         <small>保存只证明配置已写入；请再试听，确认服务和音频链路真实可用后再绑定。</small>
@@ -186,7 +200,21 @@ function renderInspectionSummary(inspection) {
   const detected = inspection.detected || {};
   const details = [detected.configFileName, detected.referenceAudioName, detected.gptWeightName, detected.sovitsWeightName].filter(Boolean);
   const warnings = Array.isArray(inspection.warnings) ? inspection.warnings : [];
-  return `<div class="voice-inspection-result ${warnings.length ? "has-warning" : "is-ready"}"><strong>${warnings.length ? "目录已读取，但还需补充" : "目录结构已读取"}</strong><span>${escapeHtml(details.join(" · ") || "已生成建议配置")}</span>${warnings.length ? `<small>${escapeHtml(warnings.map(inspectionWarningLabel).join("；"))}</small>` : ""}</div>`;
+  return `<div class="voice-inspection-result ${warnings.length ? "has-warning" : "is-ready"}"><strong>${warnings.length ? "目录已读取，但还需补充" : "目录结构已读取"}</strong><span>${escapeHtml(details.join(" · ") || "已生成建议配置")}</span><small>${warnings.length ? escapeHtml(warnings.map(inspectionWarningLabel).join("；")) : "权重仅完成检测；服务模型需在 GPT-SoVITS 侧切换。"}</small></div>`;
+}
+
+function profileValue(draft, existing, key) {
+  const value = draft?.[key] ?? existing?.[key];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function booleanSettingOptions(value) {
+  const normalized = value === true || value === "true" ? "true" : value === false || value === "false" ? "false" : "";
+  return [
+    ["", "跟随服务"],
+    ["true", "开启"],
+    ["false", "关闭"]
+  ].map(([option, label]) => `<option value="${option}"${normalized === option ? " selected" : ""}>${label}</option>`).join("");
 }
 
 function inspectionWarningLabel(value) {

@@ -4096,6 +4096,9 @@ for line in sys.stdin:
                     "parallelInfer": True,
                     "splitBucket": False,
                     "batchSize": 1,
+                    "topK": 8,
+                    "topP": 0.85,
+                    "temperature": 0.6,
                     "speedFactor": 1.05,
                     "fragmentInterval": 0.1,
                     "textSplitMethod": "cut5",
@@ -4151,6 +4154,9 @@ for line in sys.stdin:
                         "parallelInfer": True,
                         "splitBucket": False,
                         "batchSize": 1,
+                        "topK": 8,
+                        "topP": 0.85,
+                        "temperature": 0.6,
                         "speedFactor": 1.05,
                         "fragmentInterval": 0.1,
                         "textSplitMethod": "cut5",
@@ -5480,6 +5486,9 @@ for line in sys.stdin:
                     "parallelInfer": True,
                     "splitBucket": False,
                     "batchSize": 1,
+                    "topK": 8,
+                    "topP": 0.85,
+                    "temperature": 0.6,
                     "speedFactor": 1.05,
                     "fragmentInterval": 0.1,
                     "textSplitMethod": "cut5",
@@ -5524,6 +5533,9 @@ for line in sys.stdin:
             self.assertEqual(stored_profile["parallelInfer"], True)
             self.assertEqual(stored_profile["splitBucket"], False)
             self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["topK"], 8)
+            self.assertEqual(stored_profile["topP"], 0.85)
+            self.assertEqual(stored_profile["temperature"], 0.6)
             self.assertEqual(stored_profile["speedFactor"], 1.05)
             self.assertEqual(stored_profile["fragmentInterval"], 0.1)
             self.assertEqual(stored_profile["textSplitMethod"], "cut5")
@@ -5539,6 +5551,9 @@ for line in sys.stdin:
             self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
             self.assertEqual(stored_profile["streamingMode"], True)
             self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["topK"], 8)
+            self.assertEqual(stored_profile["topP"], 0.85)
+            self.assertEqual(stored_profile["temperature"], 0.6)
             self.assertEqual(stored_profile["textSplitMethod"], "cut5")
             self.assertIn(("capabilities.voice_profile_config", True), runtime.observed)
             self.assertIn(("capabilities.voice_profiles", True), runtime.observed)
@@ -5560,6 +5575,15 @@ for line in sys.stdin:
                         "text_lang: zh",
                         "media_type: wav",
                         "ref_audio_path: output.wav_0009342720_0009558400.wav",
+                        "parallel_infer: false",
+                        "split_bucket: false",
+                        "batch_size: 1",
+                        "top_k: 8",
+                        "top_p: 0.85",
+                        "temperature: 0.6",
+                        "speed_factor: 1.0",
+                        "fragment_interval: 0.3",
+                        "text_split_method: cut1",
                     ]
                 ),
                 encoding="utf-8",
@@ -5598,6 +5622,15 @@ for line in sys.stdin:
             self.assertEqual(payload["detected"]["referenceAudioName"], ref_audio.name)
             self.assertEqual(payload["detected"]["gptWeightName"], "dania-e15.ckpt")
             self.assertEqual(payload["detected"]["sovitsWeightName"], "dania_e16_s2192.pth")
+            self.assertEqual(suggested["parallelInfer"], False)
+            self.assertEqual(suggested["splitBucket"], False)
+            self.assertEqual(suggested["batchSize"], 1)
+            self.assertEqual(suggested["topK"], 8)
+            self.assertEqual(suggested["topP"], 0.85)
+            self.assertEqual(suggested["temperature"], 0.6)
+            self.assertEqual(suggested["speedFactor"], 1.0)
+            self.assertEqual(suggested["fragmentInterval"], 0.3)
+            self.assertEqual(suggested["textSplitMethod"], "cut1")
             self.assertFalse(payload["autoEnable"])
             self.assertFalse(payload["refresh"])
             self.assertNotIn("token", response.text.lower())

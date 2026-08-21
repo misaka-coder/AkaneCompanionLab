@@ -138,6 +138,15 @@ const rawSnapshot = {
         textLang: "zh",
         promptLang: "zh",
         mediaType: "wav",
+        parallelInfer: false,
+        splitBucket: false,
+        batchSize: 1,
+        topK: 8,
+        topP: 0.85,
+        temperature: 0.6,
+        speedFactor: 1,
+        fragmentInterval: 0.3,
+        textSplitMethod: "cut1",
         referenceAudioName: "reimu_ref.wav",
         promptTextLength: 12
       }]
@@ -288,6 +297,9 @@ assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
 assert.equal(viewModel.abilities.integrations.length, 3);
 assert.equal(viewModel.abilities.providers[0].id, "provider.tts.gpt_sovits.local");
 assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].voiceProfileId, "reimu_main");
+assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].topK, 8);
+assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].topP, 0.85);
+assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].temperature, 0.6);
 assert.equal(viewModel.character.voice.profileId, "reimu_main");
 assert.equal(viewModel.actions["abilities.provider.ttsTest"].available, true);
 assert.equal(viewModel.actions["abilities.provider.voiceProfile.assignToCurrentCharacter"].available, true);
@@ -728,6 +740,10 @@ assert.match(voiceHtml, /data-capability-form="voice-profile"/);
 assert.match(voiceHtml, /data-action="abilities\.provider\.voiceProfile\.inspectFolder"/);
 assert.match(voiceHtml, /data-action="abilities\.provider\.voiceProfile\.save"/);
 assert.match(voiceHtml, /保存只证明配置已写入/);
+assert.match(voiceHtml, /高级推理参数/);
+assert.match(voiceHtml, /name="topK"/);
+assert.match(voiceHtml, /name="topP"/);
+assert.match(voiceHtml, /权重不会自动切换/);
 assert.doesNotMatch(voiceHtml, /C:\\voices\\reimu_ref\.wav/);
 assert.doesNotMatch(voiceHtml, /portrait|hero-image|character-preview/);
 

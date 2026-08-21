@@ -355,7 +355,16 @@ function capabilityFormPayload(form, actionId) {
       promptLang: String(data.get("promptLang") || "").trim(),
       mediaType: String(data.get("mediaType") || "").trim(),
       refAudioPath: String(data.get("refAudioPath") || "").trim(),
-      promptText: String(data.get("promptText") || "").trim()
+      promptText: String(data.get("promptText") || "").trim(),
+      parallelInfer: String(data.get("parallelInfer") || "").trim(),
+      splitBucket: String(data.get("splitBucket") || "").trim(),
+      batchSize: String(data.get("batchSize") || "").trim(),
+      topK: String(data.get("topK") || "").trim(),
+      topP: String(data.get("topP") || "").trim(),
+      temperature: String(data.get("temperature") || "").trim(),
+      speedFactor: String(data.get("speedFactor") || "").trim(),
+      fragmentInterval: String(data.get("fragmentInterval") || "").trim(),
+      textSplitMethod: String(data.get("textSplitMethod") || "").trim()
     };
   }
   return null;
@@ -397,7 +406,16 @@ function editVoiceProfile(providerId, voiceProfileId) {
       enabled: profile.enabled,
       textLang: profile.textLang,
       promptLang: profile.promptLang,
-      mediaType: profile.mediaType
+      mediaType: profile.mediaType,
+      parallelInfer: profile.parallelInfer,
+      splitBucket: profile.splitBucket,
+      batchSize: profile.batchSize,
+      topK: profile.topK,
+      topP: profile.topP,
+      temperature: profile.temperature,
+      speedFactor: profile.speedFactor,
+      fragmentInterval: profile.fragmentInterval,
+      textSplitMethod: profile.textSplitMethod
     },
     voiceProfileInspection: null,
     voiceProfileEditorOpen: true

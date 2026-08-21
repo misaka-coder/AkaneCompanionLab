@@ -1269,6 +1269,19 @@ def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, 
     batch_size = _safe_optional_int(payload.get("batchSize") if "batchSize" in payload else payload.get("batch_size"), minimum=1, maximum=32)
     if batch_size is not None:
         profile["batchSize"] = batch_size
+    top_k = _safe_optional_int(payload.get("topK") if "topK" in payload else payload.get("top_k"), minimum=1, maximum=100)
+    if top_k is not None:
+        profile["topK"] = top_k
+    top_p = _safe_optional_float(
+        payload.get("topP") if "topP" in payload else payload.get("top_p"),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    if top_p is not None:
+        profile["topP"] = top_p
+    temperature = _safe_optional_float(payload.get("temperature"), minimum=0.0, maximum=2.0)
+    if temperature is not None:
+        profile["temperature"] = temperature
     speed_factor = _safe_optional_float(
         payload.get("speedFactor") if "speedFactor" in payload else payload.get("speed_factor"),
         minimum=0.5,

@@ -821,10 +821,25 @@ function normalizeAbilityVoiceProfile(value) {
     textLang: text(entry.textLang) || "zh",
     promptLang: text(entry.promptLang) || "zh",
     mediaType: text(entry.mediaType) || "wav",
+    parallelInfer: typeof entry.parallelInfer === "boolean" ? entry.parallelInfer : null,
+    splitBucket: typeof entry.splitBucket === "boolean" ? entry.splitBucket : null,
+    batchSize: optionalFiniteNumber(entry.batchSize),
+    topK: optionalFiniteNumber(entry.topK),
+    topP: optionalFiniteNumber(entry.topP),
+    temperature: optionalFiniteNumber(entry.temperature),
+    speedFactor: optionalFiniteNumber(entry.speedFactor),
+    fragmentInterval: optionalFiniteNumber(entry.fragmentInterval),
+    textSplitMethod: text(entry.textSplitMethod),
     referenceAudioName: text(entry.referenceAudioName),
     promptTextLength: Math.max(0, Math.round(finiteNumber(entry.promptTextLength, 0))),
     updatedAt: text(entry.updatedAt)
   };
+}
+
+function optionalFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function normalizeAbilityMcpServers(value) {

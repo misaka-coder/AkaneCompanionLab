@@ -663,6 +663,11 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .voice-folder-inspector input:focus, .voice-profile-form-grid input:focus, .voice-profile-form-grid select:focus, .voice-profile-form-grid textarea:focus { border-color: rgb(var(--accent-rgb) / 0.55); box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.08); }
 .voice-profile-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .voice-profile-form-grid .is-wide { grid-column: 1 / -1; }
+.voice-inference-settings { border: 1px solid var(--line); border-radius: 15px; background: rgb(255 255 255 / 0.018); }
+.voice-inference-settings > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; cursor: pointer; color: var(--text-soft); font-size: 8px; font-weight: 700; }
+.voice-inference-settings > summary small { color: var(--text-faint); font-size: 7px; font-weight: 500; }
+.voice-inference-settings[open] > summary { border-bottom: 1px solid var(--line); }
+.voice-inference-settings > .voice-profile-form-grid { padding: 14px; }
 .voice-enabled-field { align-content: end; }
 .voice-enabled-field input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }
 .voice-inspection-result { display: grid; gap: 4px; padding: 11px 13px; border: 1px solid rgb(104 217 163 / 0.2); border-radius: 13px; background: rgb(45 145 97 / 0.07); }

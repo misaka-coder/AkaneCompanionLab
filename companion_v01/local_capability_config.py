@@ -68,6 +68,9 @@ PRIVATE_VOICE_PROFILE_FIELDS = {
     "parallelInfer",
     "splitBucket",
     "batchSize",
+    "topK",
+    "topP",
+    "temperature",
     "speedFactor",
     "fragmentInterval",
     "textSplitMethod",
@@ -695,6 +698,27 @@ def inspect_gpt_sovits_voice_model_folder(
         _first_voice_model_yaml_value(yaml_values, "media_type", "return_media_type") or "wav",
         default="wav",
     )
+    parallel_infer = _safe_optional_bool(_first_voice_model_yaml_value(yaml_values, "parallel_infer"))
+    split_bucket = _safe_optional_bool(_first_voice_model_yaml_value(yaml_values, "split_bucket"))
+    batch_size = _safe_optional_int(
+        _first_voice_model_yaml_value(yaml_values, "batch_size"), minimum=1, maximum=32
+    )
+    top_k = _safe_optional_int(_first_voice_model_yaml_value(yaml_values, "top_k"), minimum=1, maximum=100)
+    top_p = _safe_optional_float(
+        _first_voice_model_yaml_value(yaml_values, "top_p"), minimum=0.0, maximum=1.0
+    )
+    temperature = _safe_optional_float(
+        _first_voice_model_yaml_value(yaml_values, "temperature"), minimum=0.0, maximum=2.0
+    )
+    speed_factor = _safe_optional_float(
+        _first_voice_model_yaml_value(yaml_values, "speed_factor"), minimum=0.5, maximum=2.0
+    )
+    fragment_interval = _safe_optional_float(
+        _first_voice_model_yaml_value(yaml_values, "fragment_interval"), minimum=0.0, maximum=2.0
+    )
+    text_split_method = _safe_short_token(
+        _first_voice_model_yaml_value(yaml_values, "text_split_method"), default=""
+    )
 
     gpt_weight = _resolve_voice_model_file_from_yaml(
         folder,
@@ -741,6 +765,15 @@ def inspect_gpt_sovits_voice_model_folder(
             "mediaType": media_type,
             "refAudioPath": str(ref_audio_path) if ref_audio_path else "",
             "promptText": prompt_text,
+            "parallelInfer": parallel_infer,
+            "splitBucket": split_bucket,
+            "batchSize": batch_size,
+            "topK": top_k,
+            "topP": top_p,
+            "temperature": temperature,
+            "speedFactor": speed_factor,
+            "fragmentInterval": fragment_interval,
+            "textSplitMethod": text_split_method,
         },
         "detected": {
             "folderName": folder_name,
@@ -802,6 +835,9 @@ def save_voice_profile_config(
         "parallelInfer": ("parallelInfer", "parallel_infer"),
         "splitBucket": ("splitBucket", "split_bucket"),
         "batchSize": ("batchSize", "batch_size"),
+        "topK": ("topK", "top_k"),
+        "topP": ("topP", "top_p"),
+        "temperature": ("temperature",),
         "speedFactor": ("speedFactor", "speed_factor"),
         "fragmentInterval": ("fragmentInterval", "fragment_interval"),
         "textSplitMethod": ("textSplitMethod", "text_split_method"),
@@ -823,6 +859,9 @@ def save_voice_profile_config(
         "parallelInfer": normalized["parallelInfer"],
         "splitBucket": normalized["splitBucket"],
         "batchSize": normalized["batchSize"],
+        "topK": normalized["topK"],
+        "topP": normalized["topP"],
+        "temperature": normalized["temperature"],
         "speedFactor": normalized["speedFactor"],
         "fragmentInterval": normalized["fragmentInterval"],
         "textSplitMethod": normalized["textSplitMethod"],
@@ -873,7 +912,17 @@ def get_voice_profile_runtime_config(
     emotion_voice_map = profile.get("emotionVoiceMap") if isinstance(profile.get("emotionVoiceMap"), Mapping) else {}
     if emotion_voice_map:
         result["emotionVoiceMap"] = dict(emotion_voice_map)
-    for key in ("streamingMode", "parallelInfer", "splitBucket", "batchSize", "speedFactor", "fragmentInterval"):
+    for key in (
+        "streamingMode",
+        "parallelInfer",
+        "splitBucket",
+        "batchSize",
+        "topK",
+        "topP",
+        "temperature",
+        "speedFactor",
+        "fragmentInterval",
+    ):
         value = profile.get(key)
         if value is not None:
             result[key] = value
@@ -1755,6 +1804,11 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "parallelInfer": config.get("parallelInfer") if isinstance(config.get("parallelInfer"), bool) else None,
         "splitBucket": config.get("splitBucket") if isinstance(config.get("splitBucket"), bool) else None,
         "batchSize": config.get("batchSize") if isinstance(config.get("batchSize"), int) else None,
+        "topK": config.get("topK") if isinstance(config.get("topK"), int) else None,
+        "topP": config.get("topP") if isinstance(config.get("topP"), (int, float)) else None,
+        "temperature": config.get("temperature")
+        if isinstance(config.get("temperature"), (int, float))
+        else None,
         "speedFactor": config.get("speedFactor") if isinstance(config.get("speedFactor"), (int, float)) else None,
         "fragmentInterval": config.get("fragmentInterval")
         if isinstance(config.get("fragmentInterval"), (int, float))
@@ -1949,6 +2003,17 @@ def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str
             minimum=1,
             maximum=32,
         ),
+        "topK": _safe_optional_int(
+            payload.get("topK") if "topK" in payload else payload.get("top_k"),
+            minimum=1,
+            maximum=100,
+        ),
+        "topP": _safe_optional_float(
+            payload.get("topP") if "topP" in payload else payload.get("top_p"),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "temperature": _safe_optional_float(payload.get("temperature"), minimum=0.0, maximum=2.0),
         "speedFactor": _safe_optional_float(
             payload.get("speedFactor") if "speedFactor" in payload else payload.get("speed_factor"),
             minimum=0.5,
@@ -2537,6 +2602,9 @@ def _sanitize_voice_profile_configs(raw_profiles: Any) -> tuple[dict[str, dict[s
             "parallelInfer": normalized["parallelInfer"],
             "splitBucket": normalized["splitBucket"],
             "batchSize": normalized["batchSize"],
+            "topK": normalized["topK"],
+            "topP": normalized["topP"],
+            "temperature": normalized["temperature"],
             "speedFactor": normalized["speedFactor"],
             "fragmentInterval": normalized["fragmentInterval"],
             "textSplitMethod": normalized["textSplitMethod"],
