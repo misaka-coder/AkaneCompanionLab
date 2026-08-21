@@ -116,6 +116,18 @@ const rawSnapshot = {
     providers: [{ id: "provider.tts.local", title: "本地语音服务", status: "ready", statusLabel: "可用", reason: "已连接", enabled: true, endpoint: "http://127.0.0.1:9880", actionsEnabled: true }],
     mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
     workflows: [{ workflowId: "workflow.workshop.portrait.cutout", title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定", enabled: true, configured: true, workflowPath: "workflows/portrait.json", actionsEnabled: true }],
+    skills: {
+      status: "ready",
+      catalogRevision: "catalog123",
+      total: 2,
+      bundled: 1,
+      managed: 1,
+      entries: [
+        { name: "coding-project", description: "Use for multi-file coding projects.", source: "bundled", revision: "rev1", requiredTools: ["exec_run"], resourceCount: 1 },
+        { name: "personal-workflow", description: "Use for the owner's repeatable local workflow.", source: "managed", revision: "rev2", requiredTools: [], resourceCount: 0 }
+      ],
+      diagnostics: []
+    },
     safety: {
       status: "已生效",
       approvalPolicy: {
@@ -242,6 +254,8 @@ assert.equal(viewModel.abilities.providers[0].id, "provider.tts.local");
 assert.equal(viewModel.abilities.mcpServers[0].serverId, "anysearch");
 assert.equal(viewModel.abilities.workflows[0].workflowId, "workflow.workshop.portrait.cutout");
 assert.equal(viewModel.abilities.approvalRequests[0].requestId, "approval_001");
+assert.equal(viewModel.abilities.skills.total, 2);
+assert.equal(viewModel.abilities.skills.entries[1].source, "managed");
 assert.equal(viewModel.model.available, true);
 assert.equal(viewModel.model.providerId, "deepseek");
 assert.equal(viewModel.model.hasApiKey, true);
@@ -266,6 +280,7 @@ assert.equal(viewModel.actions["abilities.provider.config.save"].available, true
 assert.equal(viewModel.actions["abilities.mcp.discover"].available, true);
 assert.equal(viewModel.actions["abilities.workflow.validate"].available, true);
 assert.equal(viewModel.actions["abilities.approvalRequest.decide"].available, true);
+assert.equal(viewModel.actions["abilities.skills.openFolder"].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.models].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.test].available, true);
 assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.save].available, true);
@@ -603,6 +618,10 @@ assert.match(abilitiesHtml, /data-action="abilities\.provider\.healthCheck"/);
 assert.match(abilitiesHtml, /data-action="abilities\.mcp\.discover"/);
 assert.match(abilitiesHtml, /data-action="abilities\.workflow\.validate"/);
 assert.match(abilitiesHtml, /data-approval-request="approval_001"/);
+assert.match(abilitiesHtml, /Skill 操作手册/);
+assert.match(abilitiesHtml, /coding-project/);
+assert.match(abilitiesHtml, /personal-workflow/);
+assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);
 assert.match(abilitiesHtml, /只有填写新的启动命令并保存时/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
 

@@ -1139,6 +1139,13 @@ fn open_character_packs_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_managed_skills_folder() -> Result<(), String> {
+    let skills_dir = akane_data_root()?.join("skills");
+    fs::create_dir_all(&skills_dir).map_err(|error| error.to_string())?;
+    open_path_in_file_manager(&skills_dir)
+}
+
+#[tauri::command]
 fn open_local_file(path: String) -> Result<(), String> {
     let path = canonical_existing_path(&path)?;
     open_path_with_system(&path)
@@ -6556,6 +6563,7 @@ fn main() {
             install_character_pack_zip_file,
             install_character_pack_zip_bytes,
             open_character_packs_folder,
+            open_managed_skills_folder,
             open_local_file,
             show_item_in_folder,
             open_external_url,

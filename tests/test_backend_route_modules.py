@@ -3070,6 +3070,22 @@ class BackendRouteModuleTests(unittest.TestCase):
     def test_capabilities_catalog_exposes_readonly_existing_tools_and_providers(self) -> None:
         runtime = FakeRuntimeMetrics()
         engine = SimpleNamespace(
+            skill_registry=SimpleNamespace(
+                snapshot=lambda: SimpleNamespace(
+                    catalog_revision="catalog123",
+                    diagnostics=(),
+                    entries=(
+                        SimpleNamespace(
+                            name="coding-project",
+                            description="Use for multi-file coding projects.",
+                            source="bundled",
+                            revision="rev123",
+                            required_tools=("exec_run",),
+                            files=("references/checklist.md",),
+                        ),
+                    ),
+                )
+            ),
             tool_handlers={
                 "retrieve_memory": CatalogMetadataHandler(risk="low"),
                 "compose_file": CatalogMetadataHandler(risk="medium"),
@@ -3111,6 +3127,12 @@ class BackendRouteModuleTests(unittest.TestCase):
             payload["configScope"]["localDiscoveryPath"],
             "users_data/_local/capabilities/discovery.json",
         )
+        self.assertEqual(payload["skills"]["status"], "ready")
+        self.assertEqual(payload["skills"]["catalogRevision"], "catalog123")
+        self.assertEqual(payload["skills"]["summary"]["bundled"], 1)
+        self.assertEqual(payload["skills"]["entries"][0]["name"], "coding-project")
+        self.assertEqual(payload["skills"]["entries"][0]["requiredTools"], ["exec_run"])
+        self.assertNotIn("root", payload["skills"]["entries"][0])
 
         capabilities = payload["capabilities"]
         by_id = {item["id"]: item for item in capabilities}

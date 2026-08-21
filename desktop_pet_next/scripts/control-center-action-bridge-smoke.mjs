@@ -139,6 +139,12 @@ const bridgedActionCases = [
     invoke: "open_character_packs_folder"
   },
   {
+    id: CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder,
+    payload: {},
+    context: {},
+    invoke: "open_managed_skills_folder"
+  },
+  {
     id: CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
     payload: {
       providerId: "provider.tts.gpt_sovits.local",

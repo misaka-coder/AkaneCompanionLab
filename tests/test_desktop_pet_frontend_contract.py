@@ -64,6 +64,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('data-capability-form="provider"', abilities_page)
         self.assertIn('data-capability-form="mcp"', abilities_page)
         self.assertIn('data-capability-form="workflow"', abilities_page)
+        self.assertIn("Skill 操作手册", abilities_page)
+        self.assertIn("abilities.skills.openFolder", abilities_page)
         self.assertIn("abilities.approvalRequest.decide", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("item.actionId", system_page)
 

@@ -122,6 +122,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover, "backend-route", "POST /capabilities/mcp-servers/{serverId}/discover"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, "backend-route", "POST /capabilities/approval-policy"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide, "backend-route", "POST /capabilities/approval-requests/{requestId}/decision"),
+  bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder, "tauri-invoke", "open_managed_skills_folder"),
   clientHandled("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigOpen, "Local toggle: expands local workflow binding details."),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave, "backend-route", "POST /capabilities/workflows/{workflowId}/config"),
   bridged("abilities", CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport, "backend-route", "POST /capabilities/workflows/{workflowId}/file"),

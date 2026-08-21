@@ -36,7 +36,8 @@ const qqBackendActionIds = new Set([
 ]);
 const tauriInvokeOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
-  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter
+  CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
+  CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder
 ]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot",
@@ -86,6 +87,7 @@ const tauriInvokeByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
   [CONTROL_CENTER_ACTIONS.characterOpenWorkshop]: "open_workshop_window",
   [CONTROL_CENTER_ACTIONS.characterOpenPackFolder]: "open_character_packs_folder",
+  [CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder]: "open_managed_skills_folder",
   [CONTROL_CENTER_ACTIONS.windowClose]: "close_window"
 });
 const tauriWindowActionByActionId = Object.freeze({
@@ -2001,6 +2003,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
     providers: buildAbilityProviderCards(catalogEntries, capabilitiesCatalog, voiceProfilesCatalog),
     mcpServers: buildAbilityMcpServerCards(catalogEntries),
     workflows: buildAbilityWorkflows(moduleCards, catalogEntries),
+    skills: buildAbilitySkillCatalog(capabilitiesCatalog?.skills),
     calls: buildAbilityStatusRows({
       syncedAt,
       serviceOk,
@@ -2023,6 +2026,40 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
         { label: "物理", value: "待接入" }
       ]
     }
+  };
+}
+
+function buildAbilitySkillCatalog(value) {
+  const payload = asObject(value);
+  const summary = asObject(payload.summary);
+  const entries = asArray(payload.entries).map((item) => {
+    const entry = asObject(item);
+    return {
+      name: stringValue(entry.name),
+      description: stringValue(entry.description),
+      source: stringValue(entry.source),
+      revision: stringValue(entry.revision),
+      requiredTools: normalizeStringList(entry.requiredTools),
+      resourceCount: positiveNumber(entry.resourceCount)
+    };
+  }).filter((item) => item.name && item.description);
+  const diagnostics = asArray(payload.diagnostics).map((item) => {
+    const entry = asObject(item);
+    return {
+      name: stringValue(entry.name),
+      source: stringValue(entry.source),
+      reason: stringValue(entry.reason),
+      fallback: stringValue(entry.fallback)
+    };
+  }).filter((item) => item.name || item.reason);
+  return {
+    status: stringValue(payload.status || "unavailable"),
+    catalogRevision: stringValue(payload.catalogRevision),
+    total: positiveNumber(summary.total ?? entries.length),
+    bundled: positiveNumber(summary.bundled ?? entries.filter((item) => item.source === "bundled").length),
+    managed: positiveNumber(summary.managed ?? entries.filter((item) => item.source === "managed").length),
+    entries,
+    diagnostics
   };
 }
 

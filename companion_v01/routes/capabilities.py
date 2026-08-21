@@ -147,6 +147,7 @@ def build_capabilities_router(
             base_dir=provider_config_base_dir,
             profile_user_id=profile_user_id,
         )["approvalPolicy"]
+        payload["skills"] = _build_skill_catalog_payload(engine)
         _observe_request(runtime_metrics, "capabilities.catalog", started_at, True)
         _log_best_effort(
             log_event,
@@ -1906,6 +1907,69 @@ def _safe_workflow_job_id(value: Any) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _build_skill_catalog_payload(engine: Any) -> dict[str, Any]:
+    registry = getattr(engine, "skill_registry", None)
+    if registry is None:
+        factory = getattr(engine, "_get_skill_registry", None)
+        if callable(factory):
+            try:
+                registry = factory()
+            except Exception:
+                registry = None
+    if registry is None or not callable(getattr(registry, "snapshot", None)):
+        return {
+            "status": "unavailable",
+            "catalogRevision": "",
+            "summary": {"total": 0, "bundled": 0, "managed": 0, "diagnostics": 0},
+            "entries": [],
+            "diagnostics": [],
+        }
+    try:
+        snapshot = registry.snapshot()
+    except Exception:
+        return {
+            "status": "unavailable",
+            "catalogRevision": "",
+            "summary": {"total": 0, "bundled": 0, "managed": 0, "diagnostics": 0},
+            "entries": [],
+            "diagnostics": [],
+        }
+    entries = [
+        {
+            "name": str(entry.name),
+            "description": str(entry.description),
+            "source": str(entry.source),
+            "revision": str(entry.revision),
+            "requiredTools": list(entry.required_tools),
+            "resourceCount": len(entry.files),
+        }
+        for entry in snapshot.entries
+    ]
+    diagnostics = [
+        {
+            "name": str(item.get("name") or ""),
+            "source": str(item.get("source") or ""),
+            "reason": str(item.get("reason") or "skill_invalid"),
+            "fallback": str(item.get("fallback") or "ignored"),
+        }
+        for item in snapshot.diagnostics
+    ]
+    bundled = sum(entry["source"] == "bundled" for entry in entries)
+    managed = sum(entry["source"] == "managed" for entry in entries)
+    return {
+        "status": "degraded" if diagnostics else "ready",
+        "catalogRevision": str(snapshot.catalog_revision),
+        "summary": {
+            "total": len(entries),
+            "bundled": bundled,
+            "managed": managed,
+            "diagnostics": len(diagnostics),
+        },
+        "entries": entries,
+        "diagnostics": diagnostics,
+    }
 
 
 def _observe_request(runtime_metrics: Any, name: str, started_at: float, ok: bool) -> None:

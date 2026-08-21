@@ -70,16 +70,35 @@ function renderModule(item) {
 }
 
 function renderCapabilityCenter(state, abilities) {
-  const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length;
+  const hasSkills = abilities.skills.status !== "unavailable" || abilities.skills.entries.length > 0;
+  const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length + (hasSkills ? 1 : 0);
   if (!total) return "";
   return `<section class="abilities-panel capability-center glass-panel">
     <div class="abilities-panel-head"><div><p class="eyebrow">LOCAL CONNECTIONS</p><h3>本地服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
     <p class="capability-center-intro">常用状态一眼确认，地址、命令与工作流绑定按需展开；保存后会重新读取真实运行状态。</p>
+    ${hasSkills ? renderSkillLibrary(state, abilities.skills) : ""}
     <div class="capability-config-stack">
       ${abilities.providers.map((item) => renderProviderConfig(state, item)).join("")}
       ${abilities.mcpServers.map((item) => renderMcpConfig(state, item)).join("")}
       ${abilities.workflows.map((item) => renderWorkflowConfig(state, item)).join("")}
     </div>
+  </section>`;
+}
+
+function renderSkillLibrary(state, skills) {
+  const phase = actionPhase(state, "abilities.skills.openFolder");
+  const pending = ["pressed", "pending"].includes(phase);
+  const visibleEntries = skills.entries;
+  return `<section class="skill-library-card">
+    <div class="skill-library-head">
+      <span class="capability-summary-mark" aria-hidden="true">⌘</span>
+      <div><small>PROGRESSIVE SKILLS</small><strong>Skill 操作手册</strong><p>常驻上下文只显示名称与用途，任务匹配时模型才加载完整说明。</p></div>
+      <button class="action-button" type="button" data-action="abilities.skills.openFolder"${pending ? " disabled" : ""}><span>▱</span><b>${pending ? "打开中" : "用户 Skill 目录"}</b></button>
+    </div>
+    <div class="skill-library-stats"><span><strong>${skills.total}</strong><small>当前可用</small></span><span><strong>${skills.bundled}</strong><small>随版本内置</small></span><span><strong>${skills.managed}</strong><small>用户安装</small></span><em>目录版本 ${escapeHtml(skills.catalogRevision || "待同步")}</em></div>
+    ${visibleEntries.length ? `<div class="skill-library-list">${visibleEntries.map((item) => `<article><div><strong>${escapeHtml(item.name)}</strong><span class="skill-source is-${escapeHtml(item.source)}">${item.source === "managed" ? "用户" : "内置"}</span></div><p>${escapeHtml(item.description)}</p><small>${item.requiredTools.length ? `需要工具：${escapeHtml(item.requiredTools.join(" · "))}` : "无额外工具要求"}${item.resourceCount ? ` · ${item.resourceCount} 个附加资源` : ""}</small></article>`).join("")}</div>` : renderInlineEmpty("当前没有已安装的 Skill")}
+    ${skills.diagnostics.length ? `<div class="skill-diagnostics"><strong>热重载诊断</strong>${skills.diagnostics.map((item) => `<span>${escapeHtml(item.name || "未知 Skill")} · ${escapeHtml(item.fallback === "last_good" ? "继续使用上一有效版本" : "无效更新未加载")} · ${escapeHtml(item.reason)}</span>`).join("")}</div>` : ""}
+    <p class="skill-library-note">每个子目录需要包含合法的 SKILL.md。复制或修改后无需重启；下一次模型请求会自动读取新目录。Skill 不会获得额外权限。</p>
   </section>`;
 }
 

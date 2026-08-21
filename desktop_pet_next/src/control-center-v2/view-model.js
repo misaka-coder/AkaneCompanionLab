@@ -97,6 +97,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
       "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
       "abilities.approvalRequest.decide": { available: connected && abilities.approvalRequests.length > 0, reason: connected ? "当前没有待确认请求" : "桌宠尚未连接" },
+      "abilities.skills.openFolder": { available: true, reason: "" },
       "abilities.provider.config.save": capabilityActionAvailability(connected, abilities.providers),
       "abilities.provider.healthCheck": capabilityActionAvailability(connected, abilities.providers),
       "abilities.mcp.config.save": capabilityActionAvailability(connected, abilities.mcpServers),
@@ -616,6 +617,7 @@ function normalizeAbilitiesRuntime(value, connected) {
     safetyStatus: text(safety.status) || (connected ? "已生效" : "待连接"),
     safetyItems: normalizeLabelValueRows(safety.items, 8),
     approvalRequests: normalizeApprovalRequests(safety.approvalRequests),
+    skills: normalizeAbilitySkills(source.skills),
     providers: normalizeAbilityProviders(source.providers),
     mcpServers: normalizeAbilityMcpServers(source.mcpServers),
     workflows: normalizeAbilityWorkflows(source.workflows),
@@ -630,6 +632,36 @@ function normalizeAbilitiesRuntime(value, connected) {
         method: text(entry.method)
       };
     }).filter((item) => item.module || item.description)
+  };
+}
+
+function normalizeAbilitySkills(value) {
+  const source = asObject(value);
+  return {
+    status: text(source.status) || "unavailable",
+    catalogRevision: text(source.catalogRevision),
+    total: Number(source.total || 0),
+    bundled: Number(source.bundled || 0),
+    managed: Number(source.managed || 0),
+    entries: (Array.isArray(source.entries) ? source.entries : []).map((item) => {
+      const entry = asObject(item);
+      return {
+        name: text(entry.name),
+        description: text(entry.description),
+        source: text(entry.source) || "bundled",
+        revision: text(entry.revision),
+        requiredTools: (Array.isArray(entry.requiredTools) ? entry.requiredTools : []).map(text).filter(Boolean),
+        resourceCount: Number(entry.resourceCount || 0)
+      };
+    }).filter((item) => item.name && item.description),
+    diagnostics: (Array.isArray(source.diagnostics) ? source.diagnostics : []).map((item) => {
+      const entry = asObject(item);
+      return {
+        name: text(entry.name),
+        reason: text(entry.reason),
+        fallback: text(entry.fallback)
+      };
+    }).filter((item) => item.name || item.reason)
   };
 }
 
