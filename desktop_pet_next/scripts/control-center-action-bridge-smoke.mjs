@@ -670,6 +670,7 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     providerId: "provider.tts.gpt_sovits.local",
     endpoint: "http://127.0.0.1:9880/ui?token=secret",
     text: "测试本地声线",
+    emotion: "开心",
     voiceProfileId: "reimu_main",
     textLang: "zh",
     promptLang: "zh",
@@ -685,6 +686,9 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     speedFactor: 1,
     fragmentInterval: 0.3,
     textSplitMethod: "cut1",
+    emotionVoiceMap: {
+      happy: { aliases: ["开心"], refAudioPath: "C:\\voices\\happy.wav", promptText: "开心参考文本" }
+    },
     token: "must-not-send"
   });
   assert.equal(testResult.status, "tts-test-ready", "provider tts test should hit provider tts-test route");
@@ -717,6 +721,9 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     speedFactor: 1,
     fragmentInterval: 0.3,
     textSplitMethod: "cut1",
+    emotionVoiceMap: {
+      happy: { aliases: ["开心"], refAudioPath: "C:\\voices\\happy.wav", promptText: "开心参考文本" }
+    },
     token: "must-not-send"
   });
   assert.equal(voiceProfileResult.status, "saved", "provider voice profile save should hit provider voice profile route");
@@ -737,6 +744,7 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
     {
       endpoint: "http://127.0.0.1:9880/ui?token=secret",
       text: "测试本地声线",
+      emotion: "开心",
       voiceProfileId: "reimu_main",
       textLang: "zh",
       promptLang: "zh",
@@ -751,7 +759,10 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
       temperature: "0.6",
       speedFactor: "1",
       fragmentInterval: "0.3",
-      textSplitMethod: "cut1"
+      textSplitMethod: "cut1",
+      emotionVoiceMap: {
+        happy: { aliases: ["开心"], refAudioPath: "C:\\voices\\happy.wav", promptText: "开心参考文本" }
+      }
     },
     "provider tts test should only send endpoint/text/profile fields"
   );
@@ -784,7 +795,10 @@ const winRouter = createControlCenterActionRouter({ dataSource: winDataSource })
       temperature: "0.6",
       speedFactor: "1",
       fragmentInterval: "0.3",
-      textSplitMethod: "cut1"
+      textSplitMethod: "cut1",
+      emotionVoiceMap: {
+        happy: { aliases: ["开心"], refAudioPath: "C:\\voices\\happy.wav", promptText: "开心参考文本" }
+      }
     },
     "provider voice profile save should only send voice profile config fields"
   );

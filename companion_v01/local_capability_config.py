@@ -102,6 +102,8 @@ VOICE_MODEL_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg"}
 VOICE_MODEL_CONFIG_FILENAMES = ("tts_infer.yaml", "tts_infer.yml")
 VOICE_MODEL_GPT_EXTENSIONS = {".ckpt"}
 VOICE_MODEL_SOVITS_EXTENSIONS = {".pth"}
+EMOTION_VOICE_ID_RE = re.compile(r"^[\w.-]{1,80}$", re.UNICODE)
+EMOTION_VOICE_ALIAS_MAX_COUNT = 16
 MCP_SERVER_ID_MAX_LENGTH = 80
 MCP_SERVER_TEXT_MAX_LENGTH = 240
 MCP_SERVER_PATH_MAX_LENGTH = 500
@@ -828,7 +830,20 @@ def save_voice_profile_config(
     if not prompt_text_submitted and not normalized["promptText"]:
         normalized["promptText"] = str(existing_profile.get("promptText") or "")
     emotion_map_submitted = "emotionVoiceMap" in payload or "emotion_voice_map" in payload
-    if not emotion_map_submitted and not normalized["emotionVoiceMap"]:
+    if emotion_map_submitted:
+        merged_emotion_map, emotion_map_error = _merge_submitted_emotion_voice_map(
+            existing_profile.get("emotionVoiceMap"),
+            normalized["emotionVoiceMap"],
+        )
+        if emotion_map_error:
+            return {
+                "ok": False,
+                "status": "invalid_config",
+                "voiceProfileId": profile_id,
+                "reason": emotion_map_error,
+            }
+        normalized["emotionVoiceMap"] = merged_emotion_map
+    elif not normalized["emotionVoiceMap"]:
         normalized["emotionVoiceMap"] = dict(existing_profile.get("emotionVoiceMap") or {})
     optional_voice_fields = {
         "streamingMode": ("streamingMode", "streaming_mode"),
@@ -1780,6 +1795,7 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     ref_audio_path = str(config.get("refAudioPath") or "").strip()
     prompt_text = str(config.get("promptText") or "").strip()
     configured = bool(ref_audio_path and prompt_text)
+    emotion_samples = _public_emotion_voice_samples(config.get("emotionVoiceMap"))
     status = "ready" if enabled and configured else "missing_config" if enabled else "disabled"
     entry = {
         "id": safe_id,
@@ -1816,6 +1832,8 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
         "textSplitMethod": str(config.get("textSplitMethod") or "")[:40],
         "referenceAudioName": _safe_path_basename(ref_audio_path),
         "promptTextLength": len(prompt_text),
+        "emotionSampleCount": len(emotion_samples),
+        "emotionSamples": emotion_samples,
         "updatedAt": str(config.get("updatedAt") or "")[:80],
         "risk": "medium",
         "requiresConfirmation": False,
@@ -3357,15 +3375,11 @@ def _safe_emotion_voice_map(value: Any) -> dict[str, dict[str, Any]]:
         return {}
     result: dict[str, dict[str, Any]] = {}
     for raw_emotion_id, raw_entry in list(value.items())[:32]:
-        emotion_id = _safe_voice_profile_id(raw_emotion_id)
+        emotion_id = _safe_emotion_voice_id(raw_emotion_id)
         if not emotion_id:
             continue
         entry: dict[str, Any] = {}
-        if isinstance(raw_entry, str):
-            ref_audio_path = _safe_private_local_path(raw_entry)
-            if ref_audio_path:
-                entry["refAudioPath"] = ref_audio_path
-        elif isinstance(raw_entry, Mapping):
+        if isinstance(raw_entry, Mapping):
             ref_audio_path = _safe_private_local_path(
                 raw_entry.get("refAudioPath")
                 or raw_entry.get("ref_audio_path")
@@ -3386,9 +3400,83 @@ def _safe_emotion_voice_map(value: Any) -> dict[str, dict[str, Any]]:
             media_type = _safe_short_token(raw_entry.get("mediaType") or raw_entry.get("media_type"), default="")
             if media_type:
                 entry["mediaType"] = media_type
+            aliases = _safe_emotion_voice_aliases(
+                raw_entry.get("aliases")
+                or raw_entry.get("emotionAliases")
+                or raw_entry.get("emotion_aliases")
+            )
+            if aliases:
+                entry["aliases"] = aliases
         if entry:
             result[emotion_id] = entry
     return result
+
+
+def _safe_emotion_voice_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if EMOTION_VOICE_ID_RE.fullmatch(text) else ""
+
+
+def _safe_emotion_voice_aliases(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = re.split(r"[,，;；\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        alias = _safe_emotion_voice_id(raw_value)
+        folded = alias.casefold()
+        if not alias or folded in seen:
+            continue
+        seen.add(folded)
+        result.append(alias)
+        if len(result) >= EMOTION_VOICE_ALIAS_MAX_COUNT:
+            break
+    return result
+
+
+def _merge_submitted_emotion_voice_map(
+    existing_value: Any,
+    submitted_value: Any,
+) -> tuple[dict[str, dict[str, Any]], str]:
+    existing = _safe_emotion_voice_map(existing_value)
+    submitted = _safe_emotion_voice_map(submitted_value)
+    merged: dict[str, dict[str, Any]] = {}
+    for emotion_id, submitted_entry in submitted.items():
+        entry = dict(submitted_entry)
+        previous = existing.get(emotion_id) if isinstance(existing.get(emotion_id), Mapping) else {}
+        for key in ("refAudioPath", "promptText", "textLang", "promptLang", "mediaType"):
+            if not entry.get(key) and previous.get(key):
+                entry[key] = previous[key]
+        has_reference = bool(entry.get("refAudioPath"))
+        has_prompt = bool(entry.get("promptText"))
+        if has_reference != has_prompt:
+            return {}, "emotion_voice_reference_pair_required"
+        if not has_reference:
+            return {}, "emotion_voice_reference_required"
+        merged[emotion_id] = entry
+    return merged, ""
+
+
+def _public_emotion_voice_samples(value: Any) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for emotion_id, entry in _safe_emotion_voice_map(value).items():
+        ref_audio_path = str(entry.get("refAudioPath") or "")
+        prompt_text = str(entry.get("promptText") or "")
+        if not ref_audio_path or not prompt_text:
+            continue
+        samples.append(
+            {
+                "emotionId": emotion_id,
+                "aliases": list(entry.get("aliases") or []),
+                "referenceAudioName": _safe_path_basename(ref_audio_path),
+                "promptTextLength": len(prompt_text),
+            }
+        )
+    return samples
 
 
 def _safe_path_basename(value: Any) -> str:

@@ -73,6 +73,7 @@ root.addEventListener("click", (event) => {
     const payload = {
       providerId: voiceProfileActionButton.dataset.providerId || "",
       voiceProfileId: voiceProfileActionButton.dataset.voiceProfileId || "",
+      emotion: voiceProfileActionButton.dataset.emotion || "",
       characterPackId: store.getState().viewModel?.character?.packId || ""
     };
     if (operation === "test") void runVoiceProfileTest(payload);
@@ -346,6 +347,8 @@ function capabilityFormPayload(form, actionId) {
       }
       return { providerId, folderPath };
     }
+    const emotionVoiceMap = collectEmotionVoiceMap(form, data);
+    if (emotionVoiceMap === null) return null;
     return {
       providerId,
       voiceProfileId: String(data.get("voiceProfileId") || "").trim(),
@@ -364,10 +367,53 @@ function capabilityFormPayload(form, actionId) {
       temperature: String(data.get("temperature") || "").trim(),
       speedFactor: String(data.get("speedFactor") || "").trim(),
       fragmentInterval: String(data.get("fragmentInterval") || "").trim(),
-      textSplitMethod: String(data.get("textSplitMethod") || "").trim()
+      textSplitMethod: String(data.get("textSplitMethod") || "").trim(),
+      emotionVoiceMap
     };
   }
   return null;
+}
+
+function collectEmotionVoiceMap(form, data) {
+  const result = {};
+  for (const row of form.querySelectorAll("[data-emotion-sample-row]")) {
+    const index = String(row.dataset.emotionSampleRow || "").trim();
+    if (!index || data.get(`emotionRemove.${index}`) === "on") continue;
+    const emotionId = String(data.get(`emotionId.${index}`) || "").trim();
+    const aliases = String(data.get(`emotionAliases.${index}`) || "").split(/[,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
+    const refAudioPath = String(data.get(`emotionRefAudioPath.${index}`) || "").trim();
+    const promptText = String(data.get(`emotionPromptText.${index}`) || "").trim();
+    const configured = row.dataset.emotionConfigured === "true";
+    if (!emotionId && !aliases.length && !refAudioPath && !promptText) continue;
+    if (!emotionId) {
+      const input = row.querySelector('[name^="emotionId."]');
+      input?.setCustomValidity("请填写情绪标识。");
+      input?.reportValidity();
+      input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+      return null;
+    }
+    if (!configured && Boolean(refAudioPath) !== Boolean(promptText)) {
+      const fieldName = refAudioPath ? "emotionPromptText" : "emotionRefAudioPath";
+      const input = row.querySelector(`[name^="${fieldName}."]`);
+      input?.setCustomValidity("参考音频和对应文本必须成对填写。");
+      input?.reportValidity();
+      input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+      return null;
+    }
+    if (Object.hasOwn(result, emotionId)) {
+      const input = row.querySelector('[name^="emotionId."]');
+      input?.setCustomValidity("情绪标识不能重复；请改用匹配别名。");
+      input?.reportValidity();
+      input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+      return null;
+    }
+    result[emotionId] = {
+      aliases,
+      ...(refAudioPath ? { refAudioPath } : {}),
+      ...(promptText ? { promptText } : {})
+    };
+  }
+  return result;
 }
 
 async function runCapabilityFormAction(actionId, payload) {
@@ -415,7 +461,8 @@ function editVoiceProfile(providerId, voiceProfileId) {
       temperature: profile.temperature,
       speedFactor: profile.speedFactor,
       fragmentInterval: profile.fragmentInterval,
-      textSplitMethod: profile.textSplitMethod
+      textSplitMethod: profile.textSplitMethod,
+      emotionSamples: profile.emotionSamples
     },
     voiceProfileInspection: null,
     voiceProfileEditorOpen: true

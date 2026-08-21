@@ -26,10 +26,10 @@ from ..model_service_config import (
     probe_model_ids,
     redact_provider_error,
 )
-from .voice import (
+from ..tts_provider_runtime import (
     GPT_SOVITS_PROVIDER_ID,
-    _coerce_synthesized_audio,
-    _resolve_tts_runtime_provider,
+    resolve_tts_runtime_provider as _resolve_tts_runtime_provider,
+    synthesize_tts_resolution,
 )
 from ..runtime_settings import runtime_setting
 from ..turn_coordination import TurnCoordinator
@@ -901,10 +901,13 @@ def _resolve_qq_tts_profile_user_id(*, config_module: Any, context: Any, setting
     return raw_value
 
 
-def _voice_cache_key(*, text: str, provider: str, resolution: dict[str, Any]) -> str:
-    """Build a stable cache key from the synthesis inputs so identical text
-    reuses an existing file instead of resynthesising."""
-    raw = f"{text}\nprovider={provider}\nprofile={resolution.get('voiceProfileId', '')}"
+def _voice_cache_key(*, text: str, synthesis: Any) -> str:
+    """Name the delivered artifact from the effective synthesis inputs."""
+    raw = (
+        f"{text}\nprovider={synthesis.provider_id}\nprofile={synthesis.voice_profile_id}"
+        f"\nemotion={synthesis.emotion}\nemotion_voice={synthesis.emotion_voice_id}"
+        f"\nprofile_fingerprint={synthesis.profile_fingerprint}"
+    )
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -940,6 +943,7 @@ def _synthesize_qq_voice_file(
     tts_client: Any,
     text: str,
     context: Any,
+    emotion: str = "",
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     settings: Any = None,
 ) -> dict[str, Any]:
@@ -959,6 +963,9 @@ def _synthesize_qq_voice_file(
         "real_user_id": tts_profile_user_id,
         "profile_user_id": tts_profile_user_id,
         "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
+        "session_id": str(getattr(context, "session_id", "") or ""),
+        "client_mode": "qq",
+        "emotion": str(emotion or "").strip(),
     }
     resolution = _resolve_tts_runtime_provider(
         engine=engine,
@@ -982,33 +989,45 @@ def _synthesize_qq_voice_file(
             "tts_profile_user_id": tts_profile_user_id,
         }
     if active_provider == GPT_SOVITS_PROVIDER_ID:
-        synthesize_kwargs: dict[str, Any] = {
-            "voice_profile_id": str(resolution.get("voiceProfileId") or ""),
-        }
-        voice_profile = resolution.get("voiceProfile")
-        if isinstance(voice_profile, dict) and voice_profile:
-            synthesize_kwargs["profile"] = voice_profile
-        result = _run_async_safely(resolution["client"].synthesize(clean_text, **synthesize_kwargs))
-        audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/wav")
+        synthesis = _run_async_safely(
+            synthesize_tts_resolution(
+                resolution=resolution,
+                text=clean_text,
+                payload=payload,
+                default_media_type="audio/wav",
+            )
+        )
     elif tts_client is not None:
-        result = _run_async_safely(tts_client.synthesize(clean_text))
-        audio, media_type = _coerce_synthesized_audio(result, default_media_type="audio/mpeg")
+        synthesis = _run_async_safely(
+            synthesize_tts_resolution(
+                resolution={**resolution, "activeProviderId": "provider.tts.edge", "client": tts_client},
+                text=clean_text,
+                payload=payload,
+                default_media_type="audio/mpeg",
+            )
+        )
     else:
         return {"ok": False, "reason": "tts_unavailable", "resolution": resolution}
 
     cache_dir = data_dir / "qq_voice_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    ext = _media_type_extension(media_type)
-    cache_key = _voice_cache_key(text=clean_text, provider=active_provider, resolution=resolution)
+    ext = _media_type_extension(synthesis.media_type)
+    cache_key = _voice_cache_key(text=clean_text, synthesis=synthesis)
     path = cache_dir / f"{cache_key}.{ext}"
-    if not path.exists():
-        path.write_bytes(audio)
-        _prune_voice_cache(cache_dir, max_mb=50)
+    temp_path = cache_dir / f".{cache_key}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_bytes(synthesis.audio)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    _prune_voice_cache(cache_dir, max_mb=50)
     return {
         "ok": True,
         "path": str(path),
-        "media_type": media_type,
+        "media_type": synthesis.media_type,
         "provider": active_provider,
+        "emotion": synthesis.emotion,
+        "emotion_voice_id": synthesis.emotion_voice_id,
         "resolution_status": str(resolution.get("status") or ""),
         "tts_profile_user_id": tts_profile_user_id,
     }
@@ -1069,6 +1088,7 @@ def _send_qq_delivery(
                     tts_client=tts_client,
                     text=voice_text,
                     context=context,
+                    emotion=str(frame.get("emotion") or ""),
                     gpt_sovits_client_factory=gpt_sovits_client_factory,
                     settings=settings,
                 )

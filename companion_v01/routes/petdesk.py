@@ -21,12 +21,14 @@ from ..petdesk_bridge import (
     clean_text,
     serialize_petdesk_sse,
 )
-from .voice import (
+from ..tts_provider_runtime import (
     EDGE_TTS_PROVIDER_ID,
     GPT_SOVITS_PROVIDER_ID,
-    _invoke_tts_adapter,
+    resolve_tts_runtime_provider as _resolve_tts_runtime_provider,
+    synthesize_tts_resolution,
+)
+from .voice import (
     _resolve_provider_config_base_dir,
-    _resolve_tts_runtime_provider,
     _safe_tts_reason,
 )
 
@@ -287,14 +289,13 @@ def build_petdesk_router(
 
         if resolution.get("activeProviderId") == GPT_SOVITS_PROVIDER_ID:
             try:
-                audio, media_type = await _invoke_tts_adapter(
-                    provider_id=GPT_SOVITS_PROVIDER_ID,
-                    client=resolution["client"],
+                synthesized = await synthesize_tts_resolution(
+                    resolution=resolution,
                     text=text,
                     payload=payload,
-                    resolution=resolution,
                     default_media_type="audio/wav",
                 )
+                audio, media_type = synthesized.audio, synthesized.media_type
                 _observe("pet_tts", started_at=started_at, ok=True)
                 return _PetdeskSynthesizedAudio(audio=audio, media_type=media_type)
             except Exception as exc:
@@ -320,14 +321,13 @@ def build_petdesk_router(
             return None
 
         try:
-            audio, media_type = await _invoke_tts_adapter(
-                provider_id=EDGE_TTS_PROVIDER_ID,
-                client=tts_client,
+            synthesized = await synthesize_tts_resolution(
+                resolution={**resolution, "activeProviderId": EDGE_TTS_PROVIDER_ID, "client": tts_client},
                 text=text,
                 payload=payload,
-                resolution=resolution,
                 default_media_type="audio/mpeg",
             )
+            audio, media_type = synthesized.audio, synthesized.media_type
         except Exception as exc:
             _observe("pet_tts", started_at=started_at, ok=False)
             _log(

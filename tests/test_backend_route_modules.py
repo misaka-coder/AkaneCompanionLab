@@ -4143,8 +4143,6 @@ for line in sys.stdin:
                     "角色语音",
                     "reimu_main",
                     {
-                        "id": "reimu_main",
-                        "providerId": "provider.tts.gpt_sovits.local",
                         "textLang": "zh",
                         "promptLang": "zh",
                         "mediaType": "wav",
@@ -4235,8 +4233,6 @@ for line in sys.stdin:
                     "这是从角色 speech 字段拿来预览的一句台词。",
                     "dania",
                     {
-                        "id": "dania",
-                        "providerId": "provider.tts.gpt_sovits.local",
                         "textLang": "zh",
                         "promptLang": "zh",
                         "mediaType": "wav",

@@ -122,7 +122,8 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
                     "refAudioPath": r"C:\voices\base.wav",
                     "promptText": "base voice",
                     "emotionVoiceMap": {
-                        "joy": {
+                        "happy": {
+                            "aliases": ["开心", "高兴"],
                             "refAudioPath": r"C:\voices\joy.wav",
                             "promptText": "bright and cheerful",
                         },
@@ -137,11 +138,16 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
             )
 
         self.assertTrue(saved["ok"])
-        self.assertEqual(runtime["emotionVoiceMap"]["joy"]["refAudioPath"], r"C:\voices\joy.wav")
+        self.assertEqual(runtime["emotionVoiceMap"]["happy"]["refAudioPath"], r"C:\voices\joy.wav")
+        self.assertEqual(runtime["emotionVoiceMap"]["happy"]["aliases"], ["开心", "高兴"])
         public_text = json.dumps(saved["voiceProfile"], ensure_ascii=False).lower()
         self.assertNotIn(r"c:\voices", public_text)
         self.assertNotIn("token", public_text)
         self.assertNotIn("emotionVoiceMap", saved["voiceProfile"])
+        self.assertNotIn("emotionvoicemap", public_text)
+        self.assertEqual(saved["voiceProfile"]["emotionSampleCount"], 1)
+        self.assertEqual(saved["voiceProfile"]["emotionSamples"][0]["emotionId"], "happy")
+        self.assertEqual(saved["voiceProfile"]["emotionSamples"][0]["aliases"], ["开心", "高兴"])
 
     def test_tts_route_applies_emotion_voice_map_before_gpt_sovits_call(self) -> None:
         class FakeGptSovitsClient:
@@ -175,7 +181,8 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
                     "refAudioPath": r"C:\voices\base.wav",
                     "promptText": "base voice",
                     "emotionVoiceMap": {
-                        "joy": {
+                        "happy": {
+                            "aliases": ["开心", "高兴"],
                             "refAudioPath": r"C:\voices\joy.wav",
                             "promptText": "bright and cheerful",
                         }
@@ -201,7 +208,7 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
                     "text": "I am happy today",
                     "real_user_id": "master",
                     "voiceProfileId": "akane",
-                    "emotion": "joy",
+                    "emotion": "开心",
                 },
             )
 
@@ -211,6 +218,59 @@ class OpenAICompatTTSRouteTests(unittest.TestCase):
         self.assertEqual(gpt_client.calls[0][1], "akane")
         self.assertEqual(gpt_client.calls[0][2]["refAudioPath"], r"C:\voices\joy.wav")
         self.assertEqual(gpt_client.calls[0][2]["promptText"], "bright and cheerful")
+
+    def test_voice_profile_emotion_samples_preserve_private_pair_on_metadata_only_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="akane",
+                payload={
+                    "enabled": True,
+                    "refAudioPath": r"C:\voices\base.wav",
+                    "promptText": "base voice",
+                    "emotionVoiceMap": {
+                        "happy": {
+                            "aliases": ["开心"],
+                            "refAudioPath": r"C:\voices\happy.wav",
+                            "promptText": "happy voice",
+                        }
+                    },
+                },
+            )
+            second = save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="akane",
+                payload={
+                    "emotionVoiceMap": {
+                        "happy": {"aliases": ["开心", "高兴"]},
+                    }
+                },
+            )
+            runtime = get_voice_profile_runtime_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="akane",
+            )
+            invalid = save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="akane",
+                payload={
+                    "emotionVoiceMap": {
+                        "sad": {"refAudioPath": r"C:\voices\sad.wav"},
+                    }
+                },
+            )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(runtime["emotionVoiceMap"]["happy"]["refAudioPath"], r"C:\voices\happy.wav")
+        self.assertEqual(runtime["emotionVoiceMap"]["happy"]["promptText"], "happy voice")
+        self.assertEqual(runtime["emotionVoiceMap"]["happy"]["aliases"], ["开心", "高兴"])
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["reason"], "emotion_voice_reference_pair_required")
 
 
 if __name__ == "__main__":

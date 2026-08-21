@@ -895,7 +895,8 @@ function buildProviderActionBody(actionId, payload = {}) {
     const body = {
       ...(endpoint ? { endpoint } : {}),
       text: String(payload.text || payload.testText || "").trim(),
-      voiceProfileId: String(payload.voiceProfileId || payload.profileId || "").trim()
+      voiceProfileId: String(payload.voiceProfileId || payload.profileId || "").trim(),
+      ...(String(payload.emotion || "").trim() ? { emotion: String(payload.emotion).trim() } : {})
     };
     for (const [bodyKey, payloadKey] of [
       ["textLang", "textLang"],
@@ -915,6 +916,9 @@ function buildProviderActionBody(actionId, payload = {}) {
     ]) {
       const value = payload[payloadKey] === false ? "false" : String(payload[payloadKey] ?? "").trim();
       if (value) body[bodyKey] = value;
+    }
+    if (payload.emotionVoiceMap && typeof payload.emotionVoiceMap === "object" && !Array.isArray(payload.emotionVoiceMap)) {
+      body.emotionVoiceMap = payload.emotionVoiceMap;
     }
     return body;
   }
@@ -946,6 +950,9 @@ function buildProviderActionBody(actionId, payload = {}) {
     ]) {
       const value = payload[payloadKey] === false ? "false" : String(payload[payloadKey] ?? "").trim();
       if (value) body[bodyKey] = value;
+    }
+    if (payload.emotionVoiceMap && typeof payload.emotionVoiceMap === "object" && !Array.isArray(payload.emotionVoiceMap)) {
+      body.emotionVoiceMap = payload.emotionVoiceMap;
     }
     return {
       ...body
@@ -2510,8 +2517,24 @@ function normalizeVoiceProfileEntries(catalog) {
         textLang: stringValue(entry.textLang || "zh"),
         promptLang: stringValue(entry.promptLang || "zh"),
         mediaType: stringValue(entry.mediaType || "wav"),
+        parallelInfer: typeof entry.parallelInfer === "boolean" ? entry.parallelInfer : null,
+        splitBucket: typeof entry.splitBucket === "boolean" ? entry.splitBucket : null,
+        batchSize: optionalNumber(entry.batchSize),
+        topK: optionalNumber(entry.topK),
+        topP: optionalNumber(entry.topP),
+        temperature: optionalNumber(entry.temperature),
+        speedFactor: optionalNumber(entry.speedFactor),
+        fragmentInterval: optionalNumber(entry.fragmentInterval),
+        textSplitMethod: stringValue(entry.textSplitMethod),
         referenceAudioName: stringValue(entry.referenceAudioName),
         promptTextLength: positiveNumber(entry.promptTextLength),
+        emotionSampleCount: positiveNumber(entry.emotionSampleCount),
+        emotionSamples: asArray(entry.emotionSamples).map((sample) => ({
+          emotionId: stringValue(sample?.emotionId),
+          aliases: asArray(sample?.aliases).map(stringValue).filter(Boolean),
+          referenceAudioName: stringValue(sample?.referenceAudioName),
+          promptTextLength: positiveNumber(sample?.promptTextLength)
+        })).filter((sample) => sample.emotionId),
         updatedAt: stringValue(entry.updatedAt)
       };
     })
@@ -3261,6 +3284,12 @@ function safeDisplayBasename(value) {
 function positiveNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function numberOrFallback(...values) {

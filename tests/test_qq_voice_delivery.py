@@ -992,6 +992,13 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                         "refAudioPath": str(Path(temp_dir) / "reference.wav"),
                         "promptText": "参考文本",
                         "promptLang": "zh",
+                        "emotionVoiceMap": {
+                            "happy": {
+                                "aliases": ["开心", "高兴"],
+                                "refAudioPath": str(Path(temp_dir) / "happy.wav"),
+                                "promptText": "开心参考文本",
+                            }
+                        },
                     },
                 )["ok"]
             )
@@ -1011,9 +1018,11 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 tts_client=FakeTTSClient(),
                 text="真实 QQ GPT-SoVITS 测试",
                 context=SimpleNamespace(
+                    session_id="qq_group_shared_123456",
                     profile_user_id="qq_group_shared_123456",
                     character_pack_id="reimu",
                 ),
+                emotion="开心",
                 gpt_sovits_client_factory=lambda _endpoint: client,
             )
 
@@ -1021,7 +1030,77 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["provider"], "provider.tts.gpt_sovits.local")
         self.assertEqual(result["media_type"], "audio/wav")
         self.assertEqual(client.kwargs["voice_profile_id"], "dania")
-        self.assertEqual(client.kwargs["profile"]["promptText"], "参考文本")
+        self.assertEqual(client.kwargs["profile"]["refAudioPath"], str(Path(temp_dir) / "happy.wav"))
+        self.assertEqual(client.kwargs["profile"]["promptText"], "开心参考文本")
+        self.assertEqual(result["emotion"], "开心")
+        self.assertEqual(result["emotion_voice_id"], "happy")
+
+    def test_same_qq_text_with_different_emotions_uses_distinct_cache_artifacts(self) -> None:
+        class FakeGptSovitsClient:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            async def synthesize(self, text: str, **kwargs):
+                self.calls.append({"text": text, **kwargs})
+                ref_name = Path(kwargs["profile"]["refAudioPath"]).name
+                return SimpleNamespace(audio=ref_name.encode(), media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bot_data_dir = Path(temp_dir) / "bot"
+            capability_dir = bot_data_dir / "users_data"
+            save_provider_config(
+                base_dir=capability_dir,
+                profile_user_id="master",
+                provider_id="provider.tts.gpt_sovits.local",
+                payload={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+            )
+            save_voice_profile_config(
+                base_dir=capability_dir,
+                profile_user_id="master",
+                voice_profile_id="dania",
+                payload={
+                    "enabled": True,
+                    "providerId": "provider.tts.gpt_sovits.local",
+                    "refAudioPath": str(Path(temp_dir) / "neutral.wav"),
+                    "promptText": "中性参考文本",
+                    "emotionVoiceMap": {
+                        "happy": {
+                            "aliases": ["开心"],
+                            "refAudioPath": str(Path(temp_dir) / "happy.wav"),
+                            "promptText": "开心参考文本",
+                        }
+                    },
+                },
+            )
+            client = FakeGptSovitsClient()
+            engine = SimpleNamespace(
+                capability_config_base_dir=capability_dir,
+                desktop_pet_character_resources=SimpleNamespace(
+                    build_character_voice_preference=lambda _pack_id: {
+                        "provider": "gpt_sovits",
+                        "profileId": "dania",
+                    }
+                ),
+            )
+            kwargs = {
+                "engine": engine,
+                "config_module": SimpleNamespace(DATA_DIR=bot_data_dir, WEB_OWNER_PROFILE_USER_ID="master"),
+                "tts_client": FakeTTSClient(),
+                "text": "同一句话",
+                "context": SimpleNamespace(
+                    session_id="qq_group_shared_123456",
+                    profile_user_id="qq_group_shared_123456",
+                    character_pack_id="reimu",
+                ),
+                "gpt_sovits_client_factory": lambda _endpoint: client,
+            }
+            neutral = _synthesize_qq_voice_file(**kwargs, emotion="正常")
+            happy = _synthesize_qq_voice_file(**kwargs, emotion="开心")
+
+            self.assertNotEqual(neutral["path"], happy["path"])
+            self.assertEqual(Path(neutral["path"]).read_bytes(), b"neutral.wav")
+            self.assertEqual(Path(happy["path"]).read_bytes(), b"happy.wav")
+            self.assertEqual([Path(call["profile"]["refAudioPath"]).name for call in client.calls], ["neutral.wav", "happy.wav"])
 
     def test_group_voice_does_not_silently_replace_gpt_sovits_with_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

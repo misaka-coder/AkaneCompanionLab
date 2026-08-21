@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
-from ..capability_adapters import CapabilityResult, InvocationContext, OpenAICompatASRAdapter, OpenAICompatTTSAdapter
+from ..capability_adapters import InvocationContext, OpenAICompatASRAdapter
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
 from ..local_capability_config import (
     CONFIGURABLE_PROVIDER_BY_ID,
@@ -24,13 +24,13 @@ from ..tts_provider_runtime import (
     GPT_SOVITS_PROVIDER_ID,
     default_gpt_sovits_client_factory as _default_gpt_sovits_client_factory,
     resolve_tts_runtime_provider as _resolve_tts_runtime_provider,
+    synthesize_tts_resolution,
 )
 from ..voice_runtime.realtime_transport import (
     VoiceRealtimeCallFactory,
     VoiceRealtimeCoordinatorFactory,
     handle_voice_realtime_websocket,
 )
-from services.tts_client import SynthesizedAudio
 
 
 LogEvent = Callable[..., None]
@@ -258,14 +258,13 @@ def build_voice_router(
 
         if resolution["activeProviderId"] == GPT_SOVITS_PROVIDER_ID:
             try:
-                audio, media_type = await _invoke_tts_adapter(
-                    provider_id=GPT_SOVITS_PROVIDER_ID,
-                    client=resolution["client"],
+                synthesized = await synthesize_tts_resolution(
+                    resolution=resolution,
                     text=text,
                     payload=payload,
-                    resolution=resolution,
                     default_media_type="audio/wav",
                 )
+                audio, media_type = synthesized.audio, synthesized.media_type
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request("tts", duration_ms=duration_ms, ok=True)
                 log_event(
@@ -319,14 +318,13 @@ def build_voice_router(
             )
 
         try:
-            audio, media_type = await _invoke_tts_adapter(
-                provider_id=EDGE_TTS_PROVIDER_ID,
-                client=tts_client,
+            synthesized = await synthesize_tts_resolution(
+                resolution={**resolution, "activeProviderId": EDGE_TTS_PROVIDER_ID, "client": tts_client},
                 text=text,
                 payload=payload,
-                resolution=resolution,
                 default_media_type="audio/mpeg",
             )
+            audio, media_type = synthesized.audio, synthesized.media_type
         except ValueError as exc:
             runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
             log_event("tts_error", message=str(exc), text_length=len(text))
@@ -409,44 +407,6 @@ async def _invoke_asr_adapter(
     if isinstance(duration, (int, float)) and duration >= 0:
         payload["duration_seconds"] = duration
     return payload
-
-
-async def _invoke_tts_adapter(
-    *,
-    provider_id: str,
-    client: Any,
-    text: str,
-    payload: Mapping[str, Any],
-    resolution: Mapping[str, Any],
-    default_media_type: str,
-) -> tuple[bytes, str]:
-    adapter = OpenAICompatTTSAdapter(
-        provider_id=provider_id,
-        client=client,
-        default_media_type=default_media_type,
-        display_name="Akane TTS",
-    )
-    args: dict[str, Any] = {
-        "text": text,
-        "emotion": _resolve_tts_emotion(payload),
-    }
-    if provider_id == GPT_SOVITS_PROVIDER_ID:
-        voice_profile_id = str(resolution.get("voiceProfileId") or "").strip()
-        if voice_profile_id:
-            args["voice_profile_id"] = voice_profile_id
-        voice_profile = resolution.get("voiceProfile")
-        if isinstance(voice_profile, Mapping) and voice_profile:
-            args["profile"] = voice_profile
-    result = await adapter.invoke(
-        "tts.synthesize",
-        args,
-        InvocationContext(
-            profile_user_id=str(resolution.get("profileUserId") or ""),
-            session_id=str(payload.get("session_id") or payload.get("user_id") or ""),
-            client_mode=str(payload.get("client_mode") or payload.get("client") or ""),
-        ),
-    )
-    return _coerce_tts_capability_result(result, default_media_type=default_media_type)
 
 
 OPENAI_COMPAT_ASR_PROVIDER_ID = "provider.asr.openai_compat.local"
@@ -548,16 +508,6 @@ def _safe_voice_profile_id(value: Any) -> str:
     return text
 
 
-def _resolve_tts_emotion(payload: Mapping[str, Any]) -> str:
-    return _safe_voice_profile_id(
-        payload.get("emotion")
-        or payload.get("currentEmotion")
-        or payload.get("current_emotion")
-        or payload.get("finalEmotion")
-        or payload.get("final_emotion")
-    )
-
-
 def _provider_unavailable_reason(status: str) -> str:
     if status == "missing_config":
         return "requested_provider_missing_config"
@@ -570,32 +520,6 @@ def _provider_unavailable_reason(status: str) -> str:
     if status:
         return "requested_provider_not_ready"
     return "requested_provider_unknown"
-
-
-def _coerce_tts_capability_result(result: CapabilityResult, *, default_media_type: str) -> tuple[bytes, str]:
-    if result.is_error:
-        raise RuntimeError(result.reason or result.status or "tts_capability_error")
-    content = result.content if isinstance(result.content, Mapping) else {}
-    audio = bytes(content.get("audio") or b"")
-    media_type = str(content.get("mediaType") or content.get("media_type") or default_media_type)
-    if not audio:
-        raise RuntimeError("tts returned empty audio")
-    return audio, _safe_media_type(media_type, default=default_media_type)
-
-
-def _coerce_synthesized_audio(result: Any, *, default_media_type: str) -> tuple[bytes, str]:
-    if isinstance(result, bytes):
-        audio = result
-        media_type = default_media_type
-    elif isinstance(result, SynthesizedAudio):
-        audio = result.audio
-        media_type = result.media_type or default_media_type
-    else:
-        audio = bytes(getattr(result, "audio", b"") or b"")
-        media_type = str(getattr(result, "media_type", "") or default_media_type)
-    if not audio:
-        raise RuntimeError("tts returned empty audio")
-    return audio, _safe_media_type(media_type, default=default_media_type)
 
 
 def _safe_media_type(value: Any, *, default: str) -> str:

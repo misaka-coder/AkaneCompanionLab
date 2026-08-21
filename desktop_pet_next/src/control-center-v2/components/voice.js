@@ -139,7 +139,7 @@ function renderVoiceProfileCenter(state, vm) {
 
 function renderVoiceProfileCard(state, vm, item, boundProfileId) {
   const bound = item.voiceProfileId === boundProfileId;
-  const meta = [item.referenceAudioName, item.textLang && `${item.textLang}/${item.promptLang}`, item.mediaType.toUpperCase()].filter(Boolean);
+  const meta = [item.referenceAudioName, item.emotionSampleCount ? `${item.emotionSampleCount} 个情绪样本` : "", item.textLang && `${item.textLang}/${item.promptLang}`, item.mediaType.toUpperCase()].filter(Boolean);
   return `<article class="voice-profile-card glass-panel${bound ? " is-bound" : ""}">
     <div class="voice-profile-card-head"><span><small>${escapeHtml(item.provider.title)}</small><strong>${escapeHtml(item.name)}</strong></span><em class="is-${escapeHtml(item.statusTone)}">${escapeHtml(bound ? "当前绑定" : item.statusLabel)}</em></div>
     <p>${escapeHtml(meta.join(" · ") || item.reason || "声线资料等待同步")}</p>
@@ -155,6 +155,7 @@ function renderVoiceProfileEditor(state, vm, provider, draft) {
   const selectedId = String(draft.voiceProfileId || "").trim();
   const existing = provider.voiceProfiles.find((item) => item.voiceProfileId === selectedId);
   const enabled = draft.enabled ?? existing?.enabled ?? true;
+  const emotionSamples = Array.isArray(draft.emotionSamples) ? draft.emotionSamples : (existing?.emotionSamples || []);
   return `<details class="voice-profile-editor glass-panel" data-capability-key="voice-profile:editor"${state.voiceProfileEditorOpen ? " open" : ""}>
     <summary><span><small>低频配置</small><strong>${escapeHtml(selectedId ? `调整 ${draft.displayName || existing?.name || selectedId}` : "添加声线档案")}</strong></span><em>展开配置⌄</em></summary>
     <form data-capability-form="voice-profile" data-provider-id="${escapeHtml(provider.id)}">
@@ -188,12 +189,36 @@ function renderVoiceProfileEditor(state, vm, provider, draft) {
           <label><span>分桶处理</span><select name="splitBucket">${booleanSettingOptions(profileValue(draft, existing, "splitBucket"))}</select></label>
         </div>
       </details>
+      <details class="voice-emotion-settings">
+        <summary><span>情绪参考音频</span><small>${escapeHtml(emotionSamples.length ? `已配置 ${emotionSamples.length} 条` : "可选配置")}</small></summary>
+        <div class="voice-emotion-settings-body">
+          <p>模型输出的情绪会按标识或别名选择参考音频；音频与对应文本必须成对保存。未命中时安全回到基础参考。</p>
+          <div class="voice-emotion-sample-list">
+            ${emotionSamples.map((sample, index) => renderEmotionSampleRow(state, vm, provider.id, selectedId, sample, String(index), true)).join("")}
+            ${renderEmotionSampleRow(state, vm, provider.id, selectedId, {}, "new", false)}
+          </div>
+        </div>
+      </details>
       <div class="voice-profile-editor-actions">
         ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.save", "保存档案", "✓", "primary")}
         <small>保存只证明配置已写入；请再试听，确认服务和音频链路真实可用后再绑定。</small>
       </div>
     </form>
   </details>`;
+}
+
+function renderEmotionSampleRow(state, vm, providerId, profileId, sample, index, configured) {
+  const aliases = Array.isArray(sample.aliases) ? sample.aliases.join("，") : "";
+  return `<fieldset class="voice-emotion-sample" data-emotion-sample-row="${escapeHtml(index)}" data-emotion-configured="${configured ? "true" : "false"}">
+    <legend>${escapeHtml(configured ? sample.emotionId : "新增情绪样本")}</legend>
+    <div class="voice-profile-form-grid">
+      <label><span>情绪标识</span><input type="text" name="emotionId.${escapeHtml(index)}" value="${escapeHtml(sample.emotionId || "")}" maxlength="80" placeholder="happy 或 开心" ${configured ? "readonly" : ""}></label>
+      <label><span>匹配别名</span><input type="text" name="emotionAliases.${escapeHtml(index)}" value="${escapeHtml(aliases)}" maxlength="240" placeholder="开心，高兴，happy"></label>
+      <label class="is-wide"><span>参考音频</span><input type="text" name="emotionRefAudioPath.${escapeHtml(index)}" value="" placeholder="${escapeHtml(configured && sample.referenceAudioName ? `已保存 ${sample.referenceAudioName}；留空保留` : "本机参考音频路径")}"></label>
+      <label class="is-wide"><span>对应文本</span><textarea name="emotionPromptText.${escapeHtml(index)}" rows="2" maxlength="300" placeholder="${escapeHtml(configured && sample.promptTextLength ? `已保存 ${sample.promptTextLength} 字；留空保留` : "必须与这段参考音频逐字一致")}"></textarea></label>
+      ${configured ? `<div class="voice-emotion-row-actions">${renderProfileActionButton(state, vm, "abilities.provider.ttsTest", "试听这条", { action: "test", providerId, voiceProfileId: profileId, emotion: sample.emotionId })}<label class="voice-emotion-remove"><input type="checkbox" name="emotionRemove.${escapeHtml(index)}"><span>删除这条情绪样本</span></label></div>` : ""}
+    </div>
+  </fieldset>`;
 }
 
 function renderInspectionSummary(inspection) {
@@ -232,7 +257,7 @@ function renderProfileActionButton(state, vm, actionId, label, options = {}) {
   const actionState = state.actionStates[actionId];
   const pending = ["pressed", "pending"].includes(actionState?.phase);
   const disabled = options.disabled || !action.available || pending;
-  return `<button class="action-button is-${escapeHtml(options.tone || "soft")}${pending ? " is-pending" : ""}" type="button" data-voice-profile-action="${escapeHtml(options.action || "")}" data-provider-id="${escapeHtml(options.providerId || "")}" data-voice-profile-id="${escapeHtml(options.voiceProfileId || "")}" title="${escapeHtml(action.available ? label : action.reason)}" ${disabled ? "disabled" : ""}><span>${options.action === "test" ? "▶" : options.action === "clear" ? "×" : "＋"}</span><b>${escapeHtml(pending ? "处理中…" : actionState?.phase === "confirmed" ? actionState.label : label)}</b></button>`;
+  return `<button class="action-button is-${escapeHtml(options.tone || "soft")}${pending ? " is-pending" : ""}" type="button" data-voice-profile-action="${escapeHtml(options.action || "")}" data-provider-id="${escapeHtml(options.providerId || "")}" data-voice-profile-id="${escapeHtml(options.voiceProfileId || "")}" data-emotion="${escapeHtml(options.emotion || "")}" title="${escapeHtml(action.available ? label : action.reason)}" ${disabled ? "disabled" : ""}><span>${options.action === "test" ? "▶" : options.action === "clear" ? "×" : "＋"}</span><b>${escapeHtml(pending ? "处理中…" : actionState?.phase === "confirmed" ? actionState.label : label)}</b></button>`;
 }
 
 function renderProfileSubmitButton(state, vm, actionId, label, icon, tone = "soft") {

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Mapping
+from dataclasses import dataclass
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
+from capcore_adapter_speech import safe_emotion_id
 from services.tts_client import GptSovitsTTSClient
+
+from .capability_adapters import InvocationContext, OpenAICompatTTSAdapter
 
 from .local_capability_config import (
     CONFIGURABLE_PROVIDER_BY_ID,
@@ -19,6 +23,74 @@ from .runtime_settings import runtime_setting
 GPT_SOVITS_PROVIDER_ID = "provider.tts.gpt_sovits.local"
 EDGE_TTS_PROVIDER_ID = "provider.tts.edge"
 TEXT_ONLY_PROVIDER_ID = "provider.voice.text_only"
+
+
+@dataclass(frozen=True)
+class SynthesizedTTSResult:
+    audio: bytes
+    media_type: str
+    provider_id: str
+    voice_profile_id: str
+    emotion: str
+    emotion_voice_id: str
+    profile_fingerprint: str
+
+
+async def synthesize_tts_resolution(
+    *,
+    resolution: Mapping[str, Any],
+    text: str,
+    payload: Mapping[str, Any],
+    default_media_type: str,
+) -> SynthesizedTTSResult:
+    """Invoke one resolved provider through the package-owned TTS adapter."""
+
+    provider_id = str(resolution.get("activeProviderId") or "").strip()
+    client = resolution.get("client")
+    if not provider_id or client is None:
+        raise RuntimeError("tts_client_unavailable")
+
+    adapter = OpenAICompatTTSAdapter(
+        provider_id=provider_id,
+        client=client,
+        default_media_type=default_media_type,
+        display_name="Akane TTS",
+    )
+    args: dict[str, Any] = {
+        "text": str(text or "").strip(),
+        "emotion": _resolve_tts_emotion(payload),
+    }
+    if provider_id == GPT_SOVITS_PROVIDER_ID:
+        voice_profile_id = str(resolution.get("voiceProfileId") or "").strip()
+        if voice_profile_id:
+            args["voice_profile_id"] = voice_profile_id
+        voice_profile = resolution.get("voiceProfile")
+        if isinstance(voice_profile, Mapping) and voice_profile:
+            args["profile"] = voice_profile
+
+    result = await adapter.invoke(
+        "tts.synthesize",
+        args,
+        InvocationContext(
+            profile_user_id=str(resolution.get("profileUserId") or ""),
+            session_id=str(payload.get("session_id") or payload.get("user_id") or ""),
+            client_mode=str(payload.get("client_mode") or payload.get("client") or ""),
+        ),
+    )
+    content = result.content if isinstance(result.content, Mapping) else {}
+    audio_value = content.get("audio")
+    audio = bytes(audio_value) if isinstance(audio_value, (bytes, bytearray, memoryview)) else b""
+    if result.is_error or not audio:
+        raise RuntimeError(str(result.reason or result.status or "tts_returned_empty_audio"))
+    return SynthesizedTTSResult(
+        audio=audio,
+        media_type=str(content.get("mediaType") or default_media_type),
+        provider_id=provider_id,
+        voice_profile_id=str(content.get("voiceProfileId") or ""),
+        emotion=str(content.get("emotion") or ""),
+        emotion_voice_id=str(content.get("emotionVoiceId") or ""),
+        profile_fingerprint=str(content.get("profileFingerprint") or ""),
+    )
 
 
 class ResolvedTTSClient:
@@ -55,6 +127,16 @@ class ResolvedTTSClient:
         if inspect.isawaitable(result):
             return await result
         return result
+
+
+def _resolve_tts_emotion(payload: Mapping[str, Any]) -> str:
+    return safe_emotion_id(
+        payload.get("emotion")
+        or payload.get("currentEmotion")
+        or payload.get("current_emotion")
+        or payload.get("finalEmotion")
+        or payload.get("final_emotion")
+    )
 
 
 def resolve_tts_runtime_provider(
@@ -455,8 +537,10 @@ __all__ = [
     "EDGE_TTS_PROVIDER_ID",
     "GPT_SOVITS_PROVIDER_ID",
     "ResolvedTTSClient",
+    "SynthesizedTTSResult",
     "TEXT_ONLY_PROVIDER_ID",
     "default_gpt_sovits_client_factory",
     "resolve_character_tts_client",
     "resolve_tts_runtime_provider",
+    "synthesize_tts_resolution",
 ]

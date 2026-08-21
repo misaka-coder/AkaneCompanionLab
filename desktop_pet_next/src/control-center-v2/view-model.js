@@ -832,6 +832,16 @@ function normalizeAbilityVoiceProfile(value) {
     textSplitMethod: text(entry.textSplitMethod),
     referenceAudioName: text(entry.referenceAudioName),
     promptTextLength: Math.max(0, Math.round(finiteNumber(entry.promptTextLength, 0))),
+    emotionSampleCount: Math.max(0, Math.round(finiteNumber(entry.emotionSampleCount, 0))),
+    emotionSamples: (Array.isArray(entry.emotionSamples) ? entry.emotionSamples : []).map((sample) => {
+      const item = asObject(sample);
+      return {
+        emotionId: text(item.emotionId),
+        aliases: (Array.isArray(item.aliases) ? item.aliases : []).map(text).filter(Boolean),
+        referenceAudioName: text(item.referenceAudioName),
+        promptTextLength: Math.max(0, Math.round(finiteNumber(item.promptTextLength, 0)))
+      };
+    }).filter((sample) => sample.emotionId),
     updatedAt: text(entry.updatedAt)
   };
 }

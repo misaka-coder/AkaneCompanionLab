@@ -148,7 +148,14 @@ const rawSnapshot = {
         fragmentInterval: 0.3,
         textSplitMethod: "cut1",
         referenceAudioName: "reimu_ref.wav",
-        promptTextLength: 12
+        promptTextLength: 12,
+        emotionSampleCount: 1,
+        emotionSamples: [{
+          emotionId: "happy",
+          aliases: ["开心", "高兴"],
+          referenceAudioName: "reimu_happy.wav",
+          promptTextLength: 9
+        }]
       }]
     }],
     mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
@@ -300,6 +307,8 @@ assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].voiceProfileId, "
 assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].topK, 8);
 assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].topP, 0.85);
 assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].temperature, 0.6);
+assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].emotionSampleCount, 1);
+assert.deepEqual(viewModel.abilities.providers[0].voiceProfiles[0].emotionSamples[0].aliases, ["开心", "高兴"]);
 assert.equal(viewModel.character.voice.profileId, "reimu_main");
 assert.equal(viewModel.actions["abilities.provider.ttsTest"].available, true);
 assert.equal(viewModel.actions["abilities.provider.voiceProfile.assignToCurrentCharacter"].available, true);
@@ -744,6 +753,9 @@ assert.match(voiceHtml, /高级推理参数/);
 assert.match(voiceHtml, /name="topK"/);
 assert.match(voiceHtml, /name="topP"/);
 assert.match(voiceHtml, /权重不会自动切换/);
+assert.match(voiceHtml, /情绪参考音频/);
+assert.match(voiceHtml, /emotionId\.new/);
+assert.match(voiceHtml, /1 个情绪样本/);
 assert.doesNotMatch(voiceHtml, /C:\\voices\\reimu_ref\.wav/);
 assert.doesNotMatch(voiceHtml, /portrait|hero-image|character-preview/);
 

@@ -26,6 +26,7 @@ from ..local_capability_config import (
     list_provider_configs,
     list_voice_profile_configs,
     load_capability_config,
+    normalize_voice_profile_config_payload,
     preflight_workflow_execution,
     save_workflow_file,
     save_workflow_config,
@@ -52,6 +53,7 @@ from ..local_capability_catalog import (
     probe_known_local_services,
 )
 from ..runtime_settings import runtime_setting
+from ..tts_provider_runtime import synthesize_tts_resolution
 
 
 LogEvent = Callable[..., None]
@@ -1145,7 +1147,18 @@ async def _run_provider_tts_test(
                     or ""
                 ),
             )
-            result = await client.synthesize(text, voice_profile_id=voice_profile_id, profile=voice_profile)
+            result = await synthesize_tts_resolution(
+                resolution={
+                    "activeProviderId": GPT_SOVITS_PROVIDER_ID,
+                    "client": client,
+                    "voiceProfileId": voice_profile_id,
+                    "voiceProfile": voice_profile,
+                    "profileUserId": "",
+                },
+                text=text,
+                payload=payload,
+                default_media_type="audio/wav",
+            )
         audio, media_type = _coerce_provider_tts_test_audio(result)
     except ValueError:
         return {
@@ -1257,6 +1270,14 @@ def _provider_tts_test_profile_payload(payload: Mapping[str, Any]) -> dict[str, 
         profile["refAudioPath"] = ref_audio_path
     if prompt_text:
         profile["promptText"] = prompt_text
+    raw_emotion_map = payload.get("emotionVoiceMap") or payload.get("emotion_voice_map")
+    if isinstance(raw_emotion_map, Mapping):
+        normalized = normalize_voice_profile_config_payload(
+            str(payload.get("voiceProfileId") or "preview"),
+            {"emotionVoiceMap": raw_emotion_map},
+        )
+        if normalized.get("emotionVoiceMap"):
+            profile["emotionVoiceMap"] = normalized["emotionVoiceMap"]
     streaming_mode = _safe_optional_bool(payload.get("streamingMode") if "streamingMode" in payload else payload.get("streaming_mode"))
     if streaming_mode is not None:
         profile["streamingMode"] = streaming_mode
