@@ -95,6 +95,7 @@ const screenshotNames = [
   "control-center-abilities.png",
   "control-center-system.png",
   "control-center-overview-mobile.png",
+  "control-center-chat-mobile.png",
 ];
 
 let screenshotCount = 0;
@@ -135,6 +136,7 @@ if (puppeteer) {
       ["control-center-abilities.png", "abilities", { width: 1440, height: 900 }],
       ["control-center-system.png", "system", { width: 1440, height: 900 }],
       ["control-center-overview-mobile.png", "overview", { width: 760, height: 900 }],
+      ["control-center-chat-mobile.png", "chat", { width: 390, height: 844 }],
     ];
 
     for (const [name, navId, viewport] of pageNavMap) {
@@ -151,6 +153,63 @@ if (puppeteer) {
       await pages.screenshot({ path: outPath, fullPage: false });
       screenshotPaths.push(outPath);
       screenshotCount += 1;
+    }
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
+      await pages.setViewport(viewport);
+      await pages.goto(`${baseUrl}/control-center-lab.html?page=chat&source=mock`, { waitUntil: "networkidle0", timeout: 15000 });
+      const geometry = await pages.evaluate(() => {
+        const shell = document.querySelector(".ccv2-shell");
+        const page = document.querySelector(".ccv2-scroll.is-chat");
+        // The browser smoke runs without a backend. Mount the minimum production
+        // chat structure here so layout ownership is tested without shipping demo data.
+        page.innerHTML = `
+          <section class="ccv2-chat">
+            <aside class="chat-presence glass-panel"></aside>
+            <section class="chat-workspace glass-panel">
+              <header class="chat-header"><h2>Layout fixture</h2></header>
+              <div class="chat-message-viewport"><div class="chat-message-list"></div></div>
+              <form class="chat-composer"><div class="composer-input-wrap"><textarea></textarea></div><button class="composer-send">Send</button></form>
+            </section>
+          </section>`;
+        const workspace = document.querySelector(".chat-workspace");
+        const header = document.querySelector(".chat-header");
+        const messages = document.querySelector(".chat-message-list");
+        const messageViewport = document.querySelector(".chat-message-viewport");
+        const composer = document.querySelector(".chat-composer");
+        for (let index = 0; index < 48; index += 1) {
+          const message = document.createElement("article");
+          message.className = "chat-message is-assistant";
+          message.innerHTML = `<div class="message-avatar is-fallback">A</div><div class="message-content"><p>Long conversation layout fixture ${index}</p></div>`;
+          messages.append(message);
+        }
+        return {
+          viewportHeight: window.innerHeight,
+          documentHeight: document.documentElement.scrollHeight,
+          bodyOverflowY: getComputedStyle(document.body).overflowY,
+          shellHeight: shell?.getBoundingClientRect().height || 0,
+          pageOverflowY: page ? getComputedStyle(page).overflowY : "missing",
+          messageOverflowY: messageViewport ? getComputedStyle(messageViewport).overflowY : "missing",
+          messageClientHeight: messageViewport?.clientHeight || 0,
+          messageScrollHeight: messageViewport?.scrollHeight || 0,
+          workspaceTop: workspace?.getBoundingClientRect().top || 0,
+          workspaceBottom: workspace?.getBoundingClientRect().bottom || 0,
+          headerTop: header?.getBoundingClientRect().top || 0,
+          composerBottom: composer?.getBoundingClientRect().bottom || 0,
+          railRight: document.querySelector(".ccv2-rail")?.getBoundingClientRect().right || 0,
+          actionsRight: document.querySelector(".topbar-actions")?.getBoundingClientRect().right || 0,
+        };
+      });
+      assert.ok(Math.abs(geometry.shellHeight - geometry.viewportHeight) <= 1, `UX: shell should stay viewport-bound at ${viewport.width}px`);
+      assert.ok(geometry.documentHeight <= geometry.viewportHeight + 1, `UX: long chat must not grow the document at ${viewport.width}px`);
+      assert.equal(geometry.bodyOverflowY, "hidden", `UX: body must not own chat scrolling at ${viewport.width}px`);
+      assert.equal(geometry.pageOverflowY, "hidden", `UX: chat page must not own message scrolling at ${viewport.width}px`);
+      assert.equal(geometry.messageOverflowY, "auto", `UX: message viewport should own scrolling at ${viewport.width}px`);
+      assert.ok(geometry.messageScrollHeight > geometry.messageClientHeight, `UX: long chat should overflow its message viewport at ${viewport.width}px`);
+      assert.ok(geometry.headerTop >= geometry.workspaceTop - 1, `UX: chat header should stay inside its workspace at ${viewport.width}px`);
+      assert.ok(geometry.composerBottom <= geometry.workspaceBottom + 1, `UX: chat composer should stay inside its workspace at ${viewport.width}px`);
+      assert.ok(geometry.railRight <= viewport.width + 1, `UX: navigation should stay inside the viewport at ${viewport.width}px`);
+      assert.ok(geometry.actionsRight <= viewport.width + 1, `UX: window actions should stay inside the viewport at ${viewport.width}px`);
     }
 
     await browser.close();
