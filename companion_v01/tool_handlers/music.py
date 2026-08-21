@@ -28,6 +28,10 @@ MUSIC_TRACK_ID_PATTERNS = {
 
 class SendMusicCardToolHandler(BaseToolHandler):
     tool_type = "send_music_card"
+    # QQ delivery is an ordinary provider-native tool when the provider has
+    # passed the native capability probe.  The delivery port and existing
+    # permission/owner checks remain authoritative at execution time.
+    policy_accepted_native_tool = True
 
     def __init__(self, *, delivery_port: Any | None = None) -> None:
         self.delivery_port = delivery_port
@@ -117,6 +121,7 @@ class SendMusicCardToolHandler(BaseToolHandler):
 
 class SendAudioToolHandler(BaseToolHandler):
     tool_type = "send_audio"
+    policy_accepted_native_tool = True
 
     def __init__(self, *, generated_file_service: Any, delivery_port: Any | None = None) -> None:
         self.generated_file_service = generated_file_service

@@ -317,6 +317,7 @@ class Settings(BaseSettings):
         "compose_file,revise_generated_file,apply_style_to_existing_file,"
         "separate_audio_stems,clean_voice_track,transcribe_media,prepare_voice_dataset,"
         "convert_media_file,cover_song,send_file,send_music_card"
+        ",send_audio"
     )
     # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
     # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。

@@ -329,6 +329,12 @@ class _SpecShim:
 
 
 class CapabilityAndSkillTests(unittest.TestCase):
+    def test_music_delivery_handlers_are_native_eligible(self) -> None:
+        from companion_v01.tool_handlers.music import SendAudioToolHandler, SendMusicCardToolHandler
+
+        self.assertTrue(SendMusicCardToolHandler.policy_accepted_native_tool)
+        self.assertTrue(SendAudioToolHandler.policy_accepted_native_tool)
+
     def test_qq_has_card_and_audio_tools_desktop_has_neither(self) -> None:
         registry = CapabilityRegistry()
         qq = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
