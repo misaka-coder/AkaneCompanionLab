@@ -2593,7 +2593,7 @@ class AttachmentIngestService:
             return "attachment_vision_unavailable"
         if "timeout" in lowered or "timed out" in lowered:
             return "attachment_download_timeout"
-        if "附件过大" in text or "too large" in lowered:
+        if "附件过大" in text or "图像过大" in text or "too large" in lowered:
             return "attachment_too_large"
         if "没有可下载" in text:
             return "attachment_source_unavailable"

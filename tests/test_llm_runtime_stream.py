@@ -143,6 +143,25 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
 
         self.assertIn({"type": "speech_segment", "index": 0, "text": "？"}, events)
 
+    def test_native_tool_preface_does_not_flush_incomplete_tail(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"speech":"文件整理好了，本"')
+        events.extend(tap.finish(include_incomplete_remainder=False))
+
+        self.assertEqual([event for event in events if event.get("type") == "speech_segment"], [])
+        self.assertEqual(tap.delivered_speech, "")
+
+    def test_native_tool_preface_keeps_completed_sentence_only(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"speech":"文件整理好了。本"')
+        events.extend(tap.finish(include_incomplete_remainder=False))
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["文件整理好了。"],
+        )
+        self.assertEqual(tap.delivered_speech, "文件整理好了。")
+
     def test_speech_stream_keeps_numbered_items_across_character_deltas(self) -> None:
         tap = _TopLevelJSONStreamTap()
         events = []

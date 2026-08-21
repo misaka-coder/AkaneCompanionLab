@@ -662,6 +662,28 @@ def _build_qq_image_vision_followup_note(
     )
 
 
+def _qq_image_followup_failure_message(
+    *,
+    wait_result: dict[str, Any],
+    pending_image_ids: list[str],
+    failed_image_ids: list[str],
+) -> str:
+    items_by_id = wait_result.get("items_by_id") if isinstance(wait_result.get("items_by_id"), dict) else {}
+    failure_codes = {
+        str((items_by_id.get(item_id) or {}).get("error_message") or "").strip().lower()
+        for item_id in failed_image_ids
+    }
+    if "attachment_too_large" in failure_codes:
+        return "这张图片超过了当前视觉读取的大小限制，请压缩后再发一次。"
+    if "attachment_vision_unavailable" in failure_codes:
+        return "图片已经收到，但视觉读取服务这次不可用，请稍后再试。"
+    if failed_image_ids:
+        return "这张图片没有成功进入视觉读取，请重新发送一次。"
+    if pending_image_ids:
+        return "这张图片在等待时间内没有处理完成，请稍后重新发送。"
+    return "这张图片这次没有读取成功，请重新发送一次。"
+
+
 def _reply_similarity(left: str, right: str) -> float:
     left_text = re.sub(r"[\s，。！？!?~～、,.]+", "", str(left or "").strip().lower())
     right_text = re.sub(r"[\s，。！？!?~～、,.]+", "", str(right or "").strip().lower())
@@ -1908,6 +1930,14 @@ def build_qq_router(
                 if str(item or "").strip() and str(kinds_by_id.get(str(item or "").strip()) or "").lower() == "image"
             ]
             if pending_image_ids or failed_image_ids:
+                failure_send_result = qq_gateway.send_reply(
+                    context,
+                    _qq_image_followup_failure_message(
+                        wait_result=wait_result if isinstance(wait_result, dict) else {},
+                        pending_image_ids=pending_image_ids,
+                        failed_image_ids=failed_image_ids,
+                    ),
+                )
                 log_event(
                     "qq_image_vision_followup_not_ready",
                     session_id=context.session_id,
@@ -1916,6 +1946,7 @@ def build_qq_router(
                     failed_count=len(failed_image_ids),
                     attachment_count=len(getattr(context, "attachments", None) or []),
                     attachments_registered=len(attachments_registered),
+                    failure_notice_sent=bool(failure_send_result.get("ok")),
                     duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
                 )
                 return

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 from dataclasses import dataclass
@@ -41,11 +40,12 @@ from .tool_invocation import TOOL_SOURCE_FIELD
 
 logger = logging.getLogger("akane.llm_runtime")
 
+MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-luna"
+
 # MemCore summaries are infrastructure work, not user-facing chat.  They use
 # the per-Bot chat credentials (which are known to be live) while keeping a
 # stable, cost-conscious model instead of inheriting a stale AUX/DeepSeek
 # setting.  This is infrastructure summarization, not user-facing chat.
-MEMCORE_SUMMARY_MODEL_NAME = str(os.getenv("MEMCORE_SUMMARY_MODEL_NAME") or "gpt-5.6-luna").strip()
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -438,6 +438,7 @@ class _TopLevelJSONStreamTap:
             max_segments=None,
         )
         self._speech_stream_finished = False
+        self._delivered_speech_segments: list[str] = []
 
     def feed(self, text: Any) -> list[dict[str, Any]]:
         source = str(text or "")
@@ -525,19 +526,31 @@ class _TopLevelJSONStreamTap:
                 self.latest_speech += str(event.get("text") or "")
             if event_type in {"speech_chunk", "speech_segment"}:
                 events.append(event)
+            if event_type == "speech_segment":
+                self._delivered_speech_segments.append(str(event.get("text") or "").strip())
         return events
 
-    def finish(self) -> list[dict[str, Any]]:
+    def finish(self, *, include_incomplete_remainder: bool = True) -> list[dict[str, Any]]:
         if self._speech_stream_finished:
             return []
         self._speech_stream_finished = True
         if not self._speech_complete:
             return []
-        return [
+        events = [
             event
             for event in self._speech_stream.finish()
             if str(event.get("type") or "") == "speech_segment"
         ]
+        if not include_incomplete_remainder:
+            events = [event for event in events if _speech_segment_has_terminal_boundary(event.get("text"))]
+        self._delivered_speech_segments.extend(
+            str(event.get("text") or "").strip() for event in events if str(event.get("text") or "").strip()
+        )
+        return events
+
+    @property
+    def delivered_speech(self) -> str:
+        return "\n".join(item for item in self._delivered_speech_segments if item).strip()
 
     def _start_string(self, role: str) -> None:
         self.in_string = True
@@ -630,6 +643,36 @@ class _TopLevelJSONStreamTap:
         self.in_primitive = False
 
 
+def _speech_segment_has_terminal_boundary(value: Any) -> bool:
+    """Whether a streamed tool preface is a complete delivery unit.
+
+    Final replies may intentionally omit punctuation and are flushed normally.
+    Tool-call prefaces are different: a provider can close the ``speech`` JSON
+    field halfway through a phrase before emitting a native call.  Only a
+    sentence boundary is safe to expose as already-delivered QQ/UI speech.
+    """
+
+    text = str(value or "").rstrip()
+    if not text:
+        return False
+    closing = "\"'”’》）)]】」』"
+    while text and text[-1] in closing:
+        text = text[:-1].rstrip()
+    return bool(text) and text[-1] in ".!?。！？…"
+
+
+def _completed_tool_preface_text(value: Any) -> str:
+    text = str(value or "").strip()
+    last_boundary = max((index for index, char in enumerate(text) if char in ".!?。！？…"), default=-1)
+    if last_boundary < 0:
+        return ""
+    end = last_boundary + 1
+    closing = "\"'”’》）)]】」』"
+    while end < len(text) and text[end] in closing:
+        end += 1
+    return text[:end].strip()
+
+
 class LLMRuntime:
     supports_request_observer = True
 
@@ -651,6 +694,7 @@ class LLMRuntime:
         self._bundle_lock = threading.RLock()
         self.aux = self._build_aux_bundle()
         self.chat = self._build_chat_bundle()
+        self.memcore_summary = self._build_memcore_summary_bundle()
         self.vision = self._build_vision_bundle()
         self._metrics_lock = threading.RLock()
         self._metrics = {
@@ -694,15 +738,18 @@ class LLMRuntime:
         self.settings = settings or BotSettingsView.from_config(self._config_module)
         aux = self._build_aux_bundle()
         chat = self._build_chat_bundle()
+        memcore_summary = self._build_memcore_summary_bundle()
         vision = self._build_vision_bundle(chat_bundle=chat)
         with self._bundle_lock:
             self.aux = aux
             self.chat = chat
+            self.memcore_summary = memcore_summary
             self.vision = vision
         return {
             "status": "reloaded",
             "auxModel": aux.model,
             "chatModel": chat.model,
+            "memcoreSummaryModel": memcore_summary.model,
         }
 
     def _build_aux_bundle(self) -> ModelBundle:
@@ -728,6 +775,35 @@ class LLMRuntime:
         )
         setattr(client, "_akane_bundle_role", "chat")
         return ModelBundle(client=client, model=settings.chat_model_name)
+
+    def _build_memcore_summary_bundle(self) -> ModelBundle:
+        """Build the dedicated PinAI Luna route used by MemCore compaction.
+
+        A saved model-service profile may move chat to another gateway while
+        retaining an explicit PinAI image key.  That key is still a PinAI
+        credential and is the only implicit fallback we accept for Luna.  We
+        never send ``gpt-5.6-luna`` to an unrelated chat/AUX gateway.
+        """
+        settings = self._settings_view()
+        candidates = (
+            (settings.chat_api_key, settings.chat_base_url, settings.chat_api_protocol),
+            (settings.image_generation_api_key, settings.image_generation_base_url, "openai"),
+        )
+        for api_key, base_url, protocol in candidates:
+            if not (api_key and base_url and "api.pinaic.com" in base_url.lower()):
+                continue
+            client = build_llm_client(
+                api_key=api_key,
+                base_url=base_url,
+                protocol="responses" if "api.pinaic.com" in base_url.lower() else protocol,
+                timeout=90.0,
+                max_retries=0,
+            )
+            setattr(client, "_akane_bundle_role", "memcore_summary")
+            return ModelBundle(client=client, model=MEMCORE_SUMMARY_MODEL_NAME)
+        # Keep the object shape stable for diagnostics; calls will return the
+        # configured fallback rather than silently changing provider.
+        return ModelBundle(client=None, model=MEMCORE_SUMMARY_MODEL_NAME)
 
     def _build_vision_bundle(self, *, chat_bundle: ModelBundle | None = None) -> ModelBundle | None:
         settings = self._settings_view()
@@ -926,17 +1002,17 @@ class LLMRuntime:
         temperature: float = 0.2,
         prompt_cache_key: str = "",
     ) -> dict[str, Any]:
-        """Run MemCore's infrastructure JSON task on this Bot's live chat API.
+        """Run MemCore infrastructure work through dedicated PinAI Luna.
 
-        The AUX slot is independently configurable and may point at an
-        exhausted provider.  MemCore must not inherit that operational failure
-        when the Bot's own chat route is healthy, so this path reuses the
-        per-Bot chat client/key/base/protocol and pins the summary model.
+        Provider route and model are one atomic configuration.  Reusing the
+        chat client while replacing only its model can send a provider-specific
+        model id to the wrong gateway after a live chat-model switch.
         """
         self._record_metric("aux_json_calls")
         with self._bundle_lock:
-            chat = self.chat
-        bundle = ModelBundle(client=chat.client, model=MEMCORE_SUMMARY_MODEL_NAME)
+            bundle = self.memcore_summary
+        if bundle.client is None:
+            return dict(fallback)
         return self._call_json(
             bundle=bundle,
             system_prompt=system_prompt,
@@ -1622,15 +1698,15 @@ class LLMRuntime:
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             self._close_stream(response)
 
-        for event in tap.finish():
-            yield event
-
         raw_text = "".join(raw_parts)
         native_tool_calls = self._stream_native_tool_calls_from_parts(
             native_tool_parts,
             native_tools=native_tools,
             bundle=bundle,
         )
+        for event in tap.finish(include_incomplete_remainder=not bool(native_tool_calls)):
+            yield event
+
         metadata_origin = "accepted_model"
         metadata_requires_signal = False
         fallback_used = False
@@ -1641,7 +1717,7 @@ class LLMRuntime:
                 NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
                 "tool_call": None,
             }
-            native_preface_text = "" if tap.latest_speech else self._native_preface_text_from_content(raw_text)
+            native_preface_text = tap.delivered_speech or self._native_preface_text_from_content(raw_text)
             if native_preface_text:
                 parsed["speech"] = native_preface_text
         elif native_requested:
@@ -1669,8 +1745,9 @@ class LLMRuntime:
 
         if tap.latest_emotion and not parsed.get("emotion"):
             parsed["emotion"] = tap.latest_emotion
-        if tap.latest_speech and not parsed.get("speech"):
-            parsed["speech"] = tap.latest_speech
+        accepted_stream_speech = tap.delivered_speech if native_tool_calls else tap.latest_speech
+        if accepted_stream_speech and not parsed.get("speech"):
+            parsed["speech"] = accepted_stream_speech
         if tap.latest_reply_medium and not parsed.get("reply_medium"):
             parsed["reply_medium"] = tap.latest_reply_medium
 
@@ -1805,11 +1882,11 @@ class LLMRuntime:
         try:
             parsed = json.loads(candidate)
         except (TypeError, ValueError, json.JSONDecodeError):
-            return text
+            return _completed_tool_preface_text(text)
         if not isinstance(parsed, dict):
             return ""
         speech = str(parsed.get("speech") or "").strip()
-        return speech
+        return _completed_tool_preface_text(speech)
 
     def _flatten_message_content(self, content: Any) -> str:
         if isinstance(content, str):

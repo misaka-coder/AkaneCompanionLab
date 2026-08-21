@@ -2335,6 +2335,78 @@ class BackendRouteModuleTests(unittest.TestCase):
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertIn("我看到这张图了", _onebot_message_text(sent_payload))
 
+    def test_qq_image_followup_reports_terminal_image_failure(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        scheduled_tasks: list[Any] = []
+        sent_text: list[str] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [{"attachment_id": "img_too_large", "kind": "image", "profile_user_id": kwargs["profile_user_id"], "session_id": kwargs["session_id"]}]
+
+            def wait_for_qq_attachments_settled(self, **_kwargs):
+                return {
+                    "ok": True,
+                    "ready": [],
+                    "failed": ["img_too_large"],
+                    "pending": [],
+                    "missing": [],
+                    "kinds_by_id": {"img_too_large": "image"},
+                    "items_by_id": {"img_too_large": {"error_message": "attachment_too_large", "kind": "image"}},
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "不应调用模型。"}}
+
+        def capture_send_reply(context, text):
+            sent_text.append(str(text))
+            return {"ok": True, "status": "sent", "results": []}
+
+        gateway.send_reply = capture_send_reply
+
+        def fake_create_task(coro):
+            scheduled_tasks.append(coro)
+            return SimpleNamespace()
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        with patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-too-large-1",
+                    "time": int(time.time()),
+                    "message": [{"type": "image", "data": {"file": "too-large.jpg"}}],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(scheduled_tasks), 1)
+            asyncio.run(scheduled_tasks.pop())
+
+        self.assertEqual(process_calls, [])
+        self.assertTrue(any("超过了当前视觉读取的大小限制" in item for item in sent_text))
+
     def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

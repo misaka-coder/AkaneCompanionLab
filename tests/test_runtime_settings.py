@@ -326,6 +326,27 @@ class BotSettingsViewTests(unittest.TestCase):
 
 
 class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
+    def test_memcore_json_uses_atomic_aux_bundle(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._bundle_lock = __import__("threading").RLock()
+        runtime.memcore_summary = SimpleNamespace(client=object(), model="gpt-5.6-luna")
+        runtime.chat = SimpleNamespace(client=object(), model="chat-model")
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        captured: dict[str, object] = {}
+
+        def fake_call_json(**kwargs):
+            captured.update(kwargs)
+            return {"summary": "ok"}
+
+        runtime._call_json = fake_call_json
+        runtime.call_memcore_json(
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"summary": ""},
+        )
+
+        self.assertIs(captured["bundle"], runtime.memcore_summary)
+
     def test_two_runtime_instances_build_clients_from_their_own_settings(self) -> None:
         settings_a = BotSettingsView(
             aux_api_key="aux-a",
