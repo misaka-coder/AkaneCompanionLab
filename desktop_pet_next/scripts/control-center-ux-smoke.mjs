@@ -18,7 +18,7 @@ for (const rel of [REQUIRED_HTML, V2_COMPATIBILITY_HTML]) {
   const abs = resolve(projectRoot, rel);
   assert.ok(existsSync(abs), `UX: built artifact ${rel} should exist`);
 }
-console.log("1/6 built artifacts present");
+console.log("1/5 built artifacts present");
 
 // ---------------------------------------------------------------------------
 // 2. Built HTML has mounting point
@@ -30,7 +30,7 @@ console.log("1/6 built artifacts present");
   assert.ok(htmlContent.includes("控制中心"), "UX: built HTML title should reference 控制中心");
   assert.ok(htmlContent.includes("module"), "UX: built HTML should load JS as module");
 }
-console.log("2/6 built HTML structure valid");
+console.log("2/5 built HTML structure valid");
 
 const builtAssetRefs = findBuiltControlCenterAssets();
 for (const rel of [builtAssetRefs.css, builtAssetRefs.js]) {
@@ -48,7 +48,7 @@ for (const rel of [builtAssetRefs.css, builtAssetRefs.js]) {
   assert.ok(cssContent.includes("not-allowed"), "UX: CSS should show not-allowed cursor on disabled actions");
   assert.ok(cssContent.includes("button:disabled"), "UX: CSS should have button:disabled selector");
 }
-console.log("3/6 built CSS has scrollbar prevention and disabled action styling");
+console.log("3/5 built CSS has scrollbar prevention and disabled action styling");
 
 {
   const htmlContent = readFileSync(resolve(projectRoot, V2_COMPATIBILITY_HTML), "utf8");
@@ -69,7 +69,7 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
   for (const actionId of windowActionIds) {
     assert.ok(jsContent.includes(actionId), `UX: JS bundle should reference ${actionId} for window chrome buttons`);
   }
-  console.log("4/6 window chrome action IDs present in bundle");
+  console.log("4/5 window chrome action IDs present in bundle");
 
   // Nav page labels
   const navLabels = ["总览", "聊天", "角色与外观", "语音与唤醒", "模型服务", "能力与权限", "系统与诊断"];
@@ -79,7 +79,7 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
   for (const label of ["真实数据模式", "连接模型服务", "密钥不会出现在快照和日志里"]) {
     assert.ok(jsContent.includes(label), `UX: JS bundle should render production label "${label}"`);
   }
-  console.log("5/6 all 7 production destinations present in bundle");
+  console.log("5/5 all 7 production destinations present in bundle");
 }
 
 // ---------------------------------------------------------------------------
@@ -88,10 +88,13 @@ console.log("3/6 built CSS has scrollbar prevention and disabled action styling"
 
 const screenshotNames = [
   "control-center-overview.png",
+  "control-center-chat.png",
+  "control-center-appearance.png",
   "control-center-model.png",
-  "control-center-music.png",
   "control-center-voice.png",
-  "control-center-advanced.png",
+  "control-center-abilities.png",
+  "control-center-system.png",
+  "control-center-overview-mobile.png",
 ];
 
 let screenshotCount = 0;
@@ -124,21 +127,24 @@ if (puppeteer) {
     await pages.setViewport({ width: 1440, height: 900 });
 
     const pageNavMap = [
-      ["control-center-overview.png", "overview"],
-      ["control-center-model.png", "model"],
-      ["control-center-music.png", "music"],
-      ["control-center-voice.png", "voice"],
-      ["control-center-advanced.png", "advanced"],
+      ["control-center-overview.png", "overview", { width: 1440, height: 900 }],
+      ["control-center-chat.png", "chat", { width: 1440, height: 900 }],
+      ["control-center-appearance.png", "appearance", { width: 1440, height: 900 }],
+      ["control-center-model.png", "model", { width: 1440, height: 900 }],
+      ["control-center-voice.png", "voice", { width: 1440, height: 900 }],
+      ["control-center-abilities.png", "abilities", { width: 1440, height: 900 }],
+      ["control-center-system.png", "system", { width: 1440, height: 900 }],
+      ["control-center-overview-mobile.png", "overview", { width: 760, height: 900 }],
     ];
 
-    for (const [name, navId] of pageNavMap) {
+    for (const [name, navId, viewport] of pageNavMap) {
+      await pages.setViewport(viewport);
       const url = `${baseUrl}/control-center-lab.html?page=${navId}&source=mock`;
       await pages.goto(url, { waitUntil: "networkidle0", timeout: 15000 });
       try {
-        await pages.waitForSelector("#page-content", { timeout: 5000 });
+        await pages.waitForSelector(".ccv2-shell", { timeout: 5000 });
       } catch {
-        // page-content may not be rendered in headless mode without Tauri;
-        // continue anyway to capture whatever is on screen.
+        // Keep the screenshot for diagnostics if the shell fails to render.
       }
       await new Promise((r) => setTimeout(r, 500));
       const outPath = resolve(codexDir, name);
@@ -149,12 +155,12 @@ if (puppeteer) {
 
     await browser.close();
     await server.close();
-    console.log(`6/6 screenshots captured (${screenshotCount}/${screenshotNames.length})`);
+    console.log(`UX screenshots captured (${screenshotCount}/${screenshotNames.length})`);
   } catch (err) {
-    console.log("6/6 screenshots: SKIPPED (browser error: " + (err.message || err) + ")");
+    console.log("UX screenshots: SKIPPED (browser error: " + (err.message || err) + ")");
   }
 } else {
-  console.log("6/6 screenshots: SKIPPED (puppeteer unavailable)");
+  console.log("UX screenshots: SKIPPED (puppeteer unavailable)");
 }
 
 // ---------------------------------------------------------------------------

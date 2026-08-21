@@ -516,6 +516,7 @@ const normalizedPresentation = normalizePresentationPreferences({
   }
 });
 assert.deepEqual(normalizedPresentation.frames.avatar, { x: 0, y: 100, scale: 2 });
+assert.deepEqual(normalizedPresentation.frames.portrait, { x: 80, y: 60, scale: 1.35 });
 assert.deepEqual(normalizedPresentation.frames.background, { x: 50, y: 50, scale: 1 });
 assert.equal(normalizedPresentation.themeMode, "light");
 assert.equal(normalizedPresentation.accentPreset, "sakura");
@@ -535,7 +536,7 @@ assert.deepEqual(presentationCssVariables(normalizedPresentation), {
   "--cc-avatar-y": "100%",
   "--cc-avatar-size": "200%",
   "--cc-portrait-shift-x": "15%",
-  "--cc-portrait-shift-y": "-27%",
+  "--cc-portrait-shift-y": "-18%",
   "--cc-portrait-scale": "1.35",
   "--cc-background-x": "50%",
   "--cc-background-y": "50%",

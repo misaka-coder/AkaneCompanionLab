@@ -740,8 +740,8 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 
 @media (max-width: 760px) {
   body { overflow: auto; }
-  .ccv2-shell { grid-template-columns: 1fr; min-width: 0; min-height: 100%; height: auto; overflow: visible; }
-  .ccv2-rail { position: sticky; z-index: 5; top: 0; flex-direction: row; align-items: center; min-height: 64px; padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .ccv2-shell { grid-template-columns: 1fr; grid-template-rows: 76px minmax(0, auto); min-width: 0; min-height: 100%; height: auto; overflow: visible; }
+  .ccv2-rail { position: sticky; z-index: 5; top: 0; align-self: stretch; height: 76px; min-height: 0; flex-direction: row; align-items: center; padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
   .ccv2-brand { padding: 0; }
   .ccv2-brand > span:last-child { display: block; }
   .ccv2-brand small, .migration-note, .rail-spacer { display: none; }

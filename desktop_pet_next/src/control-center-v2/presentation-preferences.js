@@ -78,9 +78,9 @@ export function normalizePresentationPreferences(value = {}) {
     blurAmount: clampNumber(source.blurAmount, 0, 36, DEFAULT_PRESENTATION_PREFERENCES.blurAmount),
     reducedMotion: source.reducedMotion === true,
     frames: {
-      avatar: normalizeFrame(sourceFrames.avatar, DEFAULT_PRESENTATION_PREFERENCES.frames.avatar),
-      portrait: normalizeFrame(sourceFrames.portrait, DEFAULT_PRESENTATION_PREFERENCES.frames.portrait),
-      background: normalizeFrame(sourceFrames.background, DEFAULT_PRESENTATION_PREFERENCES.frames.background)
+      avatar: normalizeFrame(sourceFrames.avatar, DEFAULT_PRESENTATION_PREFERENCES.frames.avatar, "avatar"),
+      portrait: normalizeFrame(sourceFrames.portrait, DEFAULT_PRESENTATION_PREFERENCES.frames.portrait, "portrait"),
+      background: normalizeFrame(sourceFrames.background, DEFAULT_PRESENTATION_PREFERENCES.frames.background, "background")
     }
   };
 }
@@ -145,11 +145,13 @@ function normalizeFrameTarget(value) {
   return FRAME_TARGETS.has(normalized) ? normalized : "";
 }
 
-function normalizeFrame(value, fallback) {
+function normalizeFrame(value, fallback, target) {
   const source = value && typeof value === "object" ? value : {};
+  const yMin = target === "portrait" ? 60 : 0;
+  const yMax = target === "portrait" ? 140 : 100;
   return {
     x: clampNumber(source.x, 0, 100, fallback.x),
-    y: clampNumber(source.y, 0, 100, fallback.y),
+    y: clampNumber(source.y, yMin, yMax, fallback.y),
     scale: clampNumber(source.scale, 0.6, 2, fallback.scale)
   };
 }

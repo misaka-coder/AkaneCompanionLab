@@ -3,6 +3,7 @@ import {
   CONTROL_CENTER_SCHEMA_VERSION,
   isKnownControlCenterPage
 } from "./snapshot-schema.js";
+import * as legacyPageDefaults from "./mock-data.js";
 
 const overviewActionIds = ["chat.new", "chat.stop", "workspace.open"];
 const overviewMusicControlActionIds = [
@@ -31,34 +32,46 @@ const advancedCoreSettingDefaults = [
 const advancedOperationActionIds = ["advanced.probeClickThrough", "advanced.resetWindow"];
 
 export function createControlCenterSnapshot(raw = {}) {
-  const shell = createShellSnapshot(raw);
-  const overviewRuntime = raw.overviewRuntime || raw.runtime?.overview || {};
-  const characterRuntime = raw.characterRuntime || raw.runtime?.character || {};
-  const voiceRuntime = raw.voiceRuntime || raw.runtime?.voice || {};
-  const perceptionRuntime = raw.perceptionRuntime || raw.runtime?.perception || {};
-  const musicRuntime = raw.musicRuntime || raw.runtime?.music || {};
-  const abilitiesRuntime = raw.abilitiesRuntime || raw.runtime?.abilities || {};
-  const advancedRuntime = raw.advancedRuntime || raw.runtime?.advanced || {};
+  // This adapter is retained for the frozen legacy snapshot contract only.
+  // V2 renders directly from runtime fields and never receives these defaults.
+  const source = hasLegacyPageShape(raw)
+    ? raw
+    : { ...legacyPageDefaults, ...raw };
+  const shell = createShellSnapshot(source);
+  const overviewRuntime = source.overviewRuntime || source.runtime?.overview || {};
+  const characterRuntime = source.characterRuntime || source.runtime?.character || {};
+  const voiceRuntime = source.voiceRuntime || source.runtime?.voice || {};
+  const perceptionRuntime = source.perceptionRuntime || source.runtime?.perception || {};
+  const musicRuntime = source.musicRuntime || source.runtime?.music || {};
+  const abilitiesRuntime = source.abilitiesRuntime || source.runtime?.abilities || {};
+  const advancedRuntime = source.advancedRuntime || source.runtime?.advanced || {};
   return {
     schemaVersion: CONTROL_CENTER_SCHEMA_VERSION,
-    sourceKind: raw.sourceKind || "unknown",
-    backendUrl: raw.backendUrl || null,
-    fallbackReason: raw.fallbackReason || null,
+    sourceKind: source.sourceKind || "unknown",
+    backendUrl: source.backendUrl || null,
+    fallbackReason: source.fallbackReason || null,
     generatedAt: new Date().toISOString(),
     shell,
     pages: {
-      overview: adaptOverviewPage(raw.overviewPage || raw.overview || {}, overviewRuntime),
-      model: adaptModelPage(raw.modelPage || raw.model || {}),
-      character: adaptCharacterPage(raw.characterPage || raw.character || {}, characterRuntime),
-      voice: adaptVoicePage(raw.voicePage || raw.voice || {}, voiceRuntime),
-      music: adaptMusicPage(raw.musicPage || raw.music || {}, musicRuntime),
-      perception: adaptPerceptionPage(raw.perceptionPage || raw.perception || {}, perceptionRuntime),
-      abilities: adaptAbilitiesPage(raw.abilitiesPage || raw.abilities || {}, abilitiesRuntime),
-      advanced: adaptAdvancedPage(raw.advancedPage || raw.advanced || {}, advancedRuntime)
+      overview: adaptOverviewPage(source.overviewPage || source.overview || {}, overviewRuntime),
+      model: adaptModelPage(source.modelPage || source.model || {}),
+      character: adaptCharacterPage(source.characterPage || source.character || {}, characterRuntime),
+      voice: adaptVoicePage(source.voicePage || source.voice || {}, voiceRuntime),
+      music: adaptMusicPage(source.musicPage || source.music || {}, musicRuntime),
+      perception: adaptPerceptionPage(source.perceptionPage || source.perception || {}, perceptionRuntime),
+      abilities: adaptAbilitiesPage(source.abilitiesPage || source.abilities || {}, abilitiesRuntime),
+      advanced: adaptAdvancedPage(source.advancedPage || source.advanced || {}, advancedRuntime)
     },
-    dataDomains: raw.controlCenterDataDomains || {},
-    featureFlags: deriveFeatureFlags(raw)
+    dataDomains: source.controlCenterDataDomains || {},
+    featureFlags: deriveFeatureFlags(source)
   };
+}
+
+function hasLegacyPageShape(value) {
+  return Boolean(value && typeof value === "object" && (
+    value.overviewPage || value.modelPage || value.characterPage || value.voicePage ||
+    value.musicPage || value.perceptionPage || value.abilitiesPage || value.advancedPage
+  ));
 }
 
 function adaptModelPage(page) {

@@ -459,9 +459,12 @@ function applyPresentationPreferences(preferences) {
 function updateFramingPositionFromPointer(event, stage) {
   const rect = stage.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
+  const target = stage.dataset.target;
+  const yMin = target === "portrait" ? 60 : 0;
+  const yMax = target === "portrait" ? 140 : 100;
   previewPresentationFrame({
     x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
-    y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100))
+    y: yMin + Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) * (yMax - yMin)
   });
 }
 

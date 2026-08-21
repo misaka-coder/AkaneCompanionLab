@@ -77,7 +77,7 @@ function renderPage(activePage, state) {
 
 function renderNavItem(pageId, icon, label, activePage) {
   const active = pageId === activePage;
-  return `<button class="nav-item${active ? " is-active" : ""}" type="button" data-page="${pageId}" aria-label="${label}"${active ? ' aria-current="page"' : ""}><span aria-hidden="true">${icon}</span><b>${label}</b></button>`;
+  return `<button class="nav-item${active ? " is-active" : ""}" type="button" data-page="${pageId}" aria-label="${label}" title="${label}"${active ? ' aria-current="page"' : ""}><span aria-hidden="true">${icon}</span><b>${label}</b></button>`;
 }
 
 function renderWindowButton(state, actionId, label, icon, className = "") {
