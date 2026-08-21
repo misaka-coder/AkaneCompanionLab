@@ -129,7 +129,7 @@ Important details:
 - `CapabilityRegistry` selects by client mode and material snapshot. It is not a dependency health registry.
 - `ToolReadinessGate` uses handler object identity plus profile/session/mode as a cache key, with default TTLs of 15 seconds for ready and 5 seconds for unavailable. A handler without `capability_status()` is unconditionally treated as ready with `status_check_not_required`.
 - Dynamic MCP/Python/plugin handlers are rebuilt during resolution. Because the readiness cache key begins with `id(handler)`, simply adding a status method to a newly constructed dynamic handler would also defeat useful cache reuse unless the authority boundary changes.
-- Native tools are additionally restricted by `NATIVE_TOOL_DECISION_ALLOWLIST` and provider/model support. Native-exposed names are excluded from the legacy prompt in that round.
+- Native tools require provider/model support. The default `NATIVE_TOOL_DECISION_ALLOWLIST=*` follows the current capability selection, so every selected tool is exposed natively and its duplicate legacy prompt entry is excluded for that round; an explicit comma list is only an intentional restricted profile.
 - `web_search` has a hard-coded `native_web_search_tool_schema()` special case instead of using the same semantic source as every other tool.
 - The legacy prompt obtains descriptions from each handler's `build_prompt_instruction()`. Native schema generation first tries `ToolMetadata.input_schema`, then falls back to a sanitized form of that same legacy prose. This is a projection bridge, not a canonical semantic definition.
 

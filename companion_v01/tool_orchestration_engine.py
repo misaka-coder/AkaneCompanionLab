@@ -529,7 +529,7 @@ def native_tool_decision_allowlist() -> set[str]:
 
 
 def _native_tool_decision_allowlist_items() -> list[str]:
-    raw = str(getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search") or "").strip()
+    raw = str(getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "*") or "").strip()
     allowed: list[str] = []
     seen: set[str] = set()
     for raw_item in raw.split(","):
@@ -538,7 +538,7 @@ def _native_tool_decision_allowlist_items() -> list[str]:
             continue
         seen.add(item)
         allowed.append(item)
-    return allowed or ["web_search"]
+    return allowed or ["*"]
 
 
 def build_native_tool_schemas(
@@ -633,8 +633,16 @@ def _native_tool_candidate_names(
     allowed_tool_names: Iterable[str] | None = None,
 ) -> list[str]:
     allowlist = _native_tool_decision_allowlist_items()
-    allowed = {str(item or "").strip() for item in (allowed_tool_names or ()) if str(item or "").strip()}
-    candidates = allowlist if allowed_tool_names is None else [name for name in allowlist if name in allowed]
+    allowed_sequence = [str(item or "").strip() for item in (allowed_tool_names or ()) if str(item or "").strip()]
+    allowed = set(allowed_sequence)
+    if "*" in allowlist:
+        # Capability selection remains authoritative: wildcard means all tools
+        # already selected for this client/scenario, never every dormant handler.
+        candidates = allowed_sequence if allowed_tool_names is not None else [
+            str(name or "").strip() for name in handlers if str(name or "").strip()
+        ]
+    else:
+        candidates = allowlist if allowed_tool_names is None else [name for name in allowlist if name in allowed]
     for raw_name, handler in handlers.items():
         name = str(raw_name or "").strip()
         if not name or name in candidates:

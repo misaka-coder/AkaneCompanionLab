@@ -165,11 +165,11 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5a 已完成**：`tool_runtime.ToolMetadata` 原本已经集中记录 `family/operation/risk/default_round_budget/background`；本阶段只补齐契约占位字段 `aliases/input_schema/requires_confirmation` 与派生只读属性 `is_read_only`。高风险内置工具只打 `requires_confirmation=True` 描述标签，**当前不接入 validate / permission / execute**，避免和现有 MCP approval 或 legacy 行为发生双门控。`tool_orchestration_engine.tool_metadata_dict()` 暂不暴露这些新字段，作为行为不变的保护线。
 
-- **5b 已完成**：`retrieve_memory` 与 `read_memory_timeline` 补齐 `input_schema`，`native_tool_schema` 优先使用 metadata schema，`NativeToolDecisionPlan` 从 hardcoded `web_search` 扩展为 allowlist ∩ handler 的通用 native schema 计划。默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 仍为 `web_search`，所以默认线上行为不变；显式配置 `web_search,retrieve_memory,read_memory_timeline` 时，这两个只读记忆工具可进入 native schema，并会从 legacy prompt 同名工具说明中排除。
+- **5b 已完成**：`retrieve_memory` 与 `read_memory_timeline` 补齐 `input_schema`，`native_tool_schema` 优先使用 metadata schema，`NativeToolDecisionPlan` 使用当前 capability selection 构造通用 native schema 计划。默认 allowlist 为 `*`，表示当前场景已选工具全部优先进入 native schema，并从 legacy prompt 同名工具说明中排除；显式逗号列表仅用于有意受限的 profile。
 
 - **5c 已完成**：`tool_decision_eval` 的 live provider 已从 `web_search` 专用泛化为 `web_search` / `memory` / `all` 三种 toolset。`scripts/tools/run_tool_decision_eval.py --live-llm --toolset memory|all` 现在会发送对应 native schemas 和最小路由提示；评测逻辑同时识别公开 `tool_call` 与内部 `_native_tool_call` 载体，避免 4a 后 native 结果被误判成 no-call。最近一次实测：`--live-llm --toolset memory --mode both --limit 5` 为 native/legacy 双 1.0；`--live-llm --toolset all --mode native --limit 10` 为 1.0、fallback=0、native_degraded=0。生产默认 allowlist 仍未扩大。
 
-- **5e 已完成（激活 = 扩默认 allowlist）**：默认 `NATIVE_TOOL_DECISION_ALLOWLIST` 由 `web_search` 扩为 `web_search,retrieve_memory,read_memory_timeline`，把已过 live acceptance gate 的低风险只读记忆工具纳入 native 允许清单。后续又纳入 `list_reminders,check_inventory,inspect_media_info`。**总开关 `ENABLE_NATIVE_TOOL_DECISION` 现已默认 `True`**：allowlist 内、且 provider/model 能力档案已验证的工具走 provider native schema，并从 legacy prompt 同名说明中排除；未验证 provider/model、显式关闭总开关、或未进入 allowlist 的工具仍回退 legacy JSON `tool_call`。写/控制/路径类工具不因默认开关绕过原有确认与执行边界。
+- **5e 已完成（native-first）**：**总开关 `ENABLE_NATIVE_TOOL_DECISION` 默认 `True`**，默认 `*` 让 capability selection 选出的读、写、控制、路径和交付工具统一走 provider native schema，并从 legacy prompt 同名说明中排除。provider/model 不支持 native、显式关闭总开关，或 profile 明确使用逗号列表时才走兼容路径。原有权限、确认、路径安全和执行 broker 不因 native 暴露而放宽。
 
 - **5d 已完成**：真实 engine smoke / acceptance gate 从 `web_search` 泛化到 `memory`，验证全链路（native 决策 → `_native_tool_call` → `ToolInvocation(source=native)` → execute → 最终表现回复）。`run_native_web_search_smoke.py --toolset memory` 用确定性 fixture handler（`SmokeRetrieveMemoryHandler` / `SmokeReadMemoryTimelineHandler`，罐头记忆、不读真实记忆库、不写盘）跑真实 `AkaneMemoryEngine` 一个回合；`run_native_web_search_acceptance.py --toolset memory` 复用同一 gate（`native_tool_call_extracted>0`、`tool_event>0`、流式有 `assistant_working`、fallback=0、最终回复非空 speech）。`web_search` 默认行为不变。新增 `tests/test_native_tool_smoke.py` 覆盖 toolset 映射 / fixture 执行的确定性部分；live `--smoke` 需真实模型，由人触发。
 
@@ -345,7 +345,7 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 - **N1 — ✅ 已完成（2026-06-23）**：全工具装 native 门。通用生成器接 `capcore-provider-openai`；handler 精度处补 `input_schema`；描述已扫除 `tool_call` 污染。
 - **N2 — ✅ 已完成（2026-06-23）**：native tools 列表接 `CapabilitySelection`，每客户端/场景只发其工具子集。
-- **N3 — ✅ 已完成（2026-07-09）**：总开关默认开（`ENABLE_NATIVE_TOOL_DECISION=True`）；allowlist 从 6 扩到 12 个只读工具（web_search + memory×2 + reminders/inventory/media_info + character_context/attachment×2/workspace×2/generated_file）。写/控制/路径类工具不在 allowlist。`tool_invocation.py` placeholder 注释已清理——native-first 是现实。
+- **N3 — ✅ 已完成（2026-07-09，2026-08-21 repair pass）**：总开关默认开（`ENABLE_NATIVE_TOOL_DECISION=True`）；默认 allowlist 改为 `*`，由 capability selection 决定本轮实际 schema，写/控制/路径类工具不再被静态清单隐形排除。`tool_invocation.py` placeholder 注释已清理——native-first 是现实。
 - **N4 — ✅ 已定调（2026-07-09）**：保留 `tool_call` 为**薄兼容回退**（选项 ①），不删除。理由：fallback 维护成本接近零（就是已有路径，不加新代码）；删除会锁死不支持 native function calling 的 provider。新工具必须带 `input_schema` 走 native；旧路径仅兼容。重访删除条件：(a) 所有活跃 provider 都支持 native tools；(b) 全工具目录（含写/控制）都有 native coverage + acceptance gate。
 
 **不变的边界**：写/控制/媒体工具的**执行与权限确认逻辑完全不变**——native 只改"模型怎么表达调用"，不改 execute、不绕过确认。表达层（emotion/persona/scene/segments…）是 Akane 自己的产品域，**没有行业标准、也不需要**，继续按角色需要演化；唯一被行业标准约束的只有"工具调用"这一件，N1–N4 就是把它掰回标准。

@@ -428,45 +428,33 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
     def test_default_allowlist_includes_validated_native_tools(self) -> None:
-        # The shipped default allowlist contains validated read tools plus
-        # bounded session-material/image-generation/artifact delivery tools.
-        # Read the class field default (immune to .env / other tests).
+        # The shipped default is native-first for the current capability
+        # selection. Explicit lists remain available for restricted profiles.
         from config import Settings
 
         default = str(Settings.model_fields["NATIVE_TOOL_DECISION_ALLOWLIST"].default or "")
-        self.assertEqual(
-            {item.strip() for item in default.split(",") if item.strip()},
-            {
-                "web_search",
-                "retrieve_memory",
-                "browse_memory",
-                "read_memory_timeline",
-                "open_memory",
-                "load_skill",
-                "list_reminders",
-                "check_inventory",
-                "inspect_media_info",
-                "load_character_context",
-                "inspect_attachment",
-                "load_material",
-                "read_attachment_section",
-                "list_workspace",
-                "read_workspace",
-                "inspect_generated_file",
-                "generate_image",
-                "compose_file",
-                "revise_generated_file",
-                "apply_style_to_existing_file",
-                "separate_audio_stems",
-                "clean_voice_track",
-                "transcribe_media",
-                "prepare_voice_dataset",
-                "convert_media_file",
-                "cover_song",
-                "send_file",
-                "send_music_card",
-            },
-        )
+        self.assertEqual(default.strip(), "*")
+
+    def test_wildcard_native_selection_follows_capability_selection(self) -> None:
+        original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "*")
+        try:
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "*"
+            handlers = {
+                name: FakeNativeHandler(name)
+                for name in ("exec_run", "send_music_card", "web_search", "dormant_tool")
+            }
+            plan = tool_orchestration_engine.build_native_tool_decision_plan(
+                handlers,
+                allow_tool_call=True,
+                provider_supports_native_tools=True,
+                allowed_tool_names=("exec_run", "send_music_card"),
+            )
+            self.assertTrue(plan.enabled)
+            names = [tool["function"]["name"] for tool in plan.tools]
+            self.assertEqual(names, ["exec_run", "send_music_card"])
+            self.assertEqual(plan.legacy_prompt_exclusions, {"exec_run", "send_music_card"})
+        finally:
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = original_allowlist
 
     def test_native_media_processing_and_delivery_share_one_tool_channel(self) -> None:
         original_enabled = getattr(config, "ENABLE_NATIVE_TOOL_DECISION", False)

@@ -313,10 +313,10 @@ _SPECS: tuple[SettingSpec, ...] = (
     # 工具调用 & 后台任务
     _s("MAX_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用常规软预算"),
     _s("MAX_TOOL_EMERGENCY_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用紧急安全上限"),
-    _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认关、fail-closed）"),
+    _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
     _s("CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "最终答复异常时的最大生成次数"),
-    _s("NATIVE_TOOL_DECISION_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native tool 允许列表（逗号分隔，只读类工具）"),
+    _s("NATIVE_TOOL_DECISION_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native tool 允许列表；* 表示当前场景选中的全部工具"),
     _s("NATIVE_TOOL_PROVIDER_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native provider/model 允许列表（host:model[:json]）"),
     _s("MAX_WEB_RESEARCH_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "联网搜索/网页提取同轮扩展预算"),
     _s("MAX_BROWSER_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "托管浏览器同轮扩展预算"),
