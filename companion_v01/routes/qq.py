@@ -1180,6 +1180,8 @@ def _process_qq_turn_streaming(
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     settings: Any = None,
 ) -> dict[str, Any]:
+    timing_started_at = time.perf_counter()
+    timing: dict[str, float] = {}
     pending_stage_messages: list[str] = []
     streamed_messages: list[str] = []
     stream_send_results: list[dict[str, Any]] = []
@@ -1207,6 +1209,7 @@ def _process_qq_turn_streaming(
     )
     stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and max_streamed > 0
 
+    engine_started_at = time.perf_counter()
     for stream_event in engine.process_turn_stream(turn_payload):
         if not isinstance(stream_event, dict):
             continue
@@ -1311,6 +1314,10 @@ def _process_qq_turn_streaming(
     if not frame and not streamed_messages:
         frame = engine.process_turn(turn_payload)
         final_frame_received = bool(frame)
+    # The generator includes provider calls, tool execution, and any streamed
+    # QQ sends performed while it yields. Keep the label honest: this is not a
+    # provider-only latency measurement.
+    timing["turn_processing_ms"] = round((time.perf_counter() - engine_started_at) * 1000, 1)
 
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
     retained_frame_events = [
@@ -1350,6 +1357,7 @@ def _process_qq_turn_streaming(
         context=context,
         tool_events=list(frame.get("tool_events") or []),
     )
+    file_delivery_started_at = time.perf_counter()
     file_send_result = qq_gateway.send_generated_files(
         context,
         delivery_events,
@@ -1369,6 +1377,7 @@ def _process_qq_turn_streaming(
 
     file_delivery_attempted = int(file_send_result.get("count") or 0) > 0
     file_delivery_failed = file_delivery_attempted and not bool(file_send_result.get("ok"))
+    timing["file_delivery_ms"] = round((time.perf_counter() - file_delivery_started_at) * 1000, 1)
     # Deliver artifacts before the final text so transport feedback can follow
     # the model's completed reply.  An auxiliary delivery failure must not turn
     # a successfully completed LLM turn into an apparent system crash.
@@ -1386,6 +1395,7 @@ def _process_qq_turn_streaming(
         unsent_reply_messages = []
     else:
         unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
+    text_delivery_started_at = time.perf_counter()
     send_result = _send_qq_delivery(
         engine=engine,
         qq_gateway=qq_gateway,
@@ -1400,6 +1410,7 @@ def _process_qq_turn_streaming(
         delivery_hint=delivery_hint,
         settings=settings,
     )
+    timing["text_and_voice_delivery_ms"] = round((time.perf_counter() - text_delivery_started_at) * 1000, 1)
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
@@ -1460,6 +1471,7 @@ def _process_qq_turn_streaming(
         }
 
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
+    emotion_started_at = time.perf_counter()
     if (
         send_result.get("ok")
         and not bool(frame.get("_transient_final_failure"))
@@ -1491,6 +1503,7 @@ def _process_qq_turn_streaming(
             "status": "skipped",
             "reason": "main_delivery_failed",
         }
+    timing["emotion_delivery_ms"] = round((time.perf_counter() - emotion_started_at) * 1000, 1)
 
     final_reply_fallback_result = {"ok": True, "status": "skipped", "reason": "final_reply_present"}
     if not final_reply_messages and int(file_send_result.get("count") or 0) > 0:
@@ -1542,10 +1555,13 @@ def _process_qq_turn_streaming(
             _sid,
             f"【上一轮交付状态】文件发送成功（共 {file_send_result.get('count', 0)} 个）。",
         )
+    sticker_started_at = time.perf_counter()
     sticker_send_result = qq_gateway.send_stickers(
         context,
         list(frame.get("tool_events") or []),
     )
+    timing["sticker_delivery_ms"] = round((time.perf_counter() - sticker_started_at) * 1000, 1)
+    timing["total_ms"] = round((time.perf_counter() - timing_started_at) * 1000, 1)
     return {
         "frame": frame,
         "reply_messages": [*streamed_messages, *unsent_reply_messages],
@@ -1557,6 +1573,7 @@ def _process_qq_turn_streaming(
         "file_delivery_feedback_result": file_delivery_feedback_result,
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
+        "timing": timing,
     }
 
 
@@ -1970,6 +1987,7 @@ def build_qq_router(
         started_at = time.perf_counter()
         event: dict = {}
         context = None
+        turn_timing: dict[str, float] = {}
 
         if channel_config is not None:
             auth = channel_config.authorize_webhook(request)
@@ -3116,6 +3134,13 @@ def build_qq_router(
                 # historical workspace.
                 turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
+            raw_turn_timing = turn_result.get("timing") if isinstance(turn_result, dict) else None
+            if isinstance(raw_turn_timing, dict):
+                turn_timing = {
+                    str(key): round(float(value), 1)
+                    for key, value in raw_turn_timing.items()
+                    if isinstance(value, (int, float))
+                }
             frame = dict(turn_result.get("frame") or {})
             reply_messages = list(turn_result.get("reply_messages") or [])
             send_result = dict(
@@ -3165,6 +3190,7 @@ def build_qq_router(
             attachment_count=len(context.attachments or []),
             attachments_registered=len(attachments_registered),
             duration_ms=round(duration_ms, 1),
+            turn_timing=turn_timing,
         )
         return JSONResponse(
             {
