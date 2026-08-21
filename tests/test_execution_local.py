@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from companion_v01.execution_local import ExecutionPathError, TrustedLocalExecutor
+from companion_v01.execution_local import ExecutionPathError, TrustedLocalExecutor, _SecretStreamRedactor
 from companion_v01.execution_run import ExecutionRunOwner, make_cursor
 from companion_v01.execution_specs import (
     EXEC_STATUS_CANCELLED,
@@ -293,6 +293,53 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(env["SSH_AUTH_SOCK"], "agent.sock")
         self.assertNotIn("SERVICE_API_TOKEN", env)
         self.assertNotIn("AKANE_DATA_ROOT", env)
+
+    def test_explicit_credential_reference_is_injected_and_exact_value_is_hidden_everywhere(self) -> None:
+        secret = "opaque-value-that-is-not-format-detectable"
+        executor = self._executor(
+            credential_env_names={"SERVICE_ACCESS_TOKEN"},
+            host_env={"PATH": os.environ.get("PATH", ""), "SERVICE_ACCESS_TOKEN": secret},
+        )
+
+        facts = executor.prompt_environment()["host_access"]
+        self.assertEqual(facts["credential_env_refs"], {"SERVICE_ACCESS_TOKEN": "configured"})
+        self.assertNotIn(secret, str(facts))
+        self.assertEqual(executor._build_env()["SERVICE_ACCESS_TOKEN"], secret)
+
+        start = executor.run(
+            owner=self.owner,
+            command=_echo_env("SERVICE_ACCESS_TOKEN"),
+            initial_wait_seconds=1,
+        )
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertNotIn(secret, start.stdout)
+        self.assertIn("[credential value hidden]", start.stdout)
+        persisted = (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8")
+        self.assertNotIn(secret, persisted)
+        self.assertIn("[credential value hidden]", persisted)
+
+    def test_missing_credential_reference_is_reported_without_inventing_a_value(self) -> None:
+        executor = self._executor(
+            credential_env_names={"MISSING_TOKEN"},
+            host_env={"PATH": os.environ.get("PATH", "")},
+        )
+        self.assertEqual(
+            executor.prompt_environment()["host_access"]["credential_env_refs"],
+            {"MISSING_TOKEN": "missing"},
+        )
+        self.assertNotIn("MISSING_TOKEN", executor._build_env())
+
+    def test_akane_internal_environment_cannot_be_exposed_as_a_credential_reference(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid_execution_credential_env_name"):
+            self._executor(credential_env_names={"AKANE_ADMIN_TOKEN"})
+
+    def test_secret_stream_redactor_masks_values_split_across_chunks(self) -> None:
+        redactor = _SecretStreamRedactor(("split-secret-value",))
+        first = redactor.feed("before split-sec")
+        self.assertEqual(first, "before ")
+        visible = "".join((first, redactor.feed("ret-value after"), redactor.feed("", final=True)))
+        self.assertEqual(visible, "before [credential value hidden] after")
 
     def test_default_environment_preserves_host_temp_and_cache_configuration(self) -> None:
         host_cache = str(self.workspace.parent / "host-cache")

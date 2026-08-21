@@ -12,8 +12,9 @@ Security model (Phase 2 scope; approval wiring lands in Phase 3):
   must already exist as a directory.
 * by default, child processes inherit the host user's ordinary environment so
   PATH, HOME and version-manager configuration work like a normal coding
-  agent. Credential-like names and Akane-internal variables are removed. A
-  host may opt into the older explicit-allowlist mode through configuration.
+  agent. Credential-like names and Akane-internal variables are removed unless
+  the host explicitly exposes a non-internal credential reference. A host may
+  opt into the older explicit-allowlist mode through configuration.
 * cancellation is confirmed only after the process group is gone; a request
   alone is never reported as success (``cancel_failed`` otherwise).
 * there is no command blacklist — command risk classification and ``ask``
@@ -103,6 +104,38 @@ _PROXY_ENV_NAMES = (
 )
 _SENSITIVE_ENV_NAME_RE = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 _HOST_INTERNAL_ENV_PREFIXES = ("AKANE_",)
+_CREDENTIAL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CREDENTIAL_OUTPUT_MARKER = "[credential value hidden]"
+
+
+class _SecretStreamRedactor:
+    """Redact exact configured values without losing chunk-boundary matches."""
+
+    def __init__(self, values: Sequence[str]) -> None:
+        self.values = tuple(sorted({str(value) for value in values if str(value)}, key=len, reverse=True))
+        self.pattern = re.compile("|".join(re.escape(value) for value in self.values)) if self.values else None
+        self.buffer = ""
+
+    def feed(self, text: str, *, final: bool = False) -> str:
+        if not self.values:
+            return str(text or "")
+        self.buffer += str(text or "")
+        if final:
+            ready, self.buffer = self.buffer, ""
+            return self._redact(ready)
+        keep = 0
+        for value in self.values:
+            max_prefix = min(len(value) - 1, len(self.buffer))
+            for size in range(max_prefix, keep, -1):
+                if self.buffer.endswith(value[:size]):
+                    keep = size
+                    break
+        cut = len(self.buffer) - keep
+        ready, self.buffer = self.buffer[:cut], self.buffer[cut:]
+        return self._redact(ready)
+
+    def _redact(self, text: str) -> str:
+        return self.pattern.sub(_CREDENTIAL_OUTPUT_MARKER, text) if self.pattern is not None else text
 
 
 class ExecutionPathError(Exception):
@@ -144,6 +177,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         run_log_dir: str | Path,
         provider_id: str = "local",
         allowed_env_names: Sequence[str] | None = None,
+        credential_env_names: Sequence[str] | None = None,
         host_env: Mapping[str, str] | None = None,
         proxy_url: str = "",
         proxy_probe: Any = None,
@@ -164,6 +198,19 @@ class TrustedLocalExecutor(ExecutionProvider):
         self.inherit_scrubbed_host_env = allowed_env_names is None
         allowed = {str(name or "").strip() for name in (allowed_env_names or ())}
         self.allowed_env_names = {name for name in allowed if name}
+        credential_names = {str(name or "").strip() for name in (credential_env_names or ())}
+        invalid_credentials = sorted(
+            name
+            for name in credential_names
+            if name
+            and (
+                _CREDENTIAL_ENV_NAME_RE.fullmatch(name) is None
+                or any(name.upper().startswith(prefix) for prefix in _HOST_INTERNAL_ENV_PREFIXES)
+            )
+        )
+        if invalid_credentials:
+            raise ValueError(f"invalid_execution_credential_env_name:{invalid_credentials[0]}")
+        self.credential_env_names = {name for name in credential_names if name}
         self.host_env = dict(host_env) if host_env is not None else dict(os.environ)
         self.proxy_url = str(proxy_url or "").strip()
         self._proxy_probe = proxy_probe or self._probe_http_proxy
@@ -203,6 +250,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         self._capture_failures: set[str] = set()
         self._unusable_logs: set[str] = set()
         self._pending_reasons: dict[str, str] = {}
+        self._run_secret_values: dict[str, tuple[str, ...]] = {}
         self.prune_run_logs()
 
     # -- ExecutionProvider interface -------------------------------------------------
@@ -262,6 +310,11 @@ class TrustedLocalExecutor(ExecutionProvider):
             "absolute_cwd": "supported",
             "environment": "ambient_non_secret",
         }
+        if self.credential_env_names:
+            environment["host_access"]["credential_env_refs"] = {
+                name: "configured" if self._host_env_value(name) is not None else "missing"
+                for name in sorted(self.credential_env_names)
+            }
         return environment
 
     def _toolchain_manifest(self) -> dict[str, dict[str, str]]:
@@ -316,11 +369,18 @@ class TrustedLocalExecutor(ExecutionProvider):
         return manifest
 
     def _version_probe_env(self, path_value: str) -> dict[str, str]:
-        env = self._inherited_environment()
+        env = self._inherited_environment(include_credentials=False)
         env["PATH"] = path_value
         return env
 
-    def _inherited_environment(self) -> dict[str, str]:
+    def _host_env_value(self, name: str) -> str | None:
+        if os.name == "nt":
+            hit = next((value for key, value in self.host_env.items() if str(key).casefold() == name.casefold()), None)
+        else:
+            hit = self.host_env.get(name)
+        return None if hit is None or not str(hit) else str(hit)
+
+    def _inherited_environment(self, *, include_credentials: bool = True) -> dict[str, str]:
         env: dict[str, str] = {}
         host_values = self.host_env
         if self.inherit_scrubbed_host_env:
@@ -334,8 +394,7 @@ class TrustedLocalExecutor(ExecutionProvider):
                 ):
                     continue
                 env[name] = str(raw_value)
-            return env
-        if os.name == "nt":
+        elif os.name == "nt":
             folded = {str(key).casefold(): (str(key), value) for key, value in host_values.items()}
             for name in sorted(self.allowed_env_names):
                 original_and_value = folded.get(name.casefold())
@@ -344,11 +403,16 @@ class TrustedLocalExecutor(ExecutionProvider):
                 output_name, value = original_and_value
                 if value is not None:
                     env[output_name] = str(value)
-            return env
-        for name in sorted(self.allowed_env_names):
-            value = host_values.get(name)
-            if value is not None:
-                env[name] = str(value)
+        else:
+            for name in sorted(self.allowed_env_names):
+                value = host_values.get(name)
+                if value is not None:
+                    env[name] = str(value)
+        if include_credentials:
+            for name in sorted(self.credential_env_names):
+                value = self._host_env_value(name)
+                if value is not None:
+                    env[name] = value
         return env
 
     @staticmethod
@@ -419,6 +483,12 @@ class TrustedLocalExecutor(ExecutionProvider):
             return ExecRunStart(status=EXEC_STATUS_FAILED, reason=str(exc))
 
         env = self._build_env(workdir=workdir)
+        with self._lock:
+            self._run_secret_values[run_id] = tuple(
+                value
+                for name in sorted(self.credential_env_names)
+                if (value := self._host_env_value(name)) is not None
+            )
         try:
             spawn_command: str | Sequence[str] = clean_command
             if os.name == "nt":
@@ -926,6 +996,8 @@ class TrustedLocalExecutor(ExecutionProvider):
         # must keep the same byte stream, otherwise cursor offsets and the
         # persisted output_ref diverge from the visible text.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with self._lock:
+            redactor = _SecretStreamRedactor(self._run_secret_values.get(run_id, ()))
         try:
             while True:
                 chunk = pipe.read(_READ_CHUNK_BYTES)
@@ -933,8 +1005,10 @@ class TrustedLocalExecutor(ExecutionProvider):
                     break
                 text = decoder.decode(chunk, final=False)
                 if text:
-                    self._record_output(run_id, owner, stream, text)
-            tail = decoder.decode(b"", final=True)
+                    visible = redactor.feed(text)
+                    if visible:
+                        self._record_output(run_id, owner, stream, visible)
+            tail = redactor.feed(decoder.decode(b"", final=True), final=True)
             if tail:
                 self._record_output(run_id, owner, stream, tail)
         except Exception:
@@ -1109,6 +1183,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             self._procs.pop(run_id, None)
             handle = self._logs.pop(run_id, None)
             self._pending_reasons.pop(run_id, None)
+            self._run_secret_values.pop(run_id, None)
             self._capture_failures.discard(run_id)
             if handle is not None:
                 try:

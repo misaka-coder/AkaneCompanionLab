@@ -154,16 +154,20 @@ exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
   `absolute_path_not_allowed` / `path_escapes_workspace`）。
 - 相对 cwd 解析后必须仍落在工作区根内，否则拒绝。
 
-## 6. 环境变量白名单
+## 6. 环境变量与凭据引用
 
-- 模型**不能**传 `env`。
-- 子进程只继承白名单中的宿主环境变量名（默认：PATH、SystemRoot、COMSPEC、
-  TEMP、TMP、USERPROFILE、HOME；宿主可用 `EXECUTION_ALLOWED_ENV_NAMES`
-  覆盖）。
-- 宿主完整 env、API key、token 不得进入模型结果。
+- 模型**不能**通过工具参数临时传入 `env` 或凭据值。
+- 默认像普通本机编码 Agent 一样继承宿主的非敏感环境与 PATH；凭据形名称及
+  `AKANE_*` 内部变量会被移除。宿主仍可用 `EXECUTION_ALLOWED_ENV_NAMES` 切换为
+  旧的严格白名单模式。
+- 确需让构建、发布或第三方 CLI 使用凭据时，宿主通过
+  `EXECUTION_CREDENTIAL_ENV_NAMES` 显式列出环境变量**名称**。模型只看到引用名及
+  `configured` / `missing`，子进程按次从宿主环境取得值；值不进入工具参数或提示历史。
+- 配置的凭据实际值会在 stdout/stderr 进入内存窗口和 run log 前做精确流式遮蔽，
+  包括跨读取 chunk 的值；命令仍可把凭据交给 SDK/CLI，但模型不需要读取明文。
 - 私有 run output store 对合法 UTF-8 保留完整文本；真正非法的字节序列会替换为
-  U+FFFD。模型可见的 Prompt、MemCore、
-  stream event、审计摘要统一使用脱敏投影（secret/path 会被替换）。
+  U+FFFD。模型可见的 Prompt、MemCore、stream event、审计摘要继续做凭据值级
+  脱敏；代码中的 `token = response.json()` 等字段名和周围证据不会因此被删除。
 - run log 的真实磁盘路径绝不返回给模型。
 
 ### 6.1 Python / pip 持久环境
@@ -284,10 +288,12 @@ QQ Shell 还受 `EXECUTION_QQ_ENABLED` 宿主总闸和当前会话自己的 `exe
 | `EXECUTION_QQ_ENABLED` | `false` | QQ Shell 宿主总闸；打开后仍需主人按私聊/群聊用 `/shell` 显式授权 |
 | `EXECUTION_WORKSPACE_ROOT` | `""` | 空 = `DATA_ROOT/execution_workspace`（自动创建） |
 | `EXECUTION_RUN_LOG_DIR` | `""` | 空 = `STATE_DIR/execution_runlogs`（自动创建） |
-| `EXECUTION_ALLOWED_ENV_NAMES` | `""` | 空 = 保守默认集；逗号分隔覆盖 |
+| `EXECUTION_ALLOWED_ENV_NAMES` | `""` | 空 = 继承非敏感宿主环境；非空 = 逗号分隔的严格白名单 |
+| `EXECUTION_CREDENTIAL_ENV_NAMES` | `""` | 允许执行器按次注入的凭据变量引用；只写名称，逗号分隔 |
 
 `settings_catalog.py` 将 `EXECUTION_ENABLED` / `EXECUTION_QQ_ENABLED` /
-`EXECUTION_WORKSPACE_ROOT` / `EXECUTION_RUN_LOG_DIR` / `EXECUTION_ALLOWED_ENV_NAMES`
+`EXECUTION_WORKSPACE_ROOT` / `EXECUTION_RUN_LOG_DIR` / `EXECUTION_ALLOWED_ENV_NAMES` /
+`EXECUTION_CREDENTIAL_ENV_NAMES`
 列为 `EXCLUDED_KEYS`：它们是 host-startup 安全边界，只能由部署配置提供，绝不作为
 control-center 设置或 live runtime override 暴露。
 

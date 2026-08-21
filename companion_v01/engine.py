@@ -8174,11 +8174,14 @@ class AkaneMemoryEngine:
             run_log_dir = Path(getattr(config, "EXECUTION_RUN_LOG_DIR", "") or (state_dir / "execution_runlogs"))
             allowed_raw = str(getattr(config, "EXECUTION_ALLOWED_ENV_NAMES", "") or "").strip()
             allowed_names = [name.strip() for name in allowed_raw.split(",") if name.strip()] or None
+            credential_raw = str(getattr(config, "EXECUTION_CREDENTIAL_ENV_NAMES", "") or "").strip()
+            credential_names = [name.strip() for name in credential_raw.split(",") if name.strip()]
             proxy_url = str(getattr(config, "EXECUTION_PROXY_URL", "") or "").strip()
             provider = TrustedLocalExecutor(
                 workspace_root=workspace_root,
                 run_log_dir=run_log_dir,
                 allowed_env_names=allowed_names,
+                credential_env_names=credential_names,
                 proxy_url=proxy_url,
                 mounts=self._get_skill_registry().mount_paths(),
             )
