@@ -28,6 +28,7 @@ let chatWasAtBottom = true;
 let lastChatMessageId = "";
 let voicePreviewDraft = "";
 let wakeWordDraft = "";
+let voiceProfilePreviewAudio = null;
 let livePresentationPreferences = null;
 let framingDrag = null;
 let renderedPage = "";
@@ -59,6 +60,24 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const voiceProfileEditButton = event.target.closest("button[data-voice-profile-edit]");
+  if (voiceProfileEditButton && !voiceProfileEditButton.disabled) {
+    editVoiceProfile(voiceProfileEditButton.dataset.providerId, voiceProfileEditButton.dataset.voiceProfileEdit);
+    return;
+  }
+  const voiceProfileActionButton = event.target.closest("button[data-voice-profile-action]");
+  if (voiceProfileActionButton && !voiceProfileActionButton.disabled) {
+    const operation = voiceProfileActionButton.dataset.voiceProfileAction;
+    const payload = {
+      providerId: voiceProfileActionButton.dataset.providerId || "",
+      voiceProfileId: voiceProfileActionButton.dataset.voiceProfileId || "",
+      characterPackId: store.getState().viewModel?.character?.packId || ""
+    };
+    if (operation === "test") void runVoiceProfileTest(payload);
+    if (operation === "bind") void runAction("abilities.provider.voiceProfile.assignToCurrentCharacter", payload);
+    if (operation === "clear") void runAction("abilities.provider.voiceProfile.clearCurrentCharacter", payload);
+    return;
+  }
   const approvalRequestButton = event.target.closest("button[data-approval-request]");
   if (approvalRequestButton && !approvalRequestButton.disabled) {
     void runAction("abilities.approvalRequest.decide", {
@@ -149,6 +168,7 @@ root.addEventListener("click", (event) => {
   }
   const actionButton = event.target.closest("[data-action]");
   if (!actionButton || actionButton.disabled) return;
+  if (actionButton.matches('button[type="submit"]') && actionButton.closest("form")) return;
   const actionId = actionButton.dataset.action;
   if (actionId === "voice.previewPlay") {
     const previewInput = root.querySelector("[data-voice-preview-input]");
@@ -242,7 +262,7 @@ root.addEventListener("submit", (event) => {
     if (!actionId || event.submitter?.disabled) return;
     const payload = capabilityFormPayload(capabilityForm, actionId);
     if (!payload) return;
-    void runAction(actionId, payload);
+    void runCapabilityFormAction(actionId, payload);
     return;
   }
   const wakeWordForm = event.target.closest("[data-wake-word-form]");
@@ -311,7 +331,114 @@ function capabilityFormPayload(form, actionId) {
       outputImageSlot: String(data.get("outputImageSlot") || "").trim()
     };
   }
+  if (form.dataset.capabilityForm === "voice-profile") {
+    const providerId = form.dataset.providerId || "";
+    if (actionId === "abilities.provider.voiceProfile.inspectFolder") {
+      const folderPath = String(data.get("folderPath") || "").trim();
+      if (!folderPath) {
+        const input = form.elements.namedItem("folderPath");
+        input?.setCustomValidity("请先填写 GPT-SoVITS 模型目录。");
+        input?.reportValidity();
+        input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+        return null;
+      }
+      return { providerId, folderPath };
+    }
+    return {
+      providerId,
+      voiceProfileId: String(data.get("voiceProfileId") || "").trim(),
+      displayName: String(data.get("displayName") || "").trim(),
+      voiceProfileEnabled: data.get("voiceProfileEnabled") === "on",
+      textLang: String(data.get("textLang") || "").trim(),
+      promptLang: String(data.get("promptLang") || "").trim(),
+      mediaType: String(data.get("mediaType") || "").trim(),
+      refAudioPath: String(data.get("refAudioPath") || "").trim(),
+      promptText: String(data.get("promptText") || "").trim()
+    };
+  }
   return null;
+}
+
+async function runCapabilityFormAction(actionId, payload) {
+  const result = await runAction(actionId, payload);
+  if (actionId === "abilities.provider.voiceProfile.inspectFolder" && result?.ok && result.suggestedProfile) {
+    capabilityFormDrafts.delete("voice-profile:editor");
+    openCapabilityPanels.add("voice-profile:editor");
+    store.patch({
+      voiceProfileSuggestion: {
+        ...result.suggestedProfile,
+        providerId: payload.providerId,
+        folderPath: payload.folderPath
+      },
+      voiceProfileInspection: {
+        detected: result.detected || {},
+        warnings: Array.isArray(result.warnings) ? result.warnings : []
+      },
+      voiceProfileEditorOpen: true
+    });
+  }
+  return result;
+}
+
+function editVoiceProfile(providerId, voiceProfileId) {
+  const state = store.getState();
+  const provider = state.viewModel?.abilities?.providers?.find((item) => item.id === providerId);
+  const profile = provider?.voiceProfiles?.find((item) => item.voiceProfileId === voiceProfileId);
+  if (!profile) return;
+  capabilityFormDrafts.delete("voice-profile:editor");
+  openCapabilityPanels.add("voice-profile:editor");
+  store.patch({
+    voiceProfileSuggestion: {
+      providerId,
+      voiceProfileId: profile.voiceProfileId,
+      displayName: profile.name,
+      enabled: profile.enabled,
+      textLang: profile.textLang,
+      promptLang: profile.promptLang,
+      mediaType: profile.mediaType
+    },
+    voiceProfileInspection: null,
+    voiceProfileEditorOpen: true
+  });
+  requestAnimationFrame(() => root.querySelector(".voice-profile-editor")?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+}
+
+async function runVoiceProfileTest(payload) {
+  const text = String(root.querySelector("[data-voice-preview-input]")?.value || voicePreviewDraft || "你好呀，今天也请多关照。").trim();
+  const actionId = "abilities.provider.ttsTest";
+  const result = await runAction(actionId, { ...payload, text });
+  if (!result?.ok || !result.audioBase64) return result;
+  try {
+    await playVoiceProfileAudio(result.audioBase64, result.mediaType);
+    updateAction(actionId, { phase: "confirmed", label: "正在试听", detail: "服务已返回真实音频" });
+  } catch (error) {
+    updateAction(actionId, { phase: "failed", label: "音频未能播放", detail: friendlyError(error) });
+  }
+  return result;
+}
+
+async function playVoiceProfileAudio(base64, mediaType) {
+  voiceProfilePreviewAudio?.pause?.();
+  if (voiceProfilePreviewAudio?.dataset?.objectUrl) URL.revokeObjectURL(voiceProfilePreviewAudio.dataset.objectUrl);
+  const binary = atob(String(base64));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const mime = String(mediaType || "audio/wav").includes("/") ? String(mediaType) : `audio/${String(mediaType || "wav")}`;
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const audio = new Audio(objectUrl);
+  audio.dataset.objectUrl = objectUrl;
+  voiceProfilePreviewAudio = audio;
+  audio.addEventListener("ended", () => {
+    URL.revokeObjectURL(objectUrl);
+    if (voiceProfilePreviewAudio === audio) voiceProfilePreviewAudio = null;
+  }, { once: true });
+  try {
+    await audio.play();
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    if (voiceProfilePreviewAudio === audio) voiceProfilePreviewAudio = null;
+    throw error;
+  }
 }
 
 root.addEventListener("scroll", (event) => {
@@ -359,7 +486,11 @@ void bridge.start().catch((error) => {
   store.patch({ phase: "failed", error: friendlyError(error), viewModel: null });
 });
 
-window.addEventListener("beforeunload", () => bridge.stop(), { once: true });
+window.addEventListener("beforeunload", () => {
+  bridge.stop();
+  voiceProfilePreviewAudio?.pause?.();
+  if (voiceProfilePreviewAudio?.dataset?.objectUrl) URL.revokeObjectURL(voiceProfilePreviewAudio.dataset.objectUrl);
+}, { once: true });
 
 async function refresh() {
   if (store.getState().phase === "refreshing") return;

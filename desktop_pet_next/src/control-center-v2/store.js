@@ -36,6 +36,9 @@ export function createInitialControlCenterState(options = {}) {
     framingTarget: "portrait",
     presentationNotice: null,
     modelDraft: null,
-    modelModels: []
+    modelModels: [],
+    voiceProfileSuggestion: null,
+    voiceProfileInspection: null,
+    voiceProfileEditorOpen: false
   };
 }

@@ -21,7 +21,7 @@ export function renderVoice(state) {
   return `
     <section class="ccv2-voice" aria-labelledby="ccv2-page-title">
       <div class="voice-heading">
-        <div><p class="eyebrow">VOICE & LISTENING</p><h2>让她听见，也让她说出来</h2><p>日常开关、试听和唤醒设置都在这里；角色声线仍由角色工坊统一管理。</p></div>
+        <div><p class="eyebrow">VOICE & LISTENING</p><h2>让她听见，也让她说出来</h2><p>日常开关留在上面，角色声线在下方完成检查、试听与绑定。</p></div>
         <span class="voice-live-pill is-${voice.speaking ? "speaking" : voice.inputState === "recording" ? "listening" : "idle"}"><i></i>${escapeHtml(voiceStateLabel(voice))}</span>
       </div>
 
@@ -80,7 +80,7 @@ export function renderVoice(state) {
                 ${renderActionButton(state, vm, "voice.stop", "■", "停止播放", "soft")}
               </div>
             </form>
-            <div class="voice-profile-route"><span>角色声线</span><p>绑定和更换声线档案请在角色工坊完成，避免同一角色出现两套权威配置。</p>${renderActionButton(state, vm, "character.openWorkshop", "↗", "打开角色工坊", "soft")}</div>
+            <div class="voice-profile-route"><span>角色声线</span><p>当前角色的语音绑定仍写回角色包；这里提供同一条真实配置链路，不复制角色包权威。</p><a class="voice-inline-link" href="#voice-profile-center">管理角色声线 ↓</a></div>
           </section>
 
           <section class="voice-health-card glass-panel">
@@ -93,7 +93,125 @@ export function renderVoice(state) {
           </section>
         </aside>
       </div>
+
+      ${renderVoiceProfileCenter(state, vm)}
     </section>`;
+}
+
+function renderVoiceProfileCenter(state, vm) {
+  const providers = vm.abilities.providers.filter((item) => item.adapter === "gpt_sovits" || item.type === "tts_provider" || item.voiceProfiles.length);
+  const profiles = providers.flatMap((provider) => provider.voiceProfiles.map((profile) => ({ ...profile, provider })));
+  const binding = vm.character.voice;
+  const boundProfile = profiles.find((item) => item.voiceProfileId === binding.profileId);
+  const suggestion = state.voiceProfileSuggestion || {};
+  const activeProvider = providers.find((item) => item.id === suggestion.providerId) || providers[0];
+  const currentLabel = binding.profileId ? (boundProfile?.name || binding.profileId) : "跟随默认语音";
+  return `
+    <section class="voice-profile-center" id="voice-profile-center" aria-labelledby="voice-profile-title">
+      <div class="voice-profile-heading">
+        <div><p class="eyebrow">CHARACTER VOICE</p><h3 id="voice-profile-title">角色声线</h3><p>先确认服务和声线真的可用，再绑定给当前角色。保存、试听、绑定是三个独立状态。</p></div>
+        <span class="mini-chip">${escapeHtml(profiles.length ? `${profiles.length} 个档案` : "等待配置")}</span>
+      </div>
+
+      <div class="voice-profile-overview">
+        <article class="voice-current-binding glass-panel">
+          <div class="voice-current-mark" aria-hidden="true">♪</div>
+          <span><small>${escapeHtml(vm.character.displayName)} 当前使用</small><strong>${escapeHtml(currentLabel)}</strong><em>${escapeHtml(binding.profileId ? (boundProfile?.configured ? "角色包已绑定 · 档案可用" : "角色包已绑定 · 档案需要检查") : "没有角色专属绑定，将使用可用的默认通道")}</em></span>
+          ${binding.profileId ? renderProfileActionButton(state, vm, "abilities.provider.voiceProfile.clearCurrentCharacter", "清除绑定", { action: "clear", tone: "soft" }) : ""}
+        </article>
+        <article class="voice-service-summary glass-panel">
+          <span><small>声线服务</small><strong>${escapeHtml(activeProvider?.title || "GPT-SoVITS 尚未接入")}</strong></span>
+          <em class="is-${escapeHtml(activeProvider?.statusTone || "warning")}">${escapeHtml(activeProvider?.statusLabel || "待配置")}</em>
+          <p>${escapeHtml(activeProvider?.reason || activeProvider?.description || "请先在能力页配置真实的本地语音服务。")}</p>
+          ${renderActionButton(state, vm, "character.openWorkshop", "↗", "打开角色工坊", "soft")}
+        </article>
+      </div>
+
+      ${profiles.length ? `<div class="voice-profile-grid">${profiles.map((item) => renderVoiceProfileCard(state, vm, item, binding.profileId)).join("")}</div>` : `<div class="voice-profile-empty glass-panel"><span>还没有声线档案</span><p>可以从 GPT-SoVITS 模型目录读取建议配置，也可以手动填写参考音频和提示文本。</p></div>`}
+
+      ${activeProvider ? renderVoiceProfileEditor(state, vm, activeProvider, suggestion) : `
+        <div class="voice-profile-missing glass-panel">
+          <div><strong>当前没有可配置的语音 Provider</strong><p>先在“能力与权限”中接通本地 GPT-SoVITS，Voice 页不会制造一个看似可用的假入口。</p></div>
+          <button class="action-button is-soft" type="button" data-page="abilities"><span>↗</span><b>前往能力配置</b></button>
+        </div>`}
+    </section>`;
+}
+
+function renderVoiceProfileCard(state, vm, item, boundProfileId) {
+  const bound = item.voiceProfileId === boundProfileId;
+  const meta = [item.referenceAudioName, item.textLang && `${item.textLang}/${item.promptLang}`, item.mediaType.toUpperCase()].filter(Boolean);
+  return `<article class="voice-profile-card glass-panel${bound ? " is-bound" : ""}">
+    <div class="voice-profile-card-head"><span><small>${escapeHtml(item.provider.title)}</small><strong>${escapeHtml(item.name)}</strong></span><em class="is-${escapeHtml(item.statusTone)}">${escapeHtml(bound ? "当前绑定" : item.statusLabel)}</em></div>
+    <p>${escapeHtml(meta.join(" · ") || item.reason || "声线资料等待同步")}</p>
+    <div class="voice-profile-card-actions">
+      ${renderProfileActionButton(state, vm, "abilities.provider.ttsTest", "试听", { action: "test", providerId: item.provider.id, voiceProfileId: item.voiceProfileId, disabled: !item.enabled })}
+      ${bound ? "" : renderProfileActionButton(state, vm, "abilities.provider.voiceProfile.assignToCurrentCharacter", "绑定角色", { action: "bind", providerId: item.provider.id, voiceProfileId: item.voiceProfileId, disabled: !item.enabled })}
+      <button class="action-button is-quiet" type="button" data-voice-profile-edit="${escapeHtml(item.voiceProfileId)}" data-provider-id="${escapeHtml(item.provider.id)}"><span>✎</span><b>调整</b></button>
+    </div>
+  </article>`;
+}
+
+function renderVoiceProfileEditor(state, vm, provider, draft) {
+  const selectedId = String(draft.voiceProfileId || "").trim();
+  const existing = provider.voiceProfiles.find((item) => item.voiceProfileId === selectedId);
+  const enabled = draft.enabled ?? existing?.enabled ?? true;
+  return `<details class="voice-profile-editor glass-panel" data-capability-key="voice-profile:editor"${state.voiceProfileEditorOpen ? " open" : ""}>
+    <summary><span><small>低频配置</small><strong>${escapeHtml(selectedId ? `调整 ${draft.displayName || existing?.name || selectedId}` : "添加声线档案")}</strong></span><em>展开配置⌄</em></summary>
+    <form data-capability-form="voice-profile" data-provider-id="${escapeHtml(provider.id)}">
+      <fieldset class="voice-folder-inspector">
+        <legend>从模型目录读取</legend>
+        <label class="is-wide"><span>模型目录</span><input type="text" name="folderPath" value="${escapeHtml(draft.folderPath || "")}" placeholder="例如：D:\\GPT-SoVITS\\voices\\reimu"><small>只在点击检查时读取；不会因为输入路径就自动保存。</small></label>
+        ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.inspectFolder", "检查目录", "⌕")}
+      </fieldset>
+      ${state.voiceProfileInspection ? renderInspectionSummary(state.voiceProfileInspection) : ""}
+      <div class="voice-profile-form-grid">
+        <label><span>档案 ID</span><input type="text" name="voiceProfileId" value="${escapeHtml(selectedId)}" maxlength="80" required placeholder="reimu_main"></label>
+        <label><span>显示名称</span><input type="text" name="displayName" value="${escapeHtml(draft.displayName || existing?.name || "")}" maxlength="80" placeholder="灵梦 · 主声线"></label>
+        <label><span>正文语言</span><input type="text" name="textLang" value="${escapeHtml(draft.textLang || existing?.textLang || "zh")}" maxlength="20"></label>
+        <label><span>参考语言</span><input type="text" name="promptLang" value="${escapeHtml(draft.promptLang || existing?.promptLang || "zh")}" maxlength="20"></label>
+        <label><span>音频格式</span><select name="mediaType">${["wav", "ogg", "mp3"].map((value) => `<option value="${value}"${value === (draft.mediaType || existing?.mediaType || "wav") ? " selected" : ""}>${value.toUpperCase()}</option>`).join("")}</select></label>
+        <label class="voice-enabled-field"><span>启用档案</span><input type="checkbox" name="voiceProfileEnabled" ${enabled ? "checked" : ""}></label>
+        <label class="is-wide"><span>参考音频</span><input type="text" name="refAudioPath" value="${escapeHtml(draft.refAudioPath || "")}" placeholder="检查目录后自动填写，或粘贴本机音频路径"><small>${existing?.referenceAudioName ? `已保存 ${escapeHtml(existing.referenceAudioName)}；留空不会清除原值。` : "需要真实可读的本机音频文件。"}</small></label>
+        <label class="is-wide"><span>参考文本</span><textarea name="promptText" rows="3" maxlength="1000" placeholder="与参考音频一致的文字；调整已有档案时留空可保留原值。">${escapeHtml(draft.promptText || "")}</textarea></label>
+      </div>
+      <div class="voice-profile-editor-actions">
+        ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.save", "保存档案", "✓", "primary")}
+        <small>保存只证明配置已写入；请再试听，确认服务和音频链路真实可用后再绑定。</small>
+      </div>
+    </form>
+  </details>`;
+}
+
+function renderInspectionSummary(inspection) {
+  const detected = inspection.detected || {};
+  const details = [detected.configFileName, detected.referenceAudioName, detected.gptWeightName, detected.sovitsWeightName].filter(Boolean);
+  const warnings = Array.isArray(inspection.warnings) ? inspection.warnings : [];
+  return `<div class="voice-inspection-result ${warnings.length ? "has-warning" : "is-ready"}"><strong>${warnings.length ? "目录已读取，但还需补充" : "目录结构已读取"}</strong><span>${escapeHtml(details.join(" · ") || "已生成建议配置")}</span>${warnings.length ? `<small>${escapeHtml(warnings.map(inspectionWarningLabel).join("；"))}</small>` : ""}</div>`;
+}
+
+function inspectionWarningLabel(value) {
+  return {
+    tts_infer_yaml_missing: "未发现推理配置",
+    reference_audio_missing: "未发现参考音频",
+    prompt_text_missing: "未读取到参考文本",
+    gpt_weight_missing: "未发现 GPT 权重",
+    sovits_weight_missing: "未发现 SoVITS 权重"
+  }[value] || value;
+}
+
+function renderProfileActionButton(state, vm, actionId, label, options = {}) {
+  const action = vm.actions[actionId] || { available: false, reason: "当前不可用" };
+  const actionState = state.actionStates[actionId];
+  const pending = ["pressed", "pending"].includes(actionState?.phase);
+  const disabled = options.disabled || !action.available || pending;
+  return `<button class="action-button is-${escapeHtml(options.tone || "soft")}${pending ? " is-pending" : ""}" type="button" data-voice-profile-action="${escapeHtml(options.action || "")}" data-provider-id="${escapeHtml(options.providerId || "")}" data-voice-profile-id="${escapeHtml(options.voiceProfileId || "")}" title="${escapeHtml(action.available ? label : action.reason)}" ${disabled ? "disabled" : ""}><span>${options.action === "test" ? "▶" : options.action === "clear" ? "×" : "＋"}</span><b>${escapeHtml(pending ? "处理中…" : actionState?.phase === "confirmed" ? actionState.label : label)}</b></button>`;
+}
+
+function renderProfileSubmitButton(state, vm, actionId, label, icon, tone = "soft") {
+  const action = vm.actions[actionId] || { available: false, reason: "当前不可用" };
+  const actionState = state.actionStates[actionId];
+  const pending = ["pressed", "pending"].includes(actionState?.phase);
+  return `<button class="action-button is-${escapeHtml(tone)}${pending ? " is-pending" : ""}" type="submit" data-action="${escapeHtml(actionId)}" title="${escapeHtml(action.available ? label : action.reason)}" ${action.available && !pending ? "" : "disabled"}><span>${escapeHtml(icon)}</span><b>${escapeHtml(pending ? "处理中…" : actionState?.phase === "confirmed" ? actionState.label : label)}</b></button>`;
 }
 
 function renderVoiceToggle(state, vm, actionId, enabled, label) {

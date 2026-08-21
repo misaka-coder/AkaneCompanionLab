@@ -56,6 +56,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     character: {
       packId: text(characterRuntime.selectedPackId) || text(petState.characterPackId),
       displayName,
+      voice: normalizeCharacterVoicePreference(characterRuntime.voice),
       outfit: text(petState.outfit),
       emotion: emotionName,
       visuals: {
@@ -100,6 +101,17 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "abilities.skills.openFolder": { available: true, reason: "" },
       "abilities.provider.config.save": capabilityActionAvailability(connected, abilities.providers),
       "abilities.provider.healthCheck": capabilityActionAvailability(connected, abilities.providers),
+      "abilities.provider.ttsTest": voiceProfileActionAvailability(connected, abilities.providers, "test"),
+      "abilities.provider.voiceProfile.inspectFolder": voiceProfileActionAvailability(connected, abilities.providers, "configure"),
+      "abilities.provider.voiceProfile.save": voiceProfileActionAvailability(connected, abilities.providers, "configure"),
+      "abilities.provider.voiceProfile.assignToCurrentCharacter": {
+        available: connected && Boolean(text(characterRuntime.selectedPackId) || text(petState.characterPackId)) && abilities.providers.some((entry) => entry.voiceProfiles.some((profile) => profile.enabled)),
+        reason: !connected ? "桌宠尚未连接" : !(text(characterRuntime.selectedPackId) || text(petState.characterPackId)) ? "当前没有可绑定的角色包" : "还没有可用的声线档案"
+      },
+      "abilities.provider.voiceProfile.clearCurrentCharacter": {
+        available: connected && Boolean(text(characterRuntime.selectedPackId) || text(petState.characterPackId)) && Boolean(text(asObject(characterRuntime.voice).profileId)),
+        reason: !connected ? "桌宠尚未连接" : "当前角色没有单独绑定声线"
+      },
       "abilities.mcp.config.save": capabilityActionAvailability(connected, abilities.mcpServers),
       "abilities.mcp.discover": capabilityActionAvailability(connected, abilities.mcpServers),
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
@@ -687,6 +699,8 @@ function normalizeAbilityProviders(value) {
       id: text(entry.id),
       title: text(entry.title) || text(entry.name) || "本地服务",
       description: text(entry.description),
+      adapter: text(entry.adapter),
+      type: text(entry.type),
       status: text(entry.status) || "missing_config",
       statusLabel: text(entry.statusLabel) || "待配置",
       statusTone: text(entry.statusTone) || "warning",
@@ -696,9 +710,44 @@ function normalizeAbilityProviders(value) {
       endpoint: text(entry.endpoint),
       defaultEndpoint: text(entry.defaultEndpoint),
       usedByLabel: text(entry.usedByLabel),
+      voiceProfiles: normalizeAbilityVoiceProfiles(entry.voiceProfiles),
+      defaultVoiceProfile: voiceProfileIdOf(entry.defaultVoiceProfile) ? normalizeAbilityVoiceProfile(entry.defaultVoiceProfile) : null,
       actionsEnabled: entry.actionsEnabled !== false && Boolean(text(entry.id))
     };
   }).filter((item) => item.title);
+}
+
+function normalizeAbilityVoiceProfiles(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => normalizeAbilityVoiceProfile(item))
+    .filter((item) => item.voiceProfileId);
+}
+
+function voiceProfileIdOf(value) {
+  const entry = asObject(value);
+  return text(entry.voiceProfileId) || text(entry.id);
+}
+
+function normalizeAbilityVoiceProfile(value) {
+  const entry = asObject(value);
+  const voiceProfileId = voiceProfileIdOf(entry);
+  return {
+    voiceProfileId,
+    providerId: text(entry.providerId),
+    name: text(entry.name) || voiceProfileId || "GPT-SoVITS 声线",
+    enabled: entry.enabled !== false,
+    configured: Boolean(entry.configured),
+    status: text(entry.status) || "missing_config",
+    statusLabel: text(entry.statusLabel) || "待配置",
+    statusTone: text(entry.statusTone) || "warning",
+    reason: text(entry.reason),
+    textLang: text(entry.textLang) || "zh",
+    promptLang: text(entry.promptLang) || "zh",
+    mediaType: text(entry.mediaType) || "wav",
+    referenceAudioName: text(entry.referenceAudioName),
+    promptTextLength: Math.max(0, Math.round(finiteNumber(entry.promptTextLength, 0))),
+    updatedAt: text(entry.updatedAt)
+  };
 }
 
 function normalizeAbilityMcpServers(value) {
@@ -765,6 +814,24 @@ function normalizeAbilityIntegrations(source) {
 function capabilityActionAvailability(connected, entries) {
   const available = connected && entries.some((entry) => entry.actionsEnabled !== false);
   return { available, reason: connected ? "当前没有可配置的项目" : "桌宠尚未连接" };
+}
+
+function voiceProfileActionAvailability(connected, providers, operation) {
+  const voiceProviders = providers.filter((entry) => entry.adapter === "gpt_sovits" || entry.type === "tts_provider" || entry.voiceProfiles.length);
+  const available = connected && voiceProviders.some((entry) => entry.actionsEnabled !== false) && (operation !== "test" || voiceProviders.some((entry) => entry.voiceProfiles.some((profile) => profile.enabled)));
+  return {
+    available,
+    reason: !connected ? "桌宠尚未连接" : operation === "test" ? "还没有可试听的声线档案" : "当前没有可配置的语音服务"
+  };
+}
+
+function normalizeCharacterVoicePreference(value) {
+  const source = asObject(value);
+  return {
+    provider: text(source.provider),
+    profileId: text(source.profileId) || text(source.profile_id),
+    notes: text(source.notes)
+  };
 }
 
 function normalizeLabelValueRows(value, limit) {

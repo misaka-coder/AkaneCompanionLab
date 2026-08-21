@@ -77,6 +77,7 @@ const rawSnapshot = {
   characterRuntime: {
     selectedPack: "测试角色",
     selectedPackId: "test_character",
+    voice: { provider: "gpt_sovits", profileId: "reimu_main", notes: "主声线" },
     hero: "https://127.0.0.1/assets/hero.png",
     availablePacks: [
       { id: "test_character", appName: "测试角色", defaultOutfit: "default", selected: true },
@@ -113,7 +114,34 @@ const rawSnapshot = {
       { title: "文件与工作区", description: "材料整理 / 文件交付", permission: "工作区文件访问", count: "8 项能力", tone: "orange", statusLabel: "可用", statusTone: "ready" },
       { title: "安全与契约", description: "权限确认 / 风险隔离", permission: "安全与确认", count: "3 项能力", tone: "pink", statusLabel: "已生效", statusTone: "ready" }
     ],
-    providers: [{ id: "provider.tts.local", title: "本地语音服务", status: "ready", statusLabel: "可用", reason: "已连接", enabled: true, endpoint: "http://127.0.0.1:9880", actionsEnabled: true }],
+    providers: [{
+      id: "provider.tts.gpt_sovits.local",
+      title: "本地 GPT-SoVITS",
+      adapter: "gpt_sovits",
+      type: "tts_provider",
+      status: "ready",
+      statusLabel: "可用",
+      statusTone: "ready",
+      reason: "已连接",
+      enabled: true,
+      endpoint: "http://127.0.0.1:9880",
+      actionsEnabled: true,
+      voiceProfiles: [{
+        voiceProfileId: "reimu_main",
+        providerId: "provider.tts.gpt_sovits.local",
+        name: "灵梦 · 主声线",
+        enabled: true,
+        configured: true,
+        status: "ready",
+        statusLabel: "可用",
+        statusTone: "ready",
+        textLang: "zh",
+        promptLang: "zh",
+        mediaType: "wav",
+        referenceAudioName: "reimu_ref.wav",
+        promptTextLength: 12
+      }]
+    }],
     mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
     workflows: [{ workflowId: "workflow.workshop.portrait.cutout", title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定", enabled: true, configured: true, workflowPath: "workflows/portrait.json", actionsEnabled: true }],
     skills: {
@@ -250,7 +278,12 @@ assert.equal(viewModel.abilities.availability, 86);
 assert.equal(viewModel.abilities.modules.length, 2);
 assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
 assert.equal(viewModel.abilities.integrations.length, 3);
-assert.equal(viewModel.abilities.providers[0].id, "provider.tts.local");
+assert.equal(viewModel.abilities.providers[0].id, "provider.tts.gpt_sovits.local");
+assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].voiceProfileId, "reimu_main");
+assert.equal(viewModel.character.voice.profileId, "reimu_main");
+assert.equal(viewModel.actions["abilities.provider.ttsTest"].available, true);
+assert.equal(viewModel.actions["abilities.provider.voiceProfile.assignToCurrentCharacter"].available, true);
+assert.equal(viewModel.actions["abilities.provider.voiceProfile.clearCurrentCharacter"].available, true);
 assert.equal(viewModel.abilities.mcpServers[0].serverId, "anysearch");
 assert.equal(viewModel.abilities.workflows[0].workflowId, "workflow.workshop.portrait.cutout");
 assert.equal(viewModel.abilities.approvalRequests[0].requestId, "approval_001");
@@ -661,6 +694,16 @@ assert.match(voiceHtml, /data-voice-range="volume"/);
 assert.match(voiceHtml, /data-wake-word-form/);
 assert.match(voiceHtml, /data-voice-preview-form/);
 assert.match(voiceHtml, /打开角色工坊/);
+assert.match(voiceHtml, /角色声线/);
+assert.match(voiceHtml, /灵梦 · 主声线/);
+assert.match(voiceHtml, /角色包已绑定 · 档案可用/);
+assert.match(voiceHtml, /data-voice-profile-action="test"/);
+assert.match(voiceHtml, /data-voice-profile-action="clear"/);
+assert.match(voiceHtml, /data-capability-form="voice-profile"/);
+assert.match(voiceHtml, /data-action="abilities\.provider\.voiceProfile\.inspectFolder"/);
+assert.match(voiceHtml, /data-action="abilities\.provider\.voiceProfile\.save"/);
+assert.match(voiceHtml, /保存只证明配置已写入/);
+assert.doesNotMatch(voiceHtml, /C:\\voices\\reimu_ref\.wav/);
 assert.doesNotMatch(voiceHtml, /portrait|hero-image|character-preview/);
 
 const systemHtml = renderSystem({ viewModel, actionStates: {}, phase: "ready" });
