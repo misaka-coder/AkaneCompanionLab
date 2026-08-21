@@ -79,7 +79,7 @@ class QQToolDeliveryPort:
         context = self._context(request_context)
         if context is None:
             return {"ok": False, "status": "unavailable", "reason": "qq_delivery_context_missing"}
-        result = dict(self._gateway.send_voice(context, audio_path=absolute_path, name=name, claim_reply=False))
+        result = dict(self._gateway.send_voice(context, audio_path=absolute_path, name=name))
         result.setdefault("status", "sent" if result.get("ok") else "failed")
         result["delivery_surface"] = "voice"
         return result

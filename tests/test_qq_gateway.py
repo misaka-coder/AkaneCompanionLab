@@ -1970,7 +1970,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(result["chat_model"], "deepseek-chat")
         self.assertEqual(gateway.resolve_chat_model_override(session_id), "")
 
-    def test_send_voice_uses_onebot_record_segment(self) -> None:
+    def test_send_voice_uses_independent_onebot_record_and_preserves_text_reply_claim(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1994,16 +1994,21 @@ class QQGatewayTests(unittest.TestCase):
             audio_path = Path(temp_dir) / "reply.wav"
             audio_path.write_bytes(b"RIFF....WAVE")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=[FakeResponse(), FakeResponse()],
             ) as mocked_post:
                 result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
+                text_result = gateway.send_reply(context, "语音之后的文字")
 
         self.assertTrue(result["ok"])
-        payload = mocked_post.call_args.kwargs["json"]
-        self.assertEqual(payload["user_id"], QQ_USER_FIXTURE_ID)
-        self.assertEqual(payload["message"][0], {"type": "reply", "data": {"id": "send-voice-1"}})
-        record = next(item for item in payload["message"] if item["type"] == "record")
+        self.assertTrue(text_result["ok"])
+        voice_payload = mocked_post.call_args_list[0].kwargs["json"]
+        text_payload = mocked_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(voice_payload["user_id"], QQ_USER_FIXTURE_ID)
+        self.assertEqual([item["type"] for item in voice_payload["message"]], ["record"])
+        record = voice_payload["message"][0]
         self.assertIn("file", record["data"])
+        self.assertEqual(text_payload["message"][0], {"type": "reply", "data": {"id": "send-voice-1"}})
 
     def test_send_replies_quotes_only_the_first_segment(self) -> None:
         gateway = NapCatQQGateway()

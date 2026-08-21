@@ -3994,7 +3994,6 @@ class NapCatQQGateway:
         *,
         audio_path: str,
         name: str = "",
-        claim_reply: bool = True,
     ) -> dict[str, Any]:
         clean_path = str(audio_path or "").strip()
         if not context.target_id or not clean_path:
@@ -4004,7 +4003,6 @@ class NapCatQQGateway:
         if not path_obj.exists():
             return {"ok": False, "reason": "audio_not_found"}
 
-        reply_to = self._claim_reply_message_id(context) if claim_reply else ""
         resolved_path = path_obj.resolve()
         onebot_path = self._onebot_file_path(resolved_path)
         file_candidates: list[tuple[str, str]] = []
@@ -4022,7 +4020,11 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(file_value, summary=name or path_obj.name)],
-                    reply_to=reply_to,
+                    # OneBot implementations do not consistently deliver a
+                    # record segment when it shares a message with reply.
+                    # Voice is therefore always an independent outbound
+                    # message and never consumes the turn's text reply claim.
+                    reply_to="",
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -4041,7 +4043,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(staged.file_ref, summary=name or path_obj.name)],
-                    reply_to=reply_to,
+                    reply_to="",
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -4058,7 +4060,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(inline_ref, summary=name or path_obj.name)],
-                    reply_to=reply_to,
+                    reply_to="",
                 )
                 inline_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
                 if inline_result.ok:
@@ -4082,8 +4084,8 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [voice_segment(clean_url, summary=str(name or "网络音频").strip() or "网络音频")],
-                # Tool delivery happens before the model's final reply.  Keep
-                # the source-message reply reference available for that reply.
+                # QQ voice messages use the same independent-message contract
+                # for local files and public URLs.
                 reply_to="",
             )
         except ValueError as exc:
