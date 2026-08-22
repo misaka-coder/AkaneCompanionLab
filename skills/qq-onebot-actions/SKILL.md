@@ -11,7 +11,7 @@ description: 通过当前 NapCat 的 OneBot HTTP 接口执行 QQ 扩展动作：
 python3 qq-onebot-actions/scripts/onebot_call.py <action> '<json params>'
 ```
 
-脚本会从本机配置读取凭据、探测可用端口，并且不会打印 token。
+`cwd=alias:skills` 已经是 Skills 根目录；不要再给脚本路径拼接 `/var`、宿主绝对路径或重复的 `skills` 前缀。脚本会从本机配置读取凭据、探测可用端口，并且不会打印 token。
 
 ## 动作完成契约
 
