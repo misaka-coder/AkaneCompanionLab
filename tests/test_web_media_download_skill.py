@@ -49,6 +49,14 @@ class WebMediaDownloadSkillTests(unittest.TestCase):
         self.assertIn("artifact_status` is `registered", content)
         self.assertIn("queueing, not final client receipt", content)
 
+    def test_loaded_skill_reuses_host_tools_and_distinguishes_card_audio(self) -> None:
+        content = self.registry.load("web-media-download").content
+        self.assertIn("host's `yt-dlp`", content)
+        self.assertIn("Do not install `yt-dlp`", content)
+        self.assertIn("title alone", content)
+        self.assertIn("playable", content)
+        self.assertIn("video/CDN URL", content)
+
 
 if __name__ == "__main__":
     unittest.main()

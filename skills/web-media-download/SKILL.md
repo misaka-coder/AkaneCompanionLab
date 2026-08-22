@@ -8,9 +8,12 @@ metadata:
 
 # Web Media Download
 
-Use `yt-dlp` through `exec_run` to resolve public media, download it into the
-managed run workspace, register the output as `gen_*`, and deliver it only when
-the user asked to receive the file.
+Use the host's `yt-dlp` through `exec_run` to resolve public media, download it
+into the managed run workspace, register the output as `gen_*`, and deliver it
+only when the user asked to receive the file. When `exec_run` is available, it is
+the primary media path because it exposes the host's real network route and
+toolchain; do not silently switch to a different downloader after a Shell
+result has already established the actual failure.
 
 ## Boundaries
 
@@ -32,19 +35,25 @@ the user asked to receive the file.
    `yt-dlp` search extractor when one exists; for Bilibili the valid prefix is
    `bilisearch:`, not `bilisearchvideo:`. A general public-video fallback is
    `ytsearch1:`.
-4. Inspect the first result's title, uploader and canonical URL/id before
-   downloading. If the match is ambiguous, ask one short question.
+4. Inspect several candidates before downloading when the source provides a
+   search list. Compare title, uploader/channel, duration, publish date,
+   view/engagement count when available, and the canonical URL/id. Prefer an
+   official or high-confidence uploader and an exact artist/title match;
+   popularity is supporting evidence, not the sole selector. Do not choose a
+   candidate from its title alone. If the match is still ambiguous, ask one
+   short question.
 
-Check availability before relying on it:
+Check availability before relying on it. This is a host-level probe, not a
+project dependency installation:
 
 ```text
 python3 -m yt_dlp --version
 ```
 
-Use the available Python launcher on the host (`python3` or `python`). If the
-module is absent and installing packages is permitted in the current Shell
-policy, install `yt-dlp` once with that launcher; otherwise report the missing
-dependency honestly.
+Use the available Python launcher on the host (`python3` or `python`). Reuse
+the host installation and its shared package cache. Do not install `yt-dlp`
+inside every project or every temporary run; only install once when the host
+probe proves it is genuinely absent and the current policy permits it.
 
 ## Download and register
 
@@ -79,6 +88,11 @@ registered artifact.
 - For downloaded audio in QQ, call `send_audio` with that same handle to send a
   playable voice bubble. Use `send_file` separately for ordinary file transfer;
   when both are requested the two delivery calls may be made together.
+- A page URL or a `yt-dlp -g` video/CDN URL is not automatically a playable
+  audio URL. For a custom QQ card, the `audio` field must be a public,
+  client-reachable direct audio resource; keep the page URL in the card's
+  click-through field. Signed video URLs may be video streams, require headers,
+  or expire, so do not use them as card audio merely because they were resolved.
 - Treat the delivery tool result as authoritative. A failed card, voice, or file
   delivery is feedback for the next model step; it must not be described as success.
   A successful delivery result proves queueing, not final client receipt.
@@ -87,3 +101,6 @@ registered artifact.
 - On failure, keep the useful canonical id/URL visible, explain the actual
   failure, and offer the smallest next step. Do not repeatedly retry the same
   blocked URL or mechanically page output.
+- If a host-level Shell download succeeds, reuse its registered artifact or
+  exact output in later steps. Do not re-download the same media in a fresh
+  `mktemp` directory unless the prior artifact is missing or invalid.

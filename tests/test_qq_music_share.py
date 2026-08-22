@@ -368,6 +368,19 @@ class CapabilityAndSkillTests(unittest.TestCase):
             self.assertIn(text, loaded.content)
         self.assertNotIn(str(ROOT), loaded.content)
 
+    def test_custom_card_skill_is_bundled_and_separates_page_from_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = SkillRegistry(
+                bundled_root=ROOT / "skills",
+                managed_root=Path(temp_dir) / "managed",
+                execution_workspace_root=Path(temp_dir) / "workspace",
+            )
+            loaded = registry.load("custom-music-card")
+        self.assertEqual(loaded.status, "loaded")
+        self.assertIn("public direct audio URL", loaded.content)
+        self.assertIn("`url` is the page", loaded.content)
+        self.assertIn("retcode=0", loaded.content)
+
     def test_search_script_resolves_netease_audio_without_downloading(self) -> None:
         script = _load_search_script()
         result = script._resolve_audio_url("netease", "1971144922")

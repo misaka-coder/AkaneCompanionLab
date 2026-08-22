@@ -14,6 +14,11 @@ Find the exact platform track id for a song, then let the model choose the deliv
 Neither tool silently changes the requested surface. The script never downloads,
 decrypts, or uploads audio.
 
+When a native platform result is unavailable and the user explicitly wants a
+custom card, load `custom-music-card` and follow its separate `url`/`audio`/
+`image` contract. A song page or video/CDN URL is not proof that the `audio`
+field is playable.
+
 ## When to load
 
 - The user asks to find a song, point to a song, or receive a QQ native music card.
@@ -45,6 +50,9 @@ small result directly; no cursor paging is needed.
   `songmid` values, not numeric `songid` values.
 - Pick the result whose title + artist best matches the user's request. Honor
   "原唱", "Live", "翻唱" and similar qualifiers.
+- When multiple candidates are returned, inspect any available album, uploader,
+  duration, publish date, and popularity metadata before choosing. Do not use
+  title text alone; if the evidence remains ambiguous, ask one short question.
 - If several versions are all reasonable, choose by the user's wording; if you
   really cannot decide, ask one short question instead of guessing.
 - If the user wants a card, select a NetEase result and call
