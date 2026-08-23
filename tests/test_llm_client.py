@@ -1216,7 +1216,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["tool_choice"], "auto")
         self.assertNotIn("response_format", payload)
 
-    def test_llm_runtime_skips_native_tools_for_unverified_openai_compatible_model(self) -> None:
+    def test_llm_runtime_sends_native_tools_for_unverified_openai_compatible_model(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
@@ -1242,17 +1242,17 @@ class LLMClientConfigTests(unittest.TestCase):
                 native_tool_choice="auto",
             )
 
-        self.assertNotIn("tools", payload)
-        self.assertNotIn("tool_choice", payload)
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
 
-    def test_llm_runtime_can_allow_configured_openai_compatible_native_profile(self) -> None:
+    def test_llm_runtime_allowlist_no_longer_gates_openai_compatible_native_profile(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
             model="deepseek-v4-pro",
         )
 
-        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", "opencode.ai:deepseek-v4-pro"):
+        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
             payload = runtime._build_completion_kwargs(
                 bundle=bundle,
                 system_prompt="system",
@@ -1276,7 +1276,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["tool_choice"], "auto")
         self.assertNotIn("response_format", payload)
 
-    def test_llm_runtime_configured_native_profile_supports_wildcard_and_json_mode(self) -> None:
+    def test_llm_runtime_legacy_allowlist_cannot_force_json_mode_with_native_tools(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
@@ -1303,8 +1303,39 @@ class LLMClientConfigTests(unittest.TestCase):
                 native_tool_choice="auto",
             )
 
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_sends_native_tools_to_tokenrhythm_model_variant_without_allowlist(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.tokenrhythm.studio/v1"),
+            model="deepseek-v4-flash-0731",
+        )
+
+        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
+            payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="system",
+                user_prompt="user",
+                temperature=0.1,
+                json_mode=True,
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                native_tool_choice="auto",
+            )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
 
     def test_llm_runtime_skips_native_tools_for_non_openai_protocol(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -2398,6 +2429,66 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertIn("prompt_cache_key", calls[0])
         self.assertNotIn("prompt_cache_key", calls[1])
         self.assertNotIn("prompt_cache_retention", calls[1])
+
+    def test_llm_runtime_falls_back_once_when_provider_explicitly_rejects_native_tools(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.RLock()
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            if "tools" in kwargs:
+                raise RuntimeError("This model does not support tools")
+            return {"ok": True}
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="legacy-model",
+        )
+        result = runtime._create_completion(
+            bundle=bundle,
+            payload={
+                "model": "legacy-model",
+                "messages": [{"role": "system", "content": "answer"}],
+                "tools": [{"type": "function", "function": {"name": "echo"}}],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+            },
+        )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("tools", calls[1])
+        self.assertNotIn("tool_choice", calls[1])
+        self.assertNotIn("parallel_tool_calls", calls[1])
+        self.assertEqual(calls[1]["response_format"], {"type": "json_object"})
+        self.assertIn("json", str(calls[1]["messages"][0]["content"]).lower())
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_provider_unsupported"], 1)
+
+    def test_llm_runtime_does_not_hide_tools_for_unrelated_provider_400(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            raise RuntimeError("400 reasoning_content in thinking mode must be passed back")
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="deepseek-v4-flash-0731",
+        )
+        with self.assertRaisesRegex(RuntimeError, "reasoning_content"):
+            runtime._create_completion(
+                bundle=bundle,
+                payload={
+                    "model": bundle.model,
+                    "messages": [],
+                    "tools": [{"type": "function", "function": {"name": "echo"}}],
+                },
+            )
+
+        self.assertEqual(len(calls), 1)
 
 
 class ResponseTruncationDetectionTests(unittest.TestCase):

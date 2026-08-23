@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 LogEvent = Callable[..., None]
 _QQ_ROUTE_BASE_RE = re.compile(r"^/api(?:/[A-Za-z0-9._-]+)+$")
-_QQ_GROUP_PASSIVE_MEMORY_MODES = frozenset({"all", "allowlist", "denylist", "off"})
+_QQ_GROUP_PASSIVE_MEMORY_MODES = frozenset({"all", "denylist", "off"})
 
 
 def _normalize_qq_route_base(value: Any) -> str:
@@ -63,7 +63,11 @@ def _resolve_group_passive_memory_policy(config_module: Any, group_id: Any) -> d
     """Resolve host-owned passive group memory policy without changing reply turns."""
 
     aliases = {
-        "whitelist": "allowlist",
+        # Passive history is context, not an execution permission. Old
+        # allowlist deployments migrate to default recording so newly joined
+        # groups cannot silently disappear from MemCore.
+        "allowlist": "all",
+        "whitelist": "all",
         "blacklist": "denylist",
         "enabled": "all",
         "disabled": "off",
@@ -88,8 +92,6 @@ def _resolve_group_passive_memory_policy(config_module: Any, group_id: Any) -> d
         enabled = False
     elif mode == "off":
         enabled = False
-    elif mode == "allowlist":
-        enabled = normalized_group_id in configured_ids
     elif mode == "denylist":
         enabled = normalized_group_id not in configured_ids
     else:

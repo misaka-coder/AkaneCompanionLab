@@ -294,18 +294,17 @@ class Settings(BaseSettings):
     MAX_TOOL_ROUNDS: int = 3
     # 仅用于阻止失控循环的紧急硬上限；正常工具链不应触及。
     MAX_TOOL_EMERGENCY_ROUNDS: int = MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP
-    # native tool 通道总开关。默认开启 native-first：allowlist 内、且 (host, model)
-    # 能力档案已验证的工具走 provider native schema；未知/未验证 provider 会结构化
-    # 回退 legacy JSON tool_call。需要保守兼容时可经 env 显式关闭。
+    # native tool 通道总开关。默认开启 native-first：OpenAI-compatible provider
+    # 直接尝试 provider native schema；provider 明确拒绝时才结构化回退 JSON。
+    # 需要保守兼容时可经 env 显式关闭。
     ENABLE_NATIVE_TOOL_DECISION: bool = True
     # native tool 允许列表。使用 "*" 时，当前客户端/场景 capability selection
     # 实际选出的全部工具都走 provider-native schema；不支持 native 的 provider
     # 才回退 legacy JSON。显式列名仅用于有意做受限 profile 的场景。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = "*"
-    # 额外允许的 OpenAI-compatible native tools provider/model，逗号分隔。
-    # 格式：host:model 或 host:*；默认空，未知中转仍 fail-closed。
-    # 可选第三段 json 表示允许 native tools 与 response_format=json_object 共存；
-    # 省略时按保守 prompt-only JSON 处理。
+    # 历史兼容字段：不再作为 OpenAI-compatible native tools 的能力门控。
+    # 保留 host:model[:json] 解析，供旧配置和探针工具读取；provider 明确拒绝
+    # native tools 时由请求级错误识别触发一次 JSON fallback。
     NATIVE_TOOL_PROVIDER_ALLOWLIST: str = ""
     # 联网搜索/网页提取类工具的同轮扩展预算
     MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
@@ -351,7 +350,8 @@ class Settings(BaseSettings):
     QQ_VOICE_MAX_SEGMENTS: int = 3
     # 允许群聊使用明文（非 JSON 卡片）模式
     QQ_GROUP_PLAINTEXT_ENABLED: bool = False
-    # 未触发 Bot 的群消息是否写入被动群记忆：all/allowlist/denylist/off
+    # 未触发 Bot 的群消息是否写入被动群记忆：all/denylist/off。
+    # 旧 allowlist/whitelist 值按 all 迁移，避免新群因漏配而静默丢历史。
     QQ_GROUP_PASSIVE_MEMORY_MODE: str = "all"
     # allowlist/denylist 使用的群号，支持逗号、分号或空白分隔
     QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS: str = ""
@@ -800,12 +800,13 @@ def _apply_settings(s: Settings) -> None:
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
     raw_group_passive_memory_mode = str(s.QQ_GROUP_PASSIVE_MEMORY_MODE or "all").strip().lower()
     QQ_GROUP_PASSIVE_MEMORY_MODE = {
-        "whitelist": "allowlist",
+        "allowlist": "all",
+        "whitelist": "all",
         "blacklist": "denylist",
         "enabled": "all",
         "disabled": "off",
     }.get(raw_group_passive_memory_mode, raw_group_passive_memory_mode)
-    if QQ_GROUP_PASSIVE_MEMORY_MODE not in {"all", "allowlist", "denylist", "off"}:
+    if QQ_GROUP_PASSIVE_MEMORY_MODE not in {"all", "denylist", "off"}:
         QQ_GROUP_PASSIVE_MEMORY_MODE = "all"
     QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(s.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS or "").strip()
     QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(s.QQ_GROUP_FOLLOW_TTL_SECONDS))

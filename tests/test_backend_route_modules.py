@@ -1276,10 +1276,8 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         self.assertEqual(post("passive-policy-allowlisted")["status"], "recorded")
         runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID + 1)
-        filtered = post("passive-policy-not-allowlisted")
-        self.assertEqual(filtered["status"], "ignored")
-        self.assertEqual(filtered["reason"], "group_passive_memory_filtered")
-        self.assertEqual(filtered["policy_mode"], "allowlist")
+        migrated = post("passive-policy-not-allowlisted")
+        self.assertEqual(migrated["status"], "recorded")
 
         runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "denylist"
         runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID)
@@ -1289,9 +1287,9 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "off"
         self.assertEqual(post("passive-policy-off")["status"], "ignored")
-        self.assertEqual(len(record_calls), 2)
+        self.assertEqual(len(record_calls), 3)
         skipped_logs = [payload for name, payload in log_calls if name == "qq_passive_group_message_skipped"]
-        self.assertEqual(len(skipped_logs), 3)
+        self.assertEqual(len(skipped_logs), 2)
         self.assertNotIn("QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS", repr(skipped_logs))
 
     def test_qq_router_workspace_command_lists_and_clears_without_llm(self) -> None:

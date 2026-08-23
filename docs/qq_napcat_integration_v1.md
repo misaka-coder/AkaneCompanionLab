@@ -88,7 +88,7 @@ GET http://127.0.0.1:9999/api/qq/napcat/status
 
 - 默认只有 at 机器人，或消息里包含 `Akane` 唤醒词时才回复。
 - 没有触发词的普通群消息由“被动群记忆策略”决定是否写入当前群聊记忆；记录时会参与后台记忆压缩，但不会触发 LLM，也不会向群里发消息。
-- `QQ_GROUP_PASSIVE_MEMORY_MODE` 支持 `all`（默认全部记录）、`allowlist`（只记录名单群）、`denylist`（排除名单群）和 `off`（不记录任何背景群消息）；名单通过 `QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS` 配置，支持逗号、分号或空白分隔。
+- `QQ_GROUP_PASSIVE_MEMORY_MODE` 支持 `all`（默认全部记录）、`denylist`（排除名单群）和 `off`（不记录任何背景群消息）；历史 `allowlist/whitelist` 值会迁移为 `all`，避免名单漏配导致背景历史静默丢失。`QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS` 仅用于 denylist，支持逗号、分号或空白分隔。
 - 该策略只过滤无人触发 Akane 时的背景聊天；@、唤醒词和其他正常回复轮仍会写入群聊 Raw 并按正常阈值压缩。
 - 不启用 follow 窗口；@ 之后的普通群消息仍然不会自动触发回复。
 - @ 之后会为同一个发送者打开一个短暂的“附件缓冲窗口”；在窗口内补发的图片/文件可以不再次 @，用于适配手机端不能边 @ 边发图的限制。

@@ -139,15 +139,18 @@ class ProviderToolProfile:
 
 
 DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile()
-CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
+OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
     supports_native_tools=True,
     native_tools_coexist_with_forced_json=False,
     verified=False,
     notes=(
-        "Enabled by NATIVE_TOOL_PROVIDER_ALLOWLIST. Treat as OpenAI-compatible "
-        "prompt-only JSON until a live probe verifies response_format coexistence."
+        "OpenAI-compatible providers receive native tools optimistically. "
+        "Forced JSON is suppressed when tools are present; explicit provider "
+        "unsupported errors may trigger the structured JSON fallback."
     ),
 )
+# Kept as a source-compatible alias for integrations importing the old symbol.
+CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE = OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE
 PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
     (
         "api.pinaic.com",
@@ -2567,40 +2570,20 @@ class LLMRuntime:
         profile = PROVIDER_TOOL_PROFILES.get((host, model))
         if profile is not None:
             return profile
-        return self._configured_native_tool_profile(host=host, model=model)
+        # OpenAI-compatible gateways are intentionally optimistic. A model or
+        # gateway that truly lacks function calling must say so at request time;
+        # an allowlist must not silently hide tools and make the model invent a
+        # text protocol such as DSML.
+        return OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE
 
     def _configured_native_tool_profile(self, *, host: str, model: str) -> ProviderToolProfile:
-        clean_host = str(host or "").strip().lower()
-        clean_model = str(model or "").strip().lower()
-        if not clean_host or not clean_model:
-            return DEFAULT_PROVIDER_TOOL_PROFILE
-        raw_allowlist = str(getattr(config, "NATIVE_TOOL_PROVIDER_ALLOWLIST", "") or "").strip()
-        if not raw_allowlist:
-            return DEFAULT_PROVIDER_TOOL_PROFILE
-        for raw_item in raw_allowlist.split(","):
-            item = str(raw_item or "").strip()
-            if not item:
-                continue
-            parsed = self._parse_native_tool_provider_allowlist_item(item)
-            if parsed is None:
-                continue
-            allowed_host, allowed_model, coexist_json = parsed
-            if allowed_host not in {"*", clean_host}:
-                continue
-            if allowed_model not in {"*", clean_model}:
-                continue
-            if coexist_json:
-                return ProviderToolProfile(
-                    supports_native_tools=True,
-                    native_tools_coexist_with_forced_json=True,
-                    verified=False,
-                    notes=(
-                        "Enabled by NATIVE_TOOL_PROVIDER_ALLOWLIST with json coexistence. "
-                        "Use only after probing the gateway/model."
-                    ),
-                )
-            return CONFIG_ALLOWLISTED_PROVIDER_TOOL_PROFILE
-        return DEFAULT_PROVIDER_TOOL_PROFILE
+        """Return the legacy optimistic profile for old callers.
+
+        ``NATIVE_TOOL_PROVIDER_ALLOWLIST`` is no longer a capability gate. It
+        remains parseable for configuration compatibility, but unknown
+        OpenAI-compatible providers use the same native-first policy.
+        """
+        return OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE
 
     def _parse_native_tool_provider_allowlist_item(self, item: str) -> tuple[str, str, bool] | None:
         text = str(item or "").strip().lower()
@@ -3021,17 +3004,85 @@ class LLMRuntime:
             return self._create_responses_completion(bundle=bundle, payload=payload)
         try:
             return bundle.client.chat.completions.create(**payload)
-        except TypeError:
+        except TypeError as exc:
             stripped = self._without_prompt_cache_hints(payload)
             if stripped != payload:
-                return bundle.client.chat.completions.create(**stripped)
+                try:
+                    return bundle.client.chat.completions.create(**stripped)
+                except Exception as retry_exc:
+                    fallback = self._retry_without_unsupported_native_tools(
+                        bundle=bundle,
+                        payload=stripped,
+                        exc=retry_exc,
+                    )
+                    if fallback is not None:
+                        return fallback
+                    raise
+            fallback = self._retry_without_unsupported_native_tools(bundle=bundle, payload=payload, exc=exc)
+            if fallback is not None:
+                return fallback
             raise
         except Exception as exc:
             if self._should_retry_without_prompt_cache_hints(exc):
                 stripped = self._without_prompt_cache_hints(payload)
                 if stripped != payload:
-                    return bundle.client.chat.completions.create(**stripped)
+                    try:
+                        return bundle.client.chat.completions.create(**stripped)
+                    except Exception as retry_exc:
+                        fallback = self._retry_without_unsupported_native_tools(
+                            bundle=bundle,
+                            payload=stripped,
+                            exc=retry_exc,
+                        )
+                        if fallback is not None:
+                            return fallback
+                        raise
+            fallback = self._retry_without_unsupported_native_tools(bundle=bundle, payload=payload, exc=exc)
+            if fallback is not None:
+                return fallback
             raise
+
+    def _retry_without_unsupported_native_tools(
+        self,
+        *,
+        bundle: ModelBundle,
+        payload: dict[str, Any],
+        exc: Exception,
+    ) -> Any:
+        if not payload.get("tools") or not self._provider_explicitly_rejects_native_tools(exc):
+            return None
+        fallback = dict(payload)
+        fallback.pop("tools", None)
+        fallback.pop("tool_choice", None)
+        fallback.pop("parallel_tool_calls", None)
+        messages = [dict(message) for message in list(fallback.get("messages") or []) if isinstance(message, dict)]
+        fallback["messages"] = messages
+        fallback["response_format"] = {"type": "json_object"}
+        self._ensure_json_keyword(messages)
+        self._record_metric("native_tool_provider_unsupported")
+        return bundle.client.chat.completions.create(**fallback)
+
+    def _provider_explicitly_rejects_native_tools(self, exc: Exception) -> bool:
+        message = " ".join(str(exc or "").strip().lower().split())
+        if not message:
+            return False
+        explicit_phrases = (
+            "does not support tools",
+            "doesn't support tools",
+            "tools are not supported",
+            "tool_choice is not supported",
+            "tool choice is not supported",
+            "function calling is not supported",
+            "function calling not supported",
+            "does not support function calling",
+            "unknown field: tools",
+            "unknown field `tools`",
+            "unknown parameter: tools",
+            "unrecognized request argument supplied: tools",
+        )
+        return any(phrase in message for phrase in explicit_phrases) or bool(
+            re.search(r"unsupported(?:_|\s|-)*(?:parameter|field)?(?:_|\s|-)*(?:tools?|tool_choice)", message)
+        )
 
     def _persistent_turn_messages_from_payload(
         self,
