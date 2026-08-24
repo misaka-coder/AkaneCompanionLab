@@ -8154,7 +8154,7 @@ class AkaneMemoryEngine:
         are assembled first and receive the narrow port once the runtime owns a
         real gateway.  No delivery target or transport state enters prompts.
         """
-        for tool_name in ("send_music_card", "send_audio"):
+        for tool_name in ("send_music_card", "send_audio", "onebot_action"):
             handler = self.tool_handlers.get(tool_name)
             binder = getattr(handler, "bind_delivery_port", None)
             if callable(binder):

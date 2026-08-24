@@ -1,67 +1,71 @@
 ---
 name: qq-onebot-actions
-description: 通过当前 NapCat 的 OneBot HTTP 接口执行 QQ 扩展动作：读取群/私聊历史、发送群/私聊消息、合并转发、戳一戳和点赞。用户明确要求主动操作 QQ 或读取聊天记录时加载；普通文字回复不需要本 Skill。
+description: 规划复杂 QQ OneBot 工作流：读取历史、构造或转发多条消息、跨群投递、戳一戳、表情回应、点赞与撤回。简单动作直接使用 onebot_action，不需要加载本 Skill；涉及多来源、多目标或消息 node 结构时再加载。
 ---
 
-# QQ OneBot 扩展动作
+# QQ OneBot 复杂工作流
 
-本 Skill 只使用当前 NapCat 登录账号已经拥有的能力，不新增权限。统一入口（`cwd=alias:skills`）为：
+`onebot_action` 是唯一执行入口。不要用 Shell 查找 NapCat 端口、配置或 Token，也不要自行请求 OneBot HTTP 地址。当前 Bot 身份、鉴权、权限范围和真实回执均由宿主绑定；不确定 action 或参数时先调用：
 
-```bash
-python3 qq-onebot-actions/scripts/onebot_call.py <action> '<json params>'
+```json
+{"action":"capabilities","params":{}}
 ```
-
-`cwd=alias:skills` 已经是 Skills 根目录；不要再给脚本路径拼接 `/var`、宿主绝对路径或重复的 `skills` 前缀。脚本会从本机配置读取凭据、探测可用端口，并且不会打印 token。
 
 ## 动作完成契约
 
-读取、探测、列群、读取历史和构造参数都只是准备阶段，不是发送完成。凡是用户要求对外发送、点赞或戳一戳：
+读取、探测、列群、读取历史和构造参数都只是准备阶段，不是发送完成。凡是用户要求对外发送、点赞、戳一戳或撤回：
 
-1. 先确定来源数据和唯一目标（`target_group_id` 或 `user_id`）。
-2. 需要历史时读取并转换成合法的消息段或转发 `node`。
-3. **实际调用对应动作**，例如 `send_forward_msg`、`send_group_msg`、`send_private_msg`、`group_poke`。
-4. 只有该动作返回 `status="ok"` 且 `retcode=0`，才可以告诉用户“已发送/已完成”。
+1. 确定来源数据和唯一目标。
+2. 需要历史时读取并转换为合法消息段或转发 `node`。
+3. 调用实际动作，如 `send_group_forward_msg`、`send_group_msg`、`group_poke`、`delete_msg`。
+4. 只有该动作返回 `ok=true`，才可以说“已发送/已完成”。
 
-没有动作调用，或动作返回失败/超时，必须明确说“尚未发送/未完成”，保留返回的 `status`、`retcode`、`message` 和 `wording`，不得根据查询成功、脚本结束或自己的计划猜测成功。动作回执到达之前不要使用完成时态。
+失败或超时必须保留工具给出的 `status/reason/code`，不得根据查询成功或自己的计划猜测成功。互不依赖的动作可以在同一模型响应中并行调用；有数据依赖的动作按结果顺序执行。
 
-## 多群合并转发流程
+## 合并转发
 
-多群任务必须按下面顺序执行：
+真实消息可用引用节点；构造节点必须明确视为模型构造的内容，不得冒充从历史中读取到的原话。常见节点结构：
 
-```text
-source_group_ids → get_group_msg_history（每个来源群）
-→ 转换为 node 数组（name/uin/content）
-→ 明确 target_group_id
-→ send_forward_msg
-→ 检查 status=ok 且 retcode=0
-→ 再回复用户
+```json
+{
+  "action": "send_group_forward_msg",
+  "params": {
+    "group_id": 123456789,
+    "messages": [
+      {
+        "type": "node",
+        "data": {
+          "name": "显示名",
+          "uin": "来源QQ",
+          "content": [
+            {"type": "text", "data": {"text": "内容"}}
+          ]
+        }
+      }
+    ]
+  }
+}
 ```
 
-`send_forward_msg` 示例：
+`content` 必须是消息段数组。`uin` 通常决定头像，`name` 决定节点显示名；客户端最终表现以 OneBot 回执和实际 QQ 渲染为准。
 
-```bash
-python3 qq-onebot-actions/scripts/onebot_call.py send_forward_msg \
-'{"group_id":872732158,"messages":[{"type":"node","data":{"name":"某人","uin":"对方QQ","content":[{"type":"text","data":{"text":"内容"}}]}}]}'
+## 常见消息段
+
+同一条 `message` 可以包含多个消息段，例如多个系统表情：
+
+```json
+[
+  {"type":"text","data":{"text":"收到 "}},
+  {"type":"face","data":{"id":"66"}},
+  {"type":"face","data":{"id":"76"}}
+]
 ```
 
-每个 `node.data.content` 必须是数组；`uin` 是消息来源 QQ，`name` 是显示名。查询结果中的 `status=ok` 只证明查询成功，不能替代最终发送动作。
+回复、图片、语音、`mface`、音乐等段的具体字段以 `capabilities` 返回的入口和当前 NapCat 协议为准。不要把网页 URL 当作本地文件，也不要虚构不存在的 `message_id`。
 
-## 常用动作
+## 权限与边界
 
-```text
-probe
-get_group_list '{}'
-get_group_msg_history '{"group_id":872732158,"count":10}'
-get_friend_msg_history '{"user_id":1906243651,"count":10}'
-send_group_msg '{"group_id":872732158,"message":"大家好"}'
-send_private_msg '{"user_id":1906243651,"message":"你好"}'
-group_poke '{"group_id":872732158,"user_id":1906243651}'
-friend_poke '{"user_id":1906243651}'
-set_msg_emoji_like '{"message_id":12345,"emoji_id":"60"}'
-```
-
-## 故障处理
-
-脚本会把 HTTP 错误、连接失败和 OneBot `retcode != 0` 作为结构化失败返回；失败时不要换目标或猜权限后宣称成功。`probe` 的结果只用于确认端口和登录账号，若有多个账号必须使用返回的 `self_id` 与当前机器人身份匹配。
-
-不要在命令参数、输出或 Skill 文件中打印凭据。不要读取或转发用户未要求的私聊、群聊内容，也不要伪造官方通知或他人身份。
+- 普通参与者只能操作触发本轮的当前群或当前私聊。
+- 跨群、跨私聊、全局联系人查询和消息撤回需要配置的主人账号发起。
+- 凭据、账号退出、删除好友、踢人、禁言和群/账号管理不在工具面中。
+- 不读取或转发用户未要求的私聊内容，不伪造官方通知；构造聊天记录时应让语境清楚它是整理或演示内容。

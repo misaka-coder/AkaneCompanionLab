@@ -134,6 +134,40 @@ class OneBotActionTransportTests(unittest.TestCase):
         self.assertNotIn("127.0.0.1", serialized)
         self.assertNotIn("secret", serialized)
 
+    def test_model_chat_actions_are_allowed_by_the_bound_transport(self) -> None:
+        session = _Session(
+            [
+                _Response({"status": "ok", "retcode": 0, "data": {}}),
+                _Response({"status": "ok", "retcode": 0, "data": {"messages": [{"message_id": 7}]}}),
+            ]
+        )
+        transport = OneBotActionTransport(
+            _config(url="http://127.0.0.1:3001", token="secret", bot_id="1"),
+            session=session,  # type: ignore[arg-type]
+        )
+
+        self.assertTrue(transport.call("delete_msg", {"message_id": 7}).ok)
+        history = transport.call("get_group_msg_history", {"group_id": 8, "count": 20})
+
+        self.assertTrue(history.ok)
+        self.assertEqual(history.data, {"messages": [{"message_id": 7}]})
+        self.assertEqual(session.calls[0][0], "POST")
+        self.assertEqual(session.calls[1][1], "http://127.0.0.1:3001/get_group_msg_history")
+
+    def test_list_shaped_read_result_is_not_dropped(self) -> None:
+        session = _Session(
+            [_Response({"status": "ok", "retcode": 0, "data": [{"group_id": 8}, {"group_id": 9}]})]
+        )
+        transport = OneBotActionTransport(
+            _config(url="http://127.0.0.1:3001", token="secret", bot_id="1"),
+            session=session,  # type: ignore[arg-type]
+        )
+
+        result = transport.call("get_group_list", {})
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data, {"items": [{"group_id": 8}, {"group_id": 9}]})
+
 
 if __name__ == "__main__":
     unittest.main()

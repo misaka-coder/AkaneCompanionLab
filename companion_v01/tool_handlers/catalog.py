@@ -58,6 +58,7 @@ from .memory import (
     RetrieveMemoryToolHandler,
 )
 from .music import SendAudioToolHandler, SendMusicCardToolHandler
+from .qq_onebot import OneBotActionToolHandler
 from .project_workspace import (
     ManageProjectWorkspaceToolHandler,
     ProjectInspectToolHandler,
@@ -200,6 +201,7 @@ def build_builtin_tool_handlers(
         ),
         "send_music_card": SendMusicCardToolHandler(),
         "send_audio": SendAudioToolHandler(generated_file_service=generated_file_service),
+        "onebot_action": OneBotActionToolHandler(),
         "manage_generated_file": ManageGeneratedFileToolHandler(
             generated_file_service=generated_file_service,
             task_workspace_service=task_workspace_service,

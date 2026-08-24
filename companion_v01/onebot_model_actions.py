@@ -1,0 +1,202 @@
+"""Stable model-facing OneBot action contract and conversation-scope policy.
+
+The model gets one generic native tool, but not unrestricted access to every
+NapCat endpoint.  This module is the single public manifest for useful chat
+interactions.  Credentials, account control and destructive group management
+remain outside the model surface.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+
+@dataclass(frozen=True, slots=True)
+class ModelOneBotAction:
+    name: str
+    summary: str
+    params: str
+    effect: str
+    owner_only: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.name,
+            "summary": self.summary,
+            "params": self.params,
+            "effect": self.effect,
+            "owner_only": self.owner_only,
+        }
+
+
+_ACTIONS = (
+    ModelOneBotAction("get_msg", "读取一条已知消息。", "message_id", "read"),
+    ModelOneBotAction("delete_msg", "撤回一条消息。", "message_id", "write", owner_only=True),
+    ModelOneBotAction("send_group_msg", "发送群消息，message 支持字符串或消息段数组。", "group_id, message", "write"),
+    ModelOneBotAction("send_private_msg", "发送私聊消息，message 支持字符串或消息段数组。", "user_id, message", "write"),
+    ModelOneBotAction("get_group_msg_history", "读取群聊历史。", "group_id, count; 可选 message_seq, reverseOrder", "read"),
+    ModelOneBotAction("get_friend_msg_history", "读取私聊历史。", "user_id, count; 可选 message_seq, reverseOrder", "read"),
+    ModelOneBotAction("get_forward_msg", "展开一条合并转发消息。", "message_id", "read", owner_only=True),
+    ModelOneBotAction("send_group_forward_msg", "向群聊发送合并转发；nodes 可引用真实消息或构造内容。", "group_id, messages", "write"),
+    ModelOneBotAction("send_private_forward_msg", "向私聊发送合并转发；nodes 可引用真实消息或构造内容。", "user_id, messages", "write"),
+    ModelOneBotAction("forward_group_single_msg", "把一条真实消息转发到群聊。", "group_id, message_id", "write"),
+    ModelOneBotAction("forward_friend_single_msg", "把一条真实消息转发到私聊。", "user_id, message_id", "write"),
+    ModelOneBotAction("group_poke", "在当前群戳一戳成员。", "group_id, user_id", "write"),
+    ModelOneBotAction("friend_poke", "戳一戳好友。", "user_id", "write"),
+    ModelOneBotAction("set_msg_emoji_like", "为消息添加或取消表情回应。", "message_id, emoji_id; 可选 set", "write"),
+    ModelOneBotAction("send_like", "给好友名片点赞。", "user_id; 可选 times", "write"),
+    ModelOneBotAction("get_group_info", "读取群基本信息。", "group_id; 可选 no_cache", "read"),
+    ModelOneBotAction("get_group_member_info", "读取群成员昵称、群名片等信息。", "group_id, user_id; 可选 no_cache", "read"),
+    ModelOneBotAction("get_group_member_list", "读取群成员列表。", "group_id; 可选 no_cache", "read"),
+    ModelOneBotAction("get_essence_msg_list", "读取群精华消息列表。", "group_id", "read"),
+    ModelOneBotAction("get_group_list", "读取 Bot 所在群列表。", "可选 no_cache", "read", owner_only=True),
+    ModelOneBotAction("get_friend_list", "读取 Bot 好友列表。", "可选 no_cache", "read", owner_only=True),
+    ModelOneBotAction("get_recent_contact", "读取最近联系人。", "count", "read", owner_only=True),
+)
+
+MODEL_ONEBOT_ACTIONS: dict[str, ModelOneBotAction] = {item.name: item for item in _ACTIONS}
+MODEL_ONEBOT_ACTION_NAMES: tuple[str, ...] = ("capabilities",) + tuple(MODEL_ONEBOT_ACTIONS)
+MODEL_ONEBOT_ACTION_METHODS: dict[str, str] = {name: "POST" for name in MODEL_ONEBOT_ACTIONS}
+
+
+def model_onebot_capabilities() -> dict[str, Any]:
+    """Return the stable, secret-free action catalog visible to the model."""
+
+    return {
+        "ok": True,
+        "status": "available",
+        "action": "capabilities",
+        "actions": [item.as_dict() for item in _ACTIONS],
+        "scope_policy": {
+            "same_conversation": "ordinary participants may use same-group or same-private chat interactions",
+            "context_defaults": "current group, current private peer, current sender or current message may be inferred when unambiguous",
+            "cross_conversation": "requires the configured Akane owner",
+            "owner_only": "message recall, global contact/history discovery and other explicitly marked actions",
+            "excluded": "credentials, account exit, friend deletion, kick/ban and group/account administration",
+        },
+    }
+
+
+def resolve_model_onebot_params(
+    action: str,
+    params: Mapping[str, Any],
+    *,
+    is_group: bool,
+    group_id: int,
+    user_id: int,
+    source_message_id: str,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Fill only unambiguous current-conversation targets."""
+
+    resolved = dict(params or {})
+    defaults: list[str] = []
+    if is_group and action in {
+        "send_group_msg",
+        "send_group_forward_msg",
+        "forward_group_single_msg",
+        "group_poke",
+        "get_group_msg_history",
+        "get_group_info",
+        "get_group_member_info",
+        "get_group_member_list",
+        "get_essence_msg_list",
+    } and not _id_text(resolved.get("group_id")):
+        resolved["group_id"] = int(group_id or 0)
+        defaults.append("current_group")
+    if action == "group_poke" and not _id_text(resolved.get("user_id")):
+        resolved["user_id"] = int(user_id or 0)
+        defaults.append("current_sender")
+    if not is_group and action in {
+        "send_private_msg",
+        "send_private_forward_msg",
+        "forward_friend_single_msg",
+        "friend_poke",
+        "get_friend_msg_history",
+    } and not _id_text(resolved.get("user_id")):
+        resolved["user_id"] = int(user_id or 0)
+        defaults.append("current_private_peer")
+    if action == "send_like" and not _id_text(resolved.get("user_id")):
+        resolved["user_id"] = int(user_id or 0)
+        defaults.append("current_sender")
+    if action in {"get_msg", "set_msg_emoji_like"} and not _id_text(resolved.get("message_id")):
+        resolved["message_id"] = str(source_message_id or "").strip()
+        defaults.append("current_message")
+    return resolved, tuple(defaults)
+
+
+def authorize_model_onebot_action(
+    action: str,
+    params: Mapping[str, Any],
+    *,
+    is_master: bool,
+    is_group: bool,
+    group_id: int,
+    user_id: int,
+    source_message_id: str,
+) -> tuple[bool, str, str]:
+    """Authorize one action against the triggering QQ conversation.
+
+    Returns ``(allowed, reason, scope)``.  The owner can intentionally operate
+    across conversations; other participants are constrained to the surface
+    that caused the current model turn.
+    """
+
+    spec = MODEL_ONEBOT_ACTIONS.get(str(action or "").strip())
+    if spec is None:
+        return False, "action_not_exposed", "none"
+    if is_master:
+        return True, "", "owner"
+    if spec.owner_only:
+        return False, "owner_required", "owner_only"
+
+    current_group = str(int(group_id or 0)) if is_group and int(group_id or 0) > 0 else ""
+    current_user = str(int(user_id or 0)) if int(user_id or 0) > 0 else ""
+    target_group = _id_text(params.get("group_id"))
+    target_user = _id_text(params.get("user_id"))
+    target_message = _id_text(params.get("message_id"))
+    current_message = _id_text(source_message_id)
+
+    if action in {
+        "send_group_msg",
+        "send_group_forward_msg",
+        "forward_group_single_msg",
+        "group_poke",
+        "get_group_msg_history",
+        "get_group_info",
+        "get_group_member_info",
+        "get_group_member_list",
+        "get_essence_msg_list",
+    }:
+        return _same_target(target_group, current_group, "current_group")
+    if action in {
+        "send_private_msg",
+        "send_private_forward_msg",
+        "forward_friend_single_msg",
+        "friend_poke",
+        "get_friend_msg_history",
+    }:
+        if is_group:
+            return False, "cross_conversation_requires_owner", "cross_private"
+        return _same_target(target_user, current_user, "current_private")
+    if action == "send_like":
+        return _same_target(target_user, current_user, "current_sender")
+    if action in {"get_msg", "set_msg_emoji_like"}:
+        return _same_target(target_message, current_message, "current_message")
+    return False, "owner_required", "owner_only"
+
+
+def _same_target(requested: str, current: str, scope: str) -> tuple[bool, str, str]:
+    if requested and current and requested == current:
+        return True, "", scope
+    return False, "cross_conversation_requires_owner", scope
+
+
+def _id_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(int(text))
+    except (TypeError, ValueError):
+        return text

@@ -43,6 +43,11 @@ import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
 from .deployment_security import QQChannelRuntimeConfig
 from .model_service_config import normalize_provider_model_id
+from .onebot_model_actions import (
+    authorize_model_onebot_action,
+    model_onebot_capabilities,
+    resolve_model_onebot_params,
+)
 from .onebot_transport import OneBotActionTransport
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 
@@ -2677,6 +2682,57 @@ class NapCatQQGateway:
             "retcode": 0 if result.ok else -1,
             "data": result.data,
         }
+
+    def call_model_onebot_action(
+        self,
+        context: QQMessageContext,
+        *,
+        action: str,
+        params: dict[str, Any],
+        timeout_seconds: float = 20.0,
+    ) -> dict[str, Any]:
+        """Execute one explicitly exposed model action against the bound Bot.
+
+        The model never receives the endpoint, token or transport exception.
+        Cross-conversation authority is derived from the triggering QQ actor,
+        not from model-provided parameters.
+        """
+
+        clean_action = str(action or "").strip().lstrip("/")
+        if clean_action == "capabilities":
+            return model_onebot_capabilities()
+        is_master = bool(self.master_qq) and str(int(context.user_id or 0)) == self.master_qq
+        resolved_params, defaults_applied = resolve_model_onebot_params(
+            clean_action,
+            params,
+            is_group=bool(context.is_group),
+            group_id=int(context.group_id or 0),
+            user_id=int(context.user_id or 0),
+            source_message_id=str(context.source_message_id or ""),
+        )
+        allowed, reason, scope = authorize_model_onebot_action(
+            clean_action,
+            resolved_params,
+            is_master=is_master,
+            is_group=bool(context.is_group),
+            group_id=int(context.group_id or 0),
+            user_id=int(context.user_id or 0),
+            source_message_id=str(context.source_message_id or ""),
+        )
+        if not allowed:
+            return {
+                "ok": False,
+                "status": "forbidden",
+                "reason": reason,
+                "action": clean_action or "unknown",
+                "scope": scope,
+            }
+        result = self._onebot_transport.call(clean_action, resolved_params, timeout=timeout_seconds)
+        payload = result.as_dict()
+        payload["scope"] = scope
+        if defaults_applied:
+            payload["defaults_applied"] = list(defaults_applied)
+        return payload
 
     @staticmethod
     def _legacy_attachments(attachments: tuple[AttachmentRef, ...]) -> list[dict[str, Any]]:

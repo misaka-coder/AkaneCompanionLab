@@ -12,6 +12,7 @@ from memcore import build_native_memory_tool_specs
 
 from .client_protocol import ClientMode
 from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
+from .onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES
 
 
 DOCUMENT_ATTACHMENT_FORMATS = {
@@ -228,6 +229,7 @@ GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
 FILE_HANDOFF_TOOL_NAMES = ("send_file",)
 CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
 QQ_STICKER_TOOL_NAMES = ("send_sticker",)
+QQ_ONEBOT_ACTION_TOOL_NAMES = ("onebot_action",)
 QQ_MUSIC_CARD_TOOL_NAMES = ("send_music_card",)
 QQ_AUDIO_DELIVERY_TOOL_NAMES = ("send_audio",)
 
@@ -1460,6 +1462,45 @@ SEND_STICKER_TOOL_SPEC = CapabilityToolSpec(
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=2048,
+)
+
+ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="onebot_action",
+    display_name="OneBot action",
+    description=(
+        "Call an explicitly exposed QQ/NapCat interaction through the current Bot. "
+        "Use capabilities when exact parameters are unknown. Supports messages and message segments, "
+        "history, forwards, pokes, emoji reactions, likes, member info and owner-authorized recall. "
+        "Unambiguous current group, private peer, sender and current-message ids may be omitted. "
+        "Ordinary participants are limited to the current conversation; cross-conversation actions and "
+        "delete_msg require the configured owner. Credentials and account/group administration are not exposed."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": list(MODEL_ONEBOT_ACTION_NAMES),
+                "description": "One exposed action name; use capabilities to inspect parameter hints and policy.",
+            },
+            "params": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Exact OneBot request object for the chosen action; use {} for capabilities.",
+            },
+        },
+        "required": ["action", "params"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=("qq_interaction",),
+    visible_in=("qq",),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=512 * 1024,
 )
 SEND_MUSIC_CARD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_music_card",
@@ -2867,6 +2908,19 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=QQ_STICKER_TOOL_NAMES,
                 light_hint="你有一组静态表情包；聊天氛围适合时可以发送一张表情包，但不要为了展示功能而频繁发送。",
+                trigger=_always,
+            ),
+            CapabilityModule(
+                name="qq_onebot_actions",
+                layer="qq_delivery",
+                modes=(ClientMode.QQ_TEXT,),
+                tools=QQ_ONEBOT_ACTION_TOOL_NAMES,
+                light_hint=(
+                    "QQ 中需要读取聊天记录、发送消息段或合并转发、戳一戳、回应消息表情、点赞、"
+                    "查询成员信息或撤回消息时用 onebot_action；不确定参数先查 capabilities。"
+                    "当前群、当前私聊对象、当前发送者或当前消息可在语义明确时由宿主补全；"
+                    "普通成员限当前会话，跨群/跨私聊与撤回需要主人，工具结果是真实 OneBot 回执。"
+                ),
                 trigger=_always,
             ),
             CapabilityModule(

@@ -37,6 +37,29 @@ class QQToolDeliveryPort:
         result["delivery_surface"] = "music_card"
         return result
 
+    def call_onebot_action(
+        self,
+        *,
+        request_context: dict[str, Any],
+        action: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        context = self._context(request_context)
+        if context is None:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "qq_delivery_context_missing",
+                "action": str(action or "").strip() or "unknown",
+            }
+        return dict(
+            self._gateway.call_model_onebot_action(
+                context,
+                action=action,
+                params=dict(params or {}),
+            )
+        )
+
     def send_audio_url(
         self,
         *,

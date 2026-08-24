@@ -6,6 +6,7 @@ import base64
 import hashlib
 import ipaddress
 import math
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ import requests
 from channelcore_onebot import OutboundActionResult, action_failure, normalize_action_response
 
 from .deployment_security import QQChannelRuntimeConfig
+from .onebot_model_actions import MODEL_ONEBOT_ACTION_METHODS
 
 
 ONEBOT_ACTION_METHODS = {
@@ -30,6 +32,7 @@ ONEBOT_ACTION_METHODS = {
     "upload_private_file": "POST",
     "upload_group_file": "POST",
     "upload_file_stream": "POST",
+    **MODEL_ONEBOT_ACTION_METHODS,
 }
 
 ONEBOT_STREAM_UPLOAD_CHUNK_BYTES = 512 * 1024
@@ -50,8 +53,10 @@ class OneBotActionTransport:
     def __init__(self, channel_config: QQChannelRuntimeConfig, *, session: requests.Session | None = None) -> None:
         self._config = channel_config
         self._base_url = _canonical_base_url(channel_config.onebot_http_url)
-        self._session = session or requests.Session()
-        self._session.trust_env = False
+        self._injected_session = session
+        self._thread_local = threading.local()
+        if self._injected_session is not None:
+            self._injected_session.trust_env = False
 
     def call(
         self, action: str, payload: dict[str, Any] | None = None, *, timeout: float = 20.0
@@ -60,7 +65,22 @@ class OneBotActionTransport:
         if isinstance(response, OutboundActionResult):
             return response
         body, http_status = response
-        return normalize_action_response(str(action or "").strip().lstrip("/"), body, http_status=http_status)
+        clean_action = str(action or "").strip().lstrip("/")
+        normalized = normalize_action_response(clean_action, body, http_status=http_status)
+        raw_data = body.get("data") if normalized.ok and isinstance(body, dict) else None
+        if clean_action in MODEL_ONEBOT_ACTION_METHODS and isinstance(raw_data, list):
+            # Several NapCat read APIs return a top-level array.  channelcore's
+            # general acknowledgement type is mapping-shaped, so retain the
+            # complete array under an explicit key instead of silently losing it.
+            return OutboundActionResult(
+                True,
+                normalized.status,
+                normalized.code,
+                normalized.action,
+                data={"items": raw_data},
+                http_status=normalized.http_status,
+            )
+        return normalized
 
     def stage_file(
         self,
@@ -144,7 +164,7 @@ class OneBotActionTransport:
         if not self._base_url:
             return action_failure(clean_action, "invalid_base_url", "OneBot 服务地址配置无效。")
         try:
-            response = self._session.request(
+            response = self._session_for_current_thread().request(
                 method,
                 f"{self._base_url}/{clean_action}",
                 json=dict(payload or {}) if method == "POST" else None,
@@ -171,6 +191,16 @@ class OneBotActionTransport:
         except Exception:
             return action_failure(clean_action, "invalid_json", "OneBot 返回格式无效。", http_status)
         return body, http_status
+
+    def _session_for_current_thread(self) -> requests.Session:
+        if self._injected_session is not None:
+            return self._injected_session
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.trust_env = False
+            self._thread_local.session = session
+        return session
 
 
 def _canonical_base_url(value: str) -> str:
