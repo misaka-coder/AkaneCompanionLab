@@ -859,6 +859,135 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["_service_failure"]["status"], "unavailable")
         self.assertIn("chat_final_service_failures", llm.metrics)
 
+    def test_nonstream_rate_limit_gets_one_same_request_retry_without_format_feedback(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+                self.text_calls = 0
+                self.metrics: list[str] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def record_metric(self, name: str) -> None:
+                self.metrics.append(name)
+
+            def call_chat_json_result(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    return ChatJSONResult(
+                        parsed={"speech": "", "tool_call": None},
+                        raw_text="",
+                        error="Error code: 429 - upstream_rate_limited",
+                        fallback_used=True,
+                    )
+                return ChatJSONResult(
+                    parsed={"speech": "重试成功。", "tool_call": None},
+                    raw_text='{"speech":"重试成功。","tool_call":null}',
+                )
+
+            def call_chat_text(self, **_kwargs):
+                self.text_calls += 1
+                return ChatTextResult(text="不应调用", raw_text="不应调用")
+
+        llm = FakeLLM()
+        result = self._run_nonstream(self._engine(llm))
+
+        self.assertEqual(result["speech"], "重试成功。")
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.text_calls, 0)
+        self.assertEqual(llm.calls[0]["prompt_cache_key"], llm.calls[1]["prompt_cache_key"])
+        self.assertEqual(llm.calls[0]["user_prompt"], llm.calls[1]["user_prompt"])
+        self.assertIn("chat_final_rate_limit_retries", llm.metrics)
+
+    def test_repeated_nonstream_rate_limit_stops_after_two_calls(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.text_calls = 0
+                self.metrics: list[str] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def record_metric(self, name: str) -> None:
+                self.metrics.append(name)
+
+            def call_chat_json_result(self, **_kwargs):
+                self.calls += 1
+                return ChatJSONResult(
+                    parsed={"speech": "", "tool_call": None},
+                    raw_text="",
+                    error="HTTP 429 rate limit exceeded",
+                    fallback_used=True,
+                )
+
+            def call_chat_text(self, **_kwargs):
+                self.text_calls += 1
+                return ChatTextResult(text="", raw_text="")
+
+        llm = FakeLLM()
+        result = self._run_nonstream(self._engine(llm))
+
+        self.assertEqual(llm.calls, 2)
+        self.assertEqual(llm.text_calls, 0)
+        self.assertEqual(result["_service_failure"]["reason"], "provider_rate_limited")
+        self.assertIn("chat_final_rate_limited", llm.metrics)
+
+    def test_stream_rate_limit_and_fallback_rate_limit_stop_without_uncached_or_text_retry(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.stream_calls = 0
+                self.nonstream_calls = 0
+                self.text_calls = 0
+                self.metrics: list[str] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def record_metric(self, name: str) -> None:
+                self.metrics.append(name)
+
+            def stream_chat_json(self, **_kwargs):
+                if False:
+                    yield None
+                self.stream_calls += 1
+                return SimpleNamespace(
+                    parsed={"speech": "", "tool_call": None},
+                    raw_text="",
+                    error="status_code=429 upstream_rate_limited",
+                    fallback_used=True,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            def call_chat_json_result(self, **_kwargs):
+                self.nonstream_calls += 1
+                return ChatJSONResult(
+                    parsed={"speech": "", "tool_call": None},
+                    raw_text="",
+                    error="RateLimitError: 429",
+                    fallback_used=True,
+                )
+
+            def call_chat_text(self, **_kwargs):
+                self.text_calls += 1
+                return ChatTextResult(text="", raw_text="")
+
+        llm = FakeLLM()
+        _events, result = self._run_stream(self._engine(llm))
+
+        self.assertEqual(llm.stream_calls, 1)
+        self.assertEqual(llm.nonstream_calls, 1)
+        self.assertEqual(llm.text_calls, 0)
+        self.assertEqual(result["_service_failure"]["reason"], "provider_rate_limited")
+        self.assertNotIn("chat_stream_uncached_fallbacks", llm.metrics)
+
     # --- Phase 5 item 14: stable prefix/cache key; retry info only at the tail ---
 
     def test_cache_key_and_prefix_stable_across_retries(self) -> None:

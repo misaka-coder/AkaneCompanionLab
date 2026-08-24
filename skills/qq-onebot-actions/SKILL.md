@@ -49,6 +49,8 @@ description: 规划复杂 QQ OneBot 工作流：读取历史、构造或转发�
 
 `content` 必须是消息段数组。`uin` 通常决定头像，`name` 决定节点显示名；客户端最终表现以 OneBot 回执和实际 QQ 渲染为准。
 
+展开已有合并转发时，`get_forward_msg` 的字段名虽然叫 `message_id`，值必须填写合并转发消息回执中的 `forward_id`/`res_id`；普通 QQ 消息的数字 `message_id` 不能用于展开。先用 `get_msg` 或历史读取拿到合并转发段里的真实 ID，再调用展开动作。
+
 ## 常见消息段
 
 同一条 `message` 可以包含多个消息段，例如多个系统表情：

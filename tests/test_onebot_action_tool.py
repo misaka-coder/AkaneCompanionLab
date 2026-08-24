@@ -70,6 +70,9 @@ class OneBotActionContractTests(unittest.TestCase):
         self.assertNotIn("get_clientkey", names)
         self.assertNotIn("set_group_ban", names)
         self.assertEqual(MODEL_ONEBOT_ACTION_NAMES[0], "capabilities")
+        forward = next(item for item in manifest["actions"] if item["action"] == "get_forward_msg")
+        self.assertEqual(forward["params"], "message_id=forward_id/res_id")
+        self.assertIn("不是普通 QQ message_id", forward["summary"])
 
     def test_non_owner_same_group_is_allowed_but_cross_group_and_recall_are_explicitly_denied(self) -> None:
         current = authorize_model_onebot_action(

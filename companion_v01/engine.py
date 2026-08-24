@@ -4989,12 +4989,14 @@ class AkaneMemoryEngine:
         provider_output_raw = ""
         retry_feedback = ""
         transport_failures = 0
+        rate_limit_failures = 0
+        transport_retry_pending = False
         for attempt in range(1, max_attempts + 1):
             # A malformed decision retries against the same context and tool
             # surface. A legal tool call is a decision, not damaged final text.
             retry_mode = attempt > 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if retry_mode else ""
+            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if retry_mode and not transport_retry_pending else ""
             request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -5015,8 +5017,20 @@ class AkaneMemoryEngine:
                     {"status": "failed", "reason": "request_projection_record_failed"}
                 )
             provider_output_raw = str(getattr(call_result, "raw_text", "") or "")
-            if str(getattr(call_result, "error", "") or "").strip():
+            call_error = str(getattr(call_result, "error", "") or "").strip()
+            if call_error:
                 transport_failures += 1
+            if self._provider_error_is_rate_limited(call_error):
+                rate_limit_failures += 1
+                if rate_limit_failures >= 2 or attempt >= max_attempts:
+                    self._record_final_rate_limit_metric()
+                    self._record_final_service_failure_metric()
+                    return self._final_service_failure_output(reason="provider_rate_limited")
+                transport_retry_pending = True
+                if hasattr(self.llm, "record_metric"):
+                    self.llm.record_metric("chat_final_rate_limit_retries")
+                continue
+            transport_retry_pending = False
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = self._llm_result_used_fallback(
                 call_result,
@@ -5518,6 +5532,30 @@ class AkaneMemoryEngine:
         if callable(record):
             record("chat_final_service_failures")
 
+    def _record_final_rate_limit_metric(self) -> None:
+        record = getattr(self.llm, "record_metric", None)
+        if callable(record):
+            record("chat_final_rate_limited")
+
+    @staticmethod
+    def _provider_error_is_rate_limited(error: Any) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        return bool(re.search(r"\b429\b", text)) or any(
+            marker in text
+            for marker in (
+                "upstream_rate_limited",
+                "ratelimiterror",
+                "rate limit",
+                "rate_limit",
+                "http 429",
+                "status 429",
+                "status_code=429",
+                "status_code: 429",
+            )
+        )
+
     @staticmethod
     def _final_service_failure_output(*, reason: str = "") -> dict[str, Any]:
         """Structured service-failure terminal state.
@@ -5875,6 +5913,7 @@ class AkaneMemoryEngine:
                 metrics_after=metrics_after,
             )
             stream_error = str(getattr(stream_result, "error", "") or "").strip()
+            stream_rate_limited = self._provider_error_is_rate_limited(stream_error)
             provider_output_raw = str(getattr(stream_result, "raw_text", "") or "")
             if "request_observer_rejected:" in stream_error:
                 return self._memcore_projection_failure_output(
@@ -5942,13 +5981,14 @@ class AkaneMemoryEngine:
                 normalized=normalized,
                 parse_fallback=parse_fallback,
             )
-            self._log_final_response_retry(
-                prompt_scope=str(generation_context.get("prompt_scope") or ""),
-                attempt=attempt,
-                feedback=retry_feedback,
-                raw_result=getattr(stream_result, "parsed", None),
-                provider_output_raw=provider_output_raw,
-            )
+            if not stream_rate_limited:
+                self._log_final_response_retry(
+                    prompt_scope=str(generation_context.get("prompt_scope") or ""),
+                    attempt=attempt,
+                    feedback=retry_feedback,
+                    raw_result=getattr(stream_result, "parsed", None),
+                    provider_output_raw=provider_output_raw,
+                )
             if attempt_had_speech_chunk:
                 yield {
                     "type": "speech_reset",
@@ -5985,6 +6025,10 @@ class AkaneMemoryEngine:
                         {"status": "failed", "reason": "request_projection_record_failed"}
                     )
                 provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
+                if stream_rate_limited and self._provider_error_is_rate_limited(fallback_error):
+                    self._record_final_rate_limit_metric()
+                    self._record_final_service_failure_metric()
+                    return self._final_service_failure_output(reason="provider_rate_limited")
                 fallback_metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
                 fallback_parse_failure = self._llm_result_used_fallback(
                     fallback_call_result,
@@ -7142,6 +7186,7 @@ class AkaneMemoryEngine:
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
+            memcore_turn_id=memcore_turn_id,
         )
         manager = getattr(self, "memcore_manager", None)
         memcore_required = bool(
@@ -7317,6 +7362,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        memcore_turn_id: str = "",
     ) -> dict[str, Any]:
         if tool_history_turns is None:
             return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
@@ -7340,11 +7386,15 @@ class AkaneMemoryEngine:
             if sources:
                 return {"ok": False, "status": "failed", "reason": "mixed_native_provider_batch"}
         manager = getattr(self, "memcore_manager", None)
-        build_projection = getattr(manager, "build_context_projection", None)
+        build_open_projection = getattr(manager, "build_open_turn_projection", None)
+        build_full_projection = getattr(manager, "build_context_projection", None)
         selected_ids = set(media_ids)
         selected_ids.update(
             str(source_id or "").strip() for source_id in trace_source_ids if str(source_id or "").strip()
         )
+        normalized_turn_id = str(memcore_turn_id or "").strip()
+        use_focused_projection = callable(build_open_projection) and bool(normalized_turn_id)
+        build_projection = build_open_projection if use_focused_projection else build_full_projection
         if not callable(build_projection) or not selected_ids:
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_unavailable"}
         provider_profile = str(provider_profile or "").strip().lower()
@@ -7357,12 +7407,15 @@ class AkaneMemoryEngine:
                 provider_profile = str(protocol_getter() or "").strip()
         if not provider_profile:
             return {"ok": False, "status": "unavailable", "reason": "provider_profile_unavailable"}
-        projection = build_projection(
-            provider_profile=provider_profile,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-        )
+        projection_kwargs = {
+            "provider_profile": provider_profile,
+            "profile_user_id": profile_user_id,
+            "session_id": session_id,
+            "character_pack_id": character_pack_id,
+        }
+        if use_focused_projection:
+            projection_kwargs["turn_id"] = normalized_turn_id
+        projection = build_projection(**projection_kwargs)
         if not isinstance(projection, dict) or not projection.get("ok"):
             return {"ok": False, "status": "unavailable", "reason": "memcore_projection_build_failed"}
         projection_messages = [
@@ -7378,7 +7431,9 @@ class AkaneMemoryEngine:
             for message in selected_messages
             if str(message.get("turn_id") or "").strip()
         }
-        if len(selected_turn_ids) > 1:
+        if len(selected_turn_ids) > 1 or (
+            normalized_turn_id and selected_turn_ids and selected_turn_ids != {normalized_turn_id}
+        ):
             return {"ok": False, "status": "failed", "reason": "tool_projection_crosses_turns"}
         current_turn_messages = selected_messages
         if selected_turn_ids:

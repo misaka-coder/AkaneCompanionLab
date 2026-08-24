@@ -1015,6 +1015,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
+                focused = manager.build_open_turn_projection(
+                    turn_id=str(opened["turn_id"]),
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
                 surface = manager.build_context_surface(
                     provider_profile="responses",
                     current_source_id="projection-stimulus",
@@ -1057,6 +1064,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 manager.close()
 
         self.assertTrue(projection["ok"], projection)
+        self.assertTrue(focused["ok"], focused)
+        self.assertEqual(focused["turn_id"], opened["turn_id"])
+        self.assertEqual(focused["payloads"], projection["payloads"])
+        self.assertFalse(focused["has_compact_history"])
         self.assertTrue(surface["ok"], surface)
         self.assertEqual(surface["messages"], [surface["current_message"]])
         self.assertEqual(surface["message_source_ids"], [["projection-stimulus"]])
@@ -1907,6 +1918,76 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(history[1]["role"], "user")
         self.assertIn("call_id: legacy-anthropic-call", str(history[1]["content"]))
         self.assertNotIn("tool_result", repr(history[1]))
+
+    def test_active_tool_batch_uses_focused_open_turn_projection(self) -> None:
+        class FocusedProjectionManager:
+            focused_calls: list[dict[str, object]] = []
+
+            @staticmethod
+            def build_context_projection(**_kwargs):
+                raise AssertionError("full conversation projection must not run for active batch refresh")
+
+            @classmethod
+            def build_open_turn_projection(cls, **kwargs):
+                cls.focused_calls.append(dict(kwargs))
+                return {
+                    "ok": True,
+                    "provider_profile": "responses",
+                    "messages": [
+                        {
+                            "turn_id": "active-turn",
+                            "payload": {"role": "user", "content": "查天气"},
+                            "source_ids": ["active-user"],
+                        },
+                        {
+                            "turn_id": "active-turn",
+                            "payload": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "active-call",
+                                        "type": "function",
+                                        "function": {"name": "web_search", "arguments": '{"query":"天气"}'},
+                                    }
+                                ],
+                            },
+                            "source_ids": ["active-action"],
+                        },
+                        {
+                            "turn_id": "active-turn",
+                            "payload": {"role": "tool", "tool_call_id": "active-call", "content": "晴"},
+                            "source_ids": ["active-result"],
+                        },
+                    ],
+                }
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.llm = SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "responses")
+        engine.memcore_manager = FocusedProjectionManager()
+        history: list[dict[str, object]] = []
+
+        projected = engine._append_tool_history_batch(
+            tool_history_turns=history,
+            items=[
+                (
+                    {"type": "web_search", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
+                    ToolExecutionResult(tool_type="web_search", followup_context="晴"),
+                    "晴",
+                    "",
+                )
+            ],
+            trace_source_ids=["active-action", "active-result"],
+            provider_profile="responses",
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+            memcore_turn_id="active-turn",
+        )
+
+        self.assertTrue(projected["ok"], projected)
+        self.assertEqual(FocusedProjectionManager.focused_calls[0]["turn_id"], "active-turn")
+        self.assertEqual([item["role"] for item in history], ["assistant", "tool"])
 
     def test_parallel_native_tool_wire_is_restored_in_order_on_next_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

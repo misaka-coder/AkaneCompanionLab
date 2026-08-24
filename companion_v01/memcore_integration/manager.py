@@ -1873,6 +1873,46 @@ class MemcoreManager:
             )
         return self._status(operation, True, "recorded", source_id=record_id, index_status=index_status)
 
+    @staticmethod
+    def _serialize_context_projection(
+        projection: Any,
+        *,
+        projection_messages: list[Any] | None = None,
+        has_compact_history: bool | None = None,
+    ) -> dict[str, Any]:
+        selected = list(projection.messages) if projection_messages is None else list(projection_messages)
+        messages = [
+            {
+                "turn_id": str(message.turn_id or ""),
+                "payload": dict(message.payload),
+                "source_ids": list(message.source_ids),
+                "payload_hash": str(message.payload_hash or ""),
+                "projection_status": str(message.projection_status),
+                "projection_index": int(message.projection_index),
+                "projection_version": int(message.projection_version),
+            }
+            for message in selected
+        ]
+        source_ids = list(dict.fromkeys(source_id for message in selected for source_id in message.source_ids))
+        compact = (
+            bool(getattr(projection, "has_compact_history", False))
+            if has_compact_history is None
+            else bool(has_compact_history)
+        )
+        return {
+            "provider_profile": str(projection.provider_profile),
+            "messages": messages,
+            "payloads": [dict(message.payload) for message in selected],
+            "source_ids": source_ids,
+            "message_count": len(messages),
+            "source_count": len(source_ids),
+            "stable_prefix_hash": str(projection.stable_prefix_hash or ""),
+            "projection_version": int(projection.projection_version),
+            "compaction_generation": int(projection.compaction_generation),
+            "projection_generation": int(projection.projection_generation),
+            "has_compact_history": compact,
+        }
+
     def build_context_projection(
         self,
         *,
@@ -1915,34 +1955,9 @@ class MemcoreManager:
             }
         try:
             projection = system.build_context_projection(provider_profile=profile)
-            messages = [
-                {
-                    "turn_id": str(message.turn_id or ""),
-                    "payload": dict(message.payload),
-                    "source_ids": list(message.source_ids),
-                    "payload_hash": str(message.payload_hash or ""),
-                    "projection_status": str(message.projection_status),
-                    "projection_index": int(message.projection_index),
-                    "projection_version": int(message.projection_version),
-                }
-                for message in projection.messages
-            ]
-            source_ids = list(
-                dict.fromkeys(source_id for message in projection.messages for source_id in message.source_ids)
-            )
             return {
                 **self._status(operation, True, "ok"),
-                "provider_profile": str(projection.provider_profile),
-                "messages": messages,
-                "payloads": [dict(payload) for payload in projection.payloads],
-                "source_ids": source_ids,
-                "message_count": len(messages),
-                "source_count": len(source_ids),
-                "stable_prefix_hash": str(projection.stable_prefix_hash or ""),
-                "projection_version": int(projection.projection_version),
-                "compaction_generation": int(projection.compaction_generation),
-                "projection_generation": int(projection.projection_generation),
-                "has_compact_history": bool(getattr(projection, "has_compact_history", False)),
+                **self._serialize_context_projection(projection),
             }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
@@ -1957,6 +1972,83 @@ class MemcoreManager:
                 "projection_version": 0,
                 "compaction_generation": 0,
                 "projection_generation": 0,
+            }
+
+    def build_open_turn_projection(
+        self,
+        *,
+        turn_id: str,
+        provider_profile: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any]:
+        operation = "build_open_turn_projection"
+        profile = resolve_memcore_provider_profile(provider_profile)
+        normalized_turn_id = str(turn_id or "").strip()
+        if not profile or not normalized_turn_id:
+            return {
+                **self._status(
+                    operation,
+                    False,
+                    "invalid",
+                    reason="provider_profile_unsupported" if not profile else "turn_id_required",
+                ),
+                "provider_profile": profile,
+                "turn_id": normalized_turn_id,
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
+            }
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return {
+                **self._status(operation, False, "unavailable", reason=self._reason),
+                "provider_profile": profile,
+                "turn_id": normalized_turn_id,
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
+            }
+        try:
+            focused_builder = getattr(system, "build_open_turn_projection", None)
+            if callable(focused_builder):
+                projection = focused_builder(
+                    turn_id=normalized_turn_id,
+                    provider_profile=profile,
+                )
+                projection_messages = list(projection.messages)
+            else:
+                projection = system.build_context_projection(provider_profile=profile)
+                projection_messages = [
+                    message
+                    for message in projection.messages
+                    if str(message.turn_id or "") == normalized_turn_id
+                ]
+            return {
+                **self._status(operation, True, "ok"),
+                "turn_id": normalized_turn_id,
+                **self._serialize_context_projection(
+                    projection,
+                    projection_messages=projection_messages,
+                    has_compact_history=False,
+                ),
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore open turn projection failed: %s", reason)
+            return {
+                **self._status(operation, False, "failed", reason=reason),
+                "provider_profile": profile,
+                "turn_id": normalized_turn_id,
+                "messages": [],
+                "payloads": [],
+                "source_ids": [],
             }
 
     def build_context_surface(
