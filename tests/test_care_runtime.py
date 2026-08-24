@@ -728,7 +728,8 @@ class CareRuntimeGameplayTests(unittest.TestCase):
         return CareRuntimeStore(Path(tmp) / "care_runtime.json")
 
     def _give_coins(self, store: CareRuntimeStore, coins: int, date: str = "2024-01-01") -> None:
-        store.claim_daily_checkin(
+        """签到给 coins 金币，并赛钱换成等额额度（v5 后 QQ 消费走额度）。"""
+        res = store.claim_daily_checkin(
             profile_user_id=self._PROFILE,
             character_pack_id=self._CHAR,
             relation_user_id=self._REL,
@@ -736,6 +737,162 @@ class CareRuntimeGameplayTests(unittest.TestCase):
             coins=coins,
             now_ms=1000,
         )
+        granted = int(res.get("coins_granted") or coins)
+        store.donate_to_shrine(
+            profile_user_id=self._PROFILE,
+            character_pack_id=self._CHAR,
+            relation_user_id=self._REL,
+            amount=granted,
+            now_ms=1001,
+        )
+
+    def test_saiken_is_exact_idempotent_and_shop_spends_only_quota(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            store.claim_daily_checkin(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                date_key="2024-01-01",
+                coins=20,
+                now_ms=1000,
+            )
+
+            donated = store.donate_to_shrine(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=7,
+                event_id="message-1|economy:saiken",
+                now_ms=1100,
+            )
+            self.assertEqual(donated["status"], "ok")
+            self.assertEqual(donated["coins_after"], 13)
+            self.assertEqual(donated["shrine_total"], 7)
+            self.assertEqual(donated["quota_after"], 7)
+            self.assertEqual(donated["saiken_balance"], 7)
+            self.assertEqual(donated["saiken_count"], 1)
+
+            duplicate = store.donate_to_shrine(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=7,
+                event_id="message-1|economy:saiken",
+                now_ms=1200,
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+
+            purchased = store.buy_to_inventory(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                item_id="tea",
+                item_name="茶",
+                price=5,
+                now_ms=1300,
+            )
+            self.assertEqual(purchased["status"], "ok")
+            self.assertEqual(purchased["quota_after"], 2)
+            snapshot = purchased["snapshot"]
+            self.assertEqual(snapshot["coins"], 13)
+            self.assertEqual(snapshot["shrine_total"], 7)
+            self.assertEqual(snapshot["saiken_balance"], 7)
+
+    def test_saiken_invalid_insufficient_and_limit_fail_without_deduction(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            invalid = store.donate_to_shrine(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=0,
+                now_ms=1000,
+            )
+            self.assertEqual(invalid["status"], "invalid_amount")
+
+            store.adjust_qq_coins(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=999999,
+                source="test",
+                now_ms=1100,
+            )
+            full = store.donate_to_shrine(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=999999,
+                now_ms=1200,
+            )
+            self.assertEqual(full["status"], "ok")
+            store.adjust_qq_coins(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=1,
+                source="test",
+                now_ms=1300,
+            )
+            limited = store.donate_to_shrine(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=1,
+                now_ms=1400,
+            )
+            self.assertEqual(limited["status"], "balance_limit")
+            self.assertEqual(limited["snapshot"]["coins"], 1)
+            self.assertEqual(limited["snapshot"]["redeem_quota"], 999999)
+
+    def test_negative_poke_coin_change_uses_saiken_ledger_once(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            store.adjust_qq_coins(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                amount=10,
+                source="test",
+                now_ms=1000,
+            )
+            result = store.apply_poke_plan(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                plan={"outcome_kind": "coin_change", "coin_delta": -3},
+                event_id="poke-saiken-1",
+                scope_key="reimu_demo|private:111|actor:111",
+                cooldown_ms=0,
+                now_ms=1100,
+            )
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["mutation"]["coins_after"], 7)
+            self.assertEqual(result["mutation"]["donated_to_shrine"], 3)
+            self.assertEqual(result["snapshot"]["redeem_quota"], 3)
+            self.assertEqual(result["snapshot"]["shrine_total"], 3)
+
+            duplicate = store.apply_poke_plan(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                relation_user_id=self._REL,
+                plan={"outcome_kind": "coin_change", "coin_delta": -3},
+                event_id="poke-saiken-1",
+                scope_key="reimu_demo|private:111|actor:111",
+                cooldown_ms=0,
+                now_ms=1200,
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            snapshot = store.snapshot_for_client(
+                profile_user_id=self._PROFILE,
+                character_pack_id=self._CHAR,
+                client_mode="qq_text",
+                relation_user_id=self._REL,
+                now_ms=1200,
+            )
+            self.assertEqual(snapshot["coins"], 7)
+            self.assertEqual(snapshot["redeem_quota"], 3)
 
     def test_buy_places_item_in_inventory_without_affecting_vitals(self) -> None:
         """买商品只进个人背包，不立刻影响饥饿/精力。"""
@@ -761,7 +918,7 @@ class CareRuntimeGameplayTests(unittest.TestCase):
                 now_ms=2000,
             )
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["coins_after"], 12)  # 20 - 8
+            self.assertEqual(result["quota_after"], 12)  # 20 - 8
             self.assertEqual(result["item_count"], 1)
 
             snap = store.snapshot_for_client(
@@ -937,8 +1094,8 @@ class CareRuntimeGameplayTests(unittest.TestCase):
             self.assertEqual(result["requested"], 3)
             self.assertEqual(result["snapshot"]["hunger"], 40)
 
-    def test_fortune_daiji_grants_coins_and_affection(self) -> None:
-        """大吉签（roll < 0.10）：净 +20 金币，好感 +3。"""
+    def test_fortune_daiji_grants_quota_and_affection(self) -> None:
+        """大吉签（roll < 0.10）：净 +20 额度，好感 +3。"""
         with TemporaryDirectory() as tmp:
             store = self._store(tmp)
             self._give_coins(store, 20)
@@ -953,12 +1110,12 @@ class CareRuntimeGameplayTests(unittest.TestCase):
                 )
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["fortune"], "大吉")
-            self.assertEqual(result["net_coins"], 20)   # +25 - 5 cost
-            self.assertEqual(result["coins_after"], 40)  # 20 + 20
+            self.assertEqual(result["net_quota"], 20)   # +25 - 5 cost
+            self.assertEqual(result["quota_after"], 40)  # 20 + 20
             self.assertEqual(result["affection_delta"], 3)
 
     def test_fortune_xiong_deducts_cost_plus_penalty(self) -> None:
-        """凶签（roll >= 0.90）：净 -8 金币（签钱 5 + 罚 3）。"""
+        """凶签（roll >= 0.90）：净 -8 额度（签钱 5 + 罚 3）。"""
         with TemporaryDirectory() as tmp:
             store = self._store(tmp)
             self._give_coins(store, 20)
@@ -972,11 +1129,11 @@ class CareRuntimeGameplayTests(unittest.TestCase):
                     now_ms=2000,
                 )
             self.assertEqual(result["fortune"], "凶")
-            self.assertEqual(result["net_coins"], -8)
-            self.assertEqual(result["coins_after"], 12)  # 20 - 8
+            self.assertEqual(result["net_quota"], -8)
+            self.assertEqual(result["quota_after"], 12)  # 20 - 8
 
-    def test_fortune_insufficient_coins(self) -> None:
-        """金币不足时抽签失败，余额不变。"""
+    def test_fortune_insufficient_quota(self) -> None:
+        """额度不足时抽签失败，余额不变。"""
         with TemporaryDirectory() as tmp:
             store = self._store(tmp)
             self._give_coins(store, 3)
@@ -988,8 +1145,8 @@ class CareRuntimeGameplayTests(unittest.TestCase):
                 slip_cost=5,
                 now_ms=2000,
             )
-            self.assertEqual(result["status"], "insufficient_coins")
-            self.assertEqual(result["coins_before"], 3)
+            self.assertEqual(result["status"], "insufficient_quota")
+            self.assertEqual(result["quota_before"], 3)
 
     def test_checkin_streak_milestone_at_day_three(self) -> None:
         """连续3天签到触发里程碑，金币×1.5。"""

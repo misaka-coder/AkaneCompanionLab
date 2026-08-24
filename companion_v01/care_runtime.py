@@ -705,6 +705,9 @@ class CareRuntimeStore:
             last_offering_date = str(relation.get("last_offering_date") or "")
             inventory = {k: dict(v) for k, v in (relation.get("inventory") or {}).items() if isinstance(v, dict)}
             checkin_streak = int(relation.get("checkin_streak") or 0)
+            redeem_quota = _bounded_int(relation.get("qq_redeem_quota"), 0, 999999, fallback=0)
+            saiken_balance = _bounded_int(relation.get("qq_saiken_balance"), 0, 999999999, fallback=0)
+            saiken_count = int(relation.get("qq_saiken_count") or 0)
             relation_anchors = dict(relation.get("anchors") or {})
         else:
             affection = _bounded_int(body.get("desktop_affection"), 0, 100, fallback=10)
@@ -717,6 +720,9 @@ class CareRuntimeStore:
                 if str(item_id).strip() and _bounded_int(count, 0, 999, fallback=0) > 0
             }
             checkin_streak = 0
+            redeem_quota = 0
+            saiken_balance = 0
+            saiken_count = 0
             desktop_rel = self._relation_entry(
                 state, character_pack_id=character_pack_id, relation_user_id=relation_user_id
             )
@@ -730,6 +736,10 @@ class CareRuntimeStore:
             "hunger": _bounded_int(body.get("hunger"), 0, 100, fallback=55),
             "energy": _bounded_int(body.get("energy"), 0, 100, fallback=70),
             "coins": coins,
+            "redeem_quota": redeem_quota,
+            "saiken_balance": saiken_balance,
+            "saiken_count": saiken_count,
+            "shrine_total": _bounded_int(body.get("shrine_total"), 0, 999999999, fallback=0),
             "affection": affection,
             "checkin_streak": checkin_streak,
             "last_offering_date": last_offering_date,
@@ -999,6 +1009,7 @@ class CareRuntimeStore:
                 "energy": 70,
                 "coins": 20,
                 "desktop_affection": 10,
+                "shrine_total": 0,
                 "updated_at": int(time.time() * 1000),
             },
         )
@@ -1009,6 +1020,7 @@ class CareRuntimeStore:
         body.setdefault("energy", 70)
         body.setdefault("coins", 20)
         body.setdefault("desktop_affection", 10)
+        body.setdefault("shrine_total", 0)
         body.setdefault("updated_at", int(time.time() * 1000))
         body.setdefault("vitals_updated_at_ms", 0)
         return body
@@ -1170,12 +1182,12 @@ class CareRuntimeStore:
                 character_pack_id=character_pack_id,
                 relation_user_id=relation_user_id or profile_user_id,
             )
-            coins_before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
-            if coins_before < total_price:
+            quota_before = _bounded_int(relation.get("qq_redeem_quota"), 0, 999999, fallback=0)
+            if quota_before < total_price:
                 return {
-                    "status": "insufficient_coins",
-                    "coins_before": coins_before,
-                    "coins_needed": total_price,
+                    "status": "insufficient_quota",
+                    "quota_before": quota_before,
+                    "quota_needed": total_price,
                     "snapshot": self._snapshot(
                         state,
                         character_pack_id=character_pack_id,
@@ -1184,7 +1196,7 @@ class CareRuntimeStore:
                         now_ms=now_ms,
                     ),
                 }
-            relation["qq_coins"] = coins_before - total_price
+            relation["qq_redeem_quota"] = quota_before - total_price
             inventory = relation.setdefault("inventory", {})
             if item_id in inventory and isinstance(inventory[item_id], dict):
                 inventory[item_id]["count"] = inventory[item_id].get("count", 0) + count
@@ -1230,8 +1242,8 @@ class CareRuntimeStore:
             self._save(state)
             return {
                 "status": "ok",
-                "coins_before": coins_before,
-                "coins_after": relation["qq_coins"],
+                "quota_before": quota_before,
+                "quota_after": relation["qq_redeem_quota"],
                 "item_id": item_id,
                 "item_name": item_name,
                 "item_count": inventory[item_id]["count"],
@@ -1243,6 +1255,149 @@ class CareRuntimeStore:
                     now_ms=now_ms,
                 ),
             }
+
+    def _apply_saiken_on_state(
+        self,
+        state: dict[str, Any],
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        amount: int,
+        source: str,
+        event_id: str = "",
+        scope_key: str = "",
+        group_scope_key: str = "",
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Apply the single authoritative coins -> shrine + quota mutation."""
+
+        if amount <= 0:
+            return {"status": "invalid_amount", "amount": amount, "message": "赛钱金额必须大于 0"}
+        if event_id:
+            previous = self._find_care_event(state, event_id)
+            if previous is not None:
+                return {"status": "duplicate", "event_id": event_id, "event": previous}
+        rel_key = relation_user_id or profile_user_id
+        body = self._body_entry(state, character_pack_id=character_pack_id)
+        relation = self._relation_entry(
+            state, character_pack_id=character_pack_id, relation_user_id=rel_key
+        )
+        coins_before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
+        if coins_before < amount:
+            return {
+                "status": "insufficient_coins",
+                "coins_before": coins_before,
+                "coins_needed": amount,
+                "snapshot": self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=rel_key,
+                    now_ms=now_ms,
+                ),
+            }
+        shrine_before = _bounded_int(body.get("shrine_total"), 0, 999999999, fallback=0)
+        quota_before = _bounded_int(relation.get("qq_redeem_quota"), 0, 999999, fallback=0)
+        saiken_before = _bounded_int(relation.get("qq_saiken_balance"), 0, 999999999, fallback=0)
+        shrine_after = shrine_before + amount
+        quota_after = quota_before + amount
+        saiken_after = saiken_before + amount
+        if shrine_after > 999999999 or quota_after > 999999 or saiken_after > 999999999:
+            return {
+                "status": "balance_limit",
+                "reason": "saiken_target_limit",
+                "amount": amount,
+                "snapshot": self._snapshot(
+                    state,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=rel_key,
+                    now_ms=now_ms,
+                ),
+            }
+
+        relation["qq_coins"] = coins_before - amount
+        body["shrine_total"] = shrine_after
+        relation["qq_redeem_quota"] = quota_after
+        relation["qq_saiken_balance"] = saiken_after
+        relation["qq_saiken_count"] = max(0, int(relation.get("qq_saiken_count") or 0)) + 1
+        relation["updated_at"] = now_ms
+        mutation = {
+            "kind": "coin_change",
+            "requested_delta": -amount,
+            "actual_delta": -amount,
+            "coins_before": coins_before,
+            "coins_after": relation["qq_coins"],
+            "donated_to_shrine": amount,
+            "shrine_total": shrine_after,
+            "quota_before": quota_before,
+            "quota_after": quota_after,
+            "saiken_balance": saiken_after,
+            "saiken_count": relation["qq_saiken_count"],
+            "source": str(source or "saiken"),
+        }
+        self._record_care_event(
+            state,
+            {
+                "event_id": str(event_id or ""),
+                "source": str(source or "saiken"),
+                "kind": "coin_change",
+                "status": "ok",
+                "profile_user_id": profile_user_id,
+                "character_pack_id": character_pack_id,
+                "relation_user_id": rel_key,
+                "scope_key": str(scope_key or ""),
+                "group_scope_key": str(group_scope_key or ""),
+                "mutation": mutation,
+                "timestamp_ms": now_ms,
+            },
+        )
+        return {
+            "status": "ok",
+            **mutation,
+            "mutation": mutation,
+            "snapshot": self._snapshot(
+                state,
+                character_pack_id=character_pack_id,
+                client_mode="qq_text",
+                relation_user_id=rel_key,
+                now_ms=now_ms,
+            ),
+        }
+
+    def donate_to_shrine(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        amount: int,
+        event_id: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically exchange QQ coins for permanent shrine total and spendable quota."""
+
+        try:
+            clean_amount = int(amount or 0)
+        except (TypeError, ValueError):
+            clean_amount = 0
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        with self._lock:
+            state = self._load()
+            result = self._apply_saiken_on_state(
+                state,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id,
+                amount=clean_amount,
+                source="saiken",
+                event_id=event_id,
+                now_ms=now_ms,
+            )
+            if result.get("status") == "ok":
+                self._save(state)
+            return result
 
     def use_from_inventory(
         self,
@@ -1578,6 +1733,45 @@ class CareRuntimeStore:
                 ),
             }
 
+    def donate_poke_coins(
+        self,
+        *,
+        profile_user_id: str,
+        character_pack_id: str = "",
+        relation_user_id: str = "",
+        amount: int,
+        source: str = "poke",
+        event_id: str = "",
+        scope_key: str = "",
+        group_scope_key: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """戳一戳扣金币走赛钱：顺走的金币投进赛钱箱，获得等额兑换额度。
+
+        金币不能直接买商店，因此 poke 扣币统一转成赛钱：
+        qq_coins -N, shrine_total +N, redeem_quota +N,
+        saiken_balance +N, saiken_count +1。箱子只进不出。
+        """
+        amount = max(1, int(amount or 0))
+        now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
+        with self._lock:
+            state = self._load()
+            result = self._apply_saiken_on_state(
+                state,
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                relation_user_id=relation_user_id,
+                amount=amount,
+                source=source,
+                event_id=event_id,
+                scope_key=scope_key,
+                group_scope_key=group_scope_key,
+                now_ms=now_ms,
+            )
+            if result.get("status") == "ok":
+                self._save(state)
+            return result
+
     def apply_poke_plan(
         self,
         *,
@@ -1667,11 +1861,25 @@ class CareRuntimeStore:
                 )
 
             if outcome_kind == "coin_change":
+                coin_delta = int(plan.get("coin_delta") or 0)
+                if coin_delta < 0:
+                    # 戳一戳扣金币 → 顺走变赛钱，获得等额兑换额度
+                    return self.donate_poke_coins(
+                        profile_user_id=profile_user_id,
+                        character_pack_id=character_pack_id,
+                        relation_user_id=relation_user_id,
+                        amount=abs(coin_delta),
+                        source="poke",
+                        event_id=event_id,
+                        scope_key=scope_key,
+                        group_scope_key=group_scope_key,
+                        now_ms=now_ms,
+                    )
                 return self.adjust_qq_coins(
                     profile_user_id=profile_user_id,
                     character_pack_id=character_pack_id,
                     relation_user_id=relation_user_id,
-                    amount=int(plan.get("coin_delta") or 0),
+                    amount=coin_delta,
                     source="poke",
                     event_id=event_id,
                     scope_key=scope_key,
@@ -1737,23 +1945,23 @@ class CareRuntimeStore:
     ) -> dict[str, Any]:
         """Resolve and apply one fortune draw without persisting the state."""
         fortunes = [
-            {"name": "大吉", "prob": 0.10, "coins_delta": 25, "affection_delta": 3},
-            {"name": "中吉", "prob": 0.25, "coins_delta": 12, "affection_delta": 0},
-            {"name": "小吉", "prob": 0.30, "coins_delta": 6, "affection_delta": 0},
-            {"name": "末吉", "prob": 0.25, "coins_delta": 0, "affection_delta": 0},
-            {"name": "凶", "prob": 0.10, "coins_delta": -3, "affection_delta": 0},
+            {"name": "大吉", "prob": 0.10, "quota_delta": 25, "affection_delta": 3},
+            {"name": "中吉", "prob": 0.25, "quota_delta": 12, "affection_delta": 0},
+            {"name": "小吉", "prob": 0.30, "quota_delta": 6, "affection_delta": 0},
+            {"name": "末吉", "prob": 0.25, "quota_delta": 0, "affection_delta": 0},
+            {"name": "凶", "prob": 0.10, "quota_delta": -3, "affection_delta": 0},
         ]
         slip_cost = max(1, int(slip_cost))
         rel_key = relation_user_id or profile_user_id
         relation = self._relation_entry(
             state, character_pack_id=character_pack_id, relation_user_id=rel_key
         )
-        coins_before = _bounded_int(relation.get("qq_coins"), 0, 999999, fallback=0)
-        if coins_before < slip_cost:
+        quota_before = _bounded_int(relation.get("qq_redeem_quota"), 0, 999999, fallback=0)
+        if quota_before < slip_cost:
             return {
-                "status": "insufficient_coins",
-                "coins_before": coins_before,
-                "coins_needed": slip_cost,
+                "status": "insufficient_quota",
+                "quota_before": quota_before,
+                "quota_needed": slip_cost,
             }
 
         roll = random.random()
@@ -1765,9 +1973,9 @@ class CareRuntimeStore:
                 fortune = candidate
                 break
 
-        net_coins = fortune["coins_delta"] - slip_cost
-        new_coins = max(0, min(999999, coins_before + net_coins))
-        relation["qq_coins"] = new_coins
+        net_quota = fortune["quota_delta"] - slip_cost
+        new_quota = max(0, min(999999, quota_before + net_quota))
+        relation["qq_redeem_quota"] = new_quota
         if fortune["affection_delta"] != 0:
             aff_before = _bounded_int(relation.get("qq_affection"), 0, 100, fallback=10)
             aff_after = max(0, min(100, aff_before + fortune["affection_delta"]))
@@ -1777,12 +1985,12 @@ class CareRuntimeStore:
         return {
             "status": "ok",
             "fortune": fortune["name"],
-            "coins_delta": fortune["coins_delta"],
+            "quota_delta": fortune["quota_delta"],
             "affection_delta": fortune["affection_delta"],
             "slip_cost": slip_cost,
-            "net_coins": net_coins,
-            "coins_before": coins_before,
-            "coins_after": new_coins,
+            "net_quota": net_quota,
+            "quota_before": quota_before,
+            "quota_after": new_quota,
             "snapshot": self._snapshot(
                 state,
                 character_pack_id=character_pack_id,
@@ -1808,6 +2016,9 @@ class CareRuntimeStore:
             {
                 "qq_affection": 10,
                 "qq_coins": 0,
+                "qq_redeem_quota": 0,
+                "qq_saiken_balance": 0,
+                "qq_saiken_count": 0,
                 "last_offering_date": "",
                 "updated_at": int(time.time() * 1000),
             },
@@ -1817,6 +2028,9 @@ class CareRuntimeStore:
             character_relations[relation_key] = relation
         relation.setdefault("qq_affection", 10)
         relation.setdefault("qq_coins", 0)
+        relation.setdefault("qq_redeem_quota", 0)
+        relation.setdefault("qq_saiken_balance", 0)
+        relation.setdefault("qq_saiken_count", 0)
         relation.setdefault("last_offering_date", "")
         relation.setdefault("inventory", {})
         relation.setdefault("updated_at", int(time.time() * 1000))
@@ -2020,14 +2234,14 @@ class CareRuntimeStore:
         slip_cost: int = 5,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
-        """Draw a shrine fortune slip (御神签). Deducts cost, rolls fortune, applies effects atomically.
+        """Draw a shrine fortune slip using redeem quota and apply effects atomically.
 
         Fortune table (cumulative probability):
-          大吉 10% → +25 coins, affection +3
-          中吉 25% → +12 coins
-          小吉 30% → +6 coins
+          大吉 10% → +25 quota, affection +3
+          中吉 25% → +12 quota
+          小吉 30% → +6 quota
           末吉 25% → 0 return
-          凶   10% → -3 extra coins (total loss = cost + 3)
+          凶   10% → -3 extra quota (total loss = cost + 3)
         """
         now_ms = _coerce_positive_int(now_ms, fallback=int(time.time() * 1000))
         with self._lock:

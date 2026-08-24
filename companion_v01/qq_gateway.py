@@ -238,6 +238,9 @@ QQ_ECONOMY_OFFERING_COMMANDS: frozenset[str] = frozenset({"供奉", "今日供�
 QQ_ECONOMY_LOTTERY_COMMANDS: frozenset[str] = frozenset({"抽签", "御神签", "求签", "抽御神签"})
 QQ_ECONOMY_OFFERING_STATUS_COMMANDS: frozenset[str] = frozenset({"查看供奉", "供奉状态"})
 QQ_ECONOMY_OFFERING_PREFIXES: tuple[str, ...] = ("供奉 ",)
+QQ_ECONOMY_SAIKEN_PREFIXES: tuple[str, ...] = ("赛钱 ", "捐 ", "捐款 ")
+QQ_ECONOMY_SHRINE_COMMANDS: frozenset[str] = frozenset({"赛钱箱", "香火箱", "查赛钱箱", "看赛钱箱"})
+QQ_ECONOMY_QUOTA_COMMANDS: frozenset[str] = frozenset({"我的额度", "查看额度", "查额度", "额度查询"})
 VALID_USABLE_IN: frozenset[str] = frozenset({"desktop_pet", "qq"})
 
 QQ_ECONOMY_STATUS_QUERY_FIELDS_RE = r"(?:养成)?状态|金币(?:余额)?|余额|饥饿(?:度|值)?|精力(?:值)?|体力|好感(?:度)?"
@@ -3165,6 +3168,9 @@ class NapCatQQGateway:
           {"action": "status"}
           {"action": "shop_list"}
           {"action": "buy", "item_name": str}
+          {"action": "saiken", "amount": int}
+          {"action": "shrine"}
+          {"action": "quota"}
         """
         text = str(message or "").strip()
         if not text:
@@ -3203,6 +3209,17 @@ class NapCatQQGateway:
                 item_name = text[len(prefix) :].strip()
                 if item_name:
                     return {"action": "offering", "item_name": item_name}
+        for prefix in QQ_ECONOMY_SAIKEN_PREFIXES:
+            if text.startswith(prefix):
+                amount_text = text[len(prefix) :].strip()
+                m = re.fullmatch(r"\d+", amount_text) if amount_text else None
+                if m:
+                    amount = int(m.group(0)) if len(m.group(0)) <= 6 else 0
+                    return {"action": "saiken", "amount": amount}
+        if text in QQ_ECONOMY_SHRINE_COMMANDS:
+            return {"action": "shrine"}
+        if text in QQ_ECONOMY_QUOTA_COMMANDS:
+            return {"action": "quota"}
         return None
 
     def handle_poke_event(
@@ -3316,7 +3333,7 @@ class NapCatQQGateway:
         checkin_coins: int = DEFAULT_CHECKIN_COINS,
         now_ms: int | None = None,
     ) -> dict[str, Any] | None:
-        """Handle economy commands (签到/状态/商店/购买/供奉). Returns None if not applicable."""
+        """Handle QQ economy commands, including the coins -> shrine -> quota flow."""
         parsed = self.parse_economy_command(context.clean_message)
         if parsed is None:
             return None
@@ -3397,7 +3414,98 @@ class NapCatQQGateway:
                 e = snapshot["energy"]
                 a = snapshot["affection"]
                 c = snapshot["coins"]
-                reply = f"养成状态\n饥饿 {h}/100（越低越饿）  精力 {e}/100（越高越精神）\nQQ好感 {a}/100  金币 {c}"
+                reply = f"养成状态\n饥饿 {h}/100（越低越饿）  精力 {e}/100（越高越精神）\nQQ好感 {a}/100  金币 {c}  额度 {snapshot.get('redeem_quota', 0)}"
+                return {"ok": True, "reply": reply, "status": "ok"}
+
+            if action == "saiken":
+                amount = int(parsed.get("amount") or 0)
+                event_id = ""
+                if str(context.source_message_id or "").strip():
+                    event_id = (
+                        self.poke_event_id(
+                            {"message_id": context.source_message_id},
+                            context=context,
+                        )
+                        + "|economy:saiken"
+                    )
+                result = care_runtime.donate_to_shrine(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    relation_user_id=relation_user_id,
+                    amount=amount,
+                    event_id=event_id,
+                    now_ms=ts_ms,
+                )
+                if result["status"] == "invalid_amount":
+                    return {
+                        "ok": False,
+                        "reply": "赛钱金额必须是 1–999999，例如发送「赛钱 5」。",
+                        "status": "invalid_amount",
+                    }
+                if result["status"] == "insufficient_coins":
+                    return {
+                        "ok": False,
+                        "reply": (
+                            f"金币不够，需要 {result['coins_needed']} 金币，"
+                            f"当前只有 {result['coins_before']} 金币。先签到拿点金币，再来赛钱喵。"
+                        ),
+                        "status": "insufficient_coins",
+                    }
+                if result["status"] == "duplicate":
+                    return {
+                        "ok": True,
+                        "reply": "这条赛钱已经处理过了，没有重复扣除金币。",
+                        "status": "duplicate",
+                    }
+                if result["status"] == "balance_limit":
+                    return {
+                        "ok": False,
+                        "reply": "当前额度或赛钱累计已到存储上限，本次没有扣除金币。",
+                        "status": "balance_limit",
+                    }
+                actor_label = context.sender_label or ("我" if not context.is_group else "用户")
+                memory_text = f"刚才发生的互动：{actor_label}往赛钱箱投了 {amount} 枚金币。"
+                note = (
+                    "【本轮赛钱结果】\n"
+                    f"{actor_label}往赛钱箱投了 {amount} 枚金币。\n"
+                    f"箱子香火总额：{result['shrine_total']} 枚。\n"
+                    f"{actor_label}累计投入：{result['saiken_balance']} 枚，第 {result['saiken_count']} 次。\n"
+                    f"{actor_label}当前兑换额度：{result['quota_after']} 枚。"
+                )
+                return {
+                    "_llm_passthrough": True,
+                    "qq_action_note": note,
+                    "turn_message": memory_text,
+                    "ok": True,
+                    "status": "ok",
+                }
+
+            if action == "shrine":
+                snapshot = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id,
+                    now_ms=ts_ms,
+                )
+                note = (
+                    "【赛钱箱】\n"
+                    f"香火总额：{snapshot.get('shrine_total', 0)} 枚。\n"
+                    f"你的累计投入：{snapshot.get('saiken_balance', 0)} 枚（第 {snapshot.get('saiken_count', 0)} 次）。\n"
+                    f"你的可用额度：{snapshot.get('redeem_quota', 0)} 枚。"
+                )
+                return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
+
+            if action == "quota":
+                snapshot = care_runtime.snapshot_for_client(
+                    profile_user_id=profile_user_id,
+                    character_pack_id=character_pack_id,
+                    client_mode="qq_text",
+                    relation_user_id=relation_user_id,
+                    now_ms=ts_ms,
+                )
+                quota_now = int(snapshot.get("redeem_quota") or 0)
+                reply = f"你当前有 {quota_now} 兑换额度。赛钱 N 枚金币可换 N 额度，额度在商店买东西喵。"
                 return {"ok": True, "reply": reply, "status": "ok"}
 
             if action == "shop_list":
@@ -3417,7 +3525,7 @@ class NapCatQQGateway:
 
                 def _item_line(item: dict) -> str:
                     eff = _format_effects_summary(item.get("effects") or {})
-                    line = f"  {item['name']}  {item.get('price', 0)} 金币"
+                    line = f"  {item['name']}  {item.get('price', 0)} 额度"
                     if eff:
                         line += f"  ({eff})"
                     return line
@@ -3450,7 +3558,8 @@ class NapCatQQGateway:
                     for item in offer_items:
                         lines.append(_item_line(item))
                 lines.append("─" * 18)
-                lines.append("购买 商品名  /  供奉 商品名  /  供奉  /  抽签（5金币）")
+                lines.append("购买 商品名  /  供奉 商品名  /  供奉  /  抽签（5额度）")
+                lines.append("赛钱 N 可把金币换成额度，额度在商店用喵")
                 return {"ok": True, "reply": "\n".join(lines), "status": "ok"}
 
             if action == "buy":
@@ -3483,20 +3592,20 @@ class NapCatQQGateway:
                     item_metadata=matched,
                     now_ms=ts_ms,
                 )
-                if result["status"] == "insufficient_coins":
-                    needed = result["coins_needed"]
-                    have = result["coins_before"]
+                if result["status"] == "insufficient_quota":
+                    needed = result["quota_needed"]
+                    have = result["quota_before"]
                     return {
                         "ok": False,
-                        "reply": f"金币不够，需要 {needed} 金币，当前只有 {have} 金币。",
-                        "status": "insufficient_coins",
+                        "reply": f"额度不够，需要 {needed} 额度，当前只有 {have} 额度。先「赛钱 N」把金币换成额度喵。",
+                        "status": "insufficient_quota",
                     }
-                coins_after = result["coins_after"]
+                quota_after = result["quota_after"]
                 total_count = result["item_count"]
                 qty_str = f" x{qty}" if qty > 1 else ""
                 reply = (
                     f"✓ 购买成功！「{matched['name']}」{qty_str} 已放入背包"
-                    f"（-{price_each * qty} 金币，剩余 {coins_after} 金币，背包共 x{total_count}）"
+                    f"（-{price_each * qty} 额度，剩余 {quota_after} 额度，背包共 x{total_count}）"
                     f"\n发送「投喂 {matched['name']}」来使用。"
                 )
                 return {"ok": True, "reply": reply, "status": "ok"}
@@ -3628,24 +3737,24 @@ class NapCatQQGateway:
                     slip_cost=SLIP_COST,
                     now_ms=ts_ms,
                 )
-                if result["status"] == "insufficient_coins":
-                    have = result["coins_before"]
+                if result["status"] == "insufficient_quota":
+                    have = result["quota_before"]
                     return {
                         "ok": False,
-                        "reply": f"金币不足，抽一签需要 {SLIP_COST} 金币，当前只有 {have} 金币。",
-                        "status": "insufficient_coins",
+                        "reply": f"额度不足，抽一签需要 {SLIP_COST} 额度，当前只有 {have} 额度。先「赛钱 N」换点额度喵。",
+                        "status": "insufficient_quota",
                     }
                 fortune = result["fortune"]
-                coins_after = result["coins_after"]
+                quota_after = result["quota_after"]
                 aff_delta = result["affection_delta"]
 
-                actual_coin_delta = int(coins_after) - int(result.get("coins_before") or 0)
-                effect_parts = [f"金币 {_signed_number(actual_coin_delta)}"]
+                actual_quota_delta = int(quota_after) - int(result.get("quota_before") or 0)
+                effect_parts = [f"额度 {_signed_number(actual_quota_delta)}"]
                 if aff_delta:
                     effect_parts.append(f"QQ 好感 {_signed_number(aff_delta)}")
                 note = (
-                    f"【本轮抽签结果】用户花费 {SLIP_COST} 金币抽了一签，结果是【{fortune}】。"
-                    f"实际效果：{'，'.join(effect_parts)}；当前金币 {coins_after}。"
+                    f"【本轮抽签结果】用户花费 {SLIP_COST} 额度抽了一签，结果是【{fortune}】。"
+                    f"实际效果：{'，'.join(effect_parts)}；当前额度 {quota_after}。"
                 )
                 return {"_llm_passthrough": True, "qq_action_note": note, "ok": True, "status": "ok"}
 
@@ -3662,7 +3771,7 @@ class NapCatQQGateway:
                 mark = "✓ 今日已供奉" if offered_today else "· 今日未供奉"
                 a = snapshot["affection"]
                 c = snapshot["coins"]
-                reply = f"⛩ 供奉状态\n{mark}\nQQ好感 {a}/100  金币 {c}"
+                reply = f"⛩ 供奉状态\n{mark}\nQQ好感 {a}/100  金币 {c}  额度 {snapshot.get('redeem_quota', 0)}"
                 return {"ok": True, "reply": reply, "status": "ok"}
 
             if action == "offering":
@@ -4505,23 +4614,39 @@ def _render_poke_mutation_outcome(
     elif outcome_kind == "coin_change":
         mutation = result.get("mutation") if isinstance(result.get("mutation"), dict) else {}
         actual_delta = int(mutation.get("actual_delta") or 0)
+        donated = int(mutation.get("donated_to_shrine") or 0)
         delta_text = _signed_number(actual_delta)
         amount = abs(actual_delta)
-        if actual_delta > 0:
+        if donated > 0:
+            quota_after = int(mutation.get("quota_after") or 0)
+            scene = (
+                f"{actor_label}戳了戳你，你从{owner}口袋里顺走了{amount}枚金币，"
+                f"顺手投进了赛钱箱，{actor_label}获得{amount}点兑换额度。"
+            )
+            memory_text = f"刚才发生的互动：{scene}"
+            fact_lines = [
+                memory_text.removeprefix("刚才发生的互动："),
+                f"实际效果：金币 {delta_text}，赛钱箱 +{amount}，兑换额度 +{amount}（当前 {quota_after}）。",
+            ]
+        elif actual_delta > 0:
             scene = f"{actor_label}戳了戳你，你顺手往{owner}口袋里塞了{amount}枚金币。"
+            memory_text = f"刚才发生的互动：{scene}"
+            fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
         elif actual_delta < 0:
             scene = f"{actor_label}戳了戳你，{owner}口袋里的{amount}枚金币被你顺走了。"
+            memory_text = f"刚才发生的互动：{scene}"
+            fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
         else:
             scene = f"{actor_label}戳了戳你，{owner}口袋里的金币没有变化。"
-        memory_text = f"刚才发生的互动：{scene}"
-        fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
+            memory_text = f"刚才发生的互动：{scene}"
+            fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：金币 {delta_text}。"]
         mutations = [dict(mutation)]
     elif outcome_kind == "lottery":
         fortune = str(result.get("fortune") or "未知")
-        net_coins = int(result.get("coins_after") or 0) - int(result.get("coins_before") or 0)
+        net_quota = int(result.get("net_quota") or 0)
         affection_delta = int(result.get("affection_delta") or 0)
         memory_text = f"刚才发生的互动：{actor_label}戳了戳你，触发了一次抽签，结果是{fortune}。"
-        effects = [f"金币 {_signed_number(net_coins)}"]
+        effects = [f"兑换额度 {_signed_number(net_quota)}"]
         if affection_delta:
             effects.append(f"QQ 好感 {_signed_number(affection_delta)}")
         fact_lines = [memory_text.removeprefix("刚才发生的互动："), f"实际效果：{'，'.join(effects)}。"]
@@ -4529,7 +4654,7 @@ def _render_poke_mutation_outcome(
             {
                 "kind": "lottery",
                 "fortune": fortune,
-                "net_coins": net_coins,
+                "net_quota": net_quota,
                 "affection_delta": affection_delta,
             }
         ]

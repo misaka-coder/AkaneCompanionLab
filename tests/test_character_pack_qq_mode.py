@@ -32,6 +32,157 @@ def _checkin(store: CareRuntimeStore, relation_user_id: str, coins: int = 20) ->
     )
 
 
+def _checkin_quota(store: CareRuntimeStore, relation_user_id: str, coins: int = 20) -> None:
+    """签到拿金币并赛钱换成额度（v5 后购买走额度）。"""
+    res = store.claim_daily_checkin(
+        profile_user_id=PROFILE,
+        character_pack_id=CHAR_ID,
+        relation_user_id=relation_user_id,
+        date_key="2024-05-01",
+        coins=coins,
+        now_ms=1000,
+    )
+    granted = int(res.get("coins_granted") or coins)
+    store.donate_to_shrine(
+        profile_user_id=PROFILE,
+        character_pack_id=CHAR_ID,
+        relation_user_id=relation_user_id,
+        amount=granted,
+        now_ms=1001,
+    )
+
+
+class QQSaikenV5Tests(unittest.TestCase):
+    def _context(self, message: str, *, message_id: str = "") -> QQMessageContext:
+        return QQMessageContext(
+            should_respond=True,
+            reason="direct_command",
+            is_group=True,
+            target_id=10001,
+            user_id=111,
+            group_id=10001,
+            session_id=PROFILE,
+            profile_user_id=PROFILE,
+            clean_message=message,
+            source_message_id=message_id,
+            sender_label="御坂",
+            character_pack_id=CHAR_ID,
+        )
+
+    def test_command_parser_covers_saiken_shrine_and_quota(self) -> None:
+        with TemporaryDirectory() as tmp:
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            self.assertEqual(gateway.parse_economy_command("赛钱 12"), {"action": "saiken", "amount": 12})
+            self.assertEqual(gateway.parse_economy_command("捐 3"), {"action": "saiken", "amount": 3})
+            self.assertEqual(gateway.parse_economy_command("赛钱 1000000"), {"action": "saiken", "amount": 0})
+            self.assertEqual(gateway.parse_economy_command("赛钱箱"), {"action": "shrine"})
+            self.assertEqual(gateway.parse_economy_command("我的额度"), {"action": "quota"})
+
+    def test_saiken_command_is_idempotent_and_zero_never_becomes_one(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            _checkin(store, "qq:111", coins=20)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+
+            zero = gateway.handle_economy_command(
+                self._context("赛钱 0", message_id="message-zero"),
+                care_module=_module(store),
+                now_ms=1100,
+            )
+            self.assertEqual(zero["status"], "invalid_amount")
+
+            first = gateway.handle_economy_command(
+                self._context("赛钱 5", message_id="message-one"),
+                care_module=_module(store),
+                now_ms=1200,
+            )
+            self.assertTrue(first["_llm_passthrough"])
+            self.assertEqual(first["turn_message"], "刚才发生的互动：御坂往赛钱箱投了 5 枚金币。")
+            self.assertIn("当前兑换额度：5 枚", first["qq_action_note"])
+
+            duplicate = gateway.handle_economy_command(
+                self._context("赛钱 5", message_id="message-one"),
+                care_module=_module(store),
+                now_ms=1300,
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            snapshot = store.snapshot_for_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="qq_text",
+                relation_user_id="qq:111",
+                now_ms=1300,
+            )
+            self.assertEqual(snapshot["coins"], 15)
+            self.assertEqual(snapshot["redeem_quota"], 5)
+            self.assertEqual(snapshot["shrine_total"], 5)
+            self.assertEqual(snapshot["saiken_count"], 1)
+
+    def test_shop_cannot_spend_coins_and_shrine_reads_stay_separate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            _checkin(store, "qq:111", coins=20)
+            gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
+            shop_items = [
+                {
+                    "id": "test_dango",
+                    "name": "测试团子",
+                    "price": 5,
+                    "category": "food",
+                    "usable_in": ["qq"],
+                    "effects": {"hunger": 5},
+                }
+            ]
+
+            blocked = gateway.handle_economy_command(
+                self._context("购买 测试团子", message_id="buy-before"),
+                care_module=_module(store),
+                shop_items=shop_items,
+                now_ms=1100,
+            )
+            self.assertEqual(blocked["status"], "insufficient_quota")
+            self.assertIn("先「赛钱 N」", blocked["reply"])
+
+            gateway.handle_economy_command(
+                self._context("赛钱 5", message_id="saiken-before-buy"),
+                care_module=_module(store),
+                shop_items=shop_items,
+                now_ms=1200,
+            )
+            bought = gateway.handle_economy_command(
+                self._context("购买 测试团子", message_id="buy-after"),
+                care_module=_module(store),
+                shop_items=shop_items,
+                now_ms=1300,
+            )
+            self.assertEqual(bought["status"], "ok")
+            snapshot = store.snapshot_for_client(
+                profile_user_id=PROFILE,
+                character_pack_id=CHAR_ID,
+                client_mode="qq_text",
+                relation_user_id="qq:111",
+                now_ms=1300,
+            )
+            self.assertEqual(snapshot["coins"], 15)
+            self.assertEqual(snapshot["redeem_quota"], 0)
+            self.assertEqual(snapshot["shrine_total"], 5)
+
+            shrine = gateway.handle_economy_command(
+                self._context("赛钱箱", message_id="shrine-read"),
+                care_module=_module(store),
+                now_ms=1400,
+            )
+            self.assertTrue(shrine["_llm_passthrough"])
+            self.assertIn("香火总额：5 枚", shrine["qq_action_note"])
+            quota = gateway.handle_economy_command(
+                self._context("我的额度", message_id="quota-read"),
+                care_module=_module(store),
+                now_ms=1500,
+            )
+            self.assertEqual(quota["status"], "ok")
+            self.assertIn("0 兑换额度", quota["reply"])
+
+
 class OfferingFreeTests(unittest.TestCase):
     """Free offering (no item) grants affection once per user per day."""
 
@@ -382,7 +533,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 care_payload={"enabled": True, "hunger": 9, "energy": 88, "coins": 20, "affection": 10},
                 now_ms=1000,
             )
-            _checkin(store, relation, coins=20)
+            _checkin_quota(store, relation, coins=20)
             buy_context = QQMessageContext(
                 should_respond=True,
                 reason="direct_command",
@@ -434,7 +585,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 care_payload={"enabled": True, "hunger": 45, "energy": 8, "coins": 20, "affection": 10},
                 now_ms=1000,
             )
-            _checkin(store, relation, coins=30)
+            _checkin_quota(store, relation, coins=30)
             buy_context = QQMessageContext(
                 should_respond=True,
                 reason="direct_command",
@@ -485,7 +636,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 care_payload={"enabled": True, "hunger": 45, "energy": 70, "coins": 20, "affection": 10},
                 now_ms=1000,
             )
-            _checkin(store, relation, coins=20)
+            _checkin_quota(store, relation, coins=20)
             buy_context = QQMessageContext(
                 should_respond=True,
                 reason="direct_command",

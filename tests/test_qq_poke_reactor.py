@@ -26,6 +26,17 @@ class VariantRng:
         return values[0]
 
 
+class NegativeCoinRng:
+    def __init__(self) -> None:
+        self._rolls = iter((0.56, 0.90))
+
+    def random(self) -> float:
+        return next(self._rolls)
+
+    def choice(self, values):
+        return values[-1]
+
+
 def _poke_event(message_id: str, *, group_id: int = 0) -> dict:
     event = {
         "post_type": "notice",
@@ -168,6 +179,10 @@ class QQPokeReactorTests(unittest.TestCase):
         plan = PokeEventReactor(rng=VariantRng()).plan(snapshot={"coins": 0}, shop_items=[])
         self.assertEqual(plan["outcome_kind"], "variant")
         self.assertEqual(plan["variant"], "这一戳被你躲开了")
+
+    def test_negative_coin_plan_never_requests_more_than_available(self) -> None:
+        plan = PokeEventReactor(rng=NegativeCoinRng()).plan(snapshot={"coins": 2}, shop_items=[])
+        self.assertEqual(plan, {"outcome_kind": "coin_change", "coin_delta": -2})
 
 
 if __name__ == "__main__":

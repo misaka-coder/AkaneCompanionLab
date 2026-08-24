@@ -69,8 +69,9 @@ class PokeEventReactor:
         if outcome_kind == "coin_change":
             sign = 1 if self._rng.random() < 0.65 else -1
             amount = int(self._rng.choice((1, 2, 3, 4, 5, 6))) * sign
-            if int(snapshot.get("coins") or 0) <= 0 and amount < 0:
-                amount = abs(amount)
+            if amount < 0:
+                available = max(0, int(snapshot.get("coins") or 0))
+                amount = abs(amount) if available <= 0 else -min(abs(amount), available)
             return {"outcome_kind": outcome_kind, "coin_delta": amount}
 
         if outcome_kind == "grant_inventory_item":
@@ -99,8 +100,8 @@ class PokeEventReactor:
                 }
             return {"outcome_kind": "plain", "fallback_reason": "empty_inventory"}
 
-        if outcome_kind == "lottery" and int(snapshot.get("coins") or 0) < 5:
-            return {"outcome_kind": "plain", "fallback_reason": "insufficient_coins"}
+        if outcome_kind == "lottery" and int(snapshot.get("redeem_quota") or 0) < 5:
+            return {"outcome_kind": "plain", "fallback_reason": "insufficient_quota"}
 
         if outcome_kind == "variant":
             return {
