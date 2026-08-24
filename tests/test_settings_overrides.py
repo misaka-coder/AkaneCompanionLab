@@ -19,24 +19,24 @@ def _temp_store() -> so.SettingsOverrideStore:
 class SettingsOverrideStoreTests(unittest.TestCase):
     def test_coerce_types(self) -> None:
         self.assertIs(so.coerce_value("ENABLE_SEMANTIC_MEMORY", "false"), False)
-        self.assertEqual(so.coerce_value("MAX_TOOL_ROUNDS", "4"), 4)
+        self.assertEqual(so.coerce_value("TOOL_ROUND_HARD_LIMIT", "4"), 4)
         self.assertAlmostEqual(so.coerce_value("DRIFT_PROBABILITY", "0.3"), 0.3)
         self.assertEqual(so.coerce_value("QQ_REPLY_MODE", "voice"), "voice")
 
     def test_invalid_value_rejected(self) -> None:
         with self.assertRaises(so.SettingOverrideError):
-            so.coerce_value("MAX_TOOL_ROUNDS", "not-an-int")
+            so.coerce_value("TOOL_ROUND_HARD_LIMIT", "not-an-int")
 
     def test_set_override_applies_and_persists_runtime_key(self) -> None:
         store = _temp_store()
-        original = config.MAX_TOOL_ROUNDS
+        original = config.TOOL_ROUND_HARD_LIMIT
         try:
-            applied = so.set_override(config, store, key="MAX_TOOL_ROUNDS", raw_value="5")
+            applied = so.set_override(config, store, key="TOOL_ROUND_HARD_LIMIT", raw_value="5")
             self.assertEqual(applied, 5)
-            self.assertEqual(config.MAX_TOOL_ROUNDS, 5)
-            self.assertEqual(store.load().get("MAX_TOOL_ROUNDS"), 5)
+            self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, 5)
+            self.assertEqual(store.load().get("TOOL_ROUND_HARD_LIMIT"), 5)
         finally:
-            config.MAX_TOOL_ROUNDS = original
+            config.TOOL_ROUND_HARD_LIMIT = original
 
     def test_non_editable_keys_rejected(self) -> None:
         store = _temp_store()
@@ -50,29 +50,29 @@ class SettingsOverrideStoreTests(unittest.TestCase):
 
     def test_startup_replay_skips_non_editable(self) -> None:
         store = _temp_store()
-        store.save({"MAX_TOOL_ROUNDS": 7, "TEXT_API_KEY": "secret", "HOST": "0.0.0.0"})
-        original = config.MAX_TOOL_ROUNDS
+        store.save({"TOOL_ROUND_HARD_LIMIT": 7, "TEXT_API_KEY": "secret", "HOST": "0.0.0.0"})
+        original = config.TOOL_ROUND_HARD_LIMIT
         try:
             applied = so.load_and_apply_saved_overrides(config, store)
-            self.assertEqual(applied, {"MAX_TOOL_ROUNDS": 7})
-            self.assertEqual(config.MAX_TOOL_ROUNDS, 7)
+            self.assertEqual(applied, {"TOOL_ROUND_HARD_LIMIT": 7})
+            self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, 7)
         finally:
-            config.MAX_TOOL_ROUNDS = original
+            config.TOOL_ROUND_HARD_LIMIT = original
 
     def test_runtime_config_view_keeps_bot_override_out_of_process_globals(self) -> None:
         store = _temp_store()
-        store.save({"MAX_TOOL_ROUNDS": 5, "TEXT_API_KEY": "secret"})
-        original = config.MAX_TOOL_ROUNDS
+        store.save({"TOOL_ROUND_HARD_LIMIT": 5, "TEXT_API_KEY": "secret"})
+        original = config.TOOL_ROUND_HARD_LIMIT
 
         loaded = so.load_saved_overrides(store)
         view = so.RuntimeConfigView(config, loaded)
 
-        self.assertEqual(loaded, {"MAX_TOOL_ROUNDS": 5})
-        self.assertEqual(view.MAX_TOOL_ROUNDS, 5)
-        self.assertEqual(config.MAX_TOOL_ROUNDS, original)
-        view.MAX_TOOL_ROUNDS = 4
-        self.assertEqual(view.MAX_TOOL_ROUNDS, 4)
-        self.assertEqual(config.MAX_TOOL_ROUNDS, original)
+        self.assertEqual(loaded, {"TOOL_ROUND_HARD_LIMIT": 5})
+        self.assertEqual(view.TOOL_ROUND_HARD_LIMIT, 5)
+        self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original)
+        view.TOOL_ROUND_HARD_LIMIT = 4
+        self.assertEqual(view.TOOL_ROUND_HARD_LIMIT, 4)
+        self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original)
 
 
 class SettingsUpdateEndpointTests(unittest.TestCase):
@@ -83,16 +83,16 @@ class SettingsUpdateEndpointTests(unittest.TestCase):
 
     def test_post_applies_editable_key(self) -> None:
         store = _temp_store()
-        original = config.MAX_TOOL_ROUNDS
+        original = config.TOOL_ROUND_HARD_LIMIT
         try:
-            resp = self._client(store).post("/control-center/settings-catalog/MAX_TOOL_ROUNDS", json={"value": 5})
+            resp = self._client(store).post("/control-center/settings-catalog/TOOL_ROUND_HARD_LIMIT", json={"value": 5})
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertTrue(body["ok"])
             self.assertEqual(body["value"], 5)
-            self.assertEqual(config.MAX_TOOL_ROUNDS, 5)
+            self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, 5)
         finally:
-            config.MAX_TOOL_ROUNDS = original
+            config.TOOL_ROUND_HARD_LIMIT = original
 
     def test_post_rejects_secret_key(self) -> None:
         resp = self._client(_temp_store()).post("/control-center/settings-catalog/TEXT_API_KEY", json={"value": "leak"})
@@ -101,7 +101,7 @@ class SettingsUpdateEndpointTests(unittest.TestCase):
 
     def test_post_rejects_invalid_value(self) -> None:
         resp = self._client(_temp_store()).post(
-            "/control-center/settings-catalog/MAX_TOOL_ROUNDS", json={"value": "not-an-int"}
+            "/control-center/settings-catalog/TOOL_ROUND_HARD_LIMIT", json={"value": "not-an-int"}
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["status"], "invalid_value")

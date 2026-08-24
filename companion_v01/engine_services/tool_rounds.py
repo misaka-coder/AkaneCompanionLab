@@ -55,25 +55,24 @@ def max_tool_rounds(*, domain_profile_id: str = "") -> int:
     return tool_orchestration_engine.max_tool_rounds()
 
 
-def max_tool_emergency_rounds(*, domain_profile_id: str = "", current_budget: int = 0) -> int:
-    del domain_profile_id
-    return tool_orchestration_engine.max_tool_emergency_rounds(current_budget=current_budget)
+def tool_round_warning_remaining(*, hard_limit: int) -> int:
+    return tool_orchestration_engine.tool_round_warning_remaining(hard_limit=hard_limit)
 
 
-def extend_tool_round_budget_for_progress(
+def tool_decision_retry_limit() -> int:
+    return tool_orchestration_engine.tool_decision_retry_limit()
+
+
+def build_tool_round_warning(
     *,
-    current_budget: int,
-    emergency_limit: int,
-    tool_round_index: int,
-    tool_calls: list[dict[str, Any]],
-    seen_signatures: set[str],
-) -> tuple[int, bool]:
-    return tool_orchestration_engine.extend_tool_round_budget_for_progress(
-        current_budget=current_budget,
-        emergency_limit=emergency_limit,
-        tool_round_index=tool_round_index,
-        tool_calls=tool_calls,
-        seen_signatures=seen_signatures,
+    used_rounds: int,
+    hard_limit: int,
+    memcore_enabled: bool,
+) -> str:
+    return tool_orchestration_engine.build_tool_round_warning(
+        used_rounds=used_rounds,
+        hard_limit=hard_limit,
+        memcore_enabled=memcore_enabled,
     )
 
 
@@ -100,35 +99,6 @@ def build_tool_working_stream_event(tool_call: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def should_stop_after_tool_events(
-    events: list[dict[str, Any]],
-    *,
-    domain_profile_id: str = "",
-) -> bool:
-    blocking_statuses = {
-        "unavailable",
-        "permission_denied",
-        "rate_limited",
-        "error",
-        "failed",
-        "failure",
-    }
-    for event in events or []:
-        if not isinstance(event, dict):
-            continue
-        status = str(event.get("status") or "").strip().lower()
-        reason = str(event.get("reason") or "").strip().lower()
-        if (
-            str(event.get("type") or "").strip() == "web_search_completed"
-            and status in {"unavailable", "error", "failed", "failure"}
-            and reason in {"mcp_tool_call_timeout", "mcp_call_failed", "timeout"}
-        ):
-            continue
-        if status in blocking_statuses:
-            return True
-    return False
-
-
 def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | None) -> str:
     del native_tools
     return (
@@ -139,32 +109,6 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
 
 
 # ── Group B: Engine-coupled helpers ──────────────────────────────
-
-
-def resolve_tool_round_budget(
-    engine: Any,
-    *,
-    current_budget: int,
-    tool_call: dict[str, Any],
-    client_context: ClientProtocolContext | None = None,
-    profile_user_id: str = "",
-    session_id: str = "",
-    domain_profile_id: str = "",
-) -> int:
-    capability_selection = tool_call.get("_tool_capability_selection") if isinstance(tool_call, dict) else None
-    budget = tool_orchestration_engine.resolve_tool_round_budget(
-        resolve_tool_handlers(
-            engine,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
-            capability_selection=capability_selection,
-        ),
-        tool_call,
-        current_budget=current_budget,
-    )
-    return budget
 
 
 def resolve_tool_handlers(

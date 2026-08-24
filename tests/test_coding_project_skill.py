@@ -125,7 +125,9 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn("Probe exact tool availability", content)
         self.assertIn("A command snippet is not an automated test suite", content)
         self.assertIn("assert the intended\n  intermediate state", content)
-        self.assertIn('status="continue"', content)
+        self.assertIn('never emit a tool-less `status="continue"`', content)
+        self.assertIn("`CONTINUATION.md`", content)
+        self.assertIn("not content for the user-facing `speech`", content)
         self.assertNotIn("V1 patching does not create", content)
         self.assertNotIn("toolchain manifest in the `exec_run` instruction", content)
 

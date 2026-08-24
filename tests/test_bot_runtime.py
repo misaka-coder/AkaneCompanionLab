@@ -365,7 +365,7 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 class BotRuntimeFactoryMultiBotTests(unittest.TestCase):
     def test_factory_constructs_and_runs_three_bots_without_override_cross_talk(self) -> None:
-        original_max_tool_rounds = config.MAX_TOOL_ROUNDS
+        original_max_tool_rounds = config.TOOL_ROUND_HARD_LIMIT
         runtime_config = RuntimeConfigView(
             config,
             {
@@ -418,7 +418,7 @@ care_enabled = true
                 for index, bot_id in enumerate(("bot-a", "bot-b", "bot-c"), start=3):
                     bot_root = root / "bots" / bot_id
                     SettingsOverrideStore(bot_root / "users_data" / "_local" / "settings_overrides.json").save(
-                        {"MAX_TOOL_ROUNDS": index}
+                        {"TOOL_ROUND_HARD_LIMIT": index}
                     )
 
                 bootstrap = build_host_bot_registry(factory=factory, host_data_root=root)
@@ -426,10 +426,10 @@ care_enabled = true
                 runtimes.extend(registry.values())
 
                 self.assertEqual(
-                    [runtime.config_module.MAX_TOOL_ROUNDS for runtime in runtimes],
+                    [runtime.config_module.TOOL_ROUND_HARD_LIMIT for runtime in runtimes],
                     [3, 4, 5],
                 )
-                self.assertEqual(config.MAX_TOOL_ROUNDS, original_max_tool_rounds)
+                self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original_max_tool_rounds)
                 self.assertEqual(len({runtime.runtime_layout.data_root for runtime in runtimes}), 3)
                 self.assertEqual(
                     [runtime.settings.prompt_cache_namespace for runtime in runtimes],

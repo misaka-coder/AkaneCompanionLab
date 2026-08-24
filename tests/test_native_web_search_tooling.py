@@ -2161,7 +2161,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.stream_events[0]["status"], "rejected")
         self.assertEqual(result.stream_events[0]["reason"], "bad_args")
-        self.assertIn("参数不完整或格式不对", result.followup_context)
+        self.assertIn("没有通过参数校验", result.followup_context)
+        self.assertIn("系统没有执行", result.followup_context)
+        self.assertIn('"reason":"conditional_fields_invalid"', result.followup_context)
 
     def test_engine_native_tool_trace_preserves_error_and_cancelled_statuses(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -2385,32 +2387,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             engine._is_retryable_final_output({"speech": "这是基于现有证据形成的完整结论。", "tool_call": None})
         )
 
-    def test_transient_web_search_failure_allows_alternate_research_round(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-
-        self.assertFalse(
-            engine._should_stop_after_tool_events(
-                [
-                    {
-                        "type": "web_search_completed",
-                        "status": "unavailable",
-                        "reason": "mcp_tool_call_timeout",
-                    }
-                ]
-            )
-        )
-        self.assertTrue(
-            engine._should_stop_after_tool_events(
-                [{"type": "web_search_completed", "status": "unavailable", "reason": "missing_config"}]
-            )
-        )
-        self.assertTrue(
-            engine._should_stop_after_tool_events(
-                [{"type": "other_tool_completed", "status": "unavailable", "reason": "timeout"}]
-            )
-        )
-        self.assertFalse(engine._should_stop_after_tool_events([{"type": "web_search_completed", "status": "ok"}]))
-
     def test_tool_unavailable_stop_reason_tells_model_not_to_retry(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine._merge_extra_user_context = AkaneMemoryEngine._merge_extra_user_context.__get__(
@@ -2436,7 +2412,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             stop_reason="tool_budget_exhausted",
         )
 
-        self.assertEqual(context, "stable original event context")
+        self.assertTrue(context.startswith("stable original event context"))
+        self.assertIn("最后一批工具已经真实执行", context)
+        self.assertIn("本轮不要再调用工具", context)
 
 
 class NativeDescriptionSanitizationTests(unittest.TestCase):

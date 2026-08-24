@@ -8358,6 +8358,97 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                 finally:
                     manager.close()
 
+    def test_checkpoint_file_action_stays_complete_while_short_result_stays_inline(self) -> None:
+        """A normal file write needs no special summary tool or fake card ID."""
+
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        checkpoint = (
+            "# CONTINUATION\n"
+            "目标：修复工具循环。\n"
+            "已完成：统一预算状态机。\n"
+            "验证：python -m unittest tests.test_turn_mainline_contract。\n"
+            "剩余：真实 provider 冒烟。\n"
+            "下一步：读取 engine.py 的预算分支后继续。"
+        )
+        short_result = "文件已生成：gen_checkpoint（CONTINUATION.md）。"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(config, "MEMCORE_OPERATION_PROJECTION_POLICY", "compact_after_terminal"):
+                manager = MemcoreManager(
+                    backend="memcore",
+                    storage_path=Path(temp_dir) / "checkpoint.sqlite3",
+                    visible_scope="conversation",
+                    enable_flavor=False,
+                    shadow_compare=False,
+                    llm=_FakeLLM(),
+                    embedding_provider=_FakeEmbeddingProvider(),
+                )
+                try:
+                    opened = manager.begin_input_turn(
+                        {"source_id": "user-checkpoint", "content": "继续长程任务", "timestamp": 100},
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    turn_id = str(opened.get("turn_id") or "")
+                    batch = manager.record_tool_batch(
+                        exchanges=[
+                            {
+                                "tool_name": "compose_file",
+                                "tool_call_id": "call-checkpoint",
+                                "tool_input": {
+                                    "output_format": "md",
+                                    "output_title": "CONTINUATION",
+                                    "content_markdown": checkpoint,
+                                },
+                                "result": short_result,
+                                "source": "native_openai",
+                                "timestamp": 101,
+                                "source_id_prefix": "tooltrace-checkpoint",
+                                "result_status": "success",
+                            }
+                        ],
+                        turn_id=turn_id,
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    self.assertTrue(batch["ok"], batch)
+                    manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                    completed = manager.complete_input_turn(
+                        turn_id=turn_id,
+                        assistant_record={"source_id": "assistant-checkpoint", "content": "尚未完成。", "timestamp": 102},
+                        memory_metadata={},
+                        provider_output_raw="尚未完成。",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                        provider_profile="openai",
+                        provider_projection={"role": "assistant", "content": "尚未完成。"},
+                    )
+                    self.assertTrue(completed["ok"], completed)
+                    projection = manager.build_context_projection(
+                        provider_profile="openai",
+                        profile_user_id="u1",
+                        session_id="s1",
+                        character_pack_id="char",
+                    )
+                finally:
+                    manager.close()
+
+        payloads = [item["payload"] for item in projection["messages"]]
+        action = next(payload for payload in payloads if payload.get("tool_calls"))
+        arguments = json.loads(action["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(arguments["content_markdown"], checkpoint)
+        observation = next(payload for payload in payloads if payload.get("role") == "tool")
+        self.assertEqual(observation["content"], short_result)
+        self.assertNotIn("[compact_reloadable]", observation["content"])
+
     def test_exec_run_resource_result_survives_settlement_and_is_reloadable(self) -> None:
         """The exec resource loop's run_id + gen_* stay in the stored observation,
         and the settled card keeps the reload path by source_id."""

@@ -18,7 +18,8 @@
 - 注意区分两个命题：①"别弄丢表达层"=真不变量；②"工具必须永远当 JSON 里的一个字段"≠不变量（那只是当前实现，正在按解耦方案改）。
 
 ### INV-2 工具调用走"提出→校验→权限→执行→喂回"统一管线，独立项可并行，依赖项按轮推进
-- **约束**：同一决策可并行执行互不依赖的工具；有依赖的步骤等待真实结果后再进入下一轮。`MAX_TOOL_ROUNDS`（默认 3，clamp 1–5；web_research 8、browser 10，见 `config.py`）限制的是实际执行批次，不得在最后一个真实结果返回前预先把 `tool_choice` 从 `auto` 改成 `none`。正常结果轮由模型自行决定继续调用还是回答；只有模型确实超出预算、连续重复或持续给出无效调用时才进入硬收尾。
+- **约束**：同一决策可并行执行互不依赖的工具；有依赖的步骤等待真实结果后再进入下一轮。`TOOL_ROUND_HARD_LIMIT` 只计算实际执行的工具批次，工具参数/协议拒绝走独立的 `TOOL_DECISION_RETRY_LIMIT`，不消耗真实结果预算。不存在按工具家族扩容的软预算，也不存在宿主猜测的“终稿阶段”：合法工具调用就执行并继续，合法交付就返回，格式错误就带明确反馈重新决策。
+- **预算边界**：到达硬上限的最后一批工具必须先真实执行、记录并把结果喂回，随后才关闭新工具并要求模型诚实交付。`TOOL_ROUND_WARNING_REMAINING` 只在接近上限时解释一次 MemCore 结算与续作记录的原因，不改变工具权限；需要跨用户回合续做的编程任务应留下真实、可检查的项目记录，不伪造尚未产生的卡片/source ID。
 - **当前实现**：legacy provider/model 仍可用最终 JSON 的 `tool_call` 字段提出工具调用；已验证 native `web_search` 则走内部 `_native_tool_call` 载体，engine 消费后移除，公开 payload 不泄漏 `_tool_*` metadata。`tool_call` 仍是过渡兼容入口，正按 `docs/tool_system_decoupling_v1.md` 解耦为独立工具通道。
 - **不变的是管线契约**：无论工具调用来自旧 JSON 还是 native，都要归一成内部 `ToolInvocation` → schema 校验 → 能力/权限检查 → `execute` → `ToolResult` 喂回模型。**改这条管线改共享辅助，别只改一条循环。**
 - **入口**：`engine.py::process_turn`（非流式）与 `process_turn_stream`（流式）。两者的回合体已抽成共享辅助：`_prepare_tool_round_decision`（promote→normalize→分类拒绝）、`_record_tool_call_rejection`、工具执行。**改回合逻辑时改共享辅助，不要只改一条循环**（历史上这两条是复制粘贴，极易改出分歧）。
@@ -52,7 +53,7 @@
 
 | 子系统 | 职责 | 关键文件 | 详细文档 |
 |--------|------|----------|----------|
-| 对话回合编排 | 单轮对话的检索→生成→工具循环→收尾 | `engine.py`（`process_turn` / `process_turn_stream` + 共享回合辅助） | `character_engine_blueprint_v1.md` |
+| 对话回合编排 | 单轮对话的检索→生成→工具循环→交付 | `engine.py`（`process_turn` / `process_turn_stream` + 共享回合辅助） | `character_engine_blueprint_v1.md` |
 | LLM 运行时 | 流式/非流式 JSON 生成、缓存观测、JSON 容错 | `llm_runtime.py`；Anthropic 兼容垫片 `services/llm_client.py` | — |
 | 工具运行时 | 40 个工具 handler（`build_prompt_instruction`/`normalize_call`/`execute` 契约） | `tool_runtime.py` | — |
 | 工具编排 | 归一化、拒绝分类、轮次预算、QQ 媒体委派 | `tool_orchestration_engine.py` | — |

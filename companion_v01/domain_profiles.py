@@ -15,8 +15,6 @@ class DomainProfile:
     allowed_tool_names: tuple[str, ...] = field(default_factory=tuple)
     hidden_tool_names: tuple[str, ...] = field(default_factory=tuple)
     capability_hints: tuple[str, ...] = field(default_factory=tuple)
-    default_tool_round_budget: int = 3
-    hard_tool_round_limit: int = 5
     proactive_delivery_enabled: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -26,8 +24,6 @@ class DomainProfile:
             "prompt_block_ids": list(self.prompt_block_ids),
             "allowed_tool_names": list(self.allowed_tool_names),
             "hidden_tool_names": list(self.hidden_tool_names),
-            "default_tool_round_budget": self.default_tool_round_budget,
-            "hard_tool_round_limit": self.hard_tool_round_limit,
             "proactive_delivery_enabled": self.proactive_delivery_enabled,
         }
 

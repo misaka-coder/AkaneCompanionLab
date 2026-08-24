@@ -21,7 +21,6 @@ WORKSPACE_DIR = str(AKANE_DATA_PATHS.workspace)
 CACHE_DIR = str(AKANE_DATA_PATHS.cache)
 RUN_DIR = str(AKANE_DATA_PATHS.run)
 DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
-MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP = 48
 
 
 class Settings(BaseSettings):
@@ -290,10 +289,12 @@ class Settings(BaseSettings):
     PUBLIC_DAILY_LIMIT_MESSAGE: str = "今日体验名额已满，明天再来看看 Akane 吧。"
 
     # === 工具调用 & 后台任务 ===
-    # 同轮工具调用的常规软预算。持续产生新调用/新结果时允许继续。
-    MAX_TOOL_ROUNDS: int = 3
-    # 仅用于阻止失控循环的紧急硬上限；正常工具链不应触及。
-    MAX_TOOL_EMERGENCY_ROUNDS: int = MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP
+    # 一个用户回合内实际执行的工具批次硬上限。并行批次按一轮计算。
+    TOOL_ROUND_HARD_LIMIT: int = 48
+    # 剩余这么多轮时，向模型解释一次续作记录与 MemCore 结算语义；0=关闭提醒。
+    TOOL_ROUND_WARNING_REMAINING: int = 8
+    # 工具参数/协议被拒绝后允许重新决策的次数；不消耗真实工具轮预算。
+    TOOL_DECISION_RETRY_LIMIT: int = 3
     # native tool 通道总开关。默认开启 native-first：OpenAI-compatible provider
     # 直接尝试 provider native schema；provider 明确拒绝时才结构化回退 JSON。
     # 需要保守兼容时可经 env 显式关闭。
@@ -306,14 +307,10 @@ class Settings(BaseSettings):
     # 保留 host:model[:json] 解析，供旧配置和探针工具读取；provider 明确拒绝
     # native tools 时由请求级错误识别触发一次 JSON fallback。
     NATIVE_TOOL_PROVIDER_ALLOWLIST: str = ""
-    # 联网搜索/网页提取类工具的同轮扩展预算
-    MAX_WEB_RESEARCH_TOOL_ROUNDS: int = 8
     # AnySearch MCP 单次调用超时。batch_search 可能同时覆盖多个查询，默认比普通本地 MCP 更宽松。
     WEB_SEARCH_MCP_TIMEOUT_SECONDS: float = 35.0
-    # 最终答复若落成解析兜底语或进度占位，最多重新生成几次；工具不会因此被强制调用。
-    CHAT_FINAL_RESPONSE_MAX_ATTEMPTS: int = 3
-    # 托管浏览器打开、滚动、点击、输入类工具的同轮扩展预算
-    MAX_BROWSER_TOOL_ROUNDS: int = 10
+    # 单次模型决策若既不是合法工具调用也不是可交付回复，最多生成几次。
+    CHAT_MODEL_DECISION_MAX_ATTEMPTS: int = 3
     # 后台 Workshop Worker 最大循环轮次
     MAX_TASK_WORKER_ROUNDS: int = 3
     # Akane 可访问的单一文件工作区；留空时使用桌面/Akane Workspace
@@ -478,6 +475,15 @@ def _is_retired_finance_env_key(key: str) -> bool:
     }
 
 
+_RETIRED_DECISION_LOOP_ENV_KEYS = {
+    "MAX_TOOL_ROUNDS",
+    "MAX_TOOL_EMERGENCY_ROUNDS",
+    "MAX_WEB_RESEARCH_TOOL_ROUNDS",
+    "MAX_BROWSER_TOOL_ROUNDS",
+    "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS",
+}
+
+
 def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     """Warn about .env keys that don't match any Settings field.
 
@@ -493,6 +499,7 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     known = set(settings_obj.model_fields.keys()) | _KNOWN_EXTERNAL_ENV_KEYS
 
     retired_finance: list[str] = []
+    retired_decision_loop: list[str] = []
     unknown: list[str] = []
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -506,6 +513,8 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
                     continue
                 if _is_retired_finance_env_key(key):
                     retired_finance.append(key)
+                elif key in _RETIRED_DECISION_LOOP_ENV_KEYS:
+                    retired_decision_loop.append(key)
                 else:
                     unknown.append(key)
     except OSError:
@@ -516,6 +525,13 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
             "Retired public-host finance keys in %s are ignored: %s",
             env_file,
             ", ".join(sorted(retired_finance)),
+        )
+    if retired_decision_loop:
+        logger.warning(
+            "Retired decision-loop keys in %s are ignored; use TOOL_ROUND_HARD_LIMIT, "
+            "TOOL_ROUND_WARNING_REMAINING and CHAT_MODEL_DECISION_MAX_ATTEMPTS: %s",
+            env_file,
+            ", ".join(sorted(retired_decision_loop)),
         )
     if unknown:
         logger.warning(
@@ -561,11 +577,12 @@ def _apply_settings(s: Settings) -> None:
     global FUN_ASR_MAX_SENTENCE_SILENCE, FUN_ASR_VOCABULARY_ID
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
-    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, MAX_TOOL_ROUNDS, MAX_TOOL_EMERGENCY_ROUNDS
+    global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, TOOL_ROUND_HARD_LIMIT
+    global TOOL_ROUND_WARNING_REMAINING, TOOL_DECISION_RETRY_LIMIT
     global ENABLE_NATIVE_TOOL_DECISION
-    global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST, MAX_WEB_RESEARCH_TOOL_ROUNDS
-    global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_FINAL_RESPONSE_MAX_ATTEMPTS
-    global MAX_BROWSER_TOOL_ROUNDS, MAX_TASK_WORKER_ROUNDS
+    global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST
+    global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_MODEL_DECISION_MAX_ATTEMPTS
+    global MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_ONEBOT_CACHE_ROOTS, QQ_CHANNEL_PROFILE_REF, QQ_BOT_QQ
     global QQ_WEBHOOK_SECRET, QQ_ONEBOT_ACCESS_TOKEN, QQ_CHARACTER_PACK_ID
@@ -742,18 +759,17 @@ def _apply_settings(s: Settings) -> None:
         str(s.PUBLIC_DAILY_LIMIT_MESSAGE or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
         or "今日体验名额已满，明天再来看看 Akane 吧。"
     )
-    MAX_TOOL_ROUNDS = max(1, min(5, int(s.MAX_TOOL_ROUNDS)))
-    MAX_TOOL_EMERGENCY_ROUNDS = max(
-        MAX_TOOL_ROUNDS + 1,
-        min(MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP, int(s.MAX_TOOL_EMERGENCY_ROUNDS)),
+    TOOL_ROUND_HARD_LIMIT = max(1, int(s.TOOL_ROUND_HARD_LIMIT))
+    TOOL_ROUND_WARNING_REMAINING = max(
+        0,
+        min(TOOL_ROUND_HARD_LIMIT - 1, int(s.TOOL_ROUND_WARNING_REMAINING)),
     )
+    TOOL_DECISION_RETRY_LIMIT = max(1, int(s.TOOL_DECISION_RETRY_LIMIT))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "*").strip()
     NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()
-    MAX_WEB_RESEARCH_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_WEB_RESEARCH_TOOL_ROUNDS)))
     WEB_SEARCH_MCP_TIMEOUT_SECONDS = max(5.0, min(90.0, float(s.WEB_SEARCH_MCP_TIMEOUT_SECONDS)))
-    CHAT_FINAL_RESPONSE_MAX_ATTEMPTS = max(1, min(5, int(s.CHAT_FINAL_RESPONSE_MAX_ATTEMPTS)))
-    MAX_BROWSER_TOOL_ROUNDS = max(MAX_TOOL_ROUNDS, min(12, int(s.MAX_BROWSER_TOOL_ROUNDS)))
+    CHAT_MODEL_DECISION_MAX_ATTEMPTS = max(1, int(s.CHAT_MODEL_DECISION_MAX_ATTEMPTS))
     MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))
     AKANE_WORKSPACE_ROOT = str(s.AKANE_WORKSPACE_ROOT or "").strip()
     AKANE_WORKSPACE_MAX_READ_BYTES = max(1024, int(s.AKANE_WORKSPACE_MAX_READ_BYTES))

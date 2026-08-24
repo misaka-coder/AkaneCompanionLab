@@ -175,18 +175,18 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(llm.text_calls, 0)
         first, second = llm.stream_calls
         self.assertEqual(len(first["native_tools"]), 33)
-        # Final recovery closes new tool calls: the model cannot re-execute
-        # completed side effects.
-        self.assertEqual(second["native_tools"], [])
-        self.assertEqual(second["native_tool_choice"], "none")
+        # A malformed decision does not close the tool surface. The next
+        # attempt may still choose a real tool or deliver normally.
+        self.assertEqual(second["native_tools"], first["native_tools"])
+        self.assertEqual(second["native_tool_choice"], first["native_tool_choice"])
         self.assertEqual(first["prompt_cache_key"], second["prompt_cache_key"])
         self.assertEqual(first["system_prompt"], second["system_prompt"])
         self.assertEqual(first["history_turns"], second["history_turns"])
         self.assertEqual(first["post_user_turns"], second["post_user_turns"])
         # Recovery feedback is appended only at the tail of the same prompt.
         self.assertTrue(second["user_prompt"].startswith(first["user_prompt"]))
-        self.assertIn("上一条输出没有形成可交付的最终文字。", second["user_prompt"])
-        self.assertIn("请基于同一用户请求和已经存在的工具结果重新生成最终答复。", second["user_prompt"])
+        self.assertIn("没有形成有效的工具调用或可交付回复", second["user_prompt"])
+        self.assertIn("如果仍需操作，请发出合法工具调用", second["user_prompt"])
         self.assertIn("不要重复已完成的工具", second["user_prompt"])
         self.assertIn("不要讨论这次格式错误", second["user_prompt"])
         self.assertIn("chat_final_response_retries", llm.metrics)
@@ -449,9 +449,9 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(text_call["system_prompt"], llm.json_calls[0]["system_prompt"])
         self.assertEqual(text_call["history_turns"], llm.json_calls[0]["history_turns"])
         self.assertEqual(text_call["post_user_turns"], llm.json_calls[0]["post_user_turns"])
-        self.assertIn("直接输出纯文本最终答复", text_call["user_prompt"])
+        self.assertIn("直接用纯文本向用户说明当前实际完成度", text_call["user_prompt"])
         self.assertIn("不要输出 JSON", text_call["user_prompt"])
-        self.assertIn("不要调用任何工具", text_call["user_prompt"])
+        self.assertIn("不要调用工具", text_call["user_prompt"])
 
     # --- Phase 5 item 3: tool executed once; recovery never repeats it ---
 
@@ -496,8 +496,9 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["speech"], "查完了：仓库结构是 monorepo。")
         self.assertNotIn("_transient_final_failure", result)
         self.assertEqual(len(llm.calls[0]["native_tools"]), 1)
-        self.assertEqual(llm.calls[1]["native_tools"], [])
-        # The completed tool result stays in the recovery context unchanged.
+        self.assertEqual(llm.calls[1]["native_tools"], llm.calls[0]["native_tools"])
+        # The completed tool result stays in the retry context unchanged;
+        # keeping tools available does not itself repeat any side effect.
         self.assertEqual(llm.calls[1]["post_user_turns"], llm.calls[0]["post_user_turns"])
         self.assertIn("不要重复已完成的工具", llm.calls[1]["user_prompt"])
 
@@ -728,6 +729,51 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(result.get("_native_tool_call"))
         self.assertNotIn("_transient_final_failure", result)
 
+    def test_retry_may_return_native_tool_call_without_speech(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def call_chat_json_result(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    return ChatJSONResult(
+                        parsed={"speech": "", "tool_call": None},
+                        raw_text='{"speech":',
+                        fallback_used=True,
+                    )
+                native_call = {
+                    "id": "call_retry",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"仓库"}'},
+                }
+                return ChatJSONResult(
+                    parsed={
+                        "_native_tool_calls": [native_call],
+                        "_native_tool_call": native_call,
+                        "tool_call": None,
+                    },
+                    raw_text="",
+                )
+
+        llm = FakeLLM()
+        engine = self._engine(llm)
+        result = self._run_nonstream(engine)
+
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[1]["native_tools"], llm.calls[0]["native_tools"])
+        self.assertNotEqual(llm.calls[1]["native_tool_choice"], "none")
+        self.assertTrue(result.get("_native_tool_calls"))
+        self.assertFalse(result.get("speech"))
+
     # --- Phase 5 item 13: all providers unreachable -> structured service failure ---
 
     def test_all_providers_unreachable_emits_structured_service_failure(self) -> None:
@@ -957,7 +1003,6 @@ class FinalRecoveryTests(unittest.TestCase):
                 },
                 parse_fallback=True,
                 provider_output_raw='{"speech":"我先查一下。","tool_call":null',
-                allow_tool_call=True,
             )
         )
 
@@ -969,7 +1014,6 @@ class FinalRecoveryTests(unittest.TestCase):
                 {"speech": "简短答复已经完整。", "tool_call": None},
                 parse_fallback=True,
                 provider_output_raw='{"speech":"简短答复已经完整。"',
-                allow_tool_call=True,
             )
         )
 
@@ -981,7 +1025,6 @@ class FinalRecoveryTests(unittest.TestCase):
                 {"speech": "我继续查。", "tool_call": None},
                 parse_fallback=True,
                 provider_output_raw='{"speech":"我继续查。","tool_call":{"type":"web_search"',
-                allow_tool_call=True,
             )
         )
 

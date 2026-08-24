@@ -40,7 +40,7 @@ def _safe_projection_failure_code(value: Any, *, fallback: str = "projection_det
 # 只要可见历史仍含 compact turn 就不能撤掉, 以免旧回执变成不可打开的死引用。
 COMPACT_READBACK_STABLE_HINT = (
     "部分已完成轮次的历史工具结果会显示为紧凑回执，而不是完整正文。\n"
-    "这不代表结果丢失。回执保留原工具名、调用参数、状态与 source_id。\n"
+    "这不代表结果丢失。工具调用参数仍在对应历史 action 中可见；回执保留结果状态与 source_id。\n"
     "若当前问题依赖其中的具体内容，可以按 source_id 单个或批量打开完整结果；\n"
     "若旧结果不足，可以继续调用相应工具。当前开放轮次中的工具结果始终完整可见；\n"
     "不要在已有信息足够时机械回读。"

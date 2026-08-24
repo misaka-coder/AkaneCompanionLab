@@ -312,11 +312,12 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("PUBLIC_BUSY_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "繁忙提示语（用户可见）"),
     _s("PUBLIC_DAILY_LIMIT_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "每日限额提示语（用户可见）"),
     # 工具调用 & 后台任务
-    _s("MAX_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用常规软预算"),
-    _s("MAX_TOOL_EMERGENCY_ROUNDS", _TOOL, SCOPE_RUNTIME, "同轮工具调用紧急安全上限"),
+    _s("TOOL_ROUND_HARD_LIMIT", _TOOL, SCOPE_RUNTIME, "单个用户回合实际执行的工具批次硬上限"),
+    _s("TOOL_ROUND_WARNING_REMAINING", _TOOL, SCOPE_RUNTIME, "工具轮接近上限时的一次性续作提醒阈值；0=关闭"),
+    _s("TOOL_DECISION_RETRY_LIMIT", _TOOL, SCOPE_RUNTIME, "工具参数或协议被拒绝后的重新决策次数"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
-    _s("CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "最终答复异常时的最大生成次数"),
+    _s("CHAT_MODEL_DECISION_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "模型决策未形成合法工具调用或交付时的生成次数"),
     _s("NATIVE_TOOL_DECISION_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native tool 允许列表；* 表示当前场景选中的全部工具"),
     _s(
         "NATIVE_TOOL_PROVIDER_ALLOWLIST",
@@ -324,8 +325,6 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RUNTIME,
         "兼容保留的 provider/model 探针记录（不控制 native 工具暴露；host:model[:json]）",
     ),
-    _s("MAX_WEB_RESEARCH_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "联网搜索/网页提取同轮扩展预算"),
-    _s("MAX_BROWSER_TOOL_ROUNDS", _TOOL, SCOPE_RUNTIME, "托管浏览器同轮扩展预算"),
     _s("MAX_TASK_WORKER_ROUNDS", _TOOL, SCOPE_RUNTIME, "后台 Workshop Worker 最大循环轮次"),
     _s(
         "AKANE_WORKSPACE_ROOT",

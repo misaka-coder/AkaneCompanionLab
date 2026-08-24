@@ -178,7 +178,7 @@ _MEMCORE_OPEN_TURN_GUARD: ContextVar[dict[str, str] | None] = ContextVar(
 )
 FINAL_RESPONSE_TEMPERATURE = 0.8
 
-# Same-turn final recovery feedback (Phase 2). The recovery request must reuse
+# Same-turn model-decision retry feedback. The retry request must reuse
 # the original user message, current images, MemCore timeline, completed
 # tool_call/tool_result and the same stable system prefix and cache key; the
 # only addition is this host feedback appended once at the tail. It is
@@ -186,16 +186,19 @@ FINAL_RESPONSE_TEMPERATURE = 0.8
 # host feedback, not a user message.
 FINAL_RESPONSE_RECOVERY_FEEDBACK = (
     "【宿主反馈】\n"
-    "上一条输出没有形成可交付的最终文字。\n"
-    "请基于同一用户请求和已经存在的工具结果重新生成最终答复。\n"
+    "上一条输出没有形成有效的工具调用或可交付回复。\n"
+    "请基于同一用户请求和已经存在的工具结果继续：如果仍需操作，请发出合法工具调用；"
+    "如果任务已完成，请输出符合协议的交付回复。\n"
     "不要重复已完成的工具，不要讨论这次格式错误。"
 )
 
-# Terminal plain-text recovery: after the configured structured generations all
-# fail, one more same-context generation without JSON requirement and without
-# tools. The model authors the text; the host only wraps presentation defaults.
-FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = FINAL_RESPONSE_RECOVERY_FEEDBACK + (
-    "\n本次请直接输出纯文本最终答复：不要输出 JSON，不要调用任何工具。"
+# Last-resort delivery after the configured structured decisions all fail. It
+# is an explicit protocol-exhaustion path, not an inferred final stage.
+FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = (
+    "【宿主反馈】\n"
+    "连续多次输出仍没有形成有效的工具调用或可交付回复。"
+    "本次请直接用纯文本向用户说明当前实际完成度、已有证据和具体阻塞；"
+    "不要输出 JSON，不要调用工具，也不要把未完成事项写成已完成。"
 )
 
 # Wire text that carries any JSON structure (braces or a quoted JSON key)
@@ -3946,27 +3949,25 @@ class AkaneMemoryEngine:
         recorded_tool_call_ids: set[str] = set()
         if speculative_voice_candidate:
             max_tool_rounds = -1
-            emergency_tool_rounds = -1
+            warning_remaining = 0
         else:
             max_tool_rounds = self._max_tool_rounds(domain_profile_id=turn_domain_profile_id)
-            emergency_tool_rounds = self._max_tool_emergency_rounds(
-                domain_profile_id=turn_domain_profile_id,
-                current_budget=max_tool_rounds,
-            )
+            warning_remaining = self._tool_round_warning_remaining(hard_limit=max_tool_rounds)
         tool_round_index = 0
-        empty_continuation_attempts = 0
+        tool_round_warning_emitted = False
+        invalid_tool_decision_attempts = 0
+        tool_decision_retry_limit = self._tool_decision_retry_limit()
         provider_output_raw = ""
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
             for hit in retrieval_result.get("fused_hits", [])
             if str(hit.get("source_id") or "").strip()
         ]
-        # ``max_tool_rounds`` is a soft budget. A chain that keeps asking for
-        # new, non-repeated work may grow one round at a time without changing
-        # the provider request shape. Only the universal emergency ceiling
-        # forces ``tool_choice=none``.
+        # One authoritative hard limit counts only tool batches that were
+        # actually executed. Invalid/rejected model decisions have their own
+        # bounded retry counter and never consume tool evidence budget.
         deferred_control_snapshot: dict[str, Any] = {}
-        while tool_round_index <= emergency_tool_rounds:
+        while tool_round_index <= max_tool_rounds:
             control_snapshot: dict[str, Any] = deferred_control_snapshot
             deferred_control_snapshot = {}
             turn_coordinator = getattr(self, "turn_coordinator", None)
@@ -4072,7 +4073,7 @@ class AkaneMemoryEngine:
                         "failed_count": len(failed_source_ids),
                     }
                 if applied_source_ids:
-                    empty_continuation_attempts = 0
+                    invalid_tool_decision_attempts = 0
                     # A new user instruction starts a fresh action allowance
                     # inside the same durable turn.  Repeating a read/test that
                     # was already used before the steer can now be legitimate.
@@ -4122,40 +4123,14 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
-            for tool_call in tool_calls:
-                max_tool_rounds = self._resolve_tool_round_budget(
-                    current_budget=max_tool_rounds,
-                    tool_call=tool_call,
-                    client_context=client_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    domain_profile_id=turn_domain_profile_id,
-                )
-            emergency_tool_rounds = max(emergency_tool_rounds, max_tool_rounds)
-            previous_tool_budget = max_tool_rounds
-            max_tool_rounds, emergency_stop = self._extend_tool_round_budget_for_progress(
-                current_budget=max_tool_rounds,
-                emergency_limit=emergency_tool_rounds,
-                tool_round_index=tool_round_index,
-                tool_calls=tool_calls,
-                seen_signatures=seen_tool_calls.difference(allowed_repeat_tool_calls),
-            )
-            if max_tool_rounds > previous_tool_budget:
-                logger.info(
-                    "tool_round_budget_extended session=%s previous=%s next=%s emergency=%s",
-                    session_id,
-                    previous_tool_budget,
-                    max_tool_rounds,
-                    emergency_tool_rounds,
-                )
-            if tool_calls and emergency_stop:
+            if tool_calls and tool_round_index >= max_tool_rounds:
                 blocked_calls = "；".join(self._describe_tool_call_for_prompt(tool_call) for tool_call in tool_calls)
                 tool_followups.append(
-                    f"模型在本轮已经执行 {tool_round_index} 轮工具后又请求：{blocked_calls}。"
-                    "这些额外调用没有执行；请基于已有真实结果完成答复。"
+                    f"模型在本轮已经执行 {tool_round_index}/{max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
+                    "这些额外调用没有执行；上方最后一批工具结果仍是真实结果。"
                 )
                 logger.warning(
-                    "tool_round_emergency_limit session=%s rounds=%s blocked=%s",
+                    "tool_round_hard_limit session=%s rounds=%s blocked=%s",
                     session_id,
                     tool_round_index,
                     len(tool_calls),
@@ -4213,60 +4188,6 @@ class AkaneMemoryEngine:
                 }
             if not tool_calls:
                 if not rejections:
-                    if self._final_output_requests_continuation(final_output):
-                        tool_round_index += 1
-                        can_continue = (
-                            tool_round_index <= emergency_tool_rounds
-                            and empty_continuation_attempts < 2
-                        )
-                        if can_continue:
-                            empty_continuation_attempts += 1
-                            tool_followups.append(
-                                "模型声明当前用户请求仍可在本轮继续，但这一帧没有发出下一项工具调用。"
-                                "请立即执行下一项必要操作；不要重复已经完成的工具。"
-                                "只有任务已完成，或存在本轮工具无法解决的真实阻塞时，才用 status=final 诚实收口。"
-                            )
-                        else:
-                            tool_followups.append(
-                                "同回合继续请求已经有界重试，但模型仍没有发出可执行工具。"
-                                "本次不要再调用工具；请基于已有真实结果说明当前完成度与阻塞，"
-                                "不得把未验证事项写成通过，并将 status 设为 final。"
-                            )
-                        final_output = yield from self._generate_round(
-                            mode=mode,
-                            session_id=session_id,
-                            profile_user_id=profile_user_id,
-                            user_message=user_message,
-                            recent_raw=recent_raw_for_turn,
-                            recent_episodic_summaries=recent_episodic_summaries,
-                            recent_semantic_summaries=recent_semantic_summaries,
-                            confirmed_snippets=confirmed_snippets,
-                            now_ts=now_ts,
-                            current_visual_payload=payload.get("current_visual"),
-                            extra_user_context=self._build_tool_round_extra_context(
-                                turn_extra_user_context=turn_extra_user_context,
-                                tool_followups=tool_followups,
-                                allow_more=can_continue,
-                                stop_reason="" if can_continue else "continuation_not_actionable",
-                            ),
-                            client_context=client_context,
-                            resource_manifest=turn_resource_manifest,
-                            character_pack_id=turn_character_pack_id,
-                            user_images=turn_user_images,
-                            allow_tool_call=can_continue,
-                            final_debug_enabled=final_debug_enabled,
-                            chat_model_override=chat_model_override,
-                            execution_target=turn_execution_target,
-                            post_user_turns=tool_history_turns,
-                            prompt_exclude_source_ids=prompt_exclude_source_ids,
-                            domain_profile_id=turn_domain_profile_id,
-                            prompt_scope=prompt_scope,
-                            stable_system_context=plugin_stable_system_context,
-                            request_projection_state=request_projection_state,
-                        )
-                        if can_continue:
-                            continue
-                        final_output["status"] = "final"
                     if turn_control_id and turn_coordinator is not None:
                         finalization = dict(turn_coordinator.begin_finalization(turn_control_id) or {})
                         if finalization.get("stop_requested") or finalization.get("steers"):
@@ -4278,9 +4199,11 @@ class AkaneMemoryEngine:
                     rejection="\n".join(rejections),
                     tool_followups=tool_followups,
                     session_id=session_id,
-                    tool_round_index=tool_round_index,
-                    max_tool_rounds=max_tool_rounds,
+                    decision_attempt=invalid_tool_decision_attempts + 1,
+                    retry_limit=tool_decision_retry_limit,
                 )
+                invalid_tool_decision_attempts += 1
+                allow_retry = allow_retry and tool_round_index < max_tool_rounds
                 final_output = yield from self._generate_round(
                     mode=mode,
                     session_id=session_id,
@@ -4296,6 +4219,7 @@ class AkaneMemoryEngine:
                         turn_extra_user_context=turn_extra_user_context,
                         tool_followups=tool_followups,
                         allow_more=allow_retry,
+                        stop_reason="" if allow_retry else "tool_decision_invalid",
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
@@ -4312,7 +4236,6 @@ class AkaneMemoryEngine:
                     stable_system_context=plugin_stable_system_context,
                     request_projection_state=request_projection_state,
                 )
-                tool_round_index += 1
                 if allow_retry:
                     continue
                 break
@@ -4339,8 +4262,11 @@ class AkaneMemoryEngine:
                     seen_tool_calls.add(tool_signature)
                 executable_calls.append(tool_call)
             if not executable_calls:
-                tool_round_index += 1
-                allow_retry = tool_round_index < max_tool_rounds
+                invalid_tool_decision_attempts += 1
+                allow_retry = (
+                    invalid_tool_decision_attempts <= tool_decision_retry_limit
+                    and tool_round_index < max_tool_rounds
+                )
                 final_output = yield from self._generate_round(
                     mode=mode,
                     session_id=session_id,
@@ -4356,7 +4282,7 @@ class AkaneMemoryEngine:
                         turn_extra_user_context=turn_extra_user_context,
                         tool_followups=tool_followups,
                         allow_more=allow_retry,
-                        stop_reason="" if allow_retry else "tool_budget_exhausted",
+                        stop_reason="" if allow_retry else "tool_decision_invalid",
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
@@ -4433,7 +4359,7 @@ class AkaneMemoryEngine:
                 execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
-            empty_continuation_attempts = 0
+            invalid_tool_decision_attempts = 0
             for completed_result in batch_results:
                 envelope = getattr(completed_result, "followup_envelope", None)
                 continuation = getattr(envelope, "continuation", None)
@@ -4451,6 +4377,29 @@ class AkaneMemoryEngine:
                 chat_model_override=chat_model_override,
             )
 
+            tool_round_index += 1
+            hard_budget_reached = tool_round_index >= max_tool_rounds
+            round_control_feedback = ""
+            remaining_rounds = max(0, max_tool_rounds - tool_round_index)
+            if (
+                not hard_budget_reached
+                and not tool_round_warning_emitted
+                and warning_remaining > 0
+                and remaining_rounds <= warning_remaining
+            ):
+                tool_round_warning_emitted = True
+                round_control_feedback = self._build_tool_round_warning(
+                    used_rounds=tool_round_index,
+                    hard_limit=max_tool_rounds,
+                )
+                logger.info(
+                    "tool_round_warning session=%s used=%s hard=%s remaining=%s",
+                    session_id,
+                    tool_round_index,
+                    max_tool_rounds,
+                    remaining_rounds,
+                )
+
             final_output = yield from self._generate_round(
                 mode=mode,
                 session_id=session_id,
@@ -4465,13 +4414,15 @@ class AkaneMemoryEngine:
                 extra_user_context=self._build_tool_round_extra_context(
                     turn_extra_user_context=turn_extra_user_context,
                     tool_followups=tool_followups,
-                    allow_more=True,
+                    allow_more=not hard_budget_reached,
+                    stop_reason="tool_budget_exhausted" if hard_budget_reached else "",
+                    round_control_feedback=round_control_feedback,
                 ),
                 client_context=client_context,
                 resource_manifest=turn_resource_manifest,
                 character_pack_id=turn_character_pack_id,
                 user_images=turn_user_images,
-                allow_tool_call=True,
+                allow_tool_call=not hard_budget_reached,
                 final_debug_enabled=final_debug_enabled,
                 chat_model_override=chat_model_override,
                 execution_target=turn_execution_target,
@@ -4482,7 +4433,6 @@ class AkaneMemoryEngine:
                 stable_system_context=plugin_stable_system_context,
                 request_projection_state=request_projection_state,
             )
-            tool_round_index += 1
 
         if not speculative_voice_candidate:
             final_output = self._apply_persona_state_to_final_output(
@@ -5040,14 +4990,11 @@ class AkaneMemoryEngine:
         retry_feedback = ""
         transport_failures = 0
         for attempt in range(1, max_attempts + 1):
-            # Final recovery (attempt >= 2) reuses the identical user message,
-            # images, MemCore timeline, tool results, system prefix and cache
-            # key, adding the fixed host feedback once at the tail. New tool
-            # calls are closed during recovery so completed side effects are
-            # never re-executed.
-            recovery_mode = attempt > 1
+            # A malformed decision retries against the same context and tool
+            # surface. A legal tool call is a decision, not damaged final text.
+            retry_mode = attempt > 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if recovery_mode else ""
+            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if retry_mode else ""
             request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -5057,7 +5004,6 @@ class AkaneMemoryEngine:
                 prompt_cache_key=prompt_cache_key,
                 retry_note=retry_note,
                 request_observer=request_observer,
-                recovery_mode=recovery_mode,
                 allow_tool_call=original_allow_tool_call,
             )
             call_result = (
@@ -5084,7 +5030,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 client_context=client_context,
                 resource_manifest=resource_manifest,
-                allow_tool_call=original_allow_tool_call and not recovery_mode,
+                allow_tool_call=original_allow_tool_call,
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 user_message=user_message,
                 domain_profile_id=domain_profile_id,
@@ -5100,8 +5046,6 @@ class AkaneMemoryEngine:
                 normalized=normalized,
                 parse_fallback=parse_fallback,
                 provider_output_raw=provider_output_raw,
-                allow_tool_call=original_allow_tool_call,
-                recovery_mode=recovery_mode,
                 generation_context=generation_context,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -5172,7 +5116,7 @@ class AkaneMemoryEngine:
     def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
-        return max(1, min(5, int(getattr(config, "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS", 3) or 3)))
+        return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
 
     @staticmethod
     def _final_response_retry_feedback(
@@ -5207,16 +5151,15 @@ class AkaneMemoryEngine:
         prompt_cache_key: str,
         retry_note: str,
         request_observer: Any,
-        recovery_mode: bool,
         allow_tool_call: bool,
     ) -> dict[str, Any]:
         """Build one final-response provider request.
 
-        The recovery request must keep the original user message, images,
+        A retry request keeps the original user message, images,
         MemCore timeline, completed tool results, stable system prefix and
-        cache key; the host feedback is appended only at the tail. During
-        final recovery new tool calls are closed (no tool definitions, choice
-        `none`) so completed side effects are never re-executed.
+        cache key; host feedback is appended only at the tail. Retry does not
+        change tool permissions. Only an explicit caller decision such as a
+        consumed hard budget sets allow_tool_call=False.
         """
         user_prompt = self._request_projection_user_prompt(
             request_projection_state,
@@ -5243,7 +5186,7 @@ class AkaneMemoryEngine:
             "chat_model_override": chat_model_override,
             "execution_target": execution_target,
         }
-        if recovery_mode or not allow_tool_call:
+        if not allow_tool_call:
             kwargs["native_tools"] = []
             kwargs["native_tool_choice"] = "none"
         else:
@@ -5283,8 +5226,6 @@ class AkaneMemoryEngine:
         normalized: dict[str, Any],
         parse_fallback: bool,
         provider_output_raw: str,
-        allow_tool_call: bool,
-        recovery_mode: bool,
         generation_context: dict[str, Any],
         profile_user_id: str,
         session_id: str,
@@ -5293,7 +5234,7 @@ class AkaneMemoryEngine:
         user_message: str,
         domain_profile_id: str,
     ) -> dict[str, Any] | None:
-        """Decide the terminal state of one generation attempt.
+        """Classify one generation attempt as a tool decision or delivery.
 
         Returns a deliverable normalized dict, or `None` when the attempt
         must be retried with the same-context host feedback. Shared by the
@@ -5304,8 +5245,8 @@ class AkaneMemoryEngine:
           presentation fields;
         - a legal tool call continues the ordinary tool loop (never recovery);
         - complete model speech is delivered (parse recovery included);
-        - during final recovery new tool calls are closed, so any tool request
-          in a recovery attempt counts as a failed attempt.
+        Tool availability is controlled only by the caller's explicit
+        allow_tool_call decision, never by the fact that this is a retry.
         """
         if not self._final_output_has_tool_call(normalized):
             wrapped = self._wrap_plain_text_final_speech(
@@ -5322,20 +5263,13 @@ class AkaneMemoryEngine:
             if wrapped is not None:
                 return wrapped
         if self._final_output_has_tool_call(normalized):
-            if not recovery_mode:
-                if provider_output_raw:
-                    normalized["_provider_output_raw"] = provider_output_raw
-                return normalized
-            # Recovery closes new tool calls; a tool request here is a failed
-            # attempt, never a reason to re-execute completed side effects.
-            return None
-        if recovery_mode and self._raw_tool_call_is_pending(provider_output_raw):
-            return None
+            if provider_output_raw:
+                normalized["_provider_output_raw"] = provider_output_raw
+            return normalized
         if self._is_deliverable_parse_recovery(
             normalized,
             parse_fallback=parse_fallback,
             provider_output_raw=provider_output_raw,
-            allow_tool_call=allow_tool_call,
         ):
             self._record_final_response_parse_recovery_metric()
             if provider_output_raw:
@@ -5504,10 +5438,11 @@ class AkaneMemoryEngine:
         delivered = "\n".join(f"- {item}" for item in segments)
         feedback = (
             "【宿主反馈】\n"
-            "上一条输出没有形成完整终稿，但以下从 speech 中解析出的完整句子已经提交到本轮交付通道，"
+            "上一条输出没有形成有效的工具调用或完整交付，但以下从 speech 中解析出的完整句子已经提交到本轮交付通道，"
             "用户可能已经看到或听到，不能安全撤回。"
-            "不要重复、改写或否认它们；只补充尚未交付的剩余答复。\n"
-            "请基于同一用户请求和已经存在的工具结果继续；不要重复已完成的工具，"
+            "不要重复、改写或否认它们。\n"
+            "请基于同一用户请求和已经存在的工具结果继续：仍需操作就发出合法工具调用，"
+            "任务已完成就只补充尚未交付的剩余答复；不要重复已完成的工具，"
             "不要讨论这次格式或传输错误。\n"
             f"【已交付句子】\n{delivered}"
         )
@@ -5613,17 +5548,14 @@ class AkaneMemoryEngine:
         *,
         parse_fallback: bool,
         provider_output_raw: str,
-        allow_tool_call: bool,
     ) -> bool:
         """Accept only complete model-authored speech from malformed JSON.
 
         The streaming parser exposes ``speech`` only after its JSON string value
-        is closed.  We still require proof that no tool call remains pending:
-        either tools were disabled for this generation, or the malformed wire
-        text has no tool-call field (an omitted optional field is valid) or
-        explicitly contains ``tool_call: null``.  An explicit non-null tool
-        call still blocks recovery so a tool preface cannot be mistaken for a
-        final answer.
+        is closed. We still require proof that no tool call remains pending.
+        Disabling tools in the request does not turn a model-authored non-null
+        compatibility tool_call into final speech; that preface must be retried
+        rather than delivered as if the requested action happened.
         """
 
         if not parse_fallback or not isinstance(output, dict):
@@ -5632,8 +5564,6 @@ class AkaneMemoryEngine:
             return False
         if self._is_retryable_final_output(output):
             return False
-        if not allow_tool_call:
-            return True
         # A final answer is allowed to omit the optional ``tool_call`` field.
         # Only reject recovery when the wire text explicitly contains a
         # non-null tool call; requiring an explicit ``tool_call: null`` turned
@@ -5724,8 +5654,7 @@ class AkaneMemoryEngine:
         A parse fallback no longer forces a retry by itself: complete model
         speech extracted from malformed wire text is deliverable. Pending tool
         calls are not retryable here either — they continue the ordinary tool
-        loop (the recovery layer separately blocks tool calls during final
-        recovery).
+        loop. Retry count alone never changes tool permissions.
         """
         if not isinstance(output, dict):
             return True
@@ -5855,21 +5784,19 @@ class AkaneMemoryEngine:
         transport_failures = 0
         attempts_made = 0
         for attempt in range(1, max_attempts + 1):
-            # Final recovery (attempt >= 2) reuses the identical user message,
-            # images, MemCore timeline, tool results, system prefix and cache
-            # key, adding the fixed host feedback once at the tail. New tool
-            # calls are closed during recovery so completed side effects are
-            # never re-executed.
-            recovery_mode = attempt > 1
+            # A malformed decision retries against the same context and tool
+            # surface. Streaming prefix de-duplication is transport-only and
+            # does not change what the model is allowed to decide.
+            retry_mode = attempt > 1
             attempts_made += 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             delivered_before_attempt = list(delivered_speech_segments)
             recovery_prefix_keys = ["".join(item.split()) for item in delivered_before_attempt]
             recovery_prefix_index = 0
-            recovery_prefix_matching = recovery_mode and bool(recovery_prefix_keys)
+            recovery_prefix_matching = retry_mode and bool(recovery_prefix_keys)
             retry_note = (
                 self._stream_final_response_recovery_feedback(delivered_before_attempt)
-                if recovery_mode
+                if retry_mode
                 else ""
             )
             request_kwargs = self._build_final_response_request_kwargs(
@@ -5881,7 +5808,6 @@ class AkaneMemoryEngine:
                 prompt_cache_key=prompt_cache_key,
                 retry_note=retry_note,
                 request_observer=request_observer,
-                recovery_mode=recovery_mode,
                 allow_tool_call=original_allow_tool_call,
             )
             iterator = self.llm.stream_chat_json(
@@ -5899,7 +5825,7 @@ class AkaneMemoryEngine:
                         is not None
                     )
                 )
-                if (original_allow_tool_call and not recovery_mode)
+                if original_allow_tool_call
                 else None,
             )
             attempt_had_speech_chunk = False
@@ -5969,7 +5895,7 @@ class AkaneMemoryEngine:
                 client_context=client_context,
                 resource_manifest=resource_manifest,
                 user_message=user_message,
-                allow_tool_call=original_allow_tool_call and not recovery_mode,
+                allow_tool_call=original_allow_tool_call,
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -5990,8 +5916,6 @@ class AkaneMemoryEngine:
                     normalized=normalized,
                     parse_fallback=parse_fallback,
                     provider_output_raw=provider_output_raw,
-                    allow_tool_call=original_allow_tool_call,
-                    recovery_mode=recovery_mode,
                     generation_context=generation_context,
                     profile_user_id=profile_user_id,
                     session_id=session_id,
@@ -6004,7 +5928,7 @@ class AkaneMemoryEngine:
             if terminal_output is not None:
                 normalized = self._merge_streamed_speech_into_final(
                     terminal_output,
-                    delivered_segments=delivered_before_attempt if recovery_mode else [],
+                    delivered_segments=delivered_before_attempt if retry_mode else [],
                 )
                 if self._final_output_has_tool_call(normalized) and len(delivered_speech_segments) > len(
                     delivered_before_attempt
@@ -6078,7 +6002,7 @@ class AkaneMemoryEngine:
                     client_context=client_context,
                     resource_manifest=resource_manifest,
                     user_message=user_message,
-                    allow_tool_call=original_allow_tool_call and not recovery_mode,
+                    allow_tool_call=original_allow_tool_call,
                     debug_enabled=bool(generation_context["debug_enabled"]),
                     domain_profile_id=domain_profile_id,
                     capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -6127,7 +6051,7 @@ class AkaneMemoryEngine:
                         client_context=client_context,
                         resource_manifest=resource_manifest,
                         user_message=user_message,
-                        allow_tool_call=original_allow_tool_call and not recovery_mode,
+                        allow_tool_call=original_allow_tool_call,
                         debug_enabled=bool(generation_context["debug_enabled"]),
                         domain_profile_id=domain_profile_id,
                         capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
@@ -6674,58 +6598,29 @@ class AkaneMemoryEngine:
 
         return _fn(domain_profile_id=domain_profile_id)
 
-    def _max_tool_emergency_rounds(
+    def _tool_round_warning_remaining(self, *, hard_limit: int) -> int:
+        from .engine_services.tool_rounds import tool_round_warning_remaining as _fn
+
+        return _fn(hard_limit=hard_limit)
+
+    def _tool_decision_retry_limit(self) -> int:
+        from .engine_services.tool_rounds import tool_decision_retry_limit as _fn
+
+        return _fn()
+
+    def _build_tool_round_warning(
         self,
         *,
-        domain_profile_id: str = "",
-        current_budget: int = 0,
-    ) -> int:
-        from .engine_services.tool_rounds import max_tool_emergency_rounds as _fn
+        used_rounds: int,
+        hard_limit: int,
+    ) -> str:
+        from .engine_services.tool_rounds import build_tool_round_warning as _fn
 
+        manager = getattr(self, "memcore_manager", None)
         return _fn(
-            domain_profile_id=domain_profile_id,
-            current_budget=current_budget,
-        )
-
-    def _extend_tool_round_budget_for_progress(
-        self,
-        *,
-        current_budget: int,
-        emergency_limit: int,
-        tool_round_index: int,
-        tool_calls: list[dict[str, Any]],
-        seen_signatures: set[str],
-    ) -> tuple[int, bool]:
-        from .engine_services.tool_rounds import extend_tool_round_budget_for_progress as _fn
-
-        return _fn(
-            current_budget=current_budget,
-            emergency_limit=emergency_limit,
-            tool_round_index=tool_round_index,
-            tool_calls=tool_calls,
-            seen_signatures=seen_signatures,
-        )
-
-    def _resolve_tool_round_budget(
-        self,
-        *,
-        current_budget: int,
-        tool_call: dict[str, Any],
-        client_context: ClientProtocolContext | None = None,
-        profile_user_id: str = "",
-        session_id: str = "",
-        domain_profile_id: str = "",
-    ) -> int:
-        from .engine_services.tool_rounds import resolve_tool_round_budget as _fn
-
-        return _fn(
-            self,
-            current_budget=current_budget,
-            tool_call=tool_call,
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
+            used_rounds=used_rounds,
+            hard_limit=hard_limit,
+            memcore_enabled=bool(manager is not None and getattr(manager, "enabled", False)),
         )
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
@@ -6742,16 +6637,6 @@ class AkaneMemoryEngine:
         from .engine_services.tool_rounds import build_tool_working_stream_event as _fn
 
         return _fn(tool_call)
-
-    def _should_stop_after_tool_events(
-        self,
-        events: list[dict[str, Any]],
-        *,
-        domain_profile_id: str = "",
-    ) -> bool:
-        from .engine_services.tool_rounds import should_stop_after_tool_events as _fn
-
-        return _fn(events, domain_profile_id=domain_profile_id)
 
     def _prepare_tool_round_decision(
         self,
@@ -6868,8 +6753,8 @@ class AkaneMemoryEngine:
         rejection: str,
         tool_followups: list[str],
         session_id: str,
-        tool_round_index: int,
-        max_tool_rounds: int,
+        decision_attempt: int,
+        retry_limit: int,
     ) -> bool:
         reason_tool, reason_code = self._tool_call_rejection_log_fields(
             final_output=final_output,
@@ -6882,13 +6767,7 @@ class AkaneMemoryEngine:
             reason_code,
         )
         tool_followups.append(rejection)
-        return tool_round_index < max_tool_rounds - 1
-
-    @staticmethod
-    def _final_output_requests_continuation(final_output: Any) -> bool:
-        if not isinstance(final_output, Mapping):
-            return False
-        return str(final_output.get("status") or "").strip().lower() == "continue"
+        return max(1, int(decision_attempt or 1)) <= max(1, int(retry_limit or 1))
 
     @staticmethod
     def _tool_call_rejection_log_fields(
@@ -6931,16 +6810,21 @@ class AkaneMemoryEngine:
         tool_followups: list[str],
         allow_more: bool,
         stop_reason: str = "",
+        round_control_feedback: str = "",
     ) -> str:
-        if not any(str(item or "").strip() for item in tool_followups):
-            return str(turn_extra_user_context or "").strip()
+        context = str(turn_extra_user_context or "").strip()
+        if any(str(item or "").strip() for item in tool_followups) or stop_reason:
+            context = self._merge_extra_user_context(
+                context,
+                self._build_multi_tool_followup_context(
+                    tool_followups,
+                    allow_more=allow_more,
+                    stop_reason=stop_reason,
+                ),
+            )
         return self._merge_extra_user_context(
-            turn_extra_user_context,
-            self._build_multi_tool_followup_context(
-                tool_followups,
-                allow_more=allow_more,
-                stop_reason=stop_reason,
-            ),
+            context,
+            str(round_control_feedback or "").strip(),
         )
 
     @staticmethod

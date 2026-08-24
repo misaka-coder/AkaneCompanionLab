@@ -5,6 +5,7 @@ import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import config
@@ -32,7 +33,6 @@ from companion_v01.tool_runtime import (
     SetReminderToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
-    ToolMetadata,
 )
 from companion_v01.workspace_files import WorkspaceFileService
 
@@ -670,101 +670,24 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("工具预算已经用完", block_context)
         self.assertIn("本轮不要再调用工具", block_context)
 
-    def test_tool_round_budget_expands_from_tool_metadata_without_hiding_tools(self) -> None:
-        class StubTool:
-            def __init__(self, metadata: ToolMetadata) -> None:
-                self._metadata = metadata
+    def test_tool_round_hard_limit_is_single_config_without_family_expansion(self) -> None:
+        with patch.object(config, "TOOL_ROUND_HARD_LIMIT", 64, create=True):
+            self.assertEqual(self.engine._max_tool_rounds(), 64)
+        with patch.object(config, "TOOL_ROUND_HARD_LIMIT", 12, create=True):
+            self.assertEqual(self.engine._max_tool_rounds(), 12)
 
-            def tool_metadata(self) -> ToolMetadata:
-                return self._metadata
+    def test_tool_round_warning_explains_memcore_and_checkpoint_causality(self) -> None:
+        self.engine.memcore_manager = SimpleNamespace(enabled=True)
+        warning = self.engine._build_tool_round_warning(used_rounds=40, hard_limit=48)
 
-        self.engine.tool_handlers = {
-            "fake_search": StubTool(
-                ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8)
-            ),
-            "fake_browser": StubTool(
-                ToolMetadata(family="browser_control", operation="mixed", risk="medium", default_round_budget=10)
-            ),
-            "fake_plain": StubTool(
-                ToolMetadata(family="general", operation="mixed", risk="medium", default_round_budget=3)
-            ),
-        }
-
-        with (
-            patch.object(config, "MAX_TOOL_ROUNDS", 3, create=True),
-            patch.object(config, "MAX_WEB_RESEARCH_TOOL_ROUNDS", 7, create=True),
-            patch.object(config, "MAX_BROWSER_TOOL_ROUNDS", 11, create=True),
-        ):
-            self.assertEqual(
-                self.engine._resolve_tool_round_budget(
-                    current_budget=3,
-                    tool_call={"type": "fake_search"},
-                ),
-                7,
-            )
-            self.assertEqual(
-                self.engine._resolve_tool_round_budget(
-                    current_budget=3,
-                    tool_call={"type": "fake_browser"},
-                ),
-                11,
-            )
-            self.assertEqual(
-                self.engine._resolve_tool_round_budget(
-                    current_budget=3,
-                    tool_call={"type": "fake_plain"},
-                ),
-                3,
-            )
-
-    def test_tool_round_soft_budget_extends_only_for_new_calls(self) -> None:
-        with patch.object(config, "MAX_TOOL_EMERGENCY_ROUNDS", 48, create=True):
-            self.assertEqual(
-                self.engine._max_tool_emergency_rounds(current_budget=3),
-                48,
-            )
-            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
-                current_budget=3,
-                emergency_limit=48,
-                tool_round_index=3,
-                tool_calls=[{"type": "inspect_generated_file", "generated_id": "gen_1"}],
-                seen_signatures=set(),
-            )
-            self.assertEqual(budget, 4)
-            self.assertFalse(stopped)
-            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
-                current_budget=4,
-                emergency_limit=48,
-                tool_round_index=4,
-                tool_calls=[{"type": "inspect_generated_file", "generated_id": "gen_1"}],
-                seen_signatures={self.engine._tool_call_signature({"type": "inspect_generated_file", "generated_id": "gen_1"})},
-            )
-            self.assertEqual(budget, 4)
-            self.assertFalse(stopped)
-            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
-                current_budget=47,
-                emergency_limit=48,
-                tool_round_index=47,
-                tool_calls=[{"type": "send_file", "targets": ["gen_2"]}],
-                seen_signatures=set(),
-            )
-            self.assertEqual(budget, 48)
-            self.assertFalse(stopped)
-            budget, stopped = self.engine._extend_tool_round_budget_for_progress(
-                current_budget=48,
-                emergency_limit=48,
-                tool_round_index=48,
-                tool_calls=[{"type": "send_file", "targets": ["gen_2"]}],
-                seen_signatures=set(),
-            )
-            self.assertEqual(budget, 48)
-            self.assertTrue(stopped)
-
-        with patch.object(config, "MAX_TOOL_EMERGENCY_ROUNDS", 999, create=True):
-            self.assertEqual(
-                self.engine._max_tool_emergency_rounds(current_budget=3),
-                48,
-            )
+        self.assertIn("已使用 40/48", warning)
+        self.assertIn("工具仍然可用", warning)
+        self.assertIn("较短工具结果保留原文", warning)
+        self.assertIn("较长结果", warning)
+        self.assertIn("open_memory", warning)
+        self.assertIn("不会自动把分散在多轮调用中", warning)
+        self.assertIn("真实项目中写入或更新", warning)
+        self.assertIn("无需额外创建文件", warning)
 
     def test_build_tool_prompt_context_includes_registered_tools(self) -> None:
         class StubTool:

@@ -198,14 +198,8 @@ class _Harness:
             lambda client_context, character_pack_id: {"assistant_name": "Akane"}
         )
         engine._resolve_tool_handlers = lambda **kwargs: {}
-        engine._resolve_tool_round_budget = (
-            lambda **kwargs: kwargs["current_budget"]
-        )
         engine._recompute_turn_execution_target = (
             lambda **kwargs: kwargs["current_target"]
-        )
-        engine._build_tool_round_extra_context = (
-            lambda **kwargs: "extra-context"
         )
 
         def execute_tool_call(
@@ -453,38 +447,101 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant", "assistant", "assistant"])
         self.assertEqual(len(harness.store.eval_turns), 1)
 
-    def test_explicit_continue_without_tool_stays_in_same_user_turn(self) -> None:
+    def test_warning_is_injected_once_while_tools_remain_available(self) -> None:
+        harness = _Harness(
+            [
+                _tool_round_output("第一步。", "inspect_one", "call-1"),
+                _tool_round_output("第二步。", "inspect_two", "call-2"),
+                _tool_round_output("第三步。", "inspect_three", "call-3"),
+                _speech_output("完成。"),
+            ]
+        )
+        harness.engine._max_tool_rounds = lambda **_kwargs: 4
+        harness.engine._tool_round_warning_remaining = lambda **_kwargs: 2
+
+        result = harness.run_sync(harness.payload(message="完成长程任务"))
+
+        warning_calls = [
+            kwargs
+            for kwargs in harness.script.generation_kwargs
+            if "工具预算提醒" in str(kwargs.get("extra_user_context") or "")
+        ]
+        self.assertEqual(len(warning_calls), 1)
+        self.assertTrue(warning_calls[0]["allow_tool_call"])
+        self.assertIn("已使用 2/4", warning_calls[0]["extra_user_context"])
+        self.assertEqual(result.get("speech"), "完成。")
+
+    def test_hard_limit_executes_last_batch_then_blocks_next_tool(self) -> None:
+        harness = _Harness(
+            [
+                _tool_round_output("第一步。", "inspect_one", "call-1"),
+                _tool_round_output("第二步。", "inspect_two", "call-2"),
+                _tool_round_output("第三步。", "inspect_three", "call-3"),
+                _tool_round_output("还想执行第四步。", "inspect_four", "call-4"),
+                _speech_output("三轮已执行，第四轮没有执行；任务尚未完成。"),
+            ]
+        )
+        harness.engine._max_tool_rounds = lambda **_kwargs: 3
+        harness.engine._tool_round_warning_remaining = lambda **_kwargs: 1
+
+        result = harness.run_sync(harness.payload(message="完成长程任务"))
+
+        batches = harness.rec["record_memcore_tool_batch"].calls
+        self.assertEqual(len(batches), 3)
+        executed = [call[1]["items"][0][0]["type"] for call in batches]
+        self.assertEqual(executed, ["inspect_one", "inspect_two", "inspect_three"])
+        self.assertEqual(result.get("speech"), "三轮已执行，第四轮没有执行；任务尚未完成。")
+        delivery_only = [
+            kwargs for kwargs in harness.script.generation_kwargs if not kwargs.get("allow_tool_call")
+        ]
+        self.assertEqual(len(delivery_only), 2)
+        self.assertIn("最后一批工具已经真实执行", delivery_only[0]["extra_user_context"])
+
+    def test_failed_tool_result_does_not_close_other_tools(self) -> None:
+        harness = _Harness(
+            [
+                _tool_round_output("先试第一种。", "first_tool", "call-1"),
+                _tool_round_output("换第二种。", "second_tool", "call-2"),
+                _speech_output("第二种成功。"),
+            ]
+        )
+        executed: list[str] = []
+
+        def execute_tool_call(**kwargs: object) -> ToolExecutionResult:
+            tool_type = str(dict(kwargs["tool_call"]).get("type") or "")
+            executed.append(tool_type)
+            failed = tool_type == "first_tool"
+            return ToolExecutionResult(
+                tool_type=tool_type,
+                stream_events=[
+                    {
+                        "type": "tool_execution_result",
+                        "tool_type": tool_type,
+                        "status": "failed" if failed else "succeeded",
+                    }
+                ],
+                followup_context="失败，换其它办法。" if failed else "成功。",
+            )
+
+        harness.engine._execute_tool_call = execute_tool_call
+        result = harness.run_sync(harness.payload())
+
+        self.assertEqual(executed, ["first_tool", "second_tool"])
+        self.assertEqual(result.get("speech"), "第二种成功。")
+
+    def test_toolless_continue_status_is_not_a_hidden_host_action(self) -> None:
         harness = _Harness(
             [
                 _continue_output("基础代码写完了，但验收还没跑完。"),
-                _tool_round_output("我继续跑验收。", "exec_run", "call-continue-1"),
-                _speech_output("验收完成。"),
             ]
         )
 
         result = harness.run_sync(harness.payload(message="完成这个编程任务"))
 
-        self.assertEqual(result.get("speech"), "验收完成。")
-        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 1)
-        self.assertEqual(len(harness.script.generation_calls), 3)
-        self.assertEqual(len(harness.store.eval_turns), 1)
-
-    def test_repeated_empty_continue_is_bounded_and_forced_to_honest_final(self) -> None:
-        harness = _Harness(
-            [
-                _continue_output("还要继续。"),
-                _continue_output("仍要继续。"),
-                _continue_output("还是要继续。"),
-                _continue_output("目前没有发出可执行操作，现有进度尚未完成。"),
-            ]
-        )
-
-        result = harness.run_sync(harness.payload(message="完成这个编程任务"))
-
-        self.assertEqual(result.get("speech"), "目前没有发出可执行操作，现有进度尚未完成。")
-        self.assertEqual(result.get("status"), "final")
-        self.assertEqual(len(harness.script.generation_calls), 4)
+        self.assertEqual(result.get("speech"), "基础代码写完了，但验收还没跑完。")
         self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 0)
+        self.assertEqual(len(harness.script.generation_calls), 1)
+        self.assertEqual(len(harness.store.eval_turns), 1)
 
     def test_producer_continuation_may_repeat_the_same_observation_call(self) -> None:
         repeated_call = _tool_call("poll_status", "same-call")

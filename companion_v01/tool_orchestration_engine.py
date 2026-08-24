@@ -109,70 +109,26 @@ def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 1
 
 
 def max_tool_rounds() -> int:
-    return _bounded_int(getattr(config, "MAX_TOOL_ROUNDS", 3), default=3, lower=1, upper=5)
+    try:
+        return max(1, int(getattr(config, "TOOL_ROUND_HARD_LIMIT", 48) or 48))
+    except Exception:
+        return 48
 
 
-def max_tool_emergency_rounds(*, current_budget: int = 0) -> int:
-    """Return the universal fail-safe ceiling, never a normal workflow budget."""
-
-    hard_cap = max(1, int(getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS_HARD_CAP", 48) or 48))
-    soft_budget = _bounded_int(current_budget, default=max_tool_rounds(), lower=1, upper=hard_cap)
-    configured = _bounded_int(
-        getattr(config, "MAX_TOOL_EMERGENCY_ROUNDS", hard_cap),
-        default=hard_cap,
-        lower=1,
-        upper=hard_cap,
-    )
-    return max(soft_budget, configured)
+def tool_round_warning_remaining(*, hard_limit: int | None = None) -> int:
+    hard = max_tool_rounds() if hard_limit is None else max(1, int(hard_limit or 1))
+    try:
+        configured = max(0, int(getattr(config, "TOOL_ROUND_WARNING_REMAINING", 8) or 0))
+    except Exception:
+        configured = 8
+    return min(max(0, hard - 1), configured)
 
 
-def extend_tool_round_budget_for_progress(
-    *,
-    current_budget: int,
-    emergency_limit: int,
-    tool_round_index: int,
-    tool_calls: Iterable[Mapping[str, Any]],
-    seen_signatures: set[str],
-) -> tuple[int, bool]:
-    """Extend a soft budget only for at least one not-yet-executed call.
-
-    Exact-repeat suppression remains authoritative elsewhere.  This helper
-    only distinguishes a progressing chain from a hard emergency stop; it
-    does not encode tool names, user wording, or workflow-specific steps.
-    """
-
-    budget = max(1, int(current_budget or 1))
-    emergency = max(budget, int(emergency_limit or budget))
-    round_index = max(0, int(tool_round_index or 0))
-    calls = [dict(call) for call in tool_calls if isinstance(call, Mapping)]
-    if not calls or round_index < budget:
-        return budget, False
-    has_new_call = any(tool_call_signature(call) not in seen_signatures for call in calls)
-    if not has_new_call:
-        return budget, False
-    if round_index >= emergency:
-        return budget, True
-    return max(budget, round_index + 1), False
-
-
-def _configured_family_budget(family: str, *, fallback: int) -> int:
-    clean_family = str(family or "").strip()
-    if clean_family == "web_research":
-        return _bounded_int(getattr(config, "MAX_WEB_RESEARCH_TOOL_ROUNDS", fallback), default=fallback)
-    if clean_family == "browser_control":
-        return _bounded_int(getattr(config, "MAX_BROWSER_TOOL_ROUNDS", fallback), default=fallback)
-    if clean_family in {"finance_read", "finance_artifact"}:
-        hard_limit = _bounded_int(
-            getattr(config, "FINANCE_TOOL_ROUND_HARD_LIMIT", 16),
-            default=16,
-            upper=16,
-        )
-        return _bounded_int(
-            getattr(config, "FINANCE_TOOL_ROUND_BUDGET", fallback),
-            default=fallback,
-            upper=hard_limit,
-        )
-    return _bounded_int(fallback, default=max_tool_rounds())
+def tool_decision_retry_limit() -> int:
+    try:
+        return max(1, int(getattr(config, "TOOL_DECISION_RETRY_LIMIT", 3) or 3))
+    except Exception:
+        return 3
 
 
 def tool_metadata_dict(handler: Any, *, tool_type: str = "") -> dict[str, Any]:
@@ -204,25 +160,6 @@ def tool_metadata_dict(handler: Any, *, tool_type: str = "") -> dict[str, Any]:
     )
     metadata["background"] = bool(metadata.get("background"))
     return metadata
-
-
-def resolve_tool_round_budget(
-    handlers: Mapping[str, Any],
-    tool_call: Mapping[str, Any],
-    *,
-    current_budget: int | None = None,
-) -> int:
-    base_budget = (
-        max_tool_rounds() if current_budget is None else _bounded_int(current_budget, default=max_tool_rounds())
-    )
-    tool_type = str((tool_call or {}).get("type") or "").strip()
-    if not tool_type:
-        return base_budget
-    handler = handlers.get(tool_type) if isinstance(handlers, Mapping) else None
-    metadata = tool_metadata_dict(handler, tool_type=tool_type)
-    fallback = max(base_budget, int(metadata.get("default_round_budget") or base_budget))
-    family_budget = _configured_family_budget(str(metadata.get("family") or ""), fallback=fallback)
-    return max(base_budget, family_budget)
 
 
 def tool_call_signature(tool_call: dict[str, Any]) -> str:
@@ -365,8 +302,14 @@ def build_multi_tool_followup_context(
     else:
         if str(stop_reason or "").strip() == "tool_budget_exhausted":
             lines.append(
-                "本轮工具预算已经用完；工具阶段到此结束。请基于已有证据立即完成面向用户的答案，"
-                "回答可回答的部分，并明确仍缺少的证据、数据截止时间和结论置信度。"
+                "本轮工具预算已经用完；最后一批工具已经真实执行，其结果就在上方。"
+                "现在请按原有交付格式向用户说明本轮实际完成的内容、验证结果、尚未完成或无法确认的部分。"
+                "如果任务没有完成，可以请用户发送“继续”；不要宣称未经验证的事项已经完成。"
+            )
+        elif str(stop_reason or "").strip() == "tool_decision_invalid":
+            lines.append(
+                "工具请求经过有界重新决策后仍未形成可执行调用；这不是工具执行成功。"
+                "请基于已有真实证据向用户说明当前完成度与具体阻塞。"
             )
         elif str(stop_reason or "").strip() == "tool_unavailable":
             lines.append(
@@ -384,6 +327,39 @@ def build_multi_tool_followup_context(
             "限制与下一步建议。"
         )
     return "\n\n".join(lines)
+
+
+def build_tool_round_warning(
+    *,
+    used_rounds: int,
+    hard_limit: int,
+    memcore_enabled: bool,
+) -> str:
+    """Explain the one-time continuation warning without changing permissions."""
+
+    used = max(0, int(used_rounds or 0))
+    hard = max(1, int(hard_limit or 1))
+    remaining = max(0, hard - used)
+    if memcore_enabled:
+        history_rule = (
+            "当前开放回合中的工具调用与结果现在都以完整形式可见。本回合结束并进入下一次用户请求后，"
+            "MemCore 会继续保留普通工具调用参数；较短工具结果保留原文，只有满足压缩收益条件的较长结果"
+            "才会替换为可通过 open_memory 回读的卡片。"
+        )
+    else:
+        history_rule = (
+            "当前开放回合中的工具调用与结果现在都以完整形式可见；回合结束后的历史可能因上下文维护而精简。"
+        )
+    return (
+        f"【工具预算提醒：已使用 {used}/{hard}，还剩 {remaining} 轮】\n"
+        "工具仍然可用。"
+        f"{history_rule}\n"
+        "单次卡片可以恢复对应结果，但不会自动把分散在多轮调用中的任务目标、关键决策、修改位置、"
+        "验证状态与剩余工作整理成可靠的续作说明。如果预计不能在剩余预算内完成，请趁工具仍可使用，"
+        "在真实项目中写入或更新一份可检查的续作记录，说明当前目标、已完成改动、关键文件与位置、"
+        "实际测试结果、剩余事项、已知失败和下一步。不要复制大段已有输出，不要记录未经验证的结论。"
+        "若能在本轮完成，则继续正常执行，无需额外创建文件。"
+    )
 
 
 def normalize_tool_call(
