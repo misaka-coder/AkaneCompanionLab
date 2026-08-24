@@ -2755,7 +2755,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
                 parsed = (
                     {"emotion": "normal"}
-                    if len(self.calls) == 1 or "上一条输出没有形成可交付的最终文字。" not in retry_tail
+                    if len(self.calls) == 1 or "上一条输出没有形成有效的工具调用或可交付回复。" not in retry_tail
                     else {"emotion": "normal", "speech": "完成"}
                 )
                 return SimpleNamespace(parsed=parsed, raw_text=json.dumps(parsed, ensure_ascii=False), error="")
@@ -2814,8 +2814,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(llm.calls[1]["ephemeral_turns"][0], llm.calls[0]["ephemeral_turns"][0])
         tail_content = llm.calls[1]["ephemeral_turns"][-1]["content"]
         self.assertIn("【宿主反馈】", tail_content)
-        self.assertIn("上一条输出没有形成可交付的最终文字。", tail_content)
-        self.assertIn("请基于同一用户请求和已经存在的工具结果重新生成最终答复。", tail_content)
+        self.assertIn("上一条输出没有形成有效的工具调用或可交付回复。", tail_content)
+        self.assertIn("如果仍需操作，请发出合法工具调用", tail_content)
+        self.assertIn("如果任务已完成，请输出符合协议的交付回复", tail_content)
         self.assertIn("不要重复已完成的工具", tail_content)
         self.assertIn("不要讨论这次格式错误", tail_content)
         # The recovery feedback is request-scoped: it never replaces the frozen
@@ -3052,7 +3053,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 retry_tail = str((kwargs.get("ephemeral_turns") or [{}])[-1].get("content") or "")
                 parsed = (
                     {"emotion": "normal", "speech": ""}
-                    if len(self.calls) == 1 or "上一条输出没有形成可交付的最终文字。" not in retry_tail
+                    if len(self.calls) == 1 or "上一条输出没有形成有效的工具调用或可交付回复。" not in retry_tail
                     else {"emotion": "normal", "speech": "完成"}
                 )
 
@@ -3131,7 +3132,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         tail_content = llm.calls[1]["ephemeral_turns"][-1]["content"]
         self.assertIn("【宿主反馈】", tail_content)
-        self.assertIn("上一条输出没有形成可交付的最终文字。", tail_content)
+        self.assertIn("上一条输出没有形成有效的工具调用或可交付回复。", tail_content)
+        self.assertIn("如果仍需操作，请发出合法工具调用", tail_content)
         self.assertIn("不要重复已完成的工具", tail_content)
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
