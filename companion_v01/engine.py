@@ -2913,6 +2913,7 @@ class AkaneMemoryEngine:
         attachments: list[dict[str, Any]],
         character_pack_id: str = "",
         timestamp: int | None = None,
+        observe_images: bool = True,
     ) -> list[dict[str, Any]]:
         service = self._get_attachment_ingest_service()
         if service is None:
@@ -2923,6 +2924,7 @@ class AkaneMemoryEngine:
             attachments=attachments,
             character_pack_id=character_pack_id,
             timestamp=timestamp,
+            observe_images=observe_images,
         )
 
     def ingest_desktop_pet_audio_attachment(

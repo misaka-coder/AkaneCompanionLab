@@ -114,8 +114,24 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(normalized.message.attachments[0].platform_id if normalized.message else "", "mface-1")
         self.assertEqual(context.attachments, [])
         self.assertTrue(context.should_respond)
-        self.assertEqual(context.clean_message, "这个表情")
+        self.assertEqual(context.clean_message, "这个表情 [QQ商城表情 名称=开心, emoji_id=mface-1]")
         self.assertNotIn("provider.invalid", str(normalized.as_dict()))
+
+    def test_gateway_preserves_forward_reference_for_host_resolution(self) -> None:
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "message_id": "forward-inbound-1",
+            "message": [{"type": "forward", "data": {"id": "forward-real-1"}}],
+        }
+
+        context = NapCatQQGateway().build_message_context(event)
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.clean_message, "[QQ合并转发 forward_id=forward-real-1]")
+        self.assertEqual([item.forward_id for item in context.forward_refs], ["forward-real-1"])
 
     def test_gateway_group_context_delegates_trigger_decision_to_package_policy(self) -> None:
         gateway = NapCatQQGateway(wake_words=("Akane",))

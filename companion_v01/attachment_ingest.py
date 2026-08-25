@@ -215,6 +215,7 @@ class AttachmentIngestService:
         attachments: list[dict[str, Any]],
         character_pack_id: str = "",
         timestamp: int | None = None,
+        observe_images: bool = True,
     ) -> list[dict[str, Any]]:
         effective_ts = int(timestamp or time.time())
         created_items: list[dict[str, Any]] = []
@@ -222,6 +223,7 @@ class AttachmentIngestService:
             if not isinstance(payload, dict):
                 continue
             processing_payload = self._sanitize_qq_materialization_payload(payload)
+            processing_payload["_observe_image"] = bool(observe_images)
             kind = self._normalize_kind(payload.get("kind"))
             if kind not in {"image", "document", "audio", "file"}:
                 continue
@@ -446,7 +448,7 @@ class AttachmentIngestService:
             )
 
             kind = str(item.get("kind") or "").strip().lower()
-            if kind == "image" and self.vision_service is not None:
+            if kind == "image" and self.vision_service is not None and bool(payload.get("_observe_image", True)):
                 scheduled = self.vision_service.schedule_attachment_image_observation(
                     attachment={
                         **item,
@@ -2513,6 +2515,12 @@ class AttachmentIngestService:
         group_id = str(payload.get("group_id") or "").strip()
         if group_id:
             detail["qq_group_id"] = group_id[:40]
+        forward_id = str(payload.get("forward_id") or "").strip()
+        if forward_id:
+            detail["qq_forward_id"] = forward_id[:200]
+        forward_node_index = self._safe_int(payload.get("forward_node_index"))
+        if forward_node_index > 0:
+            detail["qq_forward_node_index"] = forward_node_index
         character_pack_id = str(payload.get("character_pack_id") or "").strip()
         if character_pack_id:
             detail["character_pack_id"] = character_pack_id[:120]

@@ -1,6 +1,6 @@
 # channelcore-onebot Akane integration v0
 
-Status: inbound normalization, admission, group-trigger, quoted-message, and M4 outbound slices integrated.
+Status: inbound normalization, admission, group-trigger, quoted/forwarded-message, and M4 outbound slices integrated.
 
 ## Decision
 
@@ -19,6 +19,7 @@ OneBot/NapCat webhook
   -> channelcore_onebot.GroupTriggerPolicy.evaluate(...)
   -> Akane QQMessageContext product projection
   -> channelcore_onebot.resolve_quoted_message(..., call_action=bot_transport)
+  -> channelcore_onebot.resolve_forward_message(..., call_action=bot_transport)
   -> Akane commands, safe attachment materialization, vision, MemCore/LLM, TTS
   -> channelcore_onebot builds outbound target/segments/action plan
   -> Akane Bot-bound HTTP transport executes the plan
@@ -31,7 +32,8 @@ OneBot/NapCat webhook
   `InboundMessage`, and `InboundParseResult`;
 - private/group message and poke-notice normalization;
 - structured segments and raw CQ fallback;
-- text, at, reply, image, voice, file, video, face, and mface parsing;
+- text, at, reply, merged-forward, image, voice, file, video, face, and mface parsing;
+- semantic inbound face/mface markers with supplied names and stable platform ids;
 - per-Bot wake-word inputs and neutral trigger reasons;
 - sensitive attachment locators hidden from repr and public summaries;
 - per-Bot `self_id` comparison;
@@ -43,6 +45,8 @@ OneBot/NapCat webhook
   normalization, and group/private reply scope validation;
 - fail-closed `scope_unverifiable` for private replies without enough participant
   data.
+- ordered `ForwardRef` extraction, `get_forward_msg` action selection, logical
+  result validation, and forwarded-node actor/text/time/attachment normalization;
 - private/group outbound targets; text, image, voice, reply, and mface segment
   construction; message/file-upload action selection; and safe logical result
   normalization.
@@ -88,10 +92,13 @@ identity result back to the existing `qq_self_id_mismatch` HTTP response.
 These slices are behavior-preserving. Existing Bots still use their own Akane
 profiles and product settings. The practical improvement is that their common
 message, attachment, reply, mention, wake-word, and poke shapes now pass
-  through one reusable protocol authority. Replay races now have an atomic
-  winner, and quoted attachments from another group/private peer are rejected
-  before materialization. No vision, reply-send, or new sticker behavior is
-advertised.
+through one reusable protocol authority. Replay races now have an atomic
+winner, and quoted attachments from another group/private peer are rejected
+before materialization. Active merged forwards now reach the current model
+turn as structured user-provided data. Passive forwards and media in enabled
+groups are materialized off the webhook and enter MemCore with real attachment
+handles; passive images do not trigger automatic vision. Inbound expressions
+no longer collapse to the ambiguous `[表情]` placeholder.
 
 The transport remains Akane-owned. M4 moved OneBot target/segment/action/result
 protocol authority into `channelcore-onebot`; `qq_gateway.py` supplies product
@@ -104,9 +111,9 @@ status/retcode validation.
 
 ## Remaining protocol slices
 
-M4 covers the active text/image/voice/file/reply/mface paths. A future `face`
-slice should be added only when Akane has a real outbound face consumer. New
-outbound segment/action rules belong in the package rather than
+M4 covers the active text/image/voice/file/reply/mface paths. A future outbound
+`face` slice should be added only when Akane has a real outbound face consumer.
+New outbound segment/action rules belong in the package rather than
 `qq_gateway.py`. HTTP 200 with a non-zero OneBot retcode is not success, and
 outbound results do not expose local paths, tokens, attachment URLs, raw
 exceptions, or raw OneBot payloads.

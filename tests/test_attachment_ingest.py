@@ -1150,6 +1150,72 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(len(session.calls), 1)
             self.assertNotIn("topsecret", json.dumps(item, ensure_ascii=False))
 
+    def test_passive_qq_image_is_materialized_without_automatic_vision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            vision = FakeVisionService(store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=vision,  # type: ignore[arg-type]
+                public_host_resolver=lambda *_args: ("93.184.216.34",),
+            )
+
+            class FakeOneBotResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return {"status": "failed", "retcode": 100, "data": {}}
+
+            stream_response = FakeStreamResponse(
+                peer_ip="93.184.216.34",
+                headers={"Content-Length": "12"},
+                chunks=[b"image-bytes!"],
+            )
+            session = FakeHttpSession([stream_response])
+            with (
+                patch(
+                    "companion_v01.onebot_transport.requests.Session.request",
+                    return_value=FakeOneBotResponse(),
+                ),
+                patch("companion_v01.attachment_ingest.requests.Session", return_value=session),
+            ):
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    attachments=[
+                        {
+                            "kind": "image",
+                            "file": "passive.png",
+                            "origin_name": "passive.png",
+                            "url": "https://media.example/passive.png",
+                            "forward_id": "forward-passive-1",
+                            "forward_node_index": "2",
+                            "sender_label": "Bob",
+                        }
+                    ],
+                    timestamp=100,
+                    observe_images=False,
+                )
+                self.assertEqual(len(created), 1)
+                item = self._wait_for_status(
+                    store,
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    status="ready",
+                )
+
+            self.assertEqual(item["attachment_handle"], "img_001")
+            self.assertEqual(item["detail"]["qq_forward_id"], "forward-passive-1")
+            self.assertEqual(item["detail"]["qq_forward_node_index"], 2)
+            self.assertEqual(item["detail"]["qq_sender_label"], "Bob")
+            self.assertEqual(vision.scheduled, [])
+            self.assertTrue((root / "attachments" / item["storage_relpath"]).exists())
+
     def test_unknown_public_webpage_does_not_enter_cookie_capable_ytdlp(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

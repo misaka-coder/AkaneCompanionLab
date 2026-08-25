@@ -471,7 +471,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(plain_text.should_record)
         self.assertEqual(plain_text.reason, "group_passive_observed")
         self.assertFalse(other_user_image.should_respond)
-        self.assertFalse(other_user_image.should_record)
+        self.assertTrue(other_user_image.should_record)
         self.assertEqual(other_user_image.reason, "group_passive_image_unbound")
 
         captioned_other_user_image = gateway.build_message_context(
@@ -485,10 +485,10 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
         self.assertFalse(captioned_other_user_image.should_respond)
-        self.assertFalse(captioned_other_user_image.should_record)
+        self.assertTrue(captioned_other_user_image.should_record)
         self.assertEqual(captioned_other_user_image.reason, "group_passive_image_unbound")
 
-    def test_group_vision_disabled_does_not_record_passive_image_message(self) -> None:
+    def test_group_vision_disabled_keeps_passive_image_as_background_evidence(self) -> None:
         gateway = NapCatQQGateway()
         self.assertTrue(gateway.set_group_vision_enabled(QQ_GROUP_FIXTURE_ID, False))
         base_event = {
@@ -526,7 +526,7 @@ class QQGatewayTests(unittest.TestCase):
 
         for context in (image_only, image_with_text):
             self.assertFalse(context.should_respond)
-            self.assertFalse(context.should_record)
+            self.assertTrue(context.should_record)
             self.assertEqual(context.reason, "group_vision_disabled")
 
     def test_group_vision_toggle_does_not_change_text_turn_payload(self) -> None:

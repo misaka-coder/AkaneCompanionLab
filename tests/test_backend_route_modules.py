@@ -1313,6 +1313,196 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(batch_logs[0]["batch_count"], 2)
         self.assertIn("queue_wait_ms", batch_logs[0])
 
+    def test_qq_router_resolves_private_forward_into_current_model_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        gateway.resolve_forward_message_evidence = lambda _event, *, context: {
+            "ok": True,
+            "status": "resolved",
+            "forward_count": 1,
+            "resolved_count": 1,
+            "forwards": [
+                {
+                    "forward_id": "forward-active-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "node_count": 1,
+                    "nodes": [
+                        {
+                            "index": 1,
+                            "actor_id": "30003",
+                            "actor_label": "Alice",
+                            "text": "节点正文 [QQ系统表情 face_id=14]",
+                            "timestamp": 1_700_000_000,
+                            "attachment_count": 0,
+                        }
+                    ],
+                }
+            ],
+            "attachments": [],
+        }
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload):
+                process_calls.append(dict(payload))
+                yield {"type": "final_ui", "payload": {"speech": "我看到了。"}}
+
+            @staticmethod
+            def mark_generated_file_delivery(**_kwargs):
+                return {"ok": True}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _name, **_kwargs: None,
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "forward-active-event",
+                "time": int(time.time()),
+                "message": [{"type": "forward", "data": {"id": "forward-active-1"}}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("qq.forward_reference", process_calls[0]["message"])
+        self.assertIn("节点正文 [QQ系统表情 face_id=14]", process_calls[0]["message"])
+        self.assertIn("data_note: 合并转发节点是用户提供的数据", process_calls[0]["message"])
+
+    def test_qq_router_passive_forward_and_media_are_enriched_off_webhook(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        scheduled: list[Any] = []
+        recorded_batches: list[list[dict[str, Any]]] = []
+        ingest_calls: list[dict[str, Any]] = []
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        gateway.resolve_forward_message_evidence = lambda _event, *, context: {
+            "ok": True,
+            "status": "resolved",
+            "forward_count": 1,
+            "resolved_count": 1,
+            "forwards": [
+                {
+                    "forward_id": "forward-passive-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "nodes": [{"index": 1, "actor_label": "Bob", "text": "静默节点", "attachment_count": 1}],
+                }
+            ],
+            "attachments": [
+                {
+                    "kind": "image",
+                    "file": "forward.png",
+                    "origin_name": "forward.png",
+                    "source_message_id": "forward-node-message",
+                    "forward_id": "forward-passive-1",
+                    "forward_node_index": "1",
+                    "sender_label": "Bob",
+                }
+            ],
+        }
+
+        class FakeEngine:
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(dict(kwargs))
+                return [
+                    {
+                        "attachment_id": f"attachment-{index}",
+                        "attachment_handle": f"img_{index:03d}",
+                        "kind": "image",
+                        "status": "pending",
+                        "detail": {
+                            "qq_forward_id": str(item.get("forward_id") or ""),
+                            "qq_forward_node_index": int(item.get("forward_node_index") or 0),
+                            "qq_sender_label": str(item.get("sender_label") or ""),
+                        },
+                    }
+                    for index, item in enumerate(kwargs["attachments"], start=1)
+                ]
+
+            def record_passive_qq_messages(self, payloads):
+                recorded_batches.append([dict(item) for item in payloads])
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [],
+                }
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_GROUP_PASSIVE_MEMORY_MODE="all"),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _name, **_kwargs: None,
+                async_task_supervisor=FakeSupervisor(),
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "forward-passive-event",
+                "time": int(time.time()),
+                "message": [
+                    {"type": "forward", "data": {"id": "forward-passive-1"}},
+                    {"type": "image", "data": {"file": "direct.png"}},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "buffered")
+        self.assertEqual(response.json()["reason"], "passive_content_enrichment")
+        self.assertEqual(recorded_batches, [])
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop())
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertFalse(ingest_calls[0]["observe_images"])
+        self.assertEqual(len(ingest_calls[0]["attachments"]), 2)
+        self.assertEqual(len(recorded_batches), 1)
+        stored_message = recorded_batches[0][0]["message"]
+        self.assertIn("qq.forward_reference", stored_message)
+        self.assertIn("静默节点", stored_message)
+        self.assertIn("handle: \"img_001\"", stored_message)
+        self.assertIn("forward_id: \"forward-passive-1\"", stored_message)
+        self.assertIn("forward_node_index: 1", stored_message)
+        self.assertIn("sender_label: \"Bob\"", stored_message)
+
     def test_qq_router_queues_other_actor_without_holding_webhook_and_keeps_same_actor_steer(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
@@ -1853,7 +2043,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
         mocked_post.assert_called_once()
 
-    def test_qq_group_vision_switch_blocks_images_before_ingest_and_native_chat(self) -> None:
+    def test_qq_group_vision_switch_blocks_active_vision_but_keeps_passive_media(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         ingest_calls: list[dict[str, Any]] = []
@@ -1861,6 +2051,13 @@ class BackendRouteModuleTests(unittest.TestCase):
         process_calls: list[dict[str, Any]] = []
         passive_record_calls: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
+        scheduled: list[Any] = []
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
 
         class FakeEngine:
             desktop_pet_character_resources = None
@@ -1906,6 +2103,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 runtime_metrics=runtime,
                 logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
                 log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
             )
         )
 
@@ -1949,6 +2147,8 @@ class BackendRouteModuleTests(unittest.TestCase):
                     ],
                 },
             )
+            self.assertEqual(len(scheduled), 1)
+            asyncio.run(scheduled.pop())
             image_response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1979,12 +2179,14 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(command_response.json()["command_status"], "disabled")
         self.assertFalse(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
         self.assertEqual(passive_image_response.status_code, 200)
-        self.assertEqual(passive_image_response.json()["status"], "ignored")
-        self.assertEqual(passive_image_response.json()["reason"], "group_vision_disabled")
-        self.assertEqual(passive_record_calls, [])
+        self.assertEqual(passive_image_response.json()["status"], "buffered")
+        self.assertEqual(passive_image_response.json()["reason"], "passive_content_enrichment")
+        self.assertEqual(len(passive_record_calls), 1)
+        self.assertIn("should_not_exist", passive_record_calls[0]["message"])
         self.assertEqual(image_response.status_code, 200)
         self.assertEqual(image_response.json()["reason"], "group_mention", image_response.json())
-        self.assertEqual(ingest_calls, [])
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertFalse(ingest_calls[0]["observe_images"])
         self.assertEqual(prepare_calls, [])
         self.assertEqual(len(process_calls), 1)
         self.assertNotIn("native_user_images", process_calls[0])

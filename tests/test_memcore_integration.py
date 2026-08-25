@@ -5084,7 +5084,21 @@ class MemcoreIntegrationTests(unittest.TestCase):
             actor_display_name="张三",
         )
         passive = engine._append_memcore_passive_message(
-            user_record={"source_id": "qq-passive-1", "content": "群里路过", "timestamp": 101},
+            user_record={
+                "source_id": "qq-passive-1",
+                "content": (
+                    "qq.forward_reference\n"
+                    "forward_messages:\n"
+                    "  - forward_id: \"forward-1\"\n"
+                    "    status: \"resolved\"\n"
+                    "    nodes:\n"
+                    "      - content: \"群里路过 [QQ系统表情 face_id=14]\"\n"
+                    "qq.attachments:\n"
+                    "  - handle: \"img_001\"\n"
+                    "    status: \"pending\""
+                ),
+                "timestamp": 101,
+            },
             profile_user_id="qq-group-1",
             session_id="qq-group-1",
             character_pack_id="char-1",
@@ -5106,6 +5120,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(manager.user_calls[1]["observed"])
         self.assertEqual(manager.user_calls[1]["target_actor_id"], "qq:10003")
         self.assertEqual(manager.user_calls[1]["target_actor_display_name"], "王五")
+        self.assertIn("forward_id: \"forward-1\"", manager.user_calls[1]["record"]["content"])
+        self.assertIn("[QQ系统表情 face_id=14]", manager.user_calls[1]["record"]["content"])
+        self.assertIn("handle: \"img_001\"", manager.user_calls[1]["record"]["content"])
         self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
 

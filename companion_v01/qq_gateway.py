@@ -17,6 +17,7 @@ from channelcore_onebot import (
     EventAdmissionConfig,
     GroupTriggerPolicy,
     MentionRef,
+    ForwardRef,
     OneBotEventAdmission,
     OutboundAction,
     OutboundTarget,
@@ -32,6 +33,7 @@ from channelcore_onebot import (
     parse_cq_params as parse_onebot_cq_params,
     render_message_text as render_onebot_message_text,
     resolve_quoted_message as resolve_onebot_quoted_message,
+    resolve_forward_message as resolve_onebot_forward_message,
     image_segment,
     mface_segment,
     music_segment,
@@ -318,6 +320,7 @@ class QQMessageContext:
     source_message_id: str = ""
     mentioned_bot: bool = False
     mentions: tuple[MentionRef, ...] = ()
+    forward_refs: tuple[ForwardRef, ...] = ()
 
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
@@ -933,15 +936,6 @@ class NapCatQQGateway:
                 for item in attachments
             )
         )
-        unsupported_attachment_labels = {
-            "video": "[视频]",
-            "sticker": "[表情]",
-            "emoji": "[表情]",
-        }
-        for attachment in inbound.attachments:
-            label = unsupported_attachment_labels.get(attachment.kind)
-            if label:
-                clean_message = clean_message.replace(label, " ")
         clean_message = re.sub(r"\s+", " ", clean_message).strip()
         mentions = self.resolve_mention_labels(
             mentions=inbound.mentions,
@@ -951,7 +945,7 @@ class NapCatQQGateway:
         if mention_only:
             clean_message = "event.mention"
         if not clean_message or (
-            not inbound.has_text_content and not attachments and not mention_only
+            not inbound.has_text_content and not attachments and not mention_only and not inbound.forwards
         ):
             return QQMessageContext(False, "empty_message")
         mentions_bot = inbound.mentioned_bot
@@ -1000,13 +994,11 @@ class NapCatQQGateway:
                         if suppress_passive_image
                         else ("group_passive_image_unbound" if unbound_group_image else trigger.reason)
                     ),
-                    # An unaddressed image event has no attachment handle or
-                    # pixels in MemCore. Recording "sent an image" would invite a
-                    # later turn to mistake some older workspace image for it.
-                    # A caption attached to unavailable pixels is incomplete
-                    # evidence too, so the whole unaddressed image event stays
-                    # outside passive memory.
-                    should_record=not (suppress_passive_image or unbound_group_image),
+                    # Product policy decides whether the passive group is allowed
+                    # into memory.  The route materializes media in the background
+                    # before recording a real handle, so the protocol event itself
+                    # must not be discarded merely because it contains an image.
+                    should_record=True,
                     is_group=True,
                     target_id=group_id,
                     user_id=user_id,
@@ -1024,6 +1016,7 @@ class NapCatQQGateway:
                     source_message_id=str(event.get("message_id") or "").strip(),
                     mentioned_bot=mentions_bot,
                     mentions=mentions,
+                    forward_refs=inbound.forwards,
                 )
             group_reason = str(trigger.reason or "group")
 
@@ -1047,6 +1040,7 @@ class NapCatQQGateway:
             source_message_id=str(event.get("message_id") or "").strip(),
             mentioned_bot=mentions_bot,
             mentions=mentions,
+            forward_refs=inbound.forwards,
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,
@@ -2137,7 +2131,11 @@ class NapCatQQGateway:
 
     def parse_mface_config_command(self, message: str) -> str | None:
         text = self._normalize_character_command_text(message)
-        text = re.sub(r"\[(?:图片|表情|文件|语音)\]", "", text).strip()
+        text = re.sub(
+            r"\[(?:图片|表情|文件|语音|QQ系统表情[^\]]*|QQ商城表情[^\]]*)\]",
+            "",
+            text,
+        ).strip()
         if not text:
             return None
         match = QQ_MFACE_CONFIG_COMMAND_RE.fullmatch(text)
@@ -2667,6 +2665,86 @@ class NapCatQQGateway:
         """Compatibility adapter for callers that only consumed quote attachments."""
         return self.resolve_quoted_message_evidence(event, context=context)
 
+    def resolve_forward_message_evidence(
+        self,
+        event: dict[str, Any],
+        *,
+        context: QQMessageContext,
+    ) -> dict[str, Any]:
+        """Resolve every merged-forward reference through channelcore.
+
+        Node text is safe product evidence.  Attachment locators remain internal
+        inputs for the existing materialization boundary and must not be logged.
+        """
+
+        inbound_result = normalize_inbound_event(
+            event,
+            bot_account_id=self.bot_qq,
+            wake_words=self._wake_words,
+        )
+        inbound = inbound_result.message
+        if inbound is None:
+            return {
+                "ok": False,
+                "status": "invalid_event",
+                "forwards": [],
+                "attachments": [],
+            }
+        if not inbound.forwards:
+            return {
+                "ok": True,
+                "status": "not_forward",
+                "forwards": [],
+                "attachments": [],
+            }
+
+        projected: list[dict[str, Any]] = []
+        attachments: list[dict[str, Any]] = []
+        resolved_count = 0
+        for forward_ref in inbound.forwards:
+            result = resolve_onebot_forward_message(
+                inbound,
+                forward_ref,
+                call_action=self._call_onebot_action,
+                timeout_seconds=8.0,
+            )
+            entry: dict[str, Any] = {
+                "forward_id": forward_ref.forward_id,
+                "ok": bool(result.ok),
+                "status": str(result.status or ""),
+                "nodes": [],
+            }
+            if result.reason:
+                entry["reason"] = result.reason
+            if result.ok and result.message is not None:
+                resolved_count += 1
+                for node in result.message.nodes:
+                    node_attachments = self._legacy_attachments(node.attachments)
+                    attachments.extend(node_attachments)
+                    entry["nodes"].append(
+                        {
+                            "index": node.index,
+                            "actor_id": node.actor.id,
+                            "actor_label": node.actor.display_name,
+                            "text": node.text,
+                            "timestamp": node.timestamp,
+                            "message_id": node.message_id,
+                            "attachment_count": len(node_attachments),
+                        }
+                    )
+                entry["node_count"] = len(result.message.nodes)
+            projected.append(entry)
+
+        overall_status = "resolved" if resolved_count == len(projected) else "partial" if resolved_count else "unavailable"
+        return {
+            "ok": resolved_count == len(projected),
+            "status": overall_status,
+            "forward_count": len(projected),
+            "resolved_count": resolved_count,
+            "forwards": projected,
+            "attachments": attachments,
+        }
+
     def _call_onebot_action(
         self,
         action: str,
@@ -2759,7 +2837,14 @@ class NapCatQQGateway:
                 "segment_index": attachment.segment_index,
             }
             metadata = attachment.metadata_dict()
-            for key in ("quoted_message_id", "sender_id", "sender_label", "group_id"):
+            for key in (
+                "quoted_message_id",
+                "forward_id",
+                "forward_node_index",
+                "sender_id",
+                "sender_label",
+                "group_id",
+            ):
                 value = str(metadata.get(key) or "").strip()
                 if value:
                     item[key] = value
