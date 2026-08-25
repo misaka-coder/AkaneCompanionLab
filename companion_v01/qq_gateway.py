@@ -181,6 +181,10 @@ QQ_REPLY_MODE_SWITCH_COMMANDS = {
 QQ_GROUP_VISION_ENABLE_COMMAND = "识图开"
 QQ_GROUP_VISION_DISABLE_COMMAND = "识图关"
 QQ_GROUP_EMOTION_COMMAND_RE = re.compile(r"^[/／]?emotion(?:\s+(on|off|status|开启|关闭|状态))?$", re.IGNORECASE)
+QQ_GROUP_ATTENTION_COMMAND_RE = re.compile(
+    r"^[/／]?listen(?:\s+(off|engaged|adaptive|status|关闭|活跃|自然|状态))?$",
+    re.IGNORECASE,
+)
 QQ_CHAT_MODEL_LIST_COMMANDS = {
     "模型列表",
     "可用模型",
@@ -319,6 +323,7 @@ class QQMessageContext:
     attachments: list[dict[str, Any]] | None = None
     source_message_id: str = ""
     mentioned_bot: bool = False
+    addressed_to_assistant: bool = False
     mentions: tuple[MentionRef, ...] = ()
     forward_refs: tuple[ForwardRef, ...] = ()
 
@@ -365,7 +370,7 @@ class QQMessageContext:
             for mention in self.mentions
             if str(mention.target_id or "").strip()
         ]
-        addressed_to_assistant = bool(self.should_respond)
+        addressed_to_assistant = bool(self.addressed_to_assistant)
         primary_target = (
             {"actor_id": "assistant", "display_name": ""}
             if addressed_to_assistant
@@ -471,6 +476,8 @@ class NapCatQQGateway:
         self._group_vision_lock = threading.RLock()
         self.group_emotion_overrides: dict[str, bool] = {}
         self._group_emotion_lock = threading.RLock()
+        self.group_attention_mode_overrides: dict[str, str] = {}
+        self._group_attention_mode_lock = threading.RLock()
         self.emotion_mface_state: dict[str, dict[str, Any]] = {}
         self._emotion_mface_lock = threading.RLock()
         self.emotion_image_state: dict[str, dict[str, Any]] = {}
@@ -547,6 +554,17 @@ class NapCatQQGateway:
         with self._group_emotion_lock:
             self.group_emotion_overrides = group_emotion_overrides
 
+        group_attention_modes: dict[str, str] = {}
+        raw_group_attention_modes = payload.get("group_attention_mode_overrides")
+        if isinstance(raw_group_attention_modes, dict):
+            for raw_group_id, raw_mode in raw_group_attention_modes.items():
+                group_id = self._safe_int(raw_group_id)
+                mode = str(raw_mode or "").strip().lower()
+                if group_id > 0 and mode in {"off", "engaged", "adaptive"}:
+                    group_attention_modes[str(group_id)] = mode
+        with self._group_attention_mode_lock:
+            self.group_attention_mode_overrides = group_attention_modes
+
     def _persist_gateway_state(self) -> bool:
         if self._state_path is None:
             self._state_error = ""
@@ -562,6 +580,8 @@ class NapCatQQGateway:
                 group_vision_overrides = dict(self.group_vision_overrides)
             with self._group_emotion_lock:
                 group_emotion_overrides = dict(self.group_emotion_overrides)
+            with self._group_attention_mode_lock:
+                group_attention_mode_overrides = dict(self.group_attention_mode_overrides)
             payload = {
                 "schema_version": QQ_GATEWAY_STATE_SCHEMA_VERSION,
                 "character_pack_overrides": character_overrides,
@@ -569,6 +589,7 @@ class NapCatQQGateway:
                 "chat_model_overrides": chat_model_overrides,
                 "group_vision_overrides": group_vision_overrides,
                 "group_emotion_overrides": group_emotion_overrides,
+                "group_attention_mode_overrides": group_attention_mode_overrides,
                 "updated_at": int(time.time()),
             }
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,6 +627,9 @@ class NapCatQQGateway:
     def _persist_group_emotion_overrides(self) -> bool:
         return self._persist_gateway_state()
 
+    def _persist_group_attention_mode_overrides(self) -> bool:
+        return self._persist_gateway_state()
+
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.bridge_enabled,
@@ -626,6 +650,7 @@ class NapCatQQGateway:
             "disabled_group_emotion_count": sum(
                 1 for enabled in self.group_emotion_overrides.values() if enabled is False
             ),
+            "group_attention_mode_override_count": len(self.group_attention_mode_overrides),
             "state_persistence_enabled": self._state_path is not None,
             "state_status": "error"
             if self._state_error
@@ -901,6 +926,85 @@ class NapCatQQGateway:
             "state_persisted": state_persisted,
         }
 
+    def resolve_group_attention_mode(self, group_id: Any, *, default: str = "engaged") -> str:
+        normalized_default = str(default or "engaged").strip().lower()
+        if normalized_default not in {"off", "engaged", "adaptive"}:
+            normalized_default = "engaged"
+        normalized_group_id = self._safe_int(group_id)
+        if normalized_group_id <= 0:
+            return normalized_default
+        with self._group_attention_mode_lock:
+            return self.group_attention_mode_overrides.get(str(normalized_group_id), normalized_default)
+
+    def set_group_attention_mode(self, group_id: Any, mode: str, *, default: str = "engaged") -> bool:
+        normalized_group_id = self._safe_int(group_id)
+        normalized_mode = str(mode or "").strip().lower()
+        normalized_default = str(default or "engaged").strip().lower()
+        if normalized_group_id <= 0 or normalized_mode not in {"off", "engaged", "adaptive"}:
+            return False
+        with self._group_attention_mode_lock:
+            if normalized_mode == normalized_default:
+                self.group_attention_mode_overrides.pop(str(normalized_group_id), None)
+            else:
+                self.group_attention_mode_overrides[str(normalized_group_id)] = normalized_mode
+        return self._persist_group_attention_mode_overrides()
+
+    def parse_group_attention_command(self, message: str) -> dict[str, str] | None:
+        text = self._normalize_character_command_text(message)
+        match = QQ_GROUP_ATTENTION_COMMAND_RE.fullmatch(text)
+        if not match:
+            return None
+        action = str(match.group(1) or "status").lower()
+        return {"action": {"关闭": "off", "活跃": "engaged", "自然": "adaptive", "状态": "status"}.get(action, action)}
+
+    def handle_group_attention_command(
+        self,
+        context: QQMessageContext,
+        *,
+        sender_role: str = "",
+        default_mode: str = "engaged",
+    ) -> dict[str, Any] | None:
+        command = self.parse_group_attention_command(context.clean_message)
+        if command is None:
+            return None
+        if not context.is_group or context.group_id <= 0:
+            return {"handled": True, "ok": False, "status": "group_only", "reply": "请在群内设置注意力模式。"}
+        current = self.resolve_group_attention_mode(context.group_id, default=default_mode)
+        action = str(command.get("action") or "status")
+        if action == "status":
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": f"本群注意力模式为 {current}。直接 @、唤醒词和回复 Akane 不受该模式影响。",
+                "attention_mode": current,
+            }
+        role = str(sender_role or "").strip().lower()
+        is_master = bool(self.master_qq) and str(context.user_id) == self.master_qq
+        if role not in {"owner", "admin"} and not is_master:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有群主、群管理员或 Akane 主账号可以修改本群注意力模式。",
+                "attention_mode": current,
+            }
+        state_persisted = self.set_group_attention_mode(context.group_id, action, default=default_mode)
+        descriptions = {
+            "off": "普通消息不触发注意力判断",
+            "engaged": "仅在 Akane 刚参与后的活跃窗口内判断普通消息",
+            "adaptive": "活跃窗口外也允许低频环境观察",
+        }
+        reply = f"本群注意力模式已设为 {action}：{descriptions[action]}。"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "updated",
+            "reply": self._append_state_persistence_warning(reply, state_persisted),
+            "attention_mode": action,
+            "state_persisted": state_persisted,
+        }
+
     def build_message_context(self, event: dict[str, Any]) -> QQMessageContext:
         if str(event.get("post_type") or "").strip().lower() != "message":
             return self.build_notice_context(event)
@@ -959,6 +1063,7 @@ class NapCatQQGateway:
 
         shell_permission_command = self.parse_shell_permission_command(clean_message)
         group_emotion_command = self.parse_group_emotion_command(clean_message)
+        group_attention_command = self.parse_group_attention_command(clean_message)
         group_reason = ""
         if is_group and shell_permission_command is not None:
             # Explicit control-plane commands must reach the authorization
@@ -968,6 +1073,8 @@ class NapCatQQGateway:
             # Emotion delivery is a group control-plane setting too; it must
             # not require addressing the bot or wake-word admission.
             group_reason = "qq_group_emotion_command"
+        elif is_group and group_attention_command is not None:
+            group_reason = "qq_group_attention_command"
         elif is_group:
             trigger = self._group_trigger.evaluate(
                 group_id=str(group_id),
@@ -1037,6 +1144,7 @@ class NapCatQQGateway:
             attachments=attachments,
             source_message_id=str(event.get("message_id") or "").strip(),
             mentioned_bot=mentions_bot,
+            addressed_to_assistant=bool(is_private or group_reason),
             mentions=mentions,
             forward_refs=inbound.forwards,
             extra_context=self.build_extra_context(
@@ -1095,6 +1203,7 @@ class NapCatQQGateway:
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
             attachments=[],
+            addressed_to_assistant=True,
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,

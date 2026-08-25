@@ -352,6 +352,15 @@ class Settings(BaseSettings):
     QQ_GROUP_PASSIVE_MEMORY_MODE: str = "all"
     # allowlist/denylist 使用的群号，支持逗号、分号或空白分隔
     QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS: str = ""
+    # 普通群消息触发模型注意力的默认模式：off/engaged/adaptive。
+    # 直接 @、唤醒词和控制指令不受此开关影响。
+    QQ_GROUP_ATTENTION_MODE: str = "engaged"
+    # Akane 成功参与群聊后，普通消息可继续触发注意力判断的时长。
+    QQ_GROUP_ATTENTION_TTL_SECONDS: int = 120
+    # 普通消息首次到达后等待多久发起一次注意力判断；后续消息不重置期限。
+    QQ_GROUP_ATTENTION_DELAY_SECONDS: float = 10.0
+    # adaptive 模式在非活跃期做过一次环境观察后，至少等待多久才允许下一次。
+    QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS: int = 60
     # 群聊对话跟随 TTL（秒），超时后新卡片
     QQ_GROUP_FOLLOW_TTL_SECONDS: int = 180
     # 群附件缓冲 TTL（秒），等待多张图片到齐
@@ -596,6 +605,10 @@ def _apply_settings(s: Settings) -> None:
         QQ_GROUP_PLAINTEXT_ENABLED, \
         QQ_GROUP_PASSIVE_MEMORY_MODE, \
         QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS, \
+        QQ_GROUP_ATTENTION_MODE, \
+        QQ_GROUP_ATTENTION_TTL_SECONDS, \
+        QQ_GROUP_ATTENTION_DELAY_SECONDS, \
+        QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS, \
         QQ_GROUP_FOLLOW_TTL_SECONDS, \
         QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS
     global QQ_ATTACHMENT_DEBOUNCE_SECONDS, QQ_ATTACHMENT_READY_WAIT_SECONDS, QQ_REPLY_SEGMENT_DELAY_SECONDS
@@ -825,6 +838,21 @@ def _apply_settings(s: Settings) -> None:
     if QQ_GROUP_PASSIVE_MEMORY_MODE not in {"all", "denylist", "off"}:
         QQ_GROUP_PASSIVE_MEMORY_MODE = "all"
     QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(s.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS or "").strip()
+    raw_group_attention_mode = str(s.QQ_GROUP_ATTENTION_MODE or "engaged").strip().lower()
+    QQ_GROUP_ATTENTION_MODE = (
+        raw_group_attention_mode
+        if raw_group_attention_mode in {"off", "engaged", "adaptive"}
+        else "engaged"
+    )
+    QQ_GROUP_ATTENTION_TTL_SECONDS = max(10, int(s.QQ_GROUP_ATTENTION_TTL_SECONDS))
+    QQ_GROUP_ATTENTION_DELAY_SECONDS = max(
+        0.0,
+        min(60.0, float(s.QQ_GROUP_ATTENTION_DELAY_SECONDS)),
+    )
+    QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS = max(
+        10,
+        int(s.QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS),
+    )
     QQ_GROUP_FOLLOW_TTL_SECONDS = max(20, int(s.QQ_GROUP_FOLLOW_TTL_SECONDS))
     QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS = max(
         20,

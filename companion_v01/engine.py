@@ -3195,7 +3195,30 @@ class AkaneMemoryEngine:
         persist_requested: bool,
         final_output: dict[str, Any],
     ) -> bool:
-        return bool(persist_requested) and not bool(final_output.get("_transient_final_failure"))
+        return (
+            bool(persist_requested)
+            and not bool(final_output.get("_transient_final_failure"))
+            and not bool(final_output.get("_qq_attention_silent"))
+        )
+
+    @staticmethod
+    def _is_qq_optional_silent_result(raw_result: Any, *, prompt_scope: str) -> bool:
+        if str(prompt_scope or "").strip().lower() not in {"qq_attention", "qq_optional_reply"}:
+            return False
+        if not isinstance(raw_result, dict) or set(raw_result) != {"attention"}:
+            return False
+        return str(raw_result.get("attention") or "").strip().lower() == "silent"
+
+    @staticmethod
+    def _mark_qq_optional_silent(normalized: dict[str, Any]) -> dict[str, Any]:
+        result = dict(normalized or {})
+        result["speech"] = ""
+        result["speech_segments"] = []
+        result["tool_call"] = None
+        result.pop("_native_tool_call", None)
+        result.pop("_native_tool_calls", None)
+        result["_qq_attention_silent"] = True
+        return result
 
     @staticmethod
     def _pop_user_memory_source_id(
@@ -3843,9 +3866,8 @@ class AkaneMemoryEngine:
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
-        prompt_scope = (
-            "plugin_proactive" if str(payload.get("turn_kind") or "").strip().lower() == "plugin_proactive" else ""
-        )
+        turn_kind = str(payload.get("turn_kind") or "").strip().lower()
+        prompt_scope = turn_kind if turn_kind in {"plugin_proactive", "qq_attention", "qq_optional_reply"} else ""
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
         turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
         if prompt_scope != "plugin_proactive":
@@ -5176,6 +5198,11 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            if self._is_qq_optional_silent_result(
+                result,
+                prompt_scope=str(generation_context.get("prompt_scope") or ""),
+            ) and not list(post_user_turns or []):
+                return self._mark_qq_optional_silent(normalized)
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
             self._attach_nonfatal_memcore_failure(
@@ -6065,6 +6092,14 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            if self._is_qq_optional_silent_result(
+                getattr(stream_result, "parsed", None),
+                prompt_scope=str(generation_context.get("prompt_scope") or ""),
+            ) and not list(post_user_turns or []):
+                normalized = self._mark_qq_optional_silent(normalized)
+                unrecovered_stream_error = ""
+                unrecovered_stream_partial = {}
+                break
             self._attach_memory_annotation_truth(
                 normalized,
                 result=stream_result,

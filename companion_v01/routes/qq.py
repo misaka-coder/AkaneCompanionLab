@@ -33,6 +33,7 @@ from ..tts_provider_runtime import (
 )
 from ..runtime_settings import runtime_setting
 from ..turn_coordination import SessionWorkItem, SessionWorkQueue, TurnCoordinator
+from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -97,6 +98,19 @@ def _resolve_group_passive_memory_policy(config_module: Any, group_id: Any) -> d
     else:
         enabled = True
     return {"enabled": enabled, "mode": mode}
+
+
+def _qq_event_has_reply_reference(event: dict[str, Any]) -> bool:
+    message = event.get("message")
+    if isinstance(message, list):
+        return any(
+            isinstance(segment, dict)
+            and str(segment.get("type") or "").strip().lower() == "reply"
+            and str((segment.get("data") or {}).get("id") or "").strip()
+            for segment in message
+        )
+    raw = str(event.get("raw_message") or message or "")
+    return bool(re.search(r"\[CQ:reply,[^\]]*\bid=", raw, flags=re.IGNORECASE))
 
 
 QQ_REPLY_OBJECT_TERMS = ("工作台", "文件", "结果", "成果", "产物", "音频", "视频", "人声", "伴奏", "任务")
@@ -1496,7 +1510,7 @@ def _process_qq_turn_streaming(
     # a successfully completed LLM turn into an apparent system crash.
     final_reply_messages = (
         []
-        if bool(frame.get("_transient_final_failure"))
+        if bool(frame.get("_transient_final_failure") or frame.get("_qq_attention_silent"))
         else qq_gateway.render_reply_messages(frame)
     )
     reply_messages = final_reply_messages
@@ -1527,7 +1541,7 @@ def _process_qq_turn_streaming(
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
-    if not bool(frame.get("_turn_stopped")) and (
+    if not bool(frame.get("_turn_stopped") or frame.get("_qq_attention_silent")) and (
         (not visible_text_delivered and not visible_file_delivered)
         or (not final_frame_received and not visible_file_delivered)
         or (
@@ -1587,7 +1601,7 @@ def _process_qq_turn_streaming(
     emotion_started_at = time.perf_counter()
     if (
         send_result.get("ok")
-        and not bool(frame.get("_transient_final_failure"))
+        and not bool(frame.get("_transient_final_failure") or frame.get("_qq_attention_silent"))
         and (
         visible_text_delivered
         or visible_file_delivered
@@ -1791,6 +1805,8 @@ def build_qq_router(
     qq_route_base = _normalize_qq_route_base(route_base)
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
     turn_coordinator = turn_coordinator or TurnCoordinator()
+    group_attention = QQGroupAttentionState()
+    attention_latest: dict[str, tuple[Any, dict[str, Any]]] = {}
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1801,6 +1817,151 @@ def build_qq_router(
         profile_user_id = str(getattr(context, "profile_user_id", "") or "").strip()
         session_id = str(getattr(context, "session_id", "") or "").strip()
         return f"{profile_user_id}\0{session_id}"
+
+    def _group_attention_mode(context: Any) -> str:
+        default_mode = str(getattr(config_module, "QQ_GROUP_ATTENTION_MODE", "engaged") or "engaged")
+        resolver = getattr(qq_gateway, "resolve_group_attention_mode", None)
+        if callable(resolver):
+            return str(resolver(getattr(context, "group_id", 0), default=default_mode) or default_mode)
+        return QQGroupAttentionState.normalize_mode(default_mode)
+
+    def _turn_has_real_visible_delivery(result: Any) -> bool:
+        payload = result if isinstance(result, dict) else {}
+        frame = payload.get("frame") if isinstance(payload.get("frame"), dict) else {}
+        if frame.get("_qq_attention_silent") or frame.get("_transient_final_failure"):
+            return False
+        if list(payload.get("reply_messages") or []):
+            return True
+        file_result = payload.get("file_send_result") if isinstance(payload.get("file_send_result"), dict) else {}
+        return bool(file_result.get("ok")) and int(file_result.get("count") or 0) > 0
+
+    def _mark_group_engaged(context: Any, result: Any) -> None:
+        if not bool(getattr(context, "is_group", False)) or not _turn_has_real_visible_delivery(result):
+            return
+        group_attention.mark_visible_reply(
+            _session_work_key(context),
+            ttl_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_TTL_SECONDS", 120) or 120),
+        )
+
+    def _cancel_group_attention(context: Any) -> None:
+        if not bool(getattr(context, "is_group", False)):
+            return
+        key = _session_work_key(context)
+        group_attention.cancel(key)
+        attention_latest.pop(key, None)
+
+    async def _run_group_attention_ticket(ticket: AttentionTicket) -> None:
+        await asyncio.sleep(max(0.0, ticket.deadline - time.monotonic()))
+        if not group_attention.claim(ticket):
+            return
+        snapshot = attention_latest.pop(ticket.key, None)
+        if snapshot is None:
+            return
+        context, event = snapshot
+        if turn_coordinator.is_busy(context.profile_user_id, context.session_id) or session_work_queue.has_work(
+            ticket.key
+        ):
+            if ticket.reason == "idle_observation":
+                group_attention.mark_idle_observed(
+                    ticket.key,
+                    cooldown_seconds=float(
+                        getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
+                    ),
+                )
+            log_event(
+                "qq_group_attention_skipped",
+                session_id=context.session_id,
+                profile_user_id=context.profile_user_id,
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                reason="session_busy",
+                attention_reason=ticket.reason,
+            )
+            return
+        turn_payload = context.to_turn_payload()
+        turn_payload.update(
+            {
+                "message": "event.group_attention_review",
+                "timestamp": int(time.time()),
+                "turn_kind": "qq_attention",
+                "transient_user_message": True,
+                "message_addressing": {
+                    "mode": "observed",
+                    "trigger": ticket.reason,
+                    "addressed_to_assistant": False,
+                    "explicit_assistant_mention": False,
+                    "primary_target": {},
+                    "mentions": [],
+                },
+            }
+        )
+        for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
+            turn_payload.pop(field, None)
+        observation_note = (
+            "【群聊注意力观察】\n"
+            "response_expectation: optional\n"
+            "刚才的普通群消息已经作为真实 observed 事件写入 MemCore；请根据当前投影中的完整群聊历史，"
+            "自行判断现在是否适合参与。调度器没有另造一份聊天摘要，也不要把 event.group_attention_review "
+            "当成用户对你的请求。若适合参与，按通常 QQ 最终格式回复，speech 会照常流式投递。"
+            "若不适合参与，只输出且必须精确输出 {\"attention\":\"silent\"}。"
+            "一旦调用任何工具，就表示你决定参与，工具完成后必须形成通常的可交付回复。"
+        )
+        turn_payload["extra_context"] = "\n\n".join(
+            part for part in (str(turn_payload.get("extra_context") or "").strip(), observation_note) if part
+        )
+        try:
+            result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
+        except Exception as exc:
+            if ticket.reason == "idle_observation":
+                group_attention.mark_idle_observed(
+                    ticket.key,
+                    cooldown_seconds=float(
+                        getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
+                    ),
+                )
+            logger.exception("qq group attention observation failed")
+            log_event(
+                "qq_group_attention_failed",
+                session_id=context.session_id,
+                profile_user_id=context.profile_user_id,
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                attention_reason=ticket.reason,
+                reason=exc.__class__.__name__,
+            )
+            return
+        if ticket.reason == "idle_observation" and not _turn_has_real_visible_delivery(result):
+            group_attention.mark_idle_observed(
+                ticket.key,
+                cooldown_seconds=float(
+                    getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
+                ),
+            )
+        log_event(
+            "qq_group_attention_completed",
+            session_id=context.session_id,
+            profile_user_id=context.profile_user_id,
+            group_id=int(getattr(context, "group_id", 0) or 0),
+            attention_reason=ticket.reason,
+            visible_reply=_turn_has_real_visible_delivery(result),
+            silent=bool(dict(result.get("frame") or {}).get("_qq_attention_silent")) if isinstance(result, dict) else False,
+        )
+
+    def _schedule_group_attention(context: Any, event: dict[str, Any]) -> dict[str, Any]:
+        if not bool(getattr(context, "is_group", False)):
+            return {"scheduled": False, "reason": "not_group"}
+        key = _session_work_key(context)
+        attention_latest[key] = (context, dict(event))
+        ticket, reason = group_attention.arm(
+            key,
+            mode=_group_attention_mode(context),
+            delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
+        )
+        if ticket is None:
+            attention_latest.pop(key, None)
+            return {"scheduled": False, "reason": reason}
+        if reason != "armed":
+            return {"scheduled": False, "reason": reason}
+        schedule_followup(_run_group_attention_ticket(ticket))
+        return {"scheduled": True, "reason": ticket.reason, "deadline": ticket.deadline}
 
     def _prepare_qq_turn_payload(
         *,
@@ -1912,6 +2073,7 @@ def build_qq_router(
                 delivery_status="sent" if item.get("ok") else "failed",
                 timestamp=int(time.time()),
             )
+        _mark_group_engaged(context, turn_result)
         return turn_result
 
     async def _prepare_passive_qq_record_payload(
@@ -2057,6 +2219,19 @@ def build_qq_router(
                 duration_ms=round(duration_ms, 1),
                 **enrichment_totals,
             )
+            if bool(result_payload.get("ok")):
+                last_item_payload = items[-1].payload if isinstance(items[-1].payload, dict) else {}
+                last_context = last_item_payload.get("context") or context
+                last_event = dict(last_item_payload.get("event") or {})
+                attention_result = _schedule_group_attention(last_context, last_event)
+                log_event(
+                    "qq_group_attention_considered",
+                    session_id=session_id,
+                    profile_user_id=profile_user_id,
+                    group_id=group_id,
+                    scheduled=bool(attention_result.get("scheduled")),
+                    reason=str(attention_result.get("reason") or ""),
+                )
             return
 
         event = dict(first_payload.get("event") or {})
@@ -2446,6 +2621,30 @@ def build_qq_router(
                     )
 
             context = qq_gateway.build_message_context(event)
+            pre_resolved_quote: dict[str, Any] = {}
+            optional_reply = False
+            if (
+                not context.should_respond
+                and bool(getattr(context, "is_group", False))
+                and _qq_event_has_reply_reference(event)
+            ):
+                quoted_resolver = getattr(qq_gateway, "resolve_quoted_message_evidence", None)
+                if callable(quoted_resolver):
+                    resolved_quote = await asyncio.to_thread(quoted_resolver, event, context=context)
+                    pre_resolved_quote = resolved_quote if isinstance(resolved_quote, dict) else {}
+                    quoted_message = (
+                        pre_resolved_quote.get("quoted_message")
+                        if isinstance(pre_resolved_quote.get("quoted_message"), dict)
+                        else {}
+                    )
+                    if bool(pre_resolved_quote.get("ok")) and bool(quoted_message.get("actor_is_bot")):
+                        context = replace(
+                            context,
+                            should_respond=True,
+                            reason="group_reply_to_assistant",
+                            addressed_to_assistant=True,
+                        )
+                        optional_reply = not bool(getattr(context, "mentioned_bot", False))
             if not context.should_respond:
                 if bool(getattr(context, "should_record", False)):
                     passive_memory_policy = _resolve_group_passive_memory_policy(
@@ -2551,6 +2750,11 @@ def build_qq_router(
                         record_status=str(record_payload.get("status") or ""),
                         duration_ms=round(duration_ms, 1),
                     )
+                    attention_result = (
+                        _schedule_group_attention(context, event)
+                        if record_ok
+                        else {"scheduled": False, "reason": "record_failed"}
+                    )
                     return JSONResponse(
                         {
                             "status": "recorded" if record_ok else "record_failed",
@@ -2559,6 +2763,7 @@ def build_qq_router(
                             "profile_user_id": context.profile_user_id,
                             "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
                             "record_result": record_result,
+                            "attention": attention_result,
                         }
                     )
                 runtime_metrics.observe_request(
@@ -2568,9 +2773,19 @@ def build_qq_router(
                 )
                 return JSONResponse({"status": "ignored", "reason": context.reason})
 
+            _cancel_group_attention(context)
+
             _qq_action_note = ""
             _qq_turn_message_override = ""
-            _qq_turn_extra_context_note = ""
+            _qq_turn_extra_context_note = (
+                "【回复 Akane 的群消息】\n"
+                "response_expectation: optional\n"
+                "这条消息引用了你先前的群聊发言，但没有直接 @ 你。请根据引用内容和 MemCore 中的群聊上下文判断"
+                "是否需要继续回应。若需要，按通常 QQ 最终格式回复；若不需要，只输出且必须精确输出 "
+                "{\"attention\":\"silent\"}。一旦调用工具，就表示决定参与，工具完成后必须形成通常的可交付回复。"
+                if optional_reply
+                else ""
+            )
             _qq_native_user_images: list[dict[str, Any]] = []
 
             if context.reason == "qq_poke":
@@ -2712,6 +2927,46 @@ def build_qq_router(
                         "command_ok": command_ok,
                         "emotion_enabled": bool(group_emotion_command_result.get("emotion_enabled")),
                         "state_persisted": group_emotion_command_result.get("state_persisted"),
+                        "session_id": context.session_id,
+                        "profile_user_id": context.profile_user_id,
+                        "send_result": send_result,
+                    }
+                )
+
+            group_attention_command_result = qq_gateway.handle_group_attention_command(
+                context,
+                sender_role=_qq_sender_role(event),
+                default_mode=str(getattr(config_module, "QQ_GROUP_ATTENTION_MODE", "engaged") or "engaged"),
+            )
+            if isinstance(group_attention_command_result, dict):
+                reply = str(group_attention_command_result.get("reply") or "").strip()
+                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                command_ok = bool(group_attention_command_result.get("ok"))
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request(
+                    "qq_napcat_event",
+                    duration_ms=duration_ms,
+                    ok=bool(send_result.get("ok")) and command_ok,
+                )
+                log_event(
+                    "qq_group_attention_command",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    command_status=str(group_attention_command_result.get("status") or ""),
+                    command_ok=command_ok,
+                    attention_mode=str(group_attention_command_result.get("attention_mode") or ""),
+                    state_persisted=group_attention_command_result.get("state_persisted"),
+                    sent=bool(send_result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                )
+                return JSONResponse(
+                    {
+                        "status": "ok" if send_result.get("ok") and command_ok else "send_failed",
+                        "reason": "qq_group_attention_command",
+                        "command_status": str(group_attention_command_result.get("status") or ""),
+                        "command_ok": command_ok,
+                        "attention_mode": str(group_attention_command_result.get("attention_mode") or ""),
+                        "state_persisted": group_attention_command_result.get("state_persisted"),
                         "session_id": context.session_id,
                         "profile_user_id": context.profile_user_id,
                         "send_result": send_result,
@@ -3328,8 +3583,11 @@ def build_qq_router(
             quoted_resolver = getattr(qq_gateway, "resolve_quoted_message_evidence", None)
             if not callable(quoted_resolver):
                 quoted_resolver = qq_gateway.resolve_quoted_attachments
-            quoted_result = await asyncio.to_thread(quoted_resolver, event, context=context)
-            quoted_payload = quoted_result if isinstance(quoted_result, dict) else {}
+            if pre_resolved_quote:
+                quoted_payload = dict(pre_resolved_quote)
+            else:
+                quoted_result = await asyncio.to_thread(quoted_resolver, event, context=context)
+                quoted_payload = quoted_result if isinstance(quoted_result, dict) else {}
             quoted_attachments = [
                 dict(item) for item in list(quoted_payload.get("attachments") or []) if isinstance(item, dict)
             ]
@@ -3557,6 +3815,8 @@ def build_qq_router(
                 action_note=_qq_action_note,
                 extra_context_note=_qq_turn_extra_context_note,
             )
+            if optional_reply:
+                turn_payload["turn_kind"] = "qq_optional_reply"
             if _qq_native_user_images:
                 turn_payload["native_user_images"] = _qq_native_user_images
             if attachment_ids:
