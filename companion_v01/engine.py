@@ -3550,6 +3550,32 @@ class AkaneMemoryEngine:
             "不要声称只能看到摘要，也不要把旧图片、角色立绘或历史附件当成本轮图片。"
         )
 
+    def _steering_native_user_images(
+        self,
+        steers: list[Any],
+        *,
+        applied_source_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        applied = {
+            str(source_id or "").strip()
+            for source_id in list(applied_source_ids or [])
+            if str(source_id or "").strip()
+        }
+        raw_images: list[dict[str, Any]] = []
+        # When several inputs coalesce at one safe boundary, the newest image is
+        # the most likely correction to the active task and must not be pushed
+        # out by the five-image provider cap.
+        for steer in reversed(list(steers or [])):
+            source_id = str(getattr(steer, "source_id", "") or "").strip()
+            if applied and source_id not in applied:
+                continue
+            raw_images.extend(
+                dict(item)
+                for item in list(getattr(steer, "native_user_images", ()) or [])
+                if isinstance(item, dict)
+            )
+        return self._merge_model_image_inputs([], raw_images)
+
     def _build_desktop_screen_frame_prompt_context(self, frames: list[dict[str, Any]]) -> str:
         from .engine_services.turn_context import build_desktop_screen_frame_prompt_context as _fn
 
@@ -3681,14 +3707,29 @@ class AkaneMemoryEngine:
           tool feedback);
         - image loading failures produce no upgrade and the batch never guesses.
         """
+        tool_images = self._merge_tool_model_image_inputs([], list(tool_results or []))
+        return self._upgrade_turn_execution_target_for_images(
+            current_target=current_target,
+            model_image_inputs=tool_images,
+            chat_model_override=chat_model_override,
+            tool_image_upgrade=True,
+        )
+
+    def _upgrade_turn_execution_target_for_images(
+        self,
+        *,
+        current_target: Any,
+        model_image_inputs: list[dict[str, Any]],
+        chat_model_override: str = "",
+        tool_image_upgrade: bool = False,
+    ) -> Any:
         if current_target is not None and str(getattr(current_target, "role", "") or "") == "vision":
             return current_target
-        tool_images = self._merge_tool_model_image_inputs([], list(tool_results or []))
-        if not tool_images:
+        if not self._merge_model_image_inputs([], model_image_inputs):
             return current_target
         return self._resolve_turn_execution_target(
-            has_real_images=False,
-            tool_image_upgrade=True,
+            has_real_images=not tool_image_upgrade,
+            tool_image_upgrade=tool_image_upgrade,
             chat_model_override=chat_model_override,
         )
 
@@ -4143,6 +4184,21 @@ class AkaneMemoryEngine:
                         "failed_count": len(failed_source_ids),
                     }
                 if applied_source_ids:
+                    steer_images = self._steering_native_user_images(
+                        pending_steers,
+                        applied_source_ids=applied_source_ids,
+                    )
+                    if steer_images:
+                        turn_user_images = self._merge_model_image_inputs(steer_images, turn_user_images)
+                        turn_execution_target = self._upgrade_turn_execution_target_for_images(
+                            current_target=turn_execution_target,
+                            model_image_inputs=steer_images,
+                            chat_model_override=chat_model_override,
+                        )
+                        turn_extra_user_context = self._merge_extra_user_context(
+                            turn_extra_user_context,
+                            self._build_native_user_image_prompt_context(steer_images),
+                        )
                     invalid_tool_decision_attempts = 0
                     # A new user instruction starts a fresh action allowance
                     # inside the same durable turn.  Repeating a read/test that
@@ -7388,20 +7444,13 @@ class AkaneMemoryEngine:
         return current_events, shaped_followup, workspace_followup
 
     @staticmethod
-    def _merge_tool_model_image_inputs(
+    def _merge_model_image_inputs(
         current_images: list[dict[str, Any]],
-        tool_results: list[ToolExecutionResult],
+        additional_images: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for raw in [
-            *list(current_images or []),
-            *[
-                item
-                for result in list(tool_results or [])
-                for item in list(getattr(result, "model_image_inputs", None) or [])
-            ],
-        ]:
+        for raw in [*list(current_images or []), *list(additional_images or [])]:
             if not isinstance(raw, dict):
                 continue
             data_url = str(raw.get("data_url") or "")
@@ -7418,6 +7467,20 @@ class AkaneMemoryEngine:
             if len(merged) >= 5:
                 break
         return merged
+
+    @staticmethod
+    def _merge_tool_model_image_inputs(
+        current_images: list[dict[str, Any]],
+        tool_results: list[ToolExecutionResult],
+    ) -> list[dict[str, Any]]:
+        return AkaneMemoryEngine._merge_model_image_inputs(
+            current_images,
+            [
+                item
+                for result in list(tool_results or [])
+                for item in list(getattr(result, "model_image_inputs", None) or [])
+            ],
+        )
 
     def _append_tool_history_batch(
         self,

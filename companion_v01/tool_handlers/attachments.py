@@ -160,6 +160,8 @@ class LoadMaterialToolHandler(BaseToolHandler):
             '格式为 {"type":"load_material","targets":["img_001","gen_002"],'
             '"purpose":"重新比较细节"}。'
             "它会把原图通过模型原生多模态通道送入下一轮；当前消息已经带图、或摘要足够时不必调用。"
+            "purpose 可省略，只用于写中性的核验目标，不是图片内容证据；不得在其中预设人物、数字或结论，"
+            "实际像素和可见上下文始终优先。"
             "只能填写工作区 handle，不能填写路径、URL 或 base64。"
         )
 

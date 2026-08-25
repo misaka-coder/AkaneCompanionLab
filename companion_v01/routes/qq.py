@@ -2190,6 +2190,11 @@ def build_qq_router(
             timestamp=int(event.get("time") or time.time()),
             actor_display_name=str(getattr(context, "sender_label", "") or ""),
             channel="qq",
+            native_user_images=[
+                dict(item)
+                for item in list(turn_payload.get("native_user_images") or [])[:5]
+                if isinstance(item, dict)
+            ],
         )
         if steer_result.get("ok"):
             return {

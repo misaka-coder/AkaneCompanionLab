@@ -895,7 +895,7 @@ LOAD_MATERIAL_TOOL_SPEC = CapabilityToolSpec(
         "additionalProperties": False,
         "properties": {
             "targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "minItems": 1, "maxItems": 5, "description": "Current-session image handles such as img_001 or gen_002."},
-            "purpose": {"type": "string", "maxLength": 240, "description": "Short reason the original pixels are needed."},
+            "purpose": {"type": "string", "maxLength": 240, "description": "Optional neutral verification goal. It is not image evidence and must not presuppose people, numbers, or conclusions."},
         },
         "required": ["targets"],
     },

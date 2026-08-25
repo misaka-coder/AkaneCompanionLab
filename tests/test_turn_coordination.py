@@ -38,6 +38,30 @@ class TurnCoordinatorTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_same_actor_steer_carries_ready_native_images_without_resolving_again(self) -> None:
+        async def exercise() -> None:
+            coordinator = TurnCoordinator()
+            ready_image = {
+                "attachment_id": "attachment-1",
+                "attachment_handle": "img_001",
+                "data_url": "data:image/png;base64,cGl4ZWxz",
+            }
+            async with coordinator.hold("profile", "session", actor_id="qq:1", channel="qq") as token:
+                accepted = coordinator.offer_steer(
+                    profile_user_id="profile",
+                    session_id="session",
+                    actor_id="qq:1",
+                    content="再看这张图",
+                    native_user_images=[ready_image, {"data_url": "https://not-an-image.invalid"}],
+                )
+                self.assertTrue(accepted["ok"])
+                self.assertEqual(accepted["native_image_count"], 1)
+                steer = coordinator.drain(token)["steers"][0]
+                self.assertEqual(steer.native_user_images, (ready_image,))
+                self.assertIsNot(steer.native_user_images[0], ready_image)
+
+        asyncio.run(exercise())
+
     def test_different_actor_cannot_hijack_active_group_turn(self) -> None:
         async def exercise() -> None:
             coordinator = TurnCoordinator()

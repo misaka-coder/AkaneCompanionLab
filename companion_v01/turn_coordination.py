@@ -29,6 +29,7 @@ class SteeringInput:
     actor_id: str
     actor_display_name: str = ""
     channel: str = ""
+    native_user_images: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(slots=True)
@@ -179,6 +180,7 @@ class TurnCoordinator:
         timestamp: int | None = None,
         actor_display_name: Any = "",
         channel: Any = "",
+        native_user_images: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         actor = str(actor_id or "").strip()
@@ -193,6 +195,11 @@ class TurnCoordinator:
                 return {"ok": False, "status": "finalizing", "reason": "active_turn_finalizing"}
             if active.actor_id != actor:
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
+            safe_images = tuple(
+                dict(raw)
+                for raw in list(native_user_images or [])[:5]
+                if isinstance(raw, dict) and str(raw.get("data_url") or "").startswith("data:image/")
+            )
             item = SteeringInput(
                 source_id=f"steer_{uuid.uuid4().hex}",
                 content=text,
@@ -200,6 +207,7 @@ class TurnCoordinator:
                 actor_id=actor,
                 actor_display_name=str(actor_display_name or "").strip(),
                 channel=str(channel or "").strip(),
+                native_user_images=safe_images,
             )
             active.pending.append(item)
             return {
@@ -209,6 +217,7 @@ class TurnCoordinator:
                 "turn_token": active.token,
                 "source_id": item.source_id,
                 "pending_count": len(active.pending),
+                "native_image_count": len(safe_images),
             }
 
     def request_stop(

@@ -2043,6 +2043,60 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
         mocked_post.assert_called_once()
 
+        steer_calls: list[dict[str, Any]] = []
+
+        class ActiveTurnCoordinator:
+            @staticmethod
+            def offer_steer(**kwargs):
+                steer_calls.append(dict(kwargs))
+                return {"ok": True, "status": "accepted", "pending_count": 1}
+
+            @staticmethod
+            def request_stop(**_kwargs):
+                return {"ok": False, "status": "running"}
+
+        steer_app = FastAPI()
+        steer_app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=NapCatQQGateway(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _event_name, **_kwargs: None,
+                turn_coordinator=ActiveTurnCoordinator(),
+            )
+        )
+        steered = TestClient(steer_app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "route-image-native-steer-1",
+                "time": int(time.time()),
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "native-steer.png",
+                            "url": "http://127.0.0.1:3001/native-steer.png",
+                        },
+                    }
+                ],
+            },
+        )
+        self.assertEqual(steered.status_code, 200)
+        self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
+        self.assertEqual(len(steer_calls), 1)
+        self.assertEqual(steer_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertEqual(len(process_calls), 1, "accepted image steer must not start a second engine turn")
+
     def test_qq_group_vision_switch_blocks_active_vision_but_keeps_passive_media(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()

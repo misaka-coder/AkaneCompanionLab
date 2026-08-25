@@ -353,6 +353,78 @@ class TurnMainlineContractTests(unittest.TestCase):
             harness.script.generation_kwargs[0]["post_user_turns"] or [],
         )
 
+    def test_image_steer_upgrades_next_existing_round_without_load_material_or_extra_round(self) -> None:
+        harness = _Harness([
+            _speech_output("我先按文字处理。"),
+            _speech_output("我已经直接看到了你追加的原图。"),
+        ])
+        resolved_targets: list[dict[str, object]] = []
+
+        def resolve_target(**kwargs: object) -> object:
+            resolved_targets.append(dict(kwargs))
+            role = "vision" if kwargs.get("has_real_images") or kwargs.get("tool_image_upgrade") else "chat"
+            return SimpleNamespace(role=role, protocol="openai_chat")
+
+        harness.engine._resolve_turn_execution_target = resolve_target
+
+        class Coordinator:
+            drained = False
+
+            def drain(self, _token: str) -> dict[str, object]:
+                if self.drained:
+                    return {"ok": True, "stop_requested": False, "steers": []}
+                self.drained = True
+                return {
+                    "ok": True,
+                    "stop_requested": False,
+                    "steers": [
+                        SteeringInput(
+                            source_id="steer-image-1",
+                            content="再看这张图，按图里的内容判断",
+                            timestamp=1_784_016_011,
+                            actor_id="qq:1",
+                            actor_display_name="伙伴",
+                            channel="qq",
+                            native_user_images=(
+                                {
+                                    "attachment_id": "attachment-image-1",
+                                    "attachment_handle": "img_001",
+                                    "data_url": "data:image/png;base64,cGl4ZWxz",
+                                },
+                            ),
+                        )
+                    ],
+                }
+
+            def begin_finalization(self, _token: str) -> dict[str, object]:
+                return {"ok": True, "status": "finalizing", "stop_requested": False, "steers": []}
+
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(_turn_control_id="control-image-steer"))
+
+        final = next(event["payload"] for event in events if event.get("type") == "final")
+        self.assertEqual(final["speech"], "我已经直接看到了你追加的原图。")
+        self.assertEqual(len(harness.script.generation_kwargs), 2)
+        self.assertEqual(harness.script.generation_kwargs[0]["execution_target"].role, "chat")
+        self.assertEqual(harness.script.generation_kwargs[1]["execution_target"].role, "vision")
+        self.assertEqual(
+            harness.script.generation_kwargs[1]["user_images"][0]["attachment_handle"],
+            "img_001",
+        )
+        self.assertIn("provider 原生多模态通道", harness.script.generation_kwargs[1]["extra_user_context"])
+        self.assertEqual([item.get("type") for item in harness.script.generation_calls], [None, None])
+        self.assertEqual(
+            resolved_targets,
+            [
+                {"has_real_images": False, "chat_model_override": ""},
+                {
+                    "has_real_images": True,
+                    "tool_image_upgrade": False,
+                    "chat_model_override": "",
+                },
+            ],
+        )
+
     def test_stop_request_aborts_open_turn_without_delivering_stale_final(self) -> None:
         harness = _Harness([_speech_output("这条不应该交付。")])
 
