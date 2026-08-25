@@ -712,6 +712,73 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_attention_read_only_projection_does_not_rewrite_closed_source_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                recorded = manager.append_standalone_message(
+                    {"source_id": "observed-source", "content": "群里刚才的新消息", "timestamp": 100},
+                    role="user",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    observed=True,
+                )
+                engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                engine.llm = SimpleNamespace(
+                    supports_request_observer=True,
+                    chat_provider_protocol=lambda **_kwargs: "openai_chat",
+                )
+                engine.memcore_manager = manager
+                with patch.object(config, "MEMORY_BACKEND", "memcore"):
+                    projection = response_builder._build_memcore_provider_history(
+                        engine,
+                        profile_user_id="group",
+                        session_id="group",
+                        character_pack_id="char",
+                        current_source_id="observed-source",
+                        chat_model_override="",
+                    )
+                observer = engine._build_memcore_request_observer(
+                    generation_context={"memcore_projection_read": projection},
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    request_projection_state={"record_request_projection": False},
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(recorded["ok"], recorded)
+        self.assertTrue(projection["ok"], projection)
+        self.assertTrue(projection["current_source_visible"])
+        self.assertIn("群里刚才的新消息", repr(projection["current_turn_messages"]))
+        self.assertIsNone(observer)
+
+    def test_visible_attention_reply_appends_one_standalone_assistant_event(self) -> None:
+        manager = _ActorCaptureMemcoreManager()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._memcore_manager_if_enabled = lambda: manager
+        result = engine._append_memcore_standalone_assistant(
+            assistant_record={"source_id": "assistant-attention-1", "content": "我也觉得。", "timestamp": 100},
+            profile_user_id="group",
+            session_id="group",
+            character_pack_id="char",
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(manager.user_calls), 1)
+        self.assertEqual(manager.user_calls[0]["role"], "assistant")
+        self.assertEqual(manager.user_calls[0]["record"]["source_id"], "assistant-attention-1")
+
     def test_passive_qq_batch_preserves_order_and_schedules_compaction_once(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         recorded: list[str] = []

@@ -937,6 +937,31 @@ class AkaneMemoryEngine:
             logger.warning("memcore passive message append failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
+    def _append_memcore_standalone_assistant(
+        self,
+        *,
+        assistant_record: dict[str, Any],
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        """Persist a visible reply whose triggering group message already exists."""
+
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            return manager.append_standalone_message(
+                assistant_record,
+                role="assistant",
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except Exception as exc:
+            logger.warning("memcore standalone assistant append failed: %s", exc)
+            return {"ok": False, "status": "failed", "reason": str(exc)}
+
     @staticmethod
     def _track_open_memcore_turn_for_guard(
         *,
@@ -3885,6 +3910,11 @@ class AkaneMemoryEngine:
         payload["domain_profile"] = turn_domain_profile_id
         turn_kind = str(payload.get("turn_kind") or "").strip().lower()
         prompt_scope = turn_kind if turn_kind in {"plugin_proactive", "qq_attention", "qq_optional_reply"} else ""
+        projection_anchor_source_id = str(payload.pop("memory_projection_anchor_source_id", "") or "").strip()
+        if prompt_scope != "qq_attention":
+            projection_anchor_source_id = ""
+        else:
+            projection_anchor_source_id = projection_anchor_source_id[:256]
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
         turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
         if prompt_scope != "plugin_proactive":
@@ -3997,6 +4027,9 @@ class AkaneMemoryEngine:
             user_record,
             message_addressing,
         )
+        turn_projection_source_id = (
+            projection_anchor_source_id or str(user_record.get("source_id") or "").strip()
+        )
         recent_raw, recent_episodic_summaries, recent_semantic_summaries = self._load_turn_visible_memory(
             session_id=session_id,
             profile_user_id=profile_user_id,
@@ -4015,7 +4048,7 @@ class AkaneMemoryEngine:
             recent_raw=recent_raw,
             recent_episodic_summaries=recent_episodic_summaries,
             recent_semantic_summaries=recent_semantic_summaries,
-            current_user_source_id=str(user_record.get("source_id") or ""),
+            current_user_source_id=turn_projection_source_id,
             verifier_debug_enabled=verifier_debug_enabled,
         )
         router_output = retrieval_pipeline.router_output
@@ -4058,7 +4091,12 @@ class AkaneMemoryEngine:
             # observations are appended to ``recent_raw_for_turn`` later, so
             # rediscovering the stimulus from the mutable history tail can
             # lose its source id and abort an otherwise successful tool turn.
-            "current_user_source_id": str(user_record.get("source_id") or "").strip(),
+            "current_user_source_id": turn_projection_source_id,
+            # A QQ attention review reads from a passive message that is
+            # already a committed standalone turn. Do not make the request
+            # observer reopen or rewrite that closed source turn; a visible
+            # assistant reply is appended as its own timeline event below.
+            "record_request_projection": not bool(projection_anchor_source_id),
         }
         final_output = yield from self._generate_round(
             mode=mode,
@@ -4169,7 +4207,7 @@ class AkaneMemoryEngine:
                         session_id=session_id,
                         character_pack_id=turn_character_pack_id,
                         now_ts=int(time.time()),
-                        current_user_source_id=str(user_record.get("source_id") or ""),
+                        current_user_source_id=turn_projection_source_id,
                         client_context=client_context,
                         memory_exclude_source_ids=memory_exclude_source_ids,
                         request_context=payload,
@@ -4512,7 +4550,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
                 now_ts=now_ts,
-                current_user_source_id=str(user_record.get("source_id") or ""),
+                current_user_source_id=turn_projection_source_id,
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
                 request_context=payload,
@@ -4605,7 +4643,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 final_output=final_output,
                 now_ts=now_ts,
-                source_id=str(user_record.get("source_id") or ""),
+                source_id=turn_projection_source_id,
                 tool_result=tool_result,
             )
         self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
@@ -4702,6 +4740,32 @@ class AkaneMemoryEngine:
                         session_id=session_id,
                         character_pack_id=turn_character_pack_id,
                         chat_model_override=chat_model_override,
+                    )
+            elif prompt_scope == "qq_attention":
+                standalone_result = self._append_memcore_standalone_assistant(
+                    assistant_record=assistant_record,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                )
+                if standalone_result and bool(standalone_result.get("ok")):
+                    self._schedule_memcore_compaction(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        character_pack_id=turn_character_pack_id,
+                        chat_model_override=chat_model_override,
+                    )
+                elif standalone_result:
+                    self._attach_nonfatal_memcore_failure(
+                        final_output,
+                        {
+                            "status": str(standalone_result.get("status") or "failed"),
+                            "reason": "assistant_timeline_append_failed",
+                            "detail": self._safe_memcore_failure_code(
+                                standalone_result.get("reason"),
+                                fallback="standalone_assistant_rejected",
+                            ),
+                        },
                     )
         elif memcore_turn_id and not externally_managed_memcore_turn:
             self._abort_memcore_input_turn(
@@ -6508,6 +6572,10 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         request_projection_state: dict[str, Any] | None = None,
     ) -> Any:
+        if isinstance(request_projection_state, dict) and request_projection_state.get(
+            "record_request_projection"
+        ) is False:
+            return None
         if not bool(getattr(self.llm, "supports_request_observer", False)):
             return None
         manager = getattr(self, "memcore_manager", None)

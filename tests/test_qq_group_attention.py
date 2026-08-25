@@ -285,9 +285,68 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["turn_kind"], "qq_attention")
         self.assertTrue(processed[0]["transient_user_message"])
         self.assertEqual(processed[0]["message"], "event.group_attention_review")
+        self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-1")
         self.assertIn("完整群聊历史", processed[0]["extra_context"])
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
+
+    def test_passive_message_without_memcore_source_does_not_schedule_attention(self) -> None:
+        scheduled = []
+
+        class Engine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def record_passive_qq_message(_payload):
+                return {"ok": True, "status": "recorded", "source_id": ""}
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+        class Supervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class Metrics:
+            @staticmethod
+            def observe_request(*_args, **_kwargs):
+                return None
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=Engine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_GROUP_ATTENTION_MODE="adaptive",
+                    QQ_GROUP_ATTENTION_DELAY_SECONDS=0,
+                ),
+                qq_gateway=NapCatQQGateway(),
+                runtime_metrics=Metrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+                async_task_supervisor=Supervisor(),
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "message_id": "ambient-no-anchor",
+                "message": [{"type": "text", "data": {"text": "普通消息"}}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["attention"]["reason"], "projection_anchor_missing")
+        self.assertEqual(scheduled, [])
 
     def test_quote_only_message_to_bot_enters_optional_reply_path(self) -> None:
         processed = []

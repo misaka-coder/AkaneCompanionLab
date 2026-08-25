@@ -816,6 +816,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(len(gateway.text_sends), 1)
         self.assertIn("没有形成可交付的文字结果", gateway.text_sends[0][0])
         self.assertTrue(result["final_failure_notice_result"]["ok"])
+        self.assertEqual(result["reply_messages"], [gateway.text_sends[0][0]])
 
     def test_same_turn_recovered_final_never_sends_the_failure_notice(self) -> None:
         # A malformed final that recovers in the same turn must be delivered
@@ -892,6 +893,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertIn("没有形成可交付的文字结果", gateway.text_sends[1][0])
         self.assertTrue(result["send_result"].get("final_failure_notice"))
         self.assertTrue(result["final_failure_notice_result"]["ok"])
+        self.assertEqual(result["reply_messages"], [gateway.text_sends[0][0], gateway.text_sends[1][0]])
 
     def test_tool_preface_before_transient_final_failure_gets_terminal_notice(self) -> None:
         class FakeEngine:

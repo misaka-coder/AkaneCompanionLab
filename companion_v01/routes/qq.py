@@ -1541,6 +1541,7 @@ def _process_qq_turn_streaming(
         unsent_reply_messages = []
     else:
         unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
+    delivered_reply_messages = [*streamed_messages, *unsent_reply_messages]
     text_delivery_started_at = time.perf_counter()
     send_result = _send_qq_delivery(
         engine=engine,
@@ -1581,6 +1582,7 @@ def _process_qq_turn_streaming(
         final_failure_notice_result = qq_gateway.send_reply(context, final_failure_notice)
         if final_failure_notice_result.get("ok"):
             reply_messages.append(final_failure_notice)
+            delivered_reply_messages.append(final_failure_notice)
             send_result = dict(send_result)
             send_result_results = [
                 *list(send_result.get("results") or []),
@@ -1659,6 +1661,7 @@ def _process_qq_turn_streaming(
             final_reply_fallback_result["status"] = "generated_result_notice_sent"
             if final_reply_fallback_result.get("ok"):
                 reply_messages.append(fallback_text)
+                delivered_reply_messages.append(fallback_text)
                 send_result = dict(send_result)
                 send_result_results = [
                     *list(send_result.get("results") or []),
@@ -1710,7 +1713,7 @@ def _process_qq_turn_streaming(
     timing["total_ms"] = round((time.perf_counter() - timing_started_at) * 1000, 1)
     return {
         "frame": frame,
-        "reply_messages": [*streamed_messages, *unsent_reply_messages],
+        "reply_messages": delivered_reply_messages,
         "send_result": send_result,
         "emotion_mface_result": emotion_mface_result,
         "emotion_image_result": emotion_image_result,
@@ -1825,7 +1828,7 @@ def build_qq_router(
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
     turn_coordinator = turn_coordinator or TurnCoordinator()
     group_attention = QQGroupAttentionState()
-    attention_latest: dict[str, tuple[Any, dict[str, Any]]] = {}
+    attention_latest: dict[str, tuple[Any, dict[str, Any], str]] = {}
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1876,7 +1879,7 @@ def build_qq_router(
         snapshot = attention_latest.pop(ticket.key, None)
         if snapshot is None:
             return
-        context, event = snapshot
+        context, event, projection_anchor_source_id = snapshot
         # Ambient participation is based on the whole MemCore projection, not
         # mechanically on the last message that happened to update the ticket.
         # Clear only the delivery reply reference so Akane joins the discussion
@@ -1908,6 +1911,11 @@ def build_qq_router(
                 "timestamp": int(time.time()),
                 "turn_kind": "qq_attention",
                 "transient_user_message": True,
+                # The review event is intentionally transient. Anchor the
+                # provider projection to the real passive message that was
+                # already appended to MemCore instead of inventing a second
+                # user event or projecting an empty source id.
+                "memory_projection_anchor_source_id": projection_anchor_source_id,
                 "message_addressing": {
                     "mode": "observed",
                     "trigger": ticket.reason,
@@ -1923,7 +1931,7 @@ def build_qq_router(
         observation_note = (
             "【群聊注意力观察】\n"
             "response_expectation: optional\n"
-            "刚才的普通群消息已经作为真实 observed 事件写入 MemCore；请根据当前投影中的完整群聊历史，"
+            "刚才的普通群消息已经作为真实 observed 事件写入 MemCore；请根据以该消息为锚点的完整群聊历史，"
             "自行判断现在是否适合参与。调度器没有另造一份聊天摘要，也不要把 event.group_attention_review "
             "当成用户对你的请求。若适合参与，按通常 QQ 最终格式回复，speech 会照常流式投递。"
             "若不适合参与，只输出且必须精确输出 {\"attention\":\"silent\"}。"
@@ -1969,11 +1977,19 @@ def build_qq_router(
             silent=bool(dict(result.get("frame") or {}).get("_qq_attention_silent")) if isinstance(result, dict) else False,
         )
 
-    def _schedule_group_attention(context: Any, event: dict[str, Any]) -> dict[str, Any]:
+    def _schedule_group_attention(
+        context: Any,
+        event: dict[str, Any],
+        *,
+        projection_anchor_source_id: str,
+    ) -> dict[str, Any]:
         if not bool(getattr(context, "is_group", False)):
             return {"scheduled": False, "reason": "not_group"}
+        anchor_source_id = str(projection_anchor_source_id or "").strip()
+        if not anchor_source_id:
+            return {"scheduled": False, "reason": "projection_anchor_missing"}
         key = _session_work_key(context)
-        attention_latest[key] = (context, dict(event))
+        attention_latest[key] = (context, dict(event), anchor_source_id)
         ticket, reason = group_attention.arm(
             key,
             mode=_group_attention_mode(context),
@@ -2247,7 +2263,17 @@ def build_qq_router(
                 last_item_payload = items[-1].payload if isinstance(items[-1].payload, dict) else {}
                 last_context = last_item_payload.get("context") or context
                 last_event = dict(last_item_payload.get("event") or {})
-                attention_result = _schedule_group_attention(last_context, last_event)
+                batch_results = list(result_payload.get("results") or [])
+                last_record_result = (
+                    batch_results[-1]
+                    if batch_results and isinstance(batch_results[-1], dict)
+                    else {}
+                )
+                attention_result = _schedule_group_attention(
+                    last_context,
+                    last_event,
+                    projection_anchor_source_id=str(last_record_result.get("source_id") or ""),
+                )
                 log_event(
                     "qq_group_attention_considered",
                     session_id=session_id,
@@ -2778,7 +2804,11 @@ def build_qq_router(
                         duration_ms=round(duration_ms, 1),
                     )
                     attention_result = (
-                        _schedule_group_attention(context, event)
+                        _schedule_group_attention(
+                            context,
+                            event,
+                            projection_anchor_source_id=str(record_payload.get("source_id") or ""),
+                        )
                         if record_ok
                         else {"scheduled": False, "reason": "record_failed"}
                     )
