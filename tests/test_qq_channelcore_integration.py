@@ -117,6 +117,32 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(context.clean_message, "这个表情 [QQ商城表情 名称=开心, emoji_id=mface-1]")
         self.assertNotIn("provider.invalid", str(normalized.as_dict()))
 
+    def test_private_single_face_is_a_replyable_named_message(self) -> None:
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "message_id": "single-face-1",
+            "raw_message": "[CQ:face,id=14,raw=[object Object]]",
+            "message": [
+                {
+                    "type": "face",
+                    "data": {
+                        "id": "14",
+                        "raw": {"faceIndex": 14, "faceText": "/微笑"},
+                    },
+                }
+            ],
+        }
+
+        context = NapCatQQGateway().build_message_context(event)
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "private")
+        self.assertEqual(context.clean_message, "[QQ系统表情 名称=微笑, face_id=14]")
+        self.assertEqual(context.attachments, [])
+
     def test_gateway_preserves_forward_reference_for_host_resolution(self) -> None:
         event = {
             "post_type": "message",

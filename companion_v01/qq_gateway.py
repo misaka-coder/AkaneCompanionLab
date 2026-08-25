@@ -944,9 +944,7 @@ class NapCatQQGateway:
         mention_only = bool(mentions and not clean_message)
         if mention_only:
             clean_message = "event.mention"
-        if not clean_message or (
-            not inbound.has_text_content and not attachments and not mention_only and not inbound.forwards
-        ):
+        if not clean_message:
             return QQMessageContext(False, "empty_message")
         mentions_bot = inbound.mentioned_bot
         session_id, profile_user_id = self.resolve_identity(user_id=user_id, group_id=group_id)
