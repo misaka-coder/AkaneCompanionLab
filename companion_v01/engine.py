@@ -3356,6 +3356,74 @@ class AkaneMemoryEngine:
         return target_id, target_name
 
     def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._record_passive_qq_message(payload, schedule_maintenance=True)
+
+    def record_passive_qq_messages(self, payloads: list[dict[str, Any]]) -> dict[str, Any]:
+        """Record one ordered passive-message batch and schedule maintenance once."""
+
+        normalized = [dict(item) for item in list(payloads or []) if isinstance(item, dict)]
+        if not normalized:
+            return {"ok": False, "status": "empty_batch", "results": []}
+        identities = {
+            (
+                str(item.get("real_user_id") or item.get("profile_user_id") or "").strip(),
+                str(item.get("user_id") or item.get("session_id") or "").strip(),
+                str(self._resolve_payload_character_pack_id(item) or "").strip(),
+            )
+            for item in normalized
+        }
+        if len(identities) != 1:
+            return {
+                "ok": False,
+                "status": "mixed_batch_scope",
+                "reason": "passive_batch_requires_one_conversation",
+                "results": [],
+            }
+        results: list[dict[str, Any]] = []
+        for item in normalized:
+            try:
+                result = self._record_passive_qq_message(item, schedule_maintenance=False)
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "status": "record_failed",
+                    "reason": exc.__class__.__name__,
+                }
+            results.append(dict(result or {}))
+        successful = [item for item in results if bool(item.get("ok"))]
+        maintenance: dict[str, Any] = {}
+        if successful:
+            sample = successful[0]
+            if self._memcore_owns_compaction():
+                maintenance = self._schedule_memcore_compaction(
+                    profile_user_id=str(sample.get("profile_user_id") or ""),
+                    session_id=str(sample.get("session_id") or ""),
+                    character_pack_id=str(sample.get("character_pack_id") or ""),
+                )
+            else:
+                self._schedule_summary_cycle(
+                    profile_user_id=str(sample.get("profile_user_id") or ""),
+                    session_id=str(sample.get("session_id") or ""),
+                    character_pack_id=str(sample.get("character_pack_id") or ""),
+                )
+                maintenance = {"ok": True, "status": "scheduled"}
+        failed_count = len(results) - len(successful)
+        return {
+            "ok": failed_count == 0,
+            "status": "recorded" if failed_count == 0 else "partially_recorded",
+            "count": len(results),
+            "recorded_count": len(successful),
+            "failed_count": failed_count,
+            "results": results,
+            "maintenance": maintenance,
+        }
+
+    def _record_passive_qq_message(
+        self,
+        payload: dict[str, Any],
+        *,
+        schedule_maintenance: bool,
+    ) -> dict[str, Any]:
         turn_character_pack_id = self._resolve_payload_character_pack_id(payload)
         actor_stable_id, actor_display_name = self._resolve_turn_actor(payload)
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
@@ -3399,7 +3467,7 @@ class AkaneMemoryEngine:
             user_record,
             addressing,
         )
-        if not self._memcore_owns_compaction():
+        if schedule_maintenance and not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -3421,7 +3489,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
             )
-            if self._memcore_owns_compaction()
+            if schedule_maintenance and self._memcore_owns_compaction()
             else {}
         )
         return {

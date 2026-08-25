@@ -32,7 +32,7 @@ from ..tts_provider_runtime import (
     synthesize_tts_resolution,
 )
 from ..runtime_settings import runtime_setting
-from ..turn_coordination import TurnCoordinator
+from ..turn_coordination import SessionWorkItem, SessionWorkQueue, TurnCoordinator
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -1728,6 +1728,11 @@ def build_qq_router(
             return async_task_supervisor.create_task(coroutine)
         return asyncio.create_task(coroutine)
 
+    def _session_work_key(context: Any) -> str:
+        profile_user_id = str(getattr(context, "profile_user_id", "") or "").strip()
+        session_id = str(getattr(context, "session_id", "") or "").strip()
+        return f"{profile_user_id}\0{session_id}"
+
     def _prepare_qq_turn_payload(
         *,
         context: Any,
@@ -1840,6 +1845,160 @@ def build_qq_router(
             )
         return turn_result
 
+    async def _handle_queued_session_work(_key: str, items: list[SessionWorkItem]) -> None:
+        if not items:
+            return
+        first_payload = items[0].payload if isinstance(items[0].payload, dict) else {}
+        context = first_payload.get("context")
+        if context is None:
+            log_event(
+                "qq_session_work_failed",
+                reason="queued_context_missing",
+                work_kind=items[0].kind,
+                batch_count=len(items),
+            )
+            return
+        profile_user_id = str(getattr(context, "profile_user_id", "") or "")
+        session_id = str(getattr(context, "session_id", "") or "")
+        group_id = int(getattr(context, "group_id", 0) or 0)
+        if items[0].kind == "passive":
+            started_at = time.perf_counter()
+            async with turn_coordinator.hold(profile_user_id, session_id):
+                queue_wait_ms = max(0.0, (time.perf_counter() - items[0].enqueued_at) * 1000)
+                payloads = [
+                    dict(item.payload.get("turn_payload") or {})
+                    for item in items
+                    if isinstance(item.payload, dict) and isinstance(item.payload.get("turn_payload"), dict)
+                ]
+                batch_recorder = getattr(engine, "record_passive_qq_messages", None)
+                recorder = getattr(engine, "record_passive_qq_message", None)
+                if callable(batch_recorder):
+                    record_result = await asyncio.to_thread(batch_recorder, payloads)
+                elif callable(recorder):
+                    fallback_results = [await asyncio.to_thread(recorder, payload) for payload in payloads]
+                    failed_count = sum(
+                        1 for result in fallback_results if not isinstance(result, dict) or not bool(result.get("ok"))
+                    )
+                    record_result = {
+                        "ok": failed_count == 0,
+                        "status": "recorded" if failed_count == 0 else "partially_recorded",
+                        "count": len(fallback_results),
+                        "recorded_count": len(fallback_results) - failed_count,
+                        "failed_count": failed_count,
+                        "results": fallback_results,
+                    }
+                else:
+                    record_result = {
+                        "ok": False,
+                        "status": "recorder_unavailable",
+                        "count": len(payloads),
+                        "recorded_count": 0,
+                        "failed_count": len(payloads),
+                        "results": [],
+                    }
+            result_payload = record_result if isinstance(record_result, dict) else {}
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            runtime_metrics.observe_request(
+                "qq_passive_group_message_batch",
+                duration_ms=duration_ms,
+                ok=bool(result_payload.get("ok")),
+            )
+            log_event(
+                "qq_passive_group_message_batch_recorded",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                group_id=group_id,
+                batch_count=len(payloads),
+                recorded_count=int(result_payload.get("recorded_count") or 0),
+                failed_count=int(result_payload.get("failed_count") or 0),
+                record_status=str(result_payload.get("status") or ""),
+                queue_wait_ms=round(queue_wait_ms, 1),
+                duration_ms=round(duration_ms, 1),
+            )
+            return
+
+        event = dict(first_payload.get("event") or {})
+        turn_payload = dict(first_payload.get("turn_payload") or {})
+        qq_user_id = int(getattr(context, "user_id", 0) or 0)
+        actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{profile_user_id}"
+        started_at = time.perf_counter()
+        try:
+            async with turn_coordinator.hold(
+                profile_user_id,
+                session_id,
+                actor_id=actor_id,
+                channel="qq",
+            ) as turn_control_id:
+                queue_wait_ms = max(0.0, (time.perf_counter() - items[0].enqueued_at) * 1000)
+                turn_payload["_turn_control_id"] = turn_control_id
+                processing_started_at = time.perf_counter()
+                turn_result = await _run_qq_turn_delivery_unlocked(
+                    context=context,
+                    event=event,
+                    turn_payload=turn_payload,
+                )
+                processing_ms = (time.perf_counter() - processing_started_at) * 1000
+            result_payload = turn_result if isinstance(turn_result, dict) else {}
+            send_result = result_payload.get("send_result")
+            send_payload = send_result if isinstance(send_result, dict) else {}
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            runtime_metrics.observe_request(
+                "qq_group_turn_queue",
+                duration_ms=duration_ms,
+                ok=bool(send_payload.get("ok")),
+            )
+            log_event(
+                "qq_group_turn_queue_completed",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                group_id=group_id,
+                user_id=qq_user_id,
+                source_message_id=str(getattr(context, "source_message_id", "") or ""),
+                queue_sequence=items[0].sequence,
+                queue_wait_ms=round(queue_wait_ms, 1),
+                turn_processing_ms=round(processing_ms, 1),
+                duration_ms=round(duration_ms, 1),
+                sent=bool(send_payload.get("ok")),
+                delivery_status=str(send_payload.get("status") or ""),
+            )
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            runtime_metrics.observe_request("qq_group_turn_queue", duration_ms=duration_ms, ok=False)
+            logger.exception("queued qq group turn failed")
+            log_event(
+                "qq_group_turn_queue_failed",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                group_id=group_id,
+                user_id=qq_user_id,
+                source_message_id=str(getattr(context, "source_message_id", "") or ""),
+                queue_sequence=items[0].sequence,
+                reason=exc.__class__.__name__,
+                duration_ms=round(duration_ms, 1),
+            )
+
+    def _session_work_error(_key: str, items: list[SessionWorkItem], exc: BaseException) -> None:
+        payload = items[0].payload if items and isinstance(items[0].payload, dict) else {}
+        context = payload.get("context")
+        error_logger = getattr(logger, "error", None)
+        if callable(error_logger):
+            error_logger("qq session work handler failed: %s", exc.__class__.__name__)
+        log_event(
+            "qq_session_work_failed",
+            session_id=str(getattr(context, "session_id", "") or ""),
+            profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+            work_kind=items[0].kind if items else "",
+            batch_count=len(items),
+            reason=exc.__class__.__name__,
+        )
+
+    session_work_queue = SessionWorkQueue(
+        _handle_queued_session_work,
+        schedule_task=schedule_followup,
+        batchable_kinds={"passive"},
+        on_error=_session_work_error,
+    )
+
     async def _run_qq_turn_delivery(
         *,
         context: Any,
@@ -1901,18 +2060,63 @@ def build_qq_router(
                     "results": [],
                 },
             }
+        queue_key = _session_work_key(context)
+        queue_behind_active_turn = str(steer_result.get("status") or "") in {
+            "busy_other_actor",
+            "finalizing",
+        }
+        if context.is_group and (queue_behind_active_turn or session_work_queue.has_work(queue_key)):
+            queued = session_work_queue.enqueue(
+                queue_key,
+                kind="turn",
+                payload={
+                    "context": context,
+                    "event": dict(event),
+                    "turn_payload": dict(turn_payload),
+                },
+            )
+            log_event(
+                "qq_group_turn_queued",
+                session_id=context.session_id,
+                profile_user_id=context.profile_user_id,
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                user_id=qq_user_id,
+                source_message_id=str(getattr(context, "source_message_id", "") or ""),
+                queue_sequence=int(queued.get("sequence") or 0),
+                pending_count=int(queued.get("pending_count") or 0),
+                reason=str(steer_result.get("status") or "session_queue_busy"),
+            )
+            return {
+                "frame": {"status": "queued", "speech": ""},
+                "reply_messages": [],
+                "send_result": {
+                    "ok": bool(queued.get("ok")),
+                    "status": "queued" if queued.get("ok") else "queue_failed",
+                    "reason": str(queued.get("reason") or "session_fifo"),
+                    "results": [],
+                    "queue_sequence": int(queued.get("sequence") or 0),
+                    "pending_count": int(queued.get("pending_count") or 0),
+                },
+            }
+        queue_wait_started_at = time.perf_counter()
         async with turn_coordinator.hold(
             context.profile_user_id,
             context.session_id,
             actor_id=actor_id,
             channel="qq",
         ) as turn_control_id:
+            queue_wait_ms = max(0.0, (time.perf_counter() - queue_wait_started_at) * 1000)
             turn_payload["_turn_control_id"] = turn_control_id
-            return await _run_qq_turn_delivery_unlocked(
+            result = await _run_qq_turn_delivery_unlocked(
                 context=context,
                 event=event,
                 turn_payload=turn_payload,
             )
+            if isinstance(result, dict):
+                timing = dict(result.get("timing") or {})
+                timing["queue_wait_ms"] = round(queue_wait_ms, 1)
+                result["timing"] = timing
+            return result
 
     async def _run_qq_image_vision_followup(
         *,
@@ -2125,46 +2329,26 @@ def build_qq_router(
                                 "policy_mode": str(passive_memory_policy.get("mode") or "all"),
                             }
                         )
-                    if turn_coordinator.is_busy(context.profile_user_id, context.session_id):
-                        recorder = getattr(engine, "record_passive_qq_message", None)
+                    passive_queue_key = _session_work_key(context)
+                    if turn_coordinator.is_busy(
+                        context.profile_user_id,
+                        context.session_id,
+                    ) or session_work_queue.has_work(passive_queue_key):
                         deferred_payload = context.to_turn_payload()
                         deferred_payload["timestamp"] = int(event.get("time") or time.time())
-
-                        async def _record_passive_after_active_turn(
-                            *,
-                            _recorder: Any = recorder,
-                            _payload: dict[str, Any] = dict(deferred_payload),
-                            _context: Any = context,
-                        ) -> None:
-                            async with turn_coordinator.hold(
-                                _context.profile_user_id,
-                                _context.session_id,
-                            ):
-                                record_result = (
-                                    await asyncio.to_thread(_recorder, _payload)
-                                    if callable(_recorder)
-                                    else {"ok": False, "status": "recorder_unavailable"}
-                                )
-                                record_payload = (
-                                    record_result if isinstance(record_result, dict) else {}
-                                )
-                                log_event(
-                                    "qq_passive_group_message_recorded",
-                                    session_id=_context.session_id,
-                                    profile_user_id=_context.profile_user_id,
-                                    group_id=int(getattr(_context, "group_id", 0) or 0),
-                                    user_id=int(getattr(_context, "user_id", 0) or 0),
-                                    reason=_context.reason,
-                                    record_status=str(record_payload.get("status") or ""),
-                                    deferred=True,
-                                )
-
-                        schedule_followup(_record_passive_after_active_turn())
+                        queued = session_work_queue.enqueue(
+                            passive_queue_key,
+                            kind="passive",
+                            payload={
+                                "context": context,
+                                "turn_payload": dict(deferred_payload),
+                            },
+                        )
                         duration_ms = (time.perf_counter() - started_at) * 1000
                         runtime_metrics.observe_request(
                             "qq_napcat_event",
                             duration_ms=duration_ms,
-                            ok=True,
+                            ok=bool(queued.get("ok")),
                         )
                         log_event(
                             "qq_passive_group_message_buffered",
@@ -2173,14 +2357,19 @@ def build_qq_router(
                             group_id=int(getattr(context, "group_id", 0) or 0),
                             user_id=int(getattr(context, "user_id", 0) or 0),
                             reason="active_turn_in_progress",
+                            queue_sequence=int(queued.get("sequence") or 0),
+                            pending_count=int(queued.get("pending_count") or 0),
                             duration_ms=round(duration_ms, 1),
                         )
                         return JSONResponse(
                             {
-                                "status": "buffered",
+                                "status": "buffered" if queued.get("ok") else "record_failed",
                                 "reason": "active_turn_in_progress",
+                                "queue_reason": str(queued.get("reason") or "session_fifo"),
                                 "session_id": context.session_id,
                                 "profile_user_id": context.profile_user_id,
+                                "queue_sequence": int(queued.get("sequence") or 0),
+                                "pending_count": int(queued.get("pending_count") or 0),
                             }
                         )
                     recorder = getattr(engine, "record_passive_qq_message", None)
@@ -3232,14 +3421,18 @@ def build_qq_router(
             )
 
         duration_ms = (time.perf_counter() - started_at) * 1000
-        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=bool(send_result.get("ok")))
+        delivery_status = str(send_result.get("status") or "")
+        request_ok = bool(send_result.get("ok"))
+        visibly_sent = request_ok and delivery_status not in {"queued", "suppressed"}
+        runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=request_ok)
         log_event(
             "qq_napcat_event",
             session_id=context.session_id,
             profile_user_id=context.profile_user_id,
             character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
             reason=context.reason,
-            sent=bool(send_result.get("ok")),
+            sent=visibly_sent,
+            delivery_status=delivery_status,
             attachment_count=len(context.attachments or []),
             attachments_registered=len(attachments_registered),
             duration_ms=round(duration_ms, 1),
@@ -3247,7 +3440,7 @@ def build_qq_router(
         )
         return JSONResponse(
             {
-                "status": "ok" if send_result.get("ok") else "send_failed",
+                "status": "ok" if request_ok else "send_failed",
                 "reason": context.reason,
                 "session_id": context.session_id,
                 "profile_user_id": context.profile_user_id,

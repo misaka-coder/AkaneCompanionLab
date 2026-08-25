@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import asynccontextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1228,6 +1228,193 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertFalse(record_calls[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(process_calls, [])
         self.assertIn(("qq_napcat_event", True), runtime.observed)
+
+    def test_qq_router_batches_passive_messages_waiting_behind_active_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        scheduled: list[Any] = []
+        batches: list[list[dict[str, Any]]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeCoordinator:
+            @staticmethod
+            def is_busy(*_args, **_kwargs) -> bool:
+                return True
+
+            @staticmethod
+            @asynccontextmanager
+            async def hold(*_args, **_kwargs):
+                yield "passive-batch-turn"
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class FakeEngine:
+            def record_passive_qq_messages(self, payloads):
+                batches.append([dict(item) for item in payloads])
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [],
+                }
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
+                turn_coordinator=FakeCoordinator(),
+            )
+        )
+        client = TestClient(app)
+        base_timestamp = int(time.time())
+        responses = [
+            client.post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": f"passive-batch-{index}",
+                    "time": base_timestamp + index,
+                    "message": [{"type": "text", "data": {"text": f"背景消息 {index}"}}],
+                },
+            )
+            for index in (1, 2)
+        ]
+
+        self.assertEqual([response.json()["status"] for response in responses], ["buffered", "buffered"])
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop())
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(
+            [item["timestamp"] for item in batches[0]],
+            [base_timestamp + 1, base_timestamp + 2],
+        )
+        self.assertEqual(
+            [item["actor_stable_id"] for item in batches[0]],
+            [f"qq:{QQ_USER_FIXTURE_ID}", f"qq:{QQ_USER_FIXTURE_ID}"],
+        )
+        batch_logs = [payload for name, payload in log_calls if name == "qq_passive_group_message_batch_recorded"]
+        self.assertEqual(len(batch_logs), 1)
+        self.assertEqual(batch_logs[0]["batch_count"], 2)
+        self.assertIn("queue_wait_ms", batch_logs[0])
+
+    def test_qq_router_queues_other_actor_without_holding_webhook_and_keeps_same_actor_steer(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        scheduled: list[Any] = []
+        processed: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        steer_mode = {"same_actor": False}
+
+        class FakeCoordinator:
+            @staticmethod
+            def is_busy(*_args, **_kwargs) -> bool:
+                return True
+
+            @staticmethod
+            def offer_steer(**_kwargs):
+                if steer_mode["same_actor"]:
+                    return {"ok": True, "status": "accepted", "pending_count": 1}
+                return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
+
+            @staticmethod
+            @asynccontextmanager
+            async def hold(*_args, **_kwargs):
+                yield "queued-group-turn"
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload):
+                processed.append(dict(payload))
+                yield {"type": "final_ui", "payload": {"speech": "排队任务完成", "emotion": "normal"}}
+
+        class FakeResponse:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json():
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
+                turn_coordinator=FakeCoordinator(),
+            )
+        )
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "queued-other-actor",
+            "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "轮到我时回答"}},
+            ],
+        }
+        client = TestClient(app)
+        queued = client.post("/api/qq/napcat/event", json=event)
+        self.assertEqual(queued.status_code, 200)
+        self.assertEqual(queued.json()["send_result"]["status"], "queued")
+        self.assertEqual(queued.json()["sent_count"], 0)
+        self.assertEqual(processed, [])
+        self.assertEqual(len(scheduled), 1)
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            asyncio.run(scheduled.pop())
+        self.assertEqual(len(processed), 1)
+        queued_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queued"]
+        completed_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queue_completed"]
+        self.assertEqual(len(queued_logs), 1)
+        self.assertEqual(len(completed_logs), 1)
+        self.assertIn("queue_wait_ms", completed_logs[0])
+
+        steer_mode["same_actor"] = True
+        steered = client.post(
+            "/api/qq/napcat/event",
+            json={**event, "message_id": "same-actor-steer", "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "追加调整"}},
+            ]},
+        )
+        self.assertEqual(steered.status_code, 200)
+        self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
+        self.assertEqual(len(scheduled), 0)
 
     def test_qq_router_filters_only_passive_group_memory_by_runtime_policy(self) -> None:
         runtime = FakeRuntimeMetrics()

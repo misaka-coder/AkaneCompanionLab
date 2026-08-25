@@ -11,9 +11,10 @@ import asyncio
 import threading
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 def _identity_key(profile_user_id: Any, session_id: Any) -> str:
@@ -38,6 +39,116 @@ class _ActiveTurn:
     pending: list[SteeringInput] = field(default_factory=list)
     stop_requested: bool = False
     phase: str = "running"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionWorkItem:
+    """One in-process item waiting for a conversation timeline.
+
+    The queue does not interpret payloads or execute conversation work.  It
+    only preserves arrival order and lets the host coalesce adjacent items of
+    explicitly declared kinds (for example passive observation writes).
+    """
+
+    sequence: int
+    kind: str
+    payload: Any
+    enqueued_at: float
+
+
+class SessionWorkQueue:
+    """One FIFO worker per session without holding an inbound HTTP request.
+
+    ``enqueue`` must be called from the owning event loop. Different session
+    keys get independent workers; one key is always drained serially. Adjacent
+    batchable items are passed to the handler together without reordering work
+    across an intervening active turn.
+    """
+
+    def __init__(
+        self,
+        handler: Callable[[str, list[SessionWorkItem]], Awaitable[None]],
+        *,
+        schedule_task: Callable[[Awaitable[None]], Any] | None = None,
+        batchable_kinds: set[str] | frozenset[str] = frozenset(),
+        on_error: Callable[[str, list[SessionWorkItem], BaseException], None] | None = None,
+    ) -> None:
+        self._handler = handler
+        self._schedule_task = schedule_task or asyncio.create_task
+        self._batchable_kinds = frozenset(str(item or "").strip() for item in batchable_kinds)
+        self._on_error = on_error
+        self._queues: dict[str, deque[SessionWorkItem]] = {}
+        self._workers: dict[str, Any] = {}
+        self._sequence = 0
+
+    def pending_count(self, key: Any) -> int:
+        normalized = str(key or "").strip()
+        return len(self._queues.get(normalized, ())) if normalized else 0
+
+    def has_work(self, key: Any) -> bool:
+        normalized = str(key or "").strip()
+        return bool(normalized and (normalized in self._workers or self._queues.get(normalized)))
+
+    def enqueue(self, key: Any, *, kind: Any, payload: Any) -> dict[str, Any]:
+        normalized_key = str(key or "").strip()
+        normalized_kind = str(kind or "").strip()
+        if not normalized_key or not normalized_kind:
+            return {"ok": False, "status": "invalid", "reason": "queue_key_and_kind_required"}
+        self._sequence += 1
+        item = SessionWorkItem(
+            sequence=self._sequence,
+            kind=normalized_kind,
+            payload=payload,
+            enqueued_at=time.perf_counter(),
+        )
+        queue = self._queues.setdefault(normalized_key, deque())
+        queue.append(item)
+        worker = self._workers.get(normalized_key)
+        if worker is None or bool(getattr(worker, "done", lambda: False)()):
+            coroutine = self._drain(normalized_key)
+            try:
+                self._workers[normalized_key] = self._schedule_task(coroutine)
+            except Exception:
+                coroutine.close()
+                queue.pop()
+                if not queue:
+                    self._queues.pop(normalized_key, None)
+                raise
+        return {
+            "ok": True,
+            "status": "queued",
+            "reason": "session_fifo",
+            "sequence": item.sequence,
+            "pending_count": len(queue),
+        }
+
+    async def _drain(self, key: str) -> None:
+        try:
+            while True:
+                queue = self._queues.get(key)
+                if not queue:
+                    return
+                first = queue.popleft()
+                batch = [first]
+                if first.kind in self._batchable_kinds:
+                    while queue and queue[0].kind == first.kind:
+                        batch.append(queue.popleft())
+                try:
+                    await self._handler(key, batch)
+                except Exception as exc:
+                    if self._on_error is not None:
+                        self._on_error(key, batch, exc)
+                    else:
+                        asyncio.get_running_loop().call_exception_handler(
+                            {
+                                "message": "session work handler failed",
+                                "exception": exc,
+                            }
+                        )
+        finally:
+            self._workers.pop(key, None)
+            if not self._queues.get(key):
+                self._queues.pop(key, None)
 
 
 class TurnCoordinator:
@@ -197,4 +308,4 @@ class TurnCoordinator:
                         self._async_locks[key] = (lock, remaining)
 
 
-__all__ = ["SteeringInput", "TurnCoordinator"]
+__all__ = ["SessionWorkItem", "SessionWorkQueue", "SteeringInput", "TurnCoordinator"]

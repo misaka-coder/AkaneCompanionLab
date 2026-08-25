@@ -712,6 +712,43 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_passive_qq_batch_preserves_order_and_schedules_compaction_once(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        recorded: list[str] = []
+        compactions: list[dict[str, object]] = []
+        engine._resolve_payload_character_pack_id = lambda _payload: "char"
+        engine._memcore_owns_compaction = lambda: True
+
+        def record_one(payload, *, schedule_maintenance):
+            self.assertFalse(schedule_maintenance)
+            recorded.append(str(payload["message"]))
+            return {
+                "ok": True,
+                "status": "recorded",
+                "source_id": f"source-{len(recorded)}",
+                "profile_user_id": "group",
+                "session_id": "group",
+                "character_pack_id": "char",
+            }
+
+        engine._record_passive_qq_message = record_one
+        engine._schedule_memcore_compaction = lambda **kwargs: (
+            compactions.append(dict(kwargs)) or {"ok": True, "status": "scheduled"}
+        )
+        result = AkaneMemoryEngine.record_passive_qq_messages(
+            engine,
+            [
+                {"real_user_id": "group", "user_id": "group", "message": "first"},
+                {"real_user_id": "group", "user_id": "group", "message": "second"},
+            ],
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(recorded, ["first", "second"])
+        self.assertEqual(result["recorded_count"], 2)
+        self.assertEqual(len(compactions), 1)
+        self.assertEqual(compactions[0]["session_id"], "group")
+
     def test_open_turn_user_steer_projects_as_timestamped_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

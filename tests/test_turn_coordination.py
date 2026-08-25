@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from companion_v01.turn_coordination import TurnCoordinator
+from companion_v01.turn_coordination import SessionWorkQueue, TurnCoordinator
 
 
 class TurnCoordinatorTests(unittest.TestCase):
@@ -118,6 +118,49 @@ class TurnCoordinatorTests(unittest.TestCase):
             return order
 
         self.assertEqual(asyncio.run(exercise()), ["first", "second"])
+
+    def test_session_work_queue_batches_only_adjacent_passive_items_in_fifo_order(self) -> None:
+        async def exercise() -> list[tuple[str, list[str]]]:
+            handled: list[tuple[str, list[str]]] = []
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+            drained = asyncio.Event()
+
+            async def handler(_key, items) -> None:
+                handled.append((items[0].kind, [str(item.payload) for item in items]))
+                if items[0].payload == "turn-1":
+                    first_started.set()
+                    await release_first.wait()
+                if items[0].payload == "turn-3":
+                    drained.set()
+
+            queue = SessionWorkQueue(handler, batchable_kinds={"passive"})
+            first = queue.enqueue("group", kind="turn", payload="turn-1")
+            self.assertTrue(first["ok"])
+            await first_started.wait()
+            queue.enqueue("group", kind="passive", payload="passive-1")
+            queue.enqueue("group", kind="passive", payload="passive-2")
+            queue.enqueue("group", kind="turn", payload="turn-2")
+            queue.enqueue("group", kind="passive", payload="passive-3")
+            queue.enqueue("group", kind="turn", payload="turn-3")
+            self.assertTrue(queue.has_work("group"))
+            self.assertEqual(queue.pending_count("group"), 5)
+            release_first.set()
+            await asyncio.wait_for(drained.wait(), timeout=1)
+            await asyncio.sleep(0)
+            self.assertFalse(queue.has_work("group"))
+            return handled
+
+        self.assertEqual(
+            asyncio.run(exercise()),
+            [
+                ("turn", ["turn-1"]),
+                ("passive", ["passive-1", "passive-2"]),
+                ("turn", ["turn-2"]),
+                ("passive", ["passive-3"]),
+                ("turn", ["turn-3"]),
+            ],
+        )
 
 
 if __name__ == "__main__":
