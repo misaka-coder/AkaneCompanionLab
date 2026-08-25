@@ -287,6 +287,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["message"], "event.group_attention_review")
         self.assertIn("完整群聊历史", processed[0]["extra_context"])
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
+        self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
 
     def test_quote_only_message_to_bot_enters_optional_reply_path(self) -> None:
         processed = []
@@ -366,6 +367,79 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["turn_kind"], "qq_optional_reply")
         self.assertIn("response_expectation: optional", processed[0]["extra_context"])
         self.assertIn("要不要一起玩", processed[0]["message"])
+
+    def test_quote_to_group_member_records_structured_reply_relationship(self) -> None:
+        recorded = []
+        gateway = NapCatQQGateway()
+        gateway.resolve_quoted_message_evidence = lambda _event, *, context: {
+            "ok": True,
+            "status": "resolved",
+            "quoted_message": {
+                "message_id": "member-message-1",
+                "text": "今晚八点开黑",
+                "actor_id": "40004",
+                "actor_label": "天为",
+                "actor_is_bot": False,
+                "timestamp": 100,
+                "conversation_kind": "group",
+                "conversation_id": "30003",
+                "attachment_count": 0,
+            },
+            "attachments": [],
+        }
+
+        class Engine:
+            def record_passive_qq_message(self, payload):
+                recorded.append(dict(payload))
+                return {"ok": True, "status": "recorded", "source_id": "observed-reply-1"}
+
+        class Metrics:
+            @staticmethod
+            def observe_request(*_args, **_kwargs):
+                return None
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=Engine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=Metrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "message_id": "member-reply-current-1",
+                "message": [
+                    {"type": "reply", "data": {"id": "member-message-1"}},
+                    {"type": "text", "data": {"text": "我也来"}},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "recorded")
+        self.assertEqual(len(recorded), 1)
+        addressing = recorded[0]["message_addressing"]
+        self.assertEqual(addressing["mode"], "observed")
+        self.assertEqual(addressing["primary_target"], {"actor_id": "qq:40004", "display_name": "天为"})
+        self.assertEqual(
+            addressing["reply_reference"],
+            {
+                "actor_id": "qq:40004",
+                "actor_display_name": "天为",
+                "message_id": "member-message-1",
+                "excerpt": "今晚八点开黑",
+            },
+        )
 
 
 if __name__ == "__main__":

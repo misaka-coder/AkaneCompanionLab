@@ -113,6 +113,25 @@ def _qq_event_has_reply_reference(event: dict[str, Any]) -> bool:
     return bool(re.search(r"\[CQ:reply,[^\]]*\bid=", raw, flags=re.IGNORECASE))
 
 
+def _qq_quoted_message_reference(payload: Any) -> dict[str, str]:
+    source = payload if isinstance(payload, dict) else {}
+    quoted = source.get("quoted_message") if isinstance(source.get("quoted_message"), dict) else {}
+    if not bool(source.get("ok")) or not quoted:
+        return {}
+    raw_actor_id = str(quoted.get("actor_id") or "").strip()
+    actor_id = "assistant" if bool(quoted.get("actor_is_bot")) else (f"qq:{raw_actor_id}" if raw_actor_id else "")
+    message_id = str(quoted.get("message_id") or source.get("message_id") or "").strip()
+    excerpt = str(quoted.get("text") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not (actor_id or message_id or excerpt):
+        return {}
+    return {
+        "actor_id": actor_id,
+        "actor_display_name": str(quoted.get("actor_label") or "").strip(),
+        "message_id": message_id,
+        "excerpt": excerpt[:1000],
+    }
+
+
 QQ_REPLY_OBJECT_TERMS = ("工作台", "文件", "结果", "成果", "产物", "音频", "视频", "人声", "伴奏", "任务")
 QQ_REPLY_ACTION_TERMS = (
     "清理",
@@ -1858,6 +1877,11 @@ def build_qq_router(
         if snapshot is None:
             return
         context, event = snapshot
+        # Ambient participation is based on the whole MemCore projection, not
+        # mechanically on the last message that happened to update the ticket.
+        # Clear only the delivery reply reference so Akane joins the discussion
+        # naturally instead of quoting an arbitrary last line.
+        context = replace(context, source_message_id="")
         if turn_coordinator.is_busy(context.profile_user_id, context.session_id) or session_work_queue.has_work(
             ticket.key
         ):
@@ -2632,6 +2656,9 @@ def build_qq_router(
                 if callable(quoted_resolver):
                     resolved_quote = await asyncio.to_thread(quoted_resolver, event, context=context)
                     pre_resolved_quote = resolved_quote if isinstance(resolved_quote, dict) else {}
+                    reply_reference = _qq_quoted_message_reference(pre_resolved_quote)
+                    if reply_reference:
+                        context = replace(context, reply_reference=reply_reference)
                     quoted_message = (
                         pre_resolved_quote.get("quoted_message")
                         if isinstance(pre_resolved_quote.get("quoted_message"), dict)
@@ -3588,6 +3615,9 @@ def build_qq_router(
             else:
                 quoted_result = await asyncio.to_thread(quoted_resolver, event, context=context)
                 quoted_payload = quoted_result if isinstance(quoted_result, dict) else {}
+            reply_reference = _qq_quoted_message_reference(quoted_payload)
+            if reply_reference:
+                context = replace(context, reply_reference=reply_reference)
             quoted_attachments = [
                 dict(item) for item in list(quoted_payload.get("attachments") or []) if isinstance(item, dict)
             ]

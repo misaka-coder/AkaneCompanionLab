@@ -324,6 +324,7 @@ class QQMessageContext:
     source_message_id: str = ""
     mentioned_bot: bool = False
     addressed_to_assistant: bool = False
+    reply_reference: dict[str, Any] | None = None
     mentions: tuple[MentionRef, ...] = ()
     forward_refs: tuple[ForwardRef, ...] = ()
 
@@ -371,11 +372,19 @@ class QQMessageContext:
             if str(mention.target_id or "").strip()
         ]
         addressed_to_assistant = bool(self.addressed_to_assistant)
+        reply_reference = dict(self.reply_reference or {})
+        reply_actor_id = str(reply_reference.get("actor_id") or "").strip()
+        reply_actor_name = str(reply_reference.get("actor_display_name") or "").strip()
         primary_target = (
             {"actor_id": "assistant", "display_name": ""}
             if addressed_to_assistant
             else (
                 {
+                    "actor_id": reply_actor_id,
+                    "display_name": reply_actor_name,
+                }
+                if reply_actor_id
+                else {
                     "actor_id": str(mentions[0].get("actor_id") or ""),
                     "display_name": str(mentions[0].get("display_name") or ""),
                 }
@@ -383,7 +392,7 @@ class QQMessageContext:
                 else {}
             )
         )
-        return {
+        result = {
             "mode": "current_request" if self.should_respond else "observed",
             "trigger": str(self.reason or ""),
             "addressed_to_assistant": addressed_to_assistant,
@@ -391,6 +400,9 @@ class QQMessageContext:
             "primary_target": primary_target,
             "mentions": mentions,
         }
+        if reply_reference:
+            result["reply_reference"] = reply_reference
+        return result
 
     def to_delivery_context(self) -> dict[str, Any]:
         payload = {

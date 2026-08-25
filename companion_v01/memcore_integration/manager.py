@@ -3429,6 +3429,19 @@ class MemcoreManager:
             payload = {"text": content}
             addressing = raw.get("message_addressing")
             if isinstance(addressing, dict) and addressing:
+                reply_reference = addressing.get("reply_reference")
+                if isinstance(reply_reference, dict) and any(
+                    str(reply_reference.get(key) or "").strip()
+                    for key in ("actor_id", "message_id", "excerpt")
+                ):
+                    payload["reply_reference"] = {
+                        "actor_id": str(reply_reference.get("actor_id") or "").strip()[:160],
+                        "actor_display_name": str(
+                            reply_reference.get("actor_display_name") or ""
+                        ).strip()[:160],
+                        "message_id": str(reply_reference.get("message_id") or "").strip()[:160],
+                        "excerpt": str(reply_reference.get("excerpt") or "").strip()[:1000],
+                    }
                 additional_mentions: list[dict[str, str]] = []
                 seen_mentions: set[str] = set()
                 for mention in list(addressing.get("mentions") or [])[:16]:

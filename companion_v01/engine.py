@@ -3336,6 +3336,20 @@ class AkaneMemoryEngine:
                 }
             )
         addressed_to_assistant = bool(raw.get("addressed_to_assistant"))
+        reply_raw = raw.get("reply_reference")
+        reply_reference: dict[str, Any] = {}
+        if isinstance(reply_raw, dict):
+            reply_actor_id = str(reply_raw.get("actor_id") or "").strip()[:160]
+            reply_actor_name = str(reply_raw.get("actor_display_name") or "").strip()[:160]
+            reply_message_id = str(reply_raw.get("message_id") or "").strip()[:160]
+            reply_excerpt = str(reply_raw.get("excerpt") or "").strip()[:1000]
+            if reply_actor_id or reply_message_id or reply_excerpt:
+                reply_reference = {
+                    "actor_id": reply_actor_id,
+                    "actor_display_name": reply_actor_name,
+                    "message_id": reply_message_id,
+                    "excerpt": reply_excerpt,
+                }
         primary_raw = raw.get("primary_target")
         primary = dict(primary_raw) if isinstance(primary_raw, dict) else {}
         target_id = str(primary.get("actor_id") or "").strip()[:160]
@@ -3346,7 +3360,7 @@ class AkaneMemoryEngine:
         elif not target_id and mentions:
             target_id = str(mentions[0]["actor_id"])
             target_name = str(mentions[0]["display_name"])
-        return {
+        normalized = {
             "mode": mode,
             "trigger": trigger,
             "addressed_to_assistant": addressed_to_assistant,
@@ -3359,6 +3373,9 @@ class AkaneMemoryEngine:
             else {},
             "mentions": mentions,
         }
+        if reply_reference:
+            normalized["reply_reference"] = reply_reference
+        return normalized
 
     @staticmethod
     def _apply_message_addressing(

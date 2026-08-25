@@ -3916,6 +3916,12 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "message_addressing": {
                             "mode": "observed",
                             "addressed_to_assistant": False,
+                            "reply_reference": {
+                                "actor_id": "qq:40004",
+                                "actor_display_name": "天为",
+                                "message_id": "qq-message-previous",
+                                "excerpt": "今晚八点开黑",
+                            },
                             "mentions": [
                                 {
                                     "actor_id": "qq:40004",
@@ -3983,6 +3989,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 and "actor: 张三 (id=qq:1)" in text
                 and "target_actor: 天为 (id=qq:40004)" in text
                 and "【张三】这是群友之间的讨论" in text
+                and '"reply_reference":{"actor_display_name":"天为","actor_id":"qq:40004","excerpt":"今晚八点开黑","message_id":"qq-message-previous"}' in text
                 for text in projected
             ),
             projected,
