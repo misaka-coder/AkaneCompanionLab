@@ -149,12 +149,18 @@ if USER_ASSETS_DIR.exists():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    shutdown_started = time.monotonic()
+    logger.info("Bot registry shutdown started: bot_count=%s", len(bot_registry))
     shutdown_status = await bot_registry.stop_all()
+    shutdown_duration_ms = round((time.monotonic() - shutdown_started) * 1000, 1)
     if shutdown_status.get("status") != "stopped":
         logger.warning(
-            "Bot registry shutdown incomplete: %s",
+            "Bot registry shutdown incomplete after %.1f ms: %s",
+            shutdown_duration_ms,
             json.dumps(shutdown_status, ensure_ascii=False, sort_keys=True),
         )
+    else:
+        logger.info("Bot registry shutdown completed in %.1f ms", shutdown_duration_ms)
     app.state.akane_plugin_command_broker = None
     # Keep root leases until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here

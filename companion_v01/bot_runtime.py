@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -228,14 +229,17 @@ class BotRuntime:
         self.plugin_command_broker = None
         if self.voice_runtime_service is not None:
             try:
-                voice_status = self.voice_runtime_service.close()
+                # Runtime cleanup owns blocking worker/thread joins. Keep those
+                # joins off the Host lifecycle loop so sibling Bots can stop
+                # concurrently under the same shutdown deadline.
+                voice_status = await asyncio.to_thread(self.voice_runtime_service.close)
                 if voice_status.get("status") != "stopped":
                     failures.append("voice_runtime_shutdown_incomplete")
             except Exception:
                 failures.append("voice_runtime_shutdown_failed")
                 voice_status = {"status": "error", "reason": "voice_runtime_shutdown_failed"}
         try:
-            engine_status = self.engine.close()
+            engine_status = await asyncio.to_thread(self.engine.close)
             if engine_status.get("status") != "stopped":
                 failures.append("engine_shutdown_incomplete")
         except Exception:

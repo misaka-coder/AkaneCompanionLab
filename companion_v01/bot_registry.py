@@ -240,12 +240,20 @@ class BotRegistry:
     async def stop_all(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         with self._guard:
             bot_ids = tuple(reversed(self._entries))
-        bots: list[dict[str, Any]] = []
-        for bot_id in bot_ids:
-            try:
-                bots.append(await self.stop(bot_id, timeout_seconds=timeout_seconds))
-            except Exception:
-                bots.append({"bot_id": bot_id, "state": "degraded", "status": "degraded", "reason": "bot_stop_failed"})
+        # Every runtime gets the same Host shutdown deadline. Stopping them in
+        # series made the wall-clock budget grow with the Bot count (two Bots
+        # at 30 seconds exhausted systemd's 60-second TimeoutStopSec exactly).
+        # Runtime roots are isolated, so their cleanup can safely run together.
+        results = await asyncio.gather(
+            *(self.stop(bot_id, timeout_seconds=timeout_seconds) for bot_id in bot_ids),
+            return_exceptions=True,
+        )
+        bots = [
+            result
+            if isinstance(result, dict)
+            else {"bot_id": bot_id, "state": "degraded", "status": "degraded", "reason": "bot_stop_failed"}
+            for bot_id, result in zip(bot_ids, results)
+        ]
         return {
             "status": "stopped" if all(item.get("state") == "stopped" for item in bots) else "degraded",
             "count": len(bots),

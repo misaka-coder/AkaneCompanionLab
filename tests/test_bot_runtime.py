@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -193,6 +194,67 @@ class BotRegistryTests(unittest.TestCase):
 
 
 class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_all_stops_runtimes_concurrently_under_one_host_deadline(self) -> None:
+        all_stopping = asyncio.Event()
+        stopping_count = 0
+
+        class CoordinatedRuntime:
+            def __init__(self, bot_id: str, data_root: Path) -> None:
+                self.bot_id = bot_id
+                self.display_name = bot_id
+                self.runtime_layout = SimpleNamespace(data_root=data_root)
+
+            async def start(self) -> dict[str, str]:
+                return {"status": "active"}
+
+            async def stop(self) -> dict[str, str]:
+                nonlocal stopping_count
+                stopping_count += 1
+                if stopping_count == 2:
+                    all_stopping.set()
+                await all_stopping.wait()
+                return {"status": "stopped"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = BotRegistry(default_bot_id="bot-a")
+            root = Path(temp_dir)
+            registry.add(CoordinatedRuntime("bot-a", root / "bot-a"), default=True)
+            registry.add(CoordinatedRuntime("bot-b", root / "bot-b"))
+            await registry.start_all(timeout_seconds=0.5)
+
+            stopped = await registry.stop_all(timeout_seconds=0.5)
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(stopping_count, 2)
+        self.assertTrue(all(item["state"] == "stopped" for item in stopped["bots"]))
+
+    async def test_stop_all_keeps_blocking_engine_closes_off_the_lifecycle_loop(self) -> None:
+        registry = BotRegistry(default_bot_id="bot-a")
+        runtimes = [_runtime(bot_id)[0] for bot_id in ("bot-a", "bot-b")]
+        both_engines_closing = threading.Event()
+        close_guard = threading.Lock()
+        close_count = 0
+        overlap_observed: list[bool] = []
+
+        def coordinated_close() -> dict[str, str]:
+            nonlocal close_count
+            with close_guard:
+                close_count += 1
+                if close_count == 2:
+                    both_engines_closing.set()
+            overlap_observed.append(both_engines_closing.wait(timeout=0.5))
+            return {"status": "stopped"}
+
+        for runtime in runtimes:
+            runtime.engine.close = coordinated_close  # type: ignore[method-assign]
+            registry.add(runtime, default=runtime.bot_id == "bot-a")
+        await registry.start_all(timeout_seconds=1.0)
+
+        stopped = await registry.stop_all(timeout_seconds=1.0)
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(overlap_observed, [True, True])
+
     async def test_three_bot_runtimes_use_independent_roots_and_start_failure_is_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
