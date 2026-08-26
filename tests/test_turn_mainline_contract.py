@@ -560,10 +560,7 @@ class TurnMainlineContractTests(unittest.TestCase):
                     "content": [
                         {
                             "type": "text",
-                            "text": (
-                                "[visual_evidence]\nhandles: img_001\n"
-                                "证据是否在本次请求中可见，以紧随的内容块为准。"
-                            ),
+                            "text": "工具为当前请求加载了图片：img_001。",
                         },
                         {"type": "image_url", "image_url": {"url": image_input["data_url"]}},
                     ],
@@ -580,7 +577,7 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(harness.script.generation_kwargs[0]["user_images"], [])
         self.assertEqual(harness.script.generation_kwargs[1]["user_images"], [])
         next_history = harness.script.generation_kwargs[1]["post_user_turns"]
-        self.assertIn("[visual_evidence]", next_history[-1]["content"][0]["text"])
+        self.assertIn("img_001", next_history[-1]["content"][0]["text"])
         self.assertEqual(next_history[-1]["content"][-1]["image_url"]["url"], image_input["data_url"])
         self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 1)
         media_calls = harness.rec["record_memcore_tool_media_input"].calls

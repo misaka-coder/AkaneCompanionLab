@@ -7844,32 +7844,6 @@ class AkaneMemoryEngine:
             blocks = [dict(item) for item in content if isinstance(item, dict)]
         else:
             blocks = [{"type": "text", "text": str(content or "")}]
-        handles = list(
-            dict.fromkeys(
-                str(item.get("attachment_handle") or "").strip()
-                for item in list(model_image_inputs or [])[:5]
-                if isinstance(item, dict) and str(item.get("attachment_handle") or "").strip()
-            )
-        )
-        evidence_note = (
-            "[visual_evidence]\n"
-            f"handles: {', '.join(handles) or 'loaded_image'}\n"
-            "证据是否在本次请求中可见，以紧随的内容块为准：image_url 表示真实像素已提供，"
-            "[media omitted from persistent history] 表示像素只存在于先前请求、当前不可见。"
-            "只依据当前实际提供的像素判断；不可见时使用 load_material 重新加载，无法辨认时如实说明。"
-        )
-        text_index = next(
-            (
-                index
-                for index, block in enumerate(blocks)
-                if str(block.get("type") or "").strip().lower() in {"text", "input_text"}
-            ),
-            None,
-        )
-        if text_index is None:
-            blocks.insert(0, {"type": "text", "text": evidence_note})
-        else:
-            blocks[text_index] = {**blocks[text_index], "text": evidence_note}
         for item in list(model_image_inputs or [])[:5]:
             if not isinstance(item, dict):
                 continue

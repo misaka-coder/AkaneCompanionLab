@@ -26,6 +26,52 @@ from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RE
 logger = logging.getLogger("akane.response_builder")
 
 PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
+_EPHEMERAL_PROVIDER_BLOCK_TYPES = frozenset(
+    {"image_url", "input_image", "image", "input_audio", "audio", "input_file", "file"}
+)
+
+
+def _overlay_ephemeral_provider_evidence(
+    authoritative_turns: list[dict[str, Any]],
+    prepared_turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Decorate the authoritative open turn with request-only media blocks.
+
+    MemCore owns message order, roles and durable text. Raw image/audio/file
+    bytes deliberately do not live in its projection, so the tool runtime may
+    attach provider-native blocks to the matching open-turn message for this
+    request only. A shape mismatch declines the overlay instead of guessing.
+    """
+
+    authoritative = [dict(turn) for turn in authoritative_turns]
+    prepared = [dict(turn) for turn in prepared_turns]
+    if not authoritative or len(authoritative) != len(prepared):
+        return authoritative
+    if any(
+        str(left.get("role") or "").strip().lower()
+        != str(right.get("role") or "").strip().lower()
+        for left, right in zip(authoritative, prepared)
+    ):
+        return authoritative
+    overlaid: list[dict[str, Any]] = []
+    for durable, transient in zip(authoritative, prepared):
+        transient_content = transient.get("content")
+        media_blocks = [
+            dict(block)
+            for block in transient_content
+            if isinstance(block, dict)
+            and str(block.get("type") or "").strip().lower() in _EPHEMERAL_PROVIDER_BLOCK_TYPES
+        ] if isinstance(transient_content, list) else []
+        if not media_blocks:
+            overlaid.append(durable)
+            continue
+        content = durable.get("content")
+        if isinstance(content, list):
+            blocks = [dict(block) for block in content if isinstance(block, dict)]
+        else:
+            blocks = [{"type": "text", "text": str(content or "")}]
+        overlaid.append({**durable, "content": [*blocks, *media_blocks]})
+    return overlaid
 
 
 def _safe_projection_failure_code(value: Any, *, fallback: str = "projection_detail_unavailable") -> str:
@@ -632,7 +678,10 @@ def prepare_context(
         dict(turn) for turn in list(provider_projection.get("active_turn_messages") or []) if isinstance(turn, dict)
     ]
     if projection_authoritative and surface_active_turns:
-        effective_post_user_turns = surface_active_turns
+        effective_post_user_turns = _overlay_ephemeral_provider_evidence(
+            surface_active_turns,
+            effective_post_user_turns,
+        )
     system_prompt_override = prompt_profile.system_prompt_override
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)

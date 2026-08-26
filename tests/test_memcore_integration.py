@@ -2468,9 +2468,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(image_evidence["role"], "user")
                 self.assertEqual(image_evidence["content"][0]["type"], "text")
-                self.assertIn("[visual_evidence]", image_evidence["content"][0]["text"])
-                self.assertIn("handles: img_001", image_evidence["content"][0]["text"])
-                self.assertIn("image_url 表示真实像素已提供", image_evidence["content"][0]["text"])
+                self.assertIn("img_001", image_evidence["content"][0]["text"])
                 self.assertEqual(
                     image_evidence["content"][-1]["image_url"]["url"],
                     image_input["data_url"],
@@ -2504,8 +2502,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         media_message = next(message for message in frozen_turn if media["source_id"] in message.get("source_ids", []))
         persisted = str(media_message["payload"])
         self.assertIn("omitted from persistent history", persisted)
-        self.assertIn("[visual_evidence]", persisted)
-        self.assertIn("当前不可见", persisted)
         self.assertNotIn("AAAA", persisted)
         self.assertNotIn("MUST_NOT_BE_STORED", persisted)
         self.assertTrue(second_context["memcore_request_projection"]["media_omitted"])
@@ -6781,6 +6777,92 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_authoritative_open_turn_keeps_request_only_media_blocks(self) -> None:
+        projection_messages = [
+            {
+                "turn_id": "turn-current",
+                "payload": {"role": "user", "content": "当前问题"},
+                "source_ids": ["current"],
+            },
+            {
+                "turn_id": "turn-current",
+                "payload": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-image",
+                            "type": "function",
+                            "function": {"name": "load_material", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "source_ids": ["image-call"],
+            },
+            {
+                "turn_id": "turn-current",
+                "payload": {
+                    "role": "tool",
+                    "tool_call_id": "call-image",
+                    "content": "图片已加载。",
+                },
+                "source_ids": ["image-result"],
+            },
+            {
+                "turn_id": "turn-current",
+                "payload": {"role": "user", "content": "工具加载了图片 img_001。"},
+                "source_ids": ["image-media"],
+            },
+        ]
+        manager = _PromptContextMemcoreManager(
+            {},
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": projection_messages,
+                "stable_prefix_hash": "a" * 64,
+                "projection_version": 1,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=manager)
+        data_url = "data:image/jpeg;base64,AAAA"
+        prepared_turns = [
+            {"role": "assistant", "content": "must not replace authoritative tool call"},
+            {"role": "tool", "tool_call_id": "call-image", "content": "must not replace durable result"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "temporary media wording"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="当前问题",
+                recent_raw=[{"source_id": "current", "role": "user", "content": "当前问题"}],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                character_pack_id="char",
+                current_user_source_id="current",
+                post_user_turns=prepared_turns,
+            )
+
+        post_user = result["post_user_turns"]
+        self.assertEqual(len(post_user), 3)
+        self.assertEqual(post_user[0], projection_messages[1]["payload"])
+        self.assertEqual(post_user[1], projection_messages[2]["payload"])
+        self.assertEqual(post_user[2]["role"], "user")
+        self.assertEqual(post_user[2]["content"][0]["text"], "工具加载了图片 img_001。")
+        self.assertEqual(post_user[2]["content"][-1]["image_url"]["url"], data_url)
+        self.assertNotIn("AAAA", repr(manager.projection_payload))
 
     def test_qq_system_format_example_does_not_change_with_runtime_emotion(self) -> None:
         class _QQPromptContextEngine(_PromptContextEngine):
