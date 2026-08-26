@@ -7,6 +7,31 @@ from companion_v01.turn_coordination import SessionWorkQueue, TurnCoordinator
 
 
 class TurnCoordinatorTests(unittest.TestCase):
+    def test_addressed_input_preempts_optional_attention_instead_of_becoming_steer(self) -> None:
+        async def run() -> None:
+            coordinator = TurnCoordinator()
+            async with coordinator.hold(
+                "profile",
+                "session",
+                actor_id="qq:42",
+                channel="qq",
+                turn_kind="qq_attention",
+            ) as token:
+                result = coordinator.offer_steer(
+                    profile_user_id="profile",
+                    session_id="session",
+                    actor_id="qq:42",
+                    content="@Akane 这是明确的新消息",
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], "preempting_optional_turn")
+                self.assertEqual(result["turn_token"], token)
+                drained = coordinator.drain(token)
+                self.assertTrue(drained["stop_requested"])
+                self.assertEqual(drained["steers"], [])
+
+        asyncio.run(run())
+
     def test_same_actor_steers_active_turn_and_drain_coalesces_inputs(self) -> None:
         async def exercise() -> None:
             coordinator = TurnCoordinator()

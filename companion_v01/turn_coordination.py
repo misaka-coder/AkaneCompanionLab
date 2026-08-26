@@ -37,6 +37,7 @@ class _ActiveTurn:
     token: str
     actor_id: str
     channel: str
+    turn_kind: str = ""
     pending: list[SteeringInput] = field(default_factory=list)
     stop_requested: bool = False
     phase: str = "running"
@@ -193,6 +194,20 @@ class TurnCoordinator:
                 return {"ok": False, "status": "idle", "reason": "no_active_turn"}
             if active.phase != "running":
                 return {"ok": False, "status": "finalizing", "reason": "active_turn_finalizing"}
+            if active.turn_kind == "qq_attention":
+                # Ambient attention is host-initiated observation, not work
+                # owned by the passive message's sender.  A real addressed
+                # message must therefore become the next ordinary turn rather
+                # than disappearing into the optional turn's steer mailbox.
+                # Ask the engine to finish at its next safe boundary while the
+                # QQ route queues the addressed message behind it.
+                active.stop_requested = True
+                return {
+                    "ok": False,
+                    "status": "preempting_optional_turn",
+                    "reason": "addressed_input_preempts_optional_turn",
+                    "turn_token": active.token,
+                }
             if active.actor_id != actor:
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
             safe_images = tuple(
@@ -286,6 +301,7 @@ class TurnCoordinator:
         *,
         actor_id: Any = "",
         channel: Any = "",
+        turn_kind: Any = "",
     ):
         key = _identity_key(profile_user_id, session_id)
         with self._state_lock:
@@ -301,6 +317,7 @@ class TurnCoordinator:
                         token=token,
                         actor_id=str(actor_id or "").strip(),
                         channel=str(channel or "").strip(),
+                        turn_kind=str(turn_kind or "").strip(),
                     )
                 yield token
         finally:

@@ -1509,7 +1509,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         scheduled: list[Any] = []
         processed: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
-        steer_mode = {"same_actor": False}
+        steer_mode = {"same_actor": False, "optional_turn": False}
 
         class FakeCoordinator:
             @staticmethod
@@ -1518,6 +1518,12 @@ class BackendRouteModuleTests(unittest.TestCase):
 
             @staticmethod
             def offer_steer(**_kwargs):
+                if steer_mode["optional_turn"]:
+                    return {
+                        "ok": False,
+                        "status": "preempting_optional_turn",
+                        "reason": "addressed_input_preempts_optional_turn",
+                    }
                 if steer_mode["same_actor"]:
                     return {"ok": True, "status": "accepted", "pending_count": 1}
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
@@ -1605,6 +1611,22 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(steered.status_code, 200)
         self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
         self.assertEqual(len(scheduled), 0)
+
+        steer_mode["same_actor"] = False
+        steer_mode["optional_turn"] = True
+        preempted = client.post(
+            "/api/qq/napcat/event",
+            json={**event, "message_id": "optional-turn-preempted", "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "明确艾特不能进入主动观察邮箱"}},
+            ]},
+        )
+        self.assertEqual(preempted.status_code, 200)
+        self.assertEqual(preempted.json()["send_result"]["status"], "queued")
+        self.assertEqual(len(scheduled), 1)
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            asyncio.run(scheduled.pop())
+        self.assertEqual(len(processed), 2)
 
     def test_qq_router_filters_only_passive_group_memory_by_runtime_policy(self) -> None:
         runtime = FakeRuntimeMetrics()

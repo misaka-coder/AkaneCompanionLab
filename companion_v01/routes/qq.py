@@ -2475,6 +2475,7 @@ def build_qq_router(
         queue_behind_active_turn = str(steer_result.get("status") or "") in {
             "busy_other_actor",
             "finalizing",
+            "preempting_optional_turn",
         }
         if context.is_group and (queue_behind_active_turn or session_work_queue.has_work(queue_key)):
             queued = session_work_queue.enqueue(
@@ -2515,6 +2516,7 @@ def build_qq_router(
             context.session_id,
             actor_id=actor_id,
             channel="qq",
+            turn_kind=str(turn_payload.get("turn_kind") or "").strip(),
         ) as turn_control_id:
             queue_wait_ms = max(0.0, (time.perf_counter() - queue_wait_started_at) * 1000)
             turn_payload["_turn_control_id"] = turn_control_id
