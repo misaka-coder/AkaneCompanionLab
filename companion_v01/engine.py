@@ -192,6 +192,11 @@ FINAL_RESPONSE_RECOVERY_FEEDBACK = (
     "不要重复已完成的工具，不要讨论这次格式错误。"
 )
 
+QQ_OPTIONAL_RESPONSE_RECOVERY_FEEDBACK = (
+    "【宿主反馈】上一条可选回复格式无效。决定回复时输出标准 QQ JSON；"
+    "决定静默时只输出 {\"attention\":\"silent\"}。"
+)
+
 # Last-resort delivery after the configured structured decisions all fail. It
 # is an explicit protocol-exhaustion path, not an inferred final stage.
 FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = (
@@ -5239,7 +5244,11 @@ class AkaneMemoryEngine:
             # surface. A legal tool call is a decision, not damaged final text.
             retry_mode = attempt > 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
-            retry_note = FINAL_RESPONSE_RECOVERY_FEEDBACK if retry_mode and not transport_retry_pending else ""
+            retry_note = (
+                self._final_response_retry_note(generation_context)
+                if retry_mode and not transport_retry_pending
+                else ""
+            )
             request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -5385,10 +5394,16 @@ class AkaneMemoryEngine:
     @staticmethod
     def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
         if AkaneMemoryEngine._qq_optional_decision_pending(generation_context):
-            return 1
+            return 2
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
         return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
+
+    @staticmethod
+    def _final_response_retry_note(generation_context: dict[str, Any]) -> str:
+        if AkaneMemoryEngine._qq_optional_decision_pending(generation_context):
+            return QQ_OPTIONAL_RESPONSE_RECOVERY_FEEDBACK
+        return FINAL_RESPONSE_RECOVERY_FEEDBACK
 
     @staticmethod
     def _final_response_retry_feedback(
@@ -6090,11 +6105,13 @@ class AkaneMemoryEngine:
             recovery_prefix_keys = ["".join(item.split()) for item in delivered_before_attempt]
             recovery_prefix_index = 0
             recovery_prefix_matching = retry_mode and bool(recovery_prefix_keys)
-            retry_note = (
-                self._stream_final_response_recovery_feedback(delivered_before_attempt)
-                if retry_mode
-                else ""
-            )
+            retry_note = ""
+            if retry_mode:
+                retry_note = (
+                    self._final_response_retry_note(generation_context)
+                    if not delivered_before_attempt
+                    else self._stream_final_response_recovery_feedback(delivered_before_attempt)
+                )
             request_kwargs = self._build_final_response_request_kwargs(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -6446,7 +6463,8 @@ class AkaneMemoryEngine:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
         elif self._qq_optional_decision_pending(generation_context) and not delivered_speech_segments:
-            normalized = self._mark_qq_optional_silent(normalized)
+            if not normalized.get("_qq_attention_silent"):
+                normalized = self._mark_qq_optional_silent(normalized)
         elif self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,

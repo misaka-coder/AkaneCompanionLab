@@ -45,13 +45,10 @@ SCENE_STATIC_PROMPT_MODULES = (
 
 
 QQ_OPTIONAL_ATTENTION_PROTOCOL = (
-    "群聊可选回复协议（仅请求末尾带 response_expectation: optional 时生效）：\n"
-    "- event.group_attention_followup_review：你刚回复过；紧接着的续话、请求或追问通常应回复。\n"
-    "- event.group_attention_idle_review：低频环境观察；只在自然且有价值时回复。\n"
-    "- event.qq_optional_reply_review：有人引用了你先前的发言；按引用关系判断。\n"
-    "- 回复：仍按上述 QQ JSON。静默：只输出 {\"attention\":\"silent\"}，不要解释。\n"
-    "- 调用工具即表示回复；工具结束后必须按上述 QQ JSON 交付。\n"
-    "没有 response_expectation: optional 时，不得输出 attention 静默对象。\n"
+    "可选回复（仅请求末尾带 response_expectation: optional 时生效）：\n"
+    "- event.group_attention_followup_review 通常应接住续话；event.group_attention_idle_review 只在自然且有价值时回复；event.qq_optional_reply_review 按引用关系判断。\n"
+    "- 决定回复时输出上述标准 QQ JSON；决定静默时只输出 {\"attention\":\"silent\"}，这是字段固定规则的唯一例外。\n"
+    "- 调用工具表示决定回复；工具完成后输出标准 QQ JSON。\n"
 )
 
 
@@ -155,18 +152,18 @@ class PromptProfileRegistry:
                 system_prompt_override=build_qq_text_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text。\n"
-                    "字段固定为 emotion, reply_medium, speech, tool_call, status, choices, persona, memory_metadata, state_request。\n"
+                    "正常回复字段固定为 emotion, reply_medium, speech, tool_call, status, choices, persona, memory_metadata, state_request。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
-                    "必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
+                    "正常回复必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
                     '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                     + QQ_OPTIONAL_ATTENTION_PROTOCOL
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text。\n"
-                    "字段固定为 emotion, reply_medium, speech, tool_call, status, choices, persona, memory_metadata, state_request。\n"
+                    "正常回复字段固定为 emotion, reply_medium, speech, tool_call, status, choices, persona, memory_metadata, state_request。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
-                    "必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
+                    "正常回复必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
                     '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
                     + QQ_OPTIONAL_ATTENTION_PROTOCOL

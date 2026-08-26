@@ -182,7 +182,9 @@ class ClientProtocolTests(unittest.TestCase):
             self.assertIn("event.group_attention_idle_review", mode_prompt)
             self.assertIn("event.qq_optional_reply_review", mode_prompt)
             self.assertIn('{"attention":"silent"}', mode_prompt)
-            self.assertIn("紧接着的续话、请求或追问通常应回复", mode_prompt)
+            self.assertIn("通常应接住续话", mode_prompt)
+            self.assertIn("这是字段固定规则的唯一例外", mode_prompt)
+            self.assertEqual(mode_prompt.count('{"attention":"silent"}'), 1)
 
     def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
         text = PromptBlockRegistry().require("field_order").text
