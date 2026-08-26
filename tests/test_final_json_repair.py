@@ -146,6 +146,7 @@ class FinalRecoveryTests(unittest.TestCase):
 
         self.assertEqual(llm.calls, 1)
         self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["_qq_attention_silent_reason"], "model_decision")
         self.assertEqual(result["speech"], "")
         self.assertEqual(result["speech_segments"], [])
         self.assertIsNone(result["tool_call"])
@@ -192,6 +193,7 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(llm.json_calls, 1)
         self.assertEqual(llm.text_calls, 0)
         self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["_qq_attention_silent_reason"], "invalid_optional_output")
         self.assertEqual(result["speech"], "")
         self.assertNotIn("_transient_final_failure", result)
 
@@ -234,6 +236,7 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(llm.stream_calls, 1)
         self.assertEqual(llm.text_calls, 0)
         self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["_qq_attention_silent_reason"], "invalid_optional_output")
         self.assertEqual(result["speech"], "")
 
     def test_optional_attention_legal_tool_call_still_enters_tool_loop(self) -> None:

@@ -45,12 +45,13 @@ SCENE_STATIC_PROMPT_MODULES = (
 
 
 QQ_OPTIONAL_ATTENTION_PROTOCOL = (
-    "仅当请求末尾出现宿主事件 event.group_attention_review 或 event.qq_optional_reply_review，"
-    "并紧随 response_expectation: optional 时，本次回复才是可选的。"
-    "若自然参与，仍按上述 QQ JSON 输出；若不参与，只输出且精确输出 "
-    '{"attention":"silent"}。'
-    "结合该事件之前的真实群聊时间线判断；明确要求你不要回复时通常保持静默，不要解释决定。"
-    "没有这类事件时不得输出 attention 静默对象。调用工具即表示参与，工具完成后必须按上述 QQ JSON 交付。\n"
+    "群聊可选回复协议（仅请求末尾带 response_expectation: optional 时生效）：\n"
+    "- event.group_attention_followup_review：你刚回复过；紧接着的续话、请求或追问通常应回复。\n"
+    "- event.group_attention_idle_review：低频环境观察；只在自然且有价值时回复。\n"
+    "- event.qq_optional_reply_review：有人引用了你先前的发言；按引用关系判断。\n"
+    "- 回复：仍按上述 QQ JSON。静默：只输出 {\"attention\":\"silent\"}，不要解释。\n"
+    "- 调用工具即表示回复；工具结束后必须按上述 QQ JSON 交付。\n"
+    "没有 response_expectation: optional 时，不得输出 attention 静默对象。\n"
 )
 
 

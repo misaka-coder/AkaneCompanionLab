@@ -3235,7 +3235,11 @@ class AkaneMemoryEngine:
         return str(raw_result.get("attention") or "").strip().lower() == "silent"
 
     @staticmethod
-    def _mark_qq_optional_silent(normalized: dict[str, Any]) -> dict[str, Any]:
+    def _mark_qq_optional_silent(
+        normalized: dict[str, Any],
+        *,
+        reason: str = "invalid_optional_output",
+    ) -> dict[str, Any]:
         result = dict(normalized or {})
         result["speech"] = ""
         result["speech_segments"] = []
@@ -3245,6 +3249,7 @@ class AkaneMemoryEngine:
         result.pop("_provider_output_raw", None)
         result.pop("_transient_final_failure", None)
         result["_qq_attention_silent"] = True
+        result["_qq_attention_silent_reason"] = str(reason or "invalid_optional_output")
         return result
 
     @staticmethod
@@ -5292,7 +5297,7 @@ class AkaneMemoryEngine:
                 result,
                 prompt_scope=str(generation_context.get("prompt_scope") or ""),
             ) and self._qq_optional_decision_pending(generation_context):
-                return self._mark_qq_optional_silent(normalized)
+                return self._mark_qq_optional_silent(normalized, reason="model_decision")
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
             self._attach_nonfatal_memcore_failure(
@@ -6196,7 +6201,7 @@ class AkaneMemoryEngine:
                 getattr(stream_result, "parsed", None),
                 prompt_scope=str(generation_context.get("prompt_scope") or ""),
             ) and self._qq_optional_decision_pending(generation_context):
-                normalized = self._mark_qq_optional_silent(normalized)
+                normalized = self._mark_qq_optional_silent(normalized, reason="model_decision")
                 unrecovered_stream_error = ""
                 unrecovered_stream_partial = {}
                 break

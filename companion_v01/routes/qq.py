@@ -1804,6 +1804,14 @@ def _hydrate_plugin_managed_artifact_events(
     return hydrated, failures
 
 
+def _group_attention_review_event(reason: Any) -> str:
+    return (
+        "event.group_attention_followup_review"
+        if str(reason or "").strip().lower() == "engaged_followup"
+        else "event.group_attention_idle_review"
+    )
+
+
 def build_qq_router(
     *,
     engine: Any,
@@ -1904,10 +1912,11 @@ def build_qq_router(
                 attention_reason=ticket.reason,
             )
             return
+        review_event = _group_attention_review_event(ticket.reason)
         turn_payload = context.to_turn_payload()
         turn_payload.update(
             {
-                "message": "event.group_attention_review",
+                "message": review_event,
                 "timestamp": int(time.time()),
                 "turn_kind": "qq_attention",
                 "transient_user_message": True,
@@ -1918,7 +1927,7 @@ def build_qq_router(
                 "memory_projection_anchor_source_id": projection_anchor_source_id,
                 "message_addressing": {
                     "mode": "observed",
-                    "trigger": "group_attention_review",
+                    "trigger": review_event.removeprefix("event."),
                     "addressed_to_assistant": False,
                     "explicit_assistant_mention": False,
                     "primary_target": {},
@@ -1928,7 +1937,7 @@ def build_qq_router(
         )
         for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
             turn_payload.pop(field, None)
-        observation_note = "event.group_attention_review\nresponse_expectation: optional"
+        observation_note = f"{review_event}\nresponse_expectation: optional"
         turn_payload["extra_context"] = "\n\n".join(
             part for part in (str(turn_payload.get("extra_context") or "").strip(), observation_note) if part
         )
@@ -1967,6 +1976,11 @@ def build_qq_router(
             attention_reason=ticket.reason,
             visible_reply=_turn_has_real_visible_delivery(result),
             silent=bool(dict(result.get("frame") or {}).get("_qq_attention_silent")) if isinstance(result, dict) else False,
+            silent_reason=(
+                str(dict(result.get("frame") or {}).get("_qq_attention_silent_reason") or "")
+                if isinstance(result, dict)
+                else ""
+            ),
         )
 
     def _schedule_group_attention(

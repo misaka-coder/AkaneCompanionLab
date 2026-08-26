@@ -178,10 +178,11 @@ class ClientProtocolTests(unittest.TestCase):
             profile.mode_prompt_override(debug_enabled=False),
             profile.mode_prompt_override(debug_enabled=True),
         ):
-            self.assertIn("event.group_attention_review", mode_prompt)
+            self.assertIn("event.group_attention_followup_review", mode_prompt)
+            self.assertIn("event.group_attention_idle_review", mode_prompt)
             self.assertIn("event.qq_optional_reply_review", mode_prompt)
             self.assertIn('{"attention":"silent"}', mode_prompt)
-            self.assertIn("明确要求你不要回复时通常保持静默", mode_prompt)
+            self.assertIn("紧接着的续话、请求或追问通常应回复", mode_prompt)
 
     def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
         text = PromptBlockRegistry().require("field_order").text

@@ -13,10 +13,24 @@ from fastapi.testclient import TestClient
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.qq_group_attention import QQGroupAttentionState
-from companion_v01.routes.qq import _process_qq_turn_streaming, build_qq_router
+from companion_v01.routes.qq import (
+    _group_attention_review_event,
+    _process_qq_turn_streaming,
+    build_qq_router,
+)
 
 
 class QQGroupAttentionStateTests(unittest.TestCase):
+    def test_review_event_preserves_attention_semantics_without_dynamic_prose(self) -> None:
+        self.assertEqual(
+            _group_attention_review_event("engaged_followup"),
+            "event.group_attention_followup_review",
+        )
+        self.assertEqual(
+            _group_attention_review_event("idle_observation"),
+            "event.group_attention_idle_review",
+        )
+
     def test_pending_ticket_has_fixed_deadline(self) -> None:
         now = [100.0]
         state = QQGroupAttentionState(clock=lambda: now[0])
@@ -284,16 +298,16 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(len(processed), 1)
         self.assertEqual(processed[0]["turn_kind"], "qq_attention")
         self.assertTrue(processed[0]["transient_user_message"])
-        self.assertEqual(processed[0]["message"], "event.group_attention_review")
+        self.assertEqual(processed[0]["message"], "event.group_attention_idle_review")
         self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-1")
         self.assertTrue(
             processed[0]["extra_context"].endswith(
-                "event.group_attention_review\nresponse_expectation: optional"
+                "event.group_attention_idle_review\nresponse_expectation: optional"
             )
         )
         self.assertNotIn("完整群聊历史", processed[0]["extra_context"])
         self.assertNotIn("idle_observation", processed[0]["extra_context"])
-        self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_review")
+        self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_idle_review")
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
 
