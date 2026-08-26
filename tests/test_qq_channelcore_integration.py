@@ -159,7 +159,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(context.clean_message, "[QQ合并转发 forward_id=forward-real-1]")
         self.assertEqual([item.forward_id for item in context.forward_refs], ["forward-real-1"])
 
-    def test_gateway_group_context_delegates_trigger_decision_to_package_policy(self) -> None:
+    def test_gateway_group_context_uses_single_package_parse_for_trigger_facts(self) -> None:
         gateway = NapCatQQGateway(wake_words=("Akane",))
         event = {
             "post_type": "message",
@@ -177,21 +177,18 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(
-            gateway._group_trigger,
-            "evaluate",
-            wraps=gateway._group_trigger.evaluate,
-        ) as trigger_policy:
+        with patch(
+            "companion_v01.qq_gateway.normalize_inbound_event",
+            wraps=normalize_inbound_event,
+        ) as package_parser:
             context = gateway.build_message_context(event)
 
-        trigger_policy.assert_called_once()
-        kwargs = trigger_policy.call_args.kwargs
-        self.assertEqual(kwargs["group_id"], GROUP_ID)
-        self.assertEqual(kwargs["actor_id"], USER_ID)
-        self.assertFalse(kwargs["mentioned_bot"])
-        self.assertTrue(kwargs["mentioned_wake_word"])
-        self.assertTrue(kwargs["has_attachments"])
-        self.assertTrue(kwargs["allow_attachment_follow"])
+        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
+        self.assertIsNotNone(context.inbound_message)
+        self.assertIs(context.message_chain, context.inbound_message.chain)
+        self.assertFalse(context.inbound_message.mentioned_bot)
+        self.assertTrue(context.inbound_message.mentioned_wake_word)
+        self.assertEqual([part.kind for part in context.message_chain.parts], ["text", "attachment"])
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "group_wake_word")
 
@@ -209,7 +206,11 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                 {"type": "text", "data": {"text": "Akane 看看图"}},
             ],
         }
-        context = gateway.build_message_context(event)
+        with patch(
+            "companion_v01.qq_gateway.normalize_inbound_event",
+            wraps=normalize_inbound_event,
+        ) as package_parser:
+            context = gateway.build_message_context(event)
 
         class FakeResponse:
             def raise_for_status(self) -> None:
@@ -243,6 +244,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         ):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
+        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
         package_resolver.assert_called_once()
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["quoted_message"]["text"], "这是很久以前的原话 [图片]")

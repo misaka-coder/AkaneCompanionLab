@@ -3526,6 +3526,24 @@ class MemcoreManager:
                         "message_id": str(reply_reference.get("message_id") or "").strip()[:160],
                         "excerpt": str(reply_reference.get("excerpt") or "").strip()[:1000],
                     }
+                    try:
+                        reply_timestamp = int(float(reply_reference.get("timestamp") or 0))
+                    except (TypeError, ValueError):
+                        reply_timestamp = 0
+                    if reply_timestamp > 0:
+                        payload["reply_reference"]["timestamp"] = reply_timestamp
+                    conversation_kind = str(reply_reference.get("conversation_kind") or "").strip()[:32]
+                    conversation_id = str(reply_reference.get("conversation_id") or "").strip()[:160]
+                    if conversation_kind:
+                        payload["reply_reference"]["conversation_kind"] = conversation_kind
+                    if conversation_id:
+                        payload["reply_reference"]["conversation_id"] = conversation_id
+                    try:
+                        attachment_count = max(0, int(reply_reference.get("attachment_count") or 0))
+                    except (TypeError, ValueError):
+                        attachment_count = 0
+                    if attachment_count > 0:
+                        payload["reply_reference"]["attachment_count"] = attachment_count
                 additional_mentions: list[dict[str, str]] = []
                 seen_mentions: set[str] = set()
                 for mention in list(addressing.get("mentions") or [])[:16]:

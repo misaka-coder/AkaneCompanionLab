@@ -3441,6 +3441,16 @@ class AkaneMemoryEngine:
             reply_actor_name = str(reply_raw.get("actor_display_name") or "").strip()[:160]
             reply_message_id = str(reply_raw.get("message_id") or "").strip()[:160]
             reply_excerpt = str(reply_raw.get("excerpt") or "").strip()[:1000]
+            try:
+                reply_timestamp = int(float(reply_raw.get("timestamp") or 0))
+            except (TypeError, ValueError):
+                reply_timestamp = 0
+            reply_conversation_kind = str(reply_raw.get("conversation_kind") or "").strip()[:32]
+            reply_conversation_id = str(reply_raw.get("conversation_id") or "").strip()[:160]
+            try:
+                reply_attachment_count = max(0, int(reply_raw.get("attachment_count") or 0))
+            except (TypeError, ValueError):
+                reply_attachment_count = 0
             if reply_actor_id or reply_message_id or reply_excerpt:
                 reply_reference = {
                     "actor_id": reply_actor_id,
@@ -3448,6 +3458,14 @@ class AkaneMemoryEngine:
                     "message_id": reply_message_id,
                     "excerpt": reply_excerpt,
                 }
+                if reply_timestamp > 0:
+                    reply_reference["timestamp"] = reply_timestamp
+                if reply_conversation_kind:
+                    reply_reference["conversation_kind"] = reply_conversation_kind
+                if reply_conversation_id:
+                    reply_reference["conversation_id"] = reply_conversation_id
+                if reply_attachment_count > 0:
+                    reply_reference["attachment_count"] = reply_attachment_count
         primary_raw = raw.get("primary_target")
         primary = dict(primary_raw) if isinstance(primary_raw, dict) else {}
         target_id = str(primary.get("actor_id") or "").strip()[:160]

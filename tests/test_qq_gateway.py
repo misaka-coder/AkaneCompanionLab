@@ -2420,6 +2420,7 @@ class QQGatewayTests(unittest.TestCase):
             ],
         }
         context = gateway.build_message_context(event)
+        event["message"] = [{"type": "text", "data": {"text": "事件对象已被后续代码改写"}}]
 
         result = gateway.handle_mface_config_command(context, event)
 

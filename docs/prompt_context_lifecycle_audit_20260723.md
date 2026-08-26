@@ -202,7 +202,7 @@ MemCore 当前 provider projection 顺序是：长期语义摘要、阶段摘要
 
 ### 5.4 QQ 当前消息、引用与客户端状态
 
-QQ 引用链路方向正确：`routes/qq.py` 已把引用正文、引用者、时间与当前追问渲染为一条 `qq.reply_reference` 当前消息，并能标记引用的 Bot 回复为 `assistant_self`。这条消息整体属于 `timeline_event`，不能把引用证据拆成孤立的临时块。
+QQ 引用链路现由结构化时间线字段承载：当前消息正文保持用户原文，引用发送者、正文、时间、会话和附件数量写入同一条 `timeline_event` 的 `reply_reference` payload。旧 `qq.reply_reference` YAML 正文块已删除，避免模型同时看到两份引用内容；引用证据仍不是孤立临时块。
 
 `qq_gateway.build_extra_context()` 当前每轮重复发送者 QQ、昵称、群号、群聊昵称说明、客户端说明、回复模式、语音规则、媒体委派和临时模型名。目标处理：
 

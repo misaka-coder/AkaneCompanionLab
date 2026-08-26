@@ -81,11 +81,14 @@ rendered. An invalid supplied token falls back only to a sanitized
 `origin_name` basename. Direct media URLs remain PUBLIC_ONLY, including
 loopback URLs on the configured OneBot origin.
 
-`QQMessageContext` therefore remains in Akane, but its protocol parsing inputs
-come from `InboundMessage`. Compatibility methods such as
-`extract_attachments()` contain projection only; they do not reimplement CQ or
-OneBot segment rules. `deployment_security.py` maps the package's neutral
-identity result back to the existing `qq_self_id_mismatch` HTTP response.
+`QQMessageContext` therefore remains in Akane, but carries the single parsed
+`InboundMessage` and exposes its ordered `MessageChain`. Its clean text,
+resolved mention labels, and materialization dictionaries are product
+projections; quote/forward resolution and trusted mface extraction reuse the
+same parsed message rather than parsing the event again. The old gateway
+`extract_*` CQ helpers are deleted. `deployment_security.py` maps the package's
+neutral identity result back to the existing `qq_self_id_mismatch` HTTP
+response.
 
 ## User-visible effect
 

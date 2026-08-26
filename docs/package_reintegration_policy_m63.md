@@ -233,6 +233,9 @@ Current Akane use:
 
 - `companion_v01/qq_gateway.py` delegates OneBot message text, CQ segment,
   attachment, reply, mention, wake-word, and poke normalization to the package.
+- One inbound normalization now creates the ordered package `MessageChain` kept
+  on `QQMessageContext`; quote/forward resolution and trusted mface extraction
+  consume that same parsed message instead of reparsing the event.
 - It also delegates outbound target, text/image/voice/reply/mface segments,
   message/file action selection, and logical result normalization.
 - `QQMessageContext` remains an Akane product projection that adds session,
@@ -268,6 +271,13 @@ freshness, replay, outbound segment, action-selection, or logical result rules
 there. Akane's remaining sending code prepares product content and safe local
 media candidates, then executes the package plan through its Bot-bound
 transport.
+
+The compatibility `clean_message`, resolved mention labels, and materialization
+attachment dictionaries on `QQMessageContext` are thin Akane product
+projections. They are derived from the immutable package message and must not
+be used to reconstruct or mutate protocol ordering. Resolved quote content is
+stored once as structured MemCore `reply_reference` evidence rather than being
+duplicated into a `qq.reply_reference` message-text block.
 
 ### `capcore`
 

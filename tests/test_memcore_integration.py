@@ -4061,6 +4061,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 "actor_display_name": "天为",
                                 "message_id": "qq-message-previous",
                                 "excerpt": "今晚八点开黑",
+                                "timestamp": _ts(2026, 7, 29, 11, 30),
+                                "conversation_kind": "group",
+                                "conversation_id": "group-1",
+                                "attachment_count": 2,
                             },
                             "mentions": [
                                 {
@@ -4129,7 +4133,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 and "actor: 张三 (id=qq:1)" in text
                 and "target_actor: 天为 (id=qq:40004)" in text
                 and "【张三】这是群友之间的讨论" in text
-                and '"reply_reference":{"actor_display_name":"天为","actor_id":"qq:40004","excerpt":"今晚八点开黑","message_id":"qq-message-previous"}' in text
+                and '"actor_display_name":"天为"' in text
+                and '"actor_id":"qq:40004"' in text
+                and '"attachment_count":2' in text
+                and '"conversation_id":"group-1"' in text
+                and '"conversation_kind":"group"' in text
+                and '"excerpt":"今晚八点开黑"' in text
+                and '"message_id":"qq-message-previous"' in text
+                and f'"timestamp":{_ts(2026, 7, 29, 11, 30)}' in text
                 for text in projected
             ),
             projected,
@@ -4144,6 +4155,41 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 for text in projected
             ),
             projected,
+        )
+
+    def test_engine_preserves_structured_quote_evidence_without_message_text_duplication(self) -> None:
+        normalized = AkaneMemoryEngine._normalize_message_addressing(
+            {
+                "message_addressing": {
+                    "mode": "current_request",
+                    "addressed_to_assistant": True,
+                    "reply_reference": {
+                        "actor_id": "qq:40004",
+                        "actor_display_name": "天为",
+                        "message_id": "quoted-1",
+                        "excerpt": "旧消息正文",
+                        "timestamp": _ts(2026, 7, 29, 11, 30),
+                        "conversation_kind": "group",
+                        "conversation_id": "group-1",
+                        "attachment_count": 2,
+                    },
+                }
+            },
+            fallback_mode="current_request",
+        )
+
+        self.assertEqual(
+            normalized["reply_reference"],
+            {
+                "actor_id": "qq:40004",
+                "actor_display_name": "天为",
+                "message_id": "quoted-1",
+                "excerpt": "旧消息正文",
+                "timestamp": _ts(2026, 7, 29, 11, 30),
+                "conversation_kind": "group",
+                "conversation_id": "group-1",
+                "attachment_count": 2,
+            },
         )
 
     def test_engine_memcore_mode_lets_memcore_own_compaction_when_available(self) -> None:

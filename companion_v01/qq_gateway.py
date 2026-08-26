@@ -7,7 +7,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -15,6 +15,8 @@ from typing import Any, Callable
 from channelcore_onebot import (
     AttachmentRef,
     EventAdmissionConfig,
+    InboundMessage,
+    MessageChain,
     MentionRef,
     ForwardRef,
     OneBotEventAdmission,
@@ -22,15 +24,11 @@ from channelcore_onebot import (
     OutboundTarget,
     build_message_action,
     build_upload_file_action,
-    clean_message_text as clean_onebot_message_text,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
     compile_wake_word_search as _compile_qq_wake_word_search,
     message_mentions_bot as onebot_message_mentions_bot,
     normalize_inbound_event,
     normalize_wake_words as _normalize_qq_wake_words,
-    parse_attachments as parse_onebot_attachments,
-    parse_cq_params as parse_onebot_cq_params,
-    render_message_text as render_onebot_message_text,
     resolve_quoted_message as resolve_onebot_quoted_message,
     resolve_forward_message as resolve_onebot_forward_message,
     image_segment,
@@ -304,6 +302,7 @@ def _safe_qq_file_name(value: str, *, fallback: str) -> str:
 class QQMessageContext:
     should_respond: bool
     reason: str
+    inbound_message: InboundMessage | None = field(default=None, repr=False, compare=False)
     should_record: bool = False
     is_group: bool = False
     target_id: int = 0
@@ -325,7 +324,14 @@ class QQMessageContext:
     addressed_to_assistant: bool = False
     reply_reference: dict[str, Any] | None = None
     mentions: tuple[MentionRef, ...] = ()
-    forward_refs: tuple[ForwardRef, ...] = ()
+
+    @property
+    def message_chain(self) -> MessageChain:
+        return self.inbound_message.chain if self.inbound_message is not None else MessageChain()
+
+    @property
+    def forward_refs(self) -> tuple[ForwardRef, ...]:
+        return self.inbound_message.forwards if self.inbound_message is not None else ()
 
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
@@ -341,7 +347,7 @@ class QQMessageContext:
             "extra_context": self.extra_context,
             "qq_delivery_context": self.to_delivery_context(),
         }
-        if self.is_group:
+        if self.is_group or self.reply_reference:
             payload["message_addressing"] = self._message_addressing()
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
@@ -1100,6 +1106,7 @@ class NapCatQQGateway:
                 return QQMessageContext(
                     should_respond=False,
                     reason=passive_reason,
+                    inbound_message=inbound,
                     # Product policy decides whether the passive group is allowed
                     # into memory.  The route materializes media in the background
                     # before recording a real handle, so the protocol event itself
@@ -1119,15 +1126,15 @@ class NapCatQQGateway:
                     reply_mode=reply_mode,
                     chat_model_override=chat_model_override,
                     attachments=attachments,
-                    source_message_id=str(event.get("message_id") or "").strip(),
+                    source_message_id=inbound.event_id,
                     mentioned_bot=mentions_bot,
                     mentions=mentions,
-                    forward_refs=inbound.forwards,
                 )
 
         return QQMessageContext(
             should_respond=True,
             reason="private" if is_private else group_reason,
+            inbound_message=inbound,
             is_group=is_group,
             target_id=group_id if is_group else user_id,
             user_id=user_id,
@@ -1142,11 +1149,10 @@ class NapCatQQGateway:
             reply_mode=reply_mode,
             chat_model_override=chat_model_override,
             attachments=attachments,
-            source_message_id=str(event.get("message_id") or "").strip(),
+            source_message_id=inbound.event_id,
             mentioned_bot=mentions_bot,
             addressed_to_assistant=bool(is_private or group_reason),
             mentions=mentions,
-            forward_refs=inbound.forwards,
             extra_context=self.build_extra_context(
                 event=event,
                 is_group=is_group,
@@ -1189,6 +1195,7 @@ class NapCatQQGateway:
         return QQMessageContext(
             should_respond=True,
             reason="qq_poke",
+            inbound_message=inbound,
             is_group=is_group,
             target_id=group_id if is_group else user_id,
             user_id=user_id,
@@ -2200,7 +2207,7 @@ class NapCatQQGateway:
                 "character_pack_id": context.character_pack_id,
             }
 
-        mfaces = self.extract_mface_payloads(event)
+        mfaces = self.extract_mface_payloads(context)
         if not mfaces:
             return {
                 "handled": True,
@@ -2252,27 +2259,16 @@ class NapCatQQGateway:
         emotion = re.sub(r"\s+", "_", emotion)
         return emotion[:80] or "happy"
 
-    def extract_mface_payloads(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        payloads: list[dict[str, Any]] = []
-        segments = event.get("message") if isinstance(event, dict) else None
-        if isinstance(segments, list):
-            for item in segments:
-                if not isinstance(item, dict):
-                    continue
-                seg_type = str(item.get("type") or "").strip().lower()
-                seg_data = item.get("data") if isinstance(item.get("data"), dict) else {}
-                if seg_type in {"mface", "market_face", "marketface"} or (
-                    seg_type == "image" and _normalize_mface_payload(seg_data)
-                ):
-                    mface = _normalize_mface_payload(seg_data)
-                    if mface:
-                        payloads.append(mface)
-            if payloads:
-                return payloads
+    @staticmethod
+    def extract_mface_payloads(context: QQMessageContext) -> list[dict[str, Any]]:
+        """Read trusted mface fields from the already-normalized message chain."""
 
-        raw_message = self.extract_message_text(event)
-        for match in re.finditer(r"\[CQ:(mface|image)(?:,([^\]]*))?\]", raw_message, flags=re.IGNORECASE):
-            data = self._parse_cq_params(match.group(2) or "")
+        payloads: list[dict[str, Any]] = []
+        for part in context.message_chain.parts:
+            segment_type = str(part.segment_type or "").strip().lower()
+            if segment_type not in {"mface", "market_face", "marketface", "image"}:
+                continue
+            data = part.data_dict()
             mface = _normalize_mface_payload(data)
             if mface:
                 payloads.append(mface)
@@ -2684,15 +2680,6 @@ class NapCatQQGateway:
             return f"【{label}】用户刚刚{text}"
         return f"我{text}"
 
-    def extract_message_text(self, event: dict[str, Any]) -> str:
-        return render_onebot_message_text(event)
-
-    def clean_message_text(self, event: dict[str, Any], raw_message: str) -> str:
-        return clean_onebot_message_text(event, raw_message, bot_account_id=self.bot_qq)
-
-    def extract_attachments(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._legacy_attachments(parse_onebot_attachments(event))
-
     def resolve_quoted_message_evidence(
         self,
         event: dict[str, Any],
@@ -2707,16 +2694,12 @@ class NapCatQQGateway:
         input for the existing attachment inbox; callers must not log or expose the
         full payload because it may contain private media URLs or local paths.
         """
-        inbound_result = normalize_inbound_event(
-            event,
-            bot_account_id=self.bot_qq,
-            wake_words=self._wake_words,
-        )
-        inbound = inbound_result.message
+        _ = event  # Compatibility signature; the parsed event lives on context.
+        inbound = context.inbound_message
         if inbound is None:
             return {
                 "ok": False,
-                "status": "invalid_event",
+                "status": "inbound_context_missing",
                 "quoted_message": None,
                 "attachments": [],
             }
@@ -2784,16 +2767,12 @@ class NapCatQQGateway:
         inputs for the existing materialization boundary and must not be logged.
         """
 
-        inbound_result = normalize_inbound_event(
-            event,
-            bot_account_id=self.bot_qq,
-            wake_words=self._wake_words,
-        )
-        inbound = inbound_result.message
+        _ = event  # Compatibility signature; the parsed event lives on context.
+        inbound = context.inbound_message
         if inbound is None:
             return {
                 "ok": False,
-                "status": "invalid_event",
+                "status": "inbound_context_missing",
                 "forwards": [],
                 "attachments": [],
             }
@@ -2957,9 +2936,6 @@ class NapCatQQGateway:
                     item[key] = value
             projected.append(item)
         return projected
-
-    def _parse_cq_params(self, raw: str) -> dict[str, str]:
-        return parse_onebot_cq_params(raw)
 
     def message_mentions_bot(self, event: dict[str, Any], raw_message: str) -> bool:
         return onebot_message_mentions_bot(event, raw_message, bot_account_id=self.bot_qq)

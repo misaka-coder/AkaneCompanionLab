@@ -2512,12 +2512,17 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(process_calls), 1, response.text)
         turn_payload = process_calls[0]
         stored_turn_message = turn_payload["message"]
-        self.assertIn("qq.reply_reference", stored_turn_message)
-        self.assertIn("speaker_role: participant", stored_turn_message)
-        self.assertIn(json.dumps(quoted_text, ensure_ascii=False), stored_turn_message)
-        self.assertIn('sender_label: "旧消息发送者"', stored_turn_message)
-        self.assertIn("sent_at: 2024-07-20", stored_turn_message)
-        self.assertIn('current_message:\n  content: "这句话是什么意思？"', stored_turn_message)
+        self.assertEqual(stored_turn_message, "这句话是什么意思？")
+        reply_reference = turn_payload["message_addressing"]["reply_reference"]
+        self.assertEqual(reply_reference["actor_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(reply_reference["actor_display_name"], "旧消息发送者")
+        self.assertEqual(reply_reference["message_id"], "quoted-old-text")
+        self.assertEqual(reply_reference["excerpt"], quoted_text)
+        self.assertEqual(reply_reference["timestamp"], quoted_timestamp)
+        self.assertEqual(reply_reference["conversation_kind"], "private")
+        self.assertEqual(reply_reference["conversation_id"], str(QQ_USER_FIXTURE_ID))
+        self.assertNotIn("qq.reply_reference", stored_turn_message)
+        self.assertNotIn(quoted_text, stored_turn_message)
         self.assertNotIn("历史消息", stored_turn_message)
         self.assertNotIn("qq.reply_reference", turn_payload["extra_context"])
         serialized_logs = json.dumps(log_calls, ensure_ascii=False)
