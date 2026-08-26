@@ -128,7 +128,10 @@ class FinalRecoveryTests(unittest.TestCase):
                 )
 
         llm = FakeLLM()
-        engine = self._engine(llm, context=_default_context(prompt_scope="qq_attention"))
+        engine = self._engine(
+            llm,
+            context=_default_context(prompt_scope="qq_attention", post_user_turns=[]),
+        )
         result = engine._build_final_response(
             session_id="qq_group_shared_1",
             profile_user_id="qq_group_shared_1",
@@ -146,6 +149,130 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["speech"], "")
         self.assertEqual(result["speech_segments"], [])
         self.assertIsNone(result["tool_call"])
+
+    def test_malformed_optional_attention_fails_silent_without_plain_text_recovery(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.json_calls = 0
+                self.text_calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def call_chat_json_result(self, **_kwargs):
+                self.json_calls += 1
+                return ChatJSONResult(
+                    parsed={"speech": "", "tool_call": None},
+                    raw_text='{"speech":"',
+                    fallback_used=True,
+                )
+
+            def call_chat_text(self, **_kwargs):
+                self.text_calls += 1
+                raise AssertionError("optional attention must not enter plain-text recovery")
+
+        llm = FakeLLM()
+        engine = self._engine(
+            llm,
+            context=_default_context(prompt_scope="qq_attention", post_user_turns=[]),
+        )
+        result = engine._build_final_response(
+            session_id="qq_group_shared_1",
+            profile_user_id="qq_group_shared_1",
+            user_message="event.group_attention_review",
+            recent_raw=[],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            confirmed_snippets=[],
+            now_ts=0,
+            prompt_scope="qq_attention",
+        )
+
+        self.assertEqual(llm.json_calls, 1)
+        self.assertEqual(llm.text_calls, 0)
+        self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["speech"], "")
+        self.assertNotIn("_transient_final_failure", result)
+
+    def test_streaming_malformed_optional_attention_fails_silent_without_recovery(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.stream_calls = 0
+                self.text_calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def stream_chat_json(self, **_kwargs):
+                self.stream_calls += 1
+                if False:
+                    yield {}
+                return SimpleNamespace(
+                    parsed={"speech": "", "tool_call": None},
+                    raw_text='{"speech":"',
+                    error="",
+                    fallback_used=True,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+            def call_chat_text(self, **_kwargs):
+                self.text_calls += 1
+                raise AssertionError("optional attention must not enter plain-text recovery")
+
+        llm = FakeLLM()
+        engine = self._engine(
+            llm,
+            context=_default_context(prompt_scope="qq_attention", post_user_turns=[]),
+        )
+        _events, result = self._run_stream(engine)
+
+        self.assertEqual(llm.stream_calls, 1)
+        self.assertEqual(llm.text_calls, 0)
+        self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["speech"], "")
+
+    def test_optional_attention_legal_tool_call_still_enters_tool_loop(self) -> None:
+        class FakeLLM:
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def call_chat_json_result(**_kwargs):
+                return ChatJSONResult(
+                    parsed={
+                        "speech": "我先确认一下。",
+                        "tool_call": {"type": "web_search", "query": "更新内容"},
+                    },
+                    raw_text=(
+                        '{"speech":"我先确认一下。","tool_call":'
+                        '{"type":"web_search","query":"更新内容"}}'
+                    ),
+                )
+
+        engine = self._engine(
+            FakeLLM(),
+            context=_default_context(prompt_scope="qq_attention", post_user_turns=[]),
+        )
+        result = engine._build_final_response(
+            session_id="qq_group_shared_1",
+            profile_user_id="qq_group_shared_1",
+            user_message="event.group_attention_review",
+            recent_raw=[],
+            recent_episodic_summaries=[],
+            recent_semantic_summaries=[],
+            confirmed_snippets=[],
+            now_ts=0,
+            prompt_scope="qq_attention",
+        )
+
+        self.assertNotIn("_qq_attention_silent", result)
+        self.assertEqual(result["tool_call"]["type"], "web_search")
 
     def test_attention_silent_is_rejected_after_current_turn_tool_execution(self) -> None:
         class FakeLLM:

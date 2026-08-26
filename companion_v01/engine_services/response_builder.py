@@ -533,18 +533,6 @@ def prepare_context(
         )
     if not care_enabled:
         mode_prompt_override = strip_care_prompt_contract(mode_prompt_override)
-    if resource_manifest and client_context.effective_mode in {
-        ClientMode.DESKTOP_PET,
-        ClientMode.QQ_TEXT,
-    }:
-        default_emotion_json = json.dumps(
-            str(visual_defaults.get("emotion") or "normal"),
-            ensure_ascii=False,
-        )
-        mode_prompt_override = mode_prompt_override.replace(
-            '"emotion":"normal"',
-            f'"emotion":{default_emotion_json}',
-        )
     native_tools: list[dict[str, Any]] = []
     native_legacy_exclusions: set[str] = set()
     capability_selection = (

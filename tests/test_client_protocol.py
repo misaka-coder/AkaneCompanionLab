@@ -174,6 +174,14 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertNotIn("speech_segments", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True).split("字段固定为", 1)[-1].split("。", 1)[0])
+        for mode_prompt in (
+            profile.mode_prompt_override(debug_enabled=False),
+            profile.mode_prompt_override(debug_enabled=True),
+        ):
+            self.assertIn("event.group_attention_review", mode_prompt)
+            self.assertIn("event.qq_optional_reply_review", mode_prompt)
+            self.assertIn('{"attention":"silent"}', mode_prompt)
+            self.assertIn("明确要求你不要回复时通常保持静默", mode_prompt)
 
     def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
         text = PromptBlockRegistry().require("field_order").text

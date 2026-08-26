@@ -1918,7 +1918,7 @@ def build_qq_router(
                 "memory_projection_anchor_source_id": projection_anchor_source_id,
                 "message_addressing": {
                     "mode": "observed",
-                    "trigger": ticket.reason,
+                    "trigger": "group_attention_review",
                     "addressed_to_assistant": False,
                     "explicit_assistant_mention": False,
                     "primary_target": {},
@@ -1928,15 +1928,7 @@ def build_qq_router(
         )
         for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
             turn_payload.pop(field, None)
-        observation_note = (
-            "【群聊注意力观察】\n"
-            "response_expectation: optional\n"
-            "刚才的普通群消息已经作为真实 observed 事件写入 MemCore；请根据以该消息为锚点的完整群聊历史，"
-            "自行判断现在是否适合参与。调度器没有另造一份聊天摘要，也不要把 event.group_attention_review "
-            "当成用户对你的请求。若适合参与，按通常 QQ 最终格式回复，speech 会照常流式投递。"
-            "若不适合参与，只输出且必须精确输出 {\"attention\":\"silent\"}。"
-            "一旦调用任何工具，就表示你决定参与，工具完成后必须形成通常的可交付回复。"
-        )
+        observation_note = "event.group_attention_review\nresponse_expectation: optional"
         turn_payload["extra_context"] = "\n\n".join(
             part for part in (str(turn_payload.get("extra_context") or "").strip(), observation_note) if part
         )
@@ -2835,11 +2827,7 @@ def build_qq_router(
             _qq_action_note = ""
             _qq_turn_message_override = ""
             _qq_turn_extra_context_note = (
-                "【回复 Akane 的群消息】\n"
-                "response_expectation: optional\n"
-                "这条消息引用了你先前的群聊发言，但没有直接 @ 你。请根据引用内容和 MemCore 中的群聊上下文判断"
-                "是否需要继续回应。若需要，按通常 QQ 最终格式回复；若不需要，只输出且必须精确输出 "
-                "{\"attention\":\"silent\"}。一旦调用工具，就表示决定参与，工具完成后必须形成通常的可交付回复。"
+                "event.qq_optional_reply_review\nresponse_expectation: optional"
                 if optional_reply
                 else ""
             )

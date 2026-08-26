@@ -25,7 +25,7 @@ from companion_v01.memcore_integration.manager import (
 )
 from companion_v01.memcore_integration.adapters import build_akane_token_counter
 from companion_v01.memcore_integration.timeline import MemcoreTimelineToolService
-from companion_v01.prompt_profiles import PromptModule
+from companion_v01.prompt_profiles import PromptModule, PromptProfileRegistry
 from companion_v01.retrieval_types import RetrievalPipelineResult
 from companion_v01 import retrieval_engine
 from companion_v01.store import MemoryStore
@@ -6761,6 +6761,74 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_qq_system_format_example_does_not_change_with_runtime_emotion(self) -> None:
+        class _QQPromptContextEngine(_PromptContextEngine):
+            def _get_prompt_profile_registry(self):
+                qq_profile = PromptProfileRegistry().get(ClientMode.QQ_TEXT)
+                stable_profile = SimpleNamespace(
+                    supports_thought_debug=qq_profile.supports_thought_debug,
+                    system_prompt_override=qq_profile.system_prompt_override,
+                    includes=lambda _module: False,
+                    mode_prompt_override=qq_profile.mode_prompt_override,
+                    to_public_dict=qq_profile.to_public_dict,
+                )
+                return SimpleNamespace(resolve=lambda _client_context, **_kwargs: stable_profile)
+
+        memcore_manager = _PromptContextMemcoreManager(
+            {},
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": "当前消息"},
+                        "source_ids": ["current"],
+                    }
+                ],
+                "stable_prefix_hash": "a" * 64,
+                "projection_version": 1,
+            },
+        )
+        engine = _QQPromptContextEngine(memcore_manager=memcore_manager)
+        resource_manifest = SimpleNamespace(
+            refresh=lambda: {"ready": True},
+            build_runtime_manifest=lambda **_kwargs: {
+                "defaults": {
+                    "major": "default",
+                    "minor": "default",
+                    "background": "room",
+                    "bgm": "",
+                    "outfit": "default",
+                    "emotion": "angry",
+                }
+            },
+        )
+        qq_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="qq-group",
+                profile_user_id="qq-group",
+                user_message="当前消息",
+                recent_raw=[{"source_id": "current", "role": "user", "content": "当前消息"}],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=100,
+                client_context=qq_context,
+                resource_manifest=resource_manifest,
+                character_pack_id="char",
+            )
+
+        mode_prompt = str(engine.prompt_builder.calls[0]["mode_prompt_override"])
+        self.assertIn('"emotion":"normal"', mode_prompt)
+        self.assertNotIn('"emotion":"angry"', mode_prompt)
 
     def test_prompt_budget_compacts_then_refreshes_only_provider_projection(self) -> None:
         initial_projection = {

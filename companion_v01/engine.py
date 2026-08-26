@@ -3242,8 +3242,17 @@ class AkaneMemoryEngine:
         result["tool_call"] = None
         result.pop("_native_tool_call", None)
         result.pop("_native_tool_calls", None)
+        result.pop("_provider_output_raw", None)
+        result.pop("_transient_final_failure", None)
         result["_qq_attention_silent"] = True
         return result
+
+    @staticmethod
+    def _qq_optional_decision_pending(generation_context: dict[str, Any]) -> bool:
+        prompt_scope = str(generation_context.get("prompt_scope") or "").strip().lower()
+        return prompt_scope in {"qq_attention", "qq_optional_reply"} and not list(
+            generation_context.get("post_user_turns") or []
+        )
 
     @staticmethod
     def _pop_user_memory_source_id(
@@ -5282,7 +5291,7 @@ class AkaneMemoryEngine:
             if self._is_qq_optional_silent_result(
                 result,
                 prompt_scope=str(generation_context.get("prompt_scope") or ""),
-            ) and not list(post_user_turns or []):
+            ) and self._qq_optional_decision_pending(generation_context):
                 return self._mark_qq_optional_silent(normalized)
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
@@ -5290,17 +5299,23 @@ class AkaneMemoryEngine:
                 normalized,
                 generation_context.get("memcore_projection_recovery"),
             )
-            terminal_output = self._final_attempt_terminal_output(
-                normalized=normalized,
-                parse_fallback=parse_fallback,
-                provider_output_raw=provider_output_raw,
-                generation_context=generation_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                client_context=client_context,
-                resource_manifest=resource_manifest,
-                user_message=user_message,
-                domain_profile_id=domain_profile_id,
+            terminal_output = (
+                None
+                if self._qq_optional_decision_pending(generation_context)
+                and parse_fallback
+                and not self._final_output_has_tool_call(normalized)
+                else self._final_attempt_terminal_output(
+                    normalized=normalized,
+                    parse_fallback=parse_fallback,
+                    provider_output_raw=provider_output_raw,
+                    generation_context=generation_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    client_context=client_context,
+                    resource_manifest=resource_manifest,
+                    user_message=user_message,
+                    domain_profile_id=domain_profile_id,
+                )
             )
             if terminal_output is not None:
                 return terminal_output
@@ -5328,6 +5343,8 @@ class AkaneMemoryEngine:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
             return normalized
+        if self._qq_optional_decision_pending(generation_context):
+            return self._mark_qq_optional_silent(normalized)
         if self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,
@@ -5362,6 +5379,8 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
+        if AkaneMemoryEngine._qq_optional_decision_pending(generation_context):
+            return 1
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
         return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
@@ -6176,7 +6195,7 @@ class AkaneMemoryEngine:
             if self._is_qq_optional_silent_result(
                 getattr(stream_result, "parsed", None),
                 prompt_scope=str(generation_context.get("prompt_scope") or ""),
-            ) and not list(post_user_turns or []):
+            ) and self._qq_optional_decision_pending(generation_context):
                 normalized = self._mark_qq_optional_silent(normalized)
                 unrecovered_stream_error = ""
                 unrecovered_stream_partial = {}
@@ -6193,6 +6212,12 @@ class AkaneMemoryEngine:
             terminal_output = (
                 None
                 if stream_error
+                or (
+                    self._qq_optional_decision_pending(generation_context)
+                    and parse_fallback
+                    and not delivered_speech_segments
+                    and not self._final_output_has_tool_call(normalized)
+                )
                 else self._final_attempt_terminal_output(
                     normalized=normalized,
                     parse_fallback=parse_fallback,
@@ -6415,6 +6440,8 @@ class AkaneMemoryEngine:
             # A legal tool call still continues the ordinary tool loop.
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
+        elif self._qq_optional_decision_pending(generation_context) and not delivered_speech_segments:
+            normalized = self._mark_qq_optional_silent(normalized)
         elif self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,

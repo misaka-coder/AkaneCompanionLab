@@ -44,6 +44,16 @@ SCENE_STATIC_PROMPT_MODULES = (
 )
 
 
+QQ_OPTIONAL_ATTENTION_PROTOCOL = (
+    "仅当请求末尾出现宿主事件 event.group_attention_review 或 event.qq_optional_reply_review，"
+    "并紧随 response_expectation: optional 时，本次回复才是可选的。"
+    "若自然参与，仍按上述 QQ JSON 输出；若不参与，只输出且精确输出 "
+    '{"attention":"silent"}。'
+    "结合该事件之前的真实群聊时间线判断；明确要求你不要回复时通常保持静默，不要解释决定。"
+    "没有这类事件时不得输出 attention 静默对象。调用工具即表示参与，工具完成后必须按上述 QQ JSON 交付。\n"
+)
+
+
 @dataclass(frozen=True)
 class PromptProfile:
     id: str
@@ -149,6 +159,7 @@ class PromptProfileRegistry:
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
                     '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
+                    + QQ_OPTIONAL_ATTENTION_PROTOCOL
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text。\n"
@@ -157,6 +168,7 @@ class PromptProfileRegistry:
                     "必须先输出 emotion，再输出 reply_medium，然后才输出 speech，便于 QQ 端尽早决定是否合成语音。\n"
                     "输出格式示例如下：\n"
                     '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"memory_metadata":{"turn_intent":"","memory_facets":[],"about_roles":[],"entity_anchors":[],"topic_terms":[],"retrieval_priority":"normal","mood_tags":[]},"state_request":null}\n'
+                    + QQ_OPTIONAL_ATTENTION_PROTOCOL
                 ),
             ),
         }

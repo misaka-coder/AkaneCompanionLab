@@ -286,7 +286,14 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertTrue(processed[0]["transient_user_message"])
         self.assertEqual(processed[0]["message"], "event.group_attention_review")
         self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-1")
-        self.assertIn("完整群聊历史", processed[0]["extra_context"])
+        self.assertTrue(
+            processed[0]["extra_context"].endswith(
+                "event.group_attention_review\nresponse_expectation: optional"
+            )
+        )
+        self.assertNotIn("完整群聊历史", processed[0]["extra_context"])
+        self.assertNotIn("idle_observation", processed[0]["extra_context"])
+        self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_review")
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
 
@@ -424,7 +431,12 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(processed), 1)
         self.assertEqual(processed[0]["turn_kind"], "qq_optional_reply")
-        self.assertIn("response_expectation: optional", processed[0]["extra_context"])
+        self.assertTrue(
+            processed[0]["extra_context"].endswith(
+                "event.qq_optional_reply_review\nresponse_expectation: optional"
+            )
+        )
+        self.assertNotIn("若不需要", processed[0]["extra_context"])
         self.assertIn("要不要一起玩", processed[0]["message"])
 
     def test_quote_to_group_member_records_structured_reply_relationship(self) -> None:
