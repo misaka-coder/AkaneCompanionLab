@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from channelcore_onebot import (
@@ -158,6 +159,46 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(context.should_respond)
         self.assertEqual(context.clean_message, "[QQ合并转发 forward_id=forward-real-1]")
         self.assertEqual([item.forward_id for item in context.forward_refs], ["forward-real-1"])
+        self.assertEqual(
+            [part.part_id for part in context.message_chain.forward_parts],
+            ["forward-inbound-1:1:forward"],
+        )
+
+    def test_gateway_links_resolved_forward_evidence_to_original_message_part(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": BOT_ID,
+            "user_id": USER_ID,
+            "message_id": "forward-link-1",
+            "message": [{"type": "forward", "data": {"id": "forward-real-1"}}],
+        }
+        context = gateway.build_message_context(event)
+        resolved = SimpleNamespace(
+            ok=True,
+            status="resolved",
+            reason="",
+            message=SimpleNamespace(
+                nodes=(
+                    SimpleNamespace(
+                        index=1,
+                        actor=SimpleNamespace(id="30003", display_name="Alice"),
+                        text="节点正文",
+                        timestamp=1_700_000_000,
+                        message_id="node-1",
+                        attachments=(),
+                    ),
+                )
+            ),
+        )
+
+        with patch("companion_v01.qq_gateway.resolve_onebot_forward_message", return_value=resolved):
+            evidence = gateway.resolve_forward_message_evidence(event, context=context)
+
+        self.assertEqual(evidence["status"], "resolved")
+        self.assertEqual(evidence["forwards"][0]["source_part_id"], "forward-link-1:1:forward")
+        self.assertEqual(evidence["forwards"][0]["nodes"][0]["text"], "节点正文")
 
     def test_gateway_group_context_uses_single_package_parse_for_trigger_facts(self) -> None:
         gateway = NapCatQQGateway(wake_words=("Akane",))

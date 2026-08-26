@@ -3513,6 +3513,63 @@ class AkaneMemoryEngine:
             record["target_actor_display_name"] = target_name
         return target_id, target_name
 
+    @staticmethod
+    def _normalize_forward_references(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_references = payload.get("forward_references")
+        if not isinstance(raw_references, (list, tuple)):
+            return []
+        references: list[dict[str, Any]] = []
+        for raw in raw_references:
+            if not isinstance(raw, dict):
+                continue
+            nodes: list[dict[str, Any]] = []
+            for raw_node in list(raw.get("nodes") or []):
+                if not isinstance(raw_node, dict):
+                    continue
+                try:
+                    index = max(0, int(raw_node.get("index") or 0))
+                except (TypeError, ValueError):
+                    index = 0
+                try:
+                    timestamp = int(float(raw_node.get("timestamp") or 0))
+                except (TypeError, ValueError):
+                    timestamp = 0
+                try:
+                    attachment_count = max(0, int(raw_node.get("attachment_count") or 0))
+                except (TypeError, ValueError):
+                    attachment_count = 0
+                node = {
+                    "index": index,
+                    "actor_id": str(raw_node.get("actor_id") or "").strip(),
+                    "actor_display_name": str(
+                        raw_node.get("actor_display_name") or raw_node.get("actor_label") or ""
+                    ).strip(),
+                    "text": str(raw_node.get("text") or ""),
+                }
+                message_id = str(raw_node.get("message_id") or "").strip()
+                if timestamp > 0:
+                    node["timestamp"] = timestamp
+                if message_id:
+                    node["message_id"] = message_id
+                if attachment_count > 0:
+                    node["attachment_count"] = attachment_count
+                nodes.append(node)
+            entry: dict[str, Any] = {
+                "source_part_id": str(raw.get("source_part_id") or "").strip(),
+                "forward_id": str(raw.get("forward_id") or "").strip(),
+                "status": str(raw.get("status") or "unavailable").strip().lower(),
+                "nodes": nodes,
+            }
+            if "ok" in raw:
+                entry["ok"] = bool(raw.get("ok"))
+            reason = str(raw.get("reason") or "").strip()
+            if reason:
+                entry["reason"] = reason
+            entry["node_count"] = len(nodes)
+            if entry["forward_id"] or entry["source_part_id"]:
+                references.append(entry)
+        return references
+
     def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._record_passive_qq_message(payload, schedule_maintenance=True)
 
@@ -3602,12 +3659,15 @@ class AkaneMemoryEngine:
             payload,
             fallback_mode="observed",
         )
+        forward_references = self._normalize_forward_references(payload)
         memory_metadata = {
             "source": "qq_group_passive",
             "client_mode": str(payload.get("client_mode") or "qq_text"),
             "passive": True,
             "message_addressing": addressing,
         }
+        if forward_references:
+            memory_metadata["forward_references"] = forward_references
         user_record = self.store.add_message(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -3625,6 +3685,8 @@ class AkaneMemoryEngine:
             user_record,
             addressing,
         )
+        if forward_references:
+            user_record["forward_references"] = forward_references
         if schedule_maintenance and not self._memcore_owns_compaction():
             self._schedule_summary_cycle(
                 profile_user_id=profile_user_id,
@@ -3995,6 +4057,7 @@ class AkaneMemoryEngine:
             payload,
             fallback_mode="current_request",
         )
+        forward_references = self._normalize_forward_references(payload)
         speculative_voice_candidate = bool(payload.get("voice_speculative_candidate"))
         payload.pop("finance_mode", None)
         payload.pop("prompt_scope", None)
@@ -4097,6 +4160,15 @@ class AkaneMemoryEngine:
                     }
                 )
         else:
+            user_memory_metadata = (
+                self._external_event_memory_metadata(plugin_external_event)
+                if plugin_external_event is not None
+                else {}
+            )
+            if message_addressing:
+                user_memory_metadata["message_addressing"] = message_addressing
+            if forward_references:
+                user_memory_metadata["forward_references"] = forward_references
             user_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -4107,13 +4179,7 @@ class AkaneMemoryEngine:
                 date_label=date_label,
                 time_of_day=time_of_day,
                 semantic_tags=extract_semantic_tags(user_message),
-                memory_metadata=(
-                    self._external_event_memory_metadata(plugin_external_event)
-                    if plugin_external_event is not None
-                    else {"message_addressing": message_addressing}
-                    if message_addressing
-                    else None
-                ),
+                memory_metadata=user_memory_metadata or None,
                 source_id=user_memory_source_id,
             )
             if not self._memcore_owns_compaction():
@@ -4127,6 +4193,8 @@ class AkaneMemoryEngine:
             user_record,
             message_addressing,
         )
+        if forward_references:
+            user_record["forward_references"] = forward_references
         turn_projection_source_id = (
             projection_anchor_source_id or str(user_record.get("source_id") or "").strip()
         )

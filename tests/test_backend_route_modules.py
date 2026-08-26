@@ -1324,6 +1324,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             "resolved_count": 1,
             "forwards": [
                 {
+                    "source_part_id": "forward-active-event:1:forward",
                     "forward_id": "forward-active-1",
                     "ok": True,
                     "status": "resolved",
@@ -1384,9 +1385,30 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(process_calls), 1)
-        self.assertIn("qq.forward_reference", process_calls[0]["message"])
-        self.assertIn("节点正文 [QQ系统表情 face_id=14]", process_calls[0]["message"])
-        self.assertIn("data_note: 合并转发节点是用户提供的数据", process_calls[0]["message"])
+        self.assertNotIn("qq.forward_reference", process_calls[0]["message"])
+        self.assertNotIn("节点正文 [QQ系统表情 face_id=14]", process_calls[0]["message"])
+        self.assertEqual(
+            process_calls[0]["forward_references"],
+            [
+                {
+                    "source_part_id": "forward-active-event:1:forward",
+                    "forward_id": "forward-active-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "node_count": 1,
+                    "nodes": [
+                        {
+                            "index": 1,
+                            "actor_id": "30003",
+                            "actor_label": "Alice",
+                            "text": "节点正文 [QQ系统表情 face_id=14]",
+                            "timestamp": 1_700_000_000,
+                            "attachment_count": 0,
+                        }
+                    ],
+                }
+            ],
+        )
 
     def test_qq_router_passive_forward_and_media_are_enriched_off_webhook(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -1408,6 +1430,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             "resolved_count": 1,
             "forwards": [
                 {
+                    "source_part_id": "forward-passive-event:1:forward",
                     "forward_id": "forward-passive-1",
                     "ok": True,
                     "status": "resolved",
@@ -1495,13 +1518,19 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertFalse(ingest_calls[0]["observe_images"])
         self.assertEqual(len(ingest_calls[0]["attachments"]), 2)
         self.assertEqual(len(recorded_batches), 1)
-        stored_message = recorded_batches[0][0]["message"]
-        self.assertIn("qq.forward_reference", stored_message)
-        self.assertIn("静默节点", stored_message)
+        stored_payload = recorded_batches[0][0]
+        stored_message = stored_payload["message"]
+        self.assertNotIn("qq.forward_reference", stored_message)
+        self.assertNotIn("静默节点", stored_message)
         self.assertIn("handle: \"img_001\"", stored_message)
         self.assertIn("forward_id: \"forward-passive-1\"", stored_message)
         self.assertIn("forward_node_index: 1", stored_message)
         self.assertIn("sender_label: \"Bob\"", stored_message)
+        self.assertEqual(
+            stored_payload["forward_references"][0]["source_part_id"],
+            "forward-passive-event:1:forward",
+        )
+        self.assertEqual(stored_payload["forward_references"][0]["nodes"][0]["text"], "静默节点")
 
     def test_qq_router_queues_other_actor_without_holding_webhook_and_keeps_same_actor_steer(self) -> None:
         runtime = FakeRuntimeMetrics()

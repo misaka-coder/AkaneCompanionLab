@@ -324,6 +324,7 @@ class QQMessageContext:
     addressed_to_assistant: bool = False
     reply_reference: dict[str, Any] | None = None
     mentions: tuple[MentionRef, ...] = ()
+    forward_references: tuple[dict[str, Any], ...] = ()
 
     @property
     def message_chain(self) -> MessageChain:
@@ -349,6 +350,8 @@ class QQMessageContext:
         }
         if self.is_group or self.reply_reference:
             payload["message_addressing"] = self._message_addressing()
+        if self.forward_references:
+            payload["forward_references"] = [dict(item) for item in self.forward_references]
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
             if self.actor_profile_user_id:
@@ -2787,6 +2790,9 @@ class NapCatQQGateway:
         projected: list[dict[str, Any]] = []
         attachments: list[dict[str, Any]] = []
         resolved_count = 0
+        source_part_ids: dict[str, str] = {}
+        for part in inbound.chain.forward_parts:
+            source_part_ids.setdefault(part.forward.forward_id, part.part_id)
         for forward_ref in inbound.forwards:
             result = resolve_onebot_forward_message(
                 inbound,
@@ -2795,6 +2801,7 @@ class NapCatQQGateway:
                 timeout_seconds=8.0,
             )
             entry: dict[str, Any] = {
+                "source_part_id": source_part_ids.get(forward_ref.forward_id, ""),
                 "forward_id": forward_ref.forward_id,
                 "ok": bool(result.ok),
                 "status": str(result.status or ""),

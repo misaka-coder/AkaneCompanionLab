@@ -4074,6 +4074,25 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 }
                             ],
                         },
+                        "forward_references": [
+                            {
+                                "source_part_id": "group-observed-1:2:forward",
+                                "forward_id": "forward-1",
+                                "ok": True,
+                                "status": "resolved",
+                                "node_count": 1,
+                                "nodes": [
+                                    {
+                                        "index": 1,
+                                        "actor_id": "qq:50005",
+                                        "actor_display_name": "王五",
+                                        "text": "转发节点正文",
+                                        "timestamp": _ts(2026, 7, 29, 11, 20),
+                                        "message_id": "forward-node-1",
+                                    }
+                                ],
+                            }
+                        ],
                         "index_in_vector": False,
                     },
                     role="user",
@@ -4141,6 +4160,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 and '"excerpt":"今晚八点开黑"' in text
                 and '"message_id":"qq-message-previous"' in text
                 and f'"timestamp":{_ts(2026, 7, 29, 11, 30)}' in text
+                and '"forward_references":[{' in text
+                and '"source_part_id":"group-observed-1:2:forward"' in text
+                and '"text":"转发节点正文"' in text
                 for text in projected
             ),
             projected,
@@ -4190,6 +4212,58 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "conversation_id": "group-1",
                 "attachment_count": 2,
             },
+        )
+
+    def test_engine_normalizes_forward_evidence_without_text_duplication_or_locator_fields(self) -> None:
+        normalized = AkaneMemoryEngine._normalize_forward_references(
+            {
+                "message": "【Alice】[QQ合并转发 forward_id=forward-1]",
+                "forward_references": [
+                    {
+                        "source_part_id": "event-1:1:forward",
+                        "forward_id": "forward-1",
+                        "ok": True,
+                        "status": "resolved",
+                        "url": "https://provider.invalid/private",
+                        "nodes": [
+                            {
+                                "index": 1,
+                                "actor_id": "30003",
+                                "actor_label": "Alice",
+                                "text": "节点正文",
+                                "timestamp": 1_700_000_000,
+                                "message_id": "node-1",
+                                "attachment_count": 1,
+                                "path": "C:/private/image.png",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            normalized,
+            [
+                {
+                    "source_part_id": "event-1:1:forward",
+                    "forward_id": "forward-1",
+                    "status": "resolved",
+                    "nodes": [
+                        {
+                            "index": 1,
+                            "actor_id": "30003",
+                            "actor_display_name": "Alice",
+                            "text": "节点正文",
+                            "timestamp": 1_700_000_000,
+                            "message_id": "node-1",
+                            "attachment_count": 1,
+                        }
+                    ],
+                    "ok": True,
+                    "node_count": 1,
+                }
+            ],
         )
 
     def test_engine_memcore_mode_lets_memcore_own_compaction_when_available(self) -> None:
@@ -5280,16 +5354,26 @@ class MemcoreIntegrationTests(unittest.TestCase):
             user_record={
                 "source_id": "qq-passive-1",
                 "content": (
-                    "qq.forward_reference\n"
-                    "forward_messages:\n"
-                    "  - forward_id: \"forward-1\"\n"
-                    "    status: \"resolved\"\n"
-                    "    nodes:\n"
-                    "      - content: \"群里路过 [QQ系统表情 face_id=14]\"\n"
+                    "【李四】[QQ合并转发 forward_id=forward-1]\n"
                     "qq.attachments:\n"
                     "  - handle: \"img_001\"\n"
                     "    status: \"pending\""
                 ),
+                "forward_references": [
+                    {
+                        "source_part_id": "qq-passive-1:1:forward",
+                        "forward_id": "forward-1",
+                        "status": "resolved",
+                        "nodes": [
+                            {
+                                "index": 1,
+                                "actor_id": "qq:10002",
+                                "actor_display_name": "李四",
+                                "text": "群里路过 [QQ系统表情 face_id=14]",
+                            }
+                        ],
+                    }
+                ],
                 "timestamp": 101,
             },
             profile_user_id="qq-group-1",
@@ -5313,9 +5397,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertTrue(manager.user_calls[1]["observed"])
         self.assertEqual(manager.user_calls[1]["target_actor_id"], "qq:10003")
         self.assertEqual(manager.user_calls[1]["target_actor_display_name"], "王五")
-        self.assertIn("forward_id: \"forward-1\"", manager.user_calls[1]["record"]["content"])
-        self.assertIn("[QQ系统表情 face_id=14]", manager.user_calls[1]["record"]["content"])
+        self.assertNotIn("qq.forward_reference", manager.user_calls[1]["record"]["content"])
+        self.assertNotIn("[QQ系统表情 face_id=14]", manager.user_calls[1]["record"]["content"])
         self.assertIn("handle: \"img_001\"", manager.user_calls[1]["record"]["content"])
+        self.assertEqual(
+            manager.user_calls[1]["record"]["forward_references"][0]["nodes"][0]["text"],
+            "群里路过 [QQ系统表情 face_id=14]",
+        )
         self.assertEqual(manager.metadata_calls[0]["actor_stable_id"], "qq:10001")
         self.assertEqual(manager.metadata_calls[0]["actor_display_name"], "张三")
 

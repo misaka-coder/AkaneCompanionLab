@@ -55,6 +55,42 @@ _PROCESS_RUNTIME: Any | None = None
 _PROCESS_RUNTIME_LEASES = 0
 
 
+def _project_forward_references(value: object) -> list[dict[str, Any]]:
+    """Project only model-relevant merged-forward evidence into MemCore."""
+
+    references: list[dict[str, Any]] = []
+    for raw in list(value or []) if isinstance(value, (list, tuple)) else []:
+        if not isinstance(raw, dict):
+            continue
+        entry = {
+            key: raw[key]
+            for key in ("source_part_id", "forward_id", "ok", "status", "reason", "node_count")
+            if key in raw
+        }
+        nodes: list[dict[str, Any]] = []
+        for raw_node in list(raw.get("nodes") or []):
+            if not isinstance(raw_node, dict):
+                continue
+            nodes.append(
+                {
+                    key: raw_node[key]
+                    for key in (
+                        "index",
+                        "actor_id",
+                        "actor_display_name",
+                        "text",
+                        "timestamp",
+                        "message_id",
+                        "attachment_count",
+                    )
+                    if key in raw_node
+                }
+            )
+        entry["nodes"] = nodes
+        references.append(entry)
+    return references
+
+
 def _acquire_process_runtime(memcore: Any) -> Any:
     """Lease the one MemCoreRuntime shared by all live Akane managers."""
 
@@ -3511,6 +3547,12 @@ class MemcoreManager:
             content = str(raw.get("content") or "")
             semantic_text = content
             payload = {"text": content}
+            forward_references = raw.get("forward_references")
+            if not forward_references and isinstance(metadata, dict):
+                forward_references = metadata.get("forward_references")
+            projected_forwards = _project_forward_references(forward_references)
+            if projected_forwards:
+                payload["forward_references"] = projected_forwards
             addressing = raw.get("message_addressing")
             if isinstance(addressing, dict) and addressing:
                 reply_reference = addressing.get("reply_reference")
