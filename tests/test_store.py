@@ -10,6 +10,44 @@ from companion_v01.store import MessageSourceIdCollisionError, MemoryStore
 
 
 class MemoryStoreEvalTurnTests(unittest.TestCase):
+    def test_attachment_private_source_expires_and_purges_raw_locator(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            store.set_attachment_private_source(
+                profile_user_id="user_a",
+                session_id="session_a",
+                attachment_id="attachment::private_1",
+                source_kind="onebot+remote_url",
+                locator={
+                    "file_token": "opaque-token",
+                    "url": "https://media.example/a?signature=private",
+                },
+                expires_at=101,
+                timestamp=100,
+            )
+
+            source = store.get_attachment_private_source(
+                profile_user_id="user_a",
+                session_id="session_a",
+                attachment_id="attachment::private_1",
+                now=102,
+            )
+            status = store.get_attachment_private_source_status(
+                profile_user_id="user_a",
+                session_id="session_a",
+                attachment_id="attachment::private_1",
+                now=102,
+            )
+            with store._connect() as conn:
+                row = conn.execute(
+                    "SELECT locator_json FROM attachment_inbox_private_sources WHERE attachment_id = ?",
+                    ("attachment::private_1",),
+                ).fetchone()
+
+            self.assertEqual(source["locator"], {})
+            self.assertFalse(status["locator_available"])
+            self.assertEqual(row["locator_json"], "{}")
+
     def test_prompt_envelope_column_has_no_runtime_authority_api(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

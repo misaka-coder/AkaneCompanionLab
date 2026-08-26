@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import http.client
 import importlib.util
 import json
+import logging
 import mimetypes
 import shutil
 import socket
@@ -38,6 +39,9 @@ from .public_url_policy import (
 )
 from .store import MemoryStore
 from .vision_service import VisionObservationService
+
+
+logger = logging.getLogger("akane.attachment_ingest")
 
 
 TEXT_SUFFIXES = {
@@ -245,6 +249,35 @@ class AttachmentIngestService:
                 timestamp=effective_ts,
             )
             created_items.append(item)
+            private_locator = self._private_qq_source_locator(payload)
+            locator_ttl = int(getattr(config, "QQ_ATTACHMENT_SOURCE_LOCATOR_TTL_SECONDS", 7 * 24 * 60 * 60) or 0)
+            if private_locator and locator_ttl > 0:
+                locator_saved_at = int(time.time())
+                source_kind = "+".join(
+                    name
+                    for name, present in (
+                        ("onebot", bool(private_locator.get("file_token"))),
+                        ("remote_url", bool(private_locator.get("url"))),
+                    )
+                    if present
+                )
+                try:
+                    self.store.set_attachment_private_source(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        attachment_id=str(item.get("attachment_id") or ""),
+                        source_kind=source_kind,
+                        locator=private_locator,
+                        expires_at=locator_saved_at + locator_ttl,
+                        timestamp=locator_saved_at,
+                    )
+                    processing_payload["_private_source_registered"] = True
+                except Exception as exc:
+                    logger.warning(
+                        "attachment private source registration failed: attachment_id=%s error_type=%s",
+                        str(item.get("attachment_id") or ""),
+                        type(exc).__name__,
+                    )
             self.background_tasks.submit(
                 lane="attachment",
                 name=f"qq_attachment:{item.get('attachment_handle') or item.get('attachment_id')}",
@@ -429,6 +462,13 @@ class AttachmentIngestService:
                 trusted_local_source=trusted_local_source,
             )
             if source_path is None:
+                self._mark_private_source_attempt(
+                    item=item,
+                    payload=payload,
+                    status="failed",
+                    reason="attachment_source_unavailable",
+                    timestamp=timestamp,
+                )
                 self._mark_failed(item, "attachment_source_unavailable", timestamp=timestamp)
                 return
 
@@ -445,6 +485,13 @@ class AttachmentIngestService:
                 file_ext=file_ext,
                 file_size=source_path.stat().st_size if source_path.exists() else 0,
                 updated_at=timestamp,
+            )
+            self._mark_private_source_attempt(
+                item=item,
+                payload=payload,
+                status="success",
+                timestamp=timestamp,
+                clear_locator=True,
             )
 
             kind = str(item.get("kind") or "").strip().lower()
@@ -479,6 +526,13 @@ class AttachmentIngestService:
                 timestamp=timestamp,
             )
         except Exception as exc:
+            self._mark_private_source_attempt(
+                item=item,
+                payload=payload,
+                status="failed",
+                reason=self._material_failure_code(str(exc)),
+                timestamp=timestamp,
+            )
             self._mark_failed(item, str(exc), timestamp=timestamp)
 
     def retry_attachment(
@@ -546,8 +600,10 @@ class AttachmentIngestService:
             updated_at=effective_ts,
         ) or dict(item, status="pending_observation", error_message="", updated_at=effective_ts)
 
-        payload = self._build_retry_payload(retry_item, previous_error=previous_error)
+        payload, retry_source = self._build_retry_payload(retry_item, previous_error=previous_error)
         trusted_local_source = self._resolve_managed_retry_source(retry_item)
+        if trusted_local_source is not None:
+            retry_source = "managed_copy"
         self.background_tasks.submit(
             lane="attachment",
             name=f"retry_attachment:{retry_item.get('attachment_handle') or retry_item.get('attachment_id')}",
@@ -559,6 +615,8 @@ class AttachmentIngestService:
             "ok": True,
             "status": "retry_started",
             "item": retry_item,
+            "retry_source": retry_source,
+            "locator_available": retry_source == "private_locator",
             "followup_context": (
                 f"你刚刚已经开始重新处理工作台材料 {retry_item.get('attachment_handle') or ''}。"
                 "请自然告诉用户你在重新试一次；结果会在处理完成后进入当前材料工作台。"
@@ -1670,7 +1728,12 @@ class AttachmentIngestService:
             return "远程媒体超过当前大小限制，请换较小的文件或先压缩后重试。"
         return "链接媒体获取失败，请检查公开链接或稍后重试。"
 
-    def _build_retry_payload(self, item: dict[str, Any], *, previous_error: str = "") -> dict[str, Any]:
+    def _build_retry_payload(
+        self,
+        item: dict[str, Any],
+        *,
+        previous_error: str = "",
+    ) -> tuple[dict[str, Any], str]:
         del previous_error
         origin_name = self._clean_filename(item.get("origin_name") or "")
         payload = {
@@ -1682,13 +1745,32 @@ class AttachmentIngestService:
             "file_ext": str(item.get("file_ext") or "").strip(),
             "file_size": self._safe_int(item.get("file_size")),
         }
+        retry_source = "onebot_name_fallback" if origin_name else "unavailable"
         storage_relpath = str(item.get("storage_relpath") or "").strip()
         if storage_relpath.lower().startswith("workspace:") and self.workspace_uri_resolver is not None:
             candidate = self.workspace_uri_resolver(storage_relpath)
             if candidate is not None and candidate.exists() and candidate.is_file():
                 payload["workspace_uri"] = storage_relpath
-                return payload
-        return payload
+                return payload, "managed_copy"
+
+        private_source = self.store.get_attachment_private_source(
+            profile_user_id=str(item.get("profile_user_id") or ""),
+            session_id=str(item.get("session_id") or ""),
+            attachment_id=str(item.get("attachment_id") or ""),
+        )
+        locator = private_source.get("locator") if isinstance(private_source, dict) else None
+        if isinstance(locator, dict) and locator:
+            file_token = self._safe_onebot_file_token(locator.get("file_token"), allow_path_shape=True)
+            if file_token:
+                payload["file"] = file_token
+                payload["file_id"] = file_token
+            url = self._safe_private_source_url(locator.get("url"))
+            if url:
+                payload["url"] = url
+            if file_token or url:
+                retry_source = "private_locator"
+                payload["_private_source_registered"] = True
+        return payload, retry_source
 
     def _resolve_managed_retry_source(self, item: dict[str, Any]) -> Path | None:
         storage_relpath = str(item.get("storage_relpath") or "").strip()
@@ -1711,6 +1793,63 @@ class AttachmentIngestService:
             sanitized.pop(key, None)
         return sanitized
 
+    def _private_qq_source_locator(self, payload: dict[str, Any]) -> dict[str, str]:
+        """Extract only opaque retrieval capabilities for host-private retry storage."""
+
+        locator: dict[str, str] = {}
+        file_token = self._safe_onebot_file_token(
+            payload.get("file") or payload.get("file_id"),
+            allow_path_shape=True,
+        )
+        if file_token:
+            locator["file_token"] = file_token
+        url = self._safe_private_source_url(payload.get("url"))
+        if url:
+            locator["url"] = url
+        return locator
+
+    def _safe_private_source_url(self, value: Any) -> str:
+        url = str(value or "").strip()
+        if not url or len(url) > 4096 or any(ord(char) < 32 for char in url):
+            return ""
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if parsed.username is not None or parsed.password is not None:
+            return ""
+        return url
+
+    def _mark_private_source_attempt(
+        self,
+        *,
+        item: dict[str, Any],
+        payload: dict[str, Any],
+        status: str,
+        timestamp: int,
+        reason: str = "",
+        clear_locator: bool = False,
+    ) -> None:
+        if not bool(payload.get("_private_source_registered")):
+            return
+        try:
+            self.store.mark_attachment_private_source_attempt(
+                profile_user_id=str(item.get("profile_user_id") or ""),
+                session_id=str(item.get("session_id") or ""),
+                attachment_id=str(item.get("attachment_id") or ""),
+                route=str(payload.get("_materialization_route") or "unavailable"),
+                status=status,
+                reason=reason,
+                clear_locator=clear_locator,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            logger.warning(
+                "attachment private source attempt update failed: attachment_id=%s status=%s error_type=%s",
+                str(item.get("attachment_id") or ""),
+                str(status or ""),
+                type(exc).__name__,
+            )
+
     def _materialize_attachment_file(
         self,
         *,
@@ -1720,6 +1859,7 @@ class AttachmentIngestService:
     ) -> Path | None:
         workspace_uri = str(payload.get("workspace_uri") or "").strip()
         if workspace_uri:
+            payload["_materialization_route"] = "managed_copy"
             if self.workspace_uri_resolver is None:
                 raise RuntimeError("workspace file resolver is unavailable")
             source_path = self.workspace_uri_resolver(workspace_uri)
@@ -1756,12 +1896,14 @@ class AttachmentIngestService:
             raise RuntimeError("attachment destination escaped the managed workspace") from None
 
         if trusted_local_source is not None:
+            payload["_materialization_route"] = "managed_copy"
             source = Path(trusted_local_source)
             if not source.exists() or not source.is_file():
                 raise AttachmentMaterializationError("attachment_trusted_local_missing")
             self._copy_trusted_file(source=source, target_path=target_path, enforce_max_bytes=False)
             return target_path
 
+        payload["_materialization_route"] = "onebot"
         onebot_cached = self._copy_from_onebot_cache(
             item=item,
             payload=payload,
@@ -1773,6 +1915,7 @@ class AttachmentIngestService:
 
         url = str(payload.get("url") or "").strip()
         if url:
+            payload["_materialization_route"] = "remote_url"
             self._download_to_path(url=url, target_path=target_path)
             return target_path
         return None

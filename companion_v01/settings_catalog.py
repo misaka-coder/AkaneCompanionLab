@@ -413,6 +413,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("QQ_ALLOW_STALE_EVENTS", _QQ, SCOPE_RUNTIME, "允许处理过期事件"),
     _s("QQ_ATTACHMENT_DOWNLOAD_TIMEOUT", _QQ, SCOPE_RUNTIME, "附件下载超时（秒）"),
     _s("QQ_ATTACHMENT_MAX_BYTES", _QQ, SCOPE_RUNTIME, "附件下载最大字节数"),
+    _s("QQ_ATTACHMENT_SOURCE_LOCATOR_TTL_SECONDS", _QQ, SCOPE_RUNTIME, "附件私有重试定位保留秒数（0=关闭）"),
     _s("QQ_TEXT_ATTACHMENT_MAX_READ_BYTES", _QQ, SCOPE_RUNTIME, "QQ 文本消息附件最大读取字节数"),
     # 后台 Worker（启动时构造 runner）
     _s("BACKGROUND_DEFAULT_WORKERS", _BG, SCOPE_RESTART_CLIENT, "默认并发 Worker 数"),

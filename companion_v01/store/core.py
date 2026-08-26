@@ -317,6 +317,24 @@ class MemoryStore:
                 ON attachment_inbox_items(profile_user_id, session_id, attachment_handle)
                 WHERE attachment_handle != '';
 
+                CREATE TABLE IF NOT EXISTS attachment_inbox_private_sources (
+                    attachment_id TEXT PRIMARY KEY,
+                    profile_user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT '',
+                    locator_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_route TEXT NOT NULL DEFAULT '',
+                    last_attempt_status TEXT NOT NULL DEFAULT '',
+                    last_attempt_reason TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_attachment_private_source_scope
+                ON attachment_inbox_private_sources(profile_user_id, session_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS generated_files (
                     generated_id TEXT PRIMARY KEY,
                     profile_user_id TEXT NOT NULL,
@@ -819,6 +837,14 @@ class MemoryStore:
                 """
             )
             self._normalize_legacy_gift_rows(conn=conn)
+            conn.execute(
+                """
+                UPDATE attachment_inbox_private_sources
+                SET locator_json = '{}'
+                WHERE expires_at > 0 AND expires_at <= ? AND locator_json != '{}'
+                """,
+                (int(time.time()),),
+            )
 
     def _ensure_column(
         self,
@@ -925,6 +951,7 @@ class MemoryStore:
             conn.execute("DELETE FROM persona_cards")
             conn.execute("DELETE FROM persona_events")
             conn.execute("DELETE FROM persona_session_states")
+            conn.execute("DELETE FROM attachment_inbox_private_sources")
             conn.execute("DELETE FROM attachment_inbox_items")
             conn.execute("DELETE FROM workspace_file_states")
             conn.execute("DELETE FROM desktop_music_timelines")
@@ -2488,6 +2515,191 @@ class MemoryStore:
                     raise RuntimeError("attachment handle allocation failed after retries")
         return self._row_to_attachment_inbox_item(payload)
 
+    def set_attachment_private_source(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_id: str,
+        source_kind: str,
+        locator: dict[str, Any],
+        expires_at: int,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist host-only attachment retrieval data outside public item rows."""
+
+        normalized_id = str(attachment_id or "").strip()
+        if not normalized_id:
+            raise ValueError("attachment_id_required")
+        effective_ts = int(timestamp or time.time())
+        normalized_locator = dict(locator or {}) if isinstance(locator, dict) else {}
+        with self._attachment_inbox_write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO attachment_inbox_private_sources (
+                        attachment_id, profile_user_id, session_id, source_kind,
+                        locator_json, created_at, updated_at, expires_at,
+                        last_attempt_at, last_attempt_route, last_attempt_status, last_attempt_reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', '')
+                    ON CONFLICT(attachment_id) DO UPDATE SET
+                        profile_user_id = excluded.profile_user_id,
+                        session_id = excluded.session_id,
+                        source_kind = excluded.source_kind,
+                        locator_json = excluded.locator_json,
+                        updated_at = excluded.updated_at,
+                        expires_at = excluded.expires_at
+                    """,
+                    (
+                        normalized_id,
+                        str(profile_user_id),
+                        str(session_id),
+                        str(source_kind or "").strip(),
+                        json.dumps(normalized_locator, ensure_ascii=False),
+                        effective_ts,
+                        effective_ts,
+                        max(0, int(expires_at or 0)),
+                    ),
+                )
+        return self.get_attachment_private_source_status(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            attachment_id=normalized_id,
+            now=effective_ts,
+        )
+
+    def get_attachment_private_source(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_id: str,
+        now: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Trusted-host accessor; callers must never log or project ``locator``."""
+
+        normalized_id = str(attachment_id or "").strip()
+        if not normalized_id:
+            return None
+        effective_ts = int(now or time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM attachment_inbox_private_sources
+                WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                LIMIT 1
+                """,
+                (str(profile_user_id), str(session_id), normalized_id),
+            ).fetchone()
+        if row is None:
+            return None
+        raw = dict(row)
+        expires_at = int(raw.get("expires_at", 0) or 0)
+        locator = self._safe_json_loads(raw.get("locator_json"), fallback={})
+        if not isinstance(locator, dict):
+            locator = {}
+        if expires_at > 0 and effective_ts >= expires_at:
+            locator = {}
+            with self._attachment_inbox_write_lock:
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE attachment_inbox_private_sources
+                        SET locator_json = '{}', updated_at = ?
+                        WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                        """,
+                        (effective_ts, str(profile_user_id), str(session_id), normalized_id),
+                    )
+        return {
+            "attachment_id": normalized_id,
+            "profile_user_id": str(raw.get("profile_user_id") or ""),
+            "session_id": str(raw.get("session_id") or ""),
+            "source_kind": str(raw.get("source_kind") or ""),
+            "locator": locator,
+            "created_at": int(raw.get("created_at", 0) or 0),
+            "updated_at": int(raw.get("updated_at", 0) or 0),
+            "expires_at": expires_at,
+            "last_attempt_at": int(raw.get("last_attempt_at", 0) or 0),
+            "last_attempt_route": str(raw.get("last_attempt_route") or ""),
+            "last_attempt_status": str(raw.get("last_attempt_status") or ""),
+            "last_attempt_reason": str(raw.get("last_attempt_reason") or ""),
+        }
+
+    def get_attachment_private_source_status(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_id: str,
+        now: int | None = None,
+    ) -> dict[str, Any]:
+        """Return safe availability metadata without locator values."""
+
+        source = self.get_attachment_private_source(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            attachment_id=attachment_id,
+            now=now,
+        )
+        if source is None:
+            return {"locator_available": False, "source_kind": ""}
+        return {
+            "locator_available": bool(source.get("locator")),
+            "source_kind": str(source.get("source_kind") or ""),
+            "expires_at": int(source.get("expires_at") or 0),
+            "last_attempt_at": int(source.get("last_attempt_at") or 0),
+            "last_attempt_route": str(source.get("last_attempt_route") or ""),
+            "last_attempt_status": str(source.get("last_attempt_status") or ""),
+            "last_attempt_reason": str(source.get("last_attempt_reason") or ""),
+        }
+
+    def mark_attachment_private_source_attempt(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        attachment_id: str,
+        route: str,
+        status: str,
+        reason: str = "",
+        clear_locator: bool = False,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        effective_ts = int(timestamp or time.time())
+        fields = [
+            "last_attempt_at = ?",
+            "last_attempt_route = ?",
+            "last_attempt_status = ?",
+            "last_attempt_reason = ?",
+            "updated_at = ?",
+        ]
+        params: list[Any] = [
+            effective_ts,
+            str(route or "").strip()[:80],
+            str(status or "").strip()[:40],
+            str(reason or "").strip()[:160],
+            effective_ts,
+        ]
+        if clear_locator:
+            fields.append("locator_json = '{}'")
+        params.extend([str(profile_user_id), str(session_id), str(attachment_id or "").strip()])
+        with self._attachment_inbox_write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    f"""
+                    UPDATE attachment_inbox_private_sources
+                    SET {", ".join(fields)}
+                    WHERE profile_user_id = ? AND session_id = ? AND attachment_id = ?
+                    """,
+                    tuple(params),
+                )
+        return self.get_attachment_private_source_status(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            attachment_id=attachment_id,
+            now=effective_ts,
+        )
+
     def _next_attachment_sequence_no(
         self,
         *,
@@ -2981,6 +3193,13 @@ class MemoryStore:
                 WHERE profile_user_id = ? AND session_id = ? AND attachment_id IN ({placeholders})
                 """,
                 (effective_ts, str(profile_user_id), str(session_id), *ids),
+            )
+            conn.execute(
+                f"""
+                DELETE FROM attachment_inbox_private_sources
+                WHERE profile_user_id = ? AND session_id = ? AND attachment_id IN ({placeholders})
+                """,
+                (str(profile_user_id), str(session_id), *ids),
             )
         return [dict(item, status="cleared", updated_at=effective_ts) for item in targets if item]
 

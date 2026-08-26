@@ -562,24 +562,12 @@ class AttachmentIngestTests(unittest.TestCase):
                 vision_service=fake_vision,  # type: ignore[arg-type]
             )
 
-            class FakeResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self) -> dict[str, Any]:
-                    return {
-                        "status": "ok",
-                        "retcode": 0,
-                        "data": {
-                            "file": str(cached),
-                            "url": "https://gchat.qpic.cn/download?bad=true",
-                        },
-                    }
-
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
-                patch(
-                    "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                patch.object(
+                    service._onebot_transport,
+                    "call",
+                    return_value=types.SimpleNamespace(ok=True, data={"file": str(cached)}),
                 ) as post_mock,
                 patch("companion_v01.attachment_ingest.requests.Session") as session_mock,
             ):
@@ -625,23 +613,13 @@ class AttachmentIngestTests(unittest.TestCase):
                 vision_service=fake_vision,  # type: ignore[arg-type]
             )
 
-            class FakeResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self) -> dict[str, Any]:
-                    return {
-                        "status": "ok",
-                        "retcode": 0,
-                        "data": {
-                            "file": "/app/.config/QQ/instance-private-cache/cat.jpg",
-                            "url": "/app/.config/QQ/instance-private-cache/cat.jpg",
-                            "base64": base64.b64encode(payload_bytes).decode("ascii"),
-                        },
-                    }
-
-            with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            with patch.object(
+                service._onebot_transport,
+                "call",
+                return_value=types.SimpleNamespace(
+                    ok=True,
+                    data={"base64": base64.b64encode(payload_bytes).decode("ascii")},
+                ),
             ) as post_mock:
                 with patch("companion_v01.attachment_ingest.requests.Session") as session_mock:
                     created = service.ingest_qq_attachments(
@@ -664,6 +642,41 @@ class AttachmentIngestTests(unittest.TestCase):
             saved_path = root / "attachments" / item["storage_relpath"]
             self.assertEqual(saved_path.read_bytes(), payload_bytes)
             self.assertNotIn("/app/", str(saved_path).replace("\\", "/"))
+
+    def test_private_locator_storage_failure_does_not_block_initial_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+            action_result = types.SimpleNamespace(
+                ok=True,
+                data={"base64": base64.b64encode(b"image bytes").decode("ascii")},
+            )
+
+            with (
+                patch.object(store, "set_attachment_private_source", side_effect=RuntimeError("db unavailable")),
+                patch.object(service._onebot_transport, "call", return_value=action_result),
+            ):
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[{"kind": "image", "file": "cat.jpg", "origin_name": "cat.jpg"}],
+                    timestamp=100,
+                )
+                self.assertTrue(service.background_tasks.wait_idle(lane="attachment", timeout=3))
+
+            item = store.get_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=created[0]["attachment_id"],
+            )
+            self.assertEqual(item["status"], "ready")
 
     def test_onebot_base64_over_attachment_limit_is_rejected_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -766,6 +779,125 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(item["attachment_id"], failed["attachment_id"])
             self.assertEqual(item["summary_title"], "窗边小猫")
             self.assertTrue((root / "attachments" / item["storage_relpath"]).exists())
+
+    def test_retry_after_restart_reuses_private_locator_without_public_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            service = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+            opaque_token = "opaque-onebot-token-123"
+            signed_url = "https://media.example/image.jpg?signature=private-value"
+            failed_action = types.SimpleNamespace(ok=False, data={})
+
+            with (
+                patch.object(service._onebot_transport, "call", return_value=failed_action),
+                patch.object(
+                    service,
+                    "_download_to_path",
+                    side_effect=AttachmentMaterializationError("attachment_download_timeout"),
+                ),
+            ):
+                created = service.ingest_qq_attachments(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    attachments=[
+                        {
+                            "kind": "image",
+                            "file": opaque_token,
+                            "origin_name": "friendly-name.jpg",
+                            "url": signed_url,
+                        }
+                    ],
+                    timestamp=100,
+                )
+                self.assertTrue(service.background_tasks.wait_idle(lane="attachment", timeout=3))
+
+            failed = store.get_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=created[0]["attachment_id"],
+            )
+            self.assertIsNotNone(failed)
+            assert failed is not None
+            self.assertEqual(failed["status"], "failed")
+            public_item = json.dumps(failed, ensure_ascii=False)
+            public_prompt = inbox.build_prompt_context(profile_user_id="master", session_id="qq_pri_1")
+            self.assertNotIn(opaque_token, public_item)
+            self.assertNotIn(signed_url, public_item)
+            self.assertNotIn(opaque_token, public_prompt)
+            self.assertNotIn(signed_url, public_prompt)
+
+            trusted_source = store.get_attachment_private_source(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=failed["attachment_id"],
+            )
+            self.assertEqual(trusted_source["locator"]["file_token"], opaque_token)
+            self.assertEqual(trusted_source["locator"]["url"], signed_url)
+            inspected = inbox.inspect_attachment(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                target="img_001",
+                kind="image",
+                timestamp=200,
+            )
+            self.assertTrue(inspected["item"]["source_access"]["locator_available"])
+            inspected_text = json.dumps(inspected, ensure_ascii=False)
+            self.assertNotIn(opaque_token, inspected_text)
+            self.assertNotIn(signed_url, inspected_text)
+            self.assertIn("私有来源定位", inspected["followup_context"])
+
+            restarted_inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+            restarted = AttachmentIngestService(
+                base_dir=root / "attachments",
+                store=store,
+                attachment_service=restarted_inbox,
+                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
+            )
+            calls: list[tuple[str, dict[str, Any]]] = []
+
+            def recover_from_onebot(action: str, payload: dict[str, Any], **_kwargs: Any):
+                calls.append((action, dict(payload)))
+                self.assertEqual(payload.get("file"), opaque_token)
+                return types.SimpleNamespace(
+                    ok=True,
+                    data={"base64": base64.b64encode(b"recovered image bytes").decode("ascii")},
+                )
+
+            with patch.object(restarted._onebot_transport, "call", side_effect=recover_from_onebot):
+                retry_result = restarted.retry_attachment(
+                    profile_user_id="master",
+                    session_id="qq_pri_1",
+                    target="img_001",
+                    kind="image",
+                    timestamp=300,
+                )
+                self.assertTrue(restarted.background_tasks.wait_idle(lane="attachment", timeout=3))
+
+            self.assertTrue(retry_result["ok"])
+            self.assertEqual(retry_result["retry_source"], "private_locator")
+            self.assertTrue(retry_result["locator_available"])
+            self.assertTrue(calls)
+            ready = store.get_attachment_inbox_item(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=failed["attachment_id"],
+            )
+            self.assertEqual(ready["status"], "ready")
+            source_status = store.get_attachment_private_source_status(
+                profile_user_id="master",
+                session_id="qq_pri_1",
+                attachment_id=failed["attachment_id"],
+            )
+            self.assertFalse(source_status["locator_available"])
+            self.assertEqual(source_status["last_attempt_route"], "onebot")
+            self.assertEqual(source_status["last_attempt_status"], "success")
 
     def test_local_media_file_gets_lightweight_media_card(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1046,17 +1178,11 @@ class AttachmentIngestTests(unittest.TestCase):
                 public_host_resolver=lambda *_args: ("127.0.0.1",),
             )
 
-            class FakeOneBotResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self) -> dict[str, Any]:
-                    return {"status": "failed", "retcode": 100, "data": {}}
-
             with (
-                patch(
-                    "companion_v01.onebot_transport.requests.Session.request",
-                    return_value=FakeOneBotResponse(),
+                patch.object(
+                    service._onebot_transport,
+                    "call",
+                    return_value=types.SimpleNamespace(ok=False, data={}),
                 ) as post_mock,
                 patch("companion_v01.attachment_ingest.requests.Session") as session_mock,
             ):
@@ -1103,13 +1229,6 @@ class AttachmentIngestTests(unittest.TestCase):
                 public_host_resolver=lambda *_args: ("93.184.216.34",),
             )
 
-            class FakeOneBotResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self) -> dict[str, Any]:
-                    return {"status": "failed", "retcode": 100, "data": {}}
-
             stream_response = FakeStreamResponse(
                 peer_ip="93.184.216.34",
                 headers={"Content-Length": "7"},
@@ -1117,9 +1236,10 @@ class AttachmentIngestTests(unittest.TestCase):
             )
             session = FakeHttpSession([stream_response])
             with (
-                patch(
-                    "companion_v01.onebot_transport.requests.Session.request",
-                    return_value=FakeOneBotResponse(),
+                patch.object(
+                    service._onebot_transport,
+                    "call",
+                    return_value=types.SimpleNamespace(ok=False, data={}),
                 ) as post_mock,
                 patch("companion_v01.attachment_ingest.requests.Session", return_value=session),
                 patch("companion_v01.attachment_ingest.shutil.which", return_value=None),

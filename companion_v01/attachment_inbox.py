@@ -510,6 +510,7 @@ class AttachmentInboxService:
             )
             or item
         )
+        touched = self._with_private_source_status(touched)
         return {
             "ok": True,
             "item": touched,
@@ -1514,6 +1515,14 @@ class AttachmentInboxService:
             failure_message = self._readable_failure_message(item)
             if failure_message:
                 lines.append(f"失败原因：{failure_message}")
+            source_access = item.get("source_access") if isinstance(item.get("source_access"), dict) else {}
+            if source_access.get("managed_copy_available"):
+                lines.append("重试条件：受管工作区里仍有原文件，可用 retry_attachment 重新处理。")
+            elif source_access.get("locator_available"):
+                lines.append(
+                    "重试条件：宿主仍保留这个附件的私有来源定位，可用 retry_attachment 重试原始来源；"
+                    "定位值本身不会进入对话。"
+                )
         tags = self._normalize_text_list(detail.get("mood_tags") or detail.get("tags") or [])
         if tags:
             lines.append(f"标签：{', '.join(tags[:10])}")
@@ -1546,6 +1555,38 @@ class AttachmentInboxService:
             )
         lines.append("请基于当前真实可见的信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
         return "\n".join(lines)
+
+    def _with_private_source_status(self, item: dict[str, Any]) -> dict[str, Any]:
+        decorated = dict(item)
+        storage_relpath = str(item.get("storage_relpath") or "").strip()
+        managed_copy_available = bool(storage_relpath)
+        status_reader = getattr(self.store, "get_attachment_private_source_status", None)
+        safe_status: dict[str, Any] = {}
+        if callable(status_reader):
+            result = status_reader(
+                profile_user_id=str(item.get("profile_user_id") or ""),
+                session_id=str(item.get("session_id") or ""),
+                attachment_id=str(item.get("attachment_id") or ""),
+            )
+            if isinstance(result, dict):
+                safe_status = {
+                    key: result.get(key)
+                    for key in (
+                        "locator_available",
+                        "source_kind",
+                        "expires_at",
+                        "last_attempt_at",
+                        "last_attempt_route",
+                        "last_attempt_status",
+                        "last_attempt_reason",
+                    )
+                    if key in result
+                }
+        decorated["source_access"] = {
+            "managed_copy_available": managed_copy_available,
+            **safe_status,
+        }
+        return decorated
 
     def _extract_section_content(self, item: dict[str, Any], *, section: str, max_chars: int = 12000) -> str:
         limit = max(500, min(4_000_000, int(max_chars or 12000)))
