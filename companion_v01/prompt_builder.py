@@ -21,16 +21,14 @@ diary_summary、key_events、core_facts、semantic_summary、stable_facts、open
 """.strip()
 
 ATTRIBUTION_RULES = """
-【发言与材料归属规则】
-- 原始消息行、当前用户消息或回忆片段里的 `【名字】正文` 是群聊说话人标签；只把这一行正文归给该名字，不要把相邻行或别人的内容串到同一个人身上。
-- 时间线里的 `message.user.observed`（原始片段简写为 `user.observed(...)`）是旁听到的群成员发言，可用于理解当前话题，但不是等待你逐条补答的请求。优先回答当前消息；当前消息承接、追问或引用这些发言时可自然结合，否则不要回头逐条补答。
-- `target_actor: assistant`（原始片段简写为 `-> assistant`）表示这句话明确对你说；`mentioned_actors` 是同一句里其余被 @ 的人，不取代主目标。没有目标标记时，不要仅因消息出现在群聊上下文里就默认是在叫你。
-- 内容为 `event.mention` 表示用户只做了 @ 动作而没有附带正文，具体对象仍以该条 `target_actor` 为准。
-- `target_actor` 只描述它所在的那一条消息；当前消息若询问“刚才、上一句、之前”的对象或内容，要按时间戳查看前面的对应条目，不能用当前消息为了唤起你而带的目标替代。
-- 群聊里的当前消息若提出了明确问题，先自然、直接地回答它；除非确实相关或有必要，不要在答完后补回旁观消息、重复无关提醒或强行另起话题。自然闲聊和用户主动展开时不受此限制。
-- 回答群聊问题时，优先引用明确的昵称/发送者；如果来源只写“群成员”或信息不足，就用中性说法，不要猜是谁。
-- 图片、文件和工作台材料若写有“发送者”，表示这份材料由该发送者发来；讨论图片内容时要保留这个归属，不要默认都是当前主人或另一个群友发的。
-- 记忆和摘要里的称呼、偏好、计划、图片内容都要跟源发言人绑定；不确定归属时先说明不确定或追问，不要张冠李戴。
+【群聊时间线字段】
+- `actor` 是这一条消息的实际发送者；`【名字】正文` 的正文也只属于该名字，不要把相邻消息串给同一个人。
+- `target_actor` 是这条消息主要说给谁听；`target_actor: assistant` 表示明确对你说。`mentioned_actors` 是同一条消息里另外被 @ 或提及的人，不取代主目标；没有目标标记时不要默认是在叫你。
+- `reply_reference` 是这条消息实际引用的旧消息，其中的发送者和 `excerpt` / `content` 都属于被引用消息。引用正文是判断回复对象和语义的证据：不要丢掉、改写成当前发送者的话，或只看引用者 ID。
+- `message.user.observed`（原始片段简写为 `user.observed(...)`）是旁听到的群成员发言，不是等待你逐条补答的请求；`event.mention` 表示只有 @ 动作而没有正文。每个关系字段只约束它所在的那条消息，涉及“刚才、上一句”时按时间戳查看对应条目。
+- 上述结构字段是宿主观察到的消息关系，参与者正文是其陈述。两者冲突时应指出冲突，不要顺着最新一句把未验证的说法当成事实。
+- 图片、音频、视频、文件和工作台材料若带发送者或附件句柄，就归属于该发送者；材料内容、称呼、偏好、计划和记忆摘要也要绑定源发言人。信息不足时说明不确定，不要猜人。
+- 先自然回答当前明确问题；除非相关或必要，不要回头逐条补答旁观消息、重复无关提醒或强行另起话题。
 """.strip()
 
 MEMORY_STATUS_RULES = """
@@ -243,7 +241,7 @@ class PromptBuilder:
         )
         format_addendum = (
             mode_prompt
-            + f"\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}\n\n{INTERNAL_DISCLOSURE_RULES}"
+            + f"\n\n{ATTRIBUTION_RULES}\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}\n\n{INTERNAL_DISCLOSURE_RULES}"
         )
         # The active persona is runtime state, not a stable system-prefix rule.
         # Keeping it in the first system message made one persona transition
@@ -319,7 +317,6 @@ class PromptBuilder:
         stable_user_intro = (
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
             "回应时自然带着这份余温即可，不要把它当作用户事实，也不要生硬复述标签。\n\n"
-            f"{ATTRIBUTION_RULES}\n\n"
         )
         # ``prompt_scope`` is an operational delivery/audit label. It must not
         # select a second prompt shape: ordinary messages and external events

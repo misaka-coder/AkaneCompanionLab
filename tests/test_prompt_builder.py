@@ -1102,9 +1102,16 @@ system = "semantic reinforcement system"
         )
 
         history_text = _history_text(result)
-        self.assertIn("发言与材料归属规则", history_text)
-        self.assertIn("`【名字】正文` 是群聊说话人标签", history_text)
-        self.assertIn("图片、文件和工作台材料若写有“发送者”", history_text)
+        self.assertIn("群聊时间线字段", result["system_prompt"])
+        self.assertIn("`actor` 是这一条消息的实际发送者", result["system_prompt"])
+        self.assertIn("`target_actor` 是这条消息主要说给谁听", result["system_prompt"])
+        self.assertIn("`mentioned_actors` 是同一条消息里另外被 @ 或提及的人", result["system_prompt"])
+        self.assertIn("`reply_reference` 是这条消息实际引用的旧消息", result["system_prompt"])
+        self.assertIn("发送者和 `excerpt` / `content` 都属于被引用消息", result["system_prompt"])
+        self.assertIn("结构字段是宿主观察到的消息关系", result["system_prompt"])
+        self.assertIn("图片、音频、视频、文件和工作台材料", result["system_prompt"])
+        self.assertEqual(result["system_prompt"].count("群聊时间线字段"), 1)
+        self.assertNotIn("群聊时间线字段", history_text)
 
     def test_desktop_pet_profile_override_removes_generic_scene_rules_from_final_prompt(self) -> None:
         persona = load_persona_config()

@@ -8,6 +8,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from channelcore_onebot import MentionRef
+
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.qq_route_helpers import (
@@ -304,6 +306,60 @@ class QQGatewayTests(unittest.TestCase):
         lookup.assert_called_once_with(
             group_id=QQ_GROUP_FIXTURE_ID,
             user_id=40004,
+        )
+
+    def test_group_quote_and_mentions_preserve_each_relation_and_quoted_content(self) -> None:
+        context = QQMessageContext(
+            should_respond=True,
+            reason="group_mention",
+            is_group=True,
+            user_id=QQ_USER_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq-group:{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq-group:{QQ_GROUP_FIXTURE_ID}",
+            clean_message="你们说的都不对",
+            sender_label="316.44 g/mol",
+            mentioned_bot=True,
+            addressed_to_assistant=True,
+            reply_reference={
+                "actor_id": f"qq:{QQ_OTHER_USER_FIXTURE_ID}",
+                "actor_display_name": "千里朱音",
+                "message_id": "quoted-message-1",
+                "excerpt": "你试试直接推语音",
+            },
+            mentions=(
+                MentionRef(target_id=str(QQ_BOT_FIXTURE_ID), is_bot=True),
+                MentionRef(target_id=str(QQ_THIRD_USER_FIXTURE_ID), display_name="天为"),
+            ),
+        )
+
+        payload = context.to_turn_payload()
+        addressing = payload["message_addressing"]
+
+        self.assertEqual(payload["message"], "【316.44 g/mol】你们说的都不对")
+        self.assertEqual(
+            addressing["primary_target"],
+            {"actor_id": "assistant", "display_name": ""},
+        )
+        self.assertEqual(
+            addressing["reply_reference"],
+            {
+                "actor_id": f"qq:{QQ_OTHER_USER_FIXTURE_ID}",
+                "actor_display_name": "千里朱音",
+                "message_id": "quoted-message-1",
+                "excerpt": "你试试直接推语音",
+            },
+        )
+        self.assertEqual(
+            addressing["mentions"],
+            [
+                {"actor_id": "assistant", "display_name": "", "is_assistant": True},
+                {
+                    "actor_id": f"qq:{QQ_THIRD_USER_FIXTURE_ID}",
+                    "display_name": "天为",
+                    "is_assistant": False,
+                },
+            ],
         )
 
     def test_group_mention_only_is_recorded_as_a_typed_gesture(self) -> None:
