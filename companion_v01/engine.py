@@ -4596,6 +4596,12 @@ class AkaneMemoryEngine:
                 tool_results=batch_results,
                 chat_model_override=chat_model_override,
             )
+            batch_model_images = self._merge_tool_model_image_inputs([], batch_results)
+            if batch_model_images:
+                turn_user_images = self._merge_model_image_inputs(
+                    batch_model_images,
+                    turn_user_images,
+                )
 
             tool_round_index += 1
             hard_budget_reached = tool_round_index >= max_tool_rounds
@@ -7449,13 +7455,6 @@ class AkaneMemoryEngine:
                 chat_model_override=chat_model_override,
             )
         projection_provider_profile = str(getattr(projection_target, "protocol", "") or "").strip().lower()
-        if projection_provider_profile:
-            projection_model_images = batch_model_images
-        else:
-            native_vision_status = self.native_chat_vision_status(
-                chat_model_override=chat_model_override,
-            )
-            projection_model_images = batch_model_images if bool(native_vision_status.get("enabled")) else []
         media_source_ids = self._record_memcore_tool_media_input(
             model_image_inputs=batch_model_images,
             related_source_ids=trace_source_ids,
@@ -7474,7 +7473,11 @@ class AkaneMemoryEngine:
             items=history_items,
             trace_source_ids=trace_source_ids,
             media_source_ids=media_source_ids,
-            model_image_inputs=projection_model_images,
+            # MemCore keeps the durable handle/action/result relationship.  The
+            # caller promotes real pixels to the single current-user image
+            # channel for the next provider request, so do not duplicate base64
+            # inside the temporary tool-history projection.
+            model_image_inputs=[],
             provider_output_raw=provider_output_raw,
             provider_profile=projection_provider_profile,
             profile_user_id=profile_user_id,

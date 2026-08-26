@@ -519,6 +519,38 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant", "assistant", "assistant"])
         self.assertEqual(len(harness.store.eval_turns), 1)
 
+    def test_load_material_pixels_become_current_images_for_next_decision(self) -> None:
+        harness = _Harness(
+            [
+                _tool_round_output("我加载原图。", "load_material", "call-image"),
+                _speech_output("看到了。"),
+            ]
+        )
+        image_input = {
+            "attachment_id": "attachment::image-1",
+            "attachment_handle": "img_001",
+            "data_url": "data:image/png;base64,AAAA",
+        }
+
+        def execute_tool_call(**kwargs: object) -> ToolExecutionResult:
+            tool_call = dict(kwargs["tool_call"])
+            return ToolExecutionResult(
+                tool_type=str(tool_call.get("type") or "load_material"),
+                followup_context="原始图片已加载。",
+                model_image_inputs=[image_input],
+            )
+
+        harness.engine._execute_tool_call = execute_tool_call
+        result = harness.run_sync(harness.payload(message="再看一下刚才的图"))
+
+        self.assertEqual(result.get("speech"), "看到了。")
+        self.assertEqual(harness.script.generation_kwargs[0]["user_images"], [])
+        self.assertEqual(harness.script.generation_kwargs[1]["user_images"], [image_input])
+        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 1)
+        media_calls = harness.rec["record_memcore_tool_media_input"].calls
+        self.assertEqual(len(media_calls), 1)
+        self.assertEqual(media_calls[0][1]["model_image_inputs"], [image_input])
+
     def test_warning_is_injected_once_while_tools_remain_available(self) -> None:
         harness = _Harness(
             [
