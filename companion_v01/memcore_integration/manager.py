@@ -657,6 +657,90 @@ class MemcoreManager:
             logger.warning("memcore %s failed: %s", operation, reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=reason)
 
+    def begin_existing_input_turn(
+        self,
+        *,
+        source_id: str,
+        stimulus_source_ids: list[str] | None = None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        turn_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a response turn around an already persisted standalone input."""
+
+        operation = "begin_existing_input_turn"
+        resolved_source_id = str(source_id or "").strip()
+        if not resolved_source_id:
+            return self._status(operation, False, "invalid_record", reason="source_id_required")
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(
+                operation,
+                False,
+                "unavailable",
+                source_id=resolved_source_id,
+                reason=self._reason,
+            )
+        try:
+            opened_at = int(time.time())
+            recover_stale = getattr(system, "recover_stale_open_turns", None)
+            if callable(recover_stale):
+                recover_stale(
+                    max_age_seconds=_STALE_OPEN_TURN_MAX_AGE_SECONDS,
+                    now=opened_at,
+                    reason="host_stale_open_turn_recovery",
+                )
+            begin_existing = getattr(system, "begin_turn_from_existing_sources", None)
+            if not callable(begin_existing):
+                return self._status(
+                    operation,
+                    False,
+                    "unsupported",
+                    source_id=resolved_source_id,
+                    reason="existing_stimulus_turn_unsupported",
+                )
+            linked_source_ids = list(
+                dict.fromkeys(
+                    str(item or "").strip()
+                    for item in [*list(stimulus_source_ids or []), resolved_source_id]
+                    if str(item or "").strip()
+                )
+            )
+            handle = begin_existing(
+                stimulus_source_ids=linked_source_ids,
+                annotation_target_ids=[resolved_source_id],
+                turn_id=str(turn_id or "").strip() or self._stable_turn_id(resolved_source_id),
+                opened_at=opened_at,
+            )
+            writable = str(handle.status) == "open"
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "opened" if writable else str(handle.status),
+                    source_id=resolved_source_id,
+                    index_status=handle.stimuli[0].index_status,
+                ),
+                "turn_id": str(handle.turn_id),
+                "writable": writable,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(
+                operation,
+                False,
+                "failed",
+                source_id=resolved_source_id,
+                reason=reason,
+            )
+
     def append_turn_intermediate(
         self,
         record: dict[str, Any],

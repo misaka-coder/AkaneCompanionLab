@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -409,6 +410,170 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(len(attention_logs), 1)
         self.assertFalse(attention_logs[0]["scheduled"])
         self.assertEqual(attention_logs[0]["reason"], "passive_image_recorded")
+
+    def test_following_same_sender_text_binds_exact_passive_image_to_attention_turn(self) -> None:
+        scheduled = []
+        processed = []
+        recorded = []
+
+        class Engine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def ingest_qq_attachments(**_kwargs):
+                return [
+                    {
+                        "attachment_id": "attachment-image-exact",
+                        "attachment_handle": "img_exact",
+                        "kind": "image",
+                        "status": "ready",
+                    }
+                ]
+
+            def record_passive_qq_messages(self, payloads):
+                recorded.extend(dict(payload) for payload in payloads)
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [{"ok": True, "source_id": "observed-image"}],
+                }
+
+            def record_passive_qq_message(self, payload):
+                recorded.append(dict(payload))
+                source_id = "observed-text-2" if "再看" in str(payload.get("message") or "") else "observed-text"
+                return {"ok": True, "status": "recorded", "source_id": source_id}
+
+            @staticmethod
+            def prepare_qq_native_image_inputs(**kwargs):
+                self.assertEqual(kwargs["attachment_ids"], ["attachment-image-exact"])
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "images": [
+                        {
+                            "attachment_id": "attachment-image-exact",
+                            "attachment_handle": "img_exact",
+                            "data_url": "data:image/png;base64,cGl4ZWxz",
+                        }
+                    ],
+                }
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload):
+                processed.append(dict(payload))
+                yield {
+                    "type": "final_ui",
+                    "payload": {"_qq_attention_silent": True, "speech": "", "tool_events": []},
+                }
+
+        class Supervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class Metrics:
+            @staticmethod
+            def observe_request(*_args, **_kwargs):
+                return None
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=Engine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_GROUP_ATTENTION_MODE="adaptive",
+                    QQ_GROUP_ATTENTION_DELAY_SECONDS=0,
+                    QQ_GROUP_ATTENTION_TTL_SECONDS=120,
+                    QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS=60,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0,
+                ),
+                qq_gateway=NapCatQQGateway(),
+                runtime_metrics=Metrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+                async_task_supervisor=Supervisor(),
+            )
+        )
+        event_ts = int(time.time())
+
+        image_response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "time": event_ts,
+                "message_id": "ambient-image-exact",
+                "sender": {"nickname": "群成员"},
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {"file": "answer.png", "url": "http://127.0.0.1/answer.png"},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop(0))
+        self.assertEqual(processed, [])
+
+        text_response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "time": event_ts + 1,
+                "message_id": "ambient-text-exact",
+                "sender": {"nickname": "群成员"},
+                "message": [{"type": "text", "data": {"text": "这便是答案"}}],
+            },
+        )
+        self.assertEqual(text_response.status_code, 200)
+        self.assertTrue(text_response.json()["attention"]["scheduled"])
+        self.assertEqual(len(scheduled), 1)
+
+        second_text_response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "time": event_ts + 2,
+                "message_id": "ambient-text-exact-2",
+                "sender": {"nickname": "群成员"},
+                "message": [{"type": "text", "data": {"text": "再看清楚些"}}],
+            },
+        )
+        self.assertEqual(second_text_response.status_code, 200)
+        self.assertFalse(second_text_response.json()["attention"]["scheduled"])
+        self.assertEqual(second_text_response.json()["attention"]["reason"], "already_pending")
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop(0))
+
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0]["qq_current_attachment_ids"], ["attachment-image-exact"])
+        self.assertEqual(processed[0]["native_user_images"][0]["attachment_handle"], "img_exact")
+        self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-text-2")
+        self.assertEqual(
+            processed[0]["memory_stimulus_source_ids"],
+            ["observed-image", "observed-text", "observed-text-2"],
+        )
 
     def test_passive_message_without_memcore_source_does_not_schedule_attention(self) -> None:
         scheduled = []

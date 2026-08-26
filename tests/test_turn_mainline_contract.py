@@ -169,6 +169,10 @@ class _Harness:
         engine._begin_memcore_input_turn = record(
             "begin_memcore_input_turn", {"turn_id": "turn-generated-1"}
         )
+        engine._begin_memcore_existing_input_turn = record(
+            "begin_memcore_existing_input_turn",
+            {"ok": True, "status": "opened", "turn_id": "turn-attention-1", "writable": True},
+        )
         engine._stage_memcore_turn_metadata = record("stage_memcore_turn_metadata")
         engine._finalize_memcore_input_turn_for_delivery = record(
             "finalize_memcore_input_turn_for_delivery", False
@@ -181,6 +185,7 @@ class _Harness:
         )
         engine._abort_memcore_input_turn = record("abort_memcore_input_turn")
         engine._schedule_memcore_compaction = record("schedule_memcore_compaction")
+        engine._append_memcore_standalone_assistant = record("append_memcore_standalone_assistant")
         engine._schedule_summary_cycle = record("schedule_summary_cycle")
         engine._schedule_visual_observations_for_payload = record(
             "schedule_visual_observations_for_payload"
@@ -818,6 +823,55 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(len(rec["schedule_summary_cycle"].calls), 0)
         self.assertEqual(harness.store.messages, [])
         self.assertEqual(harness.store.eval_turns, [])
+
+    def test_attention_uses_existing_timeline_source_as_durable_tool_turn(self) -> None:
+        harness = _Harness(self._two_round_script())
+        result = harness.run_sync(
+            harness.payload(
+                turn_kind="qq_attention",
+                transient_user_message=True,
+                memory_projection_anchor_source_id="observed-source-1",
+            )
+        )
+
+        self.assertEqual(result["speech"], "查到了，是一份 PDF。")
+        open_call = harness.rec["begin_memcore_existing_input_turn"].calls[0][1]
+        self.assertEqual(open_call["source_id"], "observed-source-1")
+        self.assertEqual(open_call["stimulus_source_ids"], ["observed-source-1"])
+        self.assertEqual(len(harness.rec["begin_memcore_input_turn"].calls), 0)
+        batch_call = harness.rec["record_memcore_tool_batch"].calls[0][1]
+        self.assertEqual(batch_call["memcore_turn_id"], "turn-attention-1")
+        stage_call = harness.rec["stage_memcore_turn_metadata"].calls[0][1]
+        self.assertEqual(stage_call["source_id"], "observed-source-1")
+        finalize_call = harness.rec["finalize_memcore_input_turn_for_delivery"].calls[0][1]
+        self.assertEqual(finalize_call["turn_id"], "turn-attention-1")
+        self.assertEqual(len(harness.rec["append_memcore_standalone_assistant"].calls), 0)
+
+    def test_attention_keeps_visible_delivery_when_existing_turn_primitive_is_unavailable(self) -> None:
+        harness = _Harness([_speech_output("我也看到了。")])
+        harness.rec["begin_memcore_existing_input_turn"].result = {
+            "ok": False,
+            "status": "unsupported",
+            "reason": "existing_stimulus_turn_unsupported",
+            "turn_id": "",
+            "writable": False,
+        }
+        harness.rec["append_memcore_standalone_assistant"].result = {
+            "ok": True,
+            "status": "recorded",
+        }
+
+        result = harness.run_sync(
+            harness.payload(
+                turn_kind="qq_attention",
+                transient_user_message=True,
+                memory_projection_anchor_source_id="observed-source-fallback",
+            )
+        )
+
+        self.assertEqual(result["speech"], "我也看到了。")
+        self.assertEqual(len(harness.rec["finalize_memcore_input_turn_for_delivery"].calls), 0)
+        self.assertEqual(len(harness.rec["append_memcore_standalone_assistant"].calls), 1)
 
     def test_non_speculative_turn_does_persist_persona_care_and_summary(self) -> None:
         harness = _Harness([_speech_output("好的，明白了。")])

@@ -712,6 +712,63 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_attention_turn_links_existing_image_and_text_sources_without_copying_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                image = manager.append_standalone_message(
+                    {"source_id": "ambient-image-source", "content": "[图片] handle: img_exact", "timestamp": 100},
+                    role="user",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    observed=True,
+                )
+                text = manager.append_standalone_message(
+                    {"source_id": "ambient-text-source", "content": "这便是答案", "timestamp": 101},
+                    role="user",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    observed=True,
+                )
+                opened = manager.begin_existing_input_turn(
+                    source_id="ambient-text-source",
+                    stimulus_source_ids=["ambient-image-source", "ambient-text-source"],
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                )
+                projection = manager.build_open_turn_projection(
+                    turn_id=str(opened["turn_id"]),
+                    provider_profile="openai_chat",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(image["ok"], image)
+        self.assertTrue(text["ok"], text)
+        self.assertTrue(opened["ok"], opened)
+        self.assertTrue(opened["writable"])
+        self.assertEqual(projection["turn_id"], opened["turn_id"])
+        projected_sources = [
+            source_id
+            for message in projection["messages"]
+            for source_id in message.get("source_ids", [])
+        ]
+        self.assertEqual(projected_sources, ["ambient-image-source", "ambient-text-source"])
+
     def test_attention_read_only_projection_does_not_rewrite_closed_source_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

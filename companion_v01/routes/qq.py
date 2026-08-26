@@ -1855,7 +1855,11 @@ def build_qq_router(
     diagnostic_auth = admin_auth or AdminWriteAuth.local_compatibility()
     turn_coordinator = turn_coordinator or TurnCoordinator()
     group_attention = QQGroupAttentionState()
-    attention_latest: dict[str, tuple[Any, dict[str, Any], str]] = {}
+    attention_latest: dict[
+        str,
+        tuple[Any, dict[str, Any], str, tuple[str, ...], tuple[str, ...]],
+    ] = {}
+    attention_pending_media: dict[str, list[dict[str, Any]]] = {}
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -1866,6 +1870,80 @@ def build_qq_router(
         profile_user_id = str(getattr(context, "profile_user_id", "") or "").strip()
         session_id = str(getattr(context, "session_id", "") or "").strip()
         return f"{profile_user_id}\0{session_id}"
+
+    @staticmethod
+    def _attention_actor_key(context: Any) -> str:
+        user_id = int(getattr(context, "user_id", 0) or 0)
+        if user_id:
+            return f"qq:{user_id}"
+        return str(getattr(context, "sender_label", "") or "").strip()
+
+    def _stage_attention_media(
+        context: Any,
+        event: dict[str, Any],
+        registered_items: list[dict[str, Any]],
+        *,
+        timeline_source_id: str,
+    ) -> None:
+        attachment_ids = tuple(
+            str(item.get("attachment_id") or "").strip()
+            for item in registered_items
+            if str(item.get("kind") or "").strip().lower() == "image"
+            and str(item.get("attachment_id") or "").strip()
+        )
+        if not attachment_ids:
+            return
+        key = _session_work_key(context)
+        timestamp = int(event.get("time") or time.time())
+        ttl = max(10, int(getattr(config_module, "QQ_GROUP_ATTENTION_TTL_SECONDS", 120) or 120))
+        pending = [
+            item
+            for item in attention_pending_media.get(key, [])
+            if timestamp - int(item.get("timestamp") or 0) <= ttl
+        ]
+        pending.append(
+            {
+                "actor_key": _attention_actor_key(context),
+                "timestamp": timestamp,
+                "attachment_ids": attachment_ids,
+                "timeline_source_id": str(timeline_source_id or "").strip(),
+            }
+        )
+        attention_pending_media[key] = pending[-16:]
+
+    def _take_attention_media(context: Any, event: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+        key = _session_work_key(context)
+        timestamp = int(event.get("time") or time.time())
+        actor_key = _attention_actor_key(context)
+        ttl = max(10, int(getattr(config_module, "QQ_GROUP_ATTENTION_TTL_SECONDS", 120) or 120))
+        pending = attention_pending_media.get(key, [])
+        eligible = [
+            item
+            for item in pending
+            if str(item.get("actor_key") or "") == actor_key
+            and 0 <= timestamp - int(item.get("timestamp") or 0) <= ttl
+        ]
+        selected = eligible[-1] if eligible else None
+        retained = [
+            item
+            for item in pending
+            if item is not selected and timestamp - int(item.get("timestamp") or 0) <= ttl
+        ]
+        if retained:
+            attention_pending_media[key] = retained
+        else:
+            attention_pending_media.pop(key, None)
+        if not selected:
+            return {"attachment_ids": (), "timeline_source_ids": ()}
+        timeline_source_id = str(selected.get("timeline_source_id") or "").strip()
+        return {
+            "attachment_ids": tuple(
+                str(item or "").strip()
+                for item in selected.get("attachment_ids") or ()
+                if str(item or "").strip()
+            ),
+            "timeline_source_ids": (timeline_source_id,) if timeline_source_id else (),
+        }
 
     def _group_attention_mode(context: Any) -> str:
         default_mode = str(getattr(config_module, "QQ_GROUP_ATTENTION_MODE", "engaged") or "engaged")
@@ -1906,7 +1984,7 @@ def build_qq_router(
         snapshot = attention_latest.pop(ticket.key, None)
         if snapshot is None:
             return
-        context, event, projection_anchor_source_id = snapshot
+        context, event, projection_anchor_source_id, attachment_ids, stimulus_source_ids = snapshot
         # Ambient participation is based on the whole MemCore projection, not
         # mechanically on the last message that happened to update the ticket.
         # Clear only the delivery reply reference so Akane joins the discussion
@@ -1954,6 +2032,41 @@ def build_qq_router(
                 },
             }
         )
+        turn_payload["memory_stimulus_source_ids"] = list(stimulus_source_ids)
+        if attachment_ids:
+            turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
+            native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
+            if callable(native_prepare):
+                native_result = await asyncio.to_thread(
+                    native_prepare,
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    attachment_ids=list(attachment_ids),
+                    chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                    timeout_seconds=max(
+                        0.0,
+                        min(
+                            15.0,
+                            float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
+                        ),
+                    ),
+                )
+                native_images = [
+                    dict(item)
+                    for item in list((native_result or {}).get("images") or [])
+                    if isinstance(item, dict) and str(item.get("data_url") or "").startswith("data:image/")
+                ][:5]
+                if native_images:
+                    turn_payload["native_user_images"] = native_images
+                log_event(
+                    "qq_group_attention_media_bound",
+                    session_id=context.session_id,
+                    profile_user_id=context.profile_user_id,
+                    group_id=int(getattr(context, "group_id", 0) or 0),
+                    attachment_count=len(attachment_ids),
+                    native_image_count=len(native_images),
+                    native_status=str((native_result or {}).get("status") or "unavailable"),
+                )
         for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
             turn_payload.pop(field, None)
         observation_note = f"{review_event}\nresponse_expectation: optional"
@@ -2017,22 +2130,43 @@ def build_qq_router(
             # Passive storage and active perception are separate concerns. An
             # unaddressed image is preserved with a durable handle, but it must
             # not create a model request that lacks the actual pixels. Explicit
-            # mentions/replies and the sender-scoped attachment-follow path are
-            # handled by the ordinary QQ turn and can bind real visual input.
+            # image turns use the ordinary QQ path; a later ambient message can
+            # bind this exact image through the attention evidence snapshot.
             return {"scheduled": False, "reason": "passive_image_recorded"}
         anchor_source_id = str(projection_anchor_source_id or "").strip()
         if not anchor_source_id:
             return {"scheduled": False, "reason": "projection_anchor_missing"}
         key = _session_work_key(context)
-        attention_latest[key] = (context, dict(event), anchor_source_id)
         ticket, reason = group_attention.arm(
             key,
             mode=_group_attention_mode(context),
             delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
         )
         if ticket is None:
-            attention_latest.pop(key, None)
             return {"scheduled": False, "reason": reason}
+        media_evidence = _take_attention_media(context, event)
+        previous = attention_latest.get(key)
+        previous_attachment_ids = previous[3] if previous is not None else ()
+        previous_stimulus_source_ids = previous[4] if previous is not None else ()
+        attachment_ids = tuple(
+            dict.fromkeys([*previous_attachment_ids, *media_evidence["attachment_ids"]])
+        )[-5:]
+        stimulus_source_ids = tuple(
+            dict.fromkeys(
+                [
+                    *previous_stimulus_source_ids,
+                    *media_evidence["timeline_source_ids"],
+                    anchor_source_id,
+                ]
+            )
+        )
+        attention_latest[key] = (
+            context,
+            dict(event),
+            anchor_source_id,
+            attachment_ids,
+            stimulus_source_ids,
+        )
         if reason != "armed":
             return {"scheduled": False, "reason": reason}
         schedule_followup(_run_group_attention_ticket(ticket))
@@ -2156,7 +2290,7 @@ def build_qq_router(
         context: Any,
         event: dict[str, Any],
         base_payload: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, int]]:
+    ) -> tuple[dict[str, Any], dict[str, int], list[dict[str, Any]]]:
         payload = dict(base_payload)
         effective_attachments = [dict(item) for item in list(getattr(context, "attachments", None) or [])]
         metrics = {
@@ -2186,6 +2320,7 @@ def build_qq_router(
                 payload["message"] = forward_message
 
         metrics["attachment_count"] = len(effective_attachments)
+        registered_items: list[dict[str, Any]] = []
         if effective_attachments:
             registered = await asyncio.to_thread(
                 engine.ingest_qq_attachments,
@@ -2206,7 +2341,7 @@ def build_qq_router(
                 str(payload.get("message") or ""),
                 registered_items,
             )
-        return payload, metrics
+        return payload, metrics, registered_items
 
     async def _handle_queued_session_work(_key: str, items: list[SessionWorkItem]) -> None:
         if not items:
@@ -2227,6 +2362,7 @@ def build_qq_router(
         if items[0].kind == "passive":
             started_at = time.perf_counter()
             payloads: list[dict[str, Any]] = []
+            registered_items_by_payload: list[list[dict[str, Any]]] = []
             enrichment_totals = {
                 "forward_count": 0,
                 "forward_resolved_count": 0,
@@ -2242,12 +2378,13 @@ def build_qq_router(
                     if isinstance(item_payload.get("turn_payload"), dict)
                     else {}
                 )
-                prepared, item_metrics = await _prepare_passive_qq_record_payload(
+                prepared, item_metrics, registered_items = await _prepare_passive_qq_record_payload(
                     context=item_context,
                     event=item_event,
                     base_payload=base_payload,
                 )
                 payloads.append(prepared)
+                registered_items_by_payload.append(registered_items)
                 for key in enrichment_totals:
                     enrichment_totals[key] += int(item_metrics.get(key) or 0)
             async with turn_coordinator.hold(profile_user_id, session_id):
@@ -2299,10 +2436,25 @@ def build_qq_router(
                 **enrichment_totals,
             )
             if bool(result_payload.get("ok")):
+                batch_results = list(result_payload.get("results") or [])
+                for index, (item, registered_items) in enumerate(zip(items, registered_items_by_payload)):
+                    item_payload = item.payload if isinstance(item.payload, dict) else {}
+                    item_context = item_payload.get("context") or context
+                    item_event = dict(item_payload.get("event") or {})
+                    item_record_result = (
+                        batch_results[index]
+                        if index < len(batch_results) and isinstance(batch_results[index], dict)
+                        else {}
+                    )
+                    _stage_attention_media(
+                        item_context,
+                        item_event,
+                        registered_items,
+                        timeline_source_id=str(item_record_result.get("source_id") or ""),
+                    )
                 last_item_payload = items[-1].payload if isinstance(items[-1].payload, dict) else {}
                 last_context = last_item_payload.get("context") or context
                 last_event = dict(last_item_payload.get("event") or {})
-                batch_results = list(result_payload.get("results") or [])
                 last_record_result = (
                     batch_results[-1]
                     if batch_results and isinstance(batch_results[-1], dict)

@@ -1101,6 +1101,62 @@ class AkaneMemoryEngine:
                 "writable": False,
             }
 
+    def _begin_memcore_existing_input_turn(
+        self,
+        *,
+        source_id: str,
+        stimulus_source_ids: list[str] | None = None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> dict[str, Any]:
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {}
+        try:
+            result = manager.begin_existing_input_turn(
+                source_id=source_id,
+                stimulus_source_ids=stimulus_source_ids,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            self._warn_memcore_write_result("existing input turn open", result)
+            if not isinstance(result, dict):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": "invalid_existing_input_turn_open_result",
+                    "turn_id": "",
+                    "writable": False,
+                }
+            normalized = dict(result)
+            status = str(normalized.get("status") or "").strip().lower()
+            turn_id = str(normalized.get("turn_id") or "").strip()
+            writable = bool(
+                normalized.get("ok") and turn_id and status in {"open", "opened"} and normalized.get("writable", True)
+            )
+            normalized["writable"] = writable
+            if not writable:
+                normalized["turn_id"] = ""
+            else:
+                self._track_open_memcore_turn_for_guard(
+                    turn_id=turn_id,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                )
+            return normalized
+        except Exception as exc:
+            logger.warning("memcore existing input turn open failed reason=%s", type(exc).__name__)
+            return {
+                "ok": False,
+                "status": "failed",
+                "reason": f"exception_{type(exc).__name__}",
+                "turn_id": "",
+                "writable": False,
+            }
+
     @staticmethod
     def _memcore_input_turn_failure(result: Any) -> dict[str, Any] | None:
         if not isinstance(result, dict) or not result:
@@ -3928,10 +3984,19 @@ class AkaneMemoryEngine:
         turn_kind = str(payload.get("turn_kind") or "").strip().lower()
         prompt_scope = turn_kind if turn_kind in {"plugin_proactive", "qq_attention", "qq_optional_reply"} else ""
         projection_anchor_source_id = str(payload.pop("memory_projection_anchor_source_id", "") or "").strip()
+        existing_stimulus_source_ids = [
+            str(item or "").strip()
+            for item in list(payload.pop("memory_stimulus_source_ids", []) or [])
+            if str(item or "").strip()
+        ]
         if prompt_scope != "qq_attention":
             projection_anchor_source_id = ""
+            existing_stimulus_source_ids = []
         else:
             projection_anchor_source_id = projection_anchor_source_id[:256]
+            existing_stimulus_source_ids = list(
+                dict.fromkeys([*existing_stimulus_source_ids, projection_anchor_source_id])
+            )
         plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
         turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
         if prompt_scope != "plugin_proactive":
@@ -4078,6 +4143,16 @@ class AkaneMemoryEngine:
         turn_memcore_failure: dict[str, Any] | None = None
         if externally_managed_memcore_turn:
             memcore_turn_id = precommitted_turn_id
+        elif prompt_scope == "qq_attention" and projection_anchor_source_id:
+            memcore_open = self._begin_memcore_existing_input_turn(
+                source_id=projection_anchor_source_id,
+                stimulus_source_ids=existing_stimulus_source_ids,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            )
+            memcore_turn_id = str((memcore_open or {}).get("turn_id") or "").strip()
+            turn_memcore_failure = self._memcore_input_turn_failure(memcore_open)
         elif not transient_user_turn:
             user_record = self._apply_user_vector_index_policy(
                 user_record=user_record,
@@ -4109,11 +4184,11 @@ class AkaneMemoryEngine:
             # rediscovering the stimulus from the mutable history tail can
             # lose its source id and abort an otherwise successful tool turn.
             "current_user_source_id": turn_projection_source_id,
-            # A QQ attention review reads from a passive message that is
-            # already a committed standalone turn. Do not make the request
-            # observer reopen or rewrite that closed source turn; a visible
-            # assistant reply is appended as its own timeline event below.
-            "record_request_projection": not bool(projection_anchor_source_id),
+            # A QQ attention review is synthetic, but its real passive source
+            # is promoted into a writable turn above. Record the provider
+            # request only when that durable turn opened successfully; the
+            # fallback read-only path must not mutate a standalone source.
+            "record_request_projection": bool(memcore_turn_id) or not bool(projection_anchor_source_id),
         }
         final_output = yield from self._generate_round(
             mode=mode,
@@ -4702,7 +4777,7 @@ class AkaneMemoryEngine:
             )
         if memcore_turn_id and not externally_managed_memcore_turn:
             self._stage_memcore_turn_metadata(
-                source_id=str(user_record.get("source_id") or ""),
+                source_id=turn_projection_source_id,
                 memory_metadata=memory_metadata,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -4738,7 +4813,7 @@ class AkaneMemoryEngine:
                 memory_metadata=self._build_assistant_timeline_metadata(final_output),
             )
             self._upsert_raw_record(assistant_record)
-            if not transient_user_turn:
+            if memcore_turn_id:
                 if self._finalize_memcore_input_turn_for_delivery(
                     final_output=final_output,
                     turn_id=memcore_turn_id,
