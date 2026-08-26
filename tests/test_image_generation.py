@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.capability_registry import INSPECT_ATTACHMENT_TOOL_SPEC, LOAD_MATERIAL_TOOL_SPEC
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.image_generation import ImageGenerationError, ImageGenerationService, PinAIImageProvider
@@ -64,6 +65,15 @@ class FakeSession:
 
 
 class ImageGenerationTests(unittest.TestCase):
+    def test_image_inspection_and_pixel_loading_tool_contracts_are_distinct(self) -> None:
+        inspect_description = INSPECT_ATTACHMENT_TOOL_SPEC.description
+        load_description = LOAD_MATERIAL_TOOL_SPEC.description
+
+        self.assertIn("never sends original image pixels", inspect_description)
+        self.assertIn("use load_material", inspect_description)
+        self.assertIn("original pixels", load_description)
+        self.assertIn("regardless of who sent them", load_description)
+
     def _services(self, root: Path):
         store = MemoryStore(root / "store")
         attachment_root = root / "inbox"

@@ -858,7 +858,9 @@ INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="inspect_attachment",
     display_name="Inspect attachment",
     description=(
-        "List the current attachment workspace, or open and inspect a single image or file. "
+        "List the current attachment workspace, or read one material's metadata and existing summary. "
+        "This tool never sends original image pixels to the vision model; use load_material with the exact handle "
+        "when image contents, visible text, or visual details must actually be examined. "
         "In QQ groups, 'latest' is restricted to attachments explicitly bound to the current turn; "
         "use 'all' or an exact handle for historical materials. "
         "To compare multiple materials, prefer sync_attachment_workspace."
@@ -887,8 +889,9 @@ LOAD_MATERIAL_TOOL_SPEC = CapabilityToolSpec(
     capability_id="load_material",
     display_name="Load material",
     description=(
-        "Reload one to five original images from the current session's workspace into the next multimodal model round. "
-        "Use when an older image must be examined again."
+        "Send the original pixels of one to five images from the current session's workspace into the next multimodal "
+        "model round. This is the tool for actually examining historical image contents, regardless of who sent them; "
+        "inspect_attachment only returns metadata and an existing summary."
     ),
     input_schema={
         "type": "object",

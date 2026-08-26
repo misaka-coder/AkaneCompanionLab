@@ -1536,7 +1536,15 @@ class AttachmentInboxService:
                 lines.append(
                     "注意：这只是本次提示词节选，不是全文；忠实转换/导出原附件时不要复制这段节选，应让文件工具读取原始附件。"
                 )
-        lines.append("请基于这份材料信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
+        if str(item.get("kind") or "").strip().lower() == "image":
+            handle = str(item.get("attachment_handle") or item.get("attachment_id") or "").strip()
+            target = handle or "该图片的精确 handle"
+            lines.append(
+                "查看边界：本次 inspect_attachment 结果不包含原图像素。"
+                f"如果需要实际看图、识别文字或核对视觉细节，请调用 load_material(targets=[\"{target}\"])；"
+                "已有描述只能作为摘要使用。"
+            )
+        lines.append("请基于当前真实可见的信息自然回应；如果用户聊完了，可以稍后用 clear_attachment_focus 移除它。")
         return "\n".join(lines)
 
     def _extract_section_content(self, item: dict[str, Any], *, section: str, max_chars: int = 12000) -> str:

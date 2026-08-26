@@ -768,11 +768,16 @@ class AttachmentInboxTests(unittest.TestCase):
             )
 
             inspect_handler = InspectAttachmentToolHandler(attachment_service=service)
+            inspect_instruction = inspect_handler.build_prompt_instruction()
+            self.assertIn("不会把图片原始像素交给视觉模型", inspect_instruction)
+            self.assertIn("再调用 load_material", inspect_instruction)
             inspected = inspect_handler.execute(
                 call=inspect_handler.normalize_call({"type": "inspect_attachment", "target": "晚餐"}) or {},
                 context=context,
             )
             self.assertIn("盘子里有面包和热汤", inspected.followup_context)
+            self.assertIn("本次 inspect_attachment 结果不包含原图像素", inspected.followup_context)
+            self.assertIn('load_material(targets=["img_001"])', inspected.followup_context)
             self.assertEqual(inspected.stream_events[0]["type"], "attachment_inspected")
 
             listed = inspect_handler.execute(
