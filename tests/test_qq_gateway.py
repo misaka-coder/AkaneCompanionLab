@@ -414,7 +414,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIsNone(gateway.parse_outfit_command("穿上泳装好看吗"))
         self.assertEqual(gateway.parse_outfit_command("穿上 泳装"), {"action": "switch", "outfit_id": "泳装"})
 
-    def test_group_mention_opens_attachment_only_buffer_for_same_sender(self) -> None:
+    def test_group_mention_does_not_steer_a_later_unaddressed_attachment(self) -> None:
         gateway = NapCatQQGateway()
         mention_event = {
             "post_type": "message",
@@ -463,8 +463,9 @@ class QQGatewayTests(unittest.TestCase):
 
         self.assertTrue(mentioned.should_respond)
         self.assertEqual(mentioned.reason, "group_mention")
-        self.assertTrue(buffered_image.should_respond)
-        self.assertEqual(buffered_image.reason, "group_attachment_buffer")
+        self.assertFalse(buffered_image.should_respond)
+        self.assertTrue(buffered_image.should_record)
+        self.assertEqual(buffered_image.reason, "group_passive_image_unbound")
         self.assertEqual(buffered_image.clean_message, "发来了一张图片。")
         self.assertEqual(len(buffered_image.attachments or []), 1)
         self.assertFalse(plain_text.should_respond)

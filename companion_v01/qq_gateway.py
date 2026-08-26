@@ -15,7 +15,6 @@ from typing import Any, Callable
 from channelcore_onebot import (
     AttachmentRef,
     EventAdmissionConfig,
-    GroupTriggerPolicy,
     MentionRef,
     ForwardRef,
     OneBotEventAdmission,
@@ -464,7 +463,6 @@ class NapCatQQGateway:
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
         self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
         self.poke_reactor = poke_reactor or PokeEventReactor()
-        self._group_trigger = GroupTriggerPolicy(bot_account_id=self.bot_qq)
         require_self_id = self._channel_config.require_self_id if self._channel_config is not None else False
         self._event_admission = OneBotEventAdmission(
             EventAdmissionConfig(
@@ -673,7 +671,6 @@ class NapCatQQGateway:
             "active_reply_mode_override_count": len(self.reply_mode_overrides),
             "active_emotion_mface_session_count": len(self.emotion_mface_state),
             "active_emotion_image_session_count": len(self.emotion_image_state),
-            "active_group_attachment_buffer_count": self._group_trigger.active_window_count,
             "active_attachment_debounce_count": len(self.attachment_debounce_state),
             "active_event_fingerprint_count": self._event_admission.active_fingerprint_count,
         }
@@ -1088,29 +1085,21 @@ class NapCatQQGateway:
         elif is_group and group_attention_command is not None:
             group_reason = "qq_group_attention_command"
         elif is_group:
-            trigger = self._group_trigger.evaluate(
-                group_id=str(group_id),
-                actor_id=str(user_id),
-                mentioned_bot=mentions_bot,
-                mentioned_wake_word=mentions_wake_word,
-                has_attachments=bool(attachments),
-                allow_attachment_follow=group_vision_enabled,
-                ttl_seconds=getattr(
-                    config,
-                    "QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS",
-                    getattr(config, "QQ_GROUP_FOLLOW_TTL_SECONDS", 180),
-                ),
-            )
-            if not trigger.should_respond:
+            if mentions_bot:
+                group_reason = "group_mention"
+            elif mentions_wake_word:
+                group_reason = "group_wake_word"
+            else:
                 suppress_passive_image = bool(has_group_image and not group_vision_enabled)
                 unbound_group_image = bool(has_group_image)
+                passive_reason = (
+                    "group_vision_disabled"
+                    if suppress_passive_image
+                    else ("group_passive_image_unbound" if unbound_group_image else "group_passive_observed")
+                )
                 return QQMessageContext(
                     should_respond=False,
-                    reason=(
-                        "group_vision_disabled"
-                        if suppress_passive_image
-                        else ("group_passive_image_unbound" if unbound_group_image else trigger.reason)
-                    ),
+                    reason=passive_reason,
                     # Product policy decides whether the passive group is allowed
                     # into memory.  The route materializes media in the background
                     # before recording a real handle, so the protocol event itself
@@ -1135,7 +1124,6 @@ class NapCatQQGateway:
                     mentions=mentions,
                     forward_refs=inbound.forwards,
                 )
-            group_reason = str(trigger.reason or "group")
 
         return QQMessageContext(
             should_respond=True,

@@ -35,8 +35,6 @@ QQ_GROUP_ATTENTION_MODE=engaged
 QQ_GROUP_ATTENTION_TTL_SECONDS=120
 QQ_GROUP_ATTENTION_DELAY_SECONDS=10
 QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS=60
-QQ_GROUP_FOLLOW_TTL_SECONDS=180
-QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS=180
 QQ_ATTACHMENT_DEBOUNCE_SECONDS=1.2
 QQ_ATTACHMENT_READY_WAIT_SECONDS=8
 QQ_REPLY_SEGMENT_DELAY_SECONDS=0.8
@@ -58,9 +56,8 @@ QQ_ALLOW_STALE_EVENTS=false
 - `QQ_GROUP_ATTENTION_TTL_SECONDS`：Akane 成功向群里交付回复后，普通消息可继续触发注意力判断的时长，默认 `120` 秒。
 - `QQ_GROUP_ATTENTION_DELAY_SECONDS`：第一条普通消息写入 MemCore 后，到一次注意力判断之间的固定等待，默认 `10` 秒。期间新消息照常入库，但不会重置这个截止时间。
 - `QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS`：`adaptive` 模式在非活跃期观察一次但未参与后，再次允许观察前的冷却，默认 `60` 秒。没有新消息时不会创建定时请求。
-- `QQ_GROUP_FOLLOW_TTL_SECONDS`：旧配置名，仍可作为附件缓冲窗口的兜底 TTL。
-- `QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS`：群聊被 at 后，允许同一用户补发图片/文件的时间窗口。普通文字不受这个窗口影响。
-- `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：QQ 连发图片/文件时的短防抖窗口。窗口内较早事件只入库不触发回复，最后一个事件统一唤醒 Akane，默认 `1.2` 秒。
+- 未 @、未使用唤醒词、也未回复 Akane 的群图片只会完成素材注册并写入 MemCore，不会追加到正在执行的工具轮，也不会单独唤醒 Akane。后续明确要求“看看刚才的图”时，模型可通过时间线中的真实素材句柄调用 `load_material`。
+- `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：明确发给 Akane 的连发图片/文件使用短防抖窗口，窗口内较早事件只入库不触发回复，最后一个事件统一进入当前请求，默认 `1.2` 秒。
 - `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待文件解析完成的秒数，默认 `8` 秒。QQ 图片会自动提升到 `VISION_REQUEST_TIMEOUT + 5` 的等待窗口，尽量保证首轮回复就能看到视觉摘要；超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
 - `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
 - `QQ_EVENT_MAX_AGE_SECONDS`：忽略超过该秒数的旧 QQ 事件，避免 NapCat / OneBot 重连后把历史消息重新灌进当前对话。设为 `0` 可关闭时间拦截。

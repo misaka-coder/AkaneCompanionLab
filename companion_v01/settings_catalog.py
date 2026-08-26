@@ -406,8 +406,6 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RUNTIME,
         "被动群记忆 denylist 群号（逗号、分号或空白分隔；旧 allowlist 值不再作为门控）",
     ),
-    _s("QQ_GROUP_FOLLOW_TTL_SECONDS", _QQ, SCOPE_RUNTIME, "群聊跟随 TTL（秒）"),
-    _s("QQ_GROUP_ATTACHMENT_BUFFER_TTL_SECONDS", _QQ, SCOPE_RESTART, "群附件缓冲 TTL（秒）"),
     _s("QQ_ATTACHMENT_DEBOUNCE_SECONDS", _QQ, SCOPE_RUNTIME, "附件去抖间隔（秒）"),
     _s("QQ_ATTACHMENT_READY_WAIT_SECONDS", _QQ, SCOPE_RUNTIME, "附件就绪等待时间（秒）"),
     _s("QQ_REPLY_SEGMENT_DELAY_SECONDS", _QQ, SCOPE_RUNTIME, "多消息段发送间隔（秒）"),
