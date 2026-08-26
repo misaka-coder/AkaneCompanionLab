@@ -66,6 +66,13 @@ MODEL_ONEBOT_ACTION_NAMES: tuple[str, ...] = ("capabilities",) + tuple(MODEL_ONE
 MODEL_ONEBOT_ACTION_METHODS: dict[str, str] = {name: "POST" for name in MODEL_ONEBOT_ACTIONS}
 
 
+def model_onebot_action_is_user_visible(action: str) -> bool:
+    """Whether a successful action changes what a QQ participant can observe."""
+
+    spec = MODEL_ONEBOT_ACTIONS.get(str(action or "").strip())
+    return bool(spec is not None and spec.effect == "write")
+
+
 def model_onebot_capabilities() -> dict[str, Any]:
     """Return the stable, secret-free action catalog visible to the model."""
 

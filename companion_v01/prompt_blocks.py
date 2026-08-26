@@ -59,7 +59,15 @@ DESKTOP_PET_SYSTEM_BLOCKS = (
 )
 
 QQ_TEXT_SYSTEM_BLOCKS = (
-    *COMMON_RESPONSE_BLOCKS,
+    "json_object_only",
+    "mode_schema_contract",
+    "qq_field_order",
+    "speech_streaming",
+    "tool_execution_intent",
+    "time_awareness",
+    "persona_state",
+    "memory_metadata",
+    "state_request",
     "care_runtime",
     "qq_text_mode",
     "current_assistant_state",
@@ -96,6 +104,13 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     ),
                 ),
                 PromptBlock(
+                    id="qq_field_order",
+                    text=(
+                        "QQ 有文字回复时，先完整输出 emotion，再输出 reply_medium，然后完整输出 speech，"
+                        "便于宿主尽早投递完整句子。没有需要继续发送的文字时，只输出 {\"speech\":\"\"}。"
+                    ),
+                ),
+                PromptBlock(
                     id="speech_streaming",
                     text=(
                         "speech 是给用户看的唯一正文，必须完整填写，不要另造分段正文。\n"
@@ -106,7 +121,9 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="memory_metadata",
                     text=(
-                        "memory_metadata 只用于后台记忆入库，不展示给用户；在聊天输出中标注当前用户消息和本轮形成的可记忆事实。\n"
+                        "memory_metadata 只用于后台记忆入库，不展示给用户；它标注宿主指定的本轮输入目标，"
+                        "不标注你的回复或工具结果。只有存在真实记忆信号时才输出，并只保留非空字段；"
+                        "没有信号时省略该字段。\n"
                         + build_memory_metadata_instruction(
                             enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
                             require_disabled_mood_field=True,

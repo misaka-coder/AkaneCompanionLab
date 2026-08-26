@@ -104,7 +104,7 @@ def build_native_tool_round_instruction(native_tools: list[dict[str, Any]] | Non
     return (
         "【本轮直接工具入口】\n"
         "本轮实际附带的工具名称、参数和说明以请求中的工具定义为准；"
-        "需要时直接发出真实工具调用，最终 JSON 的 tool_call 保持 null。"
+        "需要时直接发出真实工具调用；最终回复只遵循当前客户端的输出协议。"
     )
 
 

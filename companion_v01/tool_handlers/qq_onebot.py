@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES, model_onebot_capabilities
+from ..onebot_model_actions import (
+    MODEL_ONEBOT_ACTION_NAMES,
+    model_onebot_action_is_user_visible,
+    model_onebot_capabilities,
+)
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 
 
@@ -97,8 +101,23 @@ class OneBotActionToolHandler(BaseToolHandler):
     def _result(self, payload: dict[str, Any]) -> ToolExecutionResult:
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         content = serialized if bool(payload.get("ok")) else f"<tool_use_error>{serialized}</tool_use_error>"
+        action = str(payload.get("action") or "unknown")
+        status = str(payload.get("status") or ("success" if payload.get("ok") else "failed"))
+        visible_receipts: list[dict[str, Any]] = []
+        if bool(payload.get("ok")) and model_onebot_action_is_user_visible(action):
+            receipt: dict[str, Any] = {
+                "type": "qq_visible_action_receipt",
+                "action": action,
+                "status": status,
+                "ok": True,
+            }
+            data = payload.get("data")
+            if isinstance(data, dict) and data.get("message_id") not in (None, ""):
+                receipt["message_id"] = data.get("message_id")
+            visible_receipts.append(receipt)
         return ToolExecutionResult(
             tool_type=self.tool_type,
+            stream_events=visible_receipts,
             followup_context=content,
             followup_envelope=ToolFollowupEnvelope(
                 content=content,
@@ -106,7 +125,7 @@ class OneBotActionToolHandler(BaseToolHandler):
                 complete=True,
             ),
             trace_receipt={
-                "action": str(payload.get("action") or "unknown"),
-                "status": str(payload.get("status") or ("success" if payload.get("ok") else "failed")),
+                "action": action,
+                "status": status,
             },
         )

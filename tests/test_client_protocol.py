@@ -164,27 +164,27 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertIn("当可用工具里提供 delegate_task 时", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn(
-            "字段固定为 emotion, reply_medium, speech, tool_call",
+            "普通回复只要求 emotion, reply_medium, speech",
             profile.mode_prompt_override(debug_enabled=False),
         )
         self.assertIn(
-            '"reply_medium":"text","speech":"主人，我在哦。","tool_call":null',
+            '"reply_medium":"text","speech":"主人，我在哦。"',
             profile.mode_prompt_override(debug_enabled=False),
         )
+        self.assertIn('{"speech":""}', profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("不强制输出文字", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("最终 JSON 不输出 tool_call、status 或 choices", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("speech_segments", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
-        self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True).split("字段固定为", 1)[-1].split("。", 1)[0])
+        self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True))
         for mode_prompt in (
             profile.mode_prompt_override(debug_enabled=False),
             profile.mode_prompt_override(debug_enabled=True),
         ):
+            self.assertNotIn('"attention":"silent"', mode_prompt)
+            self.assertNotIn("response_expectation", mode_prompt)
             self.assertIn("event.group_attention_followup_review", mode_prompt)
-            self.assertIn("event.group_attention_idle_review", mode_prompt)
-            self.assertIn("event.qq_optional_reply_review", mode_prompt)
-            self.assertIn('{"attention":"silent"}', mode_prompt)
-            self.assertIn("通常应接住续话", mode_prompt)
-            self.assertIn("这是字段固定规则的唯一例外", mode_prompt)
-            self.assertEqual(mode_prompt.count('{"attention":"silent"}'), 1)
+            self.assertIn("只表示一次是否自然参与当前群聊的判断机会", mode_prompt)
 
     def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
         text = PromptBlockRegistry().require("field_order").text

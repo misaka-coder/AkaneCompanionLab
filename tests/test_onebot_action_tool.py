@@ -204,6 +204,50 @@ class OneBotActionContractTests(unittest.TestCase):
         self.assertIn("onebot_retcode_error", result.followup_context)
         self.assertEqual(result.stream_events, [])
 
+    def test_successful_write_emits_visible_delivery_receipt_but_read_does_not(self) -> None:
+        write_handler = OneBotActionToolHandler(
+            delivery_port=_Port(
+                {
+                    "ok": True,
+                    "status": "success",
+                    "action": "send_group_msg",
+                    "data": {"message_id": 77},
+                }
+            )
+        )
+        write_result = write_handler.execute(
+            call={"type": "onebot_action", "action": "send_group_msg", "params": {"message": "你好"}},
+            context=_tool_context(),
+        )
+        self.assertEqual(
+            write_result.stream_events,
+            [
+                {
+                    "type": "qq_visible_action_receipt",
+                    "action": "send_group_msg",
+                    "status": "success",
+                    "ok": True,
+                    "message_id": 77,
+                }
+            ],
+        )
+
+        read_handler = OneBotActionToolHandler(
+            delivery_port=_Port(
+                {
+                    "ok": True,
+                    "status": "success",
+                    "action": "get_group_msg_history",
+                    "data": {"messages": []},
+                }
+            )
+        )
+        read_result = read_handler.execute(
+            call={"type": "onebot_action", "action": "get_group_msg_history", "params": {}},
+            context=_tool_context(),
+        )
+        self.assertEqual(read_result.stream_events, [])
+
     def test_independent_native_actions_are_handler_safe_in_parallel(self) -> None:
         port = _Port()
         handler = OneBotActionToolHandler(delivery_port=port)

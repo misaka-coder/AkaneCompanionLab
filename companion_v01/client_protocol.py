@@ -67,7 +67,6 @@ DESKTOP_PET_DEFAULT_CAPABILITIES = (
 QQ_TEXT_DEFAULT_CAPABILITIES = (
     ClientCapability.SPEECH_SEGMENTS.value,
     ClientCapability.FILE_DROP.value,
-    ClientCapability.CHOICES.value,
     ClientCapability.TOOL_ACTIONS.value,
 )
 

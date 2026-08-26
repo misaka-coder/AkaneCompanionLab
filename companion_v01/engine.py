@@ -192,11 +192,6 @@ FINAL_RESPONSE_RECOVERY_FEEDBACK = (
     "不要重复已完成的工具，不要讨论这次格式错误。"
 )
 
-QQ_OPTIONAL_RESPONSE_RECOVERY_FEEDBACK = (
-    "【宿主反馈】上一条可选回复格式无效。决定回复时输出标准 QQ JSON；"
-    "决定静默时只输出 {\"attention\":\"silent\"}。"
-)
-
 # Last-resort delivery after the configured structured decisions all fail. It
 # is an explicit protocol-exhaustion path, not an inferred final stage.
 FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = (
@@ -3284,39 +3279,8 @@ class AkaneMemoryEngine:
         return (
             bool(persist_requested)
             and not bool(final_output.get("_transient_final_failure"))
-            and not bool(final_output.get("_qq_attention_silent"))
+            and not bool(final_output.get("_deliberate_silence"))
         )
-
-    @staticmethod
-    def _is_qq_optional_silent_result(raw_result: Any, *, prompt_scope: str) -> bool:
-        if str(prompt_scope or "").strip().lower() not in {"qq_attention", "qq_optional_reply"}:
-            return False
-        if not isinstance(raw_result, dict) or set(raw_result) != {"attention"}:
-            return False
-        return str(raw_result.get("attention") or "").strip().lower() == "silent"
-
-    @staticmethod
-    def _mark_qq_optional_silent(
-        normalized: dict[str, Any],
-        *,
-        reason: str = "invalid_optional_output",
-    ) -> dict[str, Any]:
-        result = dict(normalized or {})
-        result["speech"] = ""
-        result["speech_segments"] = []
-        result["tool_call"] = None
-        result.pop("_native_tool_call", None)
-        result.pop("_native_tool_calls", None)
-        result.pop("_provider_output_raw", None)
-        result.pop("_transient_final_failure", None)
-        result["_qq_attention_silent"] = True
-        result["_qq_attention_silent_reason"] = str(reason or "invalid_optional_output")
-        return result
-
-    @staticmethod
-    def _is_qq_optional_scope(generation_context: dict[str, Any]) -> bool:
-        prompt_scope = str(generation_context.get("prompt_scope") or "").strip().lower()
-        return prompt_scope in {"qq_attention", "qq_optional_reply"}
 
     @staticmethod
     def _pop_user_memory_source_id(
@@ -4887,6 +4851,7 @@ class AkaneMemoryEngine:
             persist_assistant_turn,
             final_output,
         )
+        deliberate_silence = bool(final_output.get("_deliberate_silence"))
         if persist_assistant_turn:
             assistant_record = self.store.add_message(
                 profile_user_id=profile_user_id,
@@ -4945,6 +4910,38 @@ class AkaneMemoryEngine:
                             ),
                         },
                     )
+        elif deliberate_silence and memcore_turn_id and not externally_managed_memcore_turn:
+            # Close the authoritative MemCore turn with the exact provider
+            # envelope, but do not create a blank assistant bubble in the
+            # legacy/user-readable timeline. Tool calls and results already
+            # attached to this open turn remain replayable.
+            silent_assistant_record = {
+                "source_id": f"assistant_silent_{uuid.uuid4().hex}",
+                "role": "assistant",
+                "content": "",
+                "timestamp": int(time.time()),
+                "semantic_tags": [],
+                "memory_metadata": self._build_assistant_timeline_metadata(final_output),
+            }
+            if self._finalize_memcore_input_turn_for_delivery(
+                final_output=final_output,
+                turn_id=memcore_turn_id,
+                assistant_record=silent_assistant_record,
+                memory_metadata=memory_metadata,
+                provider_output_raw=provider_output_raw,
+                chat_model_override=chat_model_override,
+                execution_target=turn_execution_target,
+                annotation_status=memory_annotation_status,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+            ):
+                self._schedule_memcore_compaction(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                    chat_model_override=chat_model_override,
+                )
         elif memcore_turn_id and not externally_managed_memcore_turn:
             self._abort_memcore_input_turn(
                 turn_id=memcore_turn_id,
@@ -5461,34 +5458,23 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
-            if self._is_qq_optional_silent_result(
-                result,
-                prompt_scope=str(generation_context.get("prompt_scope") or ""),
-            ) and self._is_qq_optional_scope(generation_context):
-                return self._mark_qq_optional_silent(normalized, reason="model_decision")
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
             self._attach_nonfatal_memcore_failure(
                 normalized,
                 generation_context.get("memcore_projection_recovery"),
             )
-            terminal_output = (
-                None
-                if self._is_qq_optional_scope(generation_context)
-                and parse_fallback
-                and not self._final_output_has_tool_call(normalized)
-                else self._final_attempt_terminal_output(
-                    normalized=normalized,
-                    parse_fallback=parse_fallback,
-                    provider_output_raw=provider_output_raw,
-                    generation_context=generation_context,
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    client_context=client_context,
-                    resource_manifest=resource_manifest,
-                    user_message=user_message,
-                    domain_profile_id=domain_profile_id,
-                )
+            terminal_output = self._final_attempt_terminal_output(
+                normalized=normalized,
+                parse_fallback=parse_fallback,
+                provider_output_raw=provider_output_raw,
+                generation_context=generation_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_context=client_context,
+                resource_manifest=resource_manifest,
+                user_message=user_message,
+                domain_profile_id=domain_profile_id,
             )
             if terminal_output is not None:
                 return terminal_output
@@ -5516,8 +5502,6 @@ class AkaneMemoryEngine:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
             return normalized
-        if self._is_qq_optional_scope(generation_context):
-            return self._mark_qq_optional_silent(normalized)
         if self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,
@@ -5552,16 +5536,12 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
-        if AkaneMemoryEngine._is_qq_optional_scope(generation_context):
-            return 2
         if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
             return 1
         return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
 
     @staticmethod
     def _final_response_retry_note(generation_context: dict[str, Any]) -> str:
-        if AkaneMemoryEngine._is_qq_optional_scope(generation_context):
-            return QQ_OPTIONAL_RESPONSE_RECOVERY_FEEDBACK
         return FINAL_RESPONSE_RECOVERY_FEEDBACK
 
     @staticmethod
@@ -5722,6 +5702,8 @@ class AkaneMemoryEngine:
                 normalized["_provider_output_raw"] = provider_output_raw
             return normalized
         if not self._is_retryable_final_output(normalized):
+            if parse_fallback and normalized.get("_deliberate_silence"):
+                return None
             # A complete speech extracted from malformed wire text is still a
             # tool preface when the wire carries a non-null tool call. It must
             # never be delivered as the final answer; same-context regeneration
@@ -6030,6 +6012,10 @@ class AkaneMemoryEngine:
 
         if not parse_fallback or not isinstance(output, dict):
             return False
+        if output.get("_deliberate_silence"):
+            # A damaged JSON fragment does not prove completion of the compact
+            # {"speech":""} decision protocol.
+            return False
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
         if self._is_retryable_final_output(output):
@@ -6129,6 +6115,8 @@ class AkaneMemoryEngine:
         if not isinstance(output, dict):
             return True
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
+            return False
+        if output.get("_deliberate_silence"):
             return False
         text = str(output.get("speech") or "").strip()
         if not text:
@@ -6373,14 +6361,6 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
-            if self._is_qq_optional_silent_result(
-                getattr(stream_result, "parsed", None),
-                prompt_scope=str(generation_context.get("prompt_scope") or ""),
-            ) and self._is_qq_optional_scope(generation_context):
-                normalized = self._mark_qq_optional_silent(normalized, reason="model_decision")
-                unrecovered_stream_error = ""
-                unrecovered_stream_partial = {}
-                break
             self._attach_memory_annotation_truth(
                 normalized,
                 result=stream_result,
@@ -6393,12 +6373,6 @@ class AkaneMemoryEngine:
             terminal_output = (
                 None
                 if stream_error
-                or (
-                    self._is_qq_optional_scope(generation_context)
-                    and parse_fallback
-                    and not delivered_speech_segments
-                    and not self._final_output_has_tool_call(normalized)
-                )
                 else self._final_attempt_terminal_output(
                     normalized=normalized,
                     parse_fallback=parse_fallback,
@@ -6621,9 +6595,6 @@ class AkaneMemoryEngine:
             # A legal tool call still continues the ordinary tool loop.
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
-        elif self._is_qq_optional_scope(generation_context) and not delivered_speech_segments:
-            if not normalized.get("_qq_attention_silent"):
-                normalized = self._mark_qq_optional_silent(normalized)
         elif self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,
@@ -8817,7 +8788,7 @@ class AkaneMemoryEngine:
         include_capability_status: bool = True,
     ) -> str:
         if not allow_tool_call:
-            return "本轮不要调用任何工具，tool_call 固定为 null。"
+            return "本轮不要调用任何工具；按当前模式的最终回复协议作答。"
 
         selection = capability_selection or self._resolve_capability_selection(
             client_context=client_context,
@@ -8905,13 +8876,13 @@ class AkaneMemoryEngine:
                 )
                 return "\n\n".join(part for part in (execution_host_context, skill_catalog, direct_hint) if part)
             if not disclosures and not capability_hints and not media_routing:
-                return "当前没有可用工具，tool_call 固定为 null。"
+                return "当前没有可用工具；按当前模式的最终回复协议作答。"
             parts: list[str] = []
             append_capability_context(parts)
             if skill_catalog:
                 parts.extend([skill_catalog, ""])
             parts.extend(media_routing)
-            parts.append("当前没有需要展开的具体工具，tool_call 固定为 null。")
+            parts.append("当前没有需要展开的具体工具；按当前模式的最终回复协议作答。")
             if execution_host_context:
                 parts.insert(0, execution_host_context)
             return "\n".join(parts)

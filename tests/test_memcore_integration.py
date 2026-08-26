@@ -8643,6 +8643,60 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
 
+    def test_empty_speech_closes_turn_with_exact_provider_envelope_without_fake_semantic_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "silent-user-1", "content": "戳一下看看", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                completed = manager.complete_input_turn(
+                    turn_id=str(opened["turn_id"]),
+                    assistant_record={
+                        "source_id": "assistant_silent_test",
+                        "content": "",
+                        "timestamp": 101,
+                        "semantic_tags": [],
+                    },
+                    memory_metadata=None,
+                    annotation_status="missing",
+                    provider_output_raw='{"speech":""}',
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(completed["ok"], completed)
+                manager.begin_input_turn(
+                    {"source_id": "silent-user-2", "content": "下一句", "timestamp": 102},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        payloads = list(projection["payloads"])
+        self.assertIn({"role": "assistant", "content": '{"speech":""}'}, payloads)
+        self.assertNotIn({"role": "assistant", "content": ""}, payloads)
+
+
 class _CaptureBatchManager:
     """Stub MemcoreManager that records exactly what the engine projects."""
 
@@ -8676,8 +8730,6 @@ def _exec_trace_result(status: str, *, followup: str, tool_type: str = "exec_run
             }
         },
     )
-
-
 class MemcoreExecClosedLoopTests(unittest.TestCase):
     """Phase 5.4: exec_run exchanges settle through the same MemCore path as any tool."""
 

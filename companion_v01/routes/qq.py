@@ -1404,6 +1404,8 @@ def _process_qq_turn_streaming(
     timing["turn_processing_ms"] = round((time.perf_counter() - engine_started_at) * 1000, 1)
 
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
+    visible_action_delivered = _qq_has_visible_action_receipt(frame_delivery_events)
+    deliberate_silence = bool(frame.get("_deliberate_silence"))
     retained_frame_events = [
         dict(event)
         for event in frame_delivery_events
@@ -1467,7 +1469,7 @@ def _process_qq_turn_streaming(
     # a successfully completed LLM turn into an apparent system crash.
     final_reply_messages = (
         []
-        if bool(frame.get("_transient_final_failure") or frame.get("_qq_attention_silent"))
+        if bool(frame.get("_transient_final_failure") or deliberate_silence)
         else qq_gateway.render_reply_messages(frame)
     )
     reply_messages = final_reply_messages
@@ -1499,14 +1501,15 @@ def _process_qq_turn_streaming(
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
-    if not bool(frame.get("_turn_stopped") or frame.get("_qq_attention_silent")) and (
-        (not visible_text_delivered and not visible_file_delivered)
-        or (not final_frame_received and not visible_file_delivered)
+    if not bool(frame.get("_turn_stopped") or deliberate_silence) and (
+        (not visible_text_delivered and not visible_file_delivered and not visible_action_delivered)
+        or (not final_frame_received and not visible_file_delivered and not visible_action_delivered)
         or (
             bool(frame.get("_transient_final_failure"))
             and tool_preface_delivered
             and not final_streamed_text_delivered
             and not visible_file_delivered
+            and not visible_action_delivered
         )
     ):
         # A streamed tool preface or emotion is not an authoritative final
@@ -1560,7 +1563,7 @@ def _process_qq_turn_streaming(
     emotion_started_at = time.perf_counter()
     if (
         send_result.get("ok")
-        and not bool(frame.get("_transient_final_failure") or frame.get("_qq_attention_silent"))
+        and not bool(frame.get("_transient_final_failure") or deliberate_silence)
         and (
         visible_text_delivered
         or visible_file_delivered
@@ -1660,6 +1663,7 @@ def _process_qq_turn_streaming(
         "file_delivery_feedback_result": file_delivery_feedback_result,
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
+        "visible_action_delivered": visible_action_delivered,
         "timing": timing,
     }
 
@@ -1687,6 +1691,18 @@ def _qq_file_delivery_event_identity(event: dict[str, Any]) -> tuple[str, str] |
         or ""
     ).strip()
     return (source_type, source_id) if source_id else None
+
+
+def _qq_has_visible_action_receipt(events: Any) -> bool:
+    """Recognize only a successful receipt emitted by the OneBot write surface."""
+
+    return any(
+        isinstance(event, dict)
+        and str(event.get("type") or "").strip() == "qq_visible_action_receipt"
+        and bool(event.get("ok"))
+        and str(event.get("status") or "").strip().lower() not in {"failed", "invalid", "unavailable"}
+        for event in list(events or [])
+    )
 
 
 def _hydrate_plugin_managed_artifact_events(
@@ -1874,7 +1890,11 @@ def build_qq_router(
     def _turn_has_real_visible_delivery(result: Any) -> bool:
         payload = result if isinstance(result, dict) else {}
         frame = payload.get("frame") if isinstance(payload.get("frame"), dict) else {}
-        if frame.get("_qq_attention_silent") or frame.get("_transient_final_failure"):
+        if bool(payload.get("visible_action_delivered")) or _qq_has_visible_action_receipt(
+            frame.get("tool_events")
+        ):
+            return True
+        if frame.get("_transient_final_failure"):
             return False
         if list(payload.get("reply_messages") or []):
             return True
@@ -2019,19 +2039,17 @@ def build_qq_router(
                     getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
                 ),
             )
+        visible_reply = _turn_has_real_visible_delivery(result)
+        result_frame = dict(result.get("frame") or {}) if isinstance(result, dict) else {}
         log_event(
             "qq_group_attention_completed",
             session_id=context.session_id,
             profile_user_id=context.profile_user_id,
             group_id=int(getattr(context, "group_id", 0) or 0),
             attention_reason=ticket.reason,
-            visible_reply=_turn_has_real_visible_delivery(result),
-            silent=bool(dict(result.get("frame") or {}).get("_qq_attention_silent")) if isinstance(result, dict) else False,
-            silent_reason=(
-                str(dict(result.get("frame") or {}).get("_qq_attention_silent_reason") or "")
-                if isinstance(result, dict)
-                else ""
-            ),
+            visible_reply=visible_reply,
+            silent=bool(result_frame.get("_deliberate_silence")) and not visible_reply,
+            silent_reason="model_decision" if bool(result_frame.get("_deliberate_silence")) else "",
         )
 
     def _schedule_group_attention(

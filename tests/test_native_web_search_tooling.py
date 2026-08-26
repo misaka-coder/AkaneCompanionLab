@@ -888,7 +888,8 @@ class NativeWebSearchToolingTests(unittest.TestCase):
 
         self.assertNotIn("web_search", instruction)
         self.assertIn("真实工具调用", instruction)
-        self.assertIn("最终 JSON 的 tool_call 保持 null", instruction)
+        self.assertIn("最终回复只遵循当前客户端的输出协议", instruction)
+        self.assertNotIn("tool_call 保持 null", instruction)
         self.assertIn("请求中的工具定义为准", instruction)
         self.assertNotIn("互不依赖", instruction)
         self.assertNotIn("同一轮发出多个 native tool calls", instruction)

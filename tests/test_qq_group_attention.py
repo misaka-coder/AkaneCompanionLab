@@ -129,15 +129,18 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         class Engine:
             desktop_pet_character_resources = None
 
+            def __init__(self, frame=None):
+                self.frame = frame or {
+                    "_deliberate_silence": True,
+                    "speech": "",
+                    "speech_segments": [],
+                    "tool_events": [],
+                }
+
             def process_turn_stream(self, _payload):
                 yield {
                     "type": "final_ui",
-                    "payload": {
-                        "_qq_attention_silent": True,
-                        "speech": "",
-                        "speech_segments": [],
-                        "tool_events": [],
-                    },
+                    "payload": dict(self.frame),
                 }
 
             def process_turn(self, _payload):
@@ -199,31 +202,41 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(result["reply_messages"], [])
         self.assertEqual(result["final_failure_notice_result"]["status"], "skipped")
 
-    def test_silent_protocol_is_scoped_to_optional_qq_turns(self) -> None:
-        self.assertTrue(
-            AkaneMemoryEngine._is_qq_optional_silent_result(
-                {"attention": "silent"},
-                prompt_scope="qq_attention",
-            )
+        action_gateway = Gateway()
+        action_result = _process_qq_turn_streaming(
+            engine=Engine(
+                {
+                    "_deliberate_silence": True,
+                    "speech": "",
+                    "speech_segments": [],
+                    "tool_events": [
+                        {
+                            "type": "qq_visible_action_receipt",
+                            "action": "group_poke",
+                            "status": "success",
+                            "ok": True,
+                        }
+                    ],
+                }
+            ),
+            qq_gateway=action_gateway,
+            context=SimpleNamespace(session_id="qq-group", reply_mode="text"),
+            turn_payload={"user_id": "qq-group", "message": "戳一下"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
         )
-        self.assertTrue(
-            AkaneMemoryEngine._is_qq_optional_silent_result(
-                {"attention": "silent"},
-                prompt_scope="qq_optional_reply",
-            )
-        )
-        self.assertFalse(
-            AkaneMemoryEngine._is_qq_optional_silent_result(
-                {"attention": "silent"},
-                prompt_scope="",
-            )
-        )
-        self.assertFalse(
-            AkaneMemoryEngine._is_qq_optional_silent_result(
-                {"attention": "silent", "speech": ""},
-                prompt_scope="qq_attention",
-            )
-        )
+        self.assertTrue(action_result["visible_action_delivered"])
+        self.assertEqual(action_result["final_failure_notice_result"]["status"], "skipped")
+        self.assertEqual(action_gateway.sent, [])
+
+    def test_old_attention_silent_protocol_is_removed(self) -> None:
+        self.assertFalse(hasattr(AkaneMemoryEngine, "_is_qq_optional_silent_result"))
+        self.assertFalse(hasattr(AkaneMemoryEngine, "_mark_qq_optional_silent"))
 
     def test_adaptive_passive_message_runs_one_memcore_backed_observation(self) -> None:
         recorded = []
@@ -245,7 +258,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
                 processed.append(dict(payload))
                 yield {
                     "type": "final_ui",
-                    "payload": {"_qq_attention_silent": True, "speech": "", "tool_events": []},
+                    "payload": {"_deliberate_silence": True, "speech": "", "tool_events": []},
                 }
 
         class Supervisor:
@@ -469,7 +482,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
                 processed.append(dict(payload))
                 yield {
                     "type": "final_ui",
-                    "payload": {"_qq_attention_silent": True, "speech": "", "tool_events": []},
+                    "payload": {"_deliberate_silence": True, "speech": "", "tool_events": []},
                 }
 
         class Supervisor:
@@ -715,7 +728,11 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
             )
         )
         self.assertNotIn("若不需要", processed[0]["extra_context"])
-        self.assertIn("要不要一起玩", processed[0]["message"])
+        self.assertIn("可以", processed[0]["message"])
+        self.assertEqual(
+            processed[0]["message_addressing"]["reply_reference"]["excerpt"],
+            "要不要一起玩？",
+        )
 
     def test_quote_to_group_member_records_structured_reply_relationship(self) -> None:
         recorded = []
@@ -787,6 +804,9 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
                 "actor_display_name": "天为",
                 "message_id": "member-message-1",
                 "excerpt": "今晚八点开黑",
+                "timestamp": 100,
+                "conversation_kind": "group",
+                "conversation_id": "30003",
             },
         )
 

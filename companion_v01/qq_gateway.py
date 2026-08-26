@@ -40,6 +40,7 @@ from channelcore_onebot import (
 
 import config
 from .care_runtime import CareModulePort, DEFAULT_CARE_SHOP_ITEMS, DEFAULT_CHECKIN_COINS, get_seasonal_shop_items
+from .client_protocol import QQ_TEXT_DEFAULT_CAPABILITIES
 from .deployment_security import QQChannelRuntimeConfig
 from .model_service_config import normalize_provider_model_id
 from .onebot_model_actions import (
@@ -51,12 +52,8 @@ from .onebot_transport import OneBotActionTransport
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 
 
-QQ_TEXT_CAPABILITIES = (
-    "speech_segments",
-    "file_drop",
-    "choices",
-    "tool_actions",
-)
+# Public compatibility alias; client_protocol owns the capability list.
+QQ_TEXT_CAPABILITIES = QQ_TEXT_DEFAULT_CAPABILITIES
 
 QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
 

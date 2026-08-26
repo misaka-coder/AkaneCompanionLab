@@ -68,6 +68,12 @@ def normalize_final_output(
     )
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
+    explicit_qq_silence = (
+        client_context.effective_mode == ClientMode.QQ_TEXT
+        and "speech" in raw_result
+        and isinstance(raw_result.get("speech"), str)
+        and not str(raw_result.get("speech") or "").strip()
+    )
     native_tool_call = raw_result.get(NATIVE_TOOL_CALL_FIELD)
     native_tool_calls = raw_result.get(NATIVE_TOOL_CALLS_FIELD)
     if allow_tool_call and isinstance(native_tool_calls, list):
@@ -139,7 +145,7 @@ def normalize_final_output(
     normalized.pop("speech_segments", None)
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
-        fallback_to_default=not bool(
+        fallback_to_default=not explicit_qq_silence and not bool(
             normalized.get("tool_call")
             or normalized.get(NATIVE_TOOL_CALL_FIELD)
             or normalized.get(NATIVE_TOOL_CALLS_FIELD)
@@ -147,6 +153,12 @@ def normalize_final_output(
     )
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
+    if explicit_qq_silence:
+        # This is a host-derived terminal fact, not a second provider protocol.
+        # Missing/wrong-typed speech and damaged JSON never reach this marker.
+        normalized["_deliberate_silence"] = True
+    else:
+        normalized.pop("_deliberate_silence", None)
     if client_context.effective_mode == ClientMode.QQ_TEXT:
         normalized["reply_medium"] = _normalize_reply_medium(
             normalized.get("reply_medium"),
@@ -164,7 +176,10 @@ def normalize_final_output(
     normalized["memory_metadata"] = memory_metadata
     normalized.pop("memory_tags", None)
     normalized["state_request"] = normalize_state_request(normalized.get("state_request"))
-    normalized["choices"] = engine._normalize_choices(normalized.get("choices"))
+    if client_context.has_capability(ClientCapability.CHOICES):
+        normalized["choices"] = engine._normalize_choices(normalized.get("choices"))
+    else:
+        normalized.pop("choices", None)
     persona_service = engine._get_persona_card_service()
     current_persona_id = (
         persona_service.get_active_id(profile_user_id=profile_user_id, session_id=session_id)
