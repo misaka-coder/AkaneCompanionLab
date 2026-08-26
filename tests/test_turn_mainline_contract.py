@@ -519,7 +519,7 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant", "assistant", "assistant"])
         self.assertEqual(len(harness.store.eval_turns), 1)
 
-    def test_load_material_pixels_become_current_images_for_next_decision(self) -> None:
+    def test_load_material_pixels_append_as_media_evidence_for_next_decision(self) -> None:
         harness = _Harness(
             [
                 _tool_round_output("我加载原图。", "load_material", "call-image"),
@@ -540,12 +540,48 @@ class TurnMainlineContractTests(unittest.TestCase):
                 model_image_inputs=[image_input],
             )
 
+        def append_tool_history_batch(**kwargs: object) -> dict[str, object]:
+            self.assertEqual(kwargs["model_image_inputs"], [image_input])
+            history = kwargs["tool_history_turns"]
+            history[:] = [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-image",
+                            "type": "function",
+                            "function": {"name": "load_material", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-image", "content": "原始图片已加载。"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "[visual_evidence]\nhandles: img_001\n"
+                                "证据是否在本次请求中可见，以紧随的内容块为准。"
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": image_input["data_url"]}},
+                    ],
+                },
+            ]
+            return {"ok": True, "status": "projected"}
+
         harness.engine._execute_tool_call = execute_tool_call
+        harness.engine.native_chat_vision_status = lambda **_kwargs: {"enabled": True}
+        harness.engine._append_tool_history_batch = append_tool_history_batch
         result = harness.run_sync(harness.payload(message="再看一下刚才的图"))
 
         self.assertEqual(result.get("speech"), "看到了。")
         self.assertEqual(harness.script.generation_kwargs[0]["user_images"], [])
-        self.assertEqual(harness.script.generation_kwargs[1]["user_images"], [image_input])
+        self.assertEqual(harness.script.generation_kwargs[1]["user_images"], [])
+        next_history = harness.script.generation_kwargs[1]["post_user_turns"]
+        self.assertIn("[visual_evidence]", next_history[-1]["content"][0]["text"])
+        self.assertEqual(next_history[-1]["content"][-1]["image_url"]["url"], image_input["data_url"])
         self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 1)
         media_calls = harness.rec["record_memcore_tool_media_input"].calls
         self.assertEqual(len(media_calls), 1)

@@ -235,8 +235,7 @@ class LoadMaterialToolHandler(BaseToolHandler):
                 }
             ],
             followup_context=(
-                f"已把当前会话材料 {', '.join(handles)} 的原始图片通过原生多模态通道加载到下一轮。"
-                "请直接观察图片完成用户任务；不要只复述旧摘要，也不要声称看到了未加载的材料。"
+                f"已把当前会话材料 {', '.join(handles)} 的原始图片加载到紧随本结果的视觉证据消息。"
             ),
             model_image_inputs=images,
         )

@@ -4596,12 +4596,6 @@ class AkaneMemoryEngine:
                 tool_results=batch_results,
                 chat_model_override=chat_model_override,
             )
-            batch_model_images = self._merge_tool_model_image_inputs([], batch_results)
-            if batch_model_images:
-                turn_user_images = self._merge_model_image_inputs(
-                    batch_model_images,
-                    turn_user_images,
-                )
 
             tool_round_index += 1
             hard_budget_reached = tool_round_index >= max_tool_rounds
@@ -7455,6 +7449,13 @@ class AkaneMemoryEngine:
                 chat_model_override=chat_model_override,
             )
         projection_provider_profile = str(getattr(projection_target, "protocol", "") or "").strip().lower()
+        if projection_provider_profile:
+            projection_model_images = batch_model_images
+        else:
+            native_vision_status = self.native_chat_vision_status(
+                chat_model_override=chat_model_override,
+            )
+            projection_model_images = batch_model_images if bool(native_vision_status.get("enabled")) else []
         media_source_ids = self._record_memcore_tool_media_input(
             model_image_inputs=batch_model_images,
             related_source_ids=trace_source_ids,
@@ -7473,11 +7474,7 @@ class AkaneMemoryEngine:
             items=history_items,
             trace_source_ids=trace_source_ids,
             media_source_ids=media_source_ids,
-            # MemCore keeps the durable handle/action/result relationship.  The
-            # caller promotes real pixels to the single current-user image
-            # channel for the next provider request, so do not duplicate base64
-            # inside the temporary tool-history projection.
-            model_image_inputs=[],
+            model_image_inputs=projection_model_images,
             provider_output_raw=provider_output_raw,
             provider_profile=projection_provider_profile,
             profile_user_id=profile_user_id,
@@ -7847,6 +7844,32 @@ class AkaneMemoryEngine:
             blocks = [dict(item) for item in content if isinstance(item, dict)]
         else:
             blocks = [{"type": "text", "text": str(content or "")}]
+        handles = list(
+            dict.fromkeys(
+                str(item.get("attachment_handle") or "").strip()
+                for item in list(model_image_inputs or [])[:5]
+                if isinstance(item, dict) and str(item.get("attachment_handle") or "").strip()
+            )
+        )
+        evidence_note = (
+            "[visual_evidence]\n"
+            f"handles: {', '.join(handles) or 'loaded_image'}\n"
+            "证据是否在本次请求中可见，以紧随的内容块为准：image_url 表示真实像素已提供，"
+            "[media omitted from persistent history] 表示像素只存在于先前请求、当前不可见。"
+            "只依据当前实际提供的像素判断；不可见时使用 load_material 重新加载，无法辨认时如实说明。"
+        )
+        text_index = next(
+            (
+                index
+                for index, block in enumerate(blocks)
+                if str(block.get("type") or "").strip().lower() in {"text", "input_text"}
+            ),
+            None,
+        )
+        if text_index is None:
+            blocks.insert(0, {"type": "text", "text": evidence_note})
+        else:
+            blocks[text_index] = {**blocks[text_index], "text": evidence_note}
         for item in list(model_image_inputs or [])[:5]:
             if not isinstance(item, dict):
                 continue

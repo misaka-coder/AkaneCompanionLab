@@ -2457,6 +2457,24 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 self.assertTrue(projected["ok"], projected)
+                image_evidence = next(
+                    message
+                    for message in native_history
+                    if isinstance(message.get("content"), list)
+                    and any(
+                        isinstance(block, dict) and block.get("type") == "image_url"
+                        for block in message["content"]
+                    )
+                )
+                self.assertEqual(image_evidence["role"], "user")
+                self.assertEqual(image_evidence["content"][0]["type"], "text")
+                self.assertIn("[visual_evidence]", image_evidence["content"][0]["text"])
+                self.assertIn("handles: img_001", image_evidence["content"][0]["text"])
+                self.assertIn("image_url 表示真实像素已提供", image_evidence["content"][0]["text"])
+                self.assertEqual(
+                    image_evidence["content"][-1]["image_url"]["url"],
+                    image_input["data_url"],
+                )
                 second_chat_payload = {
                     "model": "gpt-test",
                     "messages": [
@@ -2486,6 +2504,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         media_message = next(message for message in frozen_turn if media["source_id"] in message.get("source_ids", []))
         persisted = str(media_message["payload"])
         self.assertIn("omitted from persistent history", persisted)
+        self.assertIn("[visual_evidence]", persisted)
+        self.assertIn("当前不可见", persisted)
         self.assertNotIn("AAAA", persisted)
         self.assertNotIn("MUST_NOT_BE_STORED", persisted)
         self.assertTrue(second_context["memcore_request_projection"]["media_omitted"])
@@ -8440,6 +8460,33 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
         self.assertEqual(exchange["tool_name"], "exec_run")
         self.assertEqual(exchange["result"], followup)
         self.assertEqual(exchange["result_status"], "success")
+
+    def test_file_and_audio_evidence_use_the_same_memcore_tool_batch(self) -> None:
+        cases = {
+            "read_attachment_section": "本页内容如下：\n文件中的真实段落。",
+            "transcribe_media": "转写完成：gen_transcript（meeting.md）。",
+        }
+        for tool_name, followup in cases.items():
+            with self.subTest(tool_name=tool_name):
+                manager = _CaptureBatchManager()
+                call_id = f"call-{tool_name}"
+                exchanges = self._record(
+                    manager,
+                    [
+                        self._exec_item(
+                            ToolExecutionResult(tool_type=tool_name, followup_context=followup),
+                            tool_call={
+                                "type": tool_name,
+                                TOOL_INVOCATION_ID_FIELD: call_id,
+                            },
+                        )
+                    ],
+                    call_id=call_id,
+                )
+                self.assertEqual(len(exchanges), 1)
+                self.assertEqual(exchanges[0]["tool_name"], tool_name)
+                self.assertEqual(exchanges[0]["result"], followup)
+                self.assertEqual(exchanges[0]["result_status"], "success")
 
     def test_running_exec_run_is_not_projected_as_error(self) -> None:
         manager = _CaptureBatchManager()

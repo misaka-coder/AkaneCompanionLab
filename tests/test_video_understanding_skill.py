@@ -291,7 +291,7 @@ class VideoUnderstandingExecutionLoopTests(unittest.TestCase):
         self.assertEqual(len(images), 2)
         self.assertTrue(all(item["data_url"].startswith("data:image/jpeg;base64,") for item in images), images)
         self.assertEqual({item["attachment_handle"] for item in images}, set(handles))
-        self.assertIn("原生多模态通道", loaded.followup_context)
+        self.assertIn("紧随本结果的视觉证据消息", loaded.followup_context)
 
     def test_multiple_contact_sheets_register_then_load_in_one_visual_round(self) -> None:
         result = self.handler.execute(
@@ -459,7 +459,7 @@ class VideoUnderstandingMemcoreTraceTests(unittest.TestCase):
                                 "tool_name": "load_material",
                                 "tool_call_id": "call-load-frames",
                                 "tool_input": {"targets": ["gen_001", "gen_002"], "purpose": "查看关键帧"},
-                                "result": "已把当前会话材料 gen_001, gen_002 的原始图片通过原生多模态通道加载到下一轮。",
+                                "result": "已把当前会话材料 gen_001, gen_002 的原始图片加载到紧随本结果的视觉证据消息。",
                                 "source": "load_material",
                                 "timestamp": 103,
                                 "source_id_prefix": "tooltrace-frames",
@@ -509,7 +509,7 @@ class VideoUnderstandingMemcoreTraceTests(unittest.TestCase):
                     self.assertIn("reload: open_memory(memory_id=", card_text)
                     self.assertIn("status: success", card_text)
                     self.assertIn("已加载 Skill video-understanding", card_text)
-                    self.assertIn("已把当前会话材料 gen_001, gen_002 的原始图片通过原生多模态通道加载到下一轮", card_text)
+                    self.assertIn("已把当前会话材料 gen_001, gen_002 的原始图片加载到紧随本结果的视觉证据消息", card_text)
                     self.assertNotIn("run_id=execrun_video", card_text)
                     self.assertNotIn("y" * 64, card_text)
                     self.assertNotIn(str(temp_dir), card_text)
