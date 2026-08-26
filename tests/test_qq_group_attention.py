@@ -311,6 +311,105 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
 
+    def test_passive_image_is_recorded_with_handle_without_starting_attention(self) -> None:
+        recorded = []
+        processed = []
+        scheduled = []
+        log_calls = []
+
+        class Engine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def ingest_qq_attachments(**_kwargs):
+                return [
+                    {
+                        "attachment_id": "attachment-image-1",
+                        "attachment_handle": "img_001",
+                        "kind": "image",
+                        "status": "pending_observation",
+                        "detail": {"qq_sender_label": "群成员"},
+                    }
+                ]
+
+            def record_passive_qq_messages(self, payloads):
+                recorded.extend(dict(payload) for payload in payloads)
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [{"ok": True, "source_id": "observed-image-1"}],
+                }
+
+            def process_turn_stream(self, payload):
+                processed.append(dict(payload))
+                raise AssertionError("a passive image without pixels must not start attention")
+
+        class Supervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class Metrics:
+            @staticmethod
+            def observe_request(*_args, **_kwargs):
+                return None
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=Engine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_GROUP_ATTENTION_MODE="adaptive",
+                    QQ_GROUP_ATTENTION_DELAY_SECONDS=0,
+                    QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS=60,
+                ),
+                qq_gateway=NapCatQQGateway(),
+                runtime_metrics=Metrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda name, **kwargs: log_calls.append((name, kwargs)),
+                async_task_supervisor=Supervisor(),
+            )
+        )
+
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": 10001,
+                "user_id": 20002,
+                "group_id": 30003,
+                "message_id": "ambient-image-1",
+                "sender": {"nickname": "群成员"},
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {"file": "ambient.jpg", "url": "http://127.0.0.1/ambient.jpg"},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "buffered")
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop())
+        self.assertEqual(scheduled, [])
+        self.assertEqual(processed, [])
+        self.assertEqual(len(recorded), 1)
+        self.assertIn("【群成员】[图片]", recorded[0]["message"])
+        self.assertIn('handle: "img_001"', recorded[0]["message"])
+        self.assertNotIn("发来了一张图片", recorded[0]["message"])
+        attention_logs = [payload for name, payload in log_calls if name == "qq_group_attention_considered"]
+        self.assertEqual(len(attention_logs), 1)
+        self.assertFalse(attention_logs[0]["scheduled"])
+        self.assertEqual(attention_logs[0]["reason"], "passive_image_recorded")
+
     def test_passive_message_without_memcore_source_does_not_schedule_attention(self) -> None:
         scheduled = []
 

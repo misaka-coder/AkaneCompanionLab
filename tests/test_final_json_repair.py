@@ -353,7 +353,7 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertNotIn("_qq_attention_silent", result)
         self.assertEqual(result["tool_call"]["type"], "web_search")
 
-    def test_attention_silent_is_rejected_after_current_turn_tool_execution(self) -> None:
+    def test_attention_can_stay_silent_after_current_turn_tool_execution(self) -> None:
         class FakeLLM:
             def __init__(self) -> None:
                 self.calls = 0
@@ -368,11 +368,7 @@ class FinalRecoveryTests(unittest.TestCase):
 
             def call_chat_json_result(self, **_kwargs):
                 self.calls += 1
-                parsed = (
-                    {"attention": "silent"}
-                    if self.calls == 1
-                    else {"speech": "工具已经用过，我会正常说明结果。", "tool_call": None}
-                )
+                parsed = {"attention": "silent"}
                 return ChatJSONResult(parsed=parsed, raw_text=json.dumps(parsed, ensure_ascii=False))
 
         llm = FakeLLM()
@@ -390,9 +386,53 @@ class FinalRecoveryTests(unittest.TestCase):
             post_user_turns=[{"role": "tool", "content": "done", "tool_call_id": "call-1"}],
         )
 
-        self.assertEqual(llm.calls, 2)
-        self.assertNotIn("_qq_attention_silent", result)
-        self.assertEqual(result["speech"], "工具已经用过，我会正常说明结果。")
+        self.assertEqual(llm.calls, 1)
+        self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["_qq_attention_silent_reason"], "model_decision")
+        self.assertEqual(result["speech"], "")
+
+    def test_streaming_attention_can_stay_silent_after_material_load(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            def stream_chat_json(self, **_kwargs):
+                self.calls += 1
+                if False:
+                    yield {}
+                return SimpleNamespace(
+                    parsed={"attention": "silent"},
+                    raw_text='{"attention":"silent"}',
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+        llm = FakeLLM()
+        engine = self._engine(
+            llm,
+            context=_default_context(
+                prompt_scope="qq_attention",
+                post_user_turns=[
+                    {"role": "tool", "content": "image loaded", "tool_call_id": "load-image-1"},
+                    {"role": "user", "content": "工具为当前模型请求加载了图片：img_001。"},
+                ],
+            ),
+        )
+
+        _events, result = self._run_stream(engine)
+
+        self.assertEqual(llm.calls, 1)
+        self.assertTrue(result["_qq_attention_silent"])
+        self.assertEqual(result["_qq_attention_silent_reason"], "model_decision")
+        self.assertEqual(result["speech"], "")
 
     # --- Phase 5 item 1: malformed final with 33 tools -> same-turn recovery ---
 

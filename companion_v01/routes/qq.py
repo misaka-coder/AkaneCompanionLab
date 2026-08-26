@@ -459,6 +459,25 @@ def _append_qq_attachment_handles_to_message(message: str, items: list[dict[str,
     return "\n".join(lines).strip()
 
 
+def _normalize_passive_image_placeholder(message: str, items: list[dict[str, Any]]) -> str:
+    """Keep a passive image turn without claiming its pixels were observed."""
+
+    text = str(message or "").strip()
+    image_count = sum(
+        1
+        for item in items
+        if isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
+    )
+    if image_count <= 0:
+        return text
+    match = re.fullmatch(r"(?P<speaker>【[^】]+】)?发来了一张图片[。.!！]?", text)
+    if match is None:
+        return text
+    speaker = str(match.group("speaker") or "")
+    label = "[图片]" if image_count == 1 else f"[图片×{image_count}]"
+    return f"{speaker}{label}"
+
+
 def _qq_item_time_label(item: dict[str, Any]) -> str:
     created_label = _format_qq_timestamp(item.get("created_at"))
     updated_label = _format_qq_timestamp(item.get("updated_at"))
@@ -1991,6 +2010,16 @@ def build_qq_router(
     ) -> dict[str, Any]:
         if not bool(getattr(context, "is_group", False)):
             return {"scheduled": False, "reason": "not_group"}
+        if any(
+            isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
+            for item in list(getattr(context, "attachments", None) or [])
+        ):
+            # Passive storage and active perception are separate concerns. An
+            # unaddressed image is preserved with a durable handle, but it must
+            # not create a model request that lacks the actual pixels. Explicit
+            # mentions/replies and the sender-scoped attachment-follow path are
+            # handled by the ordinary QQ turn and can bind real visual input.
+            return {"scheduled": False, "reason": "passive_image_recorded"}
         anchor_source_id = str(projection_anchor_source_id or "").strip()
         if not anchor_source_id:
             return {"scheduled": False, "reason": "projection_anchor_missing"}
@@ -2169,6 +2198,10 @@ def build_qq_router(
             )
             registered_items = [item for item in list(registered or []) if isinstance(item, dict)]
             metrics["attachments_registered"] = len(registered_items)
+            payload["message"] = _normalize_passive_image_placeholder(
+                str(payload.get("message") or ""),
+                registered_items,
+            )
             payload["message"] = _append_qq_attachment_handles_to_message(
                 str(payload.get("message") or ""),
                 registered_items,
