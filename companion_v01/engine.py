@@ -7262,6 +7262,29 @@ class AkaneMemoryEngine:
             for name in getattr(frozen_capability_selection, "native_tool_names", ())
             if str(name or "").strip()
         }
+        resolved_round_handlers = getattr(frozen_capability_selection, "resolved_handlers", {}) or {}
+        native_model_names = tuple(
+            str(call.get("type") or "").strip()
+            for call in raw_tool_calls
+            if (
+                isinstance(call, dict)
+                and str(call.get("type") or "").strip().startswith("mcp_")
+                and str(call.get("type") or "").strip() not in resolved_round_handlers
+            )
+        )
+        direct_mcp_aliases: dict[str, str] = {}
+        direct_mcp_selection = frozen_capability_selection
+        if native_carrier_present and native_model_names:
+            from .engine_services.tool_rounds import resolve_unloaded_mcp_native_aliases
+
+            direct_mcp_aliases, direct_mcp_selection = resolve_unloaded_mcp_native_aliases(
+                self,
+                model_tool_names=native_model_names,
+                profile_user_id=profile_user_id,
+                client_context=client_context,
+                domain_profile_id=domain_profile_id,
+                capability_selection=frozen_capability_selection,
+            )
         for raw_tool_call in raw_tool_calls:
             raw_tool_name = str(raw_tool_call.get("type") or "").strip()
             if not native_carrier_present and raw_tool_name in native_schema_names:
@@ -7273,6 +7296,13 @@ class AkaneMemoryEngine:
                     "如果不再需要，请基于当前证据自然回答。"
                 )
                 continue
+            call_capability_selection = frozen_capability_selection
+            canonical_mcp_name = direct_mcp_aliases.get(raw_tool_name, "")
+            if canonical_mcp_name:
+                raw_tool_call = dict(raw_tool_call)
+                raw_tool_call["type"] = canonical_mcp_name
+                raw_tool_call[TOOL_MODEL_NAME_FIELD] = raw_tool_name
+                call_capability_selection = direct_mcp_selection
             receipt = execution_receipts.get(raw_tool_name) if isinstance(execution_receipts, dict) else None
             if isinstance(receipt, dict):
                 raw_tool_call = dict(raw_tool_call)
@@ -7283,7 +7313,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 domain_profile_id=domain_profile_id,
-                capability_selection=frozen_capability_selection,
+                capability_selection=call_capability_selection,
             )
             if tool_call:
                 tool_calls.append(tool_call)

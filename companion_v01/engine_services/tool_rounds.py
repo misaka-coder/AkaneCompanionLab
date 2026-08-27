@@ -41,6 +41,7 @@ from ..local_capability_config import (
     approval_mode_override_for_capability,
     load_capability_config,
 )
+from ..native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 # M66-E: ToolReadinessGate deleted; readiness is now gated via
 # ServerLocalOfferIndex inside CapabilityRegistry.select().
 import config as _host_config
@@ -565,6 +566,7 @@ def build_mcp_adapter_tool_handlers(
     profile_user_id: str = "",
     client_context: ClientProtocolContext | None = None,
     mcp_activations: Mapping[str, Any] | None = None,
+    include_unloaded_for_dispatch: bool = False,
 ) -> dict[str, Any]:
     from ..capability_adapters import McpStdioCapabilityAdapter
     from ..tool_runtime import AdapterCapabilityToolHandler
@@ -619,10 +621,14 @@ def build_mcp_adapter_tool_handlers(
             for name in server_config.get("pinnedTools") or []
             if str(name or "").strip()
         }
-        selected_tools = tools if isinstance(activation, Mapping) else (
-            [tool for tool in tools if str(tool.get("name") or "") in pinned_names]
-            if activation_mode == "pinned"
-            else []
+        selected_tools = (
+            tools
+            if include_unloaded_for_dispatch or isinstance(activation, Mapping)
+            else (
+                [tool for tool in tools if str(tool.get("name") or "") in pinned_names]
+                if activation_mode == "pinned"
+                else []
+            )
         )
         prompt_tools = sorted(
             ({**tool, "promptExposed": True} for tool in selected_tools),
@@ -632,7 +638,16 @@ def build_mcp_adapter_tool_handlers(
             continue
         adapter_config = {**server_config, **dict(active_config), "serverId": str(server_id)}
         fingerprint = hashlib.sha256(
-            json.dumps(adapter_config, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            json.dumps(
+                {
+                    "adapter": adapter_config,
+                    "handlerScope": "dispatch_all" if include_unloaded_for_dispatch else "prompt_selection",
+                    "toolNames": [str(tool.get("name") or "") for tool in prompt_tools],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
         cache_key = (str(profile_user_id), str(server_id), fingerprint)
         adapter = adapter_cache.get(cache_key)
@@ -690,6 +705,84 @@ def build_mcp_adapter_tool_handlers(
     except Exception:
         pass
     return handlers
+
+
+def resolve_unloaded_mcp_native_aliases(
+    engine: Any,
+    *,
+    model_tool_names: tuple[str, ...] | list[str],
+    profile_user_id: str,
+    client_context: ClientProtocolContext | None,
+    domain_profile_id: str,
+    capability_selection: CapabilitySelection | None,
+) -> tuple[dict[str, str], CapabilitySelection | None]:
+    """Resolve exact historical MCP aliases without disclosing their schemas.
+
+    ``load_mcp`` remains the discovery path when the model does not already
+    know a tool.  A provider may nevertheless repeat a stable native tool name
+    from MemCore history even though that server was not expanded in the
+    current request.  Schema visibility is not an execution permission: map an
+    exact alias back to an enabled, configured MCP capability and add only the
+    matching handler to this frozen execution selection.  No tool definition
+    is added to ``schema_tool_names`` or to the provider request.
+    """
+
+    requested = {
+        str(name or "").strip()
+        for name in model_tool_names
+        if str(name or "").strip()
+    }
+    if not requested or capability_selection is None:
+        return {}, capability_selection
+
+    dispatch_handlers = build_mcp_adapter_tool_handlers(
+        engine,
+        profile_user_id=profile_user_id,
+        client_context=client_context,
+        include_unloaded_for_dispatch=True,
+    )
+    if not dispatch_handlers:
+        return {}, capability_selection
+
+    domain_profile = DomainProfileRegistry().get(domain_profile_id)
+    allowed_capability_ids = set(
+        _filter_tool_names_with_policy_extensions(
+            tuple(dispatch_handlers.keys()),
+            domain_profile,
+            handlers=dispatch_handlers,
+        )
+    )
+    if not allowed_capability_ids:
+        return {}, capability_selection
+
+    native_specs = build_openai_native_tool_specs(
+        dispatch_handlers,
+        allowed_tool_names=allowed_capability_ids,
+    )
+    alias_to_capability: dict[str, str] = {}
+    for native_spec in native_specs:
+        function = native_spec.get("function") if isinstance(native_spec, Mapping) else None
+        model_name = str(function.get("name") or "").strip() if isinstance(function, Mapping) else ""
+        capability_id = str(native_spec.get(NATIVE_TOOL_CAPABILITY_ID_FIELD) or "").strip()
+        if model_name in requested and capability_id in dispatch_handlers:
+            alias_to_capability[model_name] = capability_id
+    if not alias_to_capability:
+        return {}, capability_selection
+
+    resolved_handlers = dict(getattr(capability_selection, "resolved_handlers", {}) or {})
+    execution_names = list(capability_selection.tool_names)
+    for capability_id in alias_to_capability.values():
+        resolved_handlers[capability_id] = dispatch_handlers[capability_id]
+        if capability_id not in execution_names:
+            execution_names.append(capability_id)
+
+    return alias_to_capability, replace(
+        capability_selection,
+        tool_names=tuple(execution_names),
+        # Deliberately preserve schema/native names. This fast path changes
+        # host dispatch only; it never makes unloaded MCP schemas resident.
+        resolved_handlers=MappingProxyType(resolved_handlers),
+    )
 
 
 def build_python_adapter_tool_handlers(

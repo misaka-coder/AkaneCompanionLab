@@ -10,6 +10,17 @@ from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.local_capability_config import get_mcp_server_runtime_config, save_capability_approval_mode
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01 import tool_orchestration_engine
+from companion_v01.engine_services.tool_rounds import build_mcp_adapter_tool_handlers
+from companion_v01.native_tool_schema import build_openai_native_tool_specs
+from companion_v01.tool_invocation import (
+    NATIVE_OPENAI,
+    NATIVE_TOOL_CALL_FIELD,
+    TOOL_CAPABILITY_SELECTION_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_NAME_FIELD,
+    TOOL_SOURCE_FIELD,
+)
 from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionResult, ToolExecutionContext
 
 
@@ -179,6 +190,132 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             self.assertNotIn("mcp.demo.echo", without_load)
             self.assertIn("mcp.demo.echo", with_load)
             self.assertNotIn("mcp.demo.echo", next_turn)
+
+    def test_historical_native_mcp_alias_dispatches_without_loading_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False, allowlist=["echo"])
+            engine = build_engine(Path(temp_dir))
+            selection = engine._resolve_capability_selection(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertNotIn("mcp.demo.echo", selection.tool_names)
+            self.assertNotIn("mcp.demo.echo", selection.schema_tool_names)
+
+            dispatch_handlers = build_mcp_adapter_tool_handlers(
+                engine,
+                profile_user_id="alice",
+                client_context=context(),
+                include_unloaded_for_dispatch=True,
+            )
+            native = build_openai_native_tool_specs(dispatch_handlers)
+            model_name = str(native[0]["function"]["name"])
+
+            final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": model_name,
+                        "text": "hello",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_historical",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="use the same echo tool",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+
+            self.assertEqual(rejections, [])
+            self.assertEqual(len(calls), 1)
+            call = calls[0]
+            self.assertEqual(call["type"], "mcp.demo.echo")
+            self.assertEqual(call["arguments"], {"text": "hello"})
+            self.assertEqual(call[TOOL_MODEL_NAME_FIELD], model_name)
+            self.assertEqual(call[TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+            self.assertEqual(call[TOOL_INVOCATION_ID_FIELD], "call_historical")
+            dispatch_selection = call[TOOL_CAPABILITY_SELECTION_FIELD]
+            self.assertIn("mcp.demo.echo", dispatch_selection.tool_names)
+            self.assertNotIn("mcp.demo.echo", dispatch_selection.schema_tool_names)
+            self.assertNotIn("mcp.demo.echo", dispatch_selection.native_tool_names)
+            self.assertNotIn("mcp.demo.echo", selection.tool_names)
+            validation = tool_orchestration_engine.validate_legacy_tool_call(
+                engine,
+                call,
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertTrue(validation.ok, validation.message)
+
+    def test_unknown_native_mcp_alias_stays_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False)
+            engine = build_engine(Path(temp_dir))
+            selection = engine._resolve_capability_selection(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            _final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": "mcp_missing_tool_deadbeef00",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_missing",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="call it",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(len(rejections), 1)
+            self.assertIn("本轮不可用", rejections[0])
+
+    def test_disabled_mcp_family_cannot_use_historical_native_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False)
+            engine = build_engine(Path(temp_dir))
+            dispatch_handlers = build_mcp_adapter_tool_handlers(
+                engine,
+                profile_user_id="alice",
+                client_context=context(),
+                include_unloaded_for_dispatch=True,
+            )
+            model_name = str(build_openai_native_tool_specs(dispatch_handlers)[0]["function"]["name"])
+            save_capability_approval_mode(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                capability_id="mcp",
+                mode="disabled",
+            )
+            selection = engine._resolve_capability_selection(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            _final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": model_name,
+                        "text": "hello",
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_disabled",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="call it",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(len(rejections), 1)
 
     def test_explicit_pinned_mcp_tool_is_profile_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
