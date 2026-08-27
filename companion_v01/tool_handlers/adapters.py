@@ -23,6 +23,14 @@ from ..capcore_runtime import (
 )
 from ..capability_adapters import CapabilityProtocolError, InvocationContext
 from ..desktop_satellite_specs import desktop_satellite_spec
+from ..tool_invocation import (
+    TOOL_CAPABILITY_SELECTION_FIELD,
+    TOOL_EXECUTION_RECEIPT_FIELD,
+    TOOL_EXECUTION_RECEIPTS_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_NAME_FIELD,
+    TOOL_SOURCE_FIELD,
+)
 from .core import (
     BaseToolHandler,
     ToolExecutionContext,
@@ -30,6 +38,19 @@ from .core import (
     ToolFollowupEnvelope,
     ToolMetadata,
 )
+
+
+_ADAPTER_TRANSPORT_FIELDS = frozenset(
+    {
+        TOOL_SOURCE_FIELD,
+        TOOL_INVOCATION_ID_FIELD,
+        TOOL_MODEL_NAME_FIELD,
+        TOOL_EXECUTION_RECEIPT_FIELD,
+        TOOL_EXECUTION_RECEIPTS_FIELD,
+        TOOL_CAPABILITY_SELECTION_FIELD,
+    }
+)
+
 
 class DesktopSatelliteToolHandler(BaseToolHandler):
     """Schema adapter for a reviewed tool executed by the bound PC satellite.
@@ -198,13 +219,20 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
-        args: dict[str, Any] = {}
-        source = value.get("arguments") if isinstance(value.get("arguments"), Mapping) else value
-        for key, item in dict(source or {}).items():
-            clean_key = str(key or "").strip()
-            if clean_key == "type" or clean_key.startswith("_tool_"):
-                continue
-            args[clean_key] = self._safe_arg_value(item)
+        nested_arguments = value.get("arguments")
+        if isinstance(nested_arguments, Mapping):
+            # ``arguments`` is the internal adapter-call envelope. Its contents
+            # came from the model and must reach CapCore byte-for-byte: changing
+            # keys, truncating collections, collapsing whitespace, or redacting
+            # secret-shaped values here would make validation and execution see
+            # a different call from the one the model actually made.
+            args = dict(nested_arguments)
+        else:
+            # Provider-native and legacy calls are flattened at the outer wire
+            # boundary. Only host-owned transport metadata lives there; model
+            # arguments (including unknown ones) stay untouched for CapCore's
+            # canonical validator to accept or reject explicitly.
+            args = {key: item for key, item in value.items() if key != "type" and key not in _ADAPTER_TRANSPORT_FIELDS}
         return {"type": self.tool_type, "arguments": args}
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -332,6 +360,11 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
     def _validation_failed(self, validation: Any) -> ToolExecutionResult:
         first = validation.errors[0] if validation.errors else None
         reason = self._safe_public_text(getattr(first, "code", "") or "validation_error", limit=80)
+        errors = [error.as_dict() for error in validation.errors[:8]]
+        error_text = self._safe_public_text(
+            json.dumps(errors, ensure_ascii=False, separators=(",", ":"), default=str),
+            limit=2000,
+        )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[
@@ -340,10 +373,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     "capabilityId": self.tool_type,
                     "status": "validation_error",
                     "reason": reason,
-                    "errors": [error.as_dict() for error in validation.errors[:8]],
+                    "errors": errors,
                 }
             ],
-            followup_context=f"{self._source_label()}参数没有通过校验；请根据工具 schema 修正后再调用，不要声称已经完成。",
+            followup_context=(
+                f"{self._source_label()}参数没有通过校验：{error_text}。"
+                "请根据这些结构化错误和工具 schema 修正后再调用，不要声称已经完成。"
+            ),
             state_updates={
                 "adapter_capability_status": "validation_error",
                 "adapter_capability_id": self.tool_type,
@@ -507,27 +543,6 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return capcore_build_tool_spec(self.descriptor).input_schema
         except Exception:
             return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
-
-    def _safe_payload_preview(self, value: Any) -> dict[str, Any]:
-        if not isinstance(value, Mapping):
-            return {}
-        preview: dict[str, Any] = {}
-        for key, item in list(value.items())[:12]:
-            clean_key = self._safe_key(key)
-            if clean_key:
-                preview[clean_key] = self._safe_arg_value(item)
-        return preview
-
-    def _safe_arg_value(self, value: Any) -> Any:
-        if isinstance(value, bool) or isinstance(value, (int, float)):
-            return value
-        if isinstance(value, str):
-            return self._safe_public_text(value, limit=500)
-        if isinstance(value, list):
-            return [self._safe_arg_value(item) for item in value[:12]]
-        if isinstance(value, Mapping):
-            return self._safe_payload_preview(value)
-        return self._safe_public_text(str(value), limit=200)
 
     def _safe_key(self, value: Any) -> str:
         text = str(value or "").strip()

@@ -253,6 +253,107 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["type"], "adapter_capability_failed")
         self.assertEqual(result.stream_events[0]["status"], "validation_error")
         self.assertEqual(result.stream_events[0]["reason"], "unknown_argument")
+        self.assertIn('"argument":"extra"', result.followup_context)
+
+    def test_adapter_capability_preserves_raw_arguments_until_capcore_validation(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(
+                inputs=(
+                    CapabilityIOSlot(name="text", kind="string", required=True),
+                    CapabilityIOSlot(name="items", kind="array", required=True),
+                    CapabilityIOSlot(name="payload", kind="object", required=True),
+                )
+            ),
+            config_base_dir="unused",
+        )
+        raw_text = (
+            "token=keep-this-value\n"
+            r"C:\Users\Example User\project\input.txt" + "\n" + (" exact  spacing " * 80)
+        )
+        raw_items = [f"item-{index}" for index in range(20)]
+        raw_payload = {f"key-{index}": f"value-{index}" for index in range(20)}
+        raw_arguments = {"text": raw_text, "items": raw_items, "payload": raw_payload}
+
+        call = handler.normalize_call({"type": "mcp.demo.echo", "arguments": raw_arguments})
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(call["arguments"], raw_arguments)
+
+        result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(result.stream_events[0]["status"], "ok")
+        self.assertEqual(adapter.calls[0]["args"], raw_arguments)
+
+    def test_adapter_capability_does_not_hide_nested_model_arguments_as_wire_metadata(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        for raw_call in (
+            {
+                "type": "mcp.demo.echo",
+                "text": "hello",
+                "_tool_forged": "model argument",
+                "_tool_source": "native_openai",
+            },
+            {
+                "type": "mcp.demo.echo",
+                "arguments": {"text": "hello", "_tool_forged": "model argument"},
+                "_tool_source": "native_openai",
+            },
+        ):
+            with self.subTest(raw_call=raw_call):
+                call = handler.normalize_call(raw_call)
+                self.assertIsNotNone(call)
+                assert call is not None
+                self.assertEqual(call["arguments"]["_tool_forged"], "model argument")
+
+                result = handler.execute(call=call, context=self._context())
+
+                self.assertEqual(adapter.calls, [])
+                self.assertEqual(result.stream_events[0]["reason"], "unknown_argument")
+                self.assertIn('"argument":"_tool_forged"', result.followup_context)
+
+    def test_adapter_capability_does_not_rewrite_unknown_argument_names(self) -> None:
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=object(),
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        call = handler.normalize_call({"type": "mcp.demo.echo", " text ": "hello"})
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertEqual(call["arguments"], {" text ": "hello"})
+
+        result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(result.stream_events[0]["reason"], "unknown_argument")
+        self.assertIn('"argument":" text "', result.followup_context)
 
     def test_adapter_capability_does_not_treat_native_wire_metadata_as_arguments(self) -> None:
         handler = AdapterCapabilityToolHandler(

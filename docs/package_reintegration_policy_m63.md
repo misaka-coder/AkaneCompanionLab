@@ -298,6 +298,10 @@ Current Akane use:
   projection helpers.
 - `companion_v01/tool_runtime.py` uses capcore schema validation and permission
   request builders.
+- Dynamic adapter handlers preserve the model's raw argument keys and values
+  until capcore validation. Akane removes only outer host transport metadata;
+  compact redaction is restricted to capcore-owned permission previews and
+  never mutates the arguments sent to MCP, Python, or plugin adapters.
 - `companion_v01/capability_adapters/types.py`,
   `protocol.py`, and `manifest_loader.py` are compatibility re-export layers.
 
