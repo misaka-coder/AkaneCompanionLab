@@ -519,7 +519,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if adapter_name == "python":
             return "本地 Python 能力"
         if "mcp" in adapter_name:
-            return "本地 MCP 工具"
+            return "MCP 工具"
         if adapter_name == "plugin":
             return "已安装插件能力"
         return "本地 adapter 能力"

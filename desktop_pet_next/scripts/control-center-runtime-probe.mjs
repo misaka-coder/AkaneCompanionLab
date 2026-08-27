@@ -114,6 +114,7 @@ function makeCapabilitiesCatalogBody() {
         source: "external_executor",
         adapter: "ffmpeg",
         executionMode: "external",
+        executionLocation: "host",
         name: "FFmpeg",
         enabled: false,
         status: "disabled",
@@ -527,6 +528,8 @@ function makeSnapshotFetch({
   const browserMcp = abilities.mcpServers[0];
   assert.equal(browserMcp.title, "Browser MCP", "1.21j4 MCP summary should preserve display name");
   assert.equal(browserMcp.commandName, "browser-mcp.exe", "1.21j5 MCP summary should only expose command basename");
+  assert.equal(browserMcp.executionLocation, "host", "1.21j5b MCP summary should expose Host-relative execution location");
+  assert.equal(browserMcp.executionLocationLabel, "Akane Host", "1.21j5c MCP summary should explain stdio without assuming this device");
   assert.equal(browserMcp.toolCount, 2, "1.21j6 MCP summary should include discovered tool count");
   assert.equal(browserMcp.highRiskCount, 1, "1.21j7 MCP summary should count high-risk tools");
   assert.equal(browserMcp.promptExposedCount, 0, "1.21j8 MCP tools should remain hidden from prompt by default");

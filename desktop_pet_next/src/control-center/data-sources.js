@@ -2165,9 +2165,9 @@ function buildAbilityOverviewNote({ serviceOk, catalogEntries, catalogSummary })
   if (!serviceOk) return "等待后端连接，能力状态暂不可用";
   if (!catalogEntries.length) return "能力注册表已同步，当前模块可正常使用";
   if (catalogSummary.needsAttention > 0) {
-    return `已同步本地能力目录，${catalogSummary.needsAttention} 项能力等待配置或本地环境`;
+    return `能力目录已同步，${catalogSummary.needsAttention} 项能力等待配置或执行环境`;
   }
-  return "本地能力目录已同步，当前能力状态良好";
+  return "能力目录已同步，当前能力状态良好";
 }
 
 function normalizeCapabilityCatalogEntries(catalog) {
@@ -2181,6 +2181,7 @@ function normalizeCapabilityCatalogEntries(catalog) {
       source: stringValue(entry.source),
       adapter: stringValue(entry.adapter),
       executionMode: stringValue(entry.executionMode),
+      executionLocation: stringValue(entry.executionLocation),
       capabilityId: stringValue(entry.capabilityId),
       workflowId: stringValue(entry.workflowId),
       providerId: stringValue(entry.providerId),
@@ -2422,6 +2423,9 @@ function buildAbilityMcpServerCards(entries) {
         enabled: Boolean(entry.enabled),
         configured: Boolean(entry.configured),
         transport: entry.transport || "stdio",
+        executionLocation: entry.executionLocation || (entry.transport === "streamable_http" ? "remote" : "host"),
+        executionLocationLabel: mcpExecutionLocationLabel(entry.executionLocation, entry.transport),
+        executionLocationDetail: mcpExecutionLocationDetail(entry.executionLocation, entry.transport),
         commandName: entry.commandName || "",
         toolCount: entry.toolCount || tools.length,
         safeToolLabels: summarizeMcpToolLabels(tools),
@@ -2489,12 +2493,25 @@ function mcpToolCapabilityLabel(tool) {
 
 function mcpServerReasonLabel(entry) {
   const status = entry.status || "";
-  if (status === "ready") return "工具已发现，暂未开放自动调用";
+  if (status === "ready") return "工具已发现";
   if (status === "configured") return "已保存，等待发现工具";
-  if (status === "missing_config") return "需要配置本地 MCP 启动命令";
+  if (status === "missing_config") {
+    return entry.transport === "streamable_http" ? "需要配置远程 MCP 地址" : "需要配置 Akane Host 上的 MCP 启动命令";
+  }
   if (status === "disabled") return "已配置但未启用";
   if (status === "invalid_config") return "配置需要修复";
   return entry.reason || "等待同步";
+}
+
+function mcpExecutionLocationLabel(location, transport) {
+  return location === "remote" || transport === "streamable_http" ? "远程服务" : "Akane Host";
+}
+
+function mcpExecutionLocationDetail(location, transport) {
+  if (location === "remote" || transport === "streamable_http") {
+    return "通过网络连接独立 MCP 服务；不会在当前设备启动本地进程。";
+  }
+  return "MCP 进程由 Akane Host 启动；Host 在本机时运行于本机，Host 在云端时运行于云端。";
 }
 
 function normalizeVoiceProfileEntries(catalog) {

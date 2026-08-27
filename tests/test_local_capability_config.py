@@ -9,6 +9,7 @@ from companion_v01.local_capability_config import (
     CONFIGURABLE_PROVIDER_BY_ID,
     CONFIGURABLE_WORKFLOW_BY_ID,
     apply_approval_policy_to_entry,
+    build_mcp_server_config_entry,
     build_mcp_tool_config_entry,
     build_provider_config_entry,
     build_workflow_config_entry,
@@ -21,6 +22,31 @@ from companion_v01.local_capability_config import (
 
 
 class LocalCapabilityApprovalTests(unittest.TestCase):
+    def test_mcp_execution_location_is_derived_from_transport(self) -> None:
+        stdio = build_mcp_server_config_entry(
+            "browser",
+            {"enabled": True, "transport": "stdio", "command": "browser-mcp"},
+        )
+        remote = build_mcp_server_config_entry(
+            "search",
+            {"enabled": True, "transport": "streamable_http", "url": "https://mcp.example.test/rpc"},
+        )
+
+        self.assertEqual(stdio["executionLocation"], "host")
+        self.assertEqual(stdio["adapter"], "mcp_stdio")
+        self.assertEqual(remote["executionLocation"], "remote")
+        self.assertEqual(remote["adapter"], "mcp_streamable_http")
+
+    def test_remote_mcp_tool_preserves_provider_transport_location(self) -> None:
+        entry = build_mcp_tool_config_entry(
+            "search",
+            {"name": "search_web", "description": "Search public sources."},
+            transport="streamable_http",
+        )
+
+        self.assertEqual(entry["executionLocation"], "remote")
+        self.assertEqual(entry["adapter"], "mcp_streamable_http")
+
     def test_streamable_http_mcp_config_accepts_placeholder_headers(self) -> None:
         result = normalize_mcp_server_config_payload(
             "search",

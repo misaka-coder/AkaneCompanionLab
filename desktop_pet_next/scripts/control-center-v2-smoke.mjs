@@ -158,7 +158,7 @@ const rawSnapshot = {
         }]
       }]
     }],
-    mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置本地 MCP", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
+    mcpServers: [{ serverId: "anysearch", title: "AnySearch", status: "missing_config", statusLabel: "待配置", reason: "需要配置 Akane Host 上的 MCP", transport: "stdio", executionLocation: "host", executionLocationLabel: "Akane Host", executionLocationDetail: "MCP 进程由 Akane Host 启动。", safeToolLabels: ["网页搜索"], actionsEnabled: true }],
     workflows: [{ workflowId: "workflow.workshop.portrait.cutout", title: "透明背景处理", status: "ready", statusLabel: "可用", detail: "工作流已绑定", enabled: true, configured: true, workflowPath: "workflows/portrait.json", actionsEnabled: true }],
     skills: {
       status: "ready",
@@ -695,14 +695,47 @@ assert.match(abilitiesHtml, /data-capability-form="mcp"/);
 assert.match(abilitiesHtml, /data-capability-form="workflow"/);
 assert.match(abilitiesHtml, /data-action="abilities\.provider\.healthCheck"/);
 assert.match(abilitiesHtml, /data-action="abilities\.mcp\.discover"/);
+assert.match(abilitiesHtml, /Akane Host/);
+assert.match(abilitiesHtml, /Host 启动命令/);
 assert.match(abilitiesHtml, /data-action="abilities\.workflow\.validate"/);
 assert.match(abilitiesHtml, /data-approval-request="approval_001"/);
 assert.match(abilitiesHtml, /Skill 操作手册/);
 assert.match(abilitiesHtml, /coding-project/);
 assert.match(abilitiesHtml, /personal-workflow/);
 assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);
-assert.match(abilitiesHtml, /只有填写新的启动命令并保存时/);
+assert.match(abilitiesHtml, /只有填写新命令并保存时才会替换现有配置/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
+
+const remoteAbilitiesHtml = renderAbilities({
+  viewModel: {
+    ...viewModel,
+    abilities: {
+      ...viewModel.abilities,
+      mcpServers: [{
+        serverId: "remote-search",
+        title: "Remote Search",
+        status: "ready",
+        statusLabel: "可用",
+        statusTone: "ready",
+        reason: "工具已发现",
+        enabled: true,
+        configured: true,
+        transport: "streamable_http",
+        executionLocation: "remote",
+        executionLocationLabel: "远程服务",
+        executionLocationDetail: "通过网络连接独立 MCP 服务。",
+        safeToolLabels: ["检索资料"],
+        toolCount: 1,
+        actionsEnabled: true
+      }]
+    }
+  },
+  actionStates: {},
+  phase: "ready"
+});
+assert.match(remoteAbilitiesHtml, /远程地址与认证不会在控制中心回显或替换/);
+assert.match(remoteAbilitiesHtml, /远程配置请通过受信配置文件或后端配置接口管理/);
+assert.doesNotMatch(remoteAbilitiesHtml, /Host 启动命令/);
 
 const modelDraft = createModelServiceDraft(viewModel.model);
 const modelHtml = renderModelService({ viewModel, actionStates: {}, phase: "ready", modelDraft, modelModels: [] });

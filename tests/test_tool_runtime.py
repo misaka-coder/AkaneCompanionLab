@@ -194,6 +194,17 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
             },
         )
 
+    def test_mcp_source_label_does_not_claim_remote_tool_is_local(self) -> None:
+        adapter = type("RemoteMcpAdapter", (), {"type": "mcp_streamable_http"})()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        self.assertEqual(handler._source_label(), "MCP 工具")
+
     def test_adapter_capability_validates_args_before_permission_or_invoke(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:

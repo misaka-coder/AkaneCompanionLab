@@ -74,7 +74,7 @@ function renderCapabilityCenter(state, abilities) {
   const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length + (hasSkills ? 1 : 0);
   if (!total) return "";
   return `<section class="abilities-panel capability-center glass-panel">
-    <div class="abilities-panel-head"><div><p class="eyebrow">LOCAL CONNECTIONS</p><h3>本地服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
+    <div class="abilities-panel-head"><div><p class="eyebrow">CAPABILITY CONNECTIONS</p><h3>服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
     <p class="capability-center-intro">常用状态一眼确认，地址、命令与工作流绑定按需展开；保存后会重新读取真实运行状态。</p>
     ${hasSkills ? renderSkillLibrary(state, abilities.skills) : ""}
     <div class="capability-config-stack">
@@ -124,21 +124,30 @@ function renderMcpConfig(state, item) {
   const discoverPhase = actionPhase(state, "abilities.mcp.discover");
   const pending = [savePhase, discoverPhase].some((phase) => ["pressed", "pending"].includes(phase));
   const tools = item.safeToolLabels.length ? item.safeToolLabels : ["等待工具发现"];
+  const isRemote = item.executionLocation === "remote" || item.transport === "streamable_http";
+  const locationLabel = item.executionLocationLabel || (isRemote ? "远程服务" : "Akane Host");
+  const locationDetail = item.executionLocationDetail || (isRemote
+    ? "通过网络连接独立 MCP 服务。"
+    : "MCP 进程由 Akane Host 启动。Host 在本机时运行于本机，在云端时运行于云端。");
+  const configFields = isRemote
+    ? `<div class="capability-toggle"><span><strong>${item.enabled ? "远程 MCP 已启用" : "远程 MCP 未启用"}</strong><small>远程地址与认证不会在控制中心回显或替换</small></span></div>
+      <p class="capability-caution">运行位置：${escapeHtml(locationLabel)}。${escapeHtml(locationDetail)}远程配置请通过受信配置文件或后端配置接口管理。</p>`
+    : `<label class="capability-toggle"><input type="checkbox" name="enabled"${item.enabled ? " checked" : ""}><span><strong>启用 MCP 服务</strong><small>发现到的工具仍受当前审批策略约束</small></span></label>
+      <label class="capability-field"><span>Host 启动命令</span><input name="command" value="" placeholder="${escapeHtml(item.commandName || "例如 npx / python")}" autocomplete="off"></label>
+      <div class="capability-field-grid">
+        <label class="capability-field"><span>显示名称</span><input name="displayName" value="${escapeHtml(item.title)}" autocomplete="off"></label>
+        <label class="capability-field"><span>Host 工作目录 <small>可选</small></span><input name="cwd" value="" placeholder="留空则使用 Host 默认目录" autocomplete="off"></label>
+      </div>
+      <label class="capability-field"><span>启动参数 <small>每行一个</small></span><textarea name="args" rows="2" placeholder="例如：&#10;-m&#10;my_mcp_server"></textarea></label>
+      <p class="capability-caution">运行位置：${escapeHtml(locationLabel)}。${escapeHtml(locationDetail)}安全起见不回显完整 Host 命令；只有填写新命令并保存时才会替换现有配置。</p>`;
   return `<details class="capability-config-card" data-capability-kind="mcp" data-capability-key="mcp:${escapeHtml(item.serverId)}">
     <summary>${capabilitySummary("◇", "MCP 扩展", item.title, item.statusLabel, item.statusTone, item.reason || item.lastDiscoveryLabel)}</summary>
     <form class="capability-config-form" data-capability-form="mcp" data-server-id="${escapeHtml(item.serverId)}">
-      <div class="capability-tool-row">${tools.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}<em>${item.toolCount} 个工具 · ${escapeHtml(item.approvalLabel || "遵循权限策略")}</em></div>
-      <label class="capability-toggle"><input type="checkbox" name="enabled"${item.enabled ? " checked" : ""}><span><strong>启用 MCP 服务</strong><small>发现到的工具仍受当前审批策略约束</small></span></label>
-      <label class="capability-field"><span>启动命令</span><input name="command" value="" placeholder="${escapeHtml(item.commandName || "例如 npx / python")}" autocomplete="off"></label>
-      <div class="capability-field-grid">
-        <label class="capability-field"><span>显示名称</span><input name="displayName" value="${escapeHtml(item.title)}" autocomplete="off"></label>
-        <label class="capability-field"><span>工作目录 <small>可选</small></span><input name="cwd" value="" placeholder="留空则使用宿主默认目录" autocomplete="off"></label>
-      </div>
-      <label class="capability-field"><span>启动参数 <small>每行一个</small></span><textarea name="args" rows="2" placeholder="例如：&#10;-m&#10;my_mcp_server"></textarea></label>
-      <p class="capability-caution">安全起见不回显完整宿主命令。只有填写新的启动命令并保存时，才会替换现有配置。</p>
+      <div class="capability-tool-row">${tools.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}<em>${item.toolCount} 个工具 · ${escapeHtml(item.approvalLabel || "遵循权限策略")} · ${escapeHtml(locationLabel)}</em></div>
+      ${configFields}
       <div class="capability-form-actions">
         <button class="action-button" type="submit" data-action="abilities.mcp.discover"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""}><span>↻</span><b>${discoverPhase === "pending" ? "发现中" : "发现工具"}</b></button>
-        <button class="action-button is-primary" type="submit" data-action="abilities.mcp.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "替换配置"}</b></button>
+        ${isRemote ? "" : `<button class="action-button is-primary" type="submit" data-action="abilities.mcp.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "替换配置"}</b></button>`}
       </div>
     </form>
   </details>`;

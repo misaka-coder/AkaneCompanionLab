@@ -3959,6 +3959,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertTrue(saved_payload["ok"])
             self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
             self.assertEqual(saved_payload["mcpServer"]["commandName"], "browser-mcp.exe")
+            self.assertEqual(saved_payload["mcpServer"]["executionLocation"], "host")
             self.assertEqual(saved_payload["mcpServer"]["argsCount"], 2)
             self.assertEqual(saved_payload["mcpServer"]["approvalMode"], "disabled")
             self.assertNotIn("exampleuser", saved.text.lower())

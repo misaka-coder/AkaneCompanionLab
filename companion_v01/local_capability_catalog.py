@@ -776,7 +776,11 @@ def _build_mcp_entries(mcp_server_configs: Mapping[str, Any]) -> list[dict[str, 
         if server_entry.get("status") != "ready":
             continue
         for tool in server_config.get("tools") or []:
-            tool_entry = build_mcp_tool_config_entry(str(server_id), tool if isinstance(tool, Mapping) else {})
+            tool_entry = build_mcp_tool_config_entry(
+                str(server_id),
+                tool if isinstance(tool, Mapping) else {},
+                transport=str(server_config.get("transport") or "stdio"),
+            )
             if tool_entry.get("id"):
                 entries.append(tool_entry)
     return entries

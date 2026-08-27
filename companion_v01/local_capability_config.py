@@ -1135,7 +1135,10 @@ def save_mcp_server_discovery(
         "serverId": safe_server_id,
         "toolCount": len(normalized["tools"]),
         "mcpServer": build_mcp_server_config_entry(safe_server_id, servers[safe_server_id]),
-        "tools": [build_mcp_tool_config_entry(safe_server_id, tool) for tool in normalized["tools"]],
+        "tools": [
+            build_mcp_tool_config_entry(safe_server_id, tool, transport=str(server.get("transport") or "stdio"))
+            for tool in normalized["tools"]
+        ],
         "refresh": True,
     }
 
@@ -1843,6 +1846,11 @@ def build_voice_profile_config_entry(profile_id: str, config: Mapping[str, Any] 
     return with_capability_approval_metadata(projected)
 
 
+def mcp_execution_location_for_transport(transport: Any) -> str:
+    """Describe where an MCP server executes relative to the authoritative Akane Host."""
+    return "remote" if str(transport or "").strip() == "streamable_http" else "host"
+
+
 def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | None) -> dict[str, Any]:
     config = config if isinstance(config, Mapping) else {}
     safe_id = _safe_mcp_server_id(server_id)
@@ -1878,6 +1886,7 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         "source": "mcp",
         "adapter": "mcp_streamable_http" if transport == "streamable_http" else "mcp_stdio",
         "executionMode": "external",
+        "executionLocation": mcp_execution_location_for_transport(transport),
         "name": str(config.get("displayName") or safe_id or "MCP Server").strip()[:80],
         "enabled": enabled,
         "configured": configured,
@@ -1905,7 +1914,12 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
     return with_capability_approval_metadata(projected)
 
 
-def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) -> dict[str, Any]:
+def build_mcp_tool_config_entry(
+    server_id: str,
+    tool: Mapping[str, Any] | None,
+    *,
+    transport: str = "stdio",
+) -> dict[str, Any]:
     tool = tool if isinstance(tool, Mapping) else {}
     safe_server_id = _safe_mcp_server_id(server_id)
     tool_name = _safe_mcp_tool_name(tool.get("name"))
@@ -1918,8 +1932,9 @@ def build_mcp_tool_config_entry(server_id: str, tool: Mapping[str, Any] | None) 
         "kind": "mcp_tool",
         "type": "tool",
         "source": "mcp",
-        "adapter": "mcp_stdio",
+        "adapter": "mcp_streamable_http" if transport == "streamable_http" else "mcp_stdio",
         "executionMode": "external",
+        "executionLocation": mcp_execution_location_for_transport(transport),
         "toolType": tool_name,
         "name": tool_name,
         "description": description,
