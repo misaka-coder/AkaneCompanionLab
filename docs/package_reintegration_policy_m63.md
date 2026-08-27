@@ -366,6 +366,12 @@ cannot use native tools yet. It is allowed only as a compatibility path. New
 OpenAI-native envelope or parser logic should go into `capcore-provider-openai`,
 not Akane.
 
+Legacy prompt migration V1 removes the per-handler prompt authority for
+`web_search`, the four MemCore tools, and `onebot_action`. Their compatibility
+instructions now render deterministically from canonical ToolSpecs through one
+Akane-owned final-JSON adapter. This does not move Akane prompt wording into
+CapCore and does not change the documented migration-window status.
+
 ### `capcore-provider-native-tools`
 
 Current Akane use:

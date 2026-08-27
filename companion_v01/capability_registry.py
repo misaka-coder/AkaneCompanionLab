@@ -298,7 +298,11 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
         "Search public web pages or extract public URL content when the user asks for current, "
         "online, volatile, or verifiable public information. Use it before guessing about current "
         "external state even if the user did not explicitly say search. Do not use it for localhost, "
-        "intranet, file paths, login pages, paid pages, or private links."
+        "intranet, file paths, login pages, paid pages, or private links. Prefer batch_search for "
+        "multiple targets, time ranges, news aggregation, or cross-source verification. If coverage "
+        "is narrow, vary the query/source and extract critical pages before claiming broad coverage. "
+        "When a result includes a cursor, pass only that cursor and only when more content is needed. "
+        "This tool does not open a browser window, click, scroll, or prove that a page was viewed."
     ),
     input_schema={
         "type": "object",
@@ -307,7 +311,10 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
             "action": {
                 "type": "string",
                 "enum": ["search", "batch_search", "extract", "get_sub_domains"],
-                "description": "Use search for one query, batch_search for multiple queries, extract for one public URL.",
+                "description": (
+                    "Use search for one query, batch_search for multiple queries, extract for one public URL. "
+                    "Required unless cursor is supplied alone for continuation."
+                ),
             },
             "query": {
                 "type": "string",
@@ -348,14 +355,14 @@ WEB_SEARCH_TOOL_SPEC = CapabilityToolSpec(
                 "description": "Domains for action=get_sub_domains.",
             },
         },
-        "required": ["action"],
+        "required": [],
     },
     risk="low",
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="1.1.0",
-    schema_version=1,
+    spec_version="1.2.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=32768,
@@ -1476,7 +1483,9 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
         "history, forwards, pokes, emoji reactions, likes, member info and owner-authorized recall. "
         "Unambiguous current group, private peer, sender and current-message ids may be omitted. "
         "Ordinary participants are limited to the current conversation; cross-conversation actions and "
-        "delete_msg require the configured owner. Credentials and account/group administration are not exposed."
+        "delete_msg require the configured owner. Credentials and account/group administration are not exposed. "
+        "Pass the exact params object for the chosen action ({} for capabilities), and treat the returned "
+        "ok/status/reason as authoritative instead of assuming delivery or success."
     ),
     input_schema={
         "type": "object",
@@ -1499,7 +1508,7 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("qq_interaction",),
     visible_in=("qq",),
-    spec_version="1.0.0",
+    spec_version="1.1.0",
     schema_version=1,
     execution_class="sync",
     idempotency="effectful",

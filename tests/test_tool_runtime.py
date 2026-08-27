@@ -37,7 +37,8 @@ class RetrieveMemoryToolHandlerTests(unittest.TestCase):
         self.assertIn("time_hint.start_at/end_at", instruction)
         self.assertIn("within_memory_id", instruction)
         self.assertIn("top raw-first ranked", instruction)
-        self.assertTrue(instruction.endswith("这是内部记忆读取，不要先在 speech 里宣布。"))
+        self.assertIn('兼容 JSON tool_call：{"type":"retrieve_memory","query":"<string>"}', instruction)
+        self.assertNotIn("speech", instruction)
 
     def test_normalize_call_accepts_canonical_raw_first_filters_without_hidden_limits(self) -> None:
         handler = RetrieveMemoryToolHandler(retrieve_fn=lambda **kwargs: None)
@@ -698,13 +699,13 @@ class WebSearchToolHandlerTests(unittest.TestCase):
 
         instruction = handler.build_prompt_instruction()
 
-        self.assertIn("高变化事实", instruction)
-        self.assertIn("不需要用户显式说", instruction)
+        self.assertIn("current, online, volatile", instruction)
+        self.assertIn("even if the user did not explicitly say search", instruction)
         self.assertIn("batch_search", instruction)
-        self.assertIn("时间范围", instruction)
-        self.assertIn("日经指数现在多少", instruction)
-        self.assertIn("七月新番有哪些", instruction)
-        self.assertIn("稳定常识", instruction)
+        self.assertIn("time ranges", instruction)
+        self.assertIn("cross-source verification", instruction)
+        self.assertIn('兼容 JSON tool_call：{"type":"web_search"}', instruction)
+        self.assertIn("action:string[enum=search|batch_search|extract|get_sub_domains]", instruction)
         self.assertNotIn("不确定是否需要实时信息，先自然询问", instruction)
 
     def test_time_range_search_followup_requests_broader_coverage(self) -> None:

@@ -1250,23 +1250,6 @@ class WebSearchToolHandler(BaseToolHandler):
             with self._readiness_lock:
                 self._readiness_probes_inflight.discard(cache_key)
 
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- web_search：当回答依赖公开网页、公开来源核对、最新/当前/实时/近期信息或高变化事实时使用；"
-            "不需要用户显式说“联网”“搜索”“查询”。例：日经指数现在多少、七月新番有哪些、最新模型价格、今天上海天气 -> web_search。"
-            '搜索格式为 {"type":"web_search","action":"search","query":"搜索词","max_results":5}；'
-            '多目标/时间范围检索格式为 {"type":"web_search","action":"batch_search","queries":["查询1","查询2"],"max_results":3}；'
-            '网页提取格式为 {"type":"web_search","action":"extract","url":"https://..."}。'
-            "最近一周、时间范围、新闻汇总或多来源核验通常优先 batch_search；如果结果只覆盖一个日期或单一来源，"
-            "继续换日期、语言或来源检索，并对关键结果 extract，不要把一次搜索当成完整覆盖。"
-            "结果或正文还有未展示部分时，返回内容会带 cursor；如果已展示内容足够回答，可以直接回答，"
-            "只有确实需要后续内容时才调用 web_search(cursor=\"...\") 继续，不要重复传原查询参数。"
-            "只搜索或提取公开网页；不要用它访问 localhost、内网地址、file 路径、登录页、付费页或用户私密链接。"
-            "web_search 不会打开浏览器窗口、滚动网页或点击链接；如果用户要看页面或需要你继续操作某条结果，"
-            "再调用 browser_page.navigate 或 open_browser。"
-            "稳定常识、普通闲聊、创作或主观建议直接回复，不要为了展示能力而搜索。"
-        )
-
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
             return None

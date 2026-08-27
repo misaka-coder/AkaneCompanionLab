@@ -39,14 +39,6 @@ class OneBotActionToolHandler(BaseToolHandler):
             return None
         return {"type": self.tool_type, "action": action, "params": dict(params)}
 
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- onebot_action：在 QQ 会话中调用显式开放的 OneBot 交互。简单动作直接调用；"
-            "不确定 action 参数时先用 action=capabilities。普通参与者只能操作当前群或当前私聊，"
-            "语义明确时可省略当前群、当前私聊对象、当前发送者或当前消息 ID；"
-            "跨会话动作与消息撤回需要主人；工具会返回真实状态和完整可用结果。"
-        )
-
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         action = str(call.get("action") or "").strip()
         params = dict(call.get("params") or {})

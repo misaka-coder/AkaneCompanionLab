@@ -44,7 +44,15 @@ def build_openai_native_tool_from_spec(spec: CapabilityToolSpec) -> dict[str, An
     """Project one canonical ToolSpec without introducing a handler authority."""
     if not isinstance(spec, CapabilityToolSpec):
         raise TypeError("canonical_tool_spec_required")
-    tool_set = build_openai_chat_tool_set(tool_specs=(spec,))
+    # Akane's canonical memory descriptions can exceed the provider package's
+    # conservative 900-character default. They are already part of the stable
+    # ToolSpec contract, so do not silently truncate their semantics on the
+    # native path while the legacy projection sees the complete description.
+    description_limit = max(900, len(str(spec.description or "")))
+    tool_set = build_openai_chat_tool_set(
+        tool_specs=(spec,),
+        description_max_chars=description_limit,
+    )
     if not tool_set.tools:
         raise ValueError("canonical_tool_spec_not_projectable")
     tool = dict(tool_set.tools[0])

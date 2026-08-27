@@ -961,7 +961,10 @@ class BaseToolHandler:
         return ToolMetadata()
 
     def build_prompt_instruction(self) -> str:
-        raise NotImplementedError
+        from ..legacy_tool_prompt import render_legacy_json_tool_instruction
+
+        spec = self.tool_spec()
+        return render_legacy_json_tool_instruction(spec)
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         raise NotImplementedError

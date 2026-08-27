@@ -32,9 +32,6 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
     def tool_spec(self):  # M66-B: canonical ToolSpec authority
         return RETRIEVE_MEMORY_TOOL_SPEC
 
-    def build_prompt_instruction(self) -> str:
-        return f"- retrieve_memory：{RETRIEVE_MEMORY_TOOL_SPEC.description} 这是内部记忆读取，不要先在 speech 里宣布。"
-
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
             return None
@@ -119,15 +116,6 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
 
     def tool_spec(self):  # M66-B: canonical ToolSpec authority
         return READ_MEMORY_TIMELINE_TOOL_SPEC
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            f"- read_memory_timeline：{READ_MEMORY_TIMELINE_TOOL_SPEC.description} "
-            "整日或粗时段使用 date_from/date_to；retrieve_memory 返回 raw source_id 且需要附近完整 turn 时，"
-            "使用 anchor_source_id 和 before_turns/after_turns。status=partial 时只传 next_cursor 继续，"
-            "不要重复原选择器。"
-            "这是内部时间线读取，不要先在 speech 里宣布。"
-        )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
@@ -221,12 +209,6 @@ class BrowseMemoryToolHandler(BaseToolHandler):
     def tool_spec(self):
         return BROWSE_MEMORY_TOOL_SPEC
 
-    def build_prompt_instruction(self) -> str:
-        return (
-            f"- browse_memory：{BROWSE_MEMORY_TOOL_SPEC.description} "
-            "这是内部目录读取，不要先在 speech 里宣布。"
-        )
-
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
@@ -289,12 +271,6 @@ class OpenMemoryToolHandler(BaseToolHandler):
 
     def tool_spec(self):
         return OPEN_MEMORY_TOOL_SPEC
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            f"- open_memory：{OPEN_MEMORY_TOOL_SPEC.description} "
-            "这是内部证据读取，不要先在 speech 里宣布。"
-        )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:

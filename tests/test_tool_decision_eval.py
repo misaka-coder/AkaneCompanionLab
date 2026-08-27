@@ -354,7 +354,9 @@ class ToolDecisionEvalTests(unittest.TestCase):
         provider(DEFAULT_WEB_SEARCH_EVAL_CASES[0], "legacy")
 
         self.assertIsNone(runtime.calls[0]["native_tools"])
-        self.assertIn("搜索格式为", runtime.calls[0]["system_prompt"])
+        self.assertIn("兼容 JSON tool_call", runtime.calls[0]["system_prompt"])
+        self.assertIn('"type":"web_search"', runtime.calls[0]["system_prompt"])
+        self.assertIn("action:string[", runtime.calls[0]["system_prompt"])
 
     def test_live_provider_memory_legacy_prompt_keeps_memory_instructions(self) -> None:
         runtime = FakeRuntime(result={"speech": "", "tool_call": None})

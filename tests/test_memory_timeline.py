@@ -336,12 +336,13 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
             )
             instruction = ReadMemoryTimelineToolHandler(timeline_service=service).build_prompt_instruction()
 
-            self.assertIn("date_from/date_to", instruction)
+            self.assertIn("date_from:string", instruction)
+            self.assertIn("date_to:string", instruction)
             self.assertIn("anchor_source_id", instruction)
-            self.assertIn("附近完整 turn", instruction)
+            self.assertIn("nearby turns", instruction)
             self.assertIn("finite complete-unit page", instruction)
             self.assertIn("open_memory", instruction)
-            self.assertIn("status=partial", instruction)
+            self.assertIn("status is partial", instruction)
 
 
 if __name__ == "__main__":
