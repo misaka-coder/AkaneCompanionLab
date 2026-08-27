@@ -227,6 +227,10 @@ QQ_SHELL_PERMISSION_COMMAND_RE = re.compile(
     r"^[/／]shell(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
     re.IGNORECASE,
 )
+QQ_CAPABILITY_APPROVAL_COMMAND_RE = re.compile(
+    r"^[/／](approvals?|approve|deny|审批|批准|拒绝)(?:\s+([A-Za-z0-9_-]+))?$",
+    re.IGNORECASE,
+)
 QQ_GATEWAY_STATE_SCHEMA_VERSION = "akane.qq_gateway_state.v1"
 
 QQ_ECONOMY_CHECKIN_COMMANDS: frozenset[str] = frozenset({"签到", "每日签到", "领签到", "签到领奖"})
@@ -1075,10 +1079,13 @@ class NapCatQQGateway:
         chat_model_override = self.resolve_chat_model_override(session_id)
 
         shell_permission_command = self.parse_shell_permission_command(clean_message)
+        capability_approval_command = self.parse_capability_approval_command(clean_message)
         group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_attention_command = self.parse_group_attention_command(clean_message)
         group_reason = ""
-        if is_group and shell_permission_command is not None:
+        if is_group and capability_approval_command is not None:
+            group_reason = "qq_capability_approval_command"
+        elif is_group and shell_permission_command is not None:
             # Explicit control-plane commands must reach the authorization
             # handler even when the group normally requires @/wake-word.
             group_reason = "qq_shell_permission_command"
@@ -1664,6 +1671,122 @@ class NapCatQQGateway:
             "关闭": "off",
         }.get(argument)
         return {"action": action} if action else None
+
+    def parse_capability_approval_command(self, message: str) -> dict[str, str] | None:
+        text = re.sub(r"\s+", " ", str(message or "").strip())
+        match = QQ_CAPABILITY_APPROVAL_COMMAND_RE.fullmatch(text)
+        if match is None:
+            return None
+        command = str(match.group(1) or "").strip().lower()
+        action = {
+            "approval": "list",
+            "approvals": "list",
+            "审批": "list",
+            "approve": "approve",
+            "批准": "approve",
+            "deny": "deny",
+            "拒绝": "deny",
+        }.get(command)
+        if not action:
+            return None
+        return {
+            "action": action,
+            "selector": str(match.group(2) or "").strip(),
+        }
+
+    def handle_capability_approval_command(
+        self,
+        context: QQMessageContext,
+        *,
+        command: dict[str, str] | None = None,
+        approval_store: Any = None,
+    ) -> dict[str, Any] | None:
+        command = command or self.parse_capability_approval_command(context.clean_message)
+        if command is None:
+            return None
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq <= 0 or int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有 Akane 主人账号可以查看或处理能力审批。",
+            }
+        if approval_store is None:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "unavailable",
+                "reply": "能力审批服务当前不可用。",
+            }
+        pending = approval_store.list_requests(
+            profile_user_id=context.profile_user_id,
+            include_resolved=False,
+            limit=20,
+        )
+        requests = [item for item in list(pending.get("approvalRequests") or []) if isinstance(item, dict)]
+        action = str(command.get("action") or "")
+        if action == "list":
+            if not requests:
+                reply = "当前没有待处理的能力审批。"
+            else:
+                lines = ["待处理的能力审批："]
+                for index, item in enumerate(requests[:10], start=1):
+                    request_id = str(item.get("requestId") or "")
+                    capability_id = str(item.get("capabilityId") or item.get("actionId") or "能力")
+                    lines.append(f"{index}. {capability_id} · {request_id[-8:]}")
+                lines.append("使用 /approve 编号后8位 或 /deny 编号后8位。只有一项时可省略编号。")
+                reply = "\n".join(lines)
+            return {"handled": True, "ok": True, "status": "listed", "reply": reply}
+
+        selector = str(command.get("selector") or "").strip()
+        selected: list[dict[str, Any]] = []
+        if selector:
+            selected = [
+                item
+                for item in requests
+                if str(item.get("requestId") or "") == selector
+                or str(item.get("requestId") or "").endswith(selector)
+            ]
+        elif len(requests) == 1:
+            selected = requests
+        if not selected:
+            reason = "当前没有待处理的能力审批。" if not requests else "请指定唯一的审批编号；发送 /approvals 查看。"
+            return {"handled": True, "ok": False, "status": "not_found", "reply": reason}
+        if len(selected) != 1:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "ambiguous",
+                "reply": "这个编号匹配到多项请求，请发送 /approvals 后使用更完整的编号。",
+            }
+        request_id = str(selected[0].get("requestId") or "")
+        decision = "approved" if action == "approve" else "denied"
+        result = approval_store.decide_request(
+            profile_user_id=context.profile_user_id,
+            request_id=request_id,
+            payload={"decision": decision},
+        )
+        if not result.get("ok"):
+            return {
+                "handled": True,
+                "ok": False,
+                "status": str(result.get("status") or "failed"),
+                "reply": "这项能力审批没有处理成功，可能已经过期或被处理。",
+            }
+        capability_id = str(selected[0].get("capabilityId") or selected[0].get("actionId") or "该能力")
+        reply = (
+            f"已批准 {capability_id}。本次授权只匹配原调用且会短时有效；现在发送“继续”即可让 Akane 重试。"
+            if decision == "approved"
+            else f"已拒绝 {capability_id}，原动作不会执行。"
+        )
+        return {
+            "handled": True,
+            "ok": True,
+            "status": decision,
+            "reply": reply,
+            "request_id": request_id,
+        }
 
     def handle_shell_permission_command(
         self,

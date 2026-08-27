@@ -12,6 +12,7 @@ from unittest.mock import patch
 from capcore import prepare_invocation
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.local_capability_config import save_approval_policy_config, save_mcp_server_config
 from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from companion_v01.tool_runtime import (
@@ -479,6 +480,44 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(event["approvalMode"], "ask_each_time")
         self.assertEqual(event["payloadPreview"]["api_key"], "[redacted]")
         self.assertEqual(event["payloadPreview"]["local_path"], "[local_path]")
+
+    def test_adapter_capability_approval_grant_executes_exact_retry_once(self) -> None:
+        class FakeAdapter:
+            server_id = "demo"
+            provider_id = "stdio"
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": [{"type": "text", "text": "done"}]}, status="ok")
+
+        store = CapabilityApprovalStore()
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(risk="high", confirm="always"),
+            config_base_dir="unused",
+            approval_store=store,
+        )
+        call = {"type": "mcp.demo.echo", "arguments": {"text": "hello"}}
+
+        first = handler.execute(call=call, context=self._context())
+        request_id = first.stream_events[0]["requestId"]
+        store.decide_request(
+            profile_user_id="master",
+            request_id=request_id,
+            payload={"decision": "approved"},
+        )
+        second = handler.execute(call=call, context=self._context())
+        third = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(first.state_updates["adapter_capability_status"], "approval_required")
+        self.assertEqual(second.stream_events[0]["status"], "ok")
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(third.state_updates["adapter_capability_status"], "approval_required")
 
     def test_adapter_capability_trusted_auto_allow_executes_required_tool(self) -> None:
         class FakeAdapter:

@@ -564,6 +564,12 @@ def build_mcp_adapter_tool_handlers(
     if not str(profile_user_id or "").strip():
         return {}
     config_base_dir = getattr(engine, "capability_config_base_dir", None)
+    approval_store_getter = getattr(engine, "_get_approval_store", None)
+    approval_store = (
+        approval_store_getter()
+        if callable(approval_store_getter)
+        else getattr(engine, "approval_store", None)
+    )
     if config_base_dir is None:
         return {}
     try:
@@ -635,6 +641,7 @@ def build_mcp_adapter_tool_handlers(
                     adapter=adapter,
                     descriptor=descriptor,
                     config_base_dir=config_base_dir,
+                    approval_store=approval_store,
                 )
     try:
         setattr(engine, "_mcp_capability_adapter_cache", adapter_cache)
@@ -660,6 +667,12 @@ def build_python_adapter_tool_handlers(
     if config_base_dir is None:
         return {}
     adapter = AkanePythonCapabilityAdapter()
+    approval_store_getter = getattr(engine, "_get_approval_store", None)
+    approval_store = (
+        approval_store_getter()
+        if callable(approval_store_getter)
+        else getattr(engine, "approval_store", None)
+    )
     handlers: dict[str, Any] = {}
     for descriptor in adapter.list_capabilities_sync():
         if descriptor.id and descriptor.prompt_exposed:
@@ -668,5 +681,6 @@ def build_python_adapter_tool_handlers(
                 adapter=adapter,
                 descriptor=descriptor,
                 config_base_dir=config_base_dir,
+                approval_store=approval_store,
             )
     return handlers

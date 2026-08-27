@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionResult, ToolExecutionContext
 
@@ -190,7 +191,10 @@ mcpServers:
     def test_high_risk_mcp_tool_requires_approval_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, risk="high")
-            handler = build_engine(Path(temp_dir))._resolve_tool_handlers(
+            engine = build_engine(Path(temp_dir))
+            approval_store = CapabilityApprovalStore()
+            engine._get_approval_store = lambda: approval_store
+            handler = engine._resolve_tool_handlers(
                 client_context=context(),
                 profile_user_id="alice",
                 session_id="s1",
@@ -206,6 +210,11 @@ mcpServers:
                 ),
             )
             self.assertEqual(result.stream_events[0]["type"], "capability_approval_required")
+            request_id = str(result.stream_events[0].get("requestId") or "")
+            self.assertTrue(request_id.startswith("approvalreq_"), result.stream_events[0])
+            pending = approval_store.list_requests(profile_user_id="alice")
+            self.assertEqual(pending["pendingCount"], 1)
+            self.assertEqual(pending["approvalRequests"][0]["requestId"], request_id)
 
     def test_prompt_instruction_redacts_secret_and_local_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):

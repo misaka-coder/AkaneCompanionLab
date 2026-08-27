@@ -54,6 +54,23 @@ class CapabilityApprovalTests(unittest.TestCase):
             {"type": "object", "keys": ["label"]},
         )
 
+    def test_identical_pending_request_is_deduplicated(self) -> None:
+        store = CapabilityApprovalStore()
+        payload = {
+            "capabilityId": "mcp.demo.echo",
+            "actionId": "mcp.demo.echo",
+            "risk": "high",
+            "approvalMode": "ask_each_time",
+            "requestFingerprint": "f" * 64,
+            "resource": "demo",
+        }
+        first = store.create_request(profile_user_id="alice", session_id="s1", payload=payload)
+        second = store.create_request(profile_user_id="alice", session_id="s1", payload=payload)
+
+        self.assertEqual(second["requestId"], first["requestId"])
+        self.assertTrue(second["deduplicated"])
+        self.assertEqual(store.list_requests(profile_user_id="alice")["pendingCount"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from channelcore_onebot import MentionRef
 
 from companion_v01.deployment_security import QQChannelRuntimeConfig
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.qq_route_helpers import (
     apply_qq_current_outfit_visual,
@@ -1753,6 +1754,62 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "qq_shell_permission_command")
         self.assertEqual(context.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+
+    def test_capability_approval_command_lists_and_decides_exact_pending_request(self) -> None:
+        gateway = NapCatQQGateway()
+        store = CapabilityApprovalStore()
+        profile_id = f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}"
+        created = store.create_request(
+            profile_user_id=profile_id,
+            session_id=profile_id,
+            payload={
+                "capabilityId": "mcp.text-utils.normalize",
+                "actionId": "mcp.text-utils.normalize",
+                "risk": "high",
+                "approvalMode": "ask_each_time",
+                "requestFingerprint": "a" * 64,
+            },
+        )
+        context = QQMessageContext(
+            should_respond=True,
+            reason="qq_capability_approval_command",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            user_id=QQ_MASTER_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=profile_id,
+            profile_user_id=profile_id,
+            clean_message="/approvals",
+        )
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", QQ_MASTER_FIXTURE_ID):
+            listed = gateway.handle_capability_approval_command(context, approval_store=store)
+            approved = gateway.handle_capability_approval_command(
+                context,
+                command={"action": "approve", "selector": ""},
+                approval_store=store,
+            )
+
+        self.assertTrue(listed["ok"], listed)
+        self.assertIn(created["requestId"][-8:], listed["reply"])
+        self.assertEqual(approved["status"], "approved")
+        self.assertIn("发送“继续”", approved["reply"])
+
+    def test_group_capability_approval_command_bypasses_wake_word(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-approval-control-1",
+                "raw_message": "/approve",
+                "message": [{"type": "text", "data": {"text": "/approve"}}],
+            }
+        )
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_capability_approval_command")
 
     def test_thinking_mode_command_rejects_unsupported_model_without_writing(self) -> None:
         gateway = NapCatQQGateway()

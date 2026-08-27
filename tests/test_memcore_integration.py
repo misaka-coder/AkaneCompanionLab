@@ -712,6 +712,45 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_attention_hidden_host_turn_does_not_mutate_passive_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                passive = manager.append_standalone_message(
+                    {"source_id": "ambient-source", "content": "群聊事实", "timestamp": 100},
+                    role="user",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    observed=True,
+                )
+                before = manager._store.get_record_by_source_id("ambient-source")
+                opened = manager.begin_hidden_host_turn(
+                    referenced_source_ids=["ambient-source"],
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                )
+                hidden = manager._store.get_record_by_source_id(str(opened["source_id"]))
+                after = manager._store.get_record_by_source_id("ambient-source")
+            finally:
+                manager.close()
+
+        self.assertTrue(passive["ok"], passive)
+        self.assertTrue(opened["ok"], opened)
+        self.assertEqual(before["turn_id"], after["turn_id"])
+        self.assertEqual(before["relation_status"], after["relation_status"])
+        self.assertFalse(bool(hidden["prompt_visible"]))
+        self.assertEqual(hidden["payload"]["referenced_source_ids"], ["ambient-source"])
+
     def test_attention_turn_links_existing_image_and_text_sources_without_copying_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

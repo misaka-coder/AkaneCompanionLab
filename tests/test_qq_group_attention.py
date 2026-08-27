@@ -313,7 +313,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["turn_kind"], "qq_attention")
         self.assertTrue(processed[0]["transient_user_message"])
         self.assertEqual(processed[0]["message"], "event.group_attention_idle_review")
-        self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-1")
+        self.assertEqual(processed[0]["memory_attention_reference_source_ids"], ["observed-1"])
         self.assertTrue(
             processed[0]["extra_context"].endswith(
                 "event.group_attention_idle_review"
@@ -582,9 +582,8 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(len(processed), 1)
         self.assertEqual(processed[0]["qq_current_attachment_ids"], ["attachment-image-exact"])
         self.assertEqual(processed[0]["native_user_images"][0]["attachment_handle"], "img_exact")
-        self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-text-2")
         self.assertEqual(
-            processed[0]["memory_stimulus_source_ids"],
+            processed[0]["memory_attention_reference_source_ids"],
             ["observed-image", "observed-text", "observed-text-2"],
         )
 

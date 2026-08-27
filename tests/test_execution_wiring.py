@@ -688,6 +688,14 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
 
 
 class ExecTraceStatusTests(unittest.TestCase):
+    def test_approval_required_is_not_recorded_as_success(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        pending = SimpleNamespace(
+            followup_context="能力需要主人批准。",
+            stream_events=[{"type": "capability_approval_required"}],
+        )
+        self.assertEqual(engine._tool_result_trace_status(pending), "approval_required")
+
     def test_running_execution_result_is_not_recorded_as_tool_error(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         running = SimpleNamespace(

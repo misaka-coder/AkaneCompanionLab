@@ -1956,11 +1956,11 @@ def build_qq_router(
                 "timestamp": int(time.time()),
                 "turn_kind": "qq_attention",
                 "transient_user_message": True,
-                # The review event is intentionally transient. Anchor the
-                # provider projection to the real passive message that was
-                # already appended to MemCore instead of inventing a second
-                # user event or projecting an empty source id.
-                "memory_projection_anchor_source_id": projection_anchor_source_id,
+                # The review instruction exists only in this provider request.
+                # Real group messages are already durable MemCore facts; these
+                # IDs are lineage evidence for a hidden host-owned turn and
+                # must never be relinked or copied into a synthetic message.
+                "memory_attention_reference_source_ids": list(stimulus_source_ids),
                 "message_addressing": {
                     "mode": "observed",
                     "trigger": review_event.removeprefix("event."),
@@ -1971,7 +1971,6 @@ def build_qq_router(
                 },
             }
         )
-        turn_payload["memory_stimulus_source_ids"] = list(stimulus_source_ids)
         if attachment_ids:
             turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
@@ -3153,6 +3152,56 @@ def build_qq_router(
                         "send_result": send_result,
                     }
                 )
+
+            capability_approval_command = qq_gateway.parse_capability_approval_command(context.clean_message)
+            if isinstance(capability_approval_command, dict):
+                approval_store_getter = getattr(engine, "_get_approval_store", None)
+                approval_store = (
+                    approval_store_getter()
+                    if callable(approval_store_getter)
+                    else getattr(engine, "approval_store", None)
+                )
+                approval_result = qq_gateway.handle_capability_approval_command(
+                    context,
+                    command=capability_approval_command,
+                    approval_store=approval_store,
+                )
+                if isinstance(approval_result, dict):
+                    reply = str(approval_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
+                    )
+                    command_ok = bool(approval_result.get("ok"))
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")) and command_ok,
+                    )
+                    log_event(
+                        "qq_capability_approval_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        is_group=bool(context.is_group),
+                        command_status=str(approval_result.get("status") or ""),
+                        command_ok=command_ok,
+                        request_id_suffix=str(approval_result.get("request_id") or "")[-8:],
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_capability_approval_command",
+                            "command_status": str(approval_result.get("status") or ""),
+                            "command_ok": command_ok,
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "send_result": send_result,
+                        }
+                    )
 
             shell_permission_command = qq_gateway.parse_shell_permission_command(context.clean_message)
             if isinstance(shell_permission_command, dict):

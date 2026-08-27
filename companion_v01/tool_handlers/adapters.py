@@ -21,6 +21,7 @@ from ..capcore_runtime import (
     invocation_context_from_execution as capcore_invocation_context_from_execution,
 )
 from ..capability_adapters import CapabilityProtocolError, InvocationContext
+from ..capability_approval import build_approval_request_fingerprint
 from ..desktop_satellite_specs import desktop_satellite_spec
 from ..tool_invocation import (
     TOOL_CAPABILITY_SELECTION_FIELD,
@@ -158,11 +159,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         adapter: Any,
         descriptor: Any,
         config_base_dir: Path | str | None = None,
+        approval_store: Any = None,
     ) -> None:
         self.tool_type = str(capability_id or "").strip()
         self.adapter = adapter
         self.descriptor = descriptor
         self.config_base_dir = config_base_dir
+        self.approval_store = approval_store
 
     def tool_spec(self):
         """Project reviewed adapter descriptors through capcore's canonical contract."""
@@ -255,8 +258,20 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             if decision is None:
                 return self._blocked_by_policy("permission_decision_missing")
             if decision.requires_user_decision:
-                return self._approval_required(decision=decision, context=context)
+                return self._ask_or_redeem(
+                    decision=decision,
+                    context=context,
+                    normalized_args=normalized_args,
+                )
             return self._blocked_by_policy(decision.reason)
+        return self._invoke(normalized_args=normalized_args, context=context)
+
+    def _invoke(
+        self,
+        *,
+        normalized_args: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
         try:
             result = self._run_coro_blocking(
                 self.adapter.invoke(
@@ -316,6 +331,80 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             context=context,
         )
 
+    def _ask_or_redeem(
+        self,
+        *,
+        decision: Any,
+        context: ToolExecutionContext,
+        normalized_args: dict[str, Any],
+    ) -> ToolExecutionResult:
+        fingerprint = build_approval_request_fingerprint(normalized_args)
+        resource = self._safe_public_text(getattr(self.adapter, "server_id", ""), limit=160)
+        device = self._safe_public_text(getattr(self.adapter, "provider_id", ""), limit=160)
+        if self.approval_store is not None:
+            grant = self.approval_store.resolve_grant(
+                profile_user_id=str(context.profile_user_id or ""),
+                session_id=str(context.session_id or ""),
+                capability_id=self.tool_type,
+                action_id=self.tool_type,
+                resource=resource,
+                device=device,
+                fingerprint=fingerprint,
+            )
+            if grant is not None:
+                return self._invoke(normalized_args=normalized_args, context=context)
+        request_id = self._create_approval_request(
+            decision=decision,
+            context=context,
+            normalized_args=normalized_args,
+            fingerprint=fingerprint,
+            resource=resource,
+            device=device,
+        )
+        return self._approval_required(
+            decision=decision,
+            context=context,
+            request_id=request_id,
+        )
+
+    def _create_approval_request(
+        self,
+        *,
+        decision: Any,
+        context: ToolExecutionContext,
+        normalized_args: dict[str, Any],
+        fingerprint: str,
+        resource: str,
+        device: str,
+    ) -> str:
+        if self.approval_store is None:
+            return ""
+        request = getattr(decision, "request", None)
+        preview = dict(getattr(request, "args_preview", None) or normalized_args)
+        risk = self._safe_public_text(getattr(self.descriptor, "risk", ""), limit=40) or "medium"
+        result = self.approval_store.create_request(
+            profile_user_id=str(context.profile_user_id or ""),
+            session_id=str(context.session_id or ""),
+            payload={
+                "capabilityId": self.tool_type,
+                "actionId": self.tool_type,
+                "risk": risk,
+                "approvalMode": "ask_each_time",
+                "title": f"{self._source_label()}需要确认",
+                "summary": f"Akane 想执行 {self.tool_type}。",
+                "approvalReason": self._safe_public_text(
+                    getattr(decision, "reason", ""),
+                    limit=120,
+                )
+                or "requires_confirmation",
+                "payloadPreview": preview,
+                "requestFingerprint": fingerprint,
+                "resource": resource,
+                "deviceId": device,
+            },
+        )
+        return str(result.get("requestId") or "") if result.get("ok") else ""
+
     def _capability_result_provider(self, result: Any) -> str:
         content = getattr(result, "content", None)
         if not isinstance(content, Mapping):
@@ -340,7 +429,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         del capability_result, context
         return execution_result
 
-    def _approval_required(self, *, decision: Any, context: ToolExecutionContext) -> ToolExecutionResult:
+    def _approval_required(
+        self,
+        *,
+        decision: Any,
+        context: ToolExecutionContext,
+        request_id: str = "",
+    ) -> ToolExecutionResult:
         event = capcore_approval_required_event(
             decision=decision,
             capability_id=self.tool_type,
@@ -349,13 +444,27 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             summary=f"Akane 想执行一个{self._source_label()}。",
             client_mode=context.client_mode,
         )
+        if request_id:
+            event["requestId"] = request_id
+        if request_id:
+            followup = (
+                f"这个{self._source_label()}需要用户确认，审批请求已经创建。"
+                "主人可在 QQ 发送 /approve 放行最新请求，随后让你继续并重试同一调用；"
+                "获批前不要声称已经完成。"
+            )
+        else:
+            followup = (
+                f"这个{self._source_label()}需要用户确认，但宿主没有创建出可审批请求。"
+                "请如实说明审批入口不可用，不要声称已经完成。"
+            )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
-            followup_context=f"这个{self._source_label()}需要用户确认；请自然说明需要在能力审批中允许后再执行，不要声称已经完成。",
+            followup_context=followup,
             state_updates={
                 "adapter_capability_status": "approval_required",
                 "adapter_capability_id": self.tool_type,
+                "adapter_capability_approval_request_id": request_id,
             },
         )
 

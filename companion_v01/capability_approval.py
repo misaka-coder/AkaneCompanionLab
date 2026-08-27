@@ -68,34 +68,54 @@ class CapabilityApprovalStore:
             return normalized
         now = self._now()
         ttl_seconds = int(normalized.get("expiresInSec") or 300)
-        request_id = f"approvalreq_{uuid.uuid4().hex}"
-        entry = {
-            "_profileUserId": str(profile_user_id or ""),
-            "_sessionId": str(session_id or ""),
-            "_fingerprint": str(normalized.get("requestFingerprint") or ""),
-            "_resource": str(normalized.get("resource") or ""),
-            "_device": str(normalized.get("deviceId") or ""),
-            "requestId": request_id,
-            "kind": "capability_approval_request",
-            "status": "pending",
-            "decision": "",
-            "capabilityId": normalized["capabilityId"],
-            "actionId": normalized["actionId"],
-            "title": normalized["title"],
-            "summary": normalized["summary"],
-            "risk": normalized["risk"],
-            "approvalMode": "ask_each_time",
-            "approvalReason": normalized["approvalReason"],
-            "requestedBy": normalized["requestedBy"],
-            "payloadPreview": normalized["payloadPreview"],
-            "createdAt": _iso(now),
-            "updatedAt": _iso(now),
-            "expiresAt": _iso(now + timedelta(seconds=ttl_seconds)),
-            "decidedAt": "",
-            "grantId": "",
-            "grantExpiresAt": "",
-        }
         with self._lock:
+            self._expire_pending_locked(now)
+            for existing in self._requests.values():
+                if (
+                    existing.get("status") == "pending"
+                    and str(existing.get("_profileUserId") or "") == str(profile_user_id or "")
+                    and str(existing.get("_sessionId") or "") == str(session_id or "")
+                    and str(existing.get("capabilityId") or "") == str(normalized.get("capabilityId") or "")
+                    and str(existing.get("actionId") or "") == str(normalized.get("actionId") or "")
+                    and str(existing.get("_fingerprint") or "") == str(normalized.get("requestFingerprint") or "")
+                    and str(existing.get("_resource") or "") == str(normalized.get("resource") or "")
+                    and str(existing.get("_device") or "") == str(normalized.get("deviceId") or "")
+                ):
+                    return {
+                        "ok": True,
+                        "status": "pending",
+                        "request": _public_request(existing),
+                        "requestId": str(existing.get("requestId") or ""),
+                        "refresh": False,
+                        "deduplicated": True,
+                    }
+            request_id = f"approvalreq_{uuid.uuid4().hex}"
+            entry = {
+                "_profileUserId": str(profile_user_id or ""),
+                "_sessionId": str(session_id or ""),
+                "_fingerprint": str(normalized.get("requestFingerprint") or ""),
+                "_resource": str(normalized.get("resource") or ""),
+                "_device": str(normalized.get("deviceId") or ""),
+                "requestId": request_id,
+                "kind": "capability_approval_request",
+                "status": "pending",
+                "decision": "",
+                "capabilityId": normalized["capabilityId"],
+                "actionId": normalized["actionId"],
+                "title": normalized["title"],
+                "summary": normalized["summary"],
+                "risk": normalized["risk"],
+                "approvalMode": "ask_each_time",
+                "approvalReason": normalized["approvalReason"],
+                "requestedBy": normalized["requestedBy"],
+                "payloadPreview": normalized["payloadPreview"],
+                "createdAt": _iso(now),
+                "updatedAt": _iso(now),
+                "expiresAt": _iso(now + timedelta(seconds=ttl_seconds)),
+                "decidedAt": "",
+                "grantId": "",
+                "grantExpiresAt": "",
+            }
             self._requests[request_id] = entry
         return {
             "ok": True,

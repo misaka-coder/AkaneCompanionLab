@@ -777,6 +777,81 @@ class MemcoreManager:
                 reason=reason,
             )
 
+    def begin_hidden_host_turn(
+        self,
+        *,
+        referenced_source_ids: list[str] | None = None,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        turn_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a writable turn without rewriting already persisted stimuli.
+
+        Delayed host decisions such as ambient group participation may add an
+        ephemeral instruction to the current provider request.  That request
+        tail is not a new conversation fact, but any tools and final assistant
+        message still need a real turn owner.  A prompt-invisible host stimulus
+        provides that owner while the referenced passive messages remain
+        immutable standalone timeline entries.
+        """
+
+        operation = "begin_hidden_host_turn"
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+        try:
+            memcore = self._memcore_module or self._import_memcore()
+            opened_at = int(time.time())
+            source_id = f"host-attention:{hashlib.sha256(f'{session_id}|{time.time_ns()}'.encode()).hexdigest()[:32]}"
+            resolved_references = list(
+                dict.fromkeys(
+                    str(item or "").strip()
+                    for item in list(referenced_source_ids or [])
+                    if str(item or "").strip()
+                )
+            )
+            entry = memcore.TimelineEntryInput(
+                kind="event.group_attention_review",
+                origin=memcore.EntryOrigin.ENVIRONMENT,
+                turn_role=memcore.TurnRole.STIMULUS,
+                semantic_text="",
+                timestamp=opened_at,
+                payload={"referenced_source_ids": resolved_references},
+                source_id=source_id,
+                retrieval_policy=memcore.RetrievalPolicy.NEVER,
+                retrieval_visibility=memcore.RetrievalVisibility.NEVER,
+                semanticize=False,
+                prompt_visible=False,
+            )
+            handle = system.begin_turn(
+                stimuli=[entry],
+                annotation_target_ids=[source_id],
+                turn_id=str(turn_id or "").strip() or self._stable_turn_id(source_id),
+                opened_at=opened_at,
+            )
+            writable = str(handle.status) == "open"
+            return {
+                **self._status(
+                    operation,
+                    True,
+                    "opened" if writable else str(handle.status),
+                    source_id=source_id,
+                    index_status=handle.stimuli[0].index_status,
+                ),
+                "turn_id": str(handle.turn_id),
+                "writable": writable,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", reason=reason)
+
     def append_turn_intermediate(
         self,
         record: dict[str, Any],

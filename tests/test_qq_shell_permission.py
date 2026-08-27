@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.local_capability_config import get_approval_policy_config
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
@@ -47,6 +48,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.config_root = Path(self._tmp.name)
         self.process_calls: list[dict] = []
+        self.approval_store = CapabilityApprovalStore()
 
         test_case = self
 
@@ -54,6 +56,9 @@ class QQShellPermissionRouteTests(unittest.TestCase):
             capability_config_base_dir = test_case.config_root
             execution_provider = object()
             tool_handlers = {"exec_run": _ExecHandler()}
+
+            def _get_approval_store(self):
+                return test_case.approval_store
 
             def process_turn_stream(self, payload: dict):
                 test_case.process_calls.append(payload)
@@ -132,6 +137,38 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         )["approvalPolicy"]
         self.assertEqual(group_policy["capabilityModes"], {})
         self.assertEqual(self.process_calls, [])
+
+    @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
+    @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
+    @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
+    def test_master_can_approve_latest_capability_without_running_chat(self, _request) -> None:
+        profile_id = f"qq_group_shared_{QQ_GROUP_ID}"
+        created = self.approval_store.create_request(
+            profile_user_id=profile_id,
+            session_id=profile_id,
+            payload={
+                "capabilityId": "mcp.text-utils.normalize",
+                "actionId": "mcp.text-utils.normalize",
+                "risk": "high",
+                "approvalMode": "ask_each_time",
+                "requestFingerprint": "c" * 64,
+            },
+        )
+        response = self.client.post(
+            "/api/qq/napcat/event",
+            json=self._event(user_id=QQ_MASTER_ID, message="/approve"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_capability_approval_command")
+        self.assertEqual(payload["command_status"], "approved")
+        self.assertEqual(self.process_calls, [])
+        resolved = self.approval_store.get_request(
+            profile_user_id=profile_id,
+            request_id=created["requestId"],
+        )
+        self.assertEqual(resolved["status"], "approved")
 
 
 if __name__ == "__main__":
