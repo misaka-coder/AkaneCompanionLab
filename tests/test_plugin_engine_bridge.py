@@ -134,6 +134,8 @@ class ReadPlugin:
 
 
 class EngineFacade:
+    _build_execution_host_context = staticmethod(AkaneMemoryEngine._build_execution_host_context)
+
     def __init__(self, source: PluginCapabilityToolBridge) -> None:
         self.tool_handlers: dict[str, Any] = {}
         self.plugin_capability_source = source
