@@ -316,7 +316,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["memory_projection_anchor_source_id"], "observed-1")
         self.assertTrue(
             processed[0]["extra_context"].endswith(
-                "event.group_attention_idle_review\nresponse_expectation: optional"
+                "event.group_attention_idle_review"
             )
         )
         self.assertNotIn("完整群聊历史", processed[0]["extra_context"])
@@ -724,7 +724,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["turn_kind"], "qq_optional_reply")
         self.assertTrue(
             processed[0]["extra_context"].endswith(
-                "event.qq_optional_reply_review\nresponse_expectation: optional"
+                "event.qq_optional_reply_review"
             )
         )
         self.assertNotIn("若不需要", processed[0]["extra_context"])

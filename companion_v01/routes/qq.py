@@ -2008,7 +2008,7 @@ def build_qq_router(
                 )
         for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
             turn_payload.pop(field, None)
-        observation_note = f"{review_event}\nresponse_expectation: optional"
+        observation_note = review_event
         turn_payload["extra_context"] = "\n\n".join(
             part for part in (str(turn_payload.get("extra_context") or "").strip(), observation_note) if part
         )
@@ -2963,7 +2963,7 @@ def build_qq_router(
             _qq_action_note = ""
             _qq_turn_message_override = ""
             _qq_turn_extra_context_note = (
-                "event.qq_optional_reply_review\nresponse_expectation: optional"
+                "event.qq_optional_reply_review"
                 if optional_reply
                 else ""
             )
