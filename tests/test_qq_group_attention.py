@@ -64,6 +64,7 @@ class QQGroupAttentionStateTests(unittest.TestCase):
         state = QQGroupAttentionState(clock=lambda: now[0])
         ticket, _ = state.arm("group", mode="adaptive", delay_seconds=0)
         self.assertTrue(state.claim(ticket))
+        self.assertFalse(state.finish(ticket))
         state.mark_idle_observed("group", cooldown_seconds=60)
 
         blocked, reason = state.arm("group", mode="adaptive", delay_seconds=0)
@@ -74,6 +75,29 @@ class QQGroupAttentionStateTests(unittest.TestCase):
         self.assertEqual(reason, "idle_cooldown")
         self.assertIsNotNone(allowed)
         self.assertEqual(allowed_reason, "armed")
+
+    def test_in_flight_messages_coalesce_into_one_new_generation(self) -> None:
+        state = QQGroupAttentionState(clock=lambda: 100.0)
+        state.mark_visible_reply("group", ttl_seconds=120)
+        ticket, reason = state.arm("group", mode="engaged", delay_seconds=10)
+        self.assertEqual(reason, "armed")
+        self.assertTrue(state.claim(ticket))
+        self.assertTrue(state.is_in_flight("group"))
+
+        second, second_reason = state.arm("group", mode="engaged", delay_seconds=10)
+        third, third_reason = state.arm("group", mode="engaged", delay_seconds=10)
+
+        self.assertIsNone(second)
+        self.assertIsNone(third)
+        self.assertEqual(second_reason, "in_flight_dirty")
+        self.assertEqual(third_reason, "in_flight_dirty")
+        self.assertFalse(state.has_pending("group"))
+        self.assertTrue(state.finish(ticket))
+        self.assertFalse(state.is_in_flight("group"))
+
+        next_ticket, next_reason = state.arm("group", mode="engaged", delay_seconds=10)
+        self.assertIsNotNone(next_ticket)
+        self.assertEqual(next_reason, "armed")
 
 
 class QQGroupAttentionGatewayTests(unittest.TestCase):
@@ -314,13 +338,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertTrue(processed[0]["transient_user_message"])
         self.assertEqual(processed[0]["message"], "event.group_attention_idle_review")
         self.assertEqual(processed[0]["memory_attention_reference_source_ids"], ["observed-1"])
-        self.assertTrue(
-            processed[0]["extra_context"].endswith(
-                "event.group_attention_idle_review"
-            )
-        )
-        self.assertNotIn("完整群聊历史", processed[0]["extra_context"])
-        self.assertNotIn("idle_observation", processed[0]["extra_context"])
+        self.assertNotIn("event.group_attention_idle_review", processed[0].get("extra_context", ""))
         self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_idle_review")
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")

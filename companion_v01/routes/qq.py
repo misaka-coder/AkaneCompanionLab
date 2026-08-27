@@ -1930,6 +1930,7 @@ def build_qq_router(
             return
         snapshot = attention_latest.pop(ticket.key, None)
         if snapshot is None:
+            group_attention.finish(ticket, discard_dirty=True)
             return
         context, event, projection_anchor_source_id, attachment_ids, stimulus_source_ids = snapshot
         # Ambient participation is based on the whole MemCore projection, not
@@ -1955,6 +1956,8 @@ def build_qq_router(
                 reason="session_busy",
                 attention_reason=ticket.reason,
             )
+            group_attention.finish(ticket, discard_dirty=True)
+            attention_latest.pop(ticket.key, None)
             return
         review_event = _group_attention_review_event(ticket.reason)
         turn_payload = context.to_turn_payload()
@@ -2015,10 +2018,6 @@ def build_qq_router(
                 )
         for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
             turn_payload.pop(field, None)
-        observation_note = review_event
-        turn_payload["extra_context"] = "\n\n".join(
-            part for part in (str(turn_payload.get("extra_context") or "").strip(), observation_note) if part
-        )
         try:
             result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
         except Exception as exc:
@@ -2038,6 +2037,8 @@ def build_qq_router(
                 attention_reason=ticket.reason,
                 reason=exc.__class__.__name__,
             )
+            group_attention.finish(ticket, discard_dirty=True)
+            attention_latest.pop(ticket.key, None)
             return
         if ticket.reason == "idle_observation" and not _turn_has_real_visible_delivery(result):
             group_attention.mark_idle_observed(
@@ -2058,6 +2059,30 @@ def build_qq_router(
             silent=bool(result_frame.get("_deliberate_silence")) and not visible_reply,
             silent_reason="model_decision" if bool(result_frame.get("_deliberate_silence")) else "",
         )
+        newer_generation_waiting = group_attention.finish(ticket)
+        if not newer_generation_waiting:
+            return
+        next_snapshot = attention_latest.get(ticket.key)
+        if next_snapshot is None:
+            return
+        next_context = next_snapshot[0]
+        next_ticket, next_reason = group_attention.arm(
+            ticket.key,
+            mode=_group_attention_mode(next_context),
+            delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
+        )
+        if next_ticket is not None and next_reason == "armed":
+            schedule_followup(_run_group_attention_ticket(next_ticket))
+            log_event(
+                "qq_group_attention_rearmed",
+                session_id=str(getattr(next_context, "session_id", "") or ""),
+                profile_user_id=str(getattr(next_context, "profile_user_id", "") or ""),
+                group_id=int(getattr(next_context, "group_id", 0) or 0),
+                reason="newer_memcore_generation",
+                attention_reason=next_ticket.reason,
+            )
+        elif next_reason not in {"already_pending", "in_flight_dirty"}:
+            attention_latest.pop(ticket.key, None)
 
     def _schedule_group_attention(
         context: Any,
@@ -2086,7 +2111,7 @@ def build_qq_router(
             mode=_group_attention_mode(context),
             delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
         )
-        if ticket is None:
+        if ticket is None and reason != "in_flight_dirty":
             return {"scheduled": False, "reason": reason}
         media_evidence = _take_attention_media(context, event)
         previous = attention_latest.get(key)

@@ -31,6 +31,8 @@ class QQGroupAttentionState:
         self._engaged_until: dict[str, float] = {}
         self._idle_cooldown_until: dict[str, float] = {}
         self._tickets: dict[str, AttentionTicket] = {}
+        self._in_flight: dict[str, str] = {}
+        self._dirty_during_flight: set[str] = set()
 
     @staticmethod
     def normalize_mode(value: Any, *, default: str = "engaged") -> str:
@@ -53,12 +55,18 @@ class QQGroupAttentionState:
         normalized_mode = self.normalize_mode(mode)
         now = self._clock()
         with self._lock:
+            if normalized_mode == "off":
+                return None, "mode_off"
+            if normalized_key in self._in_flight:
+                # Conversation content is already durable in MemCore.  Only
+                # remember that a newer generation exists; do not create a
+                # second observation while the current one is still running.
+                self._dirty_during_flight.add(normalized_key)
+                return None, "in_flight_dirty"
             existing = self._tickets.get(normalized_key)
             if existing is not None:
                 return existing, "already_pending"
             engaged = self._engaged_until.get(normalized_key, 0.0) > now
-            if normalized_mode == "off":
-                return None, "mode_off"
             if normalized_mode == "engaged" and not engaged:
                 return None, "outside_engagement"
             if normalized_mode == "adaptive" and not engaged:
@@ -82,11 +90,28 @@ class QQGroupAttentionState:
             if current is None or current.token != ticket.token:
                 return False
             self._tickets.pop(ticket.key, None)
+            self._in_flight[ticket.key] = ticket.token
+            self._dirty_during_flight.discard(ticket.key)
             return True
 
-    def cancel(self, key: str) -> bool:
+    def finish(self, ticket: AttentionTicket, *, discard_dirty: bool = False) -> bool:
+        """Close one claimed generation and report whether newer facts arrived."""
+
         with self._lock:
-            return self._tickets.pop(str(key or "").strip(), None) is not None
+            if self._in_flight.get(ticket.key) != ticket.token:
+                return False
+            self._in_flight.pop(ticket.key, None)
+            dirty = ticket.key in self._dirty_during_flight
+            self._dirty_during_flight.discard(ticket.key)
+            return bool(dirty and not discard_dirty)
+
+    def cancel(self, key: str) -> bool:
+        normalized_key = str(key or "").strip()
+        with self._lock:
+            removed = self._tickets.pop(normalized_key, None) is not None
+            dirty = normalized_key in self._dirty_during_flight
+            self._dirty_during_flight.discard(normalized_key)
+            return removed or dirty
 
     def mark_visible_reply(self, key: str, *, ttl_seconds: float) -> None:
         normalized_key = str(key or "").strip()
@@ -114,3 +139,7 @@ class QQGroupAttentionState:
     def has_pending(self, key: str) -> bool:
         with self._lock:
             return str(key or "").strip() in self._tickets
+
+    def is_in_flight(self, key: str) -> bool:
+        with self._lock:
+            return str(key or "").strip() in self._in_flight
