@@ -7683,6 +7683,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             character_pack_id=character_pack_id,
             memcore_turn_id=memcore_turn_id,
+            current_user_source_id=current_user_source_id,
         )
         manager = getattr(self, "memcore_manager", None)
         memcore_required = bool(
@@ -7866,6 +7867,7 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str,
         memcore_turn_id: str = "",
+        current_user_source_id: str = "",
     ) -> dict[str, Any]:
         if tool_history_turns is None:
             return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
@@ -7948,13 +7950,25 @@ class AkaneMemoryEngine:
             ]
             if not current_turn_messages:
                 return {"ok": False, "status": "failed", "reason": "tool_turn_projection_missing"}
-            # The runtime already inserts the current user stimulus before
-            # ``post_user_turns``. Rebuild the entire remainder of the open
-            # MemCore turn on every tool round instead of appending only this
-            # batch. That preserves intermediate/tool/result ordering and
-            # prevents a second tool batch from drifting away from MemCore's
-            # authoritative current-turn projection.
-            current_turn_messages = current_turn_messages[1:]
+            # The runtime inserts a provider-visible current stimulus before
+            # ``post_user_turns``. Remove that exact source from the rebuilt
+            # open-turn suffix instead of assuming it is always the first
+            # projected message. Hidden host turns (for example QQ attention)
+            # have a prompt-invisible stimulus, so their first visible message
+            # can be the assistant tool call itself; dropping it leaves an
+            # orphan ``role=tool`` message that strict providers reject.
+            normalized_current_source_id = str(current_user_source_id or "").strip()
+            if normalized_current_source_id:
+                current_turn_messages = [
+                    message
+                    for message in current_turn_messages
+                    if normalized_current_source_id
+                    not in {
+                        str(source_id or "").strip()
+                        for source_id in message.get("source_ids") or []
+                        if str(source_id or "").strip()
+                    }
+                ]
         projected_messages: list[dict[str, Any]] = []
         media_attached = False
         legacy_assistant_written = False

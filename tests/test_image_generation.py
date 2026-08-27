@@ -145,6 +145,38 @@ class ImageGenerationTests(unittest.TestCase):
             self.assertFalse(isolated["ok"])
             self.assertIsNotNone(generated_service)
 
+    def test_load_material_uses_pixel_signature_over_stale_transport_mime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _store, attachment_service, _generated_service, resolver = self._services(root)
+            image_path = root / "inbox" / "user" / "session" / "stale.gif"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"\xff\xd8\xff\xe0synthetic-jpeg")
+            attachment = attachment_service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="stale.gif",
+                mime_type="image/gif",
+                storage_relpath="user/session/stale.gif",
+                timestamp=100,
+            )
+            handler = LoadMaterialToolHandler(image_material_resolver=resolver)
+
+            result = handler.execute(
+                call={"type": "load_material", "targets": [attachment["attachment_handle"]]},
+                context=ToolExecutionContext(
+                    profile_user_id="user",
+                    session_id="session",
+                    now_ts=200,
+                    visual_payload={},
+                ),
+            )
+
+            self.assertEqual(result.model_image_inputs[0]["media_type"], "image/jpeg")
+            self.assertTrue(result.model_image_inputs[0]["data_url"].startswith("data:image/jpeg;base64,"))
+
     def test_image_tools_publish_precise_native_schemas(self) -> None:
         load_handler = LoadMaterialToolHandler(image_material_resolver=object())
         generate_handler = GenerateImageToolHandler(image_generation_service=object())

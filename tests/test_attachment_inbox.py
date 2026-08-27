@@ -124,6 +124,36 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertFalse(isolated["ok"])
             self.assertEqual(isolated["images"], [])
 
+    def test_native_image_input_uses_pixel_signature_over_stale_transport_mime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attachment_root = root / "attachments"
+            image_path = attachment_root / "user" / "session" / "stale.gif"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"\xff\xd8\xff\xe0synthetic-jpeg")
+            service = AttachmentInboxService(store=MemoryStore(root / "store"), base_dir=attachment_root)
+            item = service.create_pending(
+                profile_user_id="user",
+                session_id="session",
+                source="qq",
+                kind="image",
+                origin_name="stale.gif",
+                mime_type="image/gif",
+                storage_relpath="user/session/stale.gif",
+                timestamp=100,
+            )
+
+            result = service.build_native_image_inputs(
+                profile_user_id="user",
+                session_id="session",
+                attachment_ids=[item["attachment_id"]],
+                timeout_seconds=0,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["images"][0]["media_type"], "image/jpeg")
+            self.assertTrue(result["images"][0]["data_url"].startswith("data:image/jpeg;base64,"))
+
     def test_material_trace_recorder_observes_reference_ready_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             events: list[dict[str, object]] = []

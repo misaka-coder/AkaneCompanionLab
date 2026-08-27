@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from .image_materials import sniff_supported_image_media_type
 from .public_url_policy import public_url_display_origin
 from .store import MemoryStore
 
@@ -727,16 +728,19 @@ class AttachmentInboxService:
             if total_bytes + file_size > total_limit:
                 skipped.append({"attachment_id": attachment_id, "reason": "image_total_size_limit"})
                 continue
-            media_type = str(item.get("mime_type") or mimetypes.guess_type(source_path.name)[0] or "").lower()
-            if media_type == "image/jpg":
-                media_type = "image/jpeg"
-            if media_type not in NATIVE_IMAGE_MEDIA_TYPES:
-                skipped.append({"attachment_id": attachment_id, "reason": "unsupported_image_type"})
-                continue
             try:
                 image_bytes = source_path.read_bytes()
             except OSError:
                 skipped.append({"attachment_id": attachment_id, "reason": "image_unreadable"})
+                continue
+            declared_media_type = str(
+                item.get("mime_type") or mimetypes.guess_type(source_path.name)[0] or ""
+            ).lower()
+            if declared_media_type == "image/jpg":
+                declared_media_type = "image/jpeg"
+            media_type = sniff_supported_image_media_type(image_bytes) or declared_media_type
+            if media_type not in NATIVE_IMAGE_MEDIA_TYPES:
+                skipped.append({"attachment_id": attachment_id, "reason": "unsupported_image_type"})
                 continue
             total_bytes += len(image_bytes)
             images.append(

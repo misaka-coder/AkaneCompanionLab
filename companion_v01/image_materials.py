@@ -2,12 +2,32 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 
 SUPPORTED_IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+
+
+def sniff_supported_image_media_type(image_bytes: bytes) -> str:
+    """Return the supported media type proved by the file signature.
+
+    QQ/CDN metadata and filename suffixes are transport hints, not pixel
+    evidence.  A JPEG may arrive through a ``.gif`` URL; forwarding that stale
+    label makes strict multimodal providers reject an otherwise valid image.
+    """
+
+    header = bytes(image_bytes[:16])
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -118,16 +138,25 @@ class SessionImageMaterialResolver:
             except OSError:
                 result.setdefault("unresolved", []).append({"target": material.handle, "reason": "image_unreadable"})
                 continue
+            detected_media_type = sniff_supported_image_media_type(image_bytes)
+            effective_material = (
+                replace(material, media_type=detected_media_type)
+                if detected_media_type and detected_media_type != material.media_type
+                else material
+            )
             images.append(
                 {
-                    "attachment_id": material.source_id,
-                    "attachment_handle": material.handle,
-                    "title": material.title,
-                    "media_type": material.media_type,
-                    "data_url": f"data:{material.media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+                    "attachment_id": effective_material.source_id,
+                    "attachment_handle": effective_material.handle,
+                    "title": effective_material.title,
+                    "media_type": effective_material.media_type,
+                    "data_url": (
+                        f"data:{effective_material.media_type};base64,"
+                        f"{base64.b64encode(image_bytes).decode('ascii')}"
+                    ),
                 }
             )
-            loaded_materials.append(material)
+            loaded_materials.append(effective_material)
         safe_materials = [item.safe_dict() for item in loaded_materials]
         return {
             "ok": bool(images),

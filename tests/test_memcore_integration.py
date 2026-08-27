@@ -1852,6 +1852,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
+                    current_user_source_id=str(opened["source_id"]),
                 )
                 self.assertTrue(projected["ok"], projected)
                 self.assertEqual(post_turns[0], {"role": "assistant", "content": provider_raw})
@@ -2238,11 +2239,85 @@ class MemcoreIntegrationTests(unittest.TestCase):
             session_id="s1",
             character_pack_id="char",
             memcore_turn_id="active-turn",
+            current_user_source_id="active-user",
         )
 
         self.assertTrue(projected["ok"], projected)
         self.assertEqual(FocusedProjectionManager.focused_calls[0]["turn_id"], "active-turn")
         self.assertEqual([item["role"] for item in history], ["assistant", "tool"])
+
+    def test_hidden_attention_tool_batch_keeps_native_call_before_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_hidden_host_turn(
+                    referenced_source_ids=[],
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                )
+                batch = manager.record_tool_batch(
+                    exchanges=[
+                        {
+                            "tool_name": "web_search",
+                            "tool_call_id": "attention-call",
+                            "tool_input": {"query": "最新消息"},
+                            "result": "检索完成。",
+                            "source": NATIVE_OPENAI,
+                            "timestamp": 101,
+                            "source_id_prefix": "attention-search",
+                            "result_status": "success",
+                        }
+                    ],
+                    turn_id=str(opened["turn_id"]),
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                )
+                trace_ids = [
+                    source_id
+                    for exchange in batch["exchanges"]
+                    for source_id in (exchange["tool_use_source_id"], exchange["tool_result_source_id"])
+                ]
+                engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+                engine.memcore_manager = manager
+                engine.llm = SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "openai_chat")
+                history: list[dict[str, object]] = []
+
+                projected = engine._append_tool_history_batch(
+                    tool_history_turns=history,
+                    items=[
+                        (
+                            {"type": "web_search", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
+                            ToolExecutionResult(tool_type="web_search", followup_context="检索完成。"),
+                            "检索完成。",
+                            "",
+                        )
+                    ],
+                    trace_source_ids=trace_ids,
+                    provider_profile="openai_chat",
+                    profile_user_id="group",
+                    session_id="group",
+                    character_pack_id="char",
+                    memcore_turn_id=str(opened["turn_id"]),
+                    current_user_source_id=str(opened["source_id"]),
+                )
+            finally:
+                manager.close()
+
+        self.assertTrue(opened["ok"], opened)
+        self.assertTrue(projected["ok"], projected)
+        self.assertEqual([item["role"] for item in history], ["assistant", "tool"])
+        self.assertEqual(history[0]["tool_calls"][0]["id"], "attention-call")
+        self.assertEqual(history[1]["tool_call_id"], "attention-call")
 
     def test_parallel_native_tool_wire_is_restored_in_order_on_next_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2606,6 +2681,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
+                    current_user_source_id=str(opened["source_id"]),
                 )
                 self.assertTrue(projected["ok"], projected)
                 image_evidence = next(
@@ -2775,6 +2851,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
+                    current_user_source_id=str(opened["source_id"]),
                 )
                 self.assertTrue(first_projected["ok"], first_projected)
                 self.assertEqual(native_history[0]["content"], "我先把人声和伴奏拆出来。")
@@ -2854,6 +2931,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     profile_user_id="u1",
                     session_id="s1",
                     character_pack_id="char",
+                    current_user_source_id=str(opened["source_id"]),
                 )
                 self.assertTrue(second_projected["ok"], second_projected)
 
