@@ -172,7 +172,7 @@ Duplicate suppression is also local and short-lived: a per-round `seen_tool_call
 `engine_services.tool_rounds.build_adapter_tool_handlers()` merges three sources on demand:
 
 1. `PluginCapabilityToolBridge` projects `PluginHost.capability_descriptors`, an immutable descriptor snapshot captured during plugin activation. Invocation later goes through `PluginHost.invoke_from_consumer()`, which has its own lifecycle-loop, timeout, cancellation, result, and managed-artifact handling.
-2. MCP handlers are rebuilt from profile-scoped `capabilities.yaml`. A cached discovered tool enters the model only when `promptExposed` is true. `McpStdioCapabilityAdapter.descriptor_for_tool()` converts MCP discovery metadata into a capcore descriptor; invocation starts/calls the stdio provider later.
+2. MCP handlers are rebuilt from the Host MCP registry plus the current profile's enablement/approval overlay. A cached discovered tool enters the model only when explicitly pinned or loaded for the current task turn. `McpStdioCapabilityAdapter.descriptor_for_tool()` converts MCP discovery metadata into a capcore descriptor; invocation starts/calls the provider later. The scope contract is frozen in `docs/mcp_scope_contract_v1.md`.
 3. `AkanePythonCapabilityAdapter` owns three local helper descriptors. All currently set `prompt_exposed=False`, so they are catalogued but do not enter the model path.
 
 `AdapterCapabilityToolHandler` validates and checks capcore permission before `adapter.invoke()`, but it has no `capability_status()`. Therefore a cached MCP discovery record or plugin descriptor is treated as ready by the global readiness gate even when the actual provider has disconnected since discovery/activation. Failure is commonly discovered only at invoke time.

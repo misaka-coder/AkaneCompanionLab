@@ -19,6 +19,7 @@ from ..capability_registry import ExecutorBroker
 from ..local_capability_config import (
     check_provider_health,
     get_approval_policy_config,
+    get_effective_mcp_server_configs,
     get_mcp_server_runtime_config,
     get_voice_profile_runtime_config,
     inspect_gpt_sovits_voice_model_folder,
@@ -131,7 +132,11 @@ def build_capabilities_router(
             profile_user_id=profile_user_id,
             provider_configs=provider_config.get("providers", {}),
             workflow_configs=provider_config.get("workflows", {}),
-            mcp_server_configs=provider_config.get("mcpServers", {}),
+            mcp_server_configs=get_effective_mcp_server_configs(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+                profile_config=provider_config,
+            ),
             approval_policy=provider_config.get("approvalPolicy", {}),
             character_voice=character_voice,
         )

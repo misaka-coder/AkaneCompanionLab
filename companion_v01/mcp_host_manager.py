@@ -26,13 +26,17 @@ from .local_capability_config import (
     APPROVAL_MODE_DISABLED,
     _apply_mcp_low_risk_allowlist,
     approval_mode_for_capability,
+    clear_mcp_server_profile_override,
     get_mcp_server_runtime_config,
     list_mcp_server_configs,
     load_capability_config,
+    migrate_legacy_profile_mcp_servers,
     normalize_mcp_tool_discovery_payload,
     normalize_mcp_server_config_payload,
     remove_mcp_server_config,
     save_mcp_server_config,
+    save_mcp_server_discovery,
+    save_mcp_server_profile_enabled,
 )
 from .mcp_stdio_discoverer import (
     _expand_env_placeholders,
@@ -403,6 +407,14 @@ class McpManagementService:
         self.manager = manager
         self._locks_guard = threading.RLock()
         self._server_locks: dict[tuple[str, str], threading.RLock] = {}
+        try:
+            self.migration_status = migrate_legacy_profile_mcp_servers(base_dir=self.base_dir)
+        except Exception:
+            self.migration_status = {
+                "ok": False,
+                "status": "migration_failed",
+                "reason": "legacy_mcp_registry_migration_failed",
+            }
 
     def _server_lock(self, profile_user_id: str, server_id: str) -> threading.RLock:
         key = (str(profile_user_id), str(server_id))
@@ -411,6 +423,7 @@ class McpManagementService:
 
     def list(self, *, profile_user_id: str) -> dict[str, Any]:
         payload = list_mcp_server_configs(base_dir=self.base_dir, profile_user_id=profile_user_id)
+        payload["registryMigration"] = dict(self.migration_status)
         for server in payload.get("mcpServers") or []:
             if not isinstance(server, dict):
                 continue
@@ -512,7 +525,7 @@ class McpManagementService:
         server_id: str,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        with self._server_lock(profile_user_id, server_id):
+        with self._server_lock("__host__", server_id):
             return self._configure_locked(
                 profile_user_id=profile_user_id,
                 server_id=server_id,
@@ -577,6 +590,11 @@ class McpManagementService:
                     reason="" if old else "mcp_config_save_failed",
                 )
             return saved
+        clear_mcp_server_profile_override(
+            base_dir=self.base_dir,
+            profile_user_id=profile_user_id,
+            server_id=server_id,
+        )
         if old and _config_fingerprint(old) != _config_fingerprint(candidate):
             self.manager.stop_server(
                 profile_user_id=profile_user_id,
@@ -600,7 +618,7 @@ class McpManagementService:
         return saved
 
     def discover(self, *, profile_user_id: str, server_id: str) -> dict[str, Any]:
-        with self._server_lock(profile_user_id, server_id):
+        with self._server_lock("__host__", server_id):
             config = get_mcp_server_runtime_config(
                 base_dir=self.base_dir,
                 profile_user_id=profile_user_id,
@@ -613,11 +631,38 @@ class McpManagementService:
                     "serverId": server_id,
                     "reason": "mcp_server_config_missing",
                 }
-            return self._configure_locked(
+            if not config.get("enabled"):
+                return {
+                    "ok": False,
+                    "status": "disabled",
+                    "serverId": server_id,
+                    "reason": "mcp_server_disabled",
+                }
+            try:
+                discovery = self.manager.discover(
+                    profile_user_id=profile_user_id,
+                    server_id=server_id,
+                    server_config=config,
+                )
+            except Exception as exc:
+                diagnostic = build_mcp_failure_diagnostic(exc, stage="list_tools")
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "serverId": server_id,
+                    "reason": mcp_failure_reason(exc, fallback="mcp_tools_list_failed"),
+                    "diagnostic": diagnostic,
+                    "recommendedAction": diagnostic["recommendedAction"],
+                }
+            saved = save_mcp_server_discovery(
+                base_dir=self.base_dir,
                 profile_user_id=profile_user_id,
                 server_id=server_id,
-                payload=config,
+                payload=discovery,
             )
+            if saved.get("ok"):
+                saved["status"] = "ready"
+            return saved
 
     def set_enabled(self, *, profile_user_id: str, server_id: str, enabled: bool) -> dict[str, Any]:
         with self._server_lock(profile_user_id, server_id):
@@ -633,11 +678,20 @@ class McpManagementService:
                     "serverId": server_id,
                     "reason": "mcp_server_config_missing",
                 }
-            return self._configure_locked(
+            result = save_mcp_server_profile_enabled(
+                base_dir=self.base_dir,
                 profile_user_id=profile_user_id,
                 server_id=server_id,
-                payload={**config, "enabled": enabled},
+                enabled=enabled,
             )
+            if result.get("ok") and not enabled:
+                self.manager.stop_server(
+                    profile_user_id=profile_user_id,
+                    server_id=server_id,
+                    server_config=config,
+                    disabled=True,
+                )
+            return result
 
     def restart(self, *, profile_user_id: str, server_id: str) -> dict[str, Any]:
         with self._server_lock(profile_user_id, server_id):
@@ -663,7 +717,7 @@ class McpManagementService:
             return self.discover(profile_user_id=profile_user_id, server_id=server_id)
 
     def remove(self, *, profile_user_id: str, server_id: str) -> dict[str, Any]:
-        with self._server_lock(profile_user_id, server_id):
+        with self._server_lock("__host__", server_id):
             config = get_mcp_server_runtime_config(
                 base_dir=self.base_dir,
                 profile_user_id=profile_user_id,

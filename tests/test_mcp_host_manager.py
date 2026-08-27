@@ -7,7 +7,14 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from companion_v01.local_capability_config import get_mcp_server_runtime_config, normalize_mcp_tool_discovery_payload
+from companion_v01.local_capability_config import (
+    get_mcp_server_runtime_config,
+    load_capability_config,
+    load_host_mcp_server_configs,
+    normalize_mcp_tool_discovery_payload,
+    save_capability_approval_mode,
+    write_capability_config,
+)
 from companion_v01.mcp_host_manager import McpManagementService
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
@@ -81,6 +88,143 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertFalse(saved["tools"][0]["promptExposed"])
         self.assertEqual(saved["activationMode"], "on_demand")
         self.assertIn("demo：Demo tools", self.service.prompt_catalog(profile_user_id="owner"))
+
+    def test_group_install_is_host_visible_in_private_while_enablement_is_profile_scoped(self) -> None:
+        installed = self.service.configure(
+            profile_user_id="qq_group_shared_872732158",
+            server_id="reimu",
+            payload={
+                "enabled": True,
+                "transport": "stdio",
+                "command": "reimu-mcp",
+                "catalogDescription": "Reimu QQ tools",
+            },
+        )
+
+        private = get_mcp_server_runtime_config(
+            base_dir=self.base_dir,
+            profile_user_id="master",
+            server_id="reimu",
+        )
+        private_activation = self.service.activate(
+            profile_user_id="master",
+            server_ids=["reimu"],
+        )
+        disabled_group = self.service.set_enabled(
+            profile_user_id="qq_group_shared_872732158",
+            server_id="reimu",
+            enabled=False,
+        )
+        group_after = get_mcp_server_runtime_config(
+            base_dir=self.base_dir,
+            profile_user_id="qq_group_shared_872732158",
+            server_id="reimu",
+        )
+        private_after = get_mcp_server_runtime_config(
+            base_dir=self.base_dir,
+            profile_user_id="master",
+            server_id="reimu",
+        )
+
+        self.assertTrue(installed["ok"])
+        self.assertEqual(installed["configScope"]["registry"], "host")
+        self.assertEqual(private["command"], "reimu-mcp")
+        self.assertTrue(private["enabled"])
+        self.assertTrue(private_activation["ok"])
+        self.assertEqual(private_activation["scope"], "current_turn")
+        self.assertEqual(disabled_group["scope"], "profile")
+        self.assertFalse(group_after["enabled"])
+        self.assertTrue(private_after["enabled"])
+        self.assertNotIn("reimu：", self.service.prompt_catalog(profile_user_id="qq_group_shared_872732158"))
+        self.assertIn("reimu：Reimu QQ tools", self.service.prompt_catalog(profile_user_id="master"))
+
+        save_capability_approval_mode(
+            base_dir=self.base_dir,
+            profile_user_id="master",
+            capability_id="mcp.family",
+            mode="disabled",
+        )
+        self.assertEqual(self.service.prompt_catalog(profile_user_id="master"), "")
+        self.assertFalse(
+            self.service.activate(profile_user_id="master", server_ids=["reimu"])["ok"]
+        )
+
+    def test_legacy_profile_mcp_is_promoted_without_copying_it_to_other_profiles(self) -> None:
+        legacy_profile = "qq_group_shared_872732158"
+        write_capability_config(
+            base_dir=self.base_dir,
+            profile_user_id=legacy_profile,
+            config={
+                "schemaVersion": 1,
+                "mcpServers": {
+                    "legacy": {
+                        "enabled": True,
+                        "transport": "stdio",
+                        "command": "legacy-mcp",
+                    }
+                },
+            },
+        )
+
+        service = McpManagementService(base_dir=self.base_dir, manager=self.manager)
+        host = load_host_mcp_server_configs(base_dir=self.base_dir)
+        migrated_profile = load_capability_config(
+            base_dir=self.base_dir,
+            profile_user_id=legacy_profile,
+        )
+
+        self.assertEqual(service.migration_status["status"], "migrated")
+        self.assertEqual(host["mcpServers"]["legacy"]["command"], "legacy-mcp")
+        self.assertEqual(migrated_profile["mcpServers"], {})
+        self.assertEqual(
+            get_mcp_server_runtime_config(
+                base_dir=self.base_dir,
+                profile_user_id="master",
+                server_id="legacy",
+            )["command"],
+            "legacy-mcp",
+        )
+
+    def test_conflicting_legacy_server_ids_are_not_silently_promoted(self) -> None:
+        for profile_id, command in (("alice", "alice-mcp"), ("bob", "bob-mcp")):
+            write_capability_config(
+                base_dir=self.base_dir,
+                profile_user_id=profile_id,
+                config={
+                    "schemaVersion": 1,
+                    "mcpServers": {
+                        "shared-name": {
+                            "enabled": True,
+                            "transport": "stdio",
+                            "command": command,
+                        }
+                    },
+                },
+            )
+
+        service = McpManagementService(base_dir=self.base_dir, manager=self.manager)
+
+        self.assertEqual(service.migration_status["conflicts"], ["shared-name"])
+        self.assertNotIn(
+            "shared-name",
+            load_host_mcp_server_configs(base_dir=self.base_dir)["mcpServers"],
+        )
+        self.assertEqual(
+            get_mcp_server_runtime_config(
+                base_dir=self.base_dir,
+                profile_user_id="alice",
+                server_id="shared-name",
+            )["command"],
+            "alice-mcp",
+        )
+        self.assertEqual(
+            get_mcp_server_runtime_config(
+                base_dir=self.base_dir,
+                profile_user_id="bob",
+                server_id="shared-name",
+            )["command"],
+            "bob-mcp",
+        )
 
     def test_secret_named_env_accepts_placeholder_but_rejects_literal(self) -> None:
         accepted = self.service.configure(

@@ -22,6 +22,7 @@ from capcore import resolve_permission as capcore_resolve_permission
 
 CONFIG_SCHEMA_VERSION = 1
 PROFILE_CONFIG_PATH_TEMPLATE = "users_data/<profile_user_id>/capabilities/capabilities.yaml"
+HOST_MCP_REGISTRY_PATH_TEMPLATE = "users_data/capabilities/mcp_servers.yaml"
 PROFILE_ID_SAFE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 APPROVAL_MODE_TRUSTED_AUTO_ALLOW = "trusted_auto_allow"
@@ -93,6 +94,12 @@ PRIVATE_MCP_SERVER_FIELDS = {
     "lowRiskAllowlist",
     "lastDiscovery",
     "updatedAt",
+}
+MCP_PROFILE_OVERRIDE_FIELDS = {
+    "enabled",
+    "activationMode",
+    "pinnedTools",
+    "lowRiskAllowlist",
 }
 PUBLIC_APPROVAL_POLICY_FIELDS = {"defaultMode", "capabilityModes", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
@@ -955,15 +962,303 @@ def get_voice_profile_runtime_config(
     return result
 
 
+def load_host_mcp_server_configs(*, base_dir: Path | str | None) -> dict[str, Any]:
+    """Load the Host-wide MCP registry.
+
+    Server installation and discovery belong to the Host.  Profile-specific
+    policy remains in each profile capability config and is applied separately
+    by :func:`get_effective_mcp_server_configs`.
+    """
+
+    path = _host_mcp_registry_path(base_dir)
+    if path is None or not path.exists():
+        return {
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "configStatus": "missing",
+            "mcpServers": {},
+            "warnings": [],
+        }
+    try:
+        raw = _parse_capability_config_payload(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "configStatus": "invalid_config",
+            "reason": "host_mcp_registry_invalid",
+            "mcpServers": {},
+            "warnings": [{"status": "invalid_config", "reason": "host_mcp_registry_invalid"}],
+        }
+    if not isinstance(raw, Mapping):
+        return {
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "configStatus": "invalid_config",
+            "reason": "host_mcp_registry_root_must_be_object",
+            "mcpServers": {},
+            "warnings": [
+                {"status": "invalid_config", "reason": "host_mcp_registry_root_must_be_object"}
+            ],
+        }
+    servers, warnings = _sanitize_mcp_server_configs(raw.get("mcpServers"))
+    return {
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "configStatus": "partial_invalid_config" if warnings else "available",
+        "mcpServers": servers,
+        "warnings": warnings,
+    }
+
+
+def write_host_mcp_server_configs(
+    *,
+    base_dir: Path | str | None,
+    mcp_servers: Mapping[str, Any],
+) -> None:
+    path = _host_mcp_registry_path(base_dir)
+    if path is None:
+        return
+    servers, _warnings = _sanitize_mcp_server_configs(mcp_servers)
+    payload = {
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "mcpServers": {
+            server_id: {
+                key: value
+                for key, value in server.items()
+                if key in PRIVATE_MCP_SERVER_FIELDS and value not in (None, "", [], {})
+            }
+            for server_id, server in sorted(servers.items())
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        tmp_path = Path(handle.name)
+        handle.write(text)
+    tmp_path.replace(path)
+
+
+def get_effective_mcp_server_configs(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    profile_config: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return Host registrations with the current profile's small overlay.
+
+    Legacy profile-local registrations remain a read fallback only during the
+    documented migration window.  They never override an existing Host entry.
+    """
+
+    host = load_host_mcp_server_configs(base_dir=base_dir)
+    profile = (
+        dict(profile_config)
+        if isinstance(profile_config, Mapping)
+        else load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    )
+    servers = {
+        str(server_id): dict(server)
+        for server_id, server in (host.get("mcpServers") or {}).items()
+        if isinstance(server, Mapping)
+    }
+    for server_id, server in (profile.get("mcpServers") or {}).items():
+        if server_id not in servers and isinstance(server, Mapping):
+            servers[str(server_id)] = dict(server)
+    overrides = profile.get("mcpServerOverrides") or {}
+    for server_id, override in overrides.items():
+        if server_id in servers and isinstance(override, Mapping):
+            servers[server_id] = {
+                **servers[server_id],
+                **{key: value for key, value in override.items() if key in MCP_PROFILE_OVERRIDE_FIELDS},
+            }
+    for server_id, server in list(servers.items()):
+        allowlist = _safe_mcp_tool_name_list(server.get("lowRiskAllowlist"))
+        tools = server.get("tools") if isinstance(server.get("tools"), list) else []
+        if tools:
+            servers[server_id] = {
+                **server,
+                "tools": [_apply_mcp_low_risk_allowlist(tool, allowlist) for tool in tools],
+            }
+    return servers
+
+
+def save_mcp_server_profile_enabled(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
+    host_servers = load_host_mcp_server_configs(base_dir=base_dir).get("mcpServers") or {}
+    profile = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if safe_server_id not in host_servers and safe_server_id not in (profile.get("mcpServers") or {}):
+        return {
+            "ok": False,
+            "status": "not_found",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_config_missing",
+        }
+    overrides = dict(profile.get("mcpServerOverrides") or {})
+    overrides[safe_server_id] = {
+        **dict(overrides.get(safe_server_id) or {}),
+        "enabled": bool(enabled),
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={**profile, "mcpServerOverrides": overrides},
+    )
+    effective = get_effective_mcp_server_configs(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+    ).get(safe_server_id, {})
+    return {
+        "ok": True,
+        "status": "ready" if bool(enabled) else "disabled",
+        "serverId": safe_server_id,
+        "scope": "profile",
+        "configScope": _public_mcp_config_scope(profile_user_id),
+        "mcpServer": build_mcp_server_config_entry(safe_server_id, effective),
+        "refresh": True,
+    }
+
+
+def clear_mcp_server_profile_override(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+) -> None:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return
+    profile = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    overrides = dict(profile.get("mcpServerOverrides") or {})
+    if overrides.pop(safe_server_id, None) is None:
+        return
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={**profile, "mcpServerOverrides": overrides},
+    )
+
+
+def migrate_legacy_profile_mcp_servers(*, base_dir: Path | str | None) -> dict[str, Any]:
+    """Promote unambiguous legacy per-profile MCP registrations once.
+
+    Equal endpoint definitions collapse into one Host entry.  A server id that
+    points at different endpoints is deliberately left profile-local for manual
+    resolution instead of silently choosing one credential or executable.
+    """
+
+    root = Path(base_dir).resolve() if base_dir is not None else None
+    if root is None or not root.exists():
+        return {"ok": True, "status": "no_config_root", "promoted": 0, "conflicts": []}
+    host_payload = load_host_mcp_server_configs(base_dir=root)
+    if host_payload.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": host_payload.get("reason") or "host_mcp_registry_invalid",
+        }
+    host_servers = dict(host_payload.get("mcpServers") or {})
+    candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    profile_configs: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.glob("*/capabilities/capabilities.yaml")):
+        profile_id = path.parent.parent.name
+        config = load_capability_config(base_dir=root, profile_user_id=profile_id)
+        if config.get("configStatus") == "invalid_config":
+            continue
+        legacy = config.get("mcpServers") or {}
+        if not legacy:
+            continue
+        profile_configs[profile_id] = config
+        for server_id, server in legacy.items():
+            if isinstance(server, Mapping):
+                candidates.setdefault(str(server_id), []).append((profile_id, dict(server)))
+
+    promoted_ids: set[str] = set()
+    conflicts: list[str] = []
+    for server_id, rows in sorted(candidates.items()):
+        endpoint_groups = {_mcp_server_endpoint_identity(server) for _profile, server in rows}
+        existing = host_servers.get(server_id)
+        if existing is not None:
+            endpoint_groups.add(_mcp_server_endpoint_identity(existing))
+        if len(endpoint_groups) != 1:
+            conflicts.append(server_id)
+            continue
+        chosen = max(rows, key=lambda row: str(row[1].get("updatedAt") or ""))[1]
+        if existing is None:
+            host_servers[server_id] = chosen
+        promoted_ids.add(server_id)
+
+    if promoted_ids:
+        write_host_mcp_server_configs(base_dir=root, mcp_servers=host_servers)
+        for profile_id, config in profile_configs.items():
+            legacy = dict(config.get("mcpServers") or {})
+            overrides = dict(config.get("mcpServerOverrides") or {})
+            changed = False
+            for server_id in sorted(promoted_ids.intersection(legacy)):
+                old = dict(legacy.pop(server_id))
+                shared = host_servers.get(server_id) or {}
+                differing = {
+                    key: old.get(key)
+                    for key in MCP_PROFILE_OVERRIDE_FIELDS
+                    if key in old and old.get(key) != shared.get(key)
+                }
+                if differing:
+                    overrides[server_id] = {**dict(overrides.get(server_id) or {}), **differing}
+                changed = True
+            if changed:
+                write_capability_config(
+                    base_dir=root,
+                    profile_user_id=profile_id,
+                    config={**config, "mcpServers": legacy, "mcpServerOverrides": overrides},
+                )
+    return {
+        "ok": True,
+        "status": "migrated" if promoted_ids else "unchanged",
+        "promoted": len(promoted_ids),
+        "conflicts": conflicts,
+    }
+
+
+def _remove_mcp_profile_state(*, base_dir: Path | str | None, server_id: str) -> None:
+    root = Path(base_dir).resolve() if base_dir is not None else None
+    if root is None or not root.exists():
+        return
+    for path in sorted(root.glob("*/capabilities/capabilities.yaml")):
+        profile_id = path.parent.parent.name
+        config = load_capability_config(base_dir=root, profile_user_id=profile_id)
+        if config.get("configStatus") == "invalid_config":
+            continue
+        legacy = dict(config.get("mcpServers") or {})
+        overrides = dict(config.get("mcpServerOverrides") or {})
+        changed = legacy.pop(server_id, None) is not None
+        changed = overrides.pop(server_id, None) is not None or changed
+        if changed:
+            write_capability_config(
+                base_dir=root,
+                profile_user_id=profile_id,
+                config={**config, "mcpServers": legacy, "mcpServerOverrides": overrides},
+            )
+
+
 def list_mcp_server_configs(
     *,
     base_dir: Path | str | None,
     profile_user_id: str,
 ) -> dict[str, Any]:
     config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    host = load_host_mcp_server_configs(base_dir=base_dir)
+    effective_servers = get_effective_mcp_server_configs(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        profile_config=config,
+    )
     servers = [
         build_mcp_server_config_entry(server_id, server_config)
-        for server_id, server_config in sorted((config.get("mcpServers") or {}).items())
+        for server_id, server_config in sorted(effective_servers.items())
     ]
     return {
         "ok": True,
@@ -971,9 +1266,9 @@ def list_mcp_server_configs(
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "generatedAt": _now_iso(),
         "execution": "config-skeleton",
-        "configStatus": config.get("configStatus") or "available",
-        "warnings": list(config.get("warnings") or []),
-        "configScope": _public_config_scope(profile_user_id),
+        "configStatus": host.get("configStatus") or "available",
+        "warnings": [*list(host.get("warnings") or []), *list(config.get("warnings") or [])],
+        "configScope": _public_mcp_config_scope(profile_user_id),
         "mcpServers": servers,
         "summary": _summarize_mcp_server_entries(servers),
     }
@@ -999,17 +1294,17 @@ def save_mcp_server_config(
             "reason": normalized.get("reason") or "invalid_mcp_server_config",
         }
 
-    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
-    if config.get("configStatus") == "invalid_config":
+    host = load_host_mcp_server_configs(base_dir=base_dir)
+    if host.get("configStatus") == "invalid_config":
         return {
             "ok": False,
             "status": "invalid_config",
             "serverId": safe_server_id,
-            "reason": config.get("reason") or "provider_config_file_invalid",
-            "configScope": _public_config_scope(profile_user_id),
+            "reason": host.get("reason") or "host_mcp_registry_invalid",
+            "configScope": _public_mcp_config_scope(profile_user_id),
         }
 
-    servers = dict(config.get("mcpServers") or {})
+    servers = dict(host.get("mcpServers") or {})
     existing = servers.get(safe_server_id) if isinstance(servers.get(safe_server_id), Mapping) else {}
     low_risk_allowlist = _safe_mcp_tool_name_list(normalized.get("lowRiskAllowlist"))
     next_server = {
@@ -1066,23 +1361,13 @@ def save_mcp_server_config(
     elif same_endpoint and isinstance(existing.get("lastDiscovery"), Mapping):
         next_server["lastDiscovery"] = dict(existing.get("lastDiscovery") or {})
     servers[safe_server_id] = next_server
-    write_capability_config(
-        base_dir=base_dir,
-        profile_user_id=profile_user_id,
-        config={
-            "schemaVersion": CONFIG_SCHEMA_VERSION,
-            "providers": config.get("providers", {}),
-            "workflows": config.get("workflows", {}),
-            "voiceProfiles": config.get("voiceProfiles", {}),
-            "mcpServers": servers,
-        },
-    )
+    write_host_mcp_server_configs(base_dir=base_dir, mcp_servers=servers)
     return {
         "ok": True,
         "status": "saved",
         "serverId": safe_server_id,
         "autoEnable": False,
-        "configScope": _public_config_scope(profile_user_id),
+        "configScope": _public_mcp_config_scope(profile_user_id),
         "mcpServer": build_mcp_server_config_entry(safe_server_id, next_server),
     }
 
@@ -1096,8 +1381,8 @@ def remove_mcp_server_config(
     safe_server_id = _safe_mcp_server_id(server_id)
     if not safe_server_id:
         return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
-    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
-    servers = dict(config.get("mcpServers") or {})
+    host = load_host_mcp_server_configs(base_dir=base_dir)
+    servers = dict(host.get("mcpServers") or {})
     if safe_server_id not in servers:
         return {
             "ok": False,
@@ -1106,17 +1391,8 @@ def remove_mcp_server_config(
             "reason": "mcp_server_config_missing",
         }
     servers.pop(safe_server_id, None)
-    write_capability_config(
-        base_dir=base_dir,
-        profile_user_id=profile_user_id,
-        config={
-            "schemaVersion": CONFIG_SCHEMA_VERSION,
-            "providers": config.get("providers", {}),
-            "workflows": config.get("workflows", {}),
-            "voiceProfiles": config.get("voiceProfiles", {}),
-            "mcpServers": servers,
-        },
-    )
+    write_host_mcp_server_configs(base_dir=base_dir, mcp_servers=servers)
+    _remove_mcp_profile_state(base_dir=base_dir, server_id=safe_server_id)
     return {
         "ok": True,
         "status": "removed",
@@ -1135,8 +1411,10 @@ def get_mcp_server_runtime_config(
     safe_server_id = _safe_mcp_server_id(server_id)
     if not safe_server_id:
         return {}
-    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
-    server = config.get("mcpServers", {}).get(safe_server_id)
+    server = get_effective_mcp_server_configs(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+    ).get(safe_server_id)
     if not isinstance(server, Mapping):
         return {}
     return {
@@ -1170,21 +1448,14 @@ def save_mcp_server_discovery(
     safe_server_id = _safe_mcp_server_id(server_id)
     if not safe_server_id:
         return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
-    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
-    server = config.get("mcpServers", {}).get(safe_server_id)
+    host = load_host_mcp_server_configs(base_dir=base_dir)
+    server = (host.get("mcpServers") or {}).get(safe_server_id)
     if not isinstance(server, Mapping):
         return {
             "ok": False,
             "status": "missing_config",
             "serverId": safe_server_id,
             "reason": "mcp_server_config_missing",
-        }
-    if server.get("enabled") is False:
-        return {
-            "ok": False,
-            "status": "disabled",
-            "serverId": safe_server_id,
-            "reason": "mcp_server_disabled",
         }
     normalized = normalize_mcp_tool_discovery_payload(safe_server_id, payload)
     if not normalized["ok"]:
@@ -1200,23 +1471,13 @@ def save_mcp_server_discovery(
         "discoveredAt": _now_iso(),
         "toolCount": len(normalized["tools"]),
     }
-    servers = dict(config.get("mcpServers") or {})
+    servers = dict(host.get("mcpServers") or {})
     servers[safe_server_id] = {
         **server,
         "tools": normalized["tools"],
         "lastDiscovery": last_discovery,
     }
-    write_capability_config(
-        base_dir=base_dir,
-        profile_user_id=profile_user_id,
-        config={
-            "schemaVersion": CONFIG_SCHEMA_VERSION,
-            "providers": config.get("providers", {}),
-            "workflows": config.get("workflows", {}),
-            "voiceProfiles": config.get("voiceProfiles", {}),
-            "mcpServers": servers,
-        },
-    )
+    write_host_mcp_server_configs(base_dir=base_dir, mcp_servers=servers)
     return {
         "ok": True,
         "status": "discovered",
@@ -2473,6 +2734,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "mcpServerOverrides": {},
             "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [],
         }
@@ -2488,6 +2750,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "mcpServerOverrides": {},
             "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [{"status": "invalid_config", "reason": "provider_config_file_invalid_json"}],
         }
@@ -2500,6 +2763,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
             "workflows": {},
             "voiceProfiles": {},
             "mcpServers": {},
+            "mcpServerOverrides": {},
             "approvalPolicy": normalize_approval_policy_config({}),
             "warnings": [{"status": "invalid_config", "reason": "provider_config_root_must_be_object"}],
         }
@@ -2507,8 +2771,17 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
     workflows, workflow_warnings = _sanitize_workflow_configs(data.get("workflows"))
     voice_profiles, voice_profile_warnings = _sanitize_voice_profile_configs(data.get("voiceProfiles"))
     mcp_servers, mcp_server_warnings = _sanitize_mcp_server_configs(data.get("mcpServers"))
+    mcp_server_overrides, mcp_override_warnings = _sanitize_mcp_server_overrides(
+        data.get("mcpServerOverrides")
+    )
     approval_policy = normalize_approval_policy_config(data.get("approvalPolicy"))
-    warnings = [*provider_warnings, *workflow_warnings, *voice_profile_warnings, *mcp_server_warnings]
+    warnings = [
+        *provider_warnings,
+        *workflow_warnings,
+        *voice_profile_warnings,
+        *mcp_server_warnings,
+        *mcp_override_warnings,
+    ]
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "configStatus": "partial_invalid_config" if warnings else "available",
@@ -2516,6 +2789,7 @@ def load_capability_config(*, base_dir: Path | str | None, profile_user_id: str)
         "workflows": workflows,
         "voiceProfiles": voice_profiles,
         "mcpServers": mcp_servers,
+        "mcpServerOverrides": mcp_server_overrides,
         "approvalPolicy": approval_policy,
         "warnings": warnings,
     }
@@ -2527,13 +2801,18 @@ def write_capability_config(*, base_dir: Path | str | None, profile_user_id: str
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     writable_config = dict(config)
-    if "approvalPolicy" not in writable_config and path.exists():
+    if path.exists() and (
+        "approvalPolicy" not in writable_config or "mcpServerOverrides" not in writable_config
+    ):
         try:
             raw_existing = _parse_capability_config_payload(path.read_text(encoding="utf-8"))
         except Exception:
             raw_existing = {}
         if isinstance(raw_existing, Mapping):
-            writable_config["approvalPolicy"] = raw_existing.get("approvalPolicy")
+            if "approvalPolicy" not in writable_config:
+                writable_config["approvalPolicy"] = raw_existing.get("approvalPolicy")
+            if "mcpServerOverrides" not in writable_config:
+                writable_config["mcpServerOverrides"] = raw_existing.get("mcpServerOverrides")
     payload = json.dumps(_config_for_write(writable_config), ensure_ascii=False, indent=2, sort_keys=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
         tmp_path = Path(handle.name)
@@ -2563,6 +2842,16 @@ def _profile_config_path(base_dir: Path | str | None, profile_user_id: str) -> P
     return path
 
 
+def _host_mcp_registry_path(base_dir: Path | str | None) -> Path | None:
+    if base_dir is None:
+        return None
+    root = Path(base_dir).resolve()
+    path = (root / "capabilities" / "mcp_servers.yaml").resolve()
+    if root not in path.parents:
+        return None
+    return path
+
+
 def _safe_profile_id(profile_user_id: str) -> str:
     raw = str(profile_user_id or "").strip() or "default"
     safe = "".join(ch if ch in PROFILE_ID_SAFE_CHARS else "_" for ch in raw)
@@ -2574,6 +2863,15 @@ def _public_config_scope(profile_user_id: str) -> dict[str, Any]:
     return {
         "profileUserId": _safe_profile_id(profile_user_id),
         "explicitConfigPath": PROFILE_CONFIG_PATH_TEMPLATE,
+    }
+
+
+def _public_mcp_config_scope(profile_user_id: str) -> dict[str, Any]:
+    return {
+        "registry": "host",
+        "registryPath": HOST_MCP_REGISTRY_PATH_TEMPLATE,
+        "profileOverlayUserId": _safe_profile_id(profile_user_id),
+        "profileOverlayPath": PROFILE_CONFIG_PATH_TEMPLATE,
     }
 
 
@@ -2815,6 +3113,35 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
     return servers, warnings
 
 
+def _sanitize_mcp_server_overrides(
+    raw_overrides: Any,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    if raw_overrides in (None, ""):
+        return {}, []
+    if not isinstance(raw_overrides, Mapping):
+        return {}, [{"status": "invalid_config", "reason": "mcp_server_overrides_must_be_object"}]
+    overrides: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, Any]] = []
+    for raw_server_id, raw_override in raw_overrides.items():
+        server_id = _safe_mcp_server_id(raw_server_id)
+        if not server_id or not isinstance(raw_override, Mapping):
+            warnings.append({"status": "invalid_config", "reason": "mcp_server_override_invalid"})
+            continue
+        override: dict[str, Any] = {}
+        if "enabled" in raw_override:
+            override["enabled"] = bool(raw_override.get("enabled"))
+        if "activationMode" in raw_override:
+            activation_mode = str(raw_override.get("activationMode") or "on_demand").strip().lower()
+            override["activationMode"] = activation_mode if activation_mode in {"on_demand", "pinned"} else "on_demand"
+        if "pinnedTools" in raw_override:
+            override["pinnedTools"] = _safe_mcp_tool_name_list(raw_override.get("pinnedTools"))
+        if "lowRiskAllowlist" in raw_override:
+            override["lowRiskAllowlist"] = _safe_mcp_tool_name_list(raw_override.get("lowRiskAllowlist"))
+        if override:
+            overrides[server_id] = override
+    return overrides, warnings
+
+
 def _sanitize_provider_config_entry(
     spec: ProviderConfigSpec,
     raw_config: Any,
@@ -2981,6 +3308,12 @@ def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
             for key, value in server_config.items()
             if key in PRIVATE_MCP_SERVER_FIELDS and value not in (None, "", [], {})
         }
+    raw_mcp_overrides = (
+        config.get("mcpServerOverrides")
+        if isinstance(config.get("mcpServerOverrides"), Mapping)
+        else {}
+    )
+    mcp_overrides, _mcp_override_warnings = _sanitize_mcp_server_overrides(raw_mcp_overrides)
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "approvalPolicy": {
@@ -2992,6 +3325,7 @@ def _config_for_write(config: Mapping[str, Any]) -> dict[str, Any]:
         "workflows": write_workflows,
         "voiceProfiles": write_voice_profiles,
         "mcpServers": write_mcp_servers,
+        "mcpServerOverrides": mcp_overrides,
     }
 
 

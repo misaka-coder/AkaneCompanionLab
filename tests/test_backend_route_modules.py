@@ -4079,7 +4079,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertNotIn("bearer", saved.text.lower())
             self.assertNotIn("anysearch_api_key", saved.text.lower())
 
-            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_path = Path(temp_dir) / "capabilities" / "mcp_servers.yaml"
             self.assertIn("${ANYSEARCH_API_KEY}", config_path.read_text(encoding="utf-8"))
 
             discovered = client.post(
