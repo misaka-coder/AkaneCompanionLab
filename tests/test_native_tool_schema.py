@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from memcore import build_native_memory_tool_specs
+from capcore import CapabilityToolSpec
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01 import capability_registry
@@ -32,6 +33,7 @@ from companion_v01.tool_runtime import (
     TOOL_SPEC_BY_TYPE,
     TranscribeMediaToolHandler,
 )
+from companion_v01.tool_handlers.catalog import build_builtin_tool_handlers
 
 
 class NativeToolSchemaTests(unittest.TestCase):
@@ -53,29 +55,32 @@ class NativeToolSchemaTests(unittest.TestCase):
         class FakeHandler:
             tool_type = "web_search"
 
-            def build_prompt_instruction(self) -> str:
-                return "- web_search：搜索公开网页，参数为 query 和 max_results。"
+            def tool_spec(self):
+                return TOOL_SPEC_BY_TYPE["web_search"]
 
         specs = build_openai_native_tool_specs({"web_search": FakeHandler()})
 
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0]["type"], "function")
         self.assertEqual(specs[0]["function"]["name"], "web_search")
-        self.assertIn("搜索公开网页", specs[0]["function"]["description"])
+        self.assertEqual(
+            specs[0]["function"]["description"],
+            TOOL_SPEC_BY_TYPE["web_search"].description,
+        )
         self.assertEqual(specs[0]["function"]["parameters"]["type"], "object")
 
-    def test_build_openai_native_tool_specs_filters_allowed_and_invalid_names(self) -> None:
+    def test_build_openai_native_tool_specs_filters_allowed_names(self) -> None:
         class SearchHandler:
             tool_type = "web_search"
 
-            def build_prompt_instruction(self) -> str:
-                return "search"
+            def tool_spec(self):
+                return TOOL_SPEC_BY_TYPE["web_search"]
 
         class BadHandler:
             tool_type = "bad.tool"
 
-            def build_prompt_instruction(self) -> str:
-                return "bad"
+            def tool_spec(self):
+                return None
 
         specs = build_openai_native_tool_specs(
             {
@@ -87,6 +92,61 @@ class NativeToolSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual([item["function"]["name"] for item in specs], ["web_search"])
+
+    def test_native_projection_does_not_reconstruct_legacy_handler_semantics(self) -> None:
+        class LegacyOnlyHandler:
+            tool_type = "legacy_only"
+
+            def tool_metadata(self):
+                return TOOL_METADATA_BY_TYPE["web_search"]
+
+            def build_prompt_instruction(self) -> str:
+                return "legacy prose must not become a native schema"
+
+        self.assertEqual(
+            build_openai_native_tool_specs({"legacy_only": LegacyOnlyHandler()}),
+            [],
+        )
+
+    def test_every_builtin_handler_has_a_canonical_capcore_tool_spec(self) -> None:
+        execution_provider = type("ExecutionProvider", (), {"workspace_root": None})()
+        handlers = build_builtin_tool_handlers(
+            store=object(),
+            npc_runtime=object(),
+            gift_service=object(),
+            artifact_service=object(),
+            persona_card_service=object(),
+            sticker_assets=object(),
+            capability_offer_source=object(),
+            capability_config_base_dir=".",
+            memory_timeline_service=object(),
+            context_libraries=object(),
+            attachment_service=object(),
+            image_material_resolver=object(),
+            task_workspace_service=object(),
+            workspace_file_service=object(),
+            attachment_ingest_service=object(),
+            generated_file_service=object(),
+            image_generation_service=object(),
+            cover_song_service=object(),
+            task_worker_service=object(),
+            retrieve_fn=lambda *_args, **_kwargs: None,
+            describe_scene=lambda *_args, **_kwargs: None,
+            build_npc_followup_context=lambda *_args, **_kwargs: None,
+            observe_gift_image_fn=lambda *_args, **_kwargs: None,
+            skill_registry=object(),
+            execution_provider=execution_provider,
+            approval_store=object(),
+            project_workspace_service=object(),
+        )
+
+        missing = [
+            name
+            for name, handler in handlers.items()
+            if not isinstance(handler.tool_spec(), CapabilityToolSpec)
+        ]
+        self.assertEqual(len(handlers), 63)
+        self.assertEqual(missing, [])
 
     def test_build_openai_native_tool_specs_prefers_metadata_input_schema(self) -> None:
         class MemoryHandler:

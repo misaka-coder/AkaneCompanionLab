@@ -90,6 +90,12 @@ No fourth coordinator was added. The remaining Akane code is product binding:
 profile/session ids, permission configuration, tool selection, runtime calls,
 and authenticated OneBot transport.
 
+The second-host comparison also showed that no shared coordinator/helper was
+needed for native schema projection. Akane's old fallback that inferred a new
+native schema from legacy handler metadata or prompt prose has been removed.
+Every production handler now has to provide a canonical CapCore `ToolSpec`, and
+the OpenAI provider package alone serializes that contract.
+
 This second-host pass also removes an old trace-storage mismatch: executable
 path arguments are no longer dropped by field name before MemCore projection.
 Credential-shaped arguments remain filtered. Private transport/cache/database

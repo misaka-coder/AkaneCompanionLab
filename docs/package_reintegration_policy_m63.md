@@ -341,7 +341,10 @@ Three-core production slice:
 Current Akane use:
 
 - `companion_v01/native_tool_schema.py` delegates OpenAI tool schema envelope
-  generation to `build_openai_chat_tool_set`.
+  generation to `build_openai_chat_tool_set`. Native projection requires the
+  handler's canonical CapCore `CapabilityToolSpec`; the former fallback that
+  rebuilt schema/risk/description from legacy metadata or prompt prose is
+  deleted.
 - `companion_v01/llm_runtime.py` delegates OpenAI non-streaming and streaming
   tool-call parsing to provider package parsers.
 
