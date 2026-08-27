@@ -12,14 +12,13 @@ from typing import Any, Mapping
 
 import config
 from capcore import (
-    build_permission_request as capcore_build_permission_request,
     build_tool_spec as capcore_build_tool_spec,
-    validate_invocation_args as capcore_validate_invocation_args,
+    prepare_invocation as capcore_prepare_invocation,
 )
 from ..capcore_runtime import (
+    approval_policy_for_capability as capcore_approval_policy_for_capability,
     approval_required_event as capcore_approval_required_event,
     invocation_context_from_execution as capcore_invocation_context_from_execution,
-    resolve_permission_for_profile as capcore_resolve_permission_for_profile,
 )
 from ..capability_adapters import CapabilityProtocolError, InvocationContext
 from ..desktop_satellite_specs import desktop_satellite_spec
@@ -237,21 +236,24 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         raw_args = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {}
-        validation = capcore_validate_invocation_args(self.descriptor, raw_args)
-        if not validation.ok:
-            return self._validation_failed(validation)
-        normalized_args = dict(validation.normalized_args)
-        request = capcore_build_permission_request(
+        invocation_context = capcore_invocation_context_from_execution(context)
+        prepared = capcore_prepare_invocation(
             self.descriptor,
-            normalized_args,
-            capcore_invocation_context_from_execution(context),
+            raw_args,
+            invocation_context,
+            capcore_approval_policy_for_capability(
+                base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
+                profile_user_id=context.profile_user_id,
+                capability_id=self.tool_type,
+            ),
         )
-        decision = capcore_resolve_permission_for_profile(
-            request,
-            base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
-            profile_user_id=context.profile_user_id,
-        )
-        if not decision.allowed:
+        if not prepared.validation.ok:
+            return self._validation_failed(prepared.validation)
+        normalized_args = dict(prepared.normalized_args)
+        decision = prepared.permission_decision
+        if not prepared.ok:
+            if decision is None:
+                return self._blocked_by_policy("permission_decision_missing")
             if decision.requires_user_decision:
                 return self._approval_required(decision=decision, context=context)
             return self._blocked_by_policy(decision.reason)

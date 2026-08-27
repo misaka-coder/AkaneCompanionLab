@@ -302,6 +302,10 @@ Current Akane use:
   until capcore validation. Akane removes only outer host transport metadata;
   compact redaction is restricted to capcore-owned permission previews and
   never mutates the arguments sent to MCP, Python, or plugin adapters.
+- Dynamic MCP, Python, and plugin handlers enter capcore through the single
+  public `prepare_invocation()` gate. Akane resolves the effective profile and
+  per-capability approval mode before that call, then owns only approval event
+  rendering and concrete adapter execution.
 - `companion_v01/capability_adapters/types.py`,
   `protocol.py`, and `manifest_loader.py` are compatibility re-export layers.
 

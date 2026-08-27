@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from capcore import prepare_invocation
+
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
 from companion_v01.local_capability_config import save_approval_policy_config, save_mcp_server_config
 from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
@@ -484,7 +486,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
             saved = save_approval_policy_config(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                payload={
+                    "defaultMode": "ask_each_time",
+                    "capabilityModes": {"mcp.demo.echo": "trusted_auto_allow"},
+                },
             )
             self.assertTrue(saved["ok"])
             adapter = FakeAdapter()
@@ -505,6 +510,73 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["type"], "adapter_capability_completed")
         self.assertEqual(result.stream_events[0]["status"], "ok")
         self.assertIn("done", result.followup_context)
+
+    def test_adapter_capability_enters_capcore_prepare_gate_once(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        adapter = FakeAdapter()
+        handler = AdapterCapabilityToolHandler(
+            capability_id="mcp.demo.echo",
+            adapter=adapter,
+            descriptor=self._descriptor(),
+            config_base_dir="unused",
+        )
+
+        with patch(
+            "companion_v01.tool_handlers.adapters.capcore_prepare_invocation",
+            wraps=prepare_invocation,
+        ) as gate:
+            result = handler.execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        gate.assert_called_once()
+        self.assertEqual(gate.call_args.args[1], {"text": "hello"})
+        self.assertEqual(adapter.calls[0]["args"], {"text": "hello"})
+        self.assertEqual(result.stream_events[0]["status"], "ok")
+
+    def test_adapter_capability_per_capability_disabled_policy_blocks_execution(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={
+                    "defaultMode": "trusted_auto_allow",
+                    "capabilityModes": {"mcp.demo.echo": "disabled"},
+                },
+            )
+            self.assertTrue(saved["ok"])
+            adapter = FakeAdapter()
+            handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=adapter,
+                descriptor=self._descriptor(risk="high", confirm="always"),
+                config_base_dir=temp_dir,
+            )
+
+            result = handler.execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(result.stream_events[0]["status"], "blocked")
+        self.assertEqual(result.stream_events[0]["reason"], "capability_disabled_by_policy")
 
     def test_adapter_capability_projects_only_safe_provider_identity(self) -> None:
         class FakeAdapter:

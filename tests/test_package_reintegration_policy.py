@@ -152,6 +152,17 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         self.assertIn("adapter.descriptor_for_tool(tool)", source)
         self.assertNotIn("adapter._descriptor_for_tool(tool)", source)
 
+    def test_dynamic_adapter_execution_uses_single_capcore_prepare_gate(self) -> None:
+        source = (ROOT / "companion_v01" / "tool_handlers" / "adapters.py").read_text(encoding="utf-8")
+        compatibility = (ROOT / "companion_v01" / "tool_runtime.py").read_text(encoding="utf-8")
+
+        self.assertIn("capcore_prepare_invocation(", source)
+        self.assertNotIn("capcore_validate_invocation_args", source)
+        self.assertNotIn("capcore_build_permission_request", source)
+        self.assertNotIn("capcore_resolve_permission_for_profile", source)
+        self.assertNotIn("capcore_validate_invocation_args", compatibility)
+        self.assertNotIn("capcore_build_permission_request", compatibility)
+
     def test_ld006_records_promptpack_ownership_decision(self) -> None:
         doc = (ROOT / "docs" / "akane_lean_down_ld006_promptpack_ownership.md").read_text(encoding="utf-8")
         policy = (ROOT / "docs" / "package_reintegration_policy_m63.md").read_text(encoding="utf-8")

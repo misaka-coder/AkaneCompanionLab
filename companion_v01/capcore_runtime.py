@@ -33,6 +33,21 @@ def approval_policy_for_profile(
     base_dir: Path | str | None,
     profile_user_id: str,
 ) -> ApprovalPolicy:
+    return approval_policy_for_capability(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        capability_id="",
+    )
+
+
+def approval_policy_for_capability(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    capability_id: str,
+) -> ApprovalPolicy:
+    """Resolve Akane's effective host policy before entering CapCore's gate."""
+
     try:
         payload = get_approval_policy_config(
             base_dir=base_dir,
@@ -41,7 +56,10 @@ def approval_policy_for_profile(
     except Exception:
         return ApprovalPolicy(default_mode="ask_each_time")
     policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
-    mode = str((policy or {}).get("defaultMode") or "").strip()
+    mode = approval_mode_for_capability(
+        policy,
+        str(capability_id or ""),
+    )
     if mode not in APPROVAL_POLICY_MODES:
         mode = "ask_each_time"
     return ApprovalPolicy(default_mode=mode)
@@ -53,23 +71,13 @@ def resolve_permission_for_profile(
     base_dir: Path | str | None,
     profile_user_id: str,
 ) -> PermissionDecision:
-    try:
-        payload = get_approval_policy_config(
-            base_dir=base_dir,
-            profile_user_id=profile_user_id,
-        )
-    except Exception:
-        payload = {}
-    policy = payload.get("approvalPolicy") if isinstance(payload, Mapping) else {}
-    mode = approval_mode_for_capability(
-        policy,
-        str(getattr(request, "capability_id", "") or ""),
-    )
-    if mode not in APPROVAL_POLICY_MODES:
-        mode = "ask_each_time"
     return capcore_resolve_permission(
         request,
-        ApprovalPolicy(default_mode=mode),
+        approval_policy_for_capability(
+            base_dir=base_dir,
+            profile_user_id=profile_user_id,
+            capability_id=str(getattr(request, "capability_id", "") or ""),
+        ),
     )
 
 

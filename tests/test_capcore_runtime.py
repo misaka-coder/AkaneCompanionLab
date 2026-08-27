@@ -5,15 +5,72 @@ import tempfile
 import unittest
 
 from companion_v01.capcore_runtime import (
+    approval_policy_for_capability,
+    approval_policy_for_profile,
     approval_required_event,
     invocation_context_from_execution,
     manual_permission_request,
     resolve_permission_for_profile,
     sanitize_permission_preview,
 )
+from companion_v01.local_capability_config import save_approval_policy_config
 
 
 class CapcoreRuntimeTests(unittest.TestCase):
+    def test_effective_policy_preserves_per_capability_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                payload={
+                    "defaultMode": "ask_each_time",
+                    "capabilityModes": {
+                        "mcp.demo.echo": "trusted_auto_allow",
+                        "mcp.demo.blocked": "disabled",
+                    },
+                },
+            )
+            self.assertTrue(saved["ok"])
+
+            allowed = approval_policy_for_capability(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                capability_id="mcp.demo.echo",
+            )
+            blocked = approval_policy_for_capability(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                capability_id="mcp.demo.blocked",
+            )
+            inherited = approval_policy_for_capability(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                capability_id="mcp.demo.other",
+            )
+
+        self.assertEqual(allowed.default_mode, "trusted_auto_allow")
+        self.assertEqual(blocked.default_mode, "disabled")
+        self.assertEqual(inherited.default_mode, "ask_each_time")
+
+    def test_profile_policy_uses_default_without_capability_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                payload={
+                    "defaultMode": "trusted_auto_allow",
+                    "capabilityModes": {"mcp.demo.echo": "disabled"},
+                },
+            )
+            self.assertTrue(saved["ok"])
+
+            policy = approval_policy_for_profile(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+            )
+
+        self.assertEqual(policy.default_mode, "trusted_auto_allow")
+
     def test_manual_permission_request_uses_execution_context(self) -> None:
         context = SimpleNamespace(profile_user_id="alice", session_id="s1", client_mode="desktop_pet")
 
