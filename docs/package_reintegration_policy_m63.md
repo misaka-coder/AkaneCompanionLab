@@ -325,6 +325,17 @@ Known risk:
   migration window for model invocation shape, not permission/schema ownership.
   The bridge must not become a second provider envelope implementation.
 
+Three-core production slice:
+
+- `tests/test_three_core_production_slice.py` proves one QQ group-mention turn
+  through channelcore inbound, a CapCore Python adapter/native OpenAI schema,
+  MemCore action/result projection and settlement, and channelcore outbound.
+- Akane keeps no fourth coordinator for that path. Its remaining code is a
+  thin product binding over package-owned protocol, capability, and context
+  contracts.
+- Model-supplied executable path arguments remain in the MemCore action; only
+  credential-shaped fields are removed before durable projection.
+
 ### `capcore-provider-openai`
 
 Current Akane use:

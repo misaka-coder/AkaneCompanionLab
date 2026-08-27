@@ -1657,7 +1657,13 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(stored["turn_id"], "turn-1")
         exchange = stored["exchanges"][0]
         self.assertEqual(exchange["tool_call_id"], "toolu_trace")
-        self.assertEqual(exchange["tool_input"], {"query": "Akane"})
+        self.assertEqual(
+            exchange["tool_input"],
+            {
+                "query": "Akane",
+                "absolute_path": "F:/private folder/file.txt",
+            },
+        )
         self.assertEqual(exchange["source"], NATIVE_ANTHROPIC)
         self.assertNotIn("top-secret", exchange["result"])
         self.assertIn("[redacted]", exchange["result"])

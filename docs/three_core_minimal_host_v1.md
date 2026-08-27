@@ -71,6 +71,31 @@ After a second independent host proves the same shape, extract the smallest
 bridge package or public helper and keep MemCore, CapCore, and channelcore
 independent.
 
+## Akane as the second host
+
+The production vertical regression at
+`tests/test_three_core_production_slice.py` applies the same contract to
+Akane's real QQ host seam:
+
+```text
+channelcore inbound normalization
+  -> CapCore Python adapter + OpenAI-native schema
+  -> Akane product orchestration
+  -> MemCore open-turn action/result projection
+  -> terminal settlement + open_memory reload
+  -> channelcore reply plan + logical result normalization
+```
+
+No fourth coordinator was added. The remaining Akane code is product binding:
+profile/session ids, permission configuration, tool selection, runtime calls,
+and authenticated OneBot transport.
+
+This second-host pass also removes an old trace-storage mismatch: executable
+path arguments are no longer dropped by field name before MemCore projection.
+Credential-shaped arguments remain filtered. Private transport/cache/database
+locations must stay outside model-call arguments; a path deliberately supplied
+to a tool remains executable and byte-stable across the provider continuation.
+
 ## Validation contract
 
 The focused test requires:

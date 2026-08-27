@@ -8177,6 +8177,16 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _is_sensitive_tool_trace_key(value: Any) -> bool:
+        """Reject credentials, not model-visible operation coordinates.
+
+        Paths are legitimate tool arguments and often the only durable way for
+        a later native-tool round to continue work.  Removing them here made
+        MemCore's projected assistant action differ from the provider action
+        that was actually executed.  Transport/cache/database paths that must
+        stay private belong outside model-call arguments in the first place;
+        credential-shaped values remain filtered below.
+        """
+
         key = re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
         if not key:
             return False
@@ -8184,9 +8194,7 @@ class AkaneMemoryEngine:
             return True
         if "apikey" in key or key.endswith("token") or key.endswith("secret") or key.endswith("password"):
             return True
-        return key.endswith("path") and any(
-            marker in key for marker in ("absolute", "cache", "cached", "database", "db", "file", "local", "storage")
-        )
+        return False
 
     @staticmethod
     def _sanitize_tool_trace_text(value: str) -> str:
