@@ -144,7 +144,7 @@ class PromptProfileRegistry:
                 system_prompt_override=build_qq_text_system_prompt(),
                 fast_mode_prompt=(
                     "\n当前模式：qq_text。\n"
-                    "普通回复只要求 emotion, reply_medium, speech；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实非空内容时追加。\n"
+                    "有文字时按 emotion、reply_medium、speech 的顺序输出；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实作用时追加。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "艾特、引用、触发词和戳一戳表示本次事件应立即处理，但不强制输出文字。成功的 QQ 可见动作本身可以构成回应；若无需补充文字，只输出 {\"speech\":\"\"}。不要为了确认动作成功而机械追加文字。\n"
                     "event.group_attention_followup_review、event.group_attention_idle_review、event.qq_optional_reply_review 只表示一次是否自然参与当前群聊的判断机会；有必要时回复或行动，否则按上述空 speech 规则保持静默，不要复述事件名。\n"
@@ -154,7 +154,7 @@ class PromptProfileRegistry:
                 ),
                 debug_mode_prompt=(
                     "\n当前模式：qq_text。\n"
-                    "普通回复只要求 emotion, reply_medium, speech；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实非空内容时追加。\n"
+                    "有文字时按 emotion、reply_medium、speech 的顺序输出；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实作用时追加。\n"
                     'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
                     "艾特、引用、触发词和戳一戳表示本次事件应立即处理，但不强制输出文字。成功的 QQ 可见动作本身可以构成回应；若无需补充文字，只输出 {\"speech\":\"\"}。不要为了确认动作成功而机械追加文字。\n"
                     "event.group_attention_followup_review、event.group_attention_idle_review、event.qq_optional_reply_review 只表示一次是否自然参与当前群聊的判断机会；有必要时回复或行动，否则按上述空 speech 规则保持静默，不要复述事件名。\n"

@@ -14,7 +14,7 @@ _CARE_ONLY_PROMPT_LINE_MARKERS = (
     "state_request 用于",
     "affinity 是",
     "根据当前角色的性格判断方向",
-    "普通闲聊、工具调用、日常问答输出 null",
+    "普通闲聊、工具调用和日常问答不提交状态变化",
     "特别时刻：如果角色在饥饿/疲惫临界",
     "好感显著上升的时刻",
     "不改变养成状态",
@@ -61,7 +61,6 @@ DESKTOP_PET_SYSTEM_BLOCKS = (
 QQ_TEXT_SYSTEM_BLOCKS = (
     "json_object_only",
     "mode_schema_contract",
-    "qq_field_order",
     "speech_streaming",
     "tool_execution_intent",
     "time_awareness",
@@ -104,16 +103,10 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     ),
                 ),
                 PromptBlock(
-                    id="qq_field_order",
-                    text=(
-                        "QQ 有文字回复时，先完整输出 emotion，再输出 reply_medium，然后完整输出 speech，"
-                        "便于宿主尽早投递完整句子。没有需要继续发送的文字时，只输出 {\"speech\":\"\"}。"
-                    ),
-                ),
-                PromptBlock(
                     id="speech_streaming",
                     text=(
-                        "speech 是给用户看的唯一正文，必须完整填写，不要另造分段正文。\n"
+                        "需要向用户发送文字时，speech 是唯一正文，必须完整填写，不要另造分段正文；"
+                        "无需文字时按当前模式协议处理。\n"
                         "使用当前输出语言自然、清晰的句末标点；每个可独立朗读的完整意思应以合适的句末标点或换行结束，"
                         "方便系统边生成边展示或播放。不要为了分段把同一句话硬拆碎。"
                     ),
@@ -121,8 +114,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="memory_metadata",
                     text=(
-                        "memory_metadata 只用于后台记忆入库，不展示给用户；它标注宿主指定的本轮输入目标，"
-                        "不标注你的回复或工具结果。只有存在真实记忆信号时才输出，并只保留非空字段；"
+                        "memory_metadata 只用于后台记忆入库，不展示给用户。只有存在真实记忆信号时才输出，"
+                        "并只保留非空字段；"
                         "没有信号时省略该字段。\n"
                         + build_memory_metadata_instruction(
                             enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
@@ -186,10 +179,10 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="state_request",
                     text=(
-                        "state_request 用于表达本轮互动对角色状态的影响，大多数对话省略（null）。\n"
+                        "state_request 用于表达本轮互动对角色状态的影响；大多数对话按当前模式协议省略或输出 null。\n"
                         "affinity 是本轮好感度变化量，整数 -5 到 5，不是当前总值；正值表示关系推进，负值表示受伤。\n"
                         "根据当前角色的性格判断方向——角色设定决定什么让她开心、什么让她受伤，方向可以和直觉相反。\n"
-                        "普通闲聊、工具调用、日常问答输出 null；只有互动对感情有明显推进或伤害时才填非零值。\n"
+                        "普通闲聊、工具调用和日常问答不提交状态变化；只有互动对感情有明显推进或伤害时才填非零值。\n"
                         "特别时刻：如果角色在饥饿/疲惫临界时流露出了平时少有的脆弱，用户此时关心她、给她吃的或安慰，"
                         "这是好感显著上升的时刻——affinity 可给较高正值（3 到 5）。"
                     ),

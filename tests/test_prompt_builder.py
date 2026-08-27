@@ -994,7 +994,7 @@ system = "semantic reinforcement system"
         self.assertNotIn("speech_segments", persona.final_debug_mode_prompt)
         prompt = build_scene_static_system_prompt()
         self.assertIn("tool_call 是兼容字段，必须放在 speech 之后", prompt)
-        self.assertIn("speech 是给用户看的唯一正文", prompt)
+        self.assertIn("speech 是唯一正文", prompt)
         self.assertIn("请求中直接附带的工具要走真实工具调用", prompt)
         self.assertIn("不要只用 status=continue", prompt)
         self.assertIn("直接发出下一项真实工具调用", prompt)
@@ -1217,7 +1217,7 @@ system = "semantic reinforcement system"
 
         self.assertNotIn("state_request", result["system_prompt"])
         self.assertNotIn("affinity", result["system_prompt"])
-        self.assertIn("speech 是给用户看的唯一正文", result["system_prompt"])
+        self.assertIn("speech 是唯一正文", result["system_prompt"])
         self.assertNotIn("speech_segments", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
 

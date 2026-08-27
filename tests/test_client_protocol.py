@@ -164,7 +164,7 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertIn("当可用工具里提供 delegate_task 时", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn(
-            "普通回复只要求 emotion, reply_medium, speech",
+            "有文字时按 emotion、reply_medium、speech 的顺序输出",
             profile.mode_prompt_override(debug_enabled=False),
         )
         self.assertIn(

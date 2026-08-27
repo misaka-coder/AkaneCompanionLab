@@ -775,7 +775,7 @@ def validate_tool_invocation(
                 f"你刚才请求的工具「{tool_type}」在本轮不可用，已被系统忽略。"
                 f"本轮真正可用的工具是：{available_text}。"
                 "请按本轮为该工具实际提供的通道改用其中一个工具；如果不再需要工具，"
-                "保持兼容 tool_call 为 null 并直接回复主人。不要再调用不存在的工具。"
+                "按当前客户端的最终回复协议直接回复主人。不要再调用不存在的工具。"
             ),
         )
 
@@ -857,7 +857,7 @@ def _tool_schema_rejection_message(
         f"结构化诊断：{json.dumps(diagnostics, ensure_ascii=False, separators=(',', ':'))}。"
         f"你提交的是：{describe_tool_call_for_prompt(candidate_call)}。"
         "请只使用本轮 schema 声明的字段修正调用；不要猜测别名，也不要重复未改变的失败参数。"
-        "如果不再需要工具，保持兼容 tool_call 为 null 并直接回复主人。"
+        "如果不再需要工具，按当前客户端的最终回复协议直接回复主人。"
     )
 
 
