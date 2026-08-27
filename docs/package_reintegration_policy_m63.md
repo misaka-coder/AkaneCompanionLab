@@ -238,6 +238,10 @@ Current Akane use:
   consume that same parsed message instead of reparsing the event.
 - It also delegates outbound target, text/image/voice/reply/mface segments,
   message/file action selection, and logical result normalization.
+- The package capability matrix now declares which real content families may
+  share a visible OneBot reply, and its bounded ledger owns the one-reply claim
+  for an inbound message. Akane only supplies the target, source message id,
+  and content family.
 - `QQMessageContext` remains an Akane product projection that adds session,
   profile, character, reply-mode, model, prompt, and memory-facing fields.
 
@@ -271,6 +275,12 @@ freshness, replay, outbound segment, action-selection, or logical result rules
 there. Akane's remaining sending code prepares product content and safe local
 media candidates, then executes the package plan through its Bot-bound
 transport.
+
+The old Akane-owned reply-claim dictionary, lock, eviction constant, and
+`_claim_reply_message_id()` policy are deleted. The remaining
+`_reply_reference_for_content()` method is a thin product adapter over
+`channelcore-onebot.ReplyReferenceLedger`; it does not duplicate the matrix or
+claim state.
 
 The compatibility `clean_message`, resolved mention labels, and materialization
 attachment dictionaries on `QQMessageContext` are thin Akane product

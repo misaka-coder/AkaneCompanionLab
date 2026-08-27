@@ -2067,6 +2067,65 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIn("file", record["data"])
         self.assertEqual(text_payload["message"][0], {"type": "reply", "data": {"id": "send-voice-1"}})
 
+    def test_standalone_onebot_content_does_not_consume_later_text_reply(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "standalone-before-text-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " 发给我"}},
+                ],
+            }
+        )
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {}}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "reply.wav"
+            audio_path.write_bytes(b"RIFF....WAVE")
+            with patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                side_effect=[FakeResponse(), FakeResponse(), FakeResponse(), FakeResponse()],
+            ) as request:
+                voice_result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
+                mface_result = gateway.send_mface(
+                    context,
+                    mface={
+                        "emoji_package_id": "123",
+                        "emoji_id": "happy-001",
+                        "key": "napcat-key",
+                        "summary": "开心",
+                    },
+                )
+                music_result = gateway.send_music_card(
+                    context,
+                    platform="netease_music",
+                    track_id="2703973041",
+                )
+                text_result = gateway.send_reply(context, "都发好了")
+
+        self.assertTrue(voice_result["ok"])
+        self.assertTrue(mface_result["ok"])
+        self.assertTrue(music_result["ok"])
+        self.assertTrue(text_result["ok"])
+        messages = [call.kwargs["json"]["message"] for call in request.call_args_list]
+        self.assertEqual(
+            [[part["type"] for part in message] for message in messages[:3]],
+            [["record"], ["mface"], ["music"]],
+        )
+        self.assertEqual(messages[3][0], {"type": "reply", "data": {"id": "standalone-before-text-1"}})
+        self.assertEqual(messages[3][1], {"type": "text", "data": {"text": "都发好了"}})
+
     def test_send_replies_quotes_only_the_first_segment(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(

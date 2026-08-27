@@ -138,6 +138,14 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
 
         self.assertEqual(private_core_attrs, [])
 
+    def test_qq_gateway_uses_channelcore_reply_policy_without_parallel_claim_state(self) -> None:
+        source = (ROOT / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
+
+        self.assertIn("ReplyReferenceLedger", source)
+        self.assertIn("_reply_reference_for_content", source)
+        self.assertNotIn("_reply_reference_claims", source)
+        self.assertNotIn("_claim_reply_message_id", source)
+
     def test_dynamic_mcp_handler_builder_uses_public_descriptor_api(self) -> None:
         source = (ROOT / "companion_v01" / "engine_services" / "tool_rounds.py").read_text(encoding="utf-8")
 

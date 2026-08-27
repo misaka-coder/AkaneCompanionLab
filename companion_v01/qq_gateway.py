@@ -22,6 +22,7 @@ from channelcore_onebot import (
     OneBotEventAdmission,
     OutboundAction,
     OutboundTarget,
+    ReplyReferenceLedger,
     build_message_action,
     build_upload_file_action,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
@@ -54,8 +55,6 @@ from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 
 # Public compatibility alias; client_protocol owns the capability list.
 QQ_TEXT_CAPABILITIES = QQ_TEXT_DEFAULT_CAPABILITIES
-
-QQ_REPLY_REFERENCE_MAX_CLAIMS = 4096
 
 # Akane QQ music-card platform -> OneBot music segment type (V1 open set).
 QQ_MUSIC_PLATFORM_TO_ONEBOT = {
@@ -462,8 +461,7 @@ class NapCatQQGateway:
             require_self_id=False,
         )
         self._onebot_transport = OneBotActionTransport(transport_config)
-        self._reply_reference_claims: dict[tuple[str, str, str], None] = {}
-        self._reply_reference_lock = threading.RLock()
+        self._reply_reference_ledger = ReplyReferenceLedger(max_claims=4096)
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
         self._wake_words = _normalize_qq_wake_words(wake_words)
         self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
@@ -3377,9 +3375,7 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [music_segment(onebot_type, clean_track_id)],
-                # The card is delivered before the final text reply; do not claim
-                # the one reply reference so the model's closing text keeps it.
-                reply_to="",
+                reply_to=self._reply_reference_for_content(context, ("music",)),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -4120,7 +4116,11 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [text_segment(clean_message)],
-                reply_to=self._claim_reply_message_id(context, include_reply=include_reply),
+                reply_to=self._reply_reference_for_content(
+                    context,
+                    ("text",),
+                    include_reply=include_reply,
+                ),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -4138,7 +4138,7 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [mface_segment(data)],
-                reply_to=self._claim_reply_message_id(context),
+                reply_to=self._reply_reference_for_content(context, ("mface",)),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -4286,7 +4286,7 @@ class NapCatQQGateway:
             return {"ok": False, "reason": "image_not_found"}
 
         resolved_path = path_obj.resolve()
-        reply_to = self._claim_reply_message_id(context)
+        reply_to = self._reply_reference_for_content(context, ("image",))
         onebot_path = self._onebot_file_path(resolved_path)
         file_candidates: list[tuple[str, str]] = []
         if onebot_path != str(resolved_path):
@@ -4341,6 +4341,7 @@ class NapCatQQGateway:
             return {"ok": False, "reason": "audio_not_found"}
 
         resolved_path = path_obj.resolve()
+        reply_to = self._reply_reference_for_content(context, ("record",))
         onebot_path = self._onebot_file_path(resolved_path)
         file_candidates: list[tuple[str, str]] = []
         if onebot_path != str(resolved_path):
@@ -4357,11 +4358,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(file_value, summary=name or path_obj.name)],
-                    # OneBot implementations do not consistently deliver a
-                    # record segment when it shares a message with reply.
-                    # Voice is therefore always an independent outbound
-                    # message and never consumes the turn's text reply claim.
-                    reply_to="",
+                    reply_to=reply_to,
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -4380,7 +4377,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(staged.file_ref, summary=name or path_obj.name)],
-                    reply_to="",
+                    reply_to=reply_to,
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
@@ -4397,7 +4394,7 @@ class NapCatQQGateway:
                 plan = build_message_action(
                     self._outbound_target(context),
                     [voice_segment(inline_ref, summary=name or path_obj.name)],
-                    reply_to="",
+                    reply_to=reply_to,
                 )
                 inline_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
                 if inline_result.ok:
@@ -4421,9 +4418,7 @@ class NapCatQQGateway:
             plan = build_message_action(
                 self._outbound_target(context),
                 [voice_segment(clean_url, summary=str(name or "网络音频").strip() or "网络音频")],
-                # QQ voice messages use the same independent-message contract
-                # for local files and public URLs.
-                reply_to="",
+                reply_to=self._reply_reference_for_content(context, ("record",)),
             )
         except ValueError as exc:
             return self._outbound_plan_failure(exc)
@@ -4515,21 +4510,20 @@ class NapCatQQGateway:
     def _outbound_target(context: QQMessageContext) -> OutboundTarget:
         return OutboundTarget("group" if context.is_group else "private", context.target_id)
 
-    def _claim_reply_message_id(self, context: QQMessageContext, *, include_reply: bool = True) -> str:
-        """Allow at most one visible OneBot reply frame for each inbound message."""
-        if not include_reply:
-            return ""
-        message_id = str(context.source_message_id or "").strip()
-        if not message_id:
-            return ""
-        key = ("group" if context.is_group else "private", str(context.target_id or ""), message_id)
-        with self._reply_reference_lock:
-            if key in self._reply_reference_claims:
-                return ""
-            self._reply_reference_claims[key] = None
-            while len(self._reply_reference_claims) > QQ_REPLY_REFERENCE_MAX_CLAIMS:
-                self._reply_reference_claims.pop(next(iter(self._reply_reference_claims)))
-        return message_id
+    def _reply_reference_for_content(
+        self,
+        context: QQMessageContext,
+        content_types: tuple[str, ...],
+        *,
+        include_reply: bool = True,
+    ) -> str:
+        """Thin product adapter over channelcore's OneBot reply policy."""
+        return self._reply_reference_ledger.claim(
+            self._outbound_target(context),
+            context.source_message_id,
+            content_types,
+            enabled=include_reply,
+        )
 
     def _send_outbound_plan(self, plan: OutboundAction, *, timeout: float) -> dict[str, Any]:
         return self._onebot_transport.call(plan.action, plan.params(), timeout=timeout).as_dict()
