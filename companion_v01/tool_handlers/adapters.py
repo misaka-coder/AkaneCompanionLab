@@ -38,6 +38,7 @@ from .core import (
     ToolFollowupEnvelope,
     ToolMetadata,
 )
+from ..mcp_diagnostics import build_mcp_failure_diagnostic, mcp_failure_reason
 
 
 _ADAPTER_TRANSPORT_FIELDS = frozenset(
@@ -150,8 +151,6 @@ class DesktopSatelliteToolHandler(BaseToolHandler):
 
 
 class AdapterCapabilityToolHandler(BaseToolHandler):
-    MAX_FOLLOWUP_CHARS = 64 * 1024
-
     def __init__(
         self,
         *,
@@ -285,15 +284,10 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 )
             )
         except CapabilityProtocolError as exc:
-            return self._failure(str(exc) or "adapter_protocol_error")
-        except Exception:
-            return self._failure("adapter_invoke_failed")
-        result_size = self._capability_result_size_chars(result)
-        if result_size > self.MAX_FOLLOWUP_CHARS:
-            return self._result_limit_exceeded(actual_chars=result_size)
+            return self._failure_from_exception(exc, fallback="adapter_protocol_error")
+        except Exception as exc:
+            return self._failure_from_exception(exc, fallback="adapter_invoke_failed")
         followup = self._format_capability_result(result)
-        if len(followup) > self.MAX_FOLLOWUP_CHARS:
-            return self._result_limit_exceeded(actual_chars=len(followup))
         is_error = bool(getattr(result, "is_error", False))
         status = self._safe_public_text(getattr(result, "status", ""), limit=80) if is_error else "ok"
         status = status or ("error" if is_error else "ok")
@@ -321,7 +315,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 content=followup,
                 producer_bounded=True,
                 complete=True,
-                diagnostics={"adapter_result_chars": result_size},
+                diagnostics={"adapter_result_chars": len(followup)},
             ),
             state_updates=state_updates,
         )
@@ -537,18 +531,16 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             },
         )
 
-    def _result_limit_exceeded(self, *, actual_chars: int) -> ToolExecutionResult:
-        payload = {
-            "status": "error",
-            "reason": "result_limit_exceeded",
-            "actual_chars": max(0, int(actual_chars)),
-            "max_chars": self.MAX_FOLLOWUP_CHARS,
-            "recommended_action": "narrow_query_or_use_provider_paging",
-        }
+    def _failure_from_exception(self, error: BaseException, *, fallback: str) -> ToolExecutionResult:
+        reason = str(error or "").strip() or fallback
+        if "mcp" not in self._source_label().lower():
+            return self._failure(reason)
+        safe_reason = mcp_failure_reason(error, fallback=fallback)
+        diagnostic = build_mcp_failure_diagnostic(error, stage="tool_call")
         feedback = (
-            f"{self._source_label()}返回结果超过未分页第三方能力的最终保险上限。"
-            f"实际返回数据：{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}。"
-            "请缩小查询范围、增加过滤条件，或改用该 provider 的分页参数；不要声称已经读取完整结果。"
+            f"MCP 工具调用失败：{safe_reason}。"
+            f"诊断：{json.dumps(diagnostic, ensure_ascii=False, separators=(',', ':'))}。"
+            "不要假装已经完成；按 recommendedAction 调整后再重试。"
         )
         return ToolExecutionResult(
             tool_type=self.tool_type,
@@ -557,9 +549,8 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     "type": "adapter_capability_failed",
                     "capabilityId": self.tool_type,
                     "status": "error",
-                    "reason": "result_limit_exceeded",
-                    "actualChars": payload["actual_chars"],
-                    "maxChars": payload["max_chars"],
+                    "reason": safe_reason,
+                    "diagnosticCategory": diagnostic["category"],
                 }
             ],
             followup_context=feedback,
@@ -567,22 +558,14 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 content=feedback,
                 producer_bounded=True,
                 complete=True,
-                diagnostics=payload,
+                diagnostics=diagnostic,
             ),
             state_updates={
                 "adapter_capability_status": "error",
                 "adapter_capability_id": self.tool_type,
-                "adapter_capability_reason": "result_limit_exceeded",
+                "adapter_capability_reason": safe_reason,
             },
         )
-
-    @staticmethod
-    def _capability_result_size_chars(result: Any) -> int:
-        content = getattr(result, "content", None)
-        try:
-            return len(json.dumps(content, ensure_ascii=False, sort_keys=True, default=str))
-        except Exception:
-            return len(str(content or ""))
 
     def _format_capability_result(self, result: Any) -> str:
         content = getattr(result, "content", None)
@@ -594,21 +577,18 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                     if not isinstance(item, Mapping):
                         continue
                     if str(item.get("type") or "").strip() == "text":
-                        text = self._safe_public_text(item.get("text"), limit=self.MAX_FOLLOWUP_CHARS)
+                        text = self._safe_model_result_text(item.get("text"))
                         if text:
                             pieces.append(text)
                     elif item.get("type"):
                         pieces.append(f"[{self._safe_public_text(item.get('type'), limit=40)} content]")
             if not pieces:
                 pieces.append(
-                    self._safe_public_text(
-                        json.dumps(content, ensure_ascii=False, default=str),
-                        limit=self.MAX_FOLLOWUP_CHARS,
-                    )
+                    self._safe_model_result_text(json.dumps(content, ensure_ascii=False, default=str))
                 )
             body = "\n".join(piece for piece in pieces if piece).strip()
         else:
-            body = self._safe_public_text(str(content or ""), limit=self.MAX_FOLLOWUP_CHARS)
+            body = self._safe_model_result_text(content)
         if not body:
             body = f"({self._source_label()}没有返回可读内容。)"
         if bool(getattr(result, "is_error", False)):
@@ -671,12 +651,30 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         return re.sub(r"\s+", " ", text).strip()[:limit]
 
+    def _safe_model_result_text(self, value: Any) -> str:
+        """Preserve complete MCP evidence while removing credential literals."""
+
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(
+            r"(?i)\b(api[_-]?key|authorization|bearer|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+",
+            r"\1=[redacted]",
+            text,
+        )
+        return re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text).strip()
+
     def _run_coro_blocking(self, awaitable: Any) -> Any:
         if not inspect.isawaitable(awaitable):
             return awaitable
         try:
             asyncio.get_running_loop()
         except RuntimeError:
+            has_running_loop = False
+        else:
+            has_running_loop = True
+        if not has_running_loop:
+            # Run outside the ``get_running_loop`` exception handler so a real
+            # adapter failure does not inherit "no running event loop" as a
+            # misleading diagnostic context.
             return asyncio.run(awaitable)
         result_box: dict[str, Any] = {}
         error_box: dict[str, BaseException] = {}

@@ -410,7 +410,8 @@ manifest 必须来自真实运行环境探测并有短 TTL；不能把旧项目�
 - 每页包含 `complete`、展示范围、总量（可知时）和 opaque cursor。
 - 不拆搜索条目、错误对象、JSON record 或源码行。
 - producer 已迁移后，不再经过全局 8000 字符破坏性截断。
-- 仅保留一个对第三方失控 adapter 的最终保险上限，触发时返回 `result_limit_exceeded` 和原始大小，不伪装完整。
+- 2026-08-27 repair：删除第三方 adapter 的私有 `64 KiB` 拒绝门槛；完整结果进入统一工具轨迹，
+  再由 MemCore 的 no-expansion/收益规则决定保留原文或结算为可召回卡片。
 
 ### 可能涉及文件
 

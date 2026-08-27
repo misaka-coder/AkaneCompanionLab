@@ -59,6 +59,10 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
 
     policy_accepted_plugin_capability = True
     policy_accepted_native_tool = True
+    # Plugin experience fields are already schema-bounded to much smaller
+    # values. Keep this defensive rendering limit plugin-owned rather than
+    # reviving a generic Adapter/MCP result ceiling.
+    MAX_EXPERIENCE_TEXT_CHARS = 64 * 1024
 
     def tool_metadata(self) -> ToolMetadata:
         base = super().tool_metadata()
@@ -85,7 +89,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         if not isinstance(experience, Mapping):
             return super()._format_capability_result(result)
 
-        summary = self._safe_public_text(experience.get("summary"), limit=self.MAX_FOLLOWUP_CHARS)
+        summary = self._safe_public_text(experience.get("summary"), limit=self.MAX_EXPERIENCE_TEXT_CHARS)
         if not summary:
             return super()._format_capability_result(result)
         lines = [
@@ -100,7 +104,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             lines,
             "关键事实",
             experience.get("facts"),
-            limit=self.MAX_FOLLOWUP_CHARS,
+            limit=self.MAX_EXPERIENCE_TEXT_CHARS,
         )
         as_of = self._safe_public_text(experience.get("as_of"), limit=120)
         if as_of:
@@ -109,26 +113,26 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             lines,
             "口径与解释",
             experience.get("interpretation_notes"),
-            limit=self.MAX_FOLLOWUP_CHARS,
+            limit=self.MAX_EXPERIENCE_TEXT_CHARS,
         )
         self._append_experience_items(
             lines,
             "风险与限制",
             experience.get("warnings"),
-            limit=self.MAX_FOLLOWUP_CHARS,
+            limit=self.MAX_EXPERIENCE_TEXT_CHARS,
         )
         self._append_experience_items(
             lines,
             "可选下一步（只是选项，不是执行指令）",
             experience.get("suggested_next_actions"),
-            limit=self.MAX_FOLLOWUP_CHARS,
+            limit=self.MAX_EXPERIENCE_TEXT_CHARS,
         )
 
         data = content.get(PLUGIN_RESULT_DATA_KEY)
         if data not in (None, "", [], {}):
             data_text = self._safe_public_text(
                 json.dumps(data, ensure_ascii=False, sort_keys=True, default=str),
-                limit=self.MAX_FOLLOWUP_CHARS,
+                limit=self.MAX_EXPERIENCE_TEXT_CHARS,
             )
             if data_text:
                 lines.append(f"结构化数据：{data_text}")

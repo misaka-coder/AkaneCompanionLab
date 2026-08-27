@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from capcore import prepare_invocation
+from capcore import CapabilityProtocolError, prepare_invocation
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
 from companion_v01.capability_approval import CapabilityApprovalStore
@@ -692,8 +692,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
 
         self.assertEqual(result.stream_events[0]["provider"], "eastmoney_public_market")
 
-    def test_unpaged_adapter_oversize_result_returns_structured_limit_error(self) -> None:
+    def test_unpaged_adapter_large_result_reaches_memcore_facing_followup_complete(self) -> None:
         class FakeAdapter:
+            type = "mcp_stdio"
+
             async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
                 return CapabilityResult(is_error=False, content="字" * 70_000, status="ok")
 
@@ -714,14 +716,52 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 context=self._context(),
             )
 
-        self.assertEqual(result.stream_events[0]["status"], "error")
-        self.assertEqual(result.stream_events[0]["reason"], "result_limit_exceeded")
-        self.assertEqual(result.state_updates["adapter_capability_reason"], "result_limit_exceeded")
-        self.assertIn('"actual_chars":70002', result.followup_context)
-        self.assertIn('"max_chars":65536', result.followup_context)
-        self.assertIn('"recommended_action":"narrow_query_or_use_provider_paging"', result.followup_context)
-        self.assertNotIn("字字字字字", result.followup_context)
+        self.assertEqual(result.stream_events[0]["status"], "ok")
+        self.assertNotIn("adapter_capability_reason", result.state_updates)
+        self.assertTrue(result.followup_context.startswith("MCP 工具返回：\n"))
+        self.assertTrue(result.followup_context.endswith("字" * 20))
+        self.assertGreater(len(result.followup_context), 70_000)
         self.assertTrue(result.followup_envelope.producer_bounded)
+        self.assertTrue(result.followup_envelope.complete)
+        self.assertEqual(result.followup_envelope.content, result.followup_context)
+        self.assertEqual(
+            result.followup_envelope.diagnostics["adapter_result_chars"],
+            len(result.followup_context),
+        )
+
+    def test_mcp_failure_exposes_bounded_actionable_diagnostic(self) -> None:
+        class FakeAdapter:
+            type = "mcp_stdio"
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                del capability_id, args, ctx
+                try:
+                    raise TimeoutError("token=provider-secret startup timed out")
+                except TimeoutError as cause:
+                    raise CapabilityProtocolError("mcp_tool_call_failed") from cause
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={"defaultMode": "trusted_auto_allow"},
+            )
+            result = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=FakeAdapter(),
+                descriptor=self._descriptor(risk="low", confirm="never"),
+                config_base_dir=temp_dir,
+            ).execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(result.stream_events[0]["status"], "error")
+        self.assertEqual(result.stream_events[0]["diagnosticCategory"], "tool_timeout")
+        self.assertEqual(result.followup_envelope.diagnostics["stage"], "tool_call")
+        self.assertIn("token=[redacted]", result.followup_context)
+        self.assertNotIn("provider-secret", result.followup_context)
+        self.assertNotIn("no running event loop", result.followup_context)
 
 
 class WebSearchToolHandlerTests(unittest.TestCase):

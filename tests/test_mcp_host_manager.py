@@ -14,6 +14,7 @@ from companion_v01.client_protocol import ClientMode
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.mcp_management import McpManageToolHandler
+from capcore_adapter_mcp import McpClientError
 
 
 class _FakeManager:
@@ -121,6 +122,54 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertFalse(failed["ok"])
         self.assertTrue(failed["lastGoodPreserved"])
         self.assertEqual(saved["command"], "old-mcp")
+        self.assertEqual(failed["diagnostic"]["stage"], "initialize_and_list_tools")
+        self.assertEqual(failed["diagnostic"]["category"], "startup_failed")
+        self.assertIn("candidate failed", failed["diagnostic"]["detail"])
+        self.assertEqual(failed["recommendedAction"], failed["diagnostic"]["recommendedAction"])
+
+    def test_failed_candidate_reports_actionable_sanitized_transport_cause(self) -> None:
+        class MissingCommandManager(_FakeManager):
+            def discover(self, **kwargs):
+                del kwargs
+                try:
+                    raise FileNotFoundError("token=secret-value missing-mcp")
+                except FileNotFoundError as cause:
+                    raise McpClientError("mcp_tools_list_failed") from cause
+
+        service = McpManagementService(base_dir=self.base_dir, manager=MissingCommandManager())
+        result = service.configure(
+            profile_user_id="owner",
+            server_id="missing",
+            payload={"enabled": True, "transport": "stdio", "command": "missing-mcp"},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "mcp_tools_list_failed")
+        self.assertEqual(result["diagnostic"]["category"], "command_not_found")
+        self.assertIn("token=[redacted]", result["diagnostic"]["detail"])
+        self.assertNotIn("secret-value", str(result))
+
+    def test_failed_candidate_identifies_deprecated_distribution(self) -> None:
+        class DeprecatedPackageManager(_FakeManager):
+            def discover(self, **kwargs):
+                del kwargs
+                try:
+                    raise RuntimeError("npm warn deprecated package: no longer supported")
+                except RuntimeError as cause:
+                    raise McpClientError("mcp_tools_list_failed") from cause
+
+        result = McpManagementService(
+            base_dir=self.base_dir,
+            manager=DeprecatedPackageManager(),
+        ).configure(
+            profile_user_id="owner",
+            server_id="deprecated",
+            payload={"enabled": True, "transport": "stdio", "command": "npx"},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["diagnostic"]["category"], "deprecated_distribution")
+        self.assertIn("official repository or registry", result["recommendedAction"])
 
     def test_successful_replacement_closes_only_old_session_after_candidate_is_ready(self) -> None:
         self.service.configure(
@@ -173,6 +222,8 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertIn("permission_denied", denied.followup_context)
         self.assertIn("remove", handler.tool_spec().description.lower())
         self.assertIn("never uninstalls", handler.tool_spec().description.lower())
+        self.assertIn("official repository or registry", handler.tool_spec().description.lower())
+        self.assertIn("不要只凭训练记忆或搜索摘要", handler.build_prompt_instruction())
         registry = CapabilityRegistry()
         desktop = registry.select(CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET, execution_enabled=True))
         qq = registry.select(

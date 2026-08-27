@@ -53,6 +53,8 @@ class McpManageToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- mcp_manage：主人可管理本 Host 的 MCP 连接。本地包先用 exec_run 安装，再 configure；"
+            "安装或配置第三方 MCP 前，先用实时工具打开官方仓库或 registry，核对当前包/二进制/镜像、"
+            "启动命令、认证方式和维护状态；不要只凭训练记忆或搜索摘要。"
             "configure 会先真实启动候选服务，成功才替换旧配置。remove 仅移除 Akane 连接并停止会话，"
             "不会卸载外部 npm/Python 包或删除源码。"
         )

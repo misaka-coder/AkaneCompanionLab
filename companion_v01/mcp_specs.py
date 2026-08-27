@@ -14,7 +14,10 @@ MCP_MANAGE_TOOL_SPEC = CapabilityToolSpec(
         "with exec_run, then configure its command here. A successful configure starts and initializes "
         "the candidate before replacing the last-good registration. Remove stops the managed session "
         "and removes only Akane's connection config; it never uninstalls external packages or deletes "
-        "external source. Only the trusted desktop or configured owner QQ account may use this tool."
+        "external source. Before installing or configuring third-party MCP software, verify its current "
+        "official repository or registry entry, exact package/binary/image, startup command, authentication "
+        "flow, and maintenance status with live tools; model memory and search snippets are not sufficient. "
+        "Only the trusted desktop or configured owner QQ account may use this tool."
     ),
     input_schema={
         "type": "object",
@@ -60,7 +63,7 @@ MCP_MANAGE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("mcp_config_mutation",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
+    spec_version="1.0.1",
     schema_version=1,
     execution_class="sync",
     idempotency="idempotent",

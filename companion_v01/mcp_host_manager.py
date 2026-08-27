@@ -36,6 +36,7 @@ from .mcp_stdio_discoverer import (
     _streamable_http_server_config,
     _tool_record_mapping,
 )
+from .mcp_diagnostics import build_mcp_failure_diagnostic, mcp_failure_reason
 
 
 def _transport(value: Any) -> str:
@@ -212,7 +213,7 @@ class McpHostManager:
                 assert self._stdio is not None
                 tools = await self._stdio.list_tools(server)
         except Exception as exc:
-            reason = str(exc) if isinstance(exc, McpClientError) else "mcp_tools_list_failed"
+            reason = mcp_failure_reason(exc, fallback="mcp_tools_list_failed")
             self._mark(profile_user_id, server_id, status="error", reason=reason)
             raise McpClientError(reason) from exc
         self._mark(
@@ -246,7 +247,7 @@ class McpHostManager:
                 assert self._stdio is not None
                 result = await self._stdio.call_tool(server, tool_name, arguments)
         except Exception as exc:
-            reason = str(exc) if isinstance(exc, McpClientError) else "mcp_tool_call_failed"
+            reason = mcp_failure_reason(exc, fallback="mcp_tool_call_failed")
             self._mark(profile_user_id, server_id, status="error", reason=reason)
             raise McpClientError(reason) from exc
         self._mark(profile_user_id, server_id, status="ready", reason="")
@@ -459,11 +460,14 @@ class McpManagementService:
                 )
                 tools = list(discovery.get("tools") or [])
             except Exception as exc:
+                diagnostic = build_mcp_failure_diagnostic(exc, stage="initialize_and_list_tools")
                 return {
                     "ok": False,
                     "status": "error",
                     "serverId": server_id,
-                    "reason": str(exc) if isinstance(exc, McpClientError) else "mcp_start_failed",
+                    "reason": mcp_failure_reason(exc, fallback="mcp_start_failed"),
+                    "diagnostic": diagnostic,
+                    "recommendedAction": diagnostic["recommendedAction"],
                     "lastGoodPreserved": bool(old),
                 }
         exposed = list(prompt_exposed_tools) if prompt_exposed_tools is not None else None

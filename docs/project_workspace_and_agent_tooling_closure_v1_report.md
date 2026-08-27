@@ -104,9 +104,9 @@ schema、handler prompt 与 Coding Skill 使用同一表述。
 已删除：AnySearch 1200 raw fallback、共享 `shape_tool_followup` 的 8000 字截断、Adapter content
 block 的 1200/4000 切断、Adapter/Plugin feedback 的 6000 切断。
 
-保留：未分页第三方 Adapter 的唯一 64 KiB 最终保险。触发时不返回残缺成功正文，而是
-`result_limit_exceeded`，带 `actual_chars/max_chars/recommended_action`。preview、通知、语音等非模型
-证据显示限制不在本轮范围。
+后续修正（2026-08-27）：未分页第三方 Adapter 的 64 KiB 私有保险已删除。完整结果现在进入统一
+工具 action/observation 轨迹，由 MemCore 的 no-expansion/收益规则决定保留原文或结算为可召回卡片；
+不再由 Adapter 提前改写成 `result_limit_exceeded`。preview、通知、语音等非模型证据显示限制不在本轮范围。
 
 ## 11. 分页契约
 
@@ -220,7 +220,7 @@ cache、wheel、build/dist、node_modules 或 smoke 临时项目；临时目录�
 ## 22. 风险、回滚与部署
 
 剩余风险：原生目录 picker 尚未人工点击 smoke；云端 PATH 和真实 QQ actor 流尚未 smoke；第三方未分页
-Adapter 超 64 KiB 会诚实拒绝，需 provider 自身增加 paging；Akane 全套仍有五项既有失败。桌面前端
+Adapter 的超长结果需由 MemCore 统一结算，provider 自身 paging 仍能降低当前开放工具轮压力；Akane 全套仍有五项既有失败。桌面前端
 全文件契约本轮仍复现其中两项既有 realtime voice/TTS 漂移，本切片专属契约通过。
 
 回滚可按提交独立进行：Shell `217998a`、Project Workspace `3b46105`、MemCore Akane adapter `add3116`
