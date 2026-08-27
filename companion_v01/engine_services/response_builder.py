@@ -221,6 +221,7 @@ def prepare_context(
         session_id=session_id,
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
+        allow_history_only=normalized_prompt_scope == "qq_attention",
         chat_model_override=chat_model_override,
         execution_target=execution_target,
         exclude_source_ids=list(excluded_prompt_sources),
@@ -1056,6 +1057,7 @@ def _build_memcore_provider_history(
     session_id: str,
     character_pack_id: str,
     current_source_id: str,
+    allow_history_only: bool = False,
     chat_model_override: str,
     execution_target: Any = None,
     exclude_source_ids: list[str] | None = None,
@@ -1068,7 +1070,7 @@ def _build_memcore_provider_history(
     protocol_getter = getattr(runtime, "chat_provider_protocol", None)
     if not callable(build_surface) or not callable(protocol_getter):
         return {"ok": False, "status": "unavailable", "reason": "projection_read_dependencies_unavailable"}
-    if not str(current_source_id or "").strip():
+    if not str(current_source_id or "").strip() and not allow_history_only:
         return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
     try:
         protocol = str(
@@ -1207,7 +1209,7 @@ def _build_memcore_provider_history(
             "compaction_generation": int(surface.get("compaction_generation") or 0),
             "projection_generation": int(surface.get("projection_generation") or 0),
             "has_compact_history": bool(surface.get("has_compact_history")),
-            "current_source_visible": True,
+            "current_source_visible": current_source_visible,
         }
     except Exception as exc:
         logger.warning("memcore projection read unavailable: %s", exc.__class__.__name__)

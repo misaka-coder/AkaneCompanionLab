@@ -859,6 +859,61 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("群里刚才的新消息", repr(projection["current_turn_messages"]))
         self.assertIsNone(observer)
 
+    def test_attention_history_only_projection_does_not_require_hidden_current_source(self) -> None:
+        surface = {
+            "ok": True,
+            "status": "ok",
+            "version": "context_surface_v1",
+            "provider_profile": "openai_chat",
+            "history_messages": [{"role": "user", "content": "群聊里已经入库的真实消息"}],
+            "current_message": None,
+            "active_turn_messages": [],
+            "message_source_ids": [["observed-source"]],
+            "message_projection_metadata": [
+                {
+                    "turn_id": "legacy.observed-source",
+                    "source_ids": ["observed-source"],
+                    "projection_index": 0,
+                    "projection_status": "complete",
+                    "projection_version": 1,
+                }
+            ],
+            "current_turn_id": "",
+            "projection_hash": "a" * 64,
+            "projection_version": 1,
+            "projection_generation": 1,
+        }
+        engine = SimpleNamespace(
+            memcore_manager=SimpleNamespace(build_context_surface=lambda **_kwargs: dict(surface)),
+            llm=SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "openai_chat"),
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            missing = response_builder._build_memcore_provider_history(
+                engine,
+                profile_user_id="group",
+                session_id="group",
+                character_pack_id="char",
+                current_source_id="",
+                chat_model_override="",
+            )
+            attention = response_builder._build_memcore_provider_history(
+                engine,
+                profile_user_id="group",
+                session_id="group",
+                character_pack_id="char",
+                current_source_id="",
+                allow_history_only=True,
+                chat_model_override="",
+            )
+
+        self.assertFalse(missing["ok"], missing)
+        self.assertEqual(missing["reason"], "current_source_id_missing")
+        self.assertTrue(attention["ok"], attention)
+        self.assertEqual(attention["history_turns"], surface["history_messages"])
+        self.assertEqual(attention["current_turn_messages"], [])
+        self.assertFalse(attention["current_source_visible"])
+
     def test_visible_attention_reply_appends_one_standalone_assistant_event(self) -> None:
         manager = _ActorCaptureMemcoreManager()
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

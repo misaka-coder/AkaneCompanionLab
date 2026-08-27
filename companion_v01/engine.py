@@ -4289,7 +4289,13 @@ class AkaneMemoryEngine:
             # observations are appended to ``recent_raw_for_turn`` later, so
             # rediscovering the stimulus from the mutable history tail can
             # lose its source id and abort an otherwise successful tool turn.
-            "current_user_source_id": turn_projection_source_id,
+            # Attention reviews have no provider-visible durable stimulus: the
+            # review event is the request-local user tail, while the hidden
+            # host record only owns tools/finalization.  Asking MemCore to
+            # project that prompt-invisible record as the current message makes
+            # an otherwise valid history read fail with
+            # ``current_source_not_projected``.
+            "current_user_source_id": "" if prompt_scope == "qq_attention" else turn_projection_source_id,
             # QQ attention review text is a request-local tail instruction.
             # Its durable facts are the passive messages already in MemCore;
             # never freeze the transient event into provider history.

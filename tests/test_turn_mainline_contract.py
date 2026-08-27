@@ -856,7 +856,9 @@ class TurnMainlineContractTests(unittest.TestCase):
         finalize_call = harness.rec["finalize_memcore_input_turn_for_delivery"].calls[0][1]
         self.assertEqual(finalize_call["turn_id"], "turn-attention-1")
         self.assertEqual(len(harness.rec["append_memcore_standalone_assistant"].calls), 0)
-        self.assertFalse(harness.script.generation_kwargs[0]["request_projection_state"]["record_request_projection"])
+        projection_state = harness.script.generation_kwargs[0]["request_projection_state"]
+        self.assertFalse(projection_state["record_request_projection"])
+        self.assertEqual(projection_state["current_user_source_id"], "")
 
     def test_attention_keeps_visible_delivery_when_existing_turn_primitive_is_unavailable(self) -> None:
         harness = _Harness([_speech_output("我也看到了。")])
