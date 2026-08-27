@@ -79,6 +79,9 @@ PRIVATE_VOICE_PROFILE_FIELDS = {
 PRIVATE_MCP_SERVER_FIELDS = {
     "enabled",
     "displayName",
+    "catalogDescription",
+    "activationMode",
+    "pinnedTools",
     "transport",
     "command",
     "args",
@@ -113,8 +116,6 @@ MCP_SERVER_ENV_MAX_COUNT = 12
 MCP_SERVER_HEADER_MAX_COUNT = 12
 MCP_TOOL_NAME_MAX_LENGTH = 80
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 240
-MCP_TOOL_MAX_COUNT = 64
-MCP_SCHEMA_PROPERTY_MAX_COUNT = 24
 MCP_ENV_PLACEHOLDER_RE = re.compile(r"\$\{[A-Z_][A-Z0-9_]{0,79}\}")
 MCP_SECRET_MARKERS = ("api_key", "password", "secret", "token")
 WORKFLOW_SLOT_VALUE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -123,7 +124,6 @@ WORKFLOW_ASSET_HANDLE_MAX_LENGTH = 120
 WORKFLOW_ASSET_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 MCP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 MCP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,80}$")
-MCP_SAFE_TYPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 WORKFLOW_CONFIG_FILE_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -986,7 +986,6 @@ def save_mcp_server_config(
     server_id: str,
     payload: Mapping[str, Any],
     discovered_tools: list[Mapping[str, Any]] | None = None,
-    prompt_exposed_tools: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     safe_server_id = _safe_mcp_server_id(server_id)
     if not safe_server_id:
@@ -1016,6 +1015,9 @@ def save_mcp_server_config(
     next_server = {
         "enabled": bool(normalized["enabled"]),
         "displayName": normalized["displayName"],
+        "catalogDescription": normalized["catalogDescription"],
+        "activationMode": normalized["activationMode"],
+        "pinnedTools": normalized["pinnedTools"],
         "transport": normalized["transport"],
         "command": normalized["command"],
         "args": normalized["args"],
@@ -1047,20 +1049,11 @@ def save_mcp_server_config(
         if same_endpoint and isinstance(existing.get("tools"), list)
         else []
     )
-    exposed_names = (
-        set(_safe_mcp_tool_name_list(prompt_exposed_tools))
-        if prompt_exposed_tools is not None
-        else {
-            str(tool.get("name") or "")
-            for tool in tools
-            if isinstance(tool, Mapping) and bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
-        }
-    )
     if tools:
         next_server["tools"] = [
             {
                 **_apply_mcp_low_risk_allowlist(tool, low_risk_allowlist),
-                "promptExposed": str(tool.get("name") or "") in exposed_names,
+                "promptExposed": False,
             }
             for tool in tools
         ]
@@ -1150,6 +1143,9 @@ def get_mcp_server_runtime_config(
         "serverId": safe_server_id,
         "enabled": bool(server.get("enabled")),
         "displayName": str(server.get("displayName") or safe_server_id),
+        "catalogDescription": str(server.get("catalogDescription") or ""),
+        "activationMode": str(server.get("activationMode") or "on_demand"),
+        "pinnedTools": list(server.get("pinnedTools") or []) if isinstance(server.get("pinnedTools"), list) else [],
         "transport": str(server.get("transport") or "stdio"),
         "command": str(server.get("command") or ""),
         "args": list(server.get("args") or []) if isinstance(server.get("args"), list) else [],
@@ -1980,6 +1976,9 @@ def build_mcp_server_config_entry(server_id: str, config: Mapping[str, Any] | No
         "executionMode": "external",
         "executionLocation": mcp_execution_location_for_transport(transport),
         "name": str(config.get("displayName") or safe_id or "MCP Server").strip()[:80],
+        "catalogDescription": str(config.get("catalogDescription") or "").strip()[:MCP_SERVER_TEXT_MAX_LENGTH],
+        "activationMode": str(config.get("activationMode") or "on_demand"),
+        "pinnedTools": list(config.get("pinnedTools") or []) if isinstance(config.get("pinnedTools"), list) else [],
         "enabled": enabled,
         "configured": configured,
         "status": status,
@@ -2158,6 +2157,11 @@ def normalize_voice_profile_config_payload(profile_id: str, payload: Mapping[str
 
 def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     payload = payload if isinstance(payload, Mapping) else {}
+    activation_mode = str(
+        payload.get("activationMode") or payload.get("activation_mode") or "on_demand"
+    ).strip().lower()
+    if activation_mode not in {"on_demand", "pinned"}:
+        return {"ok": False, "status": "invalid_config", "reason": "mcp_activation_mode_invalid"}
     transport = str(payload.get("transport") or "stdio").strip().lower().replace("-", "_")
     if transport in {"http", "streamablehttp"}:
         transport = "streamable_http"
@@ -2185,6 +2189,12 @@ def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, An
         "enabled": bool(payload.get("enabled", True)),
         "displayName": _safe_short_text(payload.get("displayName") or payload.get("name") or server_id, limit=80)
         or server_id,
+        "catalogDescription": _safe_short_text(
+            payload.get("catalogDescription") or payload.get("catalog_description"),
+            limit=MCP_SERVER_TEXT_MAX_LENGTH,
+        ),
+        "activationMode": activation_mode,
+        "pinnedTools": _safe_mcp_tool_name_list(payload.get("pinnedTools") or payload.get("pinned_tools")),
         "transport": transport,
         "command": command,
         "args": args,
@@ -2207,7 +2217,7 @@ def normalize_mcp_tool_discovery_payload(server_id: str, payload: Mapping[str, A
         return {"ok": False, "status": "invalid_discovery", "reason": "mcp_tools_must_be_list"}
     tools: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for raw_tool in raw_tools[:MCP_TOOL_MAX_COUNT]:
+    for raw_tool in raw_tools:
         tool = _normalize_mcp_tool_config(server_id, raw_tool)
         if not tool:
             continue
@@ -2771,6 +2781,9 @@ def _sanitize_mcp_server_configs(raw_servers: Any) -> tuple[dict[str, dict[str, 
         server: dict[str, Any] = {
             "enabled": bool(normalized["enabled"]),
             "displayName": normalized["displayName"],
+            "catalogDescription": normalized["catalogDescription"],
+            "activationMode": normalized["activationMode"],
+            "pinnedTools": normalized["pinnedTools"],
             "transport": normalized["transport"],
             "command": normalized["command"],
             "args": normalized["args"],
@@ -2918,7 +2931,7 @@ def _sanitize_mcp_last_discovery(raw_last_discovery: Any) -> dict[str, Any]:
     if discovered_at:
         result["discoveredAt"] = discovered_at
     try:
-        result["toolCount"] = max(0, min(MCP_TOOL_MAX_COUNT, int(raw_last_discovery.get("toolCount") or 0)))
+        result["toolCount"] = max(0, int(raw_last_discovery.get("toolCount") or 0))
     except Exception:
         result["toolCount"] = 0
     if status != "ready":
@@ -3057,7 +3070,7 @@ def _safe_mcp_tool_name_list(value: Any) -> list[str]:
         return []
     result: list[str] = []
     seen: set[str] = set()
-    for item in value[:MCP_TOOL_MAX_COUNT]:
+    for item in value:
         tool_name = _safe_mcp_tool_name(item)
         if not tool_name or tool_name in seen:
             continue
@@ -3078,32 +3091,44 @@ def _raw_mcp_tool_effects(tool: Mapping[str, Any]) -> Any | None:
 def _normalize_mcp_input_schema(raw_schema: Any) -> dict[str, Any]:
     if not isinstance(raw_schema, Mapping):
         return {"type": "object", "properties": {}, "required": []}
-    schema_type = str(raw_schema.get("type") or "object").strip().lower()
-    if schema_type != "object":
-        schema_type = "object"
-    raw_properties = raw_schema.get("properties") if isinstance(raw_schema.get("properties"), Mapping) else {}
-    properties: dict[str, dict[str, str]] = {}
-    for raw_name, raw_property in list(raw_properties.items())[:MCP_SCHEMA_PROPERTY_MAX_COUNT]:
-        prop_name = _safe_mcp_property_name(raw_name)
-        if not prop_name:
-            continue
-        prop = raw_property if isinstance(raw_property, Mapping) else {}
-        prop_type = _safe_mcp_schema_type(prop.get("type"))
-        properties[prop_name] = {
-            "type": prop_type or "string",
-            "description": _safe_public_mcp_text(prop.get("description"), limit=120),
-        }
-    raw_required = raw_schema.get("required") if isinstance(raw_schema.get("required"), list) else []
-    required = []
-    for item in raw_required[:MCP_SCHEMA_PROPERTY_MAX_COUNT]:
-        prop_name = _safe_mcp_property_name(item)
-        if prop_name and prop_name in properties and prop_name not in required:
-            required.append(prop_name)
-    return {
-        "type": schema_type,
-        "properties": properties,
-        "required": required,
-    }
+    try:
+        normalized = json.loads(json.dumps(raw_schema, ensure_ascii=False, default=str))
+    except Exception:
+        return {"type": "object", "properties": {}, "required": []}
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}, "required": []}
+    normalized = _sanitize_mcp_schema_node(normalized)
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}, "required": []}
+    normalized.setdefault("type", "object")
+    return normalized
+
+
+def _sanitize_mcp_schema_node(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_mcp_schema_node(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    removed_properties: set[str] = set()
+    for key, item in value.items():
+        clean_key = str(key)
+        if clean_key == "properties" and isinstance(item, dict):
+            properties: dict[str, Any] = {}
+            for raw_name, raw_property in item.items():
+                name = str(raw_name)
+                if any(marker in name.lower() for marker in MCP_SECRET_MARKERS):
+                    removed_properties.add(name)
+                    continue
+                properties[name] = _sanitize_mcp_schema_node(raw_property)
+            result[clean_key] = properties
+        elif clean_key in {"description", "title"}:
+            result[clean_key] = _safe_public_mcp_text(item, limit=2048)
+        else:
+            result[clean_key] = _sanitize_mcp_schema_node(item)
+    if removed_properties and isinstance(result.get("required"), list):
+        result["required"] = [item for item in result["required"] if str(item) not in removed_properties]
+    return result
 
 
 def _safe_mcp_server_id(value: Any) -> str:
@@ -3125,19 +3150,6 @@ def _safe_mcp_tool_name(value: Any) -> str:
     safe = "".join(ch if ch in PROFILE_ID_SAFE_CHARS else "_" for ch in raw)
     safe = safe.strip("._-")
     return safe[:MCP_TOOL_NAME_MAX_LENGTH] if safe else ""
-
-
-def _safe_mcp_property_name(value: Any) -> str:
-    return _safe_mcp_tool_name(value)
-
-
-def _safe_mcp_schema_type(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if not text or not MCP_SAFE_TYPE_RE.fullmatch(text):
-        return "string"
-    if text not in {"string", "number", "integer", "boolean", "array", "object", "null"}:
-        return "string"
-    return text
 
 
 def _safe_public_mcp_text(value: Any, *, limit: int = MCP_SERVER_TEXT_MAX_LENGTH) -> str:

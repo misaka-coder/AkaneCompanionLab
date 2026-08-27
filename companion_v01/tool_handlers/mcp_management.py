@@ -7,7 +7,7 @@ from typing import Any
 
 import config
 
-from ..mcp_specs import MCP_MANAGE_TOOL_SPEC
+from ..mcp_specs import LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 
 
@@ -38,6 +38,52 @@ def _result(payload: dict[str, Any]) -> ToolExecutionResult:
     )
 
 
+class LoadMcpToolHandler(BaseToolHandler):
+    tool_type = "load_mcp"
+
+    def __init__(self, *, service: Any) -> None:
+        self.service = service
+
+    def tool_spec(self):
+        return LOAD_MCP_TOOL_SPEC
+
+    def capability_status(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"enabled": self.service is not None, "status": "ready" if self.service is not None else "unavailable"}
+
+    def build_prompt_instruction(self) -> str:
+        return "- load_mcp：按提示中的 MCP 目录加载一个或多个 MCP；原生工具只在当前任务回合可用。"
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        raw_ids = value.get("server_ids")
+        if not isinstance(raw_ids, list):
+            return None
+        server_ids = sorted({str(item or "").strip() for item in raw_ids if str(item or "").strip()})
+        if not server_ids:
+            return None
+        return {"type": self.tool_type, "server_ids": server_ids}
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        activated = self.service.activate(
+            profile_user_id=str(context.profile_user_id or ""),
+            server_ids=list(call.get("server_ids") or []),
+        )
+        public = dict(activated)
+        private_activation = public.pop("_activation", None)
+        content = json.dumps(public, ensure_ascii=False, separators=(",", ":"))
+        state_updates = {}
+        if public.get("ok") and isinstance(private_activation, dict):
+            state_updates["mcp_activation"] = private_activation
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "mcp_activation", "status": str(public.get("status") or "error")}],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(content=content, producer_bounded=True, complete=True),
+            state_updates=state_updates,
+        )
+
+
 class McpManageToolHandler(BaseToolHandler):
     tool_type = "mcp_manage"
 
@@ -56,7 +102,7 @@ class McpManageToolHandler(BaseToolHandler):
             "安装或配置第三方 MCP 前，先用实时工具打开官方仓库或 registry，核对当前包/二进制/镜像、"
             "启动命令、认证方式和维护状态；不要只凭训练记忆或搜索摘要。"
             "configure 会先真实启动候选服务，成功才替换旧配置。remove 仅移除 Akane 连接并停止会话，"
-            "不会卸载外部 npm/Python 包或删除源码。"
+            "不会卸载外部 npm/Python 包或删除源码。新连接默认按需加载；只有明确设置 pinned 才常驻指定工具。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -71,10 +117,10 @@ class McpManageToolHandler(BaseToolHandler):
         normalized = {"type": self.tool_type, "action": action}
         if server_id:
             normalized["server_id"] = server_id
-        for key in ("display_name", "transport", "command", "cwd", "url"):
+        for key in ("display_name", "catalog_description", "activation_mode", "transport", "command", "cwd", "url"):
             if key in value:
                 normalized[key] = str(value.get(key) or "")
-        for key in ("args", "prompt_exposed_tools", "low_risk_allowlist"):
+        for key in ("args", "pinned_tools", "low_risk_allowlist"):
             if isinstance(value.get(key), list):
                 normalized[key] = [str(item) for item in value[key]]
         for key in ("env", "headers"):
@@ -101,6 +147,9 @@ class McpManageToolHandler(BaseToolHandler):
         if action == "configure":
             payload = {
                 "displayName": call.get("display_name") or server_id,
+                "catalogDescription": call.get("catalog_description") or "",
+                "activationMode": call.get("activation_mode") or "on_demand",
+                "pinnedTools": call.get("pinned_tools") or [],
                 "transport": call.get("transport") or "stdio",
                 "command": call.get("command") or "",
                 "args": call.get("args") or [],
@@ -115,7 +164,6 @@ class McpManageToolHandler(BaseToolHandler):
                 profile_user_id=profile_user_id,
                 server_id=server_id,
                 payload=payload,
-                prompt_exposed_tools=call.get("prompt_exposed_tools"),
             )
         elif action == "discover":
             result = self.service.discover(profile_user_id=profile_user_id, server_id=server_id)

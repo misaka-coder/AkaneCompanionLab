@@ -145,6 +145,7 @@ def prepare_context(
     domain_profile_id: str = "",
     prompt_scope: str = "",
     current_user_source_id: str = "",
+    mcp_activations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_prompt_scope = str(prompt_scope or "").strip().lower()
     client_context = client_context or engine._resolve_client_protocol_context({})
@@ -589,6 +590,7 @@ def prepare_context(
             session_id=session_id,
             domain_profile_id=domain_profile.id,
             intent_text=user_message,
+            mcp_activations=mcp_activations,
         )
         if tool_capability_available
         else None

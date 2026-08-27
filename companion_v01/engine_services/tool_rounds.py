@@ -176,6 +176,7 @@ def resolve_capability_selection(
     session_id: str = "",
     domain_profile_id: str = "",
     intent_text: str = "",
+    mcp_activations: Mapping[str, Any] | None = None,
 ) -> CapabilitySelection:
     from ..capability_registry import CapabilityRegistry
 
@@ -201,6 +202,7 @@ def resolve_capability_selection(
                 engine,
                 profile_user_id=profile_user_id,
                 client_context=None,
+                mcp_activations=mcp_activations,
             )
         )
         all_handlers = {**dict(static_handlers), **dynamic_handlers}
@@ -322,6 +324,7 @@ def resolve_capability_selection(
         engine,
         profile_user_id=profile_user_id,
         client_context=client_context,
+        mcp_activations=mcp_activations,
     )
     # Dynamic providers must publish an explicit, ready status. Missing or
     # malformed liveness data fails closed and never enters the model schema.
@@ -505,6 +508,7 @@ def build_adapter_tool_handlers(
     *,
     profile_user_id: str = "",
     client_context: ClientProtocolContext | None = None,
+    mcp_activations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     handlers: dict[str, Any] = {}
     handlers.update(build_plugin_capability_tool_handlers(engine, client_context=client_context))
@@ -513,6 +517,7 @@ def build_adapter_tool_handlers(
             engine,
             profile_user_id=profile_user_id,
             client_context=client_context,
+            mcp_activations=mcp_activations,
         )
     )
     handlers.update(
@@ -559,6 +564,7 @@ def build_mcp_adapter_tool_handlers(
     *,
     profile_user_id: str = "",
     client_context: ClientProtocolContext | None = None,
+    mcp_activations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from ..capability_adapters import McpStdioCapabilityAdapter
     from ..tool_runtime import AdapterCapabilityToolHandler
@@ -604,11 +610,27 @@ def build_mcp_adapter_tool_handlers(
         )
         if not configured:
             continue
-        tools = [tool for tool in server_config.get("tools") or [] if isinstance(tool, dict)]
-        prompt_tools = [tool for tool in tools if bool(tool.get("promptExposed") or tool.get("prompt_exposed"))]
+        activation = mcp_activations.get(str(server_id)) if isinstance(mcp_activations, Mapping) else None
+        active_config = activation if isinstance(activation, Mapping) else server_config
+        tools = [tool for tool in active_config.get("tools") or [] if isinstance(tool, dict)]
+        activation_mode = str(server_config.get("activationMode") or "on_demand").strip().lower()
+        pinned_names = {
+            str(name or "").strip()
+            for name in server_config.get("pinnedTools") or []
+            if str(name or "").strip()
+        }
+        selected_tools = tools if isinstance(activation, Mapping) else (
+            [tool for tool in tools if str(tool.get("name") or "") in pinned_names]
+            if activation_mode == "pinned"
+            else []
+        )
+        prompt_tools = sorted(
+            ({**tool, "promptExposed": True} for tool in selected_tools),
+            key=lambda tool: str(tool.get("name") or ""),
+        )
         if not prompt_tools:
             continue
-        adapter_config = {**server_config, "serverId": str(server_id)}
+        adapter_config = {**server_config, **dict(active_config), "serverId": str(server_id)}
         fingerprint = hashlib.sha256(
             json.dumps(adapter_config, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -631,6 +653,16 @@ def build_mcp_adapter_tool_handlers(
                         server_id=_server_id,
                         server_config=server,
                     )
+
+            if isinstance(activation, Mapping):
+                # load_mcp has just completed a real tools/list exchange. Reuse
+                # that exact lease for schema readiness instead of immediately
+                # performing the same network/process probe a second time.
+                loaded_tools = [dict(tool) for tool in prompt_tools]
+
+                def liveness_probe(*, server: Any, _tools=loaded_tools):
+                    del server
+                    return {"tools": _tools}
 
             adapter = McpStdioCapabilityAdapter(
                 provider_id=f"provider.mcp.{server_id}",

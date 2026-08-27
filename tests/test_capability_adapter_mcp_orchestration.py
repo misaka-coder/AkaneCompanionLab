@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.capability_approval import CapabilityApprovalStore
-from companion_v01.local_capability_config import save_capability_approval_mode
+from companion_v01.local_capability_config import get_mcp_server_runtime_config, save_capability_approval_mode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionResult, ToolExecutionContext
 
@@ -41,7 +41,16 @@ def context() -> ClientProtocolContext:
     )
 
 
-def write_profile_config(root: Path, profile: str, *, prompt_exposed: bool, risk: str = "low", allowlist=None) -> None:
+def write_profile_config(
+    root: Path,
+    profile: str,
+    *,
+    prompt_exposed: bool,
+    risk: str = "low",
+    allowlist=None,
+    activation_mode: str = "on_demand",
+    pinned_tools=None,
+) -> None:
     path = root / profile / "capabilities" / "capabilities.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -52,6 +61,8 @@ def write_profile_config(root: Path, profile: str, *, prompt_exposed: bool, risk
                 "displayName": "Demo MCP",
                 "transport": "stdio",
                 "command": "python",
+                "activationMode": activation_mode,
+                "pinnedTools": list(pinned_tools or []),
                 "lowRiskAllowlist": list(allowlist or []),
                 "tools": [
                     {
@@ -116,7 +127,10 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                 return {"tools": [{"name": "echo"}]}
 
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            write_profile_config(
+                Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"],
+                activation_mode="pinned", pinned_tools=["echo"],
+            )
             engine = build_engine(Path(temp_dir))
             manager = Manager()
             engine.mcp_host_manager = manager
@@ -137,9 +151,41 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             self.assertIn("web_search", handlers)
             self.assertNotIn("mcp.demo.echo", handlers)
 
-    def test_prompt_exposed_mcp_tool_is_profile_scoped(self) -> None:
+    def test_legacy_prompt_exposed_flag_does_not_bypass_on_demand_loading(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True)
+            engine = build_engine(Path(temp_dir))
+            without_load = engine._resolve_tool_handlers(
+                client_context=context(), profile_user_id="alice", session_id="s1"
+            )
+            runtime = get_mcp_server_runtime_config(
+                base_dir=temp_dir, profile_user_id="alice", server_id="demo"
+            )
+            selection = engine._resolve_capability_selection(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+                mcp_activations={"demo": runtime},
+            )
+            with_load = engine._resolve_tool_handlers(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+                capability_selection=selection,
+            )
+            next_turn = engine._resolve_tool_handlers(
+                client_context=context(), profile_user_id="alice", session_id="s2"
+            )
+            self.assertNotIn("mcp.demo.echo", without_load)
+            self.assertIn("mcp.demo.echo", with_load)
+            self.assertNotIn("mcp.demo.echo", next_turn)
+
+    def test_explicit_pinned_mcp_tool_is_profile_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(
+                Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"],
+                activation_mode="pinned", pinned_tools=["echo"],
+            )
             write_profile_config(Path(temp_dir), "bob", prompt_exposed=False, allowlist=["echo"])
             engine = build_engine(Path(temp_dir))
             alice = engine._resolve_tool_handlers(client_context=context(), profile_user_id="alice", session_id="s1")
@@ -149,7 +195,10 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
 
     def test_mcp_family_off_removes_tools_from_model_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            write_profile_config(
+                Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"],
+                activation_mode="pinned", pinned_tools=["echo"],
+            )
             saved = save_capability_approval_mode(
                 base_dir=temp_dir,
                 profile_user_id="alice",
@@ -167,7 +216,7 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             self.assertIn("web_search", handlers)
             self.assertNotIn("mcp.demo.echo", handlers)
 
-    def test_yaml_profile_config_loads_prompt_exposed_mcp_tool(self) -> None:
+    def test_yaml_profile_config_loads_explicit_pinned_mcp_tool(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             path = Path(temp_dir) / "alice" / "capabilities" / "capabilities.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,6 +229,9 @@ mcpServers:
     displayName: Demo MCP
     transport: stdio
     command: python
+    activationMode: pinned
+    pinnedTools:
+      - echo
     lowRiskAllowlist:
       - echo
     lastDiscovery:
@@ -211,7 +263,10 @@ mcpServers:
 
     def test_high_risk_mcp_tool_requires_approval_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, risk="high")
+            write_profile_config(
+                Path(temp_dir), "alice", prompt_exposed=True, risk="high",
+                activation_mode="pinned", pinned_tools=["echo"],
+            )
             engine = build_engine(Path(temp_dir))
             approval_store = CapabilityApprovalStore()
             engine._get_approval_store = lambda: approval_store
@@ -239,7 +294,10 @@ mcpServers:
 
     def test_prompt_instruction_redacts_secret_and_local_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
-            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            write_profile_config(
+                Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"],
+                activation_mode="pinned", pinned_tools=["echo"],
+            )
             prompt = build_engine(Path(temp_dir))._build_tool_prompt_context(
                 allow_tool_call=True,
                 client_context=context(),

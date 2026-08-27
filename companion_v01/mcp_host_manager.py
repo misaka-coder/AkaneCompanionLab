@@ -23,8 +23,13 @@ from capcore_adapter_mcp import (
 )
 
 from .local_capability_config import (
+    APPROVAL_MODE_DISABLED,
+    _apply_mcp_low_risk_allowlist,
+    approval_mode_for_capability,
     get_mcp_server_runtime_config,
     list_mcp_server_configs,
+    load_capability_config,
+    normalize_mcp_tool_discovery_payload,
     normalize_mcp_server_config_payload,
     remove_mcp_server_config,
     save_mcp_server_config,
@@ -417,20 +422,101 @@ class McpManagementService:
             server["runtimeReason"] = runtime.get("reason")
         return payload
 
+    def prompt_catalog(self, *, profile_user_id: str) -> str:
+        config = load_capability_config(base_dir=self.base_dir, profile_user_id=profile_user_id)
+        if approval_mode_for_capability(config.get("approvalPolicy"), "mcp.family") == APPROVAL_MODE_DISABLED:
+            return ""
+        payload = list_mcp_server_configs(base_dir=self.base_dir, profile_user_id=profile_user_id)
+        rows: list[tuple[str, str, str, int]] = []
+        for server in payload.get("mcpServers") or []:
+            if not isinstance(server, Mapping) or not bool(server.get("enabled")):
+                continue
+            if str(server.get("status") or "") != "ready":
+                continue
+            server_id = str(server.get("serverId") or "").strip()
+            name = str(server.get("name") or server_id).strip()
+            tool_count = int(server.get("toolCount") or 0)
+            description = str(server.get("catalogDescription") or "").strip()
+            if not description:
+                description = f"{name} 提供的外部能力，共 {tool_count} 个工具"
+            rows.append((server_id, name, description, tool_count))
+        if not rows:
+            return ""
+        stable = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        revision = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12]
+        lines = [
+            f"【可按需加载的 MCP｜目录 {revision}】",
+            "MCP 工具默认不占用本轮 schema。任务需要时调用 load_mcp，可一次加载多个；加载仅在当前任务回合有效，不安装软件、不改变权限。",
+        ]
+        lines.extend(f"- {server_id}：{description}" for server_id, _name, description, _count in rows)
+        return "\n".join(lines)
+
+    def activate(self, *, profile_user_id: str, server_ids: list[str] | tuple[str, ...]) -> dict[str, Any]:
+        config_payload = load_capability_config(base_dir=self.base_dir, profile_user_id=profile_user_id)
+        if approval_mode_for_capability(config_payload.get("approvalPolicy"), "mcp.family") == APPROVAL_MODE_DISABLED:
+            return {"ok": False, "status": "disabled", "reason": "mcp_family_disabled"}
+        requested = sorted({str(item or "").strip() for item in server_ids if str(item or "").strip()})
+        if not requested:
+            return {"ok": False, "status": "invalid_request", "reason": "mcp_server_ids_required"}
+        activation_servers: dict[str, dict[str, Any]] = {}
+        receipts: list[dict[str, Any]] = []
+        for server_id in requested:
+            config = get_mcp_server_runtime_config(
+                base_dir=self.base_dir,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+            )
+            if not config:
+                return {"ok": False, "status": "not_found", "serverId": server_id, "reason": "mcp_server_config_missing"}
+            if not bool(config.get("enabled")):
+                return {"ok": False, "status": "disabled", "serverId": server_id, "reason": "mcp_server_disabled"}
+            try:
+                discovery = self.manager.discover(
+                    profile_user_id=profile_user_id,
+                    server_id=server_id,
+                    server_config=config,
+                )
+            except Exception as exc:
+                diagnostic = build_mcp_failure_diagnostic(exc, stage="activate_and_list_tools")
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "serverId": server_id,
+                    "reason": mcp_failure_reason(exc, fallback="mcp_tools_list_failed"),
+                    "diagnostic": diagnostic,
+                }
+            normalized = normalize_mcp_tool_discovery_payload(server_id, discovery)
+            if not normalized.get("ok"):
+                return {"ok": False, "status": "error", "serverId": server_id, "reason": normalized.get("reason")}
+            allowlist = list(config.get("lowRiskAllowlist") or [])
+            tools = [_apply_mcp_low_risk_allowlist(tool, allowlist) for tool in normalized.get("tools") or []]
+            if not tools:
+                return {"ok": False, "status": "unavailable", "serverId": server_id, "reason": "mcp_server_has_no_tools"}
+            schema_hash = hashlib.sha256(
+                json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
+            activation_servers[server_id] = {**config, "tools": tools}
+            receipts.append({"server_id": server_id, "tool_count": len(tools), "schema_hash": schema_hash})
+        return {
+            "ok": True,
+            "status": "loaded",
+            "scope": "current_turn",
+            "servers": receipts,
+            "_activation": {"servers": activation_servers},
+        }
+
     def configure(
         self,
         *,
         profile_user_id: str,
         server_id: str,
         payload: Mapping[str, Any],
-        prompt_exposed_tools: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         with self._server_lock(profile_user_id, server_id):
             return self._configure_locked(
                 profile_user_id=profile_user_id,
                 server_id=server_id,
                 payload=payload,
-                prompt_exposed_tools=prompt_exposed_tools,
             )
 
     def _configure_locked(
@@ -439,7 +525,6 @@ class McpManagementService:
         profile_user_id: str,
         server_id: str,
         payload: Mapping[str, Any],
-        prompt_exposed_tools: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         normalized = normalize_mcp_server_config_payload(server_id, payload)
         if not normalized.get("ok"):
@@ -470,16 +555,12 @@ class McpManagementService:
                     "recommendedAction": diagnostic["recommendedAction"],
                     "lastGoodPreserved": bool(old),
                 }
-        exposed = list(prompt_exposed_tools) if prompt_exposed_tools is not None else None
-        if exposed is not None and "*" in exposed:
-            exposed = [str(tool.get("name") or "") for tool in tools or []]
         saved = save_mcp_server_config(
             base_dir=self.base_dir,
             profile_user_id=profile_user_id,
             server_id=server_id,
             payload=normalized,
             discovered_tools=tools,
-            prompt_exposed_tools=exposed,
         )
         if not saved.get("ok"):
             if tools is not None:
@@ -532,16 +613,10 @@ class McpManagementService:
                     "serverId": server_id,
                     "reason": "mcp_server_config_missing",
                 }
-            exposed = [
-                str(tool.get("name") or "")
-                for tool in config.get("tools") or []
-                if isinstance(tool, Mapping) and bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
-            ]
             return self._configure_locked(
                 profile_user_id=profile_user_id,
                 server_id=server_id,
                 payload=config,
-                prompt_exposed_tools=exposed,
             )
 
     def set_enabled(self, *, profile_user_id: str, server_id: str, enabled: bool) -> dict[str, Any]:
@@ -558,16 +633,10 @@ class McpManagementService:
                     "serverId": server_id,
                     "reason": "mcp_server_config_missing",
                 }
-            exposed = [
-                str(tool.get("name") or "")
-                for tool in config.get("tools") or []
-                if isinstance(tool, Mapping) and bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
-            ]
             return self._configure_locked(
                 profile_user_id=profile_user_id,
                 server_id=server_id,
                 payload={**config, "enabled": enabled},
-                prompt_exposed_tools=exposed,
             )
 
     def restart(self, *, profile_user_id: str, server_id: str) -> dict[str, Any]:

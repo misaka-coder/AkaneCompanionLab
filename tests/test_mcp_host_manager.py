@@ -7,13 +7,13 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from companion_v01.local_capability_config import get_mcp_server_runtime_config
+from companion_v01.local_capability_config import get_mcp_server_runtime_config, normalize_mcp_tool_discovery_payload
 from companion_v01.mcp_host_manager import McpManagementService
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.routes.capabilities import build_capabilities_router
 from companion_v01.tool_handlers.core import ToolExecutionContext
-from companion_v01.tool_handlers.mcp_management import McpManageToolHandler
+from companion_v01.tool_handlers.mcp_management import LoadMcpToolHandler, McpManageToolHandler
 from capcore_adapter_mcp import McpClientError
 
 
@@ -57,12 +57,17 @@ class McpManagementServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_configure_starts_candidate_before_atomic_save_and_exposes_selected_tools(self) -> None:
+    def test_configure_starts_candidate_before_atomic_save_and_defaults_to_on_demand(self) -> None:
         result = self.service.configure(
             profile_user_id="owner",
             server_id="demo",
-            payload={"enabled": True, "transport": "stdio", "command": "demo-mcp", "args": ["--stdio"]},
-            prompt_exposed_tools=["echo"],
+            payload={
+                "enabled": True,
+                "transport": "stdio",
+                "command": "demo-mcp",
+                "args": ["--stdio"],
+                "catalogDescription": "Demo tools",
+            },
         )
         saved = get_mcp_server_runtime_config(
             base_dir=self.base_dir,
@@ -73,7 +78,9 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(self.manager.discoveries[0][2]["command"], "demo-mcp")
         self.assertEqual(saved["tools"][0]["name"], "echo")
-        self.assertTrue(saved["tools"][0]["promptExposed"])
+        self.assertFalse(saved["tools"][0]["promptExposed"])
+        self.assertEqual(saved["activationMode"], "on_demand")
+        self.assertIn("demo：Demo tools", self.service.prompt_catalog(profile_user_id="owner"))
 
     def test_secret_named_env_accepts_placeholder_but_rejects_literal(self) -> None:
         accepted = self.service.configure(
@@ -104,7 +111,6 @@ class McpManagementServiceTests(unittest.TestCase):
             profile_user_id="owner",
             server_id="demo",
             payload={"enabled": True, "transport": "stdio", "command": "old-mcp"},
-            prompt_exposed_tools=["echo"],
         )
         self.assertTrue(first["ok"])
         self.manager.fail = True
@@ -112,7 +118,6 @@ class McpManagementServiceTests(unittest.TestCase):
             profile_user_id="owner",
             server_id="demo",
             payload={"enabled": True, "transport": "stdio", "command": "broken-mcp"},
-            prompt_exposed_tools=["echo"],
         )
         saved = get_mcp_server_runtime_config(
             base_dir=self.base_dir,
@@ -237,6 +242,97 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertIn("mcp_manage", desktop.tool_names)
         self.assertIn("mcp_manage", qq.tool_names)
         self.assertNotIn("mcp_manage", web.tool_names)
+        self.assertIn("load_mcp", desktop.tool_names)
+        self.assertIn("load_mcp", qq.tool_names)
+
+    def test_load_mcp_returns_compact_receipt_and_private_turn_activation(self) -> None:
+        self.service.configure(
+            profile_user_id="owner",
+            server_id="demo",
+            payload={"enabled": True, "transport": "stdio", "command": "demo-mcp"},
+        )
+        result = LoadMcpToolHandler(service=self.service).execute(
+            call={"type": "load_mcp", "server_ids": ["demo"]},
+            context=ToolExecutionContext(
+                profile_user_id="owner",
+                session_id="s",
+                now_ts=1,
+                visual_payload={},
+                client_mode="qq",
+            ),
+        )
+        public = result.followup_context
+        self.assertIn('"scope":"current_turn"', public)
+        self.assertIn('"tool_count":1', public)
+        self.assertNotIn("inputSchema", public)
+        self.assertEqual(list(result.state_updates["mcp_activation"]["servers"]), ["demo"])
+
+    def test_discovery_does_not_silently_truncate_more_than_64_tools(self) -> None:
+        payload = normalize_mcp_tool_discovery_payload(
+            "large",
+            {
+                "tools": [
+                    {"name": f"tool_{index}", "inputSchema": {"type": "object"}}
+                    for index in range(70)
+                ]
+            },
+        )
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["tools"]), 70)
+
+    def test_discovery_preserves_full_nested_tool_schema(self) -> None:
+        properties = {f"field_{index}": {"type": "string"} for index in range(30)}
+        properties["options"] = {
+            "type": "array",
+            "items": {"type": "string", "enum": ["open", "closed"]},
+        }
+        payload = normalize_mcp_tool_discovery_payload(
+            "nested",
+            {
+                "tools": [
+                    {
+                        "name": "complex",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": ["field_29", "options"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ]
+            },
+        )
+        schema = payload["tools"][0]["inputSchema"]
+        self.assertEqual(len(schema["properties"]), 31)
+        self.assertEqual(schema["properties"]["options"]["items"]["enum"], ["open", "closed"])
+        self.assertEqual(schema["required"], ["field_29", "options"])
+        self.assertFalse(schema["additionalProperties"])
+
+    def test_prompt_catalog_is_stable_until_config_changes(self) -> None:
+        self.service.configure(
+            profile_user_id="owner",
+            server_id="demo",
+            payload={
+                "enabled": True,
+                "transport": "stdio",
+                "command": "demo-mcp",
+                "catalogDescription": "First description",
+            },
+        )
+        first = self.service.prompt_catalog(profile_user_id="owner")
+        second = self.service.prompt_catalog(profile_user_id="owner")
+        self.assertEqual(first, second)
+        self.service.configure(
+            profile_user_id="owner",
+            server_id="demo",
+            payload={
+                "enabled": True,
+                "transport": "stdio",
+                "command": "demo-mcp",
+                "catalogDescription": "Second description",
+            },
+        )
+        self.assertNotEqual(first, self.service.prompt_catalog(profile_user_id="owner"))
 
     def test_lifecycle_routes_use_host_management_service(self) -> None:
         self.service.configure(

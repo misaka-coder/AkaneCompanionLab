@@ -150,6 +150,7 @@ COMMON_TOOL_NAMES = (
     "browse_memory",
     "open_memory",
     "load_skill",
+    "load_mcp",
     "load_character_context",
     "set_reminder",
     "list_reminders",

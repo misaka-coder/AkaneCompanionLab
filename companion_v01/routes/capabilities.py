@@ -459,13 +459,11 @@ def build_capabilities_router(
         payload = await _read_json_object(request)
         service = getattr(engine, "mcp_management_service", None)
         if service is not None:
-            exposed = payload.get("promptExposedTools") or payload.get("prompt_exposed_tools")
             result = await asyncio.to_thread(
                 service.configure,
                 profile_user_id=profile_user_id,
                 server_id=server_id,
                 payload=payload,
-                prompt_exposed_tools=exposed if isinstance(exposed, list) else None,
             )
         else:
             result = save_mcp_server_config(

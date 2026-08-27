@@ -62,7 +62,7 @@ from ..capability_registry import (
 )
 from ..execution_specs import EXEC_CANCEL_TOOL_SPEC, EXEC_RUN_TOOL_SPEC, EXEC_STATUS_TOOL_SPEC
 from ..skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
-from ..mcp_specs import MCP_MANAGE_TOOL_SPEC
+from ..mcp_specs import LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
 from ..project_workspace_specs import (
     MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,
     PROJECT_INSPECT_TOOL_SPEC,
@@ -845,6 +845,11 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="control",
         default_round_budget=4,
     ),
+    "load_mcp": ToolMetadata(
+        family="mcp",
+        operation="read",
+        default_round_budget=4,
+    ),
     "manage_project_workspace": ToolMetadata(
         family="project_workspace",
         operation="control",
@@ -925,6 +930,7 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "load_skill": LOAD_SKILL_TOOL_SPEC,
     "manage_skill": MANAGE_SKILL_TOOL_SPEC,
     "mcp_manage": MCP_MANAGE_TOOL_SPEC,
+    "load_mcp": LOAD_MCP_TOOL_SPEC,
     "manage_project_workspace": MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,
     "project_inspect": PROJECT_INSPECT_TOOL_SPEC,
     "workspace_write": WORKSPACE_WRITE_TOOL_SPEC,

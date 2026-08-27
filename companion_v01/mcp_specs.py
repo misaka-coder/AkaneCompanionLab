@@ -5,6 +5,39 @@ from __future__ import annotations
 from capcore import CapabilityToolSpec
 
 
+LOAD_MCP_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="load_mcp",
+    display_name="Load MCP tools",
+    description=(
+        "Load the native tools from one or more installed and enabled MCP servers for the current "
+        "agent turn. Use the compact MCP directory in the prompt to choose server_ids. This does "
+        "not install software, change permissions, or persist tool schemas into later turns."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "server_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 80},
+                "minItems": 1,
+                "maxItems": 16,
+            },
+        },
+        "required": ["server_ids"],
+    },
+    risk="low",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="idempotent",
+    max_result_bytes=8 * 1024,
+)
+
+
 MCP_MANAGE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="mcp_manage",
     display_name="Manage MCP connections",
@@ -45,11 +78,21 @@ MCP_MANAGE_TOOL_SPEC = CapabilityToolSpec(
                 "description": "Remote headers with ${ENV_NAME} placeholders; never pass credential literals.",
             },
             "enabled": {"type": "boolean"},
-            "prompt_exposed_tools": {
+            "catalog_description": {
+                "type": "string",
+                "maxLength": 240,
+                "description": "Stable one-line description shown in the compact MCP directory.",
+            },
+            "activation_mode": {
+                "type": "string",
+                "enum": ["on_demand", "pinned"],
+                "description": "on_demand keeps schemas hidden until load_mcp; pinned exposes only pinned_tools.",
+            },
+            "pinned_tools": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1, "maxLength": 160},
                 "maxItems": 128,
-                "description": "Discovered MCP tool names to expose to the model; use ['*'] for all discovered tools.",
+                "description": "Exact discovered tool names kept resident only when activation_mode is pinned.",
             },
             "low_risk_allowlist": {
                 "type": "array",

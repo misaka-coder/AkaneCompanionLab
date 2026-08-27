@@ -4767,6 +4767,15 @@ class AkaneMemoryEngine:
             tool_result = batch_results[-1] if batch_results else None
             invalid_tool_decision_attempts = 0
             for completed_result in batch_results:
+                state_updates = getattr(completed_result, "state_updates", None)
+                activation = state_updates.get("mcp_activation") if isinstance(state_updates, Mapping) else None
+                activation_servers = activation.get("servers") if isinstance(activation, Mapping) else None
+                if isinstance(activation_servers, Mapping):
+                    current_activations = request_projection_state.setdefault("mcp_activations", {})
+                    if isinstance(current_activations, dict):
+                        for server_id, server_config in sorted(activation_servers.items()):
+                            if isinstance(server_config, Mapping):
+                                current_activations[str(server_id)] = dict(server_config)
                 envelope = getattr(completed_result, "followup_envelope", None)
                 continuation = getattr(envelope, "continuation", None)
                 if isinstance(continuation, Mapping) and str(continuation.get("type") or "").strip():
@@ -5436,6 +5445,7 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
         if isinstance(projection_failure, dict):
@@ -6279,6 +6289,7 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
         if isinstance(projection_failure, dict):
@@ -6729,6 +6740,7 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
         prompt_scope: str = "",
         current_user_source_id: str = "",
+        mcp_activations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
 
@@ -6758,6 +6770,7 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
             current_user_source_id=current_user_source_id,
+            mcp_activations=mcp_activations,
         )
 
     @staticmethod
@@ -8774,6 +8787,7 @@ class AkaneMemoryEngine:
         session_id: str = "",
         domain_profile_id: str = "",
         intent_text: str = "",
+        mcp_activations: Mapping[str, Any] | None = None,
     ) -> CapabilitySelection:
         from .engine_services.tool_rounds import resolve_capability_selection as _fn
 
@@ -8784,6 +8798,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             domain_profile_id=domain_profile_id,
             intent_text=intent_text,
+            mcp_activations=mcp_activations,
         )
 
     def _build_mcp_adapter_tool_handlers(
@@ -8791,6 +8806,7 @@ class AkaneMemoryEngine:
         *,
         profile_user_id: str = "",
         client_context: ClientProtocolContext | None = None,
+        mcp_activations: Mapping[str, Any] | None = None,
     ) -> dict[str, BaseToolHandler]:
         from .engine_services.tool_rounds import build_mcp_adapter_tool_handlers as _fn
 
@@ -8798,6 +8814,7 @@ class AkaneMemoryEngine:
             self,
             profile_user_id=profile_user_id,
             client_context=client_context,
+            mcp_activations=mcp_activations,
         )
 
     def _build_python_adapter_tool_handlers(
@@ -8926,6 +8943,15 @@ class AkaneMemoryEngine:
             except Exception as exc:
                 logger.warning("skill catalog projection failed: %s", type(exc).__name__)
                 skill_catalog = "【可按需加载的 Skills】\n- Skill 目录当前读取失败，本轮不要假装已经加载 Skill。"
+        mcp_catalog = ""
+        if "load_mcp" in ready_tool_names:
+            try:
+                service = getattr(self, "mcp_management_service", None)
+                if service is not None:
+                    mcp_catalog = str(service.prompt_catalog(profile_user_id=profile_user_id) or "").strip()
+            except Exception as exc:
+                logger.warning("MCP catalog projection failed: %s", type(exc).__name__)
+                mcp_catalog = "【可按需加载的 MCP】\n- MCP 目录当前读取失败，本轮不要假装已经加载 MCP。"
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
@@ -8972,13 +8998,15 @@ class AkaneMemoryEngine:
                     "本轮可直接调用的工具及参数以请求中实际附带的工具定义为准；"
                     "不要把这些工具手写进最终 JSON 的兼容 tool_call 字段。"
                 )
-                return "\n\n".join(part for part in (execution_host_context, skill_catalog, direct_hint) if part)
+                return "\n\n".join(part for part in (execution_host_context, skill_catalog, mcp_catalog, direct_hint) if part)
             if not disclosures and not capability_hints and not media_routing:
                 return "当前没有可用工具；按当前模式的最终回复协议作答。"
             parts: list[str] = []
             append_capability_context(parts)
             if skill_catalog:
                 parts.extend([skill_catalog, ""])
+            if mcp_catalog:
+                parts.extend([mcp_catalog, ""])
             parts.extend(media_routing)
             parts.append("当前没有需要展开的具体工具；按当前模式的最终回复协议作答。")
             if execution_host_context:
@@ -8991,6 +9019,8 @@ class AkaneMemoryEngine:
         append_capability_context(lines)
         if skill_catalog:
             lines.extend([skill_catalog, ""])
+        if mcp_catalog:
+            lines.extend([mcp_catalog, ""])
         if (
             client_context
             and client_context.effective_mode == ClientMode.DESKTOP_PET
