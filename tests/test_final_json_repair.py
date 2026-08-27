@@ -1537,6 +1537,110 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertTrue(result["_transient_final_failure"])
         self.assertNotEqual(result.get("speech"), '{"speech":"还是坏的 JSON"')
 
+    def test_textual_dsml_tool_protocol_retries_with_native_tools_enabled(self) -> None:
+        protocol = '["qq-tools"]</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>'
+        context = _default_context(
+            native_tools=[{"type": "function", "function": {"name": "load_mcp"}}],
+        )
+
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def call_chat_json_result(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    return ChatJSONResult(
+                        parsed={"speech": protocol, "tool_call": None},
+                        raw_text=protocol,
+                        fallback_used=True,
+                    )
+                native_call = {
+                    "id": "call_load",
+                    "type": "function",
+                    "function": {
+                        "name": "load_mcp",
+                        "arguments": '{"server_ids":["qq-tools"]}',
+                    },
+                }
+                return ChatJSONResult(
+                    parsed={
+                        "speech": "",
+                        "tool_call": None,
+                        "_native_tool_call": native_call,
+                        "_native_tool_calls": [native_call],
+                    },
+                    raw_text="",
+                )
+
+        llm = FakeLLM()
+        result = self._run_nonstream(self._engine(llm, context=context))
+
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(result["_native_tool_call"]["function"]["name"], "load_mcp")
+        self.assertEqual(llm.calls[1]["native_tools"], llm.calls[0]["native_tools"])
+        self.assertIn("文本化的工具协议", llm.calls[1]["user_prompt"])
+        self.assertIn("不要把 DSML", llm.calls[1]["user_prompt"])
+
+    def test_streamed_dsml_protocol_is_not_forwarded_before_retry(self) -> None:
+        protocol = '["qq-tools"]</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>'
+
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    yield {"type": "speech_chunk", "text": protocol}
+                    yield {"type": "speech_segment", "index": 0, "text": protocol}
+                    return SimpleNamespace(
+                        parsed={"speech": protocol, "tool_call": None},
+                        raw_text=protocol,
+                        error="",
+                        fallback_used=True,
+                        latest_emotion="",
+                        latest_speech=protocol,
+                        latest_reply_medium="",
+                        native_preface_text="",
+                    )
+                yield {"type": "speech_chunk", "text": "已经重新用原生工具入口处理。"}
+                yield {"type": "speech_segment", "index": 0, "text": "已经重新用原生工具入口处理。"}
+                return SimpleNamespace(
+                    parsed={"speech": "已经重新用原生工具入口处理。", "tool_call": None},
+                    raw_text='{"speech":"已经重新用原生工具入口处理。","tool_call":null}',
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="已经重新用原生工具入口处理。",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+        llm = FakeLLM()
+        events, result = self._run_stream(self._engine(llm))
+
+        visible_text = "\n".join(str(event.get("text") or "") for event in events)
+        self.assertNotIn("DSML", visible_text)
+        self.assertEqual(result["speech"], "已经重新用原生工具入口处理。")
+        self.assertIn("文本化的工具协议", llm.calls[1]["user_prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

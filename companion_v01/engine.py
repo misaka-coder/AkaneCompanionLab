@@ -192,6 +192,18 @@ FINAL_RESPONSE_RECOVERY_FEEDBACK = (
     "不要重复已完成的工具，不要讨论这次格式错误。"
 )
 
+# Some OpenAI-compatible gateways serialize an intended tool call into their
+# private text protocol instead of returning a structured tool_calls field.
+# That text is neither user-facing speech nor an executable decision. Keep the
+# correction request-scoped so the stable prompt/cache prefix does not change.
+FINAL_TOOL_PROTOCOL_RECOVERY_FEEDBACK = (
+    "【宿主反馈】\n"
+    "上一条输出包含文本化的工具协议，没有形成可执行的原生工具调用，因此不会交付给用户。\n"
+    "如果仍需操作，请使用当前提供的原生工具入口发出结构化工具调用；"
+    "不要把 DSML、XML 标签或工具协议写进 speech。"
+    "如果任务已完成，请正常输出可交付回复。不要重复已完成的工具。"
+)
+
 # Last-resort delivery after the configured structured decisions all fail. It
 # is an explicit protocol-exhaustion path, not an inferred final stage.
 FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = (
@@ -204,6 +216,10 @@ FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK = (
 # Wire text that carries any JSON structure (braces or a quoted JSON key)
 # is treated as (possibly damaged) JSON, never as complete plain text.
 _JSON_FRAGMENT_RE = re.compile(r'[{}]|"[A-Za-z_][A-Za-z0-9_]*"\s*:')
+_TEXT_TOOL_PROTOCOL_RE = re.compile(
+    r"(?is)(?:DSML.{0,160}(?:tool_calls?|invoke|parameter)|"
+    r"(?:tool_calls?|invoke|parameter).{0,160}DSML)"
+)
 
 
 class _ContextBoundGenerator:
@@ -5472,7 +5488,10 @@ class AkaneMemoryEngine:
             retry_mode = attempt > 1
             metrics_before = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             retry_note = (
-                self._final_response_retry_note(generation_context)
+                self._final_response_retry_note(
+                    generation_context,
+                    previous_feedback=retry_feedback,
+                )
                 if retry_mode and not transport_retry_pending
                 else ""
             )
@@ -5553,6 +5572,7 @@ class AkaneMemoryEngine:
                 raw_result=result,
                 normalized=normalized,
                 parse_fallback=parse_fallback,
+                provider_output_raw=provider_output_raw,
             )
             self._log_final_response_retry(
                 prompt_scope=str(generation_context.get("prompt_scope") or ""),
@@ -5612,7 +5632,13 @@ class AkaneMemoryEngine:
         return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
 
     @staticmethod
-    def _final_response_retry_note(generation_context: dict[str, Any]) -> str:
+    def _final_response_retry_note(
+        generation_context: dict[str, Any],
+        *,
+        previous_feedback: str = "",
+    ) -> str:
+        if previous_feedback == "text_tool_protocol":
+            return FINAL_TOOL_PROTOCOL_RECOVERY_FEEDBACK
         return FINAL_RESPONSE_RECOVERY_FEEDBACK
 
     @staticmethod
@@ -5621,7 +5647,13 @@ class AkaneMemoryEngine:
         raw_result: Any,
         normalized: Any,
         parse_fallback: bool,
+        provider_output_raw: str = "",
     ) -> str:
+        if AkaneMemoryEngine._output_contains_text_tool_protocol(
+            normalized,
+            provider_output_raw=provider_output_raw,
+        ):
+            return "text_tool_protocol"
         if parse_fallback:
             return "json_parse_fallback"
         if not isinstance(raw_result, dict):
@@ -5636,6 +5668,21 @@ class AkaneMemoryEngine:
         if not isinstance(normalized, dict) or not str(normalized.get("speech") or "").strip():
             return "speech_unusable"
         return "placeholder_reply"
+
+    @staticmethod
+    def _text_contains_tool_protocol(value: Any) -> bool:
+        return bool(_TEXT_TOOL_PROTOCOL_RE.search(str(value or "")))
+
+    @staticmethod
+    def _output_contains_text_tool_protocol(
+        output: Any,
+        *,
+        provider_output_raw: str = "",
+    ) -> bool:
+        speech = output.get("speech") if isinstance(output, dict) else ""
+        return AkaneMemoryEngine._text_contains_tool_protocol(speech) or (
+            AkaneMemoryEngine._text_contains_tool_protocol(provider_output_raw)
+        )
 
     def _build_final_response_request_kwargs(
         self,
@@ -5745,6 +5792,11 @@ class AkaneMemoryEngine:
         Tool availability is controlled only by the caller's explicit
         allow_tool_call decision, never by the fact that this is a retry.
         """
+        if self._output_contains_text_tool_protocol(
+            normalized,
+            provider_output_raw=provider_output_raw,
+        ):
+            return None
         if not self._final_output_has_tool_call(normalized):
             wrapped = self._wrap_plain_text_final_speech(
                 provider_output_raw=provider_output_raw,
@@ -5809,6 +5861,8 @@ class AkaneMemoryEngine:
         """
         raw = str(provider_output_raw or "").strip()
         if not raw or not parse_fallback or _JSON_FRAGMENT_RE.search(raw):
+            return None
+        if self._text_contains_tool_protocol(raw):
             return None
         text = raw
         if text.startswith("```") and text.endswith("```"):
@@ -5904,7 +5958,7 @@ class AkaneMemoryEngine:
             )
             return None
         speech = self._extract_final_plain_text_speech(getattr(result, "text", ""))
-        if not speech:
+        if not speech or self._text_contains_tool_protocol(speech):
             return None
         normalized = self._normalize_final_output(
             result={"speech": speech},
@@ -6201,6 +6255,8 @@ class AkaneMemoryEngine:
         text = str(output.get("speech") or "").strip()
         if not text:
             return True
+        if self._text_contains_tool_protocol(text):
+            return True
         compact = "".join(text.split())
         if len(compact) <= 160 and any(
             marker in compact
@@ -6336,7 +6392,10 @@ class AkaneMemoryEngine:
             retry_note = ""
             if retry_mode:
                 retry_note = (
-                    self._final_response_retry_note(generation_context)
+                    self._final_response_retry_note(
+                        generation_context,
+                        previous_feedback=retry_feedback,
+                    )
                     if not delivered_before_attempt
                     else self._stream_final_response_recovery_feedback(delivered_before_attempt)
                 )
@@ -6384,7 +6443,14 @@ class AkaneMemoryEngine:
                     # still retain the events for the final normalized result;
                     # persistence and retry decisions remain completion-bound.
                     event_type = str(event.get("type") or "")
-                    if event_type == "speech_chunk" and str(event.get("text") or ""):
+                    event_text = str(event.get("text") or "")
+                    if event_type in {"speech_chunk", "speech_segment"} and self._text_contains_tool_protocol(
+                        event_text
+                    ):
+                        # Provider-private tool syntax is not speech. Terminal
+                        # validation below retries with native tools available.
+                        continue
+                    if event_type == "speech_chunk" and event_text:
                         attempt_had_speech_chunk = True
                     if event_type == "speech_segment":
                         segment_text = str(event.get("text") or "").strip()
@@ -6483,6 +6549,7 @@ class AkaneMemoryEngine:
                 raw_result=getattr(stream_result, "parsed", None),
                 normalized=normalized,
                 parse_fallback=parse_fallback,
+                provider_output_raw=provider_output_raw,
             )
             if not stream_rate_limited:
                 self._log_final_response_retry(
