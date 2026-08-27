@@ -5822,6 +5822,11 @@ class AkaneMemoryEngine:
         )
         wrapped["_provider_output_raw"] = raw
         wrapped["_final_recovery"] = {"kind": "plain_text_wrap"}
+        # The model authored only the text on this recovery path. Keep the
+        # normalized emotion for clients that require a visual state, but mark
+        # it as a presentation default so QQ does not publish it as if the
+        # model had deliberately chosen that semantic expression.
+        wrapped["_emotion_model_authored"] = False
         return wrapped
 
     def _recover_final_response_plain_text(
@@ -5912,6 +5917,10 @@ class AkaneMemoryEngine:
             "kind": "plain_text",
             **({"error": error} if error else {}),
         }
+        # call_chat_text has no structured emotion channel. The normalizer
+        # supplies a presentation default, which must not be mistaken for a
+        # model-authored semantic expression by delivery surfaces.
+        normalized["_emotion_model_authored"] = False
         self._record_final_plain_text_recovery_metric()
         return normalized
 

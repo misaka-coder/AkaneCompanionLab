@@ -779,6 +779,7 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["speech"], "连续三次都没有成功，这里用纯文本直接回答。")
         self.assertNotIn("_transient_final_failure", result)
         self.assertEqual(result["_final_recovery"]["kind"], "plain_text")
+        self.assertIs(result["_emotion_model_authored"], False)
         self.assertIn("chat_final_plain_text_recoveries", llm.metrics)
         text_call = llm.text_calls[0]
         self.assertEqual(text_call["prompt_cache_key"], llm.json_calls[0]["prompt_cache_key"])
@@ -875,6 +876,7 @@ class FinalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["speech"], refusal)
         self.assertNotIn("_transient_final_failure", result)
         self.assertEqual(result["_final_recovery"]["kind"], "plain_text_wrap")
+        self.assertIs(result["_emotion_model_authored"], False)
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(llm.text_calls, 0)
 

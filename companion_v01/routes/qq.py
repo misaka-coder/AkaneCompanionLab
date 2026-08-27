@@ -1562,7 +1562,14 @@ def _process_qq_turn_streaming(
 
     emotion_image_result = {"ok": True, "status": "skipped", "reason": "not_attempted"}
     emotion_started_at = time.perf_counter()
-    if (
+    if frame.get("_emotion_model_authored") is False:
+        emotion_mface_result = {
+            "ok": True,
+            "status": "skipped",
+            "reason": "emotion_not_model_authored",
+        }
+        emotion_image_result = dict(emotion_mface_result)
+    elif (
         send_result.get("ok")
         and not bool(frame.get("_transient_final_failure") or deliberate_silence)
         and (

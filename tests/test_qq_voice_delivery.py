@@ -27,6 +27,7 @@ class FakeQQGateway:
     def __init__(self) -> None:
         self.text_sends: list[list[str]] = []
         self.voice_sends: list[str] = []
+        self.emotion_sends: list[str] = []
 
     def resolve_reply_mode(self, session_id: str) -> str:
         return "auto"
@@ -65,6 +66,7 @@ class FakeQQGateway:
         return {"ok": True, "count": 0, "results": []}
 
     def send_emotion_mface(self, context, frame, *, qq_delivery_config):
+        self.emotion_sends.append(str(frame.get("emotion") or ""))
         return {"ok": True, "status": "sent"}
 
     def send_stickers(self, context, tool_events):
@@ -859,6 +861,46 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(gateway.text_sends, [["重新生成后正常交付的答复。"]])
         self.assertNotIn("没有形成可交付的文字结果", repr(gateway.text_sends))
         self.assertFalse(bool(result.get("send_result", {}).get("final_failure_notice")))
+
+    def test_plain_text_recovery_delivers_text_without_invented_emotion(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "emotion": "不满",
+                        "speech": "搜索完成，结果已经整理好了。",
+                        "speech_segments": ["搜索完成，结果已经整理好了。"],
+                        "tool_events": [],
+                        "_final_recovery": {"kind": "plain_text_wrap"},
+                        "_emotion_model_authored": False,
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_group_recovered",
+                profile_user_id="qq_group_recovered",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "搜一下"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [["搜索完成，结果已经整理好了。"]])
+        self.assertEqual(gateway.emotion_sends, [])
+        self.assertEqual(result["emotion_mface_result"]["reason"], "emotion_not_model_authored")
+        self.assertEqual(result["emotion_image_result"]["reason"], "emotion_not_model_authored")
 
     def test_tool_preface_without_final_frame_is_not_treated_as_completed_reply(self) -> None:
         class FakeEngine:
