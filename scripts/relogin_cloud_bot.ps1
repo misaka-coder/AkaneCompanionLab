@@ -83,6 +83,27 @@ function Get-ResultValue {
     return $line[0].Substring($prefix.Length)
 }
 
+function Invoke-HostReadinessCheck {
+    $readinessScript = @'
+set -u
+response=$(curl -sS --max-time 8 "http://127.0.0.1:10001/health") || {
+    echo AKANE_RESULT=HOST_UNAVAILABLE
+    echo AKANE_REASON=host_health_unreachable
+    exit 10
+}
+status=$(printf %s "$response" | jq -r '.status // empty' 2>/dev/null || true)
+if [ "$status" != ok ]; then
+    echo AKANE_RESULT=HOST_UNAVAILABLE
+    echo "AKANE_REASON=host_health_${status:-invalid}"
+    exit 11
+fi
+
+echo AKANE_RESULT=HOST_READY
+'@
+
+    return Invoke-RemoteScript -ScriptText $readinessScript -Arguments @()
+}
+
 function Invoke-StatusCheck {
     param([Parameter(Mandatory = $true)]$Profile)
 
@@ -462,6 +483,16 @@ try {
     $preflight = Invoke-RemoteScript -ScriptText "sudo -n true && command -v docker jq curl >/dev/null" -Arguments @()
     if ($preflight.ExitCode -ne 0) {
         throw "remote_preflight_failed:ssh_or_passwordless_sudo"
+    }
+
+    # NapCat login and the Akane Host are separate processes. Check the Host
+    # before restarting either account so a Host outage cannot be mistaken for
+    # a failed QR scan after the account has already logged in successfully.
+    $hostReadiness = Invoke-HostReadinessCheck
+    $hostResult = Get-ResultValue -Lines $hostReadiness.Lines -Name "RESULT"
+    if ($hostReadiness.ExitCode -ne 0 -or $hostResult -ne "HOST_READY") {
+        $reason = Get-ResultValue -Lines $hostReadiness.Lines -Name "REASON"
+        throw "host_unavailable_before_relogin:$reason"
     }
 
     $selectedBots = if ($Bot -eq "both") { @("personal", "finance") } else { @($Bot) }
