@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Akane Host storage maintenance every six hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=true
+Unit=akane-host-storage-maintenance.service
+
+[Install]
+WantedBy=timers.target
