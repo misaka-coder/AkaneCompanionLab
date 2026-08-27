@@ -87,6 +87,43 @@ def build_engine(config_base_dir: Path) -> AkaneMemoryEngine:
 
 
 class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
+    def test_host_manager_client_replaces_per_call_stdio_caller(self) -> None:
+        class ManagedClient:
+            async def list_tools(self, server):
+                del server
+                return ()
+
+            async def call_tool(self, server, tool_name, arguments):
+                del server, tool_name, arguments
+                return {}
+
+            async def aclose(self):
+                return None
+
+        class Manager:
+            def __init__(self) -> None:
+                self.managed_client = ManagedClient()
+                self.client_calls = []
+
+            def client(self, **kwargs):
+                self.client_calls.append(kwargs)
+                return self.managed_client
+
+            def discover(self, **kwargs):
+                del kwargs
+                return {"tools": [{"name": "echo"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            engine = build_engine(Path(temp_dir))
+            manager = Manager()
+            engine.mcp_host_manager = manager
+            handler = engine._resolve_tool_handlers(client_context=context(), profile_user_id="alice", session_id="s1")[
+                "mcp.demo.echo"
+            ]
+            self.assertIs(handler.adapter._client, manager.managed_client)
+            self.assertEqual(manager.client_calls[0]["server_id"], "demo")
+
     def test_no_prompt_exposed_mcp_tools_keeps_old_handlers_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
             write_profile_config(Path(temp_dir), "alice", prompt_exposed=False)

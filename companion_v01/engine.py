@@ -546,6 +546,13 @@ class AkaneMemoryEngine:
             record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
             engine_ref=self,  # M66-F: route worker tool calls through execute_tool_invocation
         )
+        from .mcp_host_manager import McpHostManager, McpManagementService
+
+        self.mcp_host_manager = McpHostManager()
+        self.mcp_management_service = McpManagementService(
+            base_dir=self.capability_config_base_dir,
+            manager=self.mcp_host_manager,
+        )
         self.tool_handlers = self._build_tool_handlers()
         # Server-local offer index for all concrete in-process handlers. Static
         # handlers are always ready; handlers with capability_status() are probed.
@@ -747,6 +754,14 @@ class AkaneMemoryEngine:
             self._embedding_reindex_stop.set()
 
         failures: list[str] = []
+
+        mcp_host_manager = getattr(self, "mcp_host_manager", None)
+        if mcp_host_manager is not None:
+            try:
+                if not mcp_host_manager.close():
+                    failures.append("mcp_host_manager_timeout")
+            except Exception:
+                failures.append("mcp_host_manager_close_failed")
 
         background_tasks = getattr(self, "background_tasks", None)
         if background_tasks is not None:
@@ -8641,6 +8656,7 @@ class AkaneMemoryEngine:
             skill_registry=self._get_skill_registry(),
             execution_provider=self._build_execution_provider(),
             approval_store=self._get_approval_store(),
+            mcp_management_service=getattr(self, "mcp_management_service", None),
         )
 
     def bind_qq_delivery_port(self, delivery_port: Any | None) -> None:

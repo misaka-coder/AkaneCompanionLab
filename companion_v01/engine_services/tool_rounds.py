@@ -599,12 +599,30 @@ def build_mcp_adapter_tool_handlers(
         cache_key = (str(profile_user_id), str(server_id), fingerprint)
         adapter = adapter_cache.get(cache_key)
         if adapter is None:
+            manager = getattr(engine, "mcp_host_manager", None)
+            managed_client = None
+            liveness_probe = getattr(engine, "mcp_liveness_probe", None)
+            if manager is not None:
+                managed_client = manager.client(
+                    profile_user_id=str(profile_user_id),
+                    server_id=str(server_id),
+                    server_config=adapter_config,
+                )
+
+                def liveness_probe(*, server: Any, _manager=manager, _profile=str(profile_user_id), _server_id=str(server_id)):
+                    return _manager.discover(
+                        profile_user_id=_profile,
+                        server_id=_server_id,
+                        server_config=server,
+                    )
+
             adapter = McpStdioCapabilityAdapter(
                 provider_id=f"provider.mcp.{server_id}",
                 server_id=str(server_id),
                 server_config=adapter_config,
                 tool_configs=tuple(prompt_tools),
-                liveness_probe=getattr(engine, "mcp_liveness_probe", None),
+                client=managed_client,
+                liveness_probe=liveness_probe,
             )
             if len(adapter_cache) >= 64:
                 adapter_cache.clear()

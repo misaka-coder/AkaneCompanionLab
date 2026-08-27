@@ -435,10 +435,14 @@ def build_capabilities_router(
     async def read_capability_mcp_servers(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
         _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
-        payload = list_mcp_server_configs(
-            base_dir=provider_config_base_dir,
-            profile_user_id=profile_user_id,
-        )
+        service = getattr(engine, "mcp_management_service", None)
+        if service is not None:
+            payload = await asyncio.to_thread(service.list, profile_user_id=profile_user_id)
+        else:
+            payload = list_mcp_server_configs(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+            )
         _observe_request(runtime_metrics, "capabilities.mcp_servers", started_at, True)
         _log_best_effort(
             log_event,
@@ -453,12 +457,23 @@ def build_capabilities_router(
         started_at = time.perf_counter()
         _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
         payload = await _read_json_object(request)
-        result = save_mcp_server_config(
-            base_dir=provider_config_base_dir,
-            profile_user_id=profile_user_id,
-            server_id=server_id,
-            payload=payload,
-        )
+        service = getattr(engine, "mcp_management_service", None)
+        if service is not None:
+            exposed = payload.get("promptExposedTools") or payload.get("prompt_exposed_tools")
+            result = await asyncio.to_thread(
+                service.configure,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+                payload=payload,
+                prompt_exposed_tools=exposed if isinstance(exposed, list) else None,
+            )
+        else:
+            result = save_mcp_server_config(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+                payload=payload,
+            )
         _observe_request(runtime_metrics, "capabilities.mcp_server_config", started_at, bool(result.get("ok")))
         _log_best_effort(
             log_event,
@@ -472,12 +487,20 @@ def build_capabilities_router(
     async def discover_capability_mcp_server_tools(server_id: str, request: Request) -> JSONResponse:
         started_at = time.perf_counter()
         _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
-        result = await _discover_mcp_server_tools(
-            base_dir=provider_config_base_dir,
-            profile_user_id=profile_user_id,
-            server_id=server_id,
-            discoverer=mcp_tool_discoverer,
-        )
+        service = getattr(engine, "mcp_management_service", None)
+        if service is not None:
+            result = await asyncio.to_thread(
+                service.discover,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+            )
+        else:
+            result = await _discover_mcp_server_tools(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+                discoverer=mcp_tool_discoverer,
+            )
         _observe_request(runtime_metrics, "capabilities.mcp_server_discover", started_at, bool(result.get("ok")))
         _log_best_effort(
             log_event,
@@ -488,6 +511,63 @@ def build_capabilities_router(
             reason=result.get("reason"),
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    async def _change_mcp_lifecycle(server_id: str, request: Request, action: str) -> JSONResponse:
+        started_at = time.perf_counter()
+        _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
+        service = getattr(engine, "mcp_management_service", None)
+        if service is None:
+            result = {
+                "ok": False,
+                "status": "unavailable",
+                "serverId": server_id,
+                "reason": "mcp_management_service_unavailable",
+            }
+        elif action == "restart":
+            result = await asyncio.to_thread(
+                service.restart, profile_user_id=profile_user_id, server_id=server_id
+            )
+        elif action == "remove":
+            result = await asyncio.to_thread(
+                service.remove, profile_user_id=profile_user_id, server_id=server_id
+            )
+        else:
+            result = await asyncio.to_thread(
+                service.set_enabled,
+                profile_user_id=profile_user_id,
+                server_id=server_id,
+                enabled=action == "enable",
+            )
+        _observe_request(
+            runtime_metrics,
+            f"capabilities.mcp_server_{action}",
+            started_at,
+            bool(result.get("ok")),
+        )
+        _log_best_effort(
+            log_event,
+            f"capabilities_mcp_server_{action}",
+            status=result.get("status"),
+            serverId=result.get("serverId"),
+            reason=result.get("reason"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.post("/capabilities/mcp-servers/{server_id}/enable")
+    async def enable_capability_mcp_server(server_id: str, request: Request) -> JSONResponse:
+        return await _change_mcp_lifecycle(server_id, request, "enable")
+
+    @router.post("/capabilities/mcp-servers/{server_id}/disable")
+    async def disable_capability_mcp_server(server_id: str, request: Request) -> JSONResponse:
+        return await _change_mcp_lifecycle(server_id, request, "disable")
+
+    @router.post("/capabilities/mcp-servers/{server_id}/restart")
+    async def restart_capability_mcp_server(server_id: str, request: Request) -> JSONResponse:
+        return await _change_mcp_lifecycle(server_id, request, "restart")
+
+    @router.delete("/capabilities/mcp-servers/{server_id}")
+    async def remove_capability_mcp_server(server_id: str, request: Request) -> JSONResponse:
+        return await _change_mcp_lifecycle(server_id, request, "remove")
 
     @router.get("/capabilities/approval-requests")
     async def read_capability_approval_requests(request: Request) -> JSONResponse:

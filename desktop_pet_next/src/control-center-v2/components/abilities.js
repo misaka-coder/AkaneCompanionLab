@@ -122,7 +122,9 @@ function renderProviderConfig(state, item) {
 function renderMcpConfig(state, item) {
   const savePhase = actionPhase(state, "abilities.mcp.config.save");
   const discoverPhase = actionPhase(state, "abilities.mcp.discover");
-  const pending = [savePhase, discoverPhase].some((phase) => ["pressed", "pending"].includes(phase));
+  const lifecycleActions = ["enable", "disable", "restart", "remove"];
+  const lifecyclePending = lifecycleActions.some((action) => ["pressed", "pending"].includes(actionPhase(state, `abilities.mcp.${action}`)));
+  const pending = [savePhase, discoverPhase].some((phase) => ["pressed", "pending"].includes(phase)) || lifecyclePending;
   const tools = item.safeToolLabels.length ? item.safeToolLabels : ["等待工具发现"];
   const isRemote = item.executionLocation === "remote" || item.transport === "streamable_http";
   const locationLabel = item.executionLocationLabel || (isRemote ? "远程服务" : "Akane Host");
@@ -147,6 +149,9 @@ function renderMcpConfig(state, item) {
       ${configFields}
       <div class="capability-form-actions">
         <button class="action-button" type="submit" data-action="abilities.mcp.discover"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""}><span>↻</span><b>${discoverPhase === "pending" ? "发现中" : "发现工具"}</b></button>
+        <button class="action-button" type="submit" data-action="abilities.mcp.${item.enabled ? "disable" : "enable"}"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""}><span>${item.enabled ? "Ⅱ" : "▷"}</span><b>${item.enabled ? "停用连接" : "启用连接"}</b></button>
+        <button class="action-button" type="submit" data-action="abilities.mcp.restart"${pending || !item.actionsEnabled || !item.configured || !item.enabled ? " disabled" : ""}><span>↻</span><b>重启会话</b></button>
+        <button class="action-button" type="submit" data-action="abilities.mcp.remove"${pending || !item.actionsEnabled || !item.configured ? " disabled" : ""} title="只移除 Akane 连接，不卸载外部软件"><span>×</span><b>移除连接</b></button>
         ${isRemote ? "" : `<button class="action-button is-primary" type="submit" data-action="abilities.mcp.config.save"${pending || !item.actionsEnabled ? " disabled" : ""}><span>✓</span><b>${savePhase === "pending" ? "保存中" : "替换配置"}</b></button>`}
       </div>
     </form>

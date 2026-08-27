@@ -58,6 +58,7 @@ from .memory import (
     RetrieveMemoryToolHandler,
 )
 from .music import SendAudioToolHandler, SendMusicCardToolHandler
+from .mcp_management import McpManageToolHandler
 from .qq_onebot import OneBotActionToolHandler
 from .project_workspace import (
     ManageProjectWorkspaceToolHandler,
@@ -110,6 +111,7 @@ def build_builtin_tool_handlers(
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
     project_workspace_service: Any | None = None,
+    mcp_management_service: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
@@ -255,6 +257,8 @@ def build_builtin_tool_handlers(
     }
     if skill_registry is not None:
         handlers["load_skill"] = LoadSkillToolHandler(registry=skill_registry)
+    if mcp_management_service is not None:
+        handlers["mcp_manage"] = McpManageToolHandler(service=mcp_management_service)
     if execution_provider is not None:
         resource_bridge = None
         workspace_root = getattr(execution_provider, "workspace_root", None)

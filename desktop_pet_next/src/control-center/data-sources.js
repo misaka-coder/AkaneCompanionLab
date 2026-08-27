@@ -23,7 +23,11 @@ const workflowBackendActionIds = new Set([
 ]);
 const mcpBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave,
-  CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover
+  CONTROL_CENTER_ACTIONS.abilitiesMcpDiscover,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpEnable,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpDisable,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpRestart,
+  CONTROL_CENTER_ACTIONS.abilitiesMcpRemove
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
@@ -715,11 +719,12 @@ async function runMcpBackendAction(fetchImpl, baseUrl, actionId, payload = {}, p
   if (!serverId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "serverId is required" };
   }
-  const endpoint = `/capabilities/mcp-servers/${encodeURIComponent(serverId)}/${mcpActionPath(actionId)}`;
+  const actionPath = mcpActionPath(actionId);
+  const endpoint = `/capabilities/mcp-servers/${encodeURIComponent(serverId)}${actionPath ? `/${actionPath}` : ""}`;
   const body = buildMcpActionBody(actionId, payload);
   try {
     const response = await fetchImpl(buildBackendUrl(baseUrl, endpoint, params), {
-      method: "POST",
+      method: actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpRemove ? "DELETE" : "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body),
       cache: "no-store"
@@ -745,6 +750,10 @@ async function runMcpBackendAction(fetchImpl, baseUrl, actionId, payload = {}, p
 
 function mcpActionPath(actionId) {
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpConfigSave) return "config";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpEnable) return "enable";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpDisable) return "disable";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpRestart) return "restart";
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesMcpRemove) return "";
   return "discover";
 }
 

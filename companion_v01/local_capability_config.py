@@ -977,6 +977,8 @@ def save_mcp_server_config(
     profile_user_id: str,
     server_id: str,
     payload: Mapping[str, Any],
+    discovered_tools: list[Mapping[str, Any]] | None = None,
+    prompt_exposed_tools: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     safe_server_id = _safe_mcp_server_id(server_id)
     if not safe_server_id:
@@ -1002,6 +1004,7 @@ def save_mcp_server_config(
 
     servers = dict(config.get("mcpServers") or {})
     existing = servers.get(safe_server_id) if isinstance(servers.get(safe_server_id), Mapping) else {}
+    low_risk_allowlist = _safe_mcp_tool_name_list(normalized.get("lowRiskAllowlist"))
     next_server = {
         "enabled": bool(normalized["enabled"]),
         "displayName": normalized["displayName"],
@@ -1014,10 +1017,52 @@ def save_mcp_server_config(
         "headers": normalized["headers"],
         "updatedAt": _now_iso(),
     }
+    if low_risk_allowlist:
+        next_server["lowRiskAllowlist"] = low_risk_allowlist
     same_endpoint = _mcp_server_endpoint_identity(existing) == _mcp_server_endpoint_identity(next_server)
-    if same_endpoint and isinstance(existing.get("tools"), list):
-        next_server["tools"] = list(existing.get("tools") or [])
-    if same_endpoint and isinstance(existing.get("lastDiscovery"), Mapping):
+    normalized_discovery = (
+        normalize_mcp_tool_discovery_payload(safe_server_id, {"tools": discovered_tools})
+        if discovered_tools is not None
+        else None
+    )
+    if normalized_discovery is not None and not normalized_discovery.get("ok"):
+        return {
+            "ok": False,
+            "status": normalized_discovery.get("status") or "invalid_discovery",
+            "serverId": safe_server_id,
+            "reason": normalized_discovery.get("reason") or "invalid_mcp_discovery_payload",
+        }
+    tools = (
+        list(normalized_discovery.get("tools") or [])
+        if normalized_discovery is not None
+        else list(existing.get("tools") or [])
+        if same_endpoint and isinstance(existing.get("tools"), list)
+        else []
+    )
+    exposed_names = (
+        set(_safe_mcp_tool_name_list(prompt_exposed_tools))
+        if prompt_exposed_tools is not None
+        else {
+            str(tool.get("name") or "")
+            for tool in tools
+            if isinstance(tool, Mapping) and bool(tool.get("promptExposed") or tool.get("prompt_exposed"))
+        }
+    )
+    if tools:
+        next_server["tools"] = [
+            {
+                **_apply_mcp_low_risk_allowlist(tool, low_risk_allowlist),
+                "promptExposed": str(tool.get("name") or "") in exposed_names,
+            }
+            for tool in tools
+        ]
+    if normalized_discovery is not None:
+        next_server["lastDiscovery"] = {
+            "status": "ready",
+            "discoveredAt": _now_iso(),
+            "toolCount": len(tools),
+        }
+    elif same_endpoint and isinstance(existing.get("lastDiscovery"), Mapping):
         next_server["lastDiscovery"] = dict(existing.get("lastDiscovery") or {})
     servers[safe_server_id] = next_server
     write_capability_config(
@@ -1038,6 +1083,45 @@ def save_mcp_server_config(
         "autoEnable": False,
         "configScope": _public_config_scope(profile_user_id),
         "mcpServer": build_mcp_server_config_entry(safe_server_id, next_server),
+    }
+
+
+def remove_mcp_server_config(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    server_id: str,
+) -> dict[str, Any]:
+    safe_server_id = _safe_mcp_server_id(server_id)
+    if not safe_server_id:
+        return {"ok": False, "status": "invalid_mcp_server", "reason": "mcp_server_id_invalid"}
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    servers = dict(config.get("mcpServers") or {})
+    if safe_server_id not in servers:
+        return {
+            "ok": False,
+            "status": "not_found",
+            "serverId": safe_server_id,
+            "reason": "mcp_server_config_missing",
+        }
+    servers.pop(safe_server_id, None)
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": servers,
+        },
+    )
+    return {
+        "ok": True,
+        "status": "removed",
+        "serverId": safe_server_id,
+        "removedExternalPackage": False,
+        "refresh": True,
     }
 
 
@@ -2100,6 +2184,9 @@ def normalize_mcp_server_config_payload(server_id: str, payload: Mapping[str, An
         "env": env,
         "url": url,
         "headers": headers,
+        "lowRiskAllowlist": _safe_mcp_tool_name_list(
+            payload.get("lowRiskAllowlist") or payload.get("low_risk_allowlist")
+        ),
     }
 
 
@@ -3153,14 +3240,19 @@ def _safe_mcp_env(value: Any) -> dict[str, str] | None:
     env: dict[str, str] = {}
     for raw_key, raw_value in list(value.items())[:MCP_SERVER_ENV_MAX_COUNT]:
         key = str(raw_key or "").strip()
-        lowered_key = key.lower()
         if not key or not MCP_ENV_KEY_RE.fullmatch(key):
-            return None
-        if any(marker in lowered_key for marker in MCP_SECRET_MARKERS):
             return None
         text = str(raw_value or "").strip().replace("\r", "").replace("\n", "")
         lowered_value = text.lower()
-        if any(marker in lowered_value for marker in MCP_SECRET_MARKERS) or _mcp_text_has_secret_literal(text):
+        is_placeholder = bool(MCP_ENV_PLACEHOLDER_RE.fullmatch(text))
+        # Secret-shaped variable names are normal MCP configuration. Persist
+        # only a Host-side placeholder, never a literal credential from a UI
+        # or model tool call.
+        if any(marker in key.lower() for marker in MCP_SECRET_MARKERS) and not is_placeholder:
+            return None
+        if not is_placeholder and (
+            any(marker in lowered_value for marker in MCP_SECRET_MARKERS) or _mcp_text_has_secret_literal(text)
+        ):
             return None
         env[key] = text[:MCP_SERVER_TEXT_MAX_LENGTH]
     return env

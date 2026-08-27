@@ -169,6 +169,7 @@ EXEC_TOOL_NAMES = (
     "exec_status",
     "exec_cancel",
     "manage_skill",
+    "mcp_manage",
 )
 DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
@@ -2806,7 +2807,8 @@ class CapabilityRegistry:
                     "当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
                     "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
                     "只有宿主在本机启用执行时这项能力才会出现；需要创建或更新 Skill 时，可在执行工作区写草稿后用 manage_skill 原子发布；"
-                    "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录。"
+                    "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录；"
+                    "主人可用 mcp_manage 管理本 Host 的 MCP 连接，安装外部包仍用 exec_run。"
                 ),
                 trigger=_execution_enabled,
                 unavailable_reason="本机执行提供者当前没有通过可用性检查。",
@@ -2824,6 +2826,7 @@ class CapabilityRegistry:
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
                     "不会隐式访问聊天成员的个人电脑。主人还可把执行工作区中的 Skill 草稿用 manage_skill 原子发布；"
                     "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录；"
+                    "主人可用 mcp_manage 管理 Bot Host 的 MCP 连接，安装外部包仍用 exec_run；"
                     "主人可用 /shell status 查看本会话权限。"
                 ),
                 trigger=_execution_qq_enabled,
