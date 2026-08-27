@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.capability_approval import CapabilityApprovalStore
+from companion_v01.local_capability_config import save_capability_approval_mode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionResult, ToolExecutionContext
 
@@ -145,6 +146,26 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             bob = engine._resolve_tool_handlers(client_context=context(), profile_user_id="bob", session_id="s1")
             self.assertIn("mcp.demo.echo", alice)
             self.assertNotIn("mcp.demo.echo", bob)
+
+    def test_mcp_family_off_removes_tools_from_model_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=True, allowlist=["echo"])
+            saved = save_capability_approval_mode(
+                base_dir=temp_dir,
+                profile_user_id="alice",
+                capability_id="mcp",
+                mode="disabled",
+            )
+            self.assertTrue(saved["ok"])
+
+            handlers = build_engine(Path(temp_dir))._resolve_tool_handlers(
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+
+            self.assertIn("web_search", handlers)
+            self.assertNotIn("mcp.demo.echo", handlers)
 
     def test_yaml_profile_config_loads_prompt_exposed_mcp_tool(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):

@@ -280,7 +280,15 @@ def approval_mode_for_capability(
     capability_id: str,
 ) -> str:
     normalized = normalize_approval_policy_config(approval_policy)
-    return approval_mode_override_for_capability(normalized, capability_id) or str(normalized["defaultMode"])
+    exact_mode = approval_mode_override_for_capability(normalized, capability_id)
+    if exact_mode:
+        return exact_mode
+    safe_id = _safe_capability_approval_id(capability_id)
+    if safe_id.startswith("mcp."):
+        family_mode = approval_mode_override_for_capability(normalized, "mcp")
+        if family_mode:
+            return family_mode
+    return str(normalized["defaultMode"])
 
 
 def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, Any]:

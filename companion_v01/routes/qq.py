@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
 from ..media_bridge_engine import redact_remote_media_urls_for_prompt
 from ..local_capability_config import (
+    approval_mode_for_capability,
     approval_mode_override_for_capability,
     get_approval_policy_config,
     save_capability_approval_mode,
@@ -3282,6 +3283,77 @@ def build_qq_router(
                             "command_ok": command_ok,
                             "approval_mode": str(shell_permission_result.get("approval_mode") or ""),
                             "supported": bool(shell_permission_result.get("supported")),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "send_result": send_result,
+                        }
+                    )
+
+            mcp_permission_command = qq_gateway.parse_mcp_permission_command(context.clean_message)
+            if isinstance(mcp_permission_command, dict):
+                capability_config_base_dir = getattr(
+                    engine,
+                    "capability_config_base_dir",
+                    getattr(config_module, "DATA_DIR", None),
+                )
+                policy_payload = get_approval_policy_config(
+                    base_dir=capability_config_base_dir,
+                    profile_user_id=context.profile_user_id,
+                )
+                current_mcp_mode = approval_mode_for_capability(
+                    policy_payload.get("approvalPolicy"),
+                    "mcp.family",
+                )
+
+                def _save_mcp_mode(mode: str) -> str:
+                    saved = save_capability_approval_mode(
+                        base_dir=capability_config_base_dir,
+                        profile_user_id=context.profile_user_id,
+                        capability_id="mcp",
+                        mode=mode,
+                    )
+                    if not saved.get("ok"):
+                        raise RuntimeError(str(saved.get("reason") or "mcp_permission_save_failed"))
+                    return str(saved.get("approvalMode") or "")
+
+                mcp_permission_result = qq_gateway.handle_mcp_permission_command(
+                    context,
+                    command=mcp_permission_command,
+                    current_mode=current_mcp_mode,
+                    apply_mode=_save_mcp_mode,
+                )
+                if isinstance(mcp_permission_result, dict):
+                    reply = str(mcp_permission_result.get("reply") or "").strip()
+                    send_result = (
+                        qq_gateway.send_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
+                    )
+                    command_ok = bool(mcp_permission_result.get("ok"))
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request(
+                        "qq_napcat_event",
+                        duration_ms=duration_ms,
+                        ok=bool(send_result.get("ok")) and command_ok,
+                    )
+                    log_event(
+                        "qq_mcp_permission_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        is_group=bool(context.is_group),
+                        command_status=str(mcp_permission_result.get("status") or ""),
+                        command_ok=command_ok,
+                        approval_mode=str(mcp_permission_result.get("approval_mode") or ""),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_mcp_permission_command",
+                            "command_status": str(mcp_permission_result.get("status") or ""),
+                            "command_ok": command_ok,
+                            "approval_mode": str(mcp_permission_result.get("approval_mode") or ""),
                             "session_id": context.session_id,
                             "profile_user_id": context.profile_user_id,
                             "send_result": send_result,

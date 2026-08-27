@@ -9,6 +9,7 @@ from companion_v01.local_capability_config import (
     CONFIGURABLE_PROVIDER_BY_ID,
     CONFIGURABLE_WORKFLOW_BY_ID,
     apply_approval_policy_to_entry,
+    approval_mode_for_capability,
     build_mcp_server_config_entry,
     build_mcp_tool_config_entry,
     build_provider_config_entry,
@@ -251,6 +252,33 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertEqual(trusted["approvalReason"], "user_policy_trusted_auto_allow")
         self.assertFalse(trusted["requiresConfirmation"])
         self.assertEqual(disabled["approvalMode"], APPROVAL_MODE_DISABLED)
+
+    def test_mcp_family_approval_mode_applies_without_changing_other_capabilities(self) -> None:
+        policy = {
+            "defaultMode": APPROVAL_MODE_ASK_EACH_TIME,
+            "capabilityModes": {"mcp": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+        }
+
+        self.assertEqual(
+            approval_mode_for_capability(policy, "mcp.demo.echo"),
+            APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        )
+        self.assertEqual(
+            approval_mode_for_capability(policy, "exec_run"),
+            APPROVAL_MODE_ASK_EACH_TIME,
+        )
+
+        exact_override = {
+            **policy,
+            "capabilityModes": {
+                **policy["capabilityModes"],
+                "mcp.demo.echo": APPROVAL_MODE_DISABLED,
+            },
+        }
+        self.assertEqual(
+            approval_mode_for_capability(exact_override, "mcp.demo.echo"),
+            APPROVAL_MODE_DISABLED,
+        )
 
 
 if __name__ == "__main__":

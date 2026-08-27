@@ -34,8 +34,10 @@ from ..domain_profiles import (
 )
 from .. import tool_orchestration_engine
 from ..local_capability_config import (
+    APPROVAL_MODE_DISABLED,
     APPROVAL_MODE_ASK_EACH_TIME,
     APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+    approval_mode_for_capability,
     approval_mode_override_for_capability,
     load_capability_config,
 )
@@ -578,6 +580,14 @@ def build_mcp_adapter_tool_handlers(
             profile_user_id=profile_user_id,
         )
     except Exception:
+        return {}
+    if (
+        approval_mode_for_capability(
+            config_payload.get("approvalPolicy"),
+            "mcp.family",
+        )
+        == APPROVAL_MODE_DISABLED
+    ):
         return {}
     servers = config_payload.get("mcpServers") if isinstance(config_payload.get("mcpServers"), dict) else {}
     raw_cache = getattr(engine, "_mcp_capability_adapter_cache", None)

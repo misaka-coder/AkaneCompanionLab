@@ -227,6 +227,10 @@ QQ_SHELL_PERMISSION_COMMAND_RE = re.compile(
     r"^[/／]shell(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
     re.IGNORECASE,
 )
+QQ_MCP_PERMISSION_COMMAND_RE = re.compile(
+    r"^[/／]mcp(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
+    re.IGNORECASE,
+)
 QQ_CAPABILITY_APPROVAL_COMMAND_RE = re.compile(
     r"^[/／](approvals?|approve|deny|审批|批准|拒绝)(?:\s+([A-Za-z0-9_-]+))?$",
     re.IGNORECASE,
@@ -1079,6 +1083,7 @@ class NapCatQQGateway:
         chat_model_override = self.resolve_chat_model_override(session_id)
 
         shell_permission_command = self.parse_shell_permission_command(clean_message)
+        mcp_permission_command = self.parse_mcp_permission_command(clean_message)
         capability_approval_command = self.parse_capability_approval_command(clean_message)
         group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_attention_command = self.parse_group_attention_command(clean_message)
@@ -1089,6 +1094,8 @@ class NapCatQQGateway:
             # Explicit control-plane commands must reach the authorization
             # handler even when the group normally requires @/wake-word.
             group_reason = "qq_shell_permission_command"
+        elif is_group and mcp_permission_command is not None:
+            group_reason = "qq_mcp_permission_command"
         elif is_group and group_emotion_command is not None:
             # Emotion delivery is a group control-plane setting too; it must
             # not require addressing the bot or wake-word admission.
@@ -1672,6 +1679,24 @@ class NapCatQQGateway:
         }.get(argument)
         return {"action": action} if action else None
 
+    def parse_mcp_permission_command(self, message: str) -> dict[str, str] | None:
+        text = re.sub(r"\s+", " ", str(message or "").strip())
+        match = QQ_MCP_PERMISSION_COMMAND_RE.fullmatch(text)
+        if match is None:
+            return None
+        argument = str(match.group(1) or "status").strip().lower()
+        action = {
+            "status": "status",
+            "状态": "status",
+            "on": "on",
+            "开启": "on",
+            "ask": "ask",
+            "询问": "ask",
+            "off": "off",
+            "关闭": "off",
+        }.get(argument)
+        return {"action": action} if action else None
+
     def parse_capability_approval_command(self, message: str) -> dict[str, str] | None:
         text = re.sub(r"\s+", " ", str(message or "").strip())
         match = QQ_CAPABILITY_APPROVAL_COMMAND_RE.fullmatch(text)
@@ -1909,6 +1934,108 @@ class NapCatQQGateway:
             "reply": reply,
             "approval_mode": applied_mode,
             "supported": supported,
+            "state_persisted": True,
+        }
+
+    def handle_mcp_permission_command(
+        self,
+        context: QQMessageContext,
+        *,
+        command: dict[str, str] | None = None,
+        current_mode: str = "ask_each_time",
+        apply_mode: Callable[[str], str] | None = None,
+    ) -> dict[str, Any] | None:
+        command = command or self.parse_mcp_permission_command(context.clean_message)
+        if command is None:
+            return None
+
+        normalized_current = str(current_mode or "").strip().lower()
+        if normalized_current not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
+            normalized_current = "ask_each_time"
+        scope_label = "本群" if context.is_group else "当前私聊"
+        action = str(command.get("action") or "")
+        if action == "status":
+            mode_label = {
+                "trusted_auto_allow": "已开启（直接执行）",
+                "ask_each_time": "每次询问",
+                "disabled": "已关闭",
+            }[normalized_current]
+            return {
+                "handled": True,
+                "ok": True,
+                "status": "current",
+                "reply": (
+                    f"{scope_label} MCP：{mode_label}。\n"
+                    "/mcp on 直接执行 · /mcp ask 每次审批 · /mcp off 禁止调用"
+                ),
+                "approval_mode": normalized_current,
+            }
+
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq <= 0 or int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有 Akane 主人账号可以调节 MCP 权限。",
+                "approval_mode": normalized_current,
+            }
+
+        target_mode = {
+            "on": "trusted_auto_allow",
+            "ask": "ask_each_time",
+            "off": "disabled",
+        }.get(action, "")
+        if not target_mode:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "invalid_action",
+                "reply": "这个 MCP 指令不支持。可用：/mcp on、/mcp ask、/mcp off、/mcp status。",
+                "approval_mode": normalized_current,
+            }
+        if apply_mode is None:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_unavailable",
+                "reply": "当前运行环境不能保存 MCP 权限，原配置保持不变。",
+                "approval_mode": normalized_current,
+            }
+        try:
+            applied_mode = str(apply_mode(target_mode) or "").strip().lower()
+        except Exception:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_failed",
+                "reply": "MCP 权限保存失败，原配置保持不变。",
+                "approval_mode": normalized_current,
+            }
+        if applied_mode != target_mode:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "runtime_update_mismatch",
+                "reply": "MCP 权限没有切换成功，原配置保持不变。",
+                "approval_mode": normalized_current,
+            }
+
+        if target_mode == "trusted_auto_allow":
+            reply = f"{scope_label} MCP 已开启：已启用及以后发现的 MCP 工具可直接执行，不再逐次审批。"
+            status = "enabled"
+        elif target_mode == "ask_each_time":
+            reply = f"{scope_label} MCP 已改为每次审批；工具获批前不会执行。"
+            status = "ask_each_time"
+        else:
+            reply = f"{scope_label} MCP 已关闭；模型从下一条消息起不能调用 MCP 工具。"
+            status = "disabled"
+        return {
+            "handled": True,
+            "ok": True,
+            "status": status,
+            "reply": reply,
+            "approval_mode": applied_mode,
             "state_persisted": True,
         }
 

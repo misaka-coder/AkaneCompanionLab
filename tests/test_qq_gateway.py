@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -1737,6 +1738,46 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(denied["status"], "forbidden")
         self.assertEqual(applied, ["trusted_auto_allow"])
 
+    def test_mcp_permission_command_is_explicit_and_master_scoped(self) -> None:
+        gateway = NapCatQQGateway()
+        self.assertEqual(gateway.parse_mcp_permission_command("/mcp"), {"action": "status"})
+        self.assertEqual(gateway.parse_mcp_permission_command("／mcp 开启"), {"action": "on"})
+        self.assertEqual(gateway.parse_mcp_permission_command("/mcp ask"), {"action": "ask"})
+        self.assertEqual(gateway.parse_mcp_permission_command("/mcp off"), {"action": "off"})
+        self.assertIsNone(gateway.parse_mcp_permission_command("mcp on"))
+
+        applied: list[str] = []
+        master_group = QQMessageContext(
+            should_respond=True,
+            reason="qq_mcp_permission_command",
+            is_group=True,
+            target_id=QQ_GROUP_FIXTURE_ID,
+            user_id=QQ_MASTER_FIXTURE_ID,
+            group_id=QQ_GROUP_FIXTURE_ID,
+            session_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+            clean_message="/mcp on",
+        )
+        result = gateway.handle_mcp_permission_command(
+            master_group,
+            current_mode="ask_each_time",
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["approval_mode"], "trusted_auto_allow")
+        self.assertIn("本群 MCP 已开启", result["reply"])
+        self.assertEqual(applied, ["trusted_auto_allow"])
+
+        ordinary_group = replace(master_group, user_id=QQ_USER_FIXTURE_ID, clean_message="/mcp off")
+        denied = gateway.handle_mcp_permission_command(
+            ordinary_group,
+            current_mode="trusted_auto_allow",
+            apply_mode=lambda mode: applied.append(mode) or mode,
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["status"], "forbidden")
+        self.assertEqual(applied, ["trusted_auto_allow"])
+
     def test_group_shell_command_bypasses_wake_word_only_for_control_plane(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
@@ -1753,6 +1794,24 @@ class QQGatewayTests(unittest.TestCase):
         )
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "qq_shell_permission_command")
+        self.assertEqual(context.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+
+    def test_group_mcp_command_bypasses_wake_word_only_for_control_plane(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-mcp-control-1",
+                "raw_message": "/mcp status",
+                "message": [{"type": "text", "data": {"text": "/mcp status"}}],
+            }
+        )
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.reason, "qq_mcp_permission_command")
         self.assertEqual(context.profile_user_id, f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
 
     def test_capability_approval_command_lists_and_decides_exact_pending_request(self) -> None:

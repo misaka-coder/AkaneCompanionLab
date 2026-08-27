@@ -561,6 +561,41 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "ok")
         self.assertIn("done", result.followup_context)
 
+    def test_adapter_capability_inherits_mcp_family_trusted_auto_allow(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={
+                    "defaultMode": "ask_each_time",
+                    "capabilityModes": {"mcp": "trusted_auto_allow"},
+                },
+            )
+            self.assertTrue(saved["ok"])
+            adapter = FakeAdapter()
+            handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=adapter,
+                descriptor=self._descriptor(risk="high", confirm="always"),
+                config_base_dir=temp_dir,
+            )
+
+            result = handler.execute(
+                call={"type": "mcp.demo.echo", "arguments": {"text": "hello"}},
+                context=self._context(),
+            )
+
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(result.stream_events[0]["status"], "ok")
+
     def test_adapter_capability_enters_capcore_prepare_gate_once(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:

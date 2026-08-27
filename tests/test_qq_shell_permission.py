@@ -141,6 +141,26 @@ class QQShellPermissionRouteTests(unittest.TestCase):
     @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
     @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
     @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
+    def test_master_can_enable_mcp_family_without_changing_shell_or_running_chat(self, _request) -> None:
+        response = self.client.post(
+            "/api/qq/napcat/event",
+            json=self._event(user_id=QQ_MASTER_ID, message="/mcp on"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_mcp_permission_command")
+        self.assertEqual(payload["approval_mode"], "trusted_auto_allow")
+        self.assertEqual(self.process_calls, [])
+
+        group_policy = get_approval_policy_config(
+            base_dir=self.config_root,
+            profile_user_id=f"qq_group_shared_{QQ_GROUP_ID}",
+        )["approvalPolicy"]
+        self.assertEqual(group_policy["capabilityModes"], {"mcp": "trusted_auto_allow"})
+
+    @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
+    @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
+    @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
     def test_master_can_approve_latest_capability_without_running_chat(self, _request) -> None:
         profile_id = f"qq_group_shared_{QQ_GROUP_ID}"
         created = self.approval_store.create_request(
