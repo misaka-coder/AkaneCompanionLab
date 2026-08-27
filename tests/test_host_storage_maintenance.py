@@ -96,6 +96,40 @@ class HostStorageMaintenanceTests(unittest.TestCase):
             self.assertEqual(reclaimed, 0)
             self.assertTrue(removed[0]["dry_run"])
 
+    def test_ephemeral_directories_keep_newest_even_when_all_are_expired(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            oldest = self._directory(root, "2026-08-20", age=500)
+            newest = self._directory(root, "2026-08-21", age=400)
+
+            targets = MODULE.collect_expired_targets(
+                [root],
+                category="workspace_artifact",
+                older_than_epoch=time.time() - 60,
+                direct_children_only=True,
+                keep_newest=1,
+            )
+
+            self.assertEqual([target.path for target in targets], [oldest])
+            self.assertTrue(newest.exists())
+
+    def test_missing_target_during_removal_does_not_abort_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            vanished = root / "vanished.tmp"
+            remaining = root / "remaining.tmp"
+            remaining.write_bytes(b"payload")
+            targets = [
+                MODULE.RetentionTarget(vanished, "transport", 5),
+                MODULE.RetentionTarget(remaining, "transport", 7),
+            ]
+
+            removed, reclaimed = MODULE.remove_targets(targets, dry_run=False)
+
+            self.assertEqual(len(removed), 2)
+            self.assertEqual(reclaimed, 12)
+            self.assertFalse(remaining.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

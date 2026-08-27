@@ -40,13 +40,22 @@ def _direct_children(root: Path, *, directories_only: bool = True) -> list[Path]
 
 
 def _newest(paths: Iterable[Path], count: int) -> set[Path]:
-    ranked = sorted(paths, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+    ranked_entries: list[tuple[float, str, Path]] = []
+    for path in paths:
+        try:
+            ranked_entries.append((path.stat().st_mtime, path.name, path))
+        except FileNotFoundError:
+            continue
+    ranked = [entry[2] for entry in sorted(ranked_entries, reverse=True)]
     return set(ranked[: max(0, count)])
 
 
 def _tree_size(path: Path) -> int:
     if path.is_file():
-        return path.stat().st_size
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            return 0
     total = 0
     for root, _, files in os.walk(path):
         for name in files:
@@ -114,11 +123,12 @@ def collect_expired_targets(
     candidates: list[Path] = []
     for root in roots:
         entries = _direct_children(root, directories_only=False) if direct_children_only else list(root.glob("*.jsonl"))
-        candidates.extend(
-            entry
-            for entry in entries
-            if not entry.is_symlink() and entry.stat().st_mtime < older_than_epoch
-        )
+        for entry in entries:
+            try:
+                if not entry.is_symlink() and entry.stat().st_mtime < older_than_epoch:
+                    candidates.append(entry)
+            except FileNotFoundError:
+                continue
     retained = _newest(candidates, keep_newest)
     return [
         RetentionTarget(path=path, category=category, bytes_before=_tree_size(path))
@@ -138,10 +148,13 @@ def remove_targets(targets: Iterable[RetentionTarget], *, dry_run: bool) -> tupl
             "dry_run": dry_run,
         }
         if not dry_run:
-            if target.path.is_dir():
-                shutil.rmtree(target.path)
-            else:
-                target.path.unlink(missing_ok=True)
+            try:
+                if target.path.is_dir():
+                    shutil.rmtree(target.path)
+                else:
+                    target.path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
             reclaimed += target.bytes_before
         removed.append(payload)
     return removed, reclaimed
@@ -220,12 +233,28 @@ def main() -> int:
         default=[],
         help="Prompt-audit directory; may be repeated.",
     )
+    parser.add_argument(
+        "--transport-cache-root",
+        action="append",
+        type=Path,
+        default=[],
+        help="OneBot transport cache directory; may be repeated.",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        action="append",
+        type=Path,
+        default=[],
+        help="Ephemeral workspace artifact directory; may be repeated.",
+    )
     parser.add_argument("--state-file", type=Path, default=Path("/var/lib/akane-host-storage/state.json"))
     parser.add_argument("--keep-releases", type=int, default=3)
     parser.add_argument("--keep-code-backups", type=int, default=2)
     parser.add_argument("--keep-data-backups", type=int, default=2)
     parser.add_argument("--deploy-backup-days", type=int, default=30)
     parser.add_argument("--audit-days", type=int, default=7)
+    parser.add_argument("--transport-cache-hours", type=int, default=12)
+    parser.add_argument("--artifact-days", type=int, default=7)
     parser.add_argument("--warning-free-gib", type=float, default=4.0)
     parser.add_argument("--critical-free-gib", type=float, default=1.0)
     parser.add_argument("--active-release", type=Path)
@@ -234,8 +263,19 @@ def main() -> int:
 
     now = time.time()
     audit_roots = args.audit_root or [
-        Path("/var/lib/akane/personal/logs/llm_prompt_audit"),
-        Path("/var/lib/akane/finance/logs/llm_prompt_audit"),
+        Path("/var/lib/akane-host/bots/personal/logs/llm_prompt_audit"),
+        Path("/var/lib/akane-host/bots/finance/logs/llm_prompt_audit"),
+    ]
+    transport_cache_roots = args.transport_cache_root or [
+        Path("/var/lib/akane-host/bots/personal/napcat/qq/NapCat/temp"),
+        Path("/var/lib/akane-host/bots/finance/napcat/qq/NapCat/temp"),
+    ]
+    artifact_roots = args.artifact_root or [
+        Path("/var/lib/akane-host/bots/personal/workspace/Inbox"),
+        Path("/var/lib/akane-host/bots/personal/workspace/Outputs"),
+        Path("/var/lib/akane-host/bots/finance/workspace/Inbox"),
+        Path("/var/lib/akane-host/bots/finance/workspace/Outputs"),
+        Path("/var/lib/akane-host/execution_workspace/outputs"),
     ]
     active_release = args.active_release or resolve_active_release(args.unit)
     targets = [
@@ -267,6 +307,19 @@ def main() -> int:
             category="prompt_audit",
             older_than_epoch=now - max(1, args.audit_days) * 86400,
             direct_children_only=False,
+        ),
+        *collect_expired_targets(
+            transport_cache_roots,
+            category="onebot_transport_cache",
+            older_than_epoch=now - max(1, args.transport_cache_hours) * 3600,
+            direct_children_only=True,
+        ),
+        *collect_expired_targets(
+            artifact_roots,
+            category="workspace_artifact",
+            older_than_epoch=now - max(1, args.artifact_days) * 86400,
+            direct_children_only=True,
+            keep_newest=1,
         ),
     ]
     removed, reclaimed = remove_targets(targets, dry_run=args.dry_run)

@@ -11,4 +11,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/akane/releases /opt/akane/backups /var/lib/akane/backups /var/lib/akane-host/deploy-backups /var/lib/akane/personal/logs/llm_prompt_audit /var/lib/akane/finance/logs/llm_prompt_audit /var/lib/akane-host-storage
+ReadWritePaths=/opt/akane/releases /opt/akane/backups /var/lib/akane/backups /var/lib/akane-host/deploy-backups /var/lib/akane-host/bots /var/lib/akane-host/execution_workspace /var/lib/akane-host-storage
