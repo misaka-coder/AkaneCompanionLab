@@ -238,6 +238,43 @@ DSH 和 OpenCode 都证明，Akane 当前“全回合签名去重 → 三次后�
 
 推荐续作内容只包含任务真正需要的状态：目标、已完成改动、关键文件及位置、实际测试结果、未完成事项、已知失败、下一步。不要复制大段工具输出；可重新读取的细节留在文件和 MemCore 轨迹中。
 
+### 7.4 MCP 历史复用需要一个稳定调用入口
+
+当前 `resolve_unloaded_mcp_native_aliases()` 只解决了宿主接收能力：如果 Provider 已经输出一个当前请求未公开的历史 MCP 原生工具名，宿主可以把它精确映射回当前注册表并执行。现有测试通过手工构造 `_native_tool_call` 证明了这一点，但没有证明真实模型会稳定调用一个不在当前 `tools` schema 中的函数。不同 Provider 可能拒绝生成、退化为普通文本，或泄漏 DSML/XML 工具标签，因此这条兼容路径不能作为主要模型体验。
+
+常驻一个小型原生工具 `invoke_mcp`，为“模型已经从可见 MemCore 历史知道准确调用方式”提供 Provider 无关的合法入口：
+
+```json
+{
+  "server_id": "github",
+  "tool_name": "get_issue",
+  "arguments": {
+    "owner": "deepseek-ai",
+    "repo": "DeepSeek-Harness",
+    "issue_number": 124
+  }
+}
+```
+
+职责边界：
+
+- `invoke_mcp` 不检索记忆、不总结历史、不发现未知工具；模型自己从当前可见工具轨迹中读取 server/tool/arguments；
+- Host registry 和当前 Profile overlay 是执行权威，MemCore 历史不是权限或 schema 权威；
+- 调用时取得当前工具 schema，重新校验参数、启用状态、领域策略和审批权限；
+- 不知道准确工具名/参数、工具已升级或 schema 不兼容时，返回结构化反馈并让模型使用 `load_mcp`；
+- `load_mcp` 继续负责陌生能力发现和当前回合完整原生 schema 展开；`invoke_mcp` 负责已知能力复用；
+- 两者最终汇入同一个 MCP adapter、权限、receipt 和 MemCore action/observation 管线，不能维护第二套执行器；
+- `resolve_unloaded_mcp_native_aliases()` 可保留为兼容兜底，但不再作为历史复用已经完成的证据；
+- `invoke_mcp` 的调用参数与结果遵循普通 MemCore settlement：参数保留，短结果原文，长结果仅在有收益时卡片化。
+
+如果 GitHub MCP 暴露 44 个工具、某次任务实际调用其中 10 个，下一次同一可见记忆范围内，模型可根据这 10 条历史调用使用 `invoke_mcp`，无需把 44 个 schema 再次注入请求。没有历史证据的另外 34 个工具仍应通过 `load_mcp` 发现。宿主可能在后台启动 MCP 或执行 `tools/list` 取得当前 schema，但这不是额外模型工具轮，也不会把全部 schema放入提示词。
+
+### 7.5 MCP 凭据引用属于宿主配置，不属于模型上下文
+
+MCP 配置中的 command/args、`env` 和 HTTP headers 应统一解析 `${ENV_NAME}` 凭据引用。Bot 实例私有值（例如 `QQ_ONEBOT_ACCESS_TOKEN`）只在启动 MCP 子进程或创建 HTTP 请求时注入；模型、公开 catalog、日志、MemCore 和工具结果只能看到 `configured/missing`，不能看到真实值。
+
+占位符扫描必须覆盖所有支持凭据的位置，不能只扫描启动参数。凭据缺失返回结构化 `credential_missing`，不得诱导模型读取 `.env`、systemd 配置或服务器私有文件。安装共享不等于凭据共享：Host registry 可跨群聊/私聊共享服务器定义，实际值由当前 Bot 实例运行时提供，Profile 权限仍独立生效。
+
 ## 8. MemCore 修复边界
 
 ### 8.1 开放回合与结算不变
@@ -287,27 +324,36 @@ QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或
 - 保留并验证第 40 批一次性软提醒；
 - 如无实际需要，先不加入新的重复 reminder。
 
-### Slice C：修复 MemCore kind 与索引预热
+### Slice C：补齐 MCP 历史复用与实例凭据
+
+- 新增常驻、低 token 的 `invoke_mcp` 原生工具；
+- 只接受精确 `server_id/tool_name/arguments`，并通过当前注册表、当前 schema、Profile 策略和统一 adapter 执行；
+- 保留 `load_mcp` 作为发现/展开入口，保留历史原生别名作为兼容兜底；
+- 把 MCP `env`、HTTP headers 与 command/args 的 `${ENV_NAME}` 解析统一到 Bot 实例凭据引用；
+- 真实模型验收：先在一次任务中加载并调用 GitHub MCP，下一次仅凭 MemCore 可见轨迹直接 `invoke_mcp`，请求中不出现 44 个 schema；
+- 验证未知/已升级工具、缺失凭据、权限拒绝、MCP 业务失败都返回结构化结果且不泄漏 token。
+
+### Slice D：修复 MemCore kind 与索引预热
 
 - 统一 kind grammar/metadata key 编码；
 - 逐条隔离索引构建失败；
 - 暴露 warmup `ready/partial/failed`；
 - 加 MCP 连字符 kind、进程重启、全量重建、摘要检索、`open_memory` 的端到端测试。
 
-### Slice D：正式修复投影/压缩竞态
+### Slice E：正式修复投影/压缩竞态
 
 - 把云端热补丁转化为明确的 stale-generation 处理；
 - 加请求冻结与后台 compaction 并发测试；
 - 验证 append-only、stable prefix hash、settlement 和缓存命中；
 - 构建并同步正式 wheel 后删除云端手改状态。
 
-### Slice E：稳定表达提示
+### Slice F：稳定表达提示
 
 - 合并 QQ 纯文本与投影元数据边界，删除冲突/重复描述；
 - 验证普通回复、工具终稿、群聊 actor/target/reply、纯文本兜底；
 - 确认只发生一次系统前缀迁移，后续请求前缀稳定。
 
-### Slice F：真实部署验收
+### Slice G：真实部署验收
 
 - 先个人 Bot 小流量部署，再扩展到金融 Bot；
 - 运行 20+、40+、48 批三档长任务和 MCP 重启复测；
@@ -321,6 +367,8 @@ QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或
 |---|---|
 | 合法重复读取/轮询 | 真实执行并返回新结果，不累计成终止条件 |
 | MCP 重启后重复 `load_mcp` | 可重新加载；历史工具名可按当前 MCP 注册状态解析 |
+| MCP 历史复用 | 可见历史已给出准确工具与参数时，`invoke_mcp` 无需展开服务器全部 schema 即可执行 |
+| MCP 凭据 | Bot 实例值可注入 `env`/headers/args；模型、日志、MemCore 不出现明文 |
 | Provider `stop` + tool call | tool call 被执行，结果回到模型 |
 | 协议格式错误 | 同工具面收到明确反馈并重试；不消耗真实工具批次 |
 | 第 40/48 批 | 第 40 批只提醒；第 48 批先执行真实结果再关工具 |
@@ -342,7 +390,7 @@ QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或
 - 不把 MemCore 检索失败降级成“数据库里没有摘要”；
 - 不用动态 system prompt 传当前轮数、群状态或恢复次数；
 - 不整套搬运 DSH/OpenCode，也不为了插件化改变 Akane 已有效的角色表现与 MemCore 设计；
-- 不在本设计切片中修改、部署或重启生产环境。
+- 不在设计文档切片中修改、部署或重启生产环境；代码实施与部署严格进入各自独立切片。
 
 ## 13. 审查门槛
 
@@ -352,4 +400,4 @@ QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或
 2. 重复调用不再拥有关闭工具的权力，硬预算是唯一正常关工具事件；
 3. MemCore 的 kind 索引和投影竞态按公共能力修复，不在 Akane 宿主继续补专有兼容。
 
-确认后严格按 Slice A → B → C → D → E → F 推进。每个切片独立测试、独立提交、可独立回滚；不得在前一切片未验收时继续叠下一层行为。
+确认后严格按 Slice A → B → C → D → E → F → G 推进。每个切片独立测试、独立提交、可独立回滚；不得在前一切片未验收时继续叠下一层行为。
