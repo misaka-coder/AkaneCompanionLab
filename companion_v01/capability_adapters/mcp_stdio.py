@@ -115,6 +115,11 @@ class McpStdioCapabilityAdapter:
             self._capability_tool_names[str(descriptor.id)] = tool_name
         return _with_akane_raw_metadata(descriptor, self.server_config)
 
+    def tool_name_for_capability(self, capability_id: str) -> str:
+        """Return the exact MCP protocol tool name for a projected capability."""
+
+        return str(self._capability_tool_names.get(str(capability_id or "").strip()) or "")
+
     def is_live(self, capability_id: str = "") -> bool:
         """Probe a real initialize/tools-list exchange and cache only its lease."""
         if not bool(self.server_config.get("enabled")):

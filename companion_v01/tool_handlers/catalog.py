@@ -58,7 +58,7 @@ from .memory import (
     RetrieveMemoryToolHandler,
 )
 from .music import SendAudioToolHandler, SendMusicCardToolHandler
-from .mcp_management import LoadMcpToolHandler, McpManageToolHandler
+from .mcp_management import InvokeMcpToolHandler, LoadMcpToolHandler, McpManageToolHandler
 from .qq_onebot import OneBotActionToolHandler
 from .project_workspace import (
     ManageProjectWorkspaceToolHandler,
@@ -259,6 +259,7 @@ def build_builtin_tool_handlers(
         handlers["load_skill"] = LoadSkillToolHandler(registry=skill_registry)
     if mcp_management_service is not None:
         handlers["load_mcp"] = LoadMcpToolHandler(service=mcp_management_service)
+        handlers["invoke_mcp"] = InvokeMcpToolHandler()
         handlers["mcp_manage"] = McpManageToolHandler(service=mcp_management_service)
     if execution_provider is not None:
         resource_bridge = None

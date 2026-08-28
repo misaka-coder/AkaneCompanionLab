@@ -151,6 +151,7 @@ COMMON_TOOL_NAMES = (
     "open_memory",
     "load_skill",
     "load_mcp",
+    "invoke_mcp",
     "load_character_context",
     "set_reminder",
     "list_reminders",

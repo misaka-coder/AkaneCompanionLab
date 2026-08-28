@@ -38,6 +38,37 @@ LOAD_MCP_TOOL_SPEC = CapabilityToolSpec(
 )
 
 
+INVOKE_MCP_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="invoke_mcp",
+    display_name="Invoke a known MCP tool",
+    description=(
+        "Invoke one exact tool on an installed and enabled MCP server without loading every tool schema. "
+        "Use this when the server_id, tool_name, and arguments are already known from visible history or "
+        "earlier work. If the exact contract is unknown, call load_mcp first. The selected MCP tool still "
+        "uses its own validation, permission, approval, and execution policy."
+    ),
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "server_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "tool_name": {"type": "string", "minLength": 1, "maxLength": 160},
+            "arguments": {"type": "object", "additionalProperties": True},
+        },
+        "required": ["server_id", "tool_name", "arguments"],
+    },
+    risk="medium",
+    confirm="never",
+    effects=(),
+    visible_in=("desktop", "qq"),
+    spec_version="1.0.0",
+    schema_version=1,
+    execution_class="sync",
+    idempotency="effectful",
+    max_result_bytes=64 * 1024,
+)
+
+
 MCP_MANAGE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="mcp_manage",
     display_name="Manage MCP connections",

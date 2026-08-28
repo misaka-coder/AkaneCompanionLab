@@ -790,6 +790,76 @@ def resolve_unloaded_mcp_native_aliases(
     )
 
 
+def resolve_mcp_router_target(
+    engine: Any,
+    *,
+    server_id: str,
+    tool_name: str,
+    profile_user_id: str,
+    client_context: ClientProtocolContext | None,
+    domain_profile_id: str,
+    capability_selection: CapabilitySelection | None,
+) -> tuple[str, CapabilitySelection | None, str]:
+    """Resolve one exact ``invoke_mcp`` target without exposing server schemas.
+
+    The returned frozen selection adds only the matching adapter handler to the
+    execution set. Schema/native names remain unchanged, so a 44-tool MCP does
+    not become resident merely because one historical call was reused.
+    """
+
+    clean_server_id = str(server_id or "").strip()
+    clean_tool_name = str(tool_name or "").strip()
+    if not clean_server_id or not clean_tool_name or capability_selection is None:
+        return "", capability_selection, "mcp_target_required"
+
+    dispatch_handlers = build_mcp_adapter_tool_handlers(
+        engine,
+        profile_user_id=profile_user_id,
+        client_context=client_context,
+        include_unloaded_for_dispatch=True,
+    )
+    if not dispatch_handlers:
+        return "", capability_selection, "mcp_target_unavailable"
+
+    domain_profile = DomainProfileRegistry().get(domain_profile_id)
+    allowed_capability_ids = set(
+        _filter_tool_names_with_policy_extensions(
+            tuple(dispatch_handlers.keys()),
+            domain_profile,
+            handlers=dispatch_handlers,
+        )
+    )
+    target_id = ""
+    for capability_id, handler in dispatch_handlers.items():
+        if capability_id not in allowed_capability_ids:
+            continue
+        adapter = getattr(handler, "adapter", None)
+        if str(getattr(adapter, "server_id", "") or "").strip() != clean_server_id:
+            continue
+        name_for_capability = getattr(adapter, "tool_name_for_capability", None)
+        raw_tool_name = (
+            str(name_for_capability(capability_id) or "").strip()
+            if callable(name_for_capability)
+            else ""
+        )
+        if raw_tool_name == clean_tool_name:
+            target_id = capability_id
+            break
+    if not target_id:
+        return "", capability_selection, "mcp_tool_not_found_or_blocked"
+
+    resolved_handlers = dict(getattr(capability_selection, "resolved_handlers", {}) or {})
+    resolved_handlers[target_id] = dispatch_handlers[target_id]
+    execution_names = list(capability_selection.tool_names)
+    if target_id not in execution_names:
+        execution_names.append(target_id)
+    return target_id, replace(
+        capability_selection,
+        tool_names=tuple(execution_names),
+        resolved_handlers=MappingProxyType(resolved_handlers),
+    ), ""
+
+
 def build_python_adapter_tool_handlers(
     engine: Any,
     *,

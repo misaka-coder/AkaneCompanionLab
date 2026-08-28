@@ -7,7 +7,7 @@ from typing import Any
 
 import config
 
-from ..mcp_specs import LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
+from ..mcp_specs import INVOKE_MCP_TOOL_SPEC, LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 
 
@@ -81,6 +81,69 @@ class LoadMcpToolHandler(BaseToolHandler):
             followup_context=content,
             followup_envelope=ToolFollowupEnvelope(content=content, producer_bounded=True, complete=True),
             state_updates=state_updates,
+        )
+
+
+class InvokeMcpToolHandler(BaseToolHandler):
+    """Model-facing schema for the engine's thin MCP dispatch router.
+
+    Successful calls are rewritten to the exact adapter capability before the
+    execution boundary, so this handler never invokes MCP or bypasses the
+    selected tool's validation and approval policy.
+    """
+
+    tool_type = "invoke_mcp"
+
+    def tool_spec(self):
+        return INVOKE_MCP_TOOL_SPEC
+
+    def capability_status(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"enabled": True, "status": "ready"}
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- invoke_mcp：若当前可见历史已明确给出 MCP 的 server_id、tool_name 和参数格式，可直接复用；"
+            "不知道准确契约时先调用 load_mcp。它不会绕过目标工具原有的校验、权限或审批。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        server_id = str(value.get("server_id") or "").strip()
+        tool_name = str(value.get("tool_name") or "").strip()
+        arguments = value.get("arguments")
+        if not server_id or not tool_name or not isinstance(arguments, dict):
+            return None
+        return {
+            "type": self.tool_type,
+            "server_id": server_id,
+            "tool_name": tool_name,
+            "arguments": dict(arguments),
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        del call, context
+        content = json.dumps(
+            {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "invoke_mcp_target_not_resolved",
+                "recommendedAction": "Call load_mcp when the exact server, tool, or arguments are unknown.",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "mcp_invocation",
+                    "status": "unavailable",
+                    "reason": "invoke_mcp_target_not_resolved",
+                }
+            ],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(content=content, producer_bounded=True, complete=True),
         )
 
 

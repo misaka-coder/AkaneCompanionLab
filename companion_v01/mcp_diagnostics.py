@@ -53,6 +53,7 @@ def build_mcp_failure_diagnostic(error: BaseException, *, stage: str) -> dict[st
             "authentication required",
             "authorization required",
             "missing credential",
+            "mcp_credential_missing",
             "missing token",
             "token is required",
             "api key is required",

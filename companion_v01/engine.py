@@ -89,7 +89,7 @@ from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
-from .tool_invocation import TOOL_MODEL_NAME_FIELD
+from .tool_invocation import TOOL_MODEL_ARGUMENTS_FIELD, TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import (
     TOOL_CAPABILITY_SELECTION_FIELD,
@@ -7299,6 +7299,46 @@ class AkaneMemoryEngine:
                 )
                 continue
             call_capability_selection = frozen_capability_selection
+            if raw_tool_name == "invoke_mcp":
+                from .engine_services.tool_rounds import resolve_mcp_router_target
+
+                server_id = str(raw_tool_call.get("server_id") or "").strip()
+                tool_name = str(raw_tool_call.get("tool_name") or "").strip()
+                arguments = raw_tool_call.get("arguments")
+                target_id, target_selection, target_reason = resolve_mcp_router_target(
+                    self,
+                    server_id=server_id,
+                    tool_name=tool_name,
+                    profile_user_id=profile_user_id,
+                    client_context=client_context,
+                    domain_profile_id=domain_profile_id,
+                    capability_selection=frozen_capability_selection,
+                )
+                if not target_id or not isinstance(arguments, Mapping):
+                    rejections.append(
+                        "invoke_mcp 没有解析到当前已安装、启用且获准的准确 MCP 工具"
+                        f"（{target_reason or 'mcp_arguments_required'}）。"
+                        "如果 server_id、tool_name 或参数契约不确定，请先调用 load_mcp；不要猜测或声称已经执行。"
+                    )
+                    continue
+                model_arguments = {
+                    "server_id": server_id,
+                    "tool_name": tool_name,
+                    "arguments": dict(arguments),
+                }
+                transport_fields = {
+                    key: value
+                    for key, value in raw_tool_call.items()
+                    if str(key).startswith("_tool_")
+                }
+                raw_tool_call = {
+                    "type": target_id,
+                    "arguments": dict(arguments),
+                    **transport_fields,
+                    TOOL_MODEL_NAME_FIELD: "invoke_mcp",
+                    TOOL_MODEL_ARGUMENTS_FIELD: model_arguments,
+                }
+                call_capability_selection = target_selection
             canonical_mcp_name = direct_mcp_aliases.get(raw_tool_name, "")
             if canonical_mcp_name:
                 raw_tool_call = dict(raw_tool_call)
@@ -8167,6 +8207,9 @@ class AkaneMemoryEngine:
         ordinary tools and legacy calls retain their existing shape.
         """
 
+        model_arguments = tool_call.get(TOOL_MODEL_ARGUMENTS_FIELD)
+        if isinstance(model_arguments, Mapping):
+            return {str(key): value for key, value in model_arguments.items()}
         payload = {
             str(key): value
             for key, value in dict(tool_call or {}).items()

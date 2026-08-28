@@ -15,6 +15,7 @@ from .tool_invocation import NATIVE_OPENAI
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
 from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD
+from .tool_invocation import TOOL_MODEL_ARGUMENTS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_invocation import ToolInvocation
@@ -391,6 +392,9 @@ def normalize_tool_call(
     model_name = str(value.get(TOOL_MODEL_NAME_FIELD) or "").strip()
     if model_name:
         normalized[TOOL_MODEL_NAME_FIELD] = model_name
+    model_arguments = value.get(TOOL_MODEL_ARGUMENTS_FIELD)
+    if isinstance(model_arguments, Mapping):
+        normalized[TOOL_MODEL_ARGUMENTS_FIELD] = dict(model_arguments)
     return normalized
 
 

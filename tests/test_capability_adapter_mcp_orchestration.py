@@ -18,9 +18,11 @@ from companion_v01.tool_invocation import (
     NATIVE_TOOL_CALL_FIELD,
     TOOL_CAPABILITY_SELECTION_FIELD,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_ARGUMENTS_FIELD,
     TOOL_MODEL_NAME_FIELD,
     TOOL_SOURCE_FIELD,
 )
+from companion_v01.tool_handlers.mcp_management import InvokeMcpToolHandler
 from companion_v01.tool_runtime import BaseToolHandler, ToolExecutionResult, ToolExecutionContext
 
 
@@ -111,6 +113,131 @@ def build_engine(config_base_dir: Path) -> AkaneMemoryEngine:
 
 
 class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
+    def test_invoke_mcp_reuses_exact_history_contract_without_loading_server_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False, allowlist=["echo"])
+            engine = build_engine(Path(temp_dir))
+            engine.tool_handlers["invoke_mcp"] = InvokeMcpToolHandler()
+            selection = engine._resolve_capability_selection(
+                client_context=context(), profile_user_id="alice", session_id="s1"
+            )
+            self.assertIn("invoke_mcp", selection.schema_tool_names)
+            self.assertNotIn("mcp.demo.echo", selection.schema_tool_names)
+
+            wrapper = {
+                "server_id": "demo",
+                "tool_name": "echo",
+                "arguments": {"text": "hello"},
+            }
+            _final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": "invoke_mcp",
+                        **wrapper,
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_invoke",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="repeat the known MCP call",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+
+            self.assertEqual(rejections, [])
+            self.assertEqual(len(calls), 1)
+            call = calls[0]
+            self.assertEqual(call["type"], "mcp.demo.echo")
+            self.assertEqual(call["arguments"], {"text": "hello"})
+            self.assertEqual(call[TOOL_MODEL_NAME_FIELD], "invoke_mcp")
+            self.assertEqual(call[TOOL_MODEL_ARGUMENTS_FIELD], wrapper)
+            self.assertEqual(engine._tool_call_model_arguments(call), wrapper)
+            routed_selection = call[TOOL_CAPABILITY_SELECTION_FIELD]
+            self.assertIn("mcp.demo.echo", routed_selection.tool_names)
+            self.assertNotIn("mcp.demo.echo", routed_selection.schema_tool_names)
+            validation = tool_orchestration_engine.validate_legacy_tool_call(
+                engine,
+                call,
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertTrue(validation.ok, validation.message)
+
+    def test_invoke_mcp_unknown_target_returns_protocol_feedback_without_schema_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False)
+            engine = build_engine(Path(temp_dir))
+            engine.tool_handlers["invoke_mcp"] = InvokeMcpToolHandler()
+            selection = engine._resolve_capability_selection(
+                client_context=context(), profile_user_id="alice", session_id="s1"
+            )
+            _final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": "invoke_mcp",
+                        "server_id": "demo",
+                        "tool_name": "missing",
+                        "arguments": {},
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_missing",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="call it",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(len(rejections), 1)
+            self.assertIn("load_mcp", rejections[0])
+            self.assertNotIn("mcp.demo.echo", selection.schema_tool_names)
+
+    def test_invoke_mcp_preserves_the_selected_tool_approval_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
+            write_profile_config(Path(temp_dir), "alice", prompt_exposed=False, risk="high")
+            engine = build_engine(Path(temp_dir))
+            engine.tool_handlers["invoke_mcp"] = InvokeMcpToolHandler()
+            approval_store = CapabilityApprovalStore()
+            engine._get_approval_store = lambda: approval_store
+            selection = engine._resolve_capability_selection(
+                client_context=context(), profile_user_id="alice", session_id="s1"
+            )
+            _final_output, calls, rejections = engine._prepare_tool_round_decisions(
+                final_output={
+                    NATIVE_TOOL_CALL_FIELD: {
+                        "type": "invoke_mcp",
+                        "server_id": "demo",
+                        "tool_name": "echo",
+                        "arguments": {"text": "hello"},
+                        TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                        TOOL_INVOCATION_ID_FIELD: "call_approval",
+                    },
+                    TOOL_CAPABILITY_SELECTION_FIELD: selection,
+                },
+                user_message="call it",
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertEqual(rejections, [])
+            call = calls[0]
+            routed_handler = call[TOOL_CAPABILITY_SELECTION_FIELD].resolved_handlers[call["type"]]
+            result = routed_handler.execute(
+                call=call,
+                context=ToolExecutionContext(
+                    profile_user_id="alice",
+                    session_id="s1",
+                    now_ts=1,
+                    visual_payload={},
+                    client_mode="desktop_pet",
+                ),
+            )
+            self.assertEqual(result.stream_events[0]["type"], "capability_approval_required")
+            self.assertEqual(approval_store.list_requests(profile_user_id="alice")["pendingCount"], 1)
+
     def test_host_manager_client_replaces_per_call_stdio_caller(self) -> None:
         class ManagedClient:
             async def list_tools(self, server):

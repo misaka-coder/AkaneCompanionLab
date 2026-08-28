@@ -8,7 +8,6 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 import hashlib
 import json
-import os
 import threading
 import time
 from typing import Any, Mapping
@@ -39,8 +38,7 @@ from .local_capability_config import (
     save_mcp_server_profile_enabled,
 )
 from .mcp_stdio_discoverer import (
-    _expand_env_placeholders,
-    _hydrate_env_placeholders,
+    _resolve_runtime_env_and_args,
     _resolve_stdio_command,
     _streamable_http_server_config,
     _tool_record_mapping,
@@ -289,12 +287,8 @@ class McpHostManager:
         command = str(config.get("command") or "").strip()
         args = [str(item) for item in config.get("args") or [] if str(item or "").strip()]
         cwd = str(config.get("cwd") or "").strip() or None
-        env = os.environ.copy()
         raw_env = config.get("env")
-        if isinstance(raw_env, Mapping):
-            env.update({str(key): str(value) for key, value in raw_env.items()})
-        _hydrate_env_placeholders(env, args=args, cwd=cwd)
-        args = _expand_env_placeholders(args, env)
+        env, args = _resolve_runtime_env_and_args(raw_env=raw_env, args=args, cwd=cwd)
         executable, prefix_args = _resolve_stdio_command(command)
         return McpStdioServerConfig(
             server_id=runtime_id,
@@ -459,7 +453,9 @@ class McpManagementService:
         revision = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12]
         lines = [
             f"【可按需加载的 MCP｜目录 {revision}】",
-            "MCP 工具默认不占用本轮 schema。任务需要时调用 load_mcp，可一次加载多个；加载仅在当前任务回合有效，不安装软件、不改变权限。",
+            "MCP 工具默认不占用本轮 schema。可见历史已明确给出准确 server_id、tool_name 和参数契约时，"
+            "可用 invoke_mcp 直接复用；否则调用 load_mcp 查看完整工具定义，可一次加载多个。"
+            "两者都不安装软件、不改变权限；load_mcp 展开的 schema 仅在当前任务回合有效。",
         ]
         lines.extend(f"- {server_id}：{description}" for server_id, _name, description, _count in rows)
         return "\n".join(lines)

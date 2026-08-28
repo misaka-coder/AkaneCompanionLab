@@ -1,10 +1,36 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from companion_v01 import mcp_stdio_discoverer
 
 
 class McpStdioCommandResolutionTests(unittest.TestCase):
+    def test_env_field_placeholder_hydrates_from_dotenv_before_server_env_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, ".env").write_text("GITHUB_TOKEN=resolved-token\n", encoding="utf-8")
+            with patch.dict(mcp_stdio_discoverer.os.environ, {}, clear=True):
+                env, args = mcp_stdio_discoverer._resolve_runtime_env_and_args(
+                    raw_env={"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"},
+                    args=["--token", "${GITHUB_PERSONAL_ACCESS_TOKEN}"],
+                    cwd=temp_dir,
+                )
+
+        self.assertEqual(env["GITHUB_PERSONAL_ACCESS_TOKEN"], "resolved-token")
+        self.assertEqual(args, ["--token", "resolved-token"])
+
+    def test_missing_env_field_placeholder_fails_with_name_not_value(self) -> None:
+        with patch.dict(mcp_stdio_discoverer.os.environ, {}, clear=True), self.assertRaisesRegex(
+            mcp_stdio_discoverer.McpStdioDiscoveryError,
+            r"^mcp_credential_missing:GITHUB_TOKEN$",
+        ):
+            mcp_stdio_discoverer._resolve_runtime_env_and_args(
+                raw_env={"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"},
+                args=[],
+                cwd=None,
+            )
+
     def test_windows_cmd_file_is_executed_directly(self) -> None:
         with patch.object(mcp_stdio_discoverer.sys, "platform", "win32"), patch.object(
             mcp_stdio_discoverer.shutil,

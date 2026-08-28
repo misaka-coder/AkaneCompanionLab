@@ -50,12 +50,8 @@ class McpStdioToolDiscoverer:
             raise McpStdioDiscoveryError("missing_command")
         args = [str(item) for item in server.get("args") or [] if str(item or "").strip()]
         cwd = str(server.get("cwd") or "").strip() or None
-        env = os.environ.copy()
         raw_env = server.get("env")
-        if isinstance(raw_env, Mapping):
-            env.update({str(key): str(value) for key, value in raw_env.items()})
-        _hydrate_env_placeholders(env, args=args, cwd=cwd)
-        args = _expand_env_placeholders(args, env)
+        env, args = _resolve_runtime_env_and_args(raw_env=raw_env, args=args, cwd=cwd)
 
         exe, prefix_args = _resolve_stdio_command(command)
         process = await asyncio.create_subprocess_exec(
@@ -186,12 +182,8 @@ class McpStdioToolCaller:
 
         args = [str(item) for item in server.get("args") or [] if str(item or "").strip()]
         cwd = str(server.get("cwd") or "").strip() or None
-        env = os.environ.copy()
         raw_env = server.get("env")
-        if isinstance(raw_env, Mapping):
-            env.update({str(key): str(value) for key, value in raw_env.items()})
-        _hydrate_env_placeholders(env, args=args, cwd=cwd)
-        args = _expand_env_placeholders(args, env)
+        env, args = _resolve_runtime_env_and_args(raw_env=raw_env, args=args, cwd=cwd)
 
         exe, prefix_args = _resolve_stdio_command(command)
         process = await asyncio.create_subprocess_exec(
@@ -472,6 +464,7 @@ def _streamable_http_server_config(
         if isinstance(raw_headers, Mapping)
         else {}
     )
+    _require_resolved_placeholders([*headers.values()], reason="mcp_credential_missing")
     return McpStreamableHttpServerConfig(
         server_id=str(server.get("serverId") or server.get("server_id") or server.get("id") or "").strip(),
         url=url,
@@ -519,6 +512,56 @@ def _expand_env_placeholders(args: list[str], env: Mapping[str, str]) -> list[st
         return str(value) if value else match.group(0)
 
     return [_ENV_PLACEHOLDER_RE.sub(replace, str(arg or "")) for arg in args]
+
+
+def _resolve_runtime_env_and_args(
+    *,
+    raw_env: Any,
+    args: list[str],
+    cwd: str | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve MCP env references before putting server-owned values in env.
+
+    A common config is ``{"GITHUB_TOKEN": "${GITHUB_TOKEN}"}``. Merging that
+    mapping first overwrites a real Host value with the literal placeholder and
+    also prevents dotenv hydration because the placeholder only appears in the
+    env mapping, not argv. Resolve against the Host/dotenv environment first,
+    then merge the expanded server mapping.
+    """
+
+    env = os.environ.copy()
+    raw_mapping = (
+        {str(key): str(value) for key, value in raw_env.items()}
+        if isinstance(raw_env, Mapping)
+        else {}
+    )
+    raw_values = list(raw_mapping.values())
+    _hydrate_env_placeholders(env, args=[*args, *raw_values], cwd=cwd)
+    resolved_mapping = {
+        key: _expand_env_placeholders([value], env)[0]
+        for key, value in raw_mapping.items()
+    }
+    resolved_args = _expand_env_placeholders(args, {**env, **resolved_mapping})
+    _require_resolved_placeholders(
+        [*resolved_mapping.values(), *resolved_args],
+        reason="mcp_credential_missing",
+    )
+    env.update(resolved_mapping)
+    return env, resolved_args
+
+
+def _require_resolved_placeholders(values: list[str], *, reason: str) -> None:
+    missing = sorted(
+        {
+            match.group(1)
+            for value in values
+            for match in _ENV_PLACEHOLDER_RE.finditer(str(value or ""))
+        }
+    )
+    if missing:
+        # Names are configuration references, not credential values. Keeping
+        # them visible makes the failure actionable without leaking secrets.
+        raise McpStdioDiscoveryError(f"{str(reason or 'mcp_credential_missing')}:{','.join(missing)}")
 
 
 def _resolve_stdio_command(command: str) -> tuple[str, list[str]]:
