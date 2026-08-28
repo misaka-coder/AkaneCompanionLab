@@ -4351,8 +4351,6 @@ class AkaneMemoryEngine:
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
         tool_history_turns: list[dict[str, Any]] = []
-        seen_tool_calls: set[str] = set()
-        allowed_repeat_tool_calls: set[str] = set()
         recorded_tool_call_ids: set[str] = set()
         if speculative_voice_candidate:
             max_tool_rounds = -1
@@ -4496,14 +4494,9 @@ class AkaneMemoryEngine:
                             self._build_native_user_image_prompt_context(steer_images),
                         )
                     invalid_tool_decision_attempts = 0
-                    # A new user instruction starts a fresh action allowance
-                    # inside the same durable turn.  Repeating a read/test that
-                    # was already used before the steer can now be legitimate.
                     # Steering never closes the tool surface: the next model
                     # decision keeps the same channel permissions and all
                     # completed tool evidence from this open turn.
-                    seen_tool_calls.clear()
-                    allowed_repeat_tool_calls.clear()
                     final_output = yield from self._generate_round(
                         mode=mode,
                         session_id=session_id,
@@ -4663,67 +4656,13 @@ class AkaneMemoryEngine:
                 break
             if rejections:
                 tool_followups.extend(rejections)
-            executable_calls: list[dict[str, Any]] = []
-            for tool_call in tool_calls:
-                tool_signature = self._tool_call_signature(tool_call)
-                if tool_signature in seen_tool_calls:
-                    if tool_signature in allowed_repeat_tool_calls:
-                        # A producer-owned continuation is a fresh observation,
-                        # even when its arguments are byte-identical (for
-                        # example polling a still-running command at the same
-                        # cursor). Consume the grant once; the next result may
-                        # issue it again if the observation remains incomplete.
-                        allowed_repeat_tool_calls.discard(tool_signature)
-                    else:
-                        tool_followups.append(
-                            f"系统刚刚拦截了一次重复工具调用：{self._describe_tool_call_for_prompt(tool_call)}。"
-                            "请基于已经拿到的工具结果自然回应，不要继续重复调用同一个工具。"
-                        )
-                        continue
-                else:
-                    seen_tool_calls.add(tool_signature)
-                executable_calls.append(tool_call)
-            if not executable_calls:
-                invalid_tool_decision_attempts += 1
-                allow_retry = (
-                    invalid_tool_decision_attempts <= tool_decision_retry_limit
-                    and tool_round_index < max_tool_rounds
-                )
-                final_output = yield from self._generate_round(
-                    mode=mode,
-                    session_id=session_id,
-                    profile_user_id=profile_user_id,
-                    user_message=user_message,
-                    recent_raw=recent_raw_for_turn,
-                    recent_episodic_summaries=recent_episodic_summaries,
-                    recent_semantic_summaries=recent_semantic_summaries,
-                    confirmed_snippets=confirmed_snippets,
-                    now_ts=now_ts,
-                    current_visual_payload=payload.get("current_visual"),
-                    extra_user_context=self._build_tool_round_extra_context(
-                        turn_extra_user_context=turn_extra_user_context,
-                        tool_followups=tool_followups,
-                        allow_more=allow_retry,
-                        stop_reason="" if allow_retry else "tool_decision_invalid",
-                    ),
-                    client_context=client_context,
-                    resource_manifest=turn_resource_manifest,
-                    character_pack_id=turn_character_pack_id,
-                    user_images=turn_user_images,
-                    allow_tool_call=allow_retry,
-                    final_debug_enabled=final_debug_enabled,
-                    chat_model_override=chat_model_override,
-                    execution_target=turn_execution_target,
-                    post_user_turns=tool_history_turns,
-                    prompt_exclude_source_ids=prompt_exclude_source_ids,
-                    domain_profile_id=turn_domain_profile_id,
-                    prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
-                    request_projection_state=request_projection_state,
-                )
-                if allow_retry:
-                    continue
-                break
+            # A repeated signature is not an invalid decision. Polling, MCP
+            # reload after a restart, a test rerun, or any external state change
+            # can make byte-identical arguments produce fresh evidence. Tools
+            # that mutate external state own their idempotency/receipt policy;
+            # the generic model loop must not silently discard a legal call or
+            # convert repetition into a terminal no-tools phase.
+            executable_calls = list(tool_calls)
 
             preface_source_id = self._record_assistant_preface_for_tool_call(
                 tool_call=executable_calls[0],
@@ -4792,10 +4731,6 @@ class AkaneMemoryEngine:
                         for server_id, server_config in sorted(activation_servers.items()):
                             if isinstance(server_config, Mapping):
                                 current_activations[str(server_id)] = dict(server_config)
-                envelope = getattr(completed_result, "followup_envelope", None)
-                continuation = getattr(envelope, "continuation", None)
-                if isinstance(continuation, Mapping) and str(continuation.get("type") or "").strip():
-                    allowed_repeat_tool_calls.add(self._tool_call_signature(dict(continuation)))
             if streaming:
                 for stream_event in current_events:
                     yield stream_event

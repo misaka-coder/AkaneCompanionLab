@@ -726,6 +726,41 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(len(executions), 2)
         self.assertEqual(result.get("speech"), "任务完成了。")
 
+    def test_exact_repeated_tool_call_executes_without_hidden_terminal_phase(self) -> None:
+        repeated_call = _tool_call("load_mcp", "same-load")
+        harness = _Harness(
+            [
+                _tool_round_output("我先加载。", "load_mcp", "same-load"),
+                _tool_round_output("服务重启了，我重新加载。", "load_mcp", "same-load"),
+                _tool_round_output("再确认一次。", "load_mcp", "same-load"),
+                _tool_round_output("最后确认。", "load_mcp", "same-load"),
+                _speech_output("重新加载后验证完成。"),
+            ]
+        )
+        harness.engine._max_tool_rounds = lambda **_kwargs: 8
+        executions: list[dict[str, object]] = []
+
+        def execute_tool_call(**kwargs: object) -> ToolExecutionResult:
+            tool_call = dict(kwargs["tool_call"])
+            executions.append(tool_call)
+            return ToolExecutionResult(
+                tool_type="load_mcp",
+                followup_context=f"第 {len(executions)} 次加载完成",
+            )
+
+        harness.engine._execute_tool_call = execute_tool_call
+        result = harness.run_sync(harness.payload())
+
+        self.assertEqual(executions, [repeated_call] * 4)
+        self.assertEqual(result.get("speech"), "重新加载后验证完成。")
+        self.assertTrue(all(kwargs.get("allow_tool_call") for kwargs in harness.script.generation_kwargs[:4]))
+        self.assertFalse(
+            any(
+                "tool_decision_invalid" in str(kwargs.get("extra_user_context") or "")
+                for kwargs in harness.script.generation_kwargs
+            )
+        )
+
     def test_stream_event_order_is_locked(self) -> None:
         harness = _Harness(
             [
