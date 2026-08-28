@@ -231,6 +231,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                         "当前是 QQ 文字聊天模式。QQ 端只发送文字、气泡、文件或工具结果，不渲染 character、scene、background、BGM 或桌宠 activity。\n"
                         "不要输出只对 Web 场景或桌宠渲染有意义的演出规划。\n"
                         "QQ 是即时聊天场景——回复要自然、口语化，像发消息一样；私聊可以轻松随意，群聊要稍微留意话题归属，把当前这句话回应好再说别的。\n"
+                        "QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或代码围栏。\n"
+                        "时间、actor、target_actor、reply_to 与引用正文用于判断谁在对谁说什么；除非用户明确询问，不要把字段名、时间戳前缀或 Assistant: 等投影标签复述进 speech。\n"
                         "本轮若出现 `qq.reply_delivery: auto|text|voice|both`，它只是当前投递方式：auto 才参考 reply_medium；text、voice、both 由后端执行，不要自行改写。\n"
                         "voice 或 both 时，让 speech 适合直接朗读：自然口语、断句清楚，避免 Markdown 和复杂列表，通常控制在 150 字以内。\n"
                         "QQ 会尽早投递已经成句的 speech；正文优先写进 speech，并用自然标点或换行分隔。\n"
