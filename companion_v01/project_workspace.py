@@ -1199,10 +1199,58 @@ class ProjectWorkspaceService:
         newline = "\r\n" if "\r\n" in original else "\n"
         output: list[str] = []
         cursor = 0
+
+        def matches_at(start: int, expected_lines: list[str]) -> bool:
+            if start < cursor or start + len(expected_lines) > len(source):
+                return False
+            return all(
+                source[start + offset].rstrip("\r\n") == expected
+                for offset, expected in enumerate(expected_lines)
+            )
+
         for hunk_index, hunk in enumerate(hunks, start=1):
-            start = max(0, int(hunk["old_start"]) - 1)
+            old_lines = [
+                raw[1:].rstrip("\r\n")
+                for raw in hunk["lines"]
+                if raw[0] in {" ", "-"}
+            ]
+            new_line_count = sum(1 for raw in hunk["lines"] if raw[0] in {" ", "+"})
+            if len(old_lines) != int(hunk["old_count"]) or new_line_count != int(hunk["new_count"]):
+                raise ProjectWorkspaceError("patch_count_mismatch", path=path, hunk=hunk_index)
+
+            expected_start = max(0, int(hunk["old_start"]) - 1)
+            if old_lines and not matches_at(expected_start, old_lines):
+                candidates = [
+                    candidate
+                    for candidate in range(cursor, len(source) - len(old_lines) + 1)
+                    if matches_at(candidate, old_lines)
+                ]
+                if len(candidates) != 1:
+                    raise ProjectWorkspaceError(
+                        "hunk_not_applicable",
+                        path=path,
+                        hunk=hunk_index,
+                        mismatch="context_not_found" if not candidates else "context_ambiguous",
+                        expected_line=expected_start + 1,
+                        candidate_lines=[candidate + 1 for candidate in candidates[:8]],
+                        recommended_action=(
+                            "reread_the_target_region_and_regenerate_the_hunk"
+                            if not candidates
+                            else "add_unchanged_context_to_make_the_hunk_unique"
+                        ),
+                    )
+                start = candidates[0]
+            else:
+                start = expected_start
             if start < cursor or start > len(source):
-                raise ProjectWorkspaceError("hunk_not_applicable", path=path, hunk=hunk_index)
+                raise ProjectWorkspaceError(
+                    "hunk_not_applicable",
+                    path=path,
+                    hunk=hunk_index,
+                    mismatch="invalid_insertion_point",
+                    expected_line=expected_start + 1,
+                    recommended_action="reread_the_target_region_and_regenerate_the_hunk",
+                )
             output.extend(source[cursor:start])
             cursor = start
             consumed = 0
@@ -1212,8 +1260,6 @@ class ProjectWorkspaceService:
                 body = raw[1:]
                 body_without_eol = body.rstrip("\r\n")
                 if marker in {" ", "-"}:
-                    if cursor >= len(source) or source[cursor].rstrip("\r\n") != body_without_eol:
-                        raise ProjectWorkspaceError("hunk_not_applicable", path=path, hunk=hunk_index)
                     if marker == " ":
                         output.append(source[cursor])
                         produced += 1

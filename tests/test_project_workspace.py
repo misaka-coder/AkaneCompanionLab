@@ -433,6 +433,67 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual((project / "a.txt").read_text(encoding="utf-8"), "alpha\ngamma\n")
         self.assertEqual((project / "b.txt").read_text(encoding="utf-8"), "one\nthree\n")
 
+    def test_patch_relocates_a_uniquely_matching_hunk_when_line_numbers_drift(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Offset Patcher")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="preface\nalpha\nbeta\ngamma\n",
+        )
+        patch = """--- a/module.py
++++ b/module.py
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++changed
+ gamma
+"""
+
+        result = self.service.patch(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            patch_text=patch,
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual(
+            (project / "module.py").read_text(encoding="utf-8"),
+            "preface\nalpha\nchanged\ngamma\n",
+        )
+
+    def test_patch_rejects_ambiguous_relocation_and_reports_candidate_lines(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Ambiguous Patcher")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="header\nrepeat\nother\nrepeat\n",
+        )
+        patch = """--- a/module.py
++++ b/module.py
+@@ -1 +1 @@
+-repeat
++changed
+"""
+
+        with self.assertRaises(ProjectWorkspaceError) as raised:
+            self.service.patch(
+                scope=self.private,
+                workspace_id=created["workspace_id"],
+                patch_text=patch,
+            )
+
+        self.assertEqual(raised.exception.reason, "hunk_not_applicable")
+        self.assertEqual(raised.exception.details["mismatch"], "context_ambiguous")
+        self.assertEqual(raised.exception.details["candidate_lines"], [2, 4])
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual(
+            (project / "module.py").read_text(encoding="utf-8"),
+            "header\nrepeat\nother\nrepeat\n",
+        )
+
     def test_patch_atomically_creates_deletes_and_renames_utf8_files(self) -> None:
         created = self.service.create(scope=self.private, display_name="Full Patch")
         self.service.write(scope=self.private, path="old.txt", content="old\n")
