@@ -1,7 +1,14 @@
 # Character Workshop UI Redesign
 
-Status: design baseline for the post-V1 visual pass
-Updated: 2026-06-05
+Status: implemented production baseline
+Updated: 2026-08-29
+
+Implementation note:
+
+- The production workshop now uses the quiet editor shell described below: a neutral app surface, compact selectable character rows, visible work tabs, a readiness inspector, grouped persona fields, a stable calibration stage, and an isolated test console.
+- Desktop and 390 px browser smoke confirm that the workshop has no page-level horizontal overflow. The mobile character-list grid has an explicit same-specificity override so the inspector cannot squeeze the list into a narrow column again.
+- Existing Tauri/backend boundaries remain authoritative. The redesign did not add mock actions, a second save path, character-pack schema fields, or role-specific artwork.
+- The character row uses a generated initial only as a neutral locator. User-provided portrait art remains confined to portrait preview, calibration, and test-visual surfaces instead of appearing on every page.
 
 ## Direction
 
@@ -249,3 +256,13 @@ Validation:
 - No horizontal scrollbar appears in normal desktop or mobile widths.
 - Deferred or unavailable actions remain visibly honest and do not fake success.
 - Browser smoke verifies list, persona, portraits, calibration, and test tabs still render.
+
+## Implemented Verification
+
+```powershell
+python -m unittest tests.test_desktop_pet_frontend_contract
+cd desktop_pet_next
+npm run build
+```
+
+The frontend contract also pins the real save copy, list selection hooks, inspector actions, reduced-motion fallback, and the mobile list-grid override.

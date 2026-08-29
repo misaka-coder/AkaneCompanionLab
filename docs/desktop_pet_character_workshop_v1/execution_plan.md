@@ -416,6 +416,8 @@ Status:
 
 ## Phase 8: Workshop UI Redesign
 
+Status: complete (2026-08-29)
+
 Goal: improve the workshop's visual clarity and usability after the V1 functional loop is in place.
 
 Primary document:
@@ -453,6 +455,13 @@ Manual:
 - Browser smoke `workshop.html` at desktop width and narrow viewport.
 - Verify list, persona, portraits, calibration, and test tabs render without horizontal scroll.
 - Verify create/import/export/apply buttons still hit their existing real boundaries.
+
+Implemented result:
+
+- The first screen keeps the character index and readiness inspector visible, with row selection plus direct edit/test actions.
+- Character entries are compact rows with pack id, readiness, active/editing state, and real apply/edit commands.
+- Persona, portrait, calibration, and test-chat tabs use one neutral editor language; stale local-only save copy and inline prototype styling were removed.
+- Browser smoke passed at 1440 × 900 and 390 × 844 without page-level horizontal overflow. The mobile list layout is covered by an explicit selector-level regression rule.
 
 ## Integration Order
 

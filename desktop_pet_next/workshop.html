@@ -8,35 +8,35 @@
   <body>
     <main class="workshop-shell">
       <header class="workshop-header">
-        <div>
+        <div class="workshop-heading-copy">
           <span class="eyebrow">桌宠角色编辑器</span>
           <h1>角色工坊</h1>
           <p id="workshop-summary">正在读取角色包。</p>
         </div>
         <div class="header-actions">
           <button id="refresh-packs" type="button">刷新</button>
-          <button id="create-character-pack" type="button" class="btn-create-pack">＋ 新建角色</button>
-          <button id="import-pack-btn" type="button">📥 导入</button>
-          <button id="export-pack-btn" type="button">📤 导出</button>
+          <button id="create-character-pack" type="button" class="btn-create-pack">新建角色</button>
+          <button id="import-pack-btn" type="button">导入</button>
+          <button id="export-pack-btn" type="button">导出</button>
           <button id="open-packs-folder" type="button">打开目录</button>
           <button id="close-window" type="button">关闭</button>
         </div>
       </header>
 
-      <section class="active-panel">
-        <div>
+      <section class="active-panel" aria-label="当前工坊状态">
+        <div class="active-panel-item">
           <span>桌宠正在使用</span>
           <strong id="active-character">-</strong>
         </div>
-        <div>
+        <div class="active-panel-item">
           <span>工坊正在编辑</span>
           <strong id="editing-character">-</strong>
         </div>
-        <div>
+        <div class="active-panel-item">
           <span>素材状态</span>
           <strong id="active-pack">-</strong>
         </div>
-        <div>
+        <div class="active-panel-item">
           <span>记忆</span>
           <strong id="active-session">-</strong>
         </div>
@@ -74,6 +74,10 @@
         <aside class="detail-panel">
           <h2>下一步</h2>
           <div id="pack-detail-list" class="pack-detail-list"></div>
+          <div class="detail-panel-actions">
+            <button id="detail-edit-pack" type="button" class="btn-primary">编辑角色</button>
+            <button id="detail-test-pack" type="button" class="btn-secondary">测试对话</button>
+          </div>
           <p id="workshop-status">等待同步。</p>
         </aside>
       </section>
@@ -91,7 +95,7 @@
           <!-- Basic Identity -->
           <fieldset class="form-section">
             <legend class="form-section-title">
-              <span class="section-icon">👤</span>
+              <span class="section-icon" aria-hidden="true">01</span>
               基础身份
             </legend>
             <p class="form-section-desc">定义角色对用户的基本称呼和关系。这些字段会在对话中影响角色如何称呼自己和用户。</p>
@@ -125,7 +129,7 @@
           <!-- Persona Core -->
           <fieldset class="form-section">
             <legend class="form-section-title">
-              <span class="section-icon">💬</span>
+              <span class="section-icon" aria-hidden="true">02</span>
               人格与说话风格
             </legend>
             <p class="form-section-desc">这些字段决定了角色的语气、性格边界和主动行为方式。</p>
@@ -179,7 +183,7 @@
           <!-- Example / click feedback lines -->
           <fieldset class="form-section">
             <legend class="form-section-title">
-              <span class="section-icon">📝</span>
+              <span class="section-icon" aria-hidden="true">03</span>
               示例 / 点击反馈台词
             </legend>
             <p class="form-section-desc">这组台词会帮助模型理解说话方式，也会作为点击桌宠时的本地反馈。每条台词可以指定要切换到的表情或立绘。</p>
@@ -206,7 +210,7 @@
         </form>
 
         <aside class="detail-panel persona-help-panel">
-          <h2>💡 填写提示</h2>
+          <h2>填写提示</h2>
           <ul class="help-list">
             <li><strong>基础身份</strong>告诉角色"我是谁"和"对方是谁"。</li>
             <li><strong>性格关键词</strong>影响模型在生成回复时的整体语气倾向。</li>
@@ -216,7 +220,7 @@
             <li><strong>点击反馈台词</strong>会同时用于提示词示例和鼠标点击桌宠时的本地反馈。</li>
             <li><strong>补充设定</strong>可以写世界观、背景故事等自由文本。</li>
           </ul>
-          <p class="help-note">💾 当前为本地草稿模式。填写完毕后点击"保存草稿"，数据会保存在浏览器中。后端保存功能将在后续版本开放。</p>
+          <p class="help-note">保存会写入当前角色包。若桌面后端暂时不可用，界面会明确提示仅保存了本地草稿；测试对话前仍需成功写入角色包。</p>
         </aside>
       </section>
 
@@ -279,7 +283,7 @@
             </div>
           </div>
           <aside class="detail-panel">
-            <h2>📷 表情预览</h2>
+            <h2>表情预览</h2>
             <div id="emotion-preview" class="emotion-preview-box">
               <p class="preview-placeholder">点击表情名称预览</p>
             </div>
@@ -303,10 +307,10 @@
             <div id="calibration-content" hidden>
               <div class="section-heading">
                 <h2>显示校准</h2>
-                <div style="display:flex;gap:8px">
-                  <select id="calibration-outfit-select" class="form-input" style="width:auto;min-width:120px"></select>
-                  <button id="calibration-auto-btn" type="button" class="btn-secondary" style="font-size:12px">🔄 自动布局</button>
-                  <button id="calibration-save-btn" type="button" class="btn-primary" style="font-size:12px">💾 保存校准</button>
+                <div class="calibration-heading-actions">
+                  <select id="calibration-outfit-select" class="form-input calibration-outfit-select" aria-label="校准服装"></select>
+                  <button id="calibration-auto-btn" type="button" class="btn-secondary calibration-command">自动布局</button>
+                  <button id="calibration-save-btn" type="button" class="btn-primary calibration-command">保存校准</button>
                 </div>
               </div>
               <div class="calibration-preview-area">
@@ -329,7 +333,7 @@
             </div>
           </div>
           <aside class="detail-panel">
-            <h2>⚙️ 参数</h2>
+            <h2>参数</h2>
             <div class="calibration-controls" id="calibration-controls">
               <div class="calibration-field">
                 <label>窗口宽度 <span id="cal-win-w-val">340</span></label>
@@ -369,10 +373,10 @@
                 </div>
               </div>
             </div>
-            <p class="help-note" style="margin-top:14px">
-              📐 窗口尺寸决定桌宠窗口大小。<br/>
-              🎯 缩放/偏移控制立绘在窗口中的位置。<br/>
-              💬 拖动预览气泡，控制对话从哪里弹出。
+            <p class="help-note calibration-help-note">
+              窗口尺寸决定桌宠窗口大小。<br/>
+              缩放和偏移控制立绘在窗口中的位置。<br/>
+              拖动预览气泡可调整对话出现的位置。
             </p>
           </aside>
         </div>

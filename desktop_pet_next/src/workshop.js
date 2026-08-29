@@ -48,6 +48,8 @@ const els = {
   /* character list */
   packCount: document.querySelector("#pack-count"),
   packDetailList: document.querySelector("#pack-detail-list"),
+  detailEditPack: document.querySelector("#detail-edit-pack"),
+  detailTestPack: document.querySelector("#detail-test-pack"),
   packList: document.querySelector("#pack-list"),
   firstUsePanel: document.querySelector("#first-use-panel"),
   firstUseCreate: document.querySelector("#first-use-create"),
@@ -277,6 +279,24 @@ function bindUi() {
       if (packId) switchTab("persona", packId);
       return;
     }
+    const packRow = event.target.closest("[data-select-pack]");
+    if (packRow) {
+      selectWorkshopPack(packRow.dataset.selectPack);
+    }
+  });
+  els.packList.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (event.target.closest("button")) return;
+    const packRow = event.target.closest("[data-select-pack]");
+    if (!packRow) return;
+    event.preventDefault();
+    selectWorkshopPack(packRow.dataset.selectPack);
+  });
+  els.detailEditPack?.addEventListener("click", () => {
+    if (view.workspacePackId) switchTab("persona", view.workspacePackId);
+  });
+  els.detailTestPack?.addEventListener("click", () => {
+    if (view.workspacePackId) switchTab("test", view.workspacePackId);
   });
 
   /* tabs */
@@ -3175,18 +3195,31 @@ function renderPackList() {
       const card = document.createElement("article");
       card.className = "pack-card";
       card.dataset.packId = pack.id;
+      card.dataset.selectPack = pack.id;
+      card.tabIndex = 0;
       const isActive = pack.id === view.activePackId;
       const isEditing = pack.id === view.workspacePackId;
       card.classList.toggle("active", isActive);
       card.classList.toggle("editing", isEditing);
+      card.setAttribute("aria-label", `选择角色 ${getPackName(pack) || pack.id}`);
+      card.setAttribute("aria-current", isEditing ? "true" : "false");
 
+      const identity = document.createElement("div");
+      identity.className = "pack-card-identity";
+      const avatar = document.createElement("span");
+      avatar.className = "pack-avatar";
+      avatar.setAttribute("aria-hidden", "true");
       const heading = document.createElement("div");
       heading.className = "pack-card-heading";
       const name = getPackName(pack) || "未命名角色";
+      avatar.textContent = Array.from(name)[0] || "角";
+      const packId = document.createElement("code");
+      packId.textContent = pack.id;
       const subtitle = document.createElement("span");
       subtitle.textContent = buildPackRoleLabel(pack, { isActive, isEditing });
       subtitle.className = isActive || isEditing ? "pack-row-active-note" : "";
-      heading.append(buildText("strong", name), subtitle);
+      heading.append(buildText("strong", name), packId, subtitle);
+      identity.append(avatar, heading);
 
       const meta = document.createElement("p");
       const issues = buildPackReadinessIssues(pack);
@@ -3210,7 +3243,7 @@ function renderPackList() {
       applyBtn.textContent = pack.id === view.pendingApplyPackId ? "应用中" : isActive ? "重新应用" : "应用";
 
       actions.append(editBtn, applyBtn);
-      card.append(heading, meta, actions);
+      card.append(identity, meta, actions);
       return card;
     })
   );
@@ -3240,6 +3273,8 @@ function buildPackListEmptyState() {
 
 function renderPackDetails(pack) {
   const readiness = buildPackReadinessIssues(pack);
+  if (els.detailEditPack) els.detailEditPack.disabled = !pack;
+  if (els.detailTestPack) els.detailTestPack.disabled = !pack;
   if (!pack) {
     els.packDetailList.replaceChildren(buildReadinessRow({
       ok: false,
@@ -3265,6 +3300,13 @@ function renderPackDetails(pack) {
     ...rows.map((row) => buildReadinessRow(row)),
     buildTechnicalDetails(technical)
   );
+}
+
+function selectWorkshopPack(packId) {
+  const id = String(packId || "").trim();
+  if (!setWorkspacePack(id)) return;
+  render();
+  setStatus(`已选择：${getPackName(findPack(id)) || id}`);
 }
 
 function buildPackReadinessIssues(pack) {
