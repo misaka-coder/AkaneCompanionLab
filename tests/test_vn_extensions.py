@@ -671,10 +671,16 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("本轮不要再调用工具", block_context)
 
     def test_tool_round_hard_limit_is_single_config_without_family_expansion(self) -> None:
+        with patch.object(config, "TOOL_ROUND_HARD_LIMIT", 0, create=True):
+            self.assertEqual(self.engine._max_tool_rounds(), 0)
         with patch.object(config, "TOOL_ROUND_HARD_LIMIT", 64, create=True):
             self.assertEqual(self.engine._max_tool_rounds(), 64)
         with patch.object(config, "TOOL_ROUND_HARD_LIMIT", 12, create=True):
             self.assertEqual(self.engine._max_tool_rounds(), 12)
+
+    def test_unlimited_tool_rounds_disable_budget_warning(self) -> None:
+        with patch.object(config, "TOOL_ROUND_WARNING_REMAINING", 8, create=True):
+            self.assertEqual(self.engine._tool_round_warning_remaining(hard_limit=0), 0)
 
     def test_tool_round_warning_explains_memcore_and_checkpoint_causality(self) -> None:
         self.engine.memcore_manager = SimpleNamespace(enabled=True)

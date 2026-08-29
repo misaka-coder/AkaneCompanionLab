@@ -291,9 +291,9 @@ class Settings(BaseSettings):
     PUBLIC_DAILY_LIMIT_MESSAGE: str = "今日体验名额已满，明天再来看看 Akane 吧。"
 
     # === 工具调用 & 后台任务 ===
-    # 一个用户回合内实际执行的工具批次硬上限。并行批次按一轮计算。
-    TOOL_ROUND_HARD_LIMIT: int = 48
-    # 剩余这么多轮时，向模型解释一次续作记录与 MemCore 结算语义；0=关闭提醒。
+    # 可选的单回合工具批次硬上限。0=不限制；正数才启用。并行批次按一轮计算。
+    TOOL_ROUND_HARD_LIMIT: int = 0
+    # 有限硬上限剩余这么多轮时，解释一次续作记录与 MemCore 结算语义；0=关闭提醒。
     TOOL_ROUND_WARNING_REMAINING: int = 8
     # native tool 通道总开关。默认开启 native-first：OpenAI-compatible provider
     # 直接尝试 provider native schema；provider 明确拒绝时才结构化回退 JSON。
@@ -777,11 +777,8 @@ def _apply_settings(s: Settings) -> None:
         str(s.PUBLIC_DAILY_LIMIT_MESSAGE or "今日体验名额已满，明天再来看看 Akane 吧。").strip()
         or "今日体验名额已满，明天再来看看 Akane 吧。"
     )
-    TOOL_ROUND_HARD_LIMIT = max(1, int(s.TOOL_ROUND_HARD_LIMIT))
-    TOOL_ROUND_WARNING_REMAINING = max(
-        0,
-        min(TOOL_ROUND_HARD_LIMIT - 1, int(s.TOOL_ROUND_WARNING_REMAINING)),
-    )
+    TOOL_ROUND_HARD_LIMIT = max(0, int(s.TOOL_ROUND_HARD_LIMIT))
+    TOOL_ROUND_WARNING_REMAINING = max(0, int(s.TOOL_ROUND_WARNING_REMAINING))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "*").strip()
     NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()

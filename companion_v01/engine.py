@@ -4390,7 +4390,7 @@ class AkaneMemoryEngine:
         # actually executed. Invalid/rejected model decisions have their own
         # bounded retry counter and never consume tool evidence budget.
         deferred_control_snapshot: dict[str, Any] = {}
-        while tool_round_index <= max_tool_rounds:
+        while max_tool_rounds == 0 or tool_round_index <= max_tool_rounds:
             control_snapshot: dict[str, Any] = deferred_control_snapshot
             deferred_control_snapshot = {}
             turn_coordinator = getattr(self, "turn_coordinator", None)
@@ -4556,7 +4556,7 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 domain_profile_id=turn_domain_profile_id,
             )
-            if tool_calls and tool_round_index >= max_tool_rounds:
+            if tool_calls and max_tool_rounds > 0 and tool_round_index >= max_tool_rounds:
                 blocked_calls = "；".join(self._describe_tool_call_for_prompt(tool_call) for tool_call in tool_calls)
                 tool_followups.append(
                     f"模型在本轮已经执行 {tool_round_index}/{max_tool_rounds} 轮工具后又请求：{blocked_calls}。"
@@ -4760,11 +4760,16 @@ class AkaneMemoryEngine:
             )
 
             tool_round_index += 1
-            hard_budget_reached = tool_round_index >= max_tool_rounds
+            hard_budget_reached = max_tool_rounds > 0 and tool_round_index >= max_tool_rounds
             round_control_feedback = ""
-            remaining_rounds = max(0, max_tool_rounds - tool_round_index)
+            remaining_rounds = (
+                max(0, max_tool_rounds - tool_round_index)
+                if max_tool_rounds > 0
+                else 0
+            )
             if (
-                not hard_budget_reached
+                max_tool_rounds > 0
+                and not hard_budget_reached
                 and not tool_round_warning_emitted
                 and warning_remaining > 0
                 and remaining_rounds <= warning_remaining

@@ -111,13 +111,15 @@ def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 1
 
 def max_tool_rounds() -> int:
     try:
-        return max(1, int(getattr(config, "TOOL_ROUND_HARD_LIMIT", 48) or 48))
+        return max(0, int(getattr(config, "TOOL_ROUND_HARD_LIMIT", 0) or 0))
     except Exception:
-        return 48
+        return 0
 
 
 def tool_round_warning_remaining(*, hard_limit: int | None = None) -> int:
-    hard = max_tool_rounds() if hard_limit is None else max(1, int(hard_limit or 1))
+    hard = max_tool_rounds() if hard_limit is None else max(0, int(hard_limit or 0))
+    if hard <= 0:
+        return 0
     try:
         configured = max(0, int(getattr(config, "TOOL_ROUND_WARNING_REMAINING", 8) or 0))
     except Exception:

@@ -218,8 +218,8 @@ DSH 和 OpenCode 都证明，Akane 当前“全回合签名去重 → 三次后�
 
 保留两个公开、可解释的预算参数：
 
-- `TOOL_ROUND_HARD_LIMIT`：实际执行工具批次的硬上限，当前默认 48；
-- `TOOL_ROUND_WARNING_REMAINING`：离硬上限还剩多少批时提醒一次，当前默认 8。
+- `TOOL_ROUND_HARD_LIMIT`：可选的实际工具批次硬上限，默认 0（不限制）；只有显式配置正数才启用；
+- `TOOL_ROUND_WARNING_REMAINING`：有限硬上限还剩多少批时提醒一次，当前默认 8；未启用硬上限时不生效。
 
 协议错误重试与工具预算彻底分离，统一使用已有 `CHAT_MODEL_DECISION_MAX_ATTEMPTS`。它只约束 Provider 连续没有形成可表示决策的次数；任何带名称的工具调用，包括参数错误、未知工具和权限拒绝，都必须先变成普通结构化工具结果，不能进入该计数，更不能在正常预算尚未耗尽时永久关闭工具。旧 `TOOL_DECISION_RETRY_LIMIT` 删除并列入退役配置。
 

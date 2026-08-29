@@ -623,6 +623,30 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertIn("已使用 2/4", warning_calls[0]["extra_user_context"])
         self.assertEqual(result.get("speech"), "完成。")
 
+    def test_unlimited_tool_rounds_continue_beyond_legacy_limit_without_warning(self) -> None:
+        tool_rounds = 49
+        harness = _Harness(
+            [
+                _tool_round_output(f"执行第 {index} 步。", "inspect", f"call-{index}")
+                for index in range(1, tool_rounds + 1)
+            ]
+            + [_speech_output("四十九轮完成并正常交付。")]
+        )
+        harness.engine._max_tool_rounds = lambda **_kwargs: 0
+        harness.engine._tool_round_warning_remaining = lambda **_kwargs: 0
+
+        result = harness.run_sync(harness.payload(message="完成超过旧上限的长程任务"))
+
+        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), tool_rounds)
+        self.assertEqual(result.get("speech"), "四十九轮完成并正常交付。")
+        self.assertTrue(all(kwargs.get("allow_tool_call") for kwargs in harness.script.generation_kwargs))
+        self.assertFalse(
+            any(
+                "工具预算提醒" in str(kwargs.get("extra_user_context") or "")
+                for kwargs in harness.script.generation_kwargs
+            )
+        )
+
     def test_hard_limit_executes_last_batch_then_blocks_next_tool(self) -> None:
         harness = _Harness(
             [
