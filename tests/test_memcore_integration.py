@@ -1033,12 +1033,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
         with (
             patch.object(config, "MEMCORE_RAW_TOKEN_TRIGGER", 24000, create=True),
             patch.object(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67, create=True),
+            patch.object(config, "MEMCORE_LLM_TIMEOUT_SECONDS", 55.0, create=True),
             patch.object(config, "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET", 3200, create=True),
             patch.object(config, "MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET", 7600, create=True),
         ):
             memory_config = manager._build_memory_config(fake_memcore)
         self.assertEqual(memory_config.raw_token_trigger, 24000)
         self.assertEqual(memory_config.raw_token_batch_ratio, 0.67)
+        self.assertEqual(memory_config.llm_timeout_s, 55.0)
         self.assertEqual(memory_config.retrieval_result_token_budget, 3200)
         self.assertEqual(memory_config.native_timeline_page_token_budget, 7600)
         self.assertFalse(hasattr(memory_config, "raw_trigger_count"))

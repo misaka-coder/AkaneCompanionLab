@@ -3232,7 +3232,7 @@ class MemcoreManager:
             ),
             llm_timeout_s=max(
                 1.0,
-                min(120.0, float(getattr(config, "MEMCORE_LLM_TIMEOUT_SECONDS", 20.0) or 20.0)),
+                min(120.0, float(getattr(config, "MEMCORE_LLM_TIMEOUT_SECONDS", 55.0) or 55.0)),
             ),
             episodic_visible_max=max(
                 1,
