@@ -52,6 +52,39 @@ if TYPE_CHECKING:
 LogEvent = Callable[..., None]
 _QQ_ROUTE_BASE_RE = re.compile(r"^/api(?:/[A-Za-z0-9._-]+)+$")
 _QQ_GROUP_PASSIVE_MEMORY_MODES = frozenset({"all", "denylist", "off"})
+_QQ_STOP_COMMANDS = frozenset(
+    {
+        "/stop",
+        "stop",
+        "停",
+        "停止",
+        "停下",
+        "停一下",
+        "停一下吧",
+        "停下来",
+        "停下来吧",
+        "先停",
+        "先停下",
+        "先停一下",
+        "先停一下吧",
+        "先停下来",
+        "先停下来吧",
+        "停止任务",
+        "取消任务",
+        "取消当前任务",
+        "终止任务",
+        "结束任务",
+        "别做了",
+        "先别做了",
+        "不要继续了",
+        "先不要继续了",
+    }
+)
+
+
+def _is_qq_stop_command(value: Any) -> bool:
+    normalized = re.sub(r"[\s，。！？!?、]+$", "", str(value or "").strip().lower())
+    return normalized in _QQ_STOP_COMMANDS
 
 
 def _normalize_qq_route_base(value: Any) -> str:
@@ -2587,18 +2620,17 @@ def build_qq_router(
         qq_user_id = int(getattr(context, "user_id", 0) or 0)
         actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{context.profile_user_id}"
         steer_text = str(turn_payload.get("message") or "").strip()
-        stop_requested = str(getattr(context, "clean_message", "") or "").strip().lower() in {
-            "停止",
-            "停下",
-            "停止任务",
-            "取消任务",
-            "先停一下",
-        }
+        stop_requested = _is_qq_stop_command(getattr(context, "clean_message", ""))
         if stop_requested:
+            master_qq = str(getattr(qq_gateway, "master_qq", "") or "").strip()
+            requester_is_master = bool(master_qq) and str(qq_user_id) == master_qq
             stop_result = turn_coordinator.request_stop(
                 profile_user_id=context.profile_user_id,
                 session_id=context.session_id,
-                actor_id=actor_id,
+                # The owner is the host-level operator for this Bot instance and
+                # may stop a group task started by another actor. Ordinary steer
+                # messages remain actor-scoped below.
+                actor_id="" if requester_is_master else actor_id,
             )
             if stop_result.get("ok"):
                 acknowledgement = "收到，已请求在安全位置停止当前任务。"
@@ -2608,11 +2640,12 @@ def build_qq_router(
                     "reply_messages": [acknowledgement],
                     "send_result": send_result,
                 }
-            acknowledgement = (
-                "当前任务已经在收尾，来不及再中止了。"
-                if stop_result.get("status") == "finalizing"
-                else "当前没有正在执行的任务。"
-            )
+            if stop_result.get("status") == "finalizing":
+                acknowledgement = "当前任务已经在收尾，来不及再中止了。"
+            elif stop_result.get("status") == "busy_other_actor":
+                acknowledgement = "当前任务由另一位群成员发起；只有主人或任务发起者可以停止。"
+            else:
+                acknowledgement = "当前没有正在执行的任务。"
             send_result = await asyncio.to_thread(qq_gateway.send_reply, context, acknowledgement)
             return {
                 "frame": {"status": str(stop_result.get("status") or "idle"), "speech": acknowledgement},
@@ -2913,6 +2946,22 @@ def build_qq_router(
                             addressed_to_assistant=True,
                         )
                         optional_reply = not bool(getattr(context, "mentioned_bot", False))
+            master_qq = str(getattr(qq_gateway, "master_qq", "") or "").strip()
+            if (
+                not context.should_respond
+                and master_qq
+                and str(int(getattr(context, "user_id", 0) or 0)) == master_qq
+                and _is_qq_stop_command(getattr(context, "clean_message", ""))
+            ):
+                # Stop is a host control event, not a conversational reply
+                # trigger. It must reach the coordinator even without @ while
+                # passive group messages continue through the normal recorder.
+                context = replace(
+                    context,
+                    should_respond=True,
+                    reason="owner_stop_command",
+                    addressed_to_assistant=True,
+                )
             if not context.should_respond:
                 if bool(getattr(context, "should_record", False)):
                     passive_memory_policy = _resolve_group_passive_memory_policy(

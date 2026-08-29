@@ -1538,6 +1538,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         scheduled: list[Any] = []
         processed: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
+        stop_calls: list[dict[str, Any]] = []
         steer_mode = {"same_actor": False, "optional_turn": False}
 
         class FakeCoordinator:
@@ -1556,6 +1557,11 @@ class BackendRouteModuleTests(unittest.TestCase):
                 if steer_mode["same_actor"]:
                     return {"ok": True, "status": "accepted", "pending_count": 1}
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
+
+            @staticmethod
+            def request_stop(**kwargs):
+                stop_calls.append(dict(kwargs))
+                return {"ok": True, "status": "requested", "reason": "stop_requested_at_safe_boundary"}
 
             @staticmethod
             @asynccontextmanager
@@ -1639,6 +1645,18 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
         self.assertEqual(steered.status_code, 200)
         self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
+        self.assertEqual(len(scheduled), 0)
+
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
+            stopped = client.post(
+                "/api/qq/napcat/event",
+                json={**event, "message_id": "owner-stop-other-actor", "message": [
+                    {"type": "text", "data": {"text": "先别做了。"}},
+                ]},
+            )
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(stopped.json()["sent_count"], 1)
+        self.assertEqual(stop_calls[-1]["actor_id"], "")
         self.assertEqual(len(scheduled), 0)
 
         steer_mode["same_actor"] = False
