@@ -15,8 +15,15 @@ from capcore import PermissionDecision
 from companion_v01.capability_registry import CapabilitySelection, ExecutorBroker
 from companion_v01.engine import AkaneMemoryEngine, FINAL_PROMPT_CACHE_LAYOUT_VERSION
 from companion_v01.execution_local import TrustedLocalExecutor
-from companion_v01.execution_run import ExecutionAvailability, ExecRunStart, make_cursor, new_run_id
-from companion_v01.execution_specs import EXEC_COMMAND_MAX_CHARS, EXEC_STATUS_RUNNING
+from companion_v01.execution_run import (
+    ExecutionAvailability,
+    ExecutionRunOwner,
+    ExecRunStart,
+    execute_exec_run,
+    make_cursor,
+    new_run_id,
+)
+from companion_v01.execution_specs import EXEC_STATUS_RUNNING
 from companion_v01.capcore_runtime import manual_permission_request, resolve_permission_for_profile
 from companion_v01.local_capability_config import (
     get_approval_policy_config,
@@ -125,25 +132,38 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertTrue(result.state_updates["capability_execution"]["run_id"].startswith("execrun_"))
         self.assertEqual(result.state_updates["capability_execution"]["output_ref"].startswith("runlog:"), True)
 
-    def test_exec_run_rejects_long_command_with_actionable_limits(self) -> None:
+    def test_exec_run_schema_and_handler_do_not_apply_a_private_command_length_limit(self) -> None:
         self._set_policy("trusted_auto_allow")
-        command = "x" * (EXEC_COMMAND_MAX_CHARS + 17)
+        handler = self._handler()
+        command = "echo " + ("x" * 9000)
+        normalized = handler.normalize_call({"type": "exec_run", "command": command})
 
-        result = self._handler().execute(
-            call={"type": "exec_run", "command": command},
-            context=_context(),
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["command"], command)
+        self.assertNotIn("maxLength", handler.tool_spec().input_schema["properties"]["command"])
+
+        captured = {}
+
+        class Provider:
+            def availability(self):
+                return ExecutionAvailability(enabled=True, status="ready")
+
+            def run(self, **kwargs):
+                captured.update(kwargs)
+                return ExecRunStart(
+                    status="completed",
+                    run_id="execrun_" + "a" * 32,
+                    exit_code=0,
+                    stdout="ok",
+                )
+
+        mapped = execute_exec_run(
+            Provider(),
+            owner=ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local"),
+            command=command,
         )
-
-        event = result.stream_events[0]
-        state = result.state_updates["capability_execution"]
-        self.assertEqual(event["status"], "rejected")
-        self.assertEqual(event["reason"], "command_too_long")
-        self.assertEqual(state["status"], "rejected")
-        self.assertEqual(state["max_chars"], EXEC_COMMAND_MAX_CHARS)
-        self.assertEqual(state["actual_chars"], len(command))
-        self.assertEqual(state["recommended_action"], "workspace_write_or_patch")
-        self.assertIn("workspace_write", result.followup_context)
-        self.assertNotIn("无法确认", result.followup_context)
+        self.assertEqual(mapped.event_status, "completed")
+        self.assertEqual(captured["command"], command)
 
     def test_exec_prompt_is_compact_and_defers_exact_versions_to_real_probes(self) -> None:
         instruction = self._handler().build_prompt_instruction()

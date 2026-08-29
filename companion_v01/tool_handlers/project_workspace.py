@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from ..project_workspace import ProjectWorkspaceError, ProjectWorkspaceService
@@ -17,8 +18,9 @@ from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, To
 class _ProjectWorkspaceHandler(BaseToolHandler):
     policy_accepted_native_tool = True
 
-    def __init__(self, *, service: ProjectWorkspaceService) -> None:
+    def __init__(self, *, service: ProjectWorkspaceService, execution_provider: Any | None = None) -> None:
         self.service = service
+        self.execution_provider = execution_provider
 
     def _scope(self, context: ToolExecutionContext):
         request_context = context.request_context if isinstance(context.request_context, dict) else {}
@@ -65,6 +67,59 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
             return self._result({"status": "rejected", "reason": exc.reason, **exc.details})
         except Exception:
             return self._result({"status": "failed", "reason": "project_workspace_internal_error"})
+
+    def _operation_location(
+        self,
+        *,
+        context: ToolExecutionContext,
+        workspace_id: str = "",
+        cwd: str = "",
+        path: str = "",
+        directory_path: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve project identity or the executor's cwd using one path contract."""
+
+        clean_workspace_id = str(workspace_id or "").strip()
+        clean_cwd = str(cwd or "").strip()
+        clean_path = str(path or "").strip()
+        if clean_workspace_id and clean_cwd:
+            raise ProjectWorkspaceError("workspace_and_cwd_conflict")
+
+        path_value = Path(clean_path).expanduser() if clean_path else None
+        if path_value is not None and path_value.is_absolute():
+            if clean_workspace_id:
+                raise ProjectWorkspaceError("workspace_and_absolute_path_conflict")
+            if clean_cwd:
+                raise ProjectWorkspaceError("cwd_and_absolute_path_conflict")
+            if directory_path:
+                clean_cwd = str(path_value)
+                clean_path = "."
+            else:
+                clean_cwd = str(path_value.parent)
+                clean_path = path_value.name
+
+        if clean_workspace_id:
+            return {"workspace_id": clean_workspace_id, "operation_root": None, "path": clean_path}
+
+        scope = self._scope(context)
+        if not clean_cwd and self.service.current(scope=scope) is not None:
+            return {"workspace_id": "", "operation_root": None, "path": clean_path}
+
+        provider = self.execution_provider
+        resolver = getattr(provider, "resolve_workdir", None)
+        if not callable(resolver):
+            raise ProjectWorkspaceError("execution_path_authority_unavailable")
+        if clean_cwd == "alias:project" or clean_cwd.startswith("alias:project/"):
+            clean_cwd = self.service.execution_cwd(
+                scope=scope,
+                alias_value=clean_cwd,
+                execution_provider=provider,
+            )
+        try:
+            root = resolver(clean_cwd)
+        except Exception as exc:
+            raise ProjectWorkspaceError("invalid_execution_cwd", detail=str(exc)) from exc
+        return {"workspace_id": "", "operation_root": root, "path": clean_path}
 
 
 class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
@@ -149,7 +204,8 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- project_inspect：只读检查当前编程项目。list 发现相对路径，search 按文本或正则定位到行号，"
+            "- project_inspect：只读检查源码。path 可相对 cwd、使用真实绝对路径，或省略 cwd 使用当前持久项目/执行根；"
+            "list 发现相对路径，search 按文本或正则定位到行号，"
             "read 按行读取 UTF-8 源码并返回 SHA-256。长结果按完整条目或完整代码片段分页；"
             "续读时原样重复 action 与选择参数并带 cursor，源码变化会明确返回 stale_cursor。"
         )
@@ -169,6 +225,8 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             return None
         if value.get("workspace_id"):
             normalized["workspace_id"] = str(value.get("workspace_id")).strip()
+        if value.get("cwd"):
+            normalized["cwd"] = str(value.get("cwd")).strip()
         if value.get("cursor"):
             normalized["cursor"] = str(value.get("cursor")).strip()
         if action == "list":
@@ -203,10 +261,18 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             params_hash = self._params_hash(call)
             cursor_state = self._parse_cursor(call=call, context=context, params_hash=params_hash)
             if action == "list":
+                location = self._operation_location(
+                    context=context,
+                    workspace_id=str(call.get("workspace_id") or ""),
+                    cwd=str(call.get("cwd") or ""),
+                    path=str(call.get("path") or "."),
+                    directory_path=Path(str(call.get("path") or ".")).expanduser().is_absolute(),
+                )
                 data = self.service.inspect_list(
                     scope=self._scope(context),
-                    workspace_id=str(call.get("workspace_id") or ""),
-                    path=str(call.get("path") or "."),
+                    workspace_id=str(location["workspace_id"]),
+                    operation_root=location["operation_root"],
+                    path=str(location["path"] or "."),
                     pattern=str(call.get("pattern") or "*"),
                     max_depth=int(call.get("max_depth") or 0),
                     include_hidden=bool(call.get("include_hidden")),
@@ -223,10 +289,18 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                     heading="项目目录",
                 )
             if action == "search":
+                location = self._operation_location(
+                    context=context,
+                    workspace_id=str(call.get("workspace_id") or ""),
+                    cwd=str(call.get("cwd") or ""),
+                    path=str(call.get("path") or "."),
+                    directory_path=Path(str(call.get("path") or ".")).expanduser().is_absolute(),
+                )
                 data = self.service.inspect_search(
                     scope=self._scope(context),
-                    workspace_id=str(call.get("workspace_id") or ""),
-                    path=str(call.get("path") or "."),
+                    workspace_id=str(location["workspace_id"]),
+                    operation_root=location["operation_root"],
+                    path=str(location["path"] or "."),
                     query=str(call.get("query") or ""),
                     include=str(call.get("include") or "*"),
                     regex=bool(call.get("regex")),
@@ -244,10 +318,17 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                     render=self._render_search_match,
                     heading="项目搜索",
                 )
+            location = self._operation_location(
+                context=context,
+                workspace_id=str(call.get("workspace_id") or ""),
+                cwd=str(call.get("cwd") or ""),
+                path=str(call.get("path") or ""),
+            )
             data = self.service.inspect_read(
                 scope=self._scope(context),
-                workspace_id=str(call.get("workspace_id") or ""),
-                path=str(call.get("path") or ""),
+                workspace_id=str(location["workspace_id"]),
+                operation_root=location["operation_root"],
+                path=str(location["path"] or ""),
             )
             return self._render_read_page(
                 call=call,
@@ -292,7 +373,10 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             used += len(row) + 1
             end += 1
         complete = end >= len(items)
-        lines = [f"【{heading}】", f"项目：{data['workspace_id']}  路径：{data['path']}"]
+        location_label = (
+            f"项目：{data['workspace_id']}" if data.get("workspace_id") else f"cwd：{data.get('cwd', '')}"
+        )
+        lines = [f"【{heading}】", f"{location_label}  路径：{data['path']}"]
         if action == "list":
             lines.append(
                 f"遍历：{data.get('visited_entries', 0)} 个条目，最大深度 {data.get('max_depth', 0)}；"
@@ -308,12 +392,13 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             lines.append("扫描触及明确技术边界；以上结果真实有效，但不是整个项目的完整结果。请缩小 path 或 pattern/include 后重试。")
         continuation = None
         if not complete:
+            continuation_call = self._bind_direct_cwd(call, data)
             cursor = self._make_cursor(
-                call=call,
+                call=continuation_call,
                 context=context,
                 payload={"i": end, "f": fingerprint},
             )
-            continuation = self._continuation_call(call, cursor)
+            continuation = self._continuation_call(continuation_call, cursor)
             lines.append(
                 f"本页展示完整条目 {start + 1}-{end} / {len(items)}。当前证据够用即可继续；需要后续结果时按 continuation 调用。"
             )
@@ -326,6 +411,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             continuation=continuation,
             diagnostics={
                 "workspace_id": data["workspace_id"],
+                **({"cwd": data.get("cwd", "")} if data.get("cwd") else {}),
                 "shown": len(rows),
                 "shown_through": end,
                 "total": len(items),
@@ -383,9 +469,12 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             if used >= budget:
                 break
         complete = line_index >= requested_stop
+        location_label = (
+            f"项目：{data['workspace_id']}" if data.get("workspace_id") else f"cwd：{data.get('cwd', '')}"
+        )
         lines = [
             "【项目源码读取】",
-            f"项目：{data['workspace_id']}  文件：{data['path']}",
+            f"{location_label}  文件：{data['path']}",
             f"SHA-256：{fingerprint}  文件大小：{data['bytes']} 字节  总行数：{len(lines_source)}",
             *rendered,
         ]
@@ -393,12 +482,13 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             lines.append("(文件为空)")
         continuation = None
         if not complete:
+            continuation_call = self._bind_direct_cwd(call, data)
             cursor = self._make_cursor(
-                call=call,
+                call=continuation_call,
                 context=context,
                 payload={"l": line_index, "c": column, "f": fingerprint},
             )
-            continuation = self._continuation_call(call, cursor)
+            continuation = self._continuation_call(continuation_call, cursor)
             lines.append("请求范围仍有内容未展示；当前证据够用即可继续，需要后续源码时按 continuation 调用。")
         else:
             if lines_source:
@@ -412,6 +502,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             continuation=continuation,
             diagnostics={
                 "workspace_id": data["workspace_id"],
+                **({"cwd": data.get("cwd", "")} if data.get("cwd") else {}),
                 "path": data["path"],
                 "sha256": fingerprint,
                 "start_line": requested_start + 1,
@@ -507,6 +598,17 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
         return {key: value for key, value in call.items() if key != "cursor"} | {"cursor": cursor}
 
     @staticmethod
+    def _bind_direct_cwd(call: dict[str, Any], data: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep a default-root page pinned if project selection changes later."""
+
+        if call.get("cwd") or call.get("workspace_id") or not data.get("cwd"):
+            return call
+        path = Path(str(call.get("path") or "")).expanduser()
+        if path.is_absolute():
+            return call
+        return {**call, "cwd": str(data.get("cwd") or "")}
+
+    @staticmethod
     def _render_list_entry(item: dict[str, Any]) -> str:
         suffix = "/" if str(item.get("kind") or "") == "directory" and not str(item.get("path") or "").endswith("/") else ""
         return f"- {item.get('path', '')}{suffix}  kind={item.get('kind', '')}  bytes={item.get('bytes', 0)}"
@@ -538,8 +640,8 @@ class WorkspaceWriteToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- workspace_write：在当前持久项目内原子创建或替换一个 UTF-8 文件；只传项目相对 path。"
-            "已有文件优先带 expected_sha256，冲突时重新读取再修改。源码不要经 Shell 命令传输。"
+            "- workspace_write：相对 cwd、真实绝对 path 或当前持久项目原子创建/替换一个 UTF-8 文件。"
+            "已有文件优先带 expected_sha256，冲突时重新读取再修改。长源码优先用本工具，不必先注册项目。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -557,19 +659,28 @@ class WorkspaceWriteToolHandler(_ProjectWorkspaceHandler):
         for key in ("workspace_id", "expected_sha256"):
             if value.get(key):
                 normalized[key] = str(value.get(key)).strip()
+        if value.get("cwd"):
+            normalized["cwd"] = str(value.get("cwd")).strip()
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        return self._execute(
-            lambda: self.service.write(
-                scope=self._scope(context),
+        def operation():
+            location = self._operation_location(
+                context=context,
                 workspace_id=str(call.get("workspace_id") or ""),
+                cwd=str(call.get("cwd") or ""),
                 path=str(call.get("path") or ""),
+            )
+            return self.service.write(
+                scope=self._scope(context),
+                workspace_id=str(location["workspace_id"]),
+                operation_root=location["operation_root"],
+                path=str(location["path"] or ""),
                 content=str(call.get("content") or ""),
                 expected_sha256=str(call.get("expected_sha256") or ""),
                 mode=str(call.get("mode") or "create_or_replace"),
             )
-        )
+        return self._execute(operation)
 
 
 class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
@@ -580,7 +691,7 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- workspace_patch：对当前持久项目中的 UTF-8 文件应用 unified diff。"
+            "- workspace_patch：对 cwd 或当前持久项目中的 UTF-8 文件应用 unified diff；不必先注册项目。"
             "支持修改、新建、删除和重命名；所有 hunk 先校验再提交，失败时不会留下半应用结果。"
             "可用 expected_files 绑定既有文件的旧 sha256。"
         )
@@ -601,17 +712,25 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
         }
         if value.get("workspace_id"):
             normalized["workspace_id"] = str(value.get("workspace_id")).strip()
+        if value.get("cwd"):
+            normalized["cwd"] = str(value.get("cwd")).strip()
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        return self._execute(
-            lambda: self.service.patch(
-                scope=self._scope(context),
+        def operation():
+            location = self._operation_location(
+                context=context,
                 workspace_id=str(call.get("workspace_id") or ""),
+                cwd=str(call.get("cwd") or ""),
+            )
+            return self.service.patch(
+                scope=self._scope(context),
+                workspace_id=str(location["workspace_id"]),
+                operation_root=location["operation_root"],
                 patch_text=str(call.get("patch") or ""),
                 expected_files=dict(call.get("expected_files") or {}),
             )
-        )
+        return self._execute(operation)
 
 
 __all__ = [

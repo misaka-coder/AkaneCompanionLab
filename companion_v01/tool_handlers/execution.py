@@ -48,7 +48,6 @@ from ..execution_run import (
 from ..execution_specs import (
     ARTIFACT_STATUS_NOT_REQUESTED,
     ARTIFACT_STATUS_REGISTRATION_FAILED,
-    EXEC_COMMAND_MAX_CHARS,
     EXEC_CWD_MAX_CHARS,
     EXEC_CANCEL_TOOL_SPEC,
     EXEC_RUN_TOOL_SPEC,
@@ -179,7 +178,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 "observed_at": data.get("observed_at"),
             }
         }
-        for key in ("max_chars", "actual_chars", "recommended_action"):
+        for key in ("max_chars", "actual_chars"):
             if data.get(key) is not None:
                 state_updates["capability_execution"][key] = data.get(key)
         if data.get("generated_resources"):
@@ -305,8 +304,8 @@ class _ExecToolHandlerBase(BaseToolHandler):
                 }
             ],
             followup_context=(
-                f"这次命令没有执行：{clean_reason}。编程任务请先用 manage_project_workspace 选择或创建项目，"
-                "再用 cwd=alias:project；不要猜测服务器目录。"
+                f"这次命令没有执行：{clean_reason}。alias:project 需要先选择持久项目；"
+                "也可以先用真实命令发现目录，再直接传可访问的 cwd。不要猜测服务器目录。"
             ),
             state_updates={
                 "capability_execution": {
@@ -365,7 +364,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return (
             "- exec_run：以宿主用户权限运行命令或脚本，不是 Shell 沙箱；命令参数字段名是 command（不是 cmd）。"
             "平台、Shell、绝对 cwd 与依赖存储见上方宿主事实；精确运行时版本需要时先用命令探测。"
-            "cwd 可用工作区相对路径、挂载别名或真实宿主绝对目录；编程项目优先使用 alias:project。"
+            "cwd 可用工作区相对路径、挂载别名或真实宿主绝对目录；已注册项目可使用 alias:project。"
             "先从 pwd、find 等真实输出发现路径，不要猜测。不要把运行时下载到项目目录；依赖按项目清单/锁文件解析。"
             "宿主事实若列出 credential_env_refs，可按当前 Shell 的普通环境变量语法使用 configured 的引用；"
             "真实值由执行器注入并从输出中遮蔽，不要尝试打印或复制明文。本工具不接受模型临时传入环境变量值。短命令直接返回结果；"
@@ -493,7 +492,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 call = {**call, "cwd": cwd}
             except ProjectWorkspaceError as exc:
                 return self._project_rejected(exc.reason)
-        if not command or len(command) > EXEC_COMMAND_MAX_CHARS or len(cwd) > EXEC_CWD_MAX_CHARS:
+        if not command or len(cwd) > EXEC_CWD_MAX_CHARS:
             return self._mapped_result(
                 execute_exec_run(
                     provider,

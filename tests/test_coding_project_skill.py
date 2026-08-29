@@ -79,7 +79,6 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertEqual(
             entry.required_tools,
             (
-                "manage_project_workspace",
                 "project_inspect",
                 "workspace_write",
                 "workspace_patch",
@@ -99,20 +98,20 @@ class CodingProjectSkillTests(unittest.TestCase):
     def test_load_skill_returns_the_full_closed_loop(self) -> None:
         content = self.registry.load("coding-project").content
         for marker in (
-            "Establish the project authority",
+            "Establish the working location",
             "Scope a verifiable increment",
             "Write through project tools",
             "Execute and diagnose honestly",
             "Verify and deliver",
         ):
             self.assertIn(marker, content)
-        self.assertIn('manage_project_workspace(action="current")', content)
+        self.assertIn("optional persistent identity", content)
         self.assertIn('cwd="alias:project"', content)
         self.assertIn("workspace_write", content)
         self.assertIn("project_inspect", content)
         self.assertIn("workspace_patch", content)
         self.assertIn("base_hash_mismatch", content)
-        self.assertIn("command_too_long", content)
+        self.assertIn("private character threshold", content)
         self.assertIn("$LASTEXITCODE", content)
         self.assertIn('$ErrorActionPreference = "Stop"', content)
         self.assertIn("node --check file.js", content)

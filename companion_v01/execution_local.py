@@ -70,7 +70,6 @@ from .execution_run import (
     parse_cursor,
 )
 from .execution_specs import (
-    EXEC_COMMAND_MAX_CHARS,
     EXEC_CWD_MAX_CHARS,
     EXEC_MAX_INITIAL_WAIT_SECONDS,
     EXEC_STATUS_CANCELLED,
@@ -465,7 +464,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         if not self._owner_matches(owner):
             return ExecRunStart(status=EXEC_STATUS_EXECUTION_UNKNOWN, reason="execution_provider_mismatch")
         clean_command = str(command or "").strip()
-        if not clean_command or len(clean_command) > EXEC_COMMAND_MAX_CHARS:
+        if not clean_command:
             return ExecRunStart(status=EXEC_STATUS_FAILED, reason="invalid_execution_command")
         try:
             workdir = self._resolve_workdir(cwd)
@@ -623,6 +622,16 @@ class TrustedLocalExecutor(ExecutionProvider):
         reason = self._visible_reason(run_id, result.reason)
         output_ref = None if run_id in self._unusable_logs else result.output_ref
         return replace(result, reason=reason, output_ref=output_ref)
+
+    def resolve_workdir(self, value: str = "") -> Path:
+        """Resolve a model-visible cwd through the executor's real path authority.
+
+        File tools use this same entry point so Shell and source editing agree on
+        relative roots, authorized aliases, absolute host directories, and
+        structured path failures.
+        """
+
+        return self._resolve_workdir(value)
 
     def _resolve_workdir(self, value: str) -> Path:
         raw = str(value or "").strip()

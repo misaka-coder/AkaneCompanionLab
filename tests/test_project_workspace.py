@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -573,8 +577,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         spec = handler.tool_spec()
         item_schema = spec.output_schema["properties"]["files"]["items"]
 
-        self.assertEqual(spec.spec_version, "1.1.0")
-        self.assertEqual(spec.schema_version, 2)
+        self.assertEqual(spec.spec_version, "1.2.0")
+        self.assertEqual(spec.schema_version, 3)
         self.assertEqual(
             item_schema["properties"]["operation"]["enum"],
             ["update", "create", "delete", "rename"],
@@ -634,6 +638,32 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.service.write(scope=self.private, path="src/minified.js", content="changed\n", mode="replace")
         stale = handler.execute(call=second_call, context=self._context())
         self.assertIn("stale_cursor", stale.followup_context)
+
+    def test_unregistered_default_root_continuation_is_pinned_to_its_real_cwd(self) -> None:
+        self.execution_root.mkdir(parents=True, exist_ok=True)
+        (self.execution_root / "large.txt").write_text("z" * 70_000, encoding="utf-8")
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-paged-root",
+        )
+        handler = ProjectInspectToolHandler(service=self.service, execution_provider=provider)
+        first = handler.execute(
+            call={
+                "type": "project_inspect",
+                "action": "read",
+                "path": "large.txt",
+                "start_line": 1,
+                "line_count": 1,
+            },
+            context=self._context(),
+        )
+        continuation = dict(first.followup_envelope.continuation or {})
+
+        self.assertEqual(Path(continuation["cwd"]), self.execution_root.resolve())
+        self.service.create(scope=self.private, display_name="Later Selection")
+        second = handler.execute(call=handler.normalize_call(continuation), context=self._context())
+        self.assertTrue(second.followup_envelope.complete)
+        self.assertNotIn("stale_cursor", second.followup_context)
 
     def test_project_inspect_cursor_is_session_bound_and_does_not_embed_search_query(self) -> None:
         created = self.service.create(scope=self.private, display_name="Search Paging")
@@ -715,6 +745,108 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(written.stream_events[0]["status"], "succeeded")
         self.assertEqual(patched.stream_events[0]["status"], "succeeded")
         self.assertIn('"path":"main.js"', written.followup_context)
+
+    def test_file_tools_share_unregistered_absolute_cwd_with_shell(self) -> None:
+        external = self.root / "unregistered project"
+        external.mkdir()
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-direct",
+        )
+        write = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider)
+        inspect = ProjectInspectToolHandler(service=self.service, execution_provider=provider)
+        patch_handler = WorkspacePatchToolHandler(service=self.service, execution_provider=provider)
+
+        written = write.execute(
+            call={
+                "type": "workspace_write",
+                "cwd": str(external),
+                "path": "src/main.py",
+                "content": "value = 1\n",
+            },
+            context=self._context(),
+        )
+        read = inspect.execute(
+            call={
+                "type": "project_inspect",
+                "action": "read",
+                "cwd": str(external),
+                "path": "src/main.py",
+                "start_line": 1,
+                "line_count": 20,
+            },
+            context=self._context(),
+        )
+        patched = patch_handler.execute(
+            call={
+                "type": "workspace_patch",
+                "cwd": str(external),
+                "patch": "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+            },
+            context=self._context(),
+        )
+        exec_handler = ExecRunToolHandler(execution_provider=provider)
+        exec_handler._permission_decision = lambda context, preview: type(
+            "Decision", (), {"allowed": True}
+        )()
+        code = "from pathlib import Path; assert Path('src/main.py').read_text(encoding='utf-8') == 'value = 2\\n'"
+        command = (
+            subprocess.list2cmdline([sys.executable, "-c", code])
+            if os.name == "nt"
+            else shlex.join([sys.executable, "-c", code])
+        )
+        executed = exec_handler.execute(
+            call={
+                "type": "exec_run",
+                "cwd": str(external),
+                "command": command,
+                "initial_wait_seconds": 2,
+            },
+            context=self._context(),
+        )
+
+        self.assertEqual(written.stream_events[0]["status"], "succeeded")
+        self.assertIn("value = 1", read.followup_context)
+        self.assertEqual(patched.stream_events[0]["status"], "succeeded")
+        self.assertEqual(executed.stream_events[0]["status"], "completed")
+        self.assertEqual((external / "src" / "main.py").read_text(encoding="utf-8"), "value = 2\n")
+        self.assertNotIn("workspace_not_selected", written.followup_context)
+
+    def test_workspace_write_accepts_absolute_file_path_without_project_registration(self) -> None:
+        external = self.root / "absolute-project"
+        external.mkdir()
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-absolute",
+        )
+        handler = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider)
+
+        result = handler.execute(
+            call={
+                "type": "workspace_write",
+                "path": str(external / "hello.txt"),
+                "content": "hello\n",
+            },
+            context=self._context(),
+        )
+
+        self.assertEqual(result.stream_events[0]["status"], "succeeded")
+        self.assertEqual((external / "hello.txt").read_text(encoding="utf-8"), "hello\n")
+
+    def test_file_tools_default_to_execution_root_when_no_project_is_selected(self) -> None:
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-default",
+        )
+        handler = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider)
+
+        result = handler.execute(
+            call={"type": "workspace_write", "path": "default.txt", "content": "ok\n"},
+            context=self._context(),
+        )
+
+        self.assertEqual(result.stream_events[0]["status"], "succeeded")
+        self.assertEqual((self.execution_root / "default.txt").read_text(encoding="utf-8"), "ok\n")
 
     def test_manage_handler_opens_existing_host_directory(self) -> None:
         external = self.root / "existing-project"

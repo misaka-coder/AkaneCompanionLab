@@ -2804,8 +2804,8 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "桌宠本机模式下，编程项目先用 manage_project_workspace 选择持久项目，读代码用 project_inspect，源码用 workspace_write/"
-                    "workspace_patch 修改，构建、测试和其他命令再用 exec_run(cwd='alias:project')；"
+                    "桌宠本机模式下，project_inspect、workspace_write/workspace_patch 与 exec_run 共用 cwd 路径规则，"
+                    "可直接在已发现的真实目录读写、局部修改、构建和测试；需要跨会话查找项目时再用 manage_project_workspace 注册/选择并使用 alias:project；"
                     "当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
                     "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
                     "只有宿主在本机启用执行时这项能力才会出现；需要创建或更新 Skill 时，可在执行工作区写草稿后用 manage_skill 原子发布；"
@@ -2822,8 +2822,8 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "当前 QQ 会话已由主人开放 Shell；编程项目先用 manage_project_workspace 选择持久项目，读代码用 project_inspect，源码用"
-                    " workspace_write/workspace_patch 修改，构建与测试用 exec_run(cwd='alias:project')；"
+                    "当前 QQ 会话已由主人开放 Shell；project_inspect、workspace_write/workspace_patch 与 exec_run 共用 cwd 路径规则，"
+                    "可直接在后端机器已发现的真实目录读写、局部修改、构建和测试；需要跨会话查找项目时再用 manage_project_workspace 注册/选择并使用 alias:project；"
                     "当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
                     "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
                     "不会隐式访问聊天成员的个人电脑。主人还可把执行工作区中的 Skill 草稿用 manage_skill 原子发布；"

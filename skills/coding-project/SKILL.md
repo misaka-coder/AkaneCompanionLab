@@ -3,7 +3,6 @@ name: coding-project
 description: Use for building or modifying executable programs, scripts, interactive web apps, games, or multi-file projects that must be run, tested, or debugged. Skip one-off text, documents, and static presentation files that need no runtime validation.
 metadata:
   required_tools:
-    - manage_project_workspace
     - project_inspect
     - workspace_write
     - workspace_patch
@@ -17,33 +16,26 @@ metadata:
 Turn “generate code” into a project with real run evidence. This Skill adds no tools or
 permissions; use only the tools visible in the current request.
 
-## Establish the project authority
+## Establish the working location
 
-- Call `manage_project_workspace(action="current")` before editing. Continue in the
-  selected project when it matches the request; otherwise list, select, create, or open one.
-- The project catalog follows the same user across QQ private and group conversations.
-  The current selection is conversation-local so concurrent tasks cannot switch each
-  other's directory. A new conversation may need `list` then `select` even though the
-  project already exists.
-- The selected Project Workspace is the file-editing authority, not a filesystem sandbox.
-  `workspace:/` is a material-reading namespace, not the project, and task-workspace
-  records are not a filesystem.
-- Use project-relative paths in file tools and `cwd="alias:project"` for project
-  commands. Shell can inspect every host directory available to its operating-system
-  user. Discover real directories with `pwd`, `find`, or the platform equivalent; never
-  guess. `create` makes a host-managed project and takes `display_name`; when the user
-  names Desktop or another host location, discover/create that real directory with Shell,
-  then register it with `manage_project_workspace(action="open", path=...)` before using
-  project file tools there.
-- An archived or missing registered project is not writable through project file tools.
-  Follow the structured reason, then select/create a project or open a real existing
-  directory. Do not invent a substitute path.
+- Discover the real task directory with `pwd`, `find`, or the platform equivalent; never
+  guess. `project_inspect`, `workspace_write`, `workspace_patch`, and `exec_run` use the
+  same cwd rules. Relative paths resolve from the supplied cwd; a discovered absolute
+  host path is valid when the host grants access. If cwd is omitted they use the selected
+  persistent project when one exists, otherwise the trusted execution root.
+- A Project Workspace is an optional persistent identity, not a file-editing licence.
+  When `manage_project_workspace` is visible, use it when a project should be found across conversations,
+  needs a stable `alias:project`, or benefits from catalog ownership. Create/open/select
+  it then use project-relative paths or `cwd="alias:project"`. Do not add this round trip
+  merely to read or edit a directory already discovered in the current task.
+- `workspace:/` is a material-reading namespace, not the coding directory, and
+  task-workspace records are not a filesystem.
 
 ## Scope a verifiable increment
 
 - For open-ended requests, choose and state a concrete MVP that can be verified now.
   Continue until that scope works or a real external blocker remains.
-- Inspect the selected project before changing it. Use `project_inspect(action="list")`
+- Inspect the working location before changing it. Use `project_inspect(action="list")`
   to discover paths, `search` to locate symbols or text with line numbers, and `read`
   for exact line ranges plus the current SHA-256. Continue a paged result only when the
   visible evidence is insufficient; repeat its selectors exactly with the opaque cursor.
@@ -79,10 +71,10 @@ permissions; use only the tools visible in the current request.
   dependency graph remains version-correct. For Python, Rust, Go, Java, and other
   ecosystems, respect the existing project environment and lock files; create a new
   project-local environment only when version isolation is actually required.
-- Run registered project commands with `cwd="alias:project"`; for host inspection or
-  administration, an absolute cwd discovered from real output is valid. Shell is for inspect/build/run/test,
-  not source transfer. A rejected `command_too_long` means use `workspace_write` or
-  `workspace_patch`, not retry a differently quoted giant command.
+- Run commands in the same cwd used by the file tools; a registered project may use
+  `cwd="alias:project"`. Prefer `workspace_write` or `workspace_patch` for long source
+  because they avoid quoting and preserve atomic/hash checks, but valid Shell commands
+  are not rejected solely for crossing a private character threshold.
 - Preserve dependent-step failures. Use `&&` or explicit status checks on POSIX/cmd.
   In PowerShell, set `$ErrorActionPreference = "Stop"` for cmdlets and check
   `$LASTEXITCODE` after native programs. Never let a later success mask an earlier

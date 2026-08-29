@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .execution_specs import (
-    EXEC_COMMAND_MAX_CHARS,
     EXEC_CWD_MAX_CHARS,
     EXEC_DEFAULT_MAX_LOG_BYTES,
     EXEC_DEFAULT_MAX_RUNS,
@@ -603,7 +602,6 @@ def _rejected_mapped(
     *,
     max_chars: int | None = None,
     actual_chars: int | None = None,
-    recommended_action: str = "",
 ) -> ExecMappedResult:
     clean_reason = _sanitize_model_text(str(reason or "execution_request_rejected"))
     data = {
@@ -617,14 +615,8 @@ def _rejected_mapped(
         "reason": clean_reason,
         "max_chars": max_chars,
         "actual_chars": actual_chars,
-        "recommended_action": str(recommended_action or "") or None,
     }
-    if clean_reason == "command_too_long":
-        feedback = (
-            f"这次命令没有执行：command_too_long（max_chars={max_chars}，actual_chars={actual_chars}）。"
-            "源码或长文本请改用 workspace_write / workspace_patch；Shell 只用于构建、运行和测试。"
-        )
-    elif clean_reason == "command_required":
+    if clean_reason == "command_required":
         feedback = "这次命令没有执行：command_required。请提供非空 command。"
     elif clean_reason == "cwd_too_long":
         feedback = (
@@ -770,13 +762,6 @@ def execute_exec_run(
         return _unknown_mapped("execution_owner_required")
     if not clean_command:
         return _rejected_mapped("command_required")
-    if len(clean_command) > EXEC_COMMAND_MAX_CHARS:
-        return _rejected_mapped(
-            "command_too_long",
-            max_chars=EXEC_COMMAND_MAX_CHARS,
-            actual_chars=len(clean_command),
-            recommended_action="workspace_write_or_patch",
-        )
     if len(clean_cwd) > EXEC_CWD_MAX_CHARS:
         return _rejected_mapped(
             "cwd_too_long",

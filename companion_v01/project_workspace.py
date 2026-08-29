@@ -75,11 +75,12 @@ class ProjectWorkspaceScope:
 
 
 class ProjectWorkspaceService:
-    """Persistent project identity and confined source mutation.
+    """Persistent project identity plus one atomic source-operation authority.
 
     This is separate from the attachment ``workspace:/`` and TaskWorkspace
-    ledger. Physical roots stay host-internal; model-facing callers use a
-    workspace id and the dynamic ``alias:project`` execution alias.
+    ledger. Registered projects use a workspace id and ``alias:project``;
+    unregistered task directories may reuse a cwd already authorized and
+    resolved by the execution provider.
     """
 
     def __init__(
@@ -290,13 +291,18 @@ class ProjectWorkspaceService:
         *,
         scope: ProjectWorkspaceScope,
         workspace_id: str = "",
+        operation_root: str | Path | None = None,
         path: str = ".",
         pattern: str = "*",
         max_depth: int = 2,
         include_hidden: bool = False,
     ) -> dict[str, Any]:
         """List project-relative entries without creating another filesystem authority."""
-        record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
+        record, root = self._resolve_operation_root(
+            scope=scope,
+            workspace_id=workspace_id,
+            operation_root=operation_root,
+        )
         base_relative, base = self._inspection_target(root, path, allow_root=True)
         if not base.is_dir() or base.is_symlink():
             raise ProjectWorkspaceError("not_a_directory", path=base_relative)
@@ -350,6 +356,7 @@ class ProjectWorkspaceService:
         )
         return {
             "workspace_id": str(record["workspace_id"]),
+            **({"cwd": str(root)} if not record["workspace_id"] else {}),
             "path": base_relative,
             "pattern": clean_pattern,
             "max_depth": depth_limit,
@@ -366,6 +373,7 @@ class ProjectWorkspaceService:
         *,
         scope: ProjectWorkspaceScope,
         workspace_id: str = "",
+        operation_root: str | Path | None = None,
         path: str = ".",
         query: str,
         include: str = "*",
@@ -374,7 +382,11 @@ class ProjectWorkspaceService:
         include_hidden: bool = False,
     ) -> dict[str, Any]:
         """Search UTF-8 project files and return stable, line-addressable matches."""
-        record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
+        record, root = self._resolve_operation_root(
+            scope=scope,
+            workspace_id=workspace_id,
+            operation_root=operation_root,
+        )
         base_relative, base = self._inspection_target(root, path, allow_root=True)
         clean_query = str(query or "")
         if not clean_query:
@@ -483,6 +495,7 @@ class ProjectWorkspaceService:
         )
         return {
             "workspace_id": str(record["workspace_id"]),
+            **({"cwd": str(root)} if not record["workspace_id"] else {}),
             "path": base_relative,
             "query": clean_query,
             "include": clean_include,
@@ -504,10 +517,15 @@ class ProjectWorkspaceService:
         *,
         scope: ProjectWorkspaceScope,
         workspace_id: str = "",
+        operation_root: str | Path | None = None,
         path: str,
     ) -> dict[str, Any]:
         """Read one UTF-8 source as logical lines and expose a content fingerprint."""
-        record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
+        record, root = self._resolve_operation_root(
+            scope=scope,
+            workspace_id=workspace_id,
+            operation_root=operation_root,
+        )
         relative, target = self._inspection_target(root, path, allow_root=False)
         if target.is_symlink() or not target.is_file():
             raise ProjectWorkspaceError("source_missing", path=relative)
@@ -539,6 +557,7 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("read_failed", path=relative) from exc
         return {
             "workspace_id": str(record["workspace_id"]),
+            **({"cwd": str(root)} if not record["workspace_id"] else {}),
             "path": relative,
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -598,6 +617,7 @@ class ProjectWorkspaceService:
         path: str,
         content: str,
         workspace_id: str = "",
+        operation_root: str | Path | None = None,
         expected_sha256: str = "",
         mode: str = "create_or_replace",
     ) -> dict[str, Any]:
@@ -612,7 +632,11 @@ class ProjectWorkspaceService:
         clean_mode = str(mode or "create_or_replace").strip()
         if clean_mode not in {"create", "replace", "create_or_replace"}:
             raise ProjectWorkspaceError("invalid_write_mode")
-        record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
+        record, root = self._resolve_operation_root(
+            scope=scope,
+            workspace_id=workspace_id,
+            operation_root=operation_root,
+        )
         relative = self._relative_path(path)
         target = self._safe_child(root, relative.as_posix())
         with self._lock:
@@ -630,6 +654,7 @@ class ProjectWorkspaceService:
         return {
             "status": "succeeded",
             "workspace_id": str(record["workspace_id"]),
+            **({"cwd": str(root)} if not record["workspace_id"] else {}),
             "path": relative.as_posix(),
             "created": not exists,
             "replaced": exists,
@@ -643,6 +668,7 @@ class ProjectWorkspaceService:
         scope: ProjectWorkspaceScope,
         patch_text: str,
         workspace_id: str = "",
+        operation_root: str | Path | None = None,
         expected_files: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         text = str(patch_text or "")
@@ -655,7 +681,11 @@ class ProjectWorkspaceService:
                 actual_chars=len(text),
                 recommended_action="split_patch_by_file",
             )
-        record, root = self._resolve_project(scope=scope, workspace_id=workspace_id)
+        record, root = self._resolve_operation_root(
+            scope=scope,
+            workspace_id=workspace_id,
+            operation_root=operation_root,
+        )
         file_patches = self._parse_unified_diff(text)
         expected = {
             self._relative_path(key).as_posix(): str(value or "").lower()
@@ -750,6 +780,7 @@ class ProjectWorkspaceService:
         return {
             "status": "succeeded",
             "workspace_id": str(record["workspace_id"]),
+            **({"cwd": str(root)} if not record["workspace_id"] else {}),
             "files": [
                 {
                     "path": item["relative"].as_posix(),
@@ -776,6 +807,33 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("workspace_not_selected")
         record = self._owned_record(scope=scope, workspace_id=resolved_id, require_active=True)
         return record, self._root_from_record(record, require_exists=True)
+
+    def _resolve_operation_root(
+        self,
+        *,
+        scope: ProjectWorkspaceScope,
+        workspace_id: str,
+        operation_root: str | Path | None,
+    ) -> tuple[dict[str, Any], Path]:
+        """Choose one filesystem root without creating a second file authority.
+
+        Registered projects retain their identity and selection semantics.  A
+        caller that already resolved a cwd through the execution provider may
+        instead supply that real directory; the same inspect/write/patch
+        implementation and atomicity checks then operate relative to it.
+        """
+
+        if operation_root is None:
+            return self._resolve_project(scope=scope, workspace_id=workspace_id)
+        if str(workspace_id or "").strip():
+            raise ProjectWorkspaceError("workspace_and_cwd_conflict")
+        try:
+            root = Path(operation_root).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise ProjectWorkspaceError("cwd_not_found") from None
+        if not root.is_dir():
+            raise ProjectWorkspaceError("cwd_not_found")
+        return {"workspace_id": ""}, root
 
     def _prepare_scope(self, scope: ProjectWorkspaceScope) -> None:
         if scope.owner_kind != "qq_user":

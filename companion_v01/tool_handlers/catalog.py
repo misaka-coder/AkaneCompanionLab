@@ -296,9 +296,18 @@ def build_builtin_tool_handlers(
             handlers["manage_project_workspace"] = ManageProjectWorkspaceToolHandler(
                 service=project_workspace_service
             )
-            handlers["project_inspect"] = ProjectInspectToolHandler(service=project_workspace_service)
-            handlers["workspace_write"] = WorkspaceWriteToolHandler(service=project_workspace_service)
-            handlers["workspace_patch"] = WorkspacePatchToolHandler(service=project_workspace_service)
+            handlers["project_inspect"] = ProjectInspectToolHandler(
+                service=project_workspace_service,
+                execution_provider=execution_provider,
+            )
+            handlers["workspace_write"] = WorkspaceWriteToolHandler(
+                service=project_workspace_service,
+                execution_provider=execution_provider,
+            )
+            handlers["workspace_patch"] = WorkspacePatchToolHandler(
+                service=project_workspace_service,
+                execution_provider=execution_provider,
+            )
     if image_generation_service is not None:
         handlers["generate_image"] = GenerateImageToolHandler(
             image_generation_service=image_generation_service,

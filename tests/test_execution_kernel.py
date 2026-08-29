@@ -80,7 +80,7 @@ class ExecutionSpecsTests(unittest.TestCase):
 
     def test_specs_bound_inputs_and_results(self) -> None:
         run_props = EXEC_RUN_TOOL_SPEC.input_schema["properties"]
-        self.assertEqual(run_props["command"]["maxLength"], 8192)
+        self.assertNotIn("maxLength", run_props["command"])
         self.assertEqual(run_props["cwd"]["maxLength"], 512)
         self.assertEqual(EXEC_RUN_TOOL_SPEC.max_result_bytes, EXEC_RUN_RESULT_MAX_BYTES)
         self.assertEqual(EXEC_STATUS_TOOL_SPEC.max_result_bytes, EXEC_STATUS_RESULT_MAX_BYTES)

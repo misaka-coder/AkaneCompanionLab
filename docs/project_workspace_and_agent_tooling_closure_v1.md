@@ -5,6 +5,13 @@
 > 范围：Akane 宿主、MemCore 通用接入面、Web Search 执行链路
 > 部署：本执行单完成并通过 repair pass 前禁止部署
 
+> 2026-08-29 后续收口：本文保留的是当时的故障证据与历史执行单，不再是当前文件工具契约。
+> 当前实现已删除 `EXEC_COMMAND_MAX_CHARS=8192` 私有硬限制；`project_inspect`、
+> `workspace_write`、`workspace_patch` 与 `exec_run` 共用 cwd 路径规则，可直接操作已发现的
+> 未注册目录。Project Workspace 仅提供跨会话目录身份、选择和 `alias:project` 增强，不再是
+> 使用文件工具的前置许可证。运行时权威说明以工具 schema、`skills/coding-project/SKILL.md`
+> 与 `docs/akane_general_execution_v1.md` 为准。
+
 ## 1. 目标
 
 本执行单不是修补 2026-08-19 两次失败任务的表面报错，而是收口一类长期问题：模型已经知道如何完成任务，但宿主没有提供稳定、清晰、可验证的执行环境，导致路径猜测、长命令拒绝、工具结果丢失、上下文投影失败和搜索假不可用。

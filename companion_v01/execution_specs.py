@@ -97,7 +97,6 @@ EXEC_RUN_RESULT_MAX_BYTES = 128 * 1024
 EXEC_STATUS_RESULT_MAX_BYTES = 96 * 1024
 EXEC_CANCEL_RESULT_MAX_BYTES = 4 * 1024
 
-EXEC_COMMAND_MAX_CHARS = 8192
 EXEC_CWD_MAX_CHARS = 512
 EXEC_RUN_ID_MAX_CHARS = 96
 EXEC_CURSOR_MAX_CHARS = 160
@@ -207,14 +206,16 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
             "command": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": EXEC_COMMAND_MAX_CHARS,
-                "description": "要执行的命令或脚本。参数字段名必须是 command（不是 cmd）。",
+                "description": (
+                    "要执行的命令或脚本。参数字段名必须是 command（不是 cmd）。"
+                    "长源码优先用 workspace_write/workspace_patch 传输，但执行器不按命令字符数拒绝有效命令。"
+                ),
             },
             "cwd": {
                 "type": "string",
                 "maxLength": EXEC_CWD_MAX_CHARS,
                 "description": (
-                    "启动目录（可选）：工作区相对路径、挂载别名或真实宿主绝对目录。编程项目优先使用 alias:project。"
+                    "启动目录（可选）：工作区相对路径、挂载别名或真实宿主绝对目录；已注册项目可使用 alias:project。"
                     "使用 input_resources 时必须省略 cwd；output_globs 可与 alias:project 同用。"
                     "宿主绝对 cwd 不直接支持 output_globs；先将目录注册为项目再登记产物。"
                     "既无资源参数又省略时使用受信任执行工作区根；省略但声明 output_globs 时使用本次临时目录。"
@@ -329,6 +330,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     confirm="always",
     effects=("command_exec",),
     visible_in=("desktop", "qq"),
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="long_task",
     idempotency="effectful",
     max_result_bytes=EXEC_RUN_RESULT_MAX_BYTES,

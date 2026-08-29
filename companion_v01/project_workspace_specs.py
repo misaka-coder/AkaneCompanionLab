@@ -70,7 +70,8 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="project_inspect",
     display_name="Inspect project source",
     description=(
-        "Inspect the selected coding project through one read-only authority. Use list to discover project-relative "
+        "Inspect source through one read-only authority. Paths may resolve from cwd, an absolute host path, or the "
+        "selected persistent project. Use list to discover relative "
         "paths, search to locate text with line numbers, and read to load an exact UTF-8 line range with SHA-256. "
         "Long results return an opaque continuation cursor bound to the current session and source fingerprint."
     ),
@@ -80,11 +81,16 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "action": {"type": "string", "enum": ["list", "search", "read"]},
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
+            "cwd": {
+                "type": "string",
+                "maxLength": 512,
+                "description": "Optional execution cwd. Uses the same relative, alias, and absolute-directory rules as exec_run.",
+            },
             "path": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 1024,
-                "description": "Project-relative file or directory. Use . for the project root; never pass a host path.",
+                "description": "Path relative to cwd/project, or an absolute host path. Use . for the selected root.",
             },
             "pattern": {
                 "type": "string",
@@ -122,6 +128,7 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
             "status": {"type": "string"},
             "action": {"type": "string"},
             "workspace_id": {"type": "string"},
+            "cwd": {"type": "string"},
             "path": {"type": "string"},
             "sha256": {"type": "string"},
             "complete": {"type": "boolean"},
@@ -134,8 +141,8 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=64 * 1024,
@@ -146,15 +153,25 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_write",
     display_name="Write a project file atomically",
     description=(
-        "Create or replace one UTF-8 source file inside the selected project. Use this instead of transporting "
-        "source through Shell. Writes are atomic and may be guarded by the prior SHA-256."
+        "Create or replace one UTF-8 source file relative to cwd, at an absolute host path, or inside the selected "
+        "persistent project. Writes are atomic and may be guarded by the prior SHA-256; project registration is optional."
     ),
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
-            "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "cwd": {
+                "type": "string",
+                "maxLength": 512,
+                "description": "Optional execution cwd using the same path rules as exec_run.",
+            },
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Path relative to cwd/project, or an absolute host file path.",
+            },
             "content": {"type": "string", "maxLength": PROJECT_WRITE_MAX_CHARS},
             "expected_sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
             "mode": {"type": "string", "enum": ["create", "replace", "create_or_replace"]},
@@ -167,6 +184,7 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
             "status": {"type": "string", "enum": ["succeeded", "failed", "rejected"]},
             "reason": {"type": "string"},
             "workspace_id": {"type": "string"},
+            "cwd": {"type": "string"},
             "path": {"type": "string"},
             "created": {"type": "boolean"},
             "replaced": {"type": "boolean"},
@@ -180,8 +198,8 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="1.1.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=16 * 1024,
@@ -192,7 +210,8 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_patch",
     display_name="Apply a unified diff atomically",
     description=(
-        "Apply a unified diff atomically to selected project files. Supports update, create, delete, and rename "
+        "Apply a unified diff atomically to files relative to cwd or the selected persistent project. Project "
+        "registration is optional. Supports update, create, delete, and rename "
         "operations for UTF-8 files. All paths, hashes, and hunks are validated before commit; any failure leaves "
         "every target unchanged."
     ),
@@ -201,6 +220,11 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
         "additionalProperties": False,
         "properties": {
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
+            "cwd": {
+                "type": "string",
+                "maxLength": 512,
+                "description": "Optional execution cwd using the same path rules as exec_run; patch paths stay relative to it.",
+            },
             "patch": {"type": "string", "minLength": 1, "maxLength": PROJECT_PATCH_MAX_CHARS},
             "expected_files": {
                 "type": "object",
@@ -215,6 +239,7 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
             "status": {"type": "string", "enum": ["succeeded", "failed", "rejected"]},
             "reason": {"type": "string"},
             "workspace_id": {"type": "string"},
+            "cwd": {"type": "string"},
             "files": {
                 "type": "array",
                 "items": {
@@ -248,8 +273,8 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
+    spec_version="1.2.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=32 * 1024,
