@@ -19,6 +19,8 @@ from companion_v01.tool_invocation import (
     NATIVE_TOOL_CALLS_FIELD,
     TOOL_INVOCATION_ID_FIELD,
     TOOL_MODEL_NAME_FIELD,
+    TOOL_PARSE_ERROR_FIELD,
+    TOOL_RAW_ARGUMENTS_FIELD,
     TOOL_SOURCE_FIELD,
 )
 
@@ -1846,7 +1848,7 @@ class LLMClientConfigTests(unittest.TestCase):
         )
         self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 1)
 
-    def test_llm_runtime_preserves_more_than_four_calls_to_the_same_tool(self) -> None:
+    def test_llm_runtime_preserves_every_call_beyond_parallel_execution_width(self) -> None:
         runtime = LLMRuntime()
         response = SimpleNamespace(
             choices=[
@@ -1860,7 +1862,7 @@ class LLMClientConfigTests(unittest.TestCase):
                                     arguments=json.dumps({"query": f"query-{index}"}),
                                 ),
                             )
-                            for index in range(6)
+                            for index in range(25)
                         ]
                     )
                 )
@@ -1878,15 +1880,43 @@ class LLMClientConfigTests(unittest.TestCase):
                         "arguments": json.dumps({"query": f"query-{index}"}),
                     },
                 }
-                for index in range(6)
+                for index in range(25)
             ]
         )
 
-        self.assertEqual(len(calls), 6)
-        self.assertEqual([call["query"] for call in calls], [f"query-{index}" for index in range(6)])
-        self.assertEqual(len(history_calls), 6)
-        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 5)
+        self.assertEqual(len(calls), 25)
+        self.assertEqual([call["query"] for call in calls], [f"query-{index}" for index in range(25)])
+        self.assertEqual(len(history_calls), 25)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 24)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_truncated"], 0)
+
+    def test_llm_runtime_preserves_malformed_native_arguments_for_tool_feedback(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_bad_json",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"query":"weather"',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["type"], "web_search")
+        self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_bad_json")
+        self.assertEqual(calls[0][TOOL_PARSE_ERROR_FIELD], "invalid_tool_arguments_json")
+        self.assertEqual(calls[0][TOOL_RAW_ARGUMENTS_FIELD], '{"query":"weather"')
 
     def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

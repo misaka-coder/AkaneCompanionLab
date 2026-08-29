@@ -314,7 +314,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     # 工具调用 & 后台任务
     _s("TOOL_ROUND_HARD_LIMIT", _TOOL, SCOPE_RUNTIME, "单个用户回合实际执行的工具批次硬上限"),
     _s("TOOL_ROUND_WARNING_REMAINING", _TOOL, SCOPE_RUNTIME, "工具轮接近上限时的一次性续作提醒阈值；0=关闭"),
-    _s("TOOL_DECISION_RETRY_LIMIT", _TOOL, SCOPE_RUNTIME, "工具参数或协议被拒绝后的重新决策次数"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
     _s("CHAT_MODEL_DECISION_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "模型决策未形成合法工具调用或交付时的生成次数"),

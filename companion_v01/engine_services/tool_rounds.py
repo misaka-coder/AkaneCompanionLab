@@ -63,10 +63,6 @@ def tool_round_warning_remaining(*, hard_limit: int) -> int:
     return tool_orchestration_engine.tool_round_warning_remaining(hard_limit=hard_limit)
 
 
-def tool_decision_retry_limit() -> int:
-    return tool_orchestration_engine.tool_decision_retry_limit()
-
-
 def build_tool_round_warning(
     *,
     used_rounds: int,

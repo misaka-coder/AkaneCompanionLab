@@ -4375,8 +4375,11 @@ class AkaneMemoryEngine:
             warning_remaining = self._tool_round_warning_remaining(hard_limit=max_tool_rounds)
         tool_round_index = 0
         tool_round_warning_emitted = False
-        invalid_tool_decision_attempts = 0
-        tool_decision_retry_limit = self._tool_decision_retry_limit()
+        tool_protocol_attempts = 0
+        tool_protocol_retry_limit = max(
+            1,
+            int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3),
+        )
         provider_output_raw = ""
         memory_exclude_source_ids = [
             str(hit.get("source_id") or "").strip()
@@ -4508,7 +4511,7 @@ class AkaneMemoryEngine:
                             turn_extra_user_context,
                             self._build_native_user_image_prompt_context(steer_images),
                         )
-                    invalid_tool_decision_attempts = 0
+                    tool_protocol_attempts = 0
                     # Steering never closes the tool surface: the next model
                     # decision keeps the same channel permissions and all
                     # completed tool evidence from this open turn.
@@ -4624,16 +4627,16 @@ class AkaneMemoryEngine:
                             deferred_control_snapshot = finalization
                             continue
                     break
-                allow_retry = self._record_tool_call_rejection(
+                self._record_tool_call_rejection(
                     final_output=final_output,
                     rejection="\n".join(rejections),
                     tool_followups=tool_followups,
                     session_id=session_id,
-                    decision_attempt=invalid_tool_decision_attempts + 1,
-                    retry_limit=tool_decision_retry_limit,
                 )
-                invalid_tool_decision_attempts += 1
-                allow_retry = allow_retry and tool_round_index < max_tool_rounds
+                tool_protocol_attempts += 1
+                if tool_protocol_attempts >= tool_protocol_retry_limit:
+                    final_output = self._tool_protocol_failure_output(rejections=rejections)
+                    break
                 final_output = yield from self._generate_round(
                     mode=mode,
                     session_id=session_id,
@@ -4648,14 +4651,14 @@ class AkaneMemoryEngine:
                     extra_user_context=self._build_tool_round_extra_context(
                         turn_extra_user_context=turn_extra_user_context,
                         tool_followups=tool_followups,
-                        allow_more=allow_retry,
-                        stop_reason="" if allow_retry else "tool_decision_invalid",
+                        allow_more=True,
+                        stop_reason="",
                     ),
                     client_context=client_context,
                     resource_manifest=turn_resource_manifest,
                     character_pack_id=turn_character_pack_id,
                     user_images=turn_user_images,
-                    allow_tool_call=allow_retry,
+                    allow_tool_call=True,
                     final_debug_enabled=final_debug_enabled,
                     chat_model_override=chat_model_override,
                     execution_target=turn_execution_target,
@@ -4666,9 +4669,7 @@ class AkaneMemoryEngine:
                     stable_system_context=plugin_stable_system_context,
                     request_projection_state=request_projection_state,
                 )
-                if allow_retry:
-                    continue
-                break
+                continue
             if rejections:
                 tool_followups.extend(rejections)
             # A repeated signature is not an invalid decision. Polling, MCP
@@ -4735,7 +4736,7 @@ class AkaneMemoryEngine:
                 execution_target=turn_execution_target,
             )
             tool_result = batch_results[-1] if batch_results else None
-            invalid_tool_decision_attempts = 0
+            tool_protocol_attempts = 0
             for completed_result in batch_results:
                 state_updates = getattr(completed_result, "state_updates", None)
                 activation = state_updates.get("mcp_activation") if isinstance(state_updates, Mapping) else None
@@ -7173,11 +7174,6 @@ class AkaneMemoryEngine:
 
         return _fn(hard_limit=hard_limit)
 
-    def _tool_decision_retry_limit(self) -> int:
-        from .engine_services.tool_rounds import tool_decision_retry_limit as _fn
-
-        return _fn()
-
     def _build_tool_round_warning(
         self,
         *,
@@ -7274,11 +7270,6 @@ class AkaneMemoryEngine:
             final_output["tool_call"] = None
         tool_calls: list[dict[str, Any]] = []
         rejections: list[str] = []
-        native_schema_names = {
-            str(name or "").strip()
-            for name in getattr(frozen_capability_selection, "native_tool_names", ())
-            if str(name or "").strip()
-        }
         resolved_round_handlers = getattr(frozen_capability_selection, "resolved_handlers", {}) or {}
         native_model_names = tuple(
             str(call.get("type") or "").strip()
@@ -7304,15 +7295,6 @@ class AkaneMemoryEngine:
             )
         for raw_tool_call in raw_tool_calls:
             raw_tool_name = str(raw_tool_call.get("type") or "").strip()
-            if not native_carrier_present and raw_tool_name in native_schema_names:
-                final_output["tool_call"] = None
-                rejections.append(
-                    f"工具 {raw_tool_name} 本轮已在请求的直接工具入口中提供，"
-                    "但上一次输出把它写进了兼容 JSON tool_call；系统没有执行这次歧义调用。"
-                    "如果仍需执行，请通过直接工具入口调用；"
-                    "如果不再需要，请基于当前证据自然回答。"
-                )
-                continue
             call_capability_selection = frozen_capability_selection
             if raw_tool_name == "invoke_mcp":
                 from .engine_services.tool_rounds import resolve_mcp_router_target
@@ -7320,7 +7302,7 @@ class AkaneMemoryEngine:
                 server_id = str(raw_tool_call.get("server_id") or "").strip()
                 tool_name = str(raw_tool_call.get("tool_name") or "").strip()
                 arguments = raw_tool_call.get("arguments")
-                target_id, target_selection, target_reason = resolve_mcp_router_target(
+                target_id, target_selection, _target_reason = resolve_mcp_router_target(
                     self,
                     server_id=server_id,
                     tool_name=tool_name,
@@ -7329,31 +7311,25 @@ class AkaneMemoryEngine:
                     domain_profile_id=domain_profile_id,
                     capability_selection=frozen_capability_selection,
                 )
-                if not target_id or not isinstance(arguments, Mapping):
-                    rejections.append(
-                        "invoke_mcp 没有解析到当前已安装、启用且获准的准确 MCP 工具"
-                        f"（{target_reason or 'mcp_arguments_required'}）。"
-                        "如果 server_id、tool_name 或参数契约不确定，请先调用 load_mcp；不要猜测或声称已经执行。"
-                    )
-                    continue
-                model_arguments = {
-                    "server_id": server_id,
-                    "tool_name": tool_name,
-                    "arguments": dict(arguments),
-                }
-                transport_fields = {
-                    key: value
-                    for key, value in raw_tool_call.items()
-                    if str(key).startswith("_tool_")
-                }
-                raw_tool_call = {
-                    "type": target_id,
-                    "arguments": dict(arguments),
-                    **transport_fields,
-                    TOOL_MODEL_NAME_FIELD: "invoke_mcp",
-                    TOOL_MODEL_ARGUMENTS_FIELD: model_arguments,
-                }
-                call_capability_selection = target_selection
+                if target_id and isinstance(arguments, Mapping):
+                    model_arguments = {
+                        "server_id": server_id,
+                        "tool_name": tool_name,
+                        "arguments": dict(arguments),
+                    }
+                    transport_fields = {
+                        key: value
+                        for key, value in raw_tool_call.items()
+                        if str(key).startswith("_tool_")
+                    }
+                    raw_tool_call = {
+                        "type": target_id,
+                        "arguments": dict(arguments),
+                        **transport_fields,
+                        TOOL_MODEL_NAME_FIELD: "invoke_mcp",
+                        TOOL_MODEL_ARGUMENTS_FIELD: model_arguments,
+                    }
+                    call_capability_selection = target_selection
             canonical_mcp_name = direct_mcp_aliases.get(raw_tool_name, "")
             if canonical_mcp_name:
                 raw_tool_call = dict(raw_tool_call)
@@ -7393,9 +7369,7 @@ class AkaneMemoryEngine:
         rejection: str,
         tool_followups: list[str],
         session_id: str,
-        decision_attempt: int,
-        retry_limit: int,
-    ) -> bool:
+    ) -> None:
         reason_tool, reason_code = self._tool_call_rejection_log_fields(
             final_output=final_output,
             rejection=rejection,
@@ -7407,7 +7381,25 @@ class AkaneMemoryEngine:
             reason_code,
         )
         tool_followups.append(rejection)
-        return max(1, int(decision_attempt or 1)) <= max(1, int(retry_limit or 1))
+
+    @staticmethod
+    def _tool_protocol_failure_output(*, rejections: list[str]) -> dict[str, Any]:
+        """Expose a repeated carrier failure without pretending completion."""
+
+        return {
+            "emotion": "",
+            "speech": (
+                "刚才连续的工具请求没有形成可执行的协议，已经完成的工具结果仍然保留，"
+                "但这次任务没有完整结束。"
+            ),
+            "tool_call": None,
+            "memory_metadata": {},
+            "_agent_failure": {
+                "status": "protocol_error",
+                "reason": "tool_call_protocol_invalid",
+                "rejection_count": len(list(rejections or [])),
+            },
+        }
 
     @staticmethod
     def _tool_call_rejection_log_fields(

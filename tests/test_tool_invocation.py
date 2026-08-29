@@ -10,6 +10,8 @@ from companion_v01.tool_invocation import (
     LEGACY_JSON,
     NATIVE_OPENAI,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_PARSE_ERROR_FIELD,
+    TOOL_RAW_ARGUMENTS_FIELD,
     TOOL_SOURCE_FIELD,
     ToolResultEnvelope,
     ToolInvocation,
@@ -84,6 +86,76 @@ class ToolInvocationTests(unittest.TestCase):
             invocation_to_legacy_tool_call(inv),
             {"type": "web_search", "action": "search", "query": "天气"},
         )
+
+    def test_malformed_provider_arguments_survive_bridge_and_become_tool_error(self) -> None:
+        raw_arguments = '{"query":"weather"'
+        inv = legacy_tool_call_to_invocation(
+            {
+                "type": "web_search",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_bad_json",
+                TOOL_PARSE_ERROR_FIELD: "invalid_tool_arguments_json",
+                TOOL_RAW_ARGUMENTS_FIELD: raw_arguments,
+            }
+        )
+        assert inv is not None
+
+        bridged = invocation_to_legacy_tool_call(inv, include_metadata=True)
+        validation = tool_orchestration_engine.validate_tool_invocation(
+            object(),
+            inv,
+        )
+
+        self.assertEqual(bridged[TOOL_PARSE_ERROR_FIELD], "invalid_tool_arguments_json")
+        self.assertEqual(bridged[TOOL_RAW_ARGUMENTS_FIELD], raw_arguments)
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.code, "invalid_tool_arguments_json")
+        self.assertIn(raw_arguments, validation.message)
+        self.assertIn("工具仍然可用", validation.message)
+
+        result, envelope = tool_orchestration_engine.execute_tool_invocation(
+            object(),
+            invocation=inv,
+            profile_user_id="alice",
+            session_id="s1",
+            visual_payload={},
+            now_ts=1,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(envelope.invocation_id, "call_bad_json")
+        self.assertEqual(envelope.status, "error")
+        self.assertIn(raw_arguments, envelope.model_feedback)
+
+    def test_unknown_named_call_becomes_result_instead_of_disappearing(self) -> None:
+        engine = FakeEngine(RecordingHandler())
+        normalized = tool_orchestration_engine.normalize_tool_call(
+            engine,
+            {
+                "type": "not_installed_tool",
+                "value": "still-preserved",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_unknown",
+            },
+            profile_user_id="alice",
+            session_id="s1",
+        )
+        assert normalized is not None
+        invocation = legacy_tool_call_to_invocation(normalized)
+        assert invocation is not None
+
+        result, envelope = tool_orchestration_engine.execute_tool_invocation(
+            engine,
+            invocation=invocation,
+            profile_user_id="alice",
+            session_id="s1",
+            visual_payload={},
+            now_ts=1,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(envelope.invocation_id, "call_unknown")
+        self.assertEqual(envelope.status, "error")
+        self.assertIn("not_installed_tool", envelope.model_feedback)
 
     def test_round_trip_bridge_returns_legacy_shape(self) -> None:
         self.assertEqual(
@@ -193,15 +265,14 @@ class ToolInvocationTests(unittest.TestCase):
             "brief": "后台做人声分离",
         }
 
-        self.assertIsNone(
-            tool_orchestration_engine.normalize_tool_call(
-                engine,
-                call,
-                client_context=context,
-                profile_user_id="alice",
-                session_id="s1",
-            )
+        normalized = tool_orchestration_engine.normalize_tool_call(
+            engine,
+            call,
+            client_context=context,
+            profile_user_id="alice",
+            session_id="s1",
         )
+        self.assertEqual(normalized, call)
         rejection = tool_orchestration_engine.classify_tool_call_rejection(
             engine,
             call,

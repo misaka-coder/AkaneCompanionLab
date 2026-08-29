@@ -125,13 +125,6 @@ def tool_round_warning_remaining(*, hard_limit: int | None = None) -> int:
     return min(max(0, hard - 1), configured)
 
 
-def tool_decision_retry_limit() -> int:
-    try:
-        return max(1, int(getattr(config, "TOOL_DECISION_RETRY_LIMIT", 3) or 3))
-    except Exception:
-        return 3
-
-
 def tool_metadata_dict(handler: Any, *, tool_type: str = "") -> dict[str, Any]:
     raw_metadata: Any = None
     if handler is not None and hasattr(handler, "tool_metadata"):
@@ -307,11 +300,6 @@ def build_multi_tool_followup_context(
                 "现在请按原有交付格式向用户说明本轮实际完成的内容、验证结果、尚未完成或无法确认的部分。"
                 "如果任务没有完成，可以请用户发送“继续”；不要宣称未经验证的事项已经完成。"
             )
-        elif str(stop_reason or "").strip() == "tool_decision_invalid":
-            lines.append(
-                "工具请求经过有界重新决策后仍未形成可执行调用；这不是工具执行成功。"
-                "请基于已有真实证据向用户说明当前完成度与具体阻塞。"
-            )
         elif str(stop_reason or "").strip() == "tool_unavailable":
             lines.append(
                 "刚才的工具返回不可用或失败状态；工具阶段到此结束。请使用此前已经取得的可靠证据回答，"
@@ -414,8 +402,6 @@ def normalize_tool_invocation(
     tool_type = str(value.get("type") or "").strip()
     if not tool_type:
         return None
-    if _qq_media_delegation_is_blocked(value, client_context=client_context):
-        return None
     source = _normalize_invocation_source(value.get(TOOL_SOURCE_FIELD))
     invocation_id = str(value.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
     frozen_selection = capability_selection or value.get(TOOL_CAPABILITY_SELECTION_FIELD)
@@ -464,7 +450,15 @@ def normalize_tool_invocation(
         )
         handler = handlers.get(tool_type)
     if handler is None:
-        return None
+        # Unknown or unavailable names are still genuine model decisions. Keep
+        # the invocation so validation can return one ordinary tool result;
+        # dropping it here would leave the model waiting for a result forever.
+        return legacy_tool_call_to_invocation(
+            value,
+            source=source,
+            invocation_id=invocation_id,
+            capability_selection=frozen_selection,
+        )
     try:
         normalized = handler.normalize_call(value)
     except Exception:
@@ -672,6 +666,25 @@ def validate_tool_invocation(
 ) -> ValidationResult:
     if invocation is None:
         return ValidationResult.success()
+
+    if str(invocation.parse_error or "").strip():
+        raw_arguments = invocation.raw_arguments
+        try:
+            rendered_arguments = (
+                raw_arguments
+                if isinstance(raw_arguments, str)
+                else json.dumps(raw_arguments, ensure_ascii=False, separators=(",", ":"), default=str)
+            )
+        except Exception:
+            rendered_arguments = repr(raw_arguments)
+        return ValidationResult.fail(
+            str(invocation.parse_error),
+            (
+                f"工具「{str(invocation.name or 'unknown')}」的参数没有形成有效 JSON，系统没有执行这次调用。"
+                f"Provider 返回的原始参数是：{rendered_arguments}。"
+                "请根据本轮实际提供的工具 schema 修正参数后重新调用；工具仍然可用。"
+            ),
+        )
 
     tool_type = str(invocation.name or "").strip()
     if not tool_type:

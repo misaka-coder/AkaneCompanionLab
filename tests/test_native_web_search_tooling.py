@@ -1049,7 +1049,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         )
         self.assertEqual(rejections, [])
 
-    def test_engine_rejects_legacy_json_for_tool_exposed_in_native_schema(self) -> None:
+    def test_engine_accepts_legacy_fallback_for_tool_exposed_in_native_schema(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine._promote_narrated_tool_call = lambda final_output, **_kwargs: final_output
         engine._normalize_tool_call = lambda value, **_kwargs: dict(value or {})
@@ -1078,11 +1078,9 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             session_id="s",
         )
 
-        self.assertEqual(tool_calls, [])
-        self.assertIsNone(final_output["tool_call"])
-        self.assertEqual(len(rejections), 1)
-        self.assertIn("没有执行这次歧义调用", rejections[0])
-        self.assertIn("直接工具入口调用", rejections[0])
+        self.assertEqual(tool_calls, [{"type": "send_file", "target": "gen_049"}])
+        self.assertEqual(final_output["tool_call"], {"type": "send_file", "target": "gen_049"})
+        self.assertEqual(rejections, [])
 
     def test_engine_still_accepts_legacy_json_for_non_native_tool(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)

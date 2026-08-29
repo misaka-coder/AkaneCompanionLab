@@ -29,6 +29,8 @@ TOOL_SOURCE_FIELD = "_tool_source"
 TOOL_INVOCATION_ID_FIELD = "_tool_invocation_id"
 TOOL_MODEL_NAME_FIELD = "_tool_model_name"
 TOOL_MODEL_ARGUMENTS_FIELD = "_tool_model_arguments"
+TOOL_PARSE_ERROR_FIELD = "_tool_parse_error"
+TOOL_RAW_ARGUMENTS_FIELD = "_tool_raw_arguments"
 NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
 NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
 TOOL_EXECUTION_RECEIPT_FIELD = "_tool_execution_receipt"
@@ -48,6 +50,8 @@ class ToolInvocation:
     source: str = LEGACY_JSON
     id: str = ""
     execution_receipt: dict[str, Any] = field(default_factory=dict)
+    parse_error: str = ""
+    raw_arguments: Any = None
     capability_selection: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -115,6 +119,8 @@ def legacy_tool_call_to_invocation(
     embedded_source = str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
     embedded_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
     embedded_receipt = tool_call.get(TOOL_EXECUTION_RECEIPT_FIELD)
+    embedded_parse_error = str(tool_call.get(TOOL_PARSE_ERROR_FIELD) or "").strip()
+    embedded_raw_arguments = tool_call.get(TOOL_RAW_ARGUMENTS_FIELD)
     embedded_selection = tool_call.get(TOOL_CAPABILITY_SELECTION_FIELD)
     arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
     return ToolInvocation(
@@ -123,6 +129,8 @@ def legacy_tool_call_to_invocation(
         source=embedded_source or source,
         id=embedded_id or invocation_id,
         execution_receipt=dict(embedded_receipt) if isinstance(embedded_receipt, dict) else {},
+        parse_error=embedded_parse_error,
+        raw_arguments=embedded_raw_arguments,
         capability_selection=capability_selection if capability_selection is not None else embedded_selection,
     )
 
@@ -144,6 +152,9 @@ def invocation_to_legacy_tool_call(
         tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
     if include_metadata and invocation.execution_receipt:
         tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(invocation.execution_receipt)
+    if include_metadata and invocation.parse_error:
+        tool_call[TOOL_PARSE_ERROR_FIELD] = str(invocation.parse_error)
+        tool_call[TOOL_RAW_ARGUMENTS_FIELD] = invocation.raw_arguments
     if include_metadata and invocation.capability_selection is not None:
         tool_call[TOOL_CAPABILITY_SELECTION_FIELD] = invocation.capability_selection
     return tool_call

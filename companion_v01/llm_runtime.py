@@ -35,6 +35,8 @@ from .tool_invocation import NATIVE_TOOL_CALL_FIELD
 from .tool_invocation import NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_invocation import TOOL_PARSE_ERROR_FIELD
+from .tool_invocation import TOOL_RAW_ARGUMENTS_FIELD
 from .tool_invocation import TOOL_SOURCE_FIELD
 
 
@@ -55,7 +57,6 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
 )
 PROMPT_AUDIT_LOCK = threading.RLock()
-MAX_NATIVE_TOOL_CALLS_PER_RESPONSE = 16
 JSON_ESCAPE_MAP = {
     '"': '"',
     "\\": "\\",
@@ -2155,7 +2156,7 @@ class LLMRuntime:
         if not isinstance(value, list):
             return []
         normalized: list[dict[str, Any]] = []
-        for raw in value[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]:
+        for raw in value:
             if not isinstance(raw, dict):
                 continue
             call_id = str(raw.get("id") or "").strip()
@@ -2703,14 +2704,9 @@ class LLMRuntime:
             return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        if len(invocations) > MAX_NATIVE_TOOL_CALLS_PER_RESPONSE:
-            self._record_metric(
-                "native_tool_calls_truncated",
-                len(invocations) - MAX_NATIVE_TOOL_CALLS_PER_RESPONSE,
-            )
         calls = [
             self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
-            for invocation in invocations[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]
+            for invocation in invocations
         ]
         return [call for call in calls if call is not None]
 
@@ -2753,14 +2749,9 @@ class LLMRuntime:
             return []
         if len(invocations) > 1:
             self._record_metric("native_tool_calls_extra", len(invocations) - 1)
-        if len(invocations) > MAX_NATIVE_TOOL_CALLS_PER_RESPONSE:
-            self._record_metric(
-                "native_tool_calls_truncated",
-                len(invocations) - MAX_NATIVE_TOOL_CALLS_PER_RESPONSE,
-            )
         calls = [
             self._native_invocation_to_tool_call(invocation, native_tools=native_tools, source=source)
-            for invocation in invocations[:MAX_NATIVE_TOOL_CALLS_PER_RESPONSE]
+            for invocation in invocations
         ]
         return [call for call in calls if call is not None]
 
@@ -2789,7 +2780,27 @@ class LLMRuntime:
             result[TOOL_INVOCATION_ID_FIELD] = call_id
         if model_name != capability_id:
             result[TOOL_MODEL_NAME_FIELD] = model_name
+        parse_error = str(getattr(invocation, "parse_error", "") or "").strip()
+        if parse_error:
+            result[TOOL_PARSE_ERROR_FIELD] = parse_error
+            result[TOOL_RAW_ARGUMENTS_FIELD] = self._native_invocation_raw_arguments(invocation)
         return result
+
+    @staticmethod
+    def _native_invocation_raw_arguments(invocation: Any) -> Any:
+        """Return the provider's exact argument carrier for a rejected call.
+
+        CapCore intentionally preserves malformed argument text on ``raw``.
+        Keeping that value on the internal invocation lets the ordinary tool
+        result path explain the real parse failure to the model instead of
+        silently replacing its decision with an empty argument object.
+        """
+
+        raw = getattr(invocation, "raw", None)
+        function = raw.get("function") if isinstance(raw, dict) else getattr(raw, "function", None)
+        if isinstance(function, dict):
+            return function.get("arguments")
+        return getattr(function, "arguments", None)
 
     def _native_invocation_provider_id(self, invocation: Any, *, source: str = NATIVE_OPENAI) -> str:
         raw = getattr(invocation, "raw", None)

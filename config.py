@@ -295,8 +295,6 @@ class Settings(BaseSettings):
     TOOL_ROUND_HARD_LIMIT: int = 48
     # 剩余这么多轮时，向模型解释一次续作记录与 MemCore 结算语义；0=关闭提醒。
     TOOL_ROUND_WARNING_REMAINING: int = 8
-    # 工具参数/协议被拒绝后允许重新决策的次数；不消耗真实工具轮预算。
-    TOOL_DECISION_RETRY_LIMIT: int = 3
     # native tool 通道总开关。默认开启 native-first：OpenAI-compatible provider
     # 直接尝试 provider native schema；provider 明确拒绝时才结构化回退 JSON。
     # 需要保守兼容时可经 env 显式关闭。
@@ -490,6 +488,7 @@ _RETIRED_DECISION_LOOP_ENV_KEYS = {
     "MAX_WEB_RESEARCH_TOOL_ROUNDS",
     "MAX_BROWSER_TOOL_ROUNDS",
     "CHAT_FINAL_RESPONSE_MAX_ATTEMPTS",
+    "TOOL_DECISION_RETRY_LIMIT",
 }
 
 
@@ -587,7 +586,7 @@ def _apply_settings(s: Settings) -> None:
     global MUSIC_ONLINE_LYRICS_ENABLED, MUSIC_ONLINE_LYRICS_PROVIDERS
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, TOOL_ROUND_HARD_LIMIT
-    global TOOL_ROUND_WARNING_REMAINING, TOOL_DECISION_RETRY_LIMIT
+    global TOOL_ROUND_WARNING_REMAINING
     global ENABLE_NATIVE_TOOL_DECISION
     global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_MODEL_DECISION_MAX_ATTEMPTS
@@ -780,7 +779,6 @@ def _apply_settings(s: Settings) -> None:
         0,
         min(TOOL_ROUND_HARD_LIMIT - 1, int(s.TOOL_ROUND_WARNING_REMAINING)),
     )
-    TOOL_DECISION_RETRY_LIMIT = max(1, int(s.TOOL_DECISION_RETRY_LIMIT))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "*").strip()
     NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()
