@@ -215,7 +215,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
             turn_payload={"user_id": "qq-group", "message": "event.group_attention_review"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -248,7 +248,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
             turn_payload={"user_id": "qq-group", "message": "戳一下"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,

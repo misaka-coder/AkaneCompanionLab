@@ -101,7 +101,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"user_id": "qq-stop", "message": "long task"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -217,7 +217,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 turn_payload=context.to_turn_payload(),
                 config_module=SimpleNamespace(
                     QQ_STREAM_REPLIES_ENABLED=True,
-                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                     QQ_REPLY_MAX_SEGMENTS=8,
                     QQ_VOICE_MAX_SEGMENTS=3,
                     QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -266,7 +266,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "列两项"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -283,6 +283,95 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(result["reply_messages"], ["1. 第一条", "2. 第二条"])
         self.assertEqual(result["send_result"].get("streamed_count"), 2)
+
+    def test_stream_immediate_quota_defers_and_preserves_every_later_tool_preface(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                for index in range(1, 11):
+                    yield {"type": "speech_segment", "text": f"工具阶段说明 {index}"}
+                    yield {"type": "assistant_stage_decision", "has_tool_call": True}
+                yield {"type": "speech_segment", "text": "任务已经完成"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "任务已经完成",
+                        "speech_segments": ["任务已经完成"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_stream_deferred",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "执行长任务"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=2,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        delivered_text = "\n".join(item for batch in gateway.text_sends for item in batch)
+        delivered_lines = delivered_text.splitlines()
+        for index in range(1, 11):
+            self.assertEqual(delivered_lines.count(f"工具阶段说明 {index}"), 1)
+        self.assertEqual(delivered_lines.count("任务已经完成"), 1)
+        self.assertEqual(result["send_result"]["streamed_count"], 2)
+        self.assertGreater(result["send_result"]["deferred_count"], 0)
+
+    def test_long_stream_segment_is_split_without_losing_its_tail(self) -> None:
+        speech = "长" * 2005
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "speech_segment", "text": speech}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": speech,
+                        "speech_segments": [speech],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_long_stream_segment",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "输出长文本"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=1,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual("".join(item for batch in gateway.text_sends for item in batch), speech)
 
     def test_intentionally_repeated_speech_sentences_are_both_delivered(self) -> None:
         class FakeEngine:
@@ -315,7 +404,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "强调一下"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -367,7 +456,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "说一句"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -407,7 +496,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "生图"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -462,7 +551,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "生成图片"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -535,7 +624,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "发我刚才那张图"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -620,7 +709,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "写个文件发给我"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -670,7 +759,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "更新状态"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -712,7 +801,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "看看这张图"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -769,7 +858,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "继续说"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -808,7 +897,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "继续处理"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -851,7 +940,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "继续处理"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -890,7 +979,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "搜一下"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -924,7 +1013,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "检查 shell"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -965,7 +1054,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "检查 shell"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,
-                QQ_STREAM_MAX_SEGMENTS=8,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -1205,7 +1294,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 config_module=SimpleNamespace(
                     DATA_DIR=temp_dir,
                     QQ_STREAM_REPLIES_ENABLED=True,
-                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                     QQ_REPLY_MAX_SEGMENTS=8,
                     QQ_VOICE_MAX_SEGMENTS=3,
                     QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -1250,7 +1339,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 config_module=SimpleNamespace(
                     DATA_DIR=temp_dir,
                     QQ_STREAM_REPLIES_ENABLED=True,
-                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                     QQ_REPLY_MAX_SEGMENTS=8,
                     QQ_VOICE_MAX_SEGMENTS=3,
                     QQ_VOICE_MAX_TEXT_CHARS=40,
@@ -1294,7 +1383,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 config_module=SimpleNamespace(
                     DATA_DIR=temp_dir,
                     QQ_STREAM_REPLIES_ENABLED=True,
-                    QQ_STREAM_MAX_SEGMENTS=8,
+                    QQ_STREAM_IMMEDIATE_SEGMENTS=8,
                     QQ_REPLY_MAX_SEGMENTS=8,
                     QQ_VOICE_MAX_SEGMENTS=3,
                     QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -1349,7 +1438,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "在吗"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=False,
-                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=0,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -1412,7 +1501,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "推一张音乐卡片"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=False,
-                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=0,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,
@@ -1487,7 +1576,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             turn_payload={"message": "推一首歌"},
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=False,
-                QQ_STREAM_MAX_SEGMENTS=0,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=0,
                 QQ_REPLY_MAX_SEGMENTS=8,
                 QQ_VOICE_MAX_SEGMENTS=3,
                 QQ_VOICE_MAX_TEXT_CHARS=280,

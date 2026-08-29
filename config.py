@@ -337,6 +337,8 @@ class Settings(BaseSettings):
     QQ_CHARACTER_PACK_ID: str = ""
     # QQ 回复投递模式：text=只文字 voice=只语音 both=文字+语音 auto=模型用 reply_medium 决定
     QQ_REPLY_MODE: str = "auto"
+    # 每回合最多即时推送多少个流式文字气泡；超出部分无损合并并在回合结束时补发
+    QQ_STREAM_IMMEDIATE_SEGMENTS: int = 8
     # QQ 语音合成读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
     QQ_TTS_PROFILE_USER_ID: str = ""
     # QQ 联网搜索读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
@@ -596,6 +598,7 @@ def _apply_settings(s: Settings) -> None:
     global QQ_WEBHOOK_SECRET, QQ_ONEBOT_ACCESS_TOKEN, QQ_CHARACTER_PACK_ID
     global \
         QQ_REPLY_MODE, \
+        QQ_STREAM_IMMEDIATE_SEGMENTS, \
         QQ_TTS_PROFILE_USER_ID, \
         QQ_WEB_SEARCH_PROFILE_USER_ID, \
         QQ_VOICE_MAX_TEXT_CHARS, \
@@ -827,6 +830,7 @@ def _apply_settings(s: Settings) -> None:
     )
     QQ_VOICE_MAX_TEXT_CHARS = max(20, min(1200, int(s.QQ_VOICE_MAX_TEXT_CHARS)))
     QQ_VOICE_MAX_SEGMENTS = max(1, min(10, int(s.QQ_VOICE_MAX_SEGMENTS)))
+    QQ_STREAM_IMMEDIATE_SEGMENTS = max(0, min(100, int(s.QQ_STREAM_IMMEDIATE_SEGMENTS)))
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
     raw_group_passive_memory_mode = str(s.QQ_GROUP_PASSIVE_MEMORY_MODE or "all").strip().lower()
     QQ_GROUP_PASSIVE_MEMORY_MODE = {

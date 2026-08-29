@@ -825,21 +825,41 @@ def _send_pending_stage_messages(
     qq_gateway: Any,
     context: Any,
     pending_messages: list[str],
+    deferred_messages: list[str],
     streamed_messages: list[str],
     stream_send_results: list[dict[str, Any]],
     max_streamed: int,
 ) -> list[str]:
     for text in pending_messages:
-        if len(streamed_messages) >= max_streamed:
-            break
         normalized = _normalize_reply_text(text)
         if not normalized:
             continue
-        result = qq_gateway.send_reply(context, text[:1800].strip())
-        stream_send_results.append(result)
-        if bool(result.get("ok")):
-            streamed_messages.append(text)
+        chunks = [text[index : index + 1800] for index in range(0, len(text), 1800)]
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if len(streamed_messages) >= max_streamed:
+                deferred_messages.append(chunk)
+                continue
+            result = qq_gateway.send_reply(context, chunk)
+            stream_send_results.append(result)
+            if bool(result.get("ok")):
+                streamed_messages.append(chunk)
+            else:
+                # A failed immediate send is still model-authored content.
+                # Keep it for the ordinary end-of-turn delivery attempt.
+                deferred_messages.append(chunk)
     return []
+
+
+def _coalesce_deferred_stream_messages(messages: list[str], *, max_chars: int = 1800) -> list[str]:
+    """Merge delayed stream segments without deleting model-authored text."""
+
+    visible = [str(item or "") for item in messages if str(item or "").strip()]
+    if not visible:
+        return []
+    joined = "\n".join(visible).strip()
+    return [joined[index : index + max_chars] for index in range(0, len(joined), max_chars)]
 
 
 def _normalize_reply_medium(value: Any) -> str:
@@ -1268,6 +1288,7 @@ def _process_qq_turn_streaming(
     timing_started_at = time.perf_counter()
     timing: dict[str, float] = {}
     pending_stage_messages: list[str] = []
+    deferred_stage_messages: list[str] = []
     streamed_messages: list[str] = []
     stream_send_results: list[dict[str, Any]] = []
     streamed_delivery_events: list[dict[str, Any]] = []
@@ -1285,9 +1306,13 @@ def _process_qq_turn_streaming(
     max_streamed = max(
         0,
         min(
-            20,
+            100,
             int(
-                getattr(config_module, "QQ_STREAM_MAX_SEGMENTS", getattr(config_module, "QQ_REPLY_MAX_SEGMENTS", 8))
+                getattr(
+                    config_module,
+                    "QQ_STREAM_IMMEDIATE_SEGMENTS",
+                    8,
+                )
                 or 0
             ),
         ),
@@ -1319,6 +1344,7 @@ def _process_qq_turn_streaming(
                 qq_gateway=qq_gateway,
                 context=context,
                 pending_messages=pending_stage_messages,
+                deferred_messages=deferred_stage_messages,
                 streamed_messages=streamed_messages,
                 stream_send_results=stream_send_results,
                 max_streamed=max_streamed,
@@ -1348,6 +1374,7 @@ def _process_qq_turn_streaming(
                 qq_gateway=qq_gateway,
                 context=context,
                 pending_messages=pending_stage_messages,
+                deferred_messages=deferred_stage_messages,
                 streamed_messages=streamed_messages,
                 stream_send_results=stream_send_results,
                 max_streamed=max_streamed,
@@ -1376,6 +1403,7 @@ def _process_qq_turn_streaming(
                     qq_gateway=qq_gateway,
                     context=context,
                     pending_messages=pending_stage_messages,
+                    deferred_messages=deferred_stage_messages,
                     streamed_messages=streamed_messages,
                     stream_send_results=stream_send_results,
                     max_streamed=max_streamed,
@@ -1391,6 +1419,7 @@ def _process_qq_turn_streaming(
             qq_gateway=qq_gateway,
             context=context,
             pending_messages=pending_stage_messages,
+            deferred_messages=deferred_stage_messages,
             streamed_messages=streamed_messages,
             stream_send_results=stream_send_results,
             max_streamed=max_streamed,
@@ -1468,6 +1497,9 @@ def _process_qq_turn_streaming(
     # Deliver artifacts before the final text so transport feedback can follow
     # the model's completed reply.  An auxiliary delivery failure must not turn
     # a successfully completed LLM turn into an apparent system crash.
+    deferred_stream_messages = _coalesce_deferred_stream_messages(
+        [*deferred_stage_messages, *pending_stage_messages]
+    )
     final_reply_messages = (
         []
         if bool(frame.get("_transient_final_failure") or deliberate_silence)
@@ -1479,9 +1511,13 @@ def _process_qq_turn_streaming(
         # JSON tail forces the final frame to its generic persona fallback. The
         # model's speech remains the sole body authority; never append that
         # host fallback as a second, contradictory bubble.
-        unsent_reply_messages = []
+        unsent_reply_messages = deferred_stream_messages
     else:
-        unsent_reply_messages = _filter_unsent_reply_messages(reply_messages, streamed_messages)
+        final_tail_messages = _filter_unsent_reply_messages(
+            reply_messages,
+            [*streamed_messages, *deferred_stream_messages],
+        )
+        unsent_reply_messages = [*deferred_stream_messages, *final_tail_messages]
     delivered_reply_messages = [*streamed_messages, *unsent_reply_messages]
     text_delivery_started_at = time.perf_counter()
     send_result = _send_qq_delivery(

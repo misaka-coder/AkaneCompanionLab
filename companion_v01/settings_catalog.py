@@ -388,6 +388,12 @@ _SPECS: tuple[SettingSpec, ...] = (
     ),
     _s("QQ_CHARACTER_PACK_ID", _QQ, SCOPE_RUNTIME, "QQ 文字聊天默认角色包 id"),
     _s("QQ_REPLY_MODE", _QQ, SCOPE_RUNTIME, "QQ 回复投递模式：text/voice/both/auto"),
+    _s(
+        "QQ_STREAM_IMMEDIATE_SEGMENTS",
+        _QQ,
+        SCOPE_RUNTIME,
+        "每回合即时推送的流式文字气泡数；超出部分不会丢失，会在回合结束时合并补发",
+    ),
     _s("QQ_TTS_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 语音合成读取的本地能力 profile"),
     _s("QQ_WEB_SEARCH_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 联网搜索读取的本地能力 profile"),
     _s("QQ_VOICE_MAX_TEXT_CHARS", _QQ, SCOPE_RUNTIME, "QQ 语音最大合成文本长度（超过降级文字）"),
