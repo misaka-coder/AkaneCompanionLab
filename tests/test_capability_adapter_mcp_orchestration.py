@@ -190,9 +190,20 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                 profile_user_id="alice",
                 session_id="s1",
             )
-            self.assertEqual(calls, [])
-            self.assertEqual(len(rejections), 1)
-            self.assertIn("load_mcp", rejections[0])
+            self.assertEqual(rejections, [])
+            self.assertEqual(len(calls), 1)
+            result = engine.tool_handlers["invoke_mcp"].execute(
+                call=calls[0],
+                context=ToolExecutionContext(
+                    profile_user_id="alice",
+                    session_id="s1",
+                    now_ts=1,
+                    visual_payload={},
+                    client_mode="desktop_pet",
+                ),
+            )
+            self.assertIn("invoke_mcp_target_not_resolved", result.followup_context)
+            self.assertIn("load_mcp", result.followup_context)
             self.assertNotIn("mcp.demo.echo", selection.schema_tool_names)
 
     def test_invoke_mcp_preserves_the_selected_tool_approval_policy(self) -> None:
@@ -400,9 +411,17 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                 profile_user_id="alice",
                 session_id="s1",
             )
-            self.assertEqual(calls, [])
-            self.assertEqual(len(rejections), 1)
-            self.assertIn("本轮不可用", rejections[0])
+            self.assertEqual(rejections, [])
+            self.assertEqual(len(calls), 1)
+            validation = tool_orchestration_engine.validate_legacy_tool_call(
+                engine,
+                calls[0],
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertFalse(validation.ok)
+            self.assertIn("本轮不可用", validation.message)
 
     def test_disabled_mcp_family_cannot_use_historical_native_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):
@@ -441,8 +460,16 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                 profile_user_id="alice",
                 session_id="s1",
             )
-            self.assertEqual(calls, [])
-            self.assertEqual(len(rejections), 1)
+            self.assertEqual(rejections, [])
+            self.assertEqual(len(calls), 1)
+            validation = tool_orchestration_engine.validate_legacy_tool_call(
+                engine,
+                calls[0],
+                client_context=context(),
+                profile_user_id="alice",
+                session_id="s1",
+            )
+            self.assertFalse(validation.ok)
 
     def test_explicit_pinned_mcp_tool_is_profile_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch("config.DATA_DIR", temp_dir):

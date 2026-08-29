@@ -6333,6 +6333,7 @@ class AkaneMemoryEngine:
         retry_feedback = ""
         transport_failures = 0
         attempts_made = 0
+        unrecovered_nonstream_transport_failure = False
         for attempt in range(1, max_attempts + 1):
             # A malformed decision retries against the same context and tool
             # surface. Streaming prefix de-duplication is transport-only and
@@ -6566,9 +6567,12 @@ class AkaneMemoryEngine:
                     metrics_before=fallback_metrics_before,
                     metrics_after=fallback_metrics_after,
                 )
-                fallback_transport_failure = int(fallback_metrics_after.get("errors", 0) or 0) > int(
-                    fallback_metrics_before.get("errors", 0) or 0
+                fallback_transport_failure = (
+                    bool(fallback_error and fallback_error != "response_truncated")
+                    or int(fallback_metrics_after.get("errors", 0) or 0)
+                    > int(fallback_metrics_before.get("errors", 0) or 0)
                 )
+                unrecovered_nonstream_transport_failure = fallback_transport_failure
                 normalized = self._normalize_final_output(
                     result=fallback_result,
                     visual_defaults=dict(generation_context["visual_defaults"]),
@@ -6587,7 +6591,7 @@ class AkaneMemoryEngine:
                     result=fallback_call_result,
                     raw_result=fallback_result,
                 )
-                if fallback_transport_failure and self._is_retryable_final_output(normalized):
+                if fallback_transport_failure:
                     if hasattr(self.llm, "record_metric"):
                         self.llm.record_metric("chat_stream_uncached_fallbacks")
                     uncached_request_kwargs = {**request_kwargs, "prompt_cache_key": ""}
@@ -6621,6 +6625,11 @@ class AkaneMemoryEngine:
                         metrics_before=uncached_metrics_before,
                         metrics_after=uncached_metrics_after,
                     )
+                    unrecovered_nonstream_transport_failure = (
+                        bool(uncached_error and uncached_error != "response_truncated")
+                        or int(uncached_metrics_after.get("errors", 0) or 0)
+                        > int(uncached_metrics_before.get("errors", 0) or 0)
+                    )
                     normalized = self._normalize_final_output(
                         result=uncached_result,
                         visual_defaults=dict(generation_context["visual_defaults"]),
@@ -6648,7 +6657,7 @@ class AkaneMemoryEngine:
                     fallback_preface_text = str(normalized.get("speech") or "").strip()
                     if fallback_preface_text:
                         normalized["_native_preface_text"] = fallback_preface_text
-                if not self._is_retryable_final_output(normalized):
+                if not fallback_parse_failure and not self._is_retryable_final_output(normalized):
                     unrecovered_stream_error = ""
                     unrecovered_stream_partial = {}
                     if hasattr(self.llm, "record_metric"):
@@ -6697,12 +6706,17 @@ class AkaneMemoryEngine:
                 "message": unrecovered_stream_error,
                 "partial": unrecovered_stream_partial,
             }
-        if unrecovered_stream_error and streamed_speech_to_user:
-            # Transport died after complete speech sentences entered the
-            # delivery channel. Preserve them in canonical speech and never
-            # append a contradictory generic fallback over them.
-            normalized["_transient_final_failure"] = True
-            normalized.pop("_provider_output_raw", None)
+        if unrecovered_stream_error:
+            # The stream failed and its equivalent non-stream request did not
+            # produce a provider-authored, parseable decision. Preserve any
+            # already delivered sentence, but never mistake the host fallback
+            # object for a successful model reply.
+            if unrecovered_nonstream_transport_failure and transport_failures >= attempts_made:
+                self._record_final_service_failure_metric()
+                normalized = self._final_service_failure_output(reason="provider_unreachable")
+            else:
+                normalized["_transient_final_failure"] = True
+                normalized.pop("_provider_output_raw", None)
         elif self._final_output_has_tool_call(normalized):
             # A legal tool call still continues the ordinary tool loop.
             if provider_output_raw:

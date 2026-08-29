@@ -888,11 +888,12 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertNotIn("inspect_attachment", scene_prompt)
         self.assertNotIn("retry_attachment", scene_prompt)
         self.assertNotIn("sync_attachment_workspace", scene_prompt)
-        self.assertIsNone(
+        self.assertEqual(
             self.engine._normalize_tool_call(
                 {"type": "manage_gift"},
                 client_context=qq_context,
-            )
+            ),
+            {"type": "manage_gift"},
         )
         self.assertEqual(
             self.engine._normalize_tool_call(
@@ -1089,13 +1090,14 @@ class EngineExtensionTests(unittest.TestCase):
                 ),
                 {"type": "convert_media_file"},
             )
-            self.assertIsNone(
+            self.assertEqual(
                 self.engine._normalize_tool_call(
                     {"type": "send_sticker"},
                     client_context=desktop_context,
                     profile_user_id="master",
                     session_id="desktop_pet_test",
-                )
+                ),
+                {"type": "send_sticker"},
             )
 
     def test_capability_registry_keeps_light_hints_and_hides_inactive_tools(self) -> None:
@@ -1162,13 +1164,14 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- transcribe_media", prompt)
             self.assertNotIn("\n- prepare_voice_dataset", prompt)
             self.assertNotIn("\n- read_attachment_section", prompt)
-            self.assertIsNone(
+            self.assertEqual(
                 self.engine._normalize_tool_call(
                     {"type": "convert_media_file", "source_id": "audio_001"},
                     client_context=qq_context,
                     profile_user_id="master",
                     session_id="qq_pri_1",
-                )
+                ),
+                {"type": "convert_media_file", "source_id": "audio_001"},
             )
 
     def test_desktop_workspace_materials_expand_matching_tools_without_upload(self) -> None:

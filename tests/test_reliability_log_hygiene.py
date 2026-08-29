@@ -96,7 +96,7 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
         followups: list[str] = []
         logger = logging.getLogger("akane.engine")
         with self.assertLogs(logger, level="WARNING") as captured:
-            allow = engine._record_tool_call_rejection(
+            engine._record_tool_call_rejection(
                 final_output={"tool_call": {"type": ""}},
                 rejection=(
                     "工具 fetch_media_from_url 的调用参数不完整或格式不对，"
@@ -104,8 +104,6 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
                 ),
                 tool_followups=followups,
                 session_id="qq_group_shared_302814983",
-                tool_round_index=0,
-                max_tool_rounds=4,
             )
         joined = "\n".join(captured.output)
         self.assertIn("qq_group_shared_302814983", joined)
@@ -115,7 +113,6 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
         self.assertNotIn("hidden-value", joined)
         self.assertEqual(len(followups), 1)
         self.assertIn("secret.txt", followups[0])
-        self.assertTrue(allow)
 
     def test_rejection_log_marks_unknown_when_detail_empty(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -126,8 +123,6 @@ class ToolCallRejectionLogHygieneTests(unittest.TestCase):
                 rejection="",
                 tool_followups=[],
                 session_id="qq_group_shared_302814983",
-                tool_round_index=2,
-                max_tool_rounds=4,
             )
         joined = "\n".join(captured.output)
         self.assertIn("reason_tool=unknown", joined)
