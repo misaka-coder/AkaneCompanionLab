@@ -2975,7 +2975,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             finally:
                 manager.close()
 
-    def test_proactive_request_projection_failure_returns_memcore_error_not_persona_fallback(self) -> None:
+    def test_request_projection_record_failure_preserves_model_reply(self) -> None:
         class RejectingManager:
             bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
 
@@ -3007,15 +3007,19 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     }
                 )
                 return SimpleNamespace(
-                    parsed=dict(kwargs["fallback"]),
-                    raw_text="",
-                    error=f"request_observer_rejected:{observed['reason']}",
+                    parsed={"emotion": "normal", "speech": "主动推送已完成。", "tool_call": None},
+                    raw_text='{"speech":"主动推送已完成。"}',
+                    error="" if observed["ok"] else f"request_observer_rejected:{observed['reason']}",
                 )
 
         manager = RejectingManager()
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.llm = RejectingLLM()
         engine.memcore_manager = manager
+        engine.resource_manifest = None
+        engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
+        engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
+        engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
         engine._prepare_final_response_context = lambda **_kwargs: {
             "system_prompt": "stable system",
             "user_prompt": "event.finance current",
@@ -3052,10 +3056,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(len(manager.calls), 1)
-        self.assertTrue(result["_transient_final_failure"])
+        self.assertEqual(result["speech"], "主动推送已完成。")
         self.assertEqual(result["_memcore_failure"]["reason"], "request_projection_record_failed")
-        self.assertIn("上下文没有完整衔接成功", result["speech"])
-        self.assertNotIn("认真听你说", result["speech"])
+        self.assertEqual(result["_memcore_failure"]["delivery_status"], "model_reply_preserved")
 
     def test_memcore_final_retry_keeps_user_payload_and_adds_ephemeral_repair_tail(self) -> None:
         class RecordingManager:
@@ -3487,7 +3490,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(manager.calls), 2)
         self.assertTrue(llm.assert_observed["ok"])
 
-    def test_stream_transport_fallback_stops_when_second_projection_record_is_rejected(self) -> None:
+    def test_stream_transport_fallback_survives_projection_record_failure(self) -> None:
         class FlakyManager:
             bind_request_projection_messages = staticmethod(_bind_test_request_projection_messages)
 
@@ -3550,9 +3553,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             def call_chat_json_result(self, **kwargs):
                 observed = kwargs["request_observer"](self._request(kwargs))
                 return SimpleNamespace(
-                    parsed=dict(kwargs["fallback"]),
-                    raw_text="",
-                    error=f"request_observer_rejected:{observed['reason']}",
+                    parsed={"emotion": "normal", "speech": "恢复后完成。", "tool_call": None},
+                    raw_text='{"speech":"恢复后完成。"}',
+                    error="" if observed["ok"] else f"request_observer_rejected:{observed['reason']}",
                 )
 
         manager = FlakyManager()
@@ -3585,7 +3588,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._normalize_final_output = lambda *, result, **_kwargs: dict(result or {})
         engine._attach_memory_annotation_truth = lambda *_args, **_kwargs: None
         engine._attach_tool_execution_receipts = lambda *_args, **_kwargs: None
-        engine._is_retryable_final_output = lambda *_args, **_kwargs: True
 
         stream = engine._stream_final_response(
             session_id="private:u1",
@@ -3608,9 +3610,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 break
 
         self.assertEqual(len(manager.calls), 2)
-        self.assertTrue(result["_transient_final_failure"])
+        self.assertEqual(result["speech"], "恢复后完成。")
         self.assertEqual(result["_memcore_failure"]["reason"], "request_projection_record_failed")
-        self.assertNotIn("认真听你说", result["speech"])
+        self.assertEqual(result["_memcore_failure"]["delivery_status"], "model_reply_preserved")
         self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
 
     def test_prompt_token_estimate_counts_structured_history(self) -> None:

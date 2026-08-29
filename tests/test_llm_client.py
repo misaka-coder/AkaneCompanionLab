@@ -2460,7 +2460,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertNotIn("prompt_cache_key", calls[1])
         self.assertNotIn("prompt_cache_retention", calls[1])
 
-    def test_llm_runtime_falls_back_once_when_provider_explicitly_rejects_native_tools(self) -> None:
+    def test_llm_runtime_never_silently_drops_rejected_native_tools(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._metrics = {}
         runtime._metrics_lock = threading.RLock()
@@ -2476,24 +2476,19 @@ class LLMClientConfigTests(unittest.TestCase):
             client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
             model="legacy-model",
         )
-        result = runtime._create_completion(
-            bundle=bundle,
-            payload={
-                "model": "legacy-model",
-                "messages": [{"role": "system", "content": "answer"}],
-                "tools": [{"type": "function", "function": {"name": "echo"}}],
-                "tool_choice": "auto",
-                "parallel_tool_calls": True,
-            },
-        )
+        with self.assertRaisesRegex(RuntimeError, "native_tools_unsupported"):
+            runtime._create_completion(
+                bundle=bundle,
+                payload={
+                    "model": "legacy-model",
+                    "messages": [{"role": "system", "content": "answer"}],
+                    "tools": [{"type": "function", "function": {"name": "echo"}}],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                },
+            )
 
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(len(calls), 2)
-        self.assertNotIn("tools", calls[1])
-        self.assertNotIn("tool_choice", calls[1])
-        self.assertNotIn("parallel_tool_calls", calls[1])
-        self.assertEqual(calls[1]["response_format"], {"type": "json_object"})
-        self.assertIn("json", str(calls[1]["messages"][0]["content"]).lower())
+        self.assertEqual(len(calls), 1)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_provider_unsupported"], 1)
 
     def test_llm_runtime_does_not_hide_tools_for_unrelated_provider_400(self) -> None:
@@ -2542,7 +2537,12 @@ class ResponseTruncationDetectionTests(unittest.TestCase):
 
     def test_length_finish_reason_is_surfaced(self) -> None:
         runtime = self._runtime()
-        runtime._note_truncation(self._response("length", '{"speech":"长长的回答被切'), phase="call_json")
+        self.assertTrue(
+            runtime._note_truncation(
+                self._response("length", '{"speech":"长长的回答被切'),
+                phase="call_json",
+            )
+        )
         self.assertEqual(runtime.snapshot_metrics().get("response_truncated"), 1)
         error = runtime.snapshot_last_error()
         self.assertEqual(error.get("type"), "ResponseTruncated")
@@ -2551,14 +2551,74 @@ class ResponseTruncationDetectionTests(unittest.TestCase):
 
     def test_normal_finish_reason_is_ignored(self) -> None:
         runtime = self._runtime()
-        runtime._note_truncation(self._response("stop", '{"speech":"ok"}'), phase="call_json")
+        self.assertFalse(runtime._note_truncation(self._response("stop", '{"speech":"ok"}'), phase="call_json"))
         self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
         self.assertEqual(runtime.snapshot_last_error(), {})
 
     def test_malformed_response_does_not_raise(self) -> None:
         runtime = self._runtime()
-        runtime._note_truncation(SimpleNamespace(choices=[]), phase="call_json")
+        self.assertFalse(runtime._note_truncation(SimpleNamespace(choices=[]), phase="call_json"))
         self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
+
+    def test_nonstream_length_never_returns_a_complete_model_decision(self) -> None:
+        runtime = self._runtime()
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._observe_completion_request = lambda **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._create_completion = lambda **_kwargs: self._response(
+            "length",
+            '{"speech":"看似完整但供应商声明已截断"}',
+        )
+
+        result = runtime._call_json_result(
+            bundle=ModelBundle(client=SimpleNamespace(), model="test"),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "host fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.error, "response_truncated")
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.parsed["speech"], "host fallback")
+
+    def test_stream_length_is_returned_as_explicit_retryable_error(self) -> None:
+        runtime = self._runtime()
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._observe_completion_request = lambda **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._close_stream = lambda *_args, **_kwargs: None
+        chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content='{"speech":"半截'),
+                    finish_reason="length",
+                )
+            ]
+        )
+        runtime._create_completion = lambda **_kwargs: [chunk]
+
+        iterator = runtime._stream_chat_json(
+            bundle=ModelBundle(client=SimpleNamespace(), model="test"),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "host fallback"},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="",
+        )
+        while True:
+            try:
+                next(iterator)
+            except StopIteration as stopped:
+                result = stopped.value
+                break
+
+        self.assertEqual(result.error, "response_truncated")
+        self.assertEqual(result.finish_reason, "length")
+        self.assertIn("半截", result.raw_text)
 
 
 class ChatJSONFallbackSampleTests(unittest.TestCase):

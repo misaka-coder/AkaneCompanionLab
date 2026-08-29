@@ -2291,7 +2291,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(captured["native_tools"], [schema])
         self.assertEqual(captured["native_tool_choice"], "auto")
 
-    def test_stream_final_response_retries_placeholder_speech_for_the_real_answer(self) -> None:
+    def test_stream_final_response_does_not_guess_from_model_speech_semantics(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         prompts = []
         metrics = []
@@ -2350,18 +2350,18 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             )
         )
 
-        # Sentence streaming stays immediate, but a known host fallback is not
-        # a model-authored speech unit and must never become a visible bubble.
+        # With no transport error or fallback provenance this is model-authored
+        # speech. The host must not classify it by matching Chinese phrases.
         self.assertEqual(
             events,
             [
                 {"type": "turn_start", "speaker": "Akane"},
-                {"type": "speech_segment", "text": "这是重试后的完整答复。"},
+                {"type": "speech_segment", "text": "我在认真听你说，要不要再多告诉我一点？"},
             ],
         )
-        self.assertEqual(result["speech"], "这是重试后的完整答复。")
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("chat_final_response_retries", metrics)
+        self.assertEqual(result["speech"], "我在认真听你说，要不要再多告诉我一点？")
+        self.assertEqual(len(prompts), 1)
+        self.assertNotIn("chat_final_response_retries", metrics)
 
     def test_tool_working_stream_event_is_in_progress_only(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -2374,13 +2374,19 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(event["tool_type"], "web_search")
         self.assertNotIn("done", str(event).lower())
 
-    def test_final_fallback_and_progress_placeholders_are_retryable(self) -> None:
+    def test_final_retry_uses_protocol_shape_not_speech_semantics(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
 
-        self.assertTrue(
+        self.assertFalse(
             engine._is_retryable_final_output({"speech": "我在认真听你说，要不要再多告诉我一点？", "tool_call": None})
         )
-        self.assertTrue(engine._is_retryable_final_output({"speech": "还没处理完", "tool_call": None}))
+        self.assertFalse(engine._is_retryable_final_output({"speech": "还没处理完", "tool_call": None}))
+        self.assertTrue(engine._is_retryable_final_output({"speech": "", "tool_call": None}))
+        self.assertTrue(
+            engine._is_retryable_final_output(
+                {"speech": '<｜DSML｜tool_calls><｜DSML｜invoke name="web_search">', "tool_call": None}
+            )
+        )
         # A parse fallback no longer forces a retry by itself: complete model
         # speech extracted from malformed wire text is deliverable. The wire
         # tool-intent guard lives in the recovery layer, not here.

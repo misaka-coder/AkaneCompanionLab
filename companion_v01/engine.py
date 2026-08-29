@@ -5469,6 +5469,9 @@ class AkaneMemoryEngine:
             call_error = str(getattr(call_result, "error", "") or "").strip()
             if call_error:
                 transport_failures += 1
+            if "native_tools_unsupported" in call_error:
+                self._record_final_service_failure_metric()
+                return self._final_service_failure_output(reason="provider_native_tools_unsupported")
             if self._provider_error_is_rate_limited(call_error):
                 rate_limit_failures += 1
                 if rate_limit_failures >= 2 or attempt >= max_attempts:
@@ -5479,6 +5482,18 @@ class AkaneMemoryEngine:
                 if hasattr(self.llm, "record_metric"):
                     self.llm.record_metric("chat_final_rate_limit_retries")
                 continue
+            if call_error:
+                # A host fallback object is not a model decision. Retry based
+                # on transport/protocol provenance rather than inspecting the
+                # fallback sentence for particular words.
+                normalized = {}
+                retry_feedback = "provider_error"
+                transport_retry_pending = True
+                if attempt < max_attempts:
+                    if hasattr(self.llm, "record_metric"):
+                        self.llm.record_metric("chat_final_response_retries")
+                    continue
+                break
             transport_retry_pending = False
             metrics_after = self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
             parse_fallback = self._llm_result_used_fallback(
@@ -5503,7 +5518,8 @@ class AkaneMemoryEngine:
             self._attach_tool_execution_receipts(normalized, generation_context)
             self._attach_nonfatal_memcore_failure(
                 normalized,
-                generation_context.get("memcore_projection_recovery"),
+                generation_context.get("memcore_projection_recovery")
+                or generation_context.get("memcore_request_projection_failure"),
             )
             terminal_output = self._final_attempt_terminal_output(
                 normalized=normalized,
@@ -5563,7 +5579,8 @@ class AkaneMemoryEngine:
             if recovered is not None:
                 self._attach_nonfatal_memcore_failure(
                     recovered,
-                    generation_context.get("memcore_projection_recovery"),
+                    generation_context.get("memcore_projection_recovery")
+                    or generation_context.get("memcore_request_projection_failure"),
                 )
                 return recovered
             if transport_failures >= max_attempts and max_attempts > 0:
@@ -6208,19 +6225,6 @@ class AkaneMemoryEngine:
             return True
         if self._text_contains_tool_protocol(text):
             return True
-        compact = "".join(text.split())
-        if len(compact) <= 160 and any(
-            marker in compact
-            for marker in (
-                "我在认真听你说",
-                "要不要再多告诉我一点",
-                "还没处理完",
-                "尚未处理完",
-                "正在处理中",
-                "稍后给你结果",
-            )
-        ):
-            return True
         return False
 
     @staticmethod
@@ -6439,6 +6443,9 @@ class AkaneMemoryEngine:
                 return self._memcore_projection_failure_output(
                     {"status": "failed", "reason": "request_projection_record_failed"}
                 )
+            if "native_tools_unsupported" in stream_error:
+                self._record_final_service_failure_metric()
+                return self._final_service_failure_output(reason="provider_native_tools_unsupported")
             if stream_error:
                 transport_failures += 1
                 unrecovered_stream_error = stream_error
@@ -6545,6 +6552,9 @@ class AkaneMemoryEngine:
                     return self._memcore_projection_failure_output(
                         {"status": "failed", "reason": "request_projection_record_failed"}
                     )
+                if "native_tools_unsupported" in fallback_error:
+                    self._record_final_service_failure_metric()
+                    return self._final_service_failure_output(reason="provider_native_tools_unsupported")
                 provider_output_raw = str(getattr(fallback_call_result, "raw_text", "") or "")
                 if stream_rate_limited and self._provider_error_is_rate_limited(fallback_error):
                     self._record_final_rate_limit_metric()
@@ -6599,6 +6609,9 @@ class AkaneMemoryEngine:
                         return self._memcore_projection_failure_output(
                             {"status": "failed", "reason": "request_projection_record_failed"}
                         )
+                    if "native_tools_unsupported" in uncached_error:
+                        self._record_final_service_failure_metric()
+                        return self._final_service_failure_output(reason="provider_native_tools_unsupported")
                     provider_output_raw = str(getattr(uncached_call_result, "raw_text", "") or "")
                     uncached_metrics_after = (
                         self.llm.snapshot_metrics() if hasattr(self.llm, "snapshot_metrics") else {}
@@ -6727,7 +6740,8 @@ class AkaneMemoryEngine:
                 normalized["_provider_output_raw"] = provider_output_raw
         self._attach_nonfatal_memcore_failure(
             normalized,
-            generation_context.get("memcore_projection_recovery"),
+            generation_context.get("memcore_projection_recovery")
+            or generation_context.get("memcore_request_projection_failure"),
         )
         return normalized
 
@@ -7000,22 +7014,29 @@ class AkaneMemoryEngine:
             failure_reason = str((result or {}).get("reason") or "request_projection_record_failed")
             if failure_reason.startswith("projection_audit_"):
                 logger.warning("memcore audit persistence failed reason=%s", failure_reason)
-                generation_context["memcore_request_projection"] = {
-                    "status": "degraded",
-                    "reason": "audit_persistence_failed",
-                    "detail": failure_reason,
-                }
-                return {
-                    "ok": True,
-                    "status": "degraded",
-                    "reason": "audit_persistence_failed",
-                }
-            return {
-                "ok": False,
+                public_reason = "audit_persistence_failed"
+            else:
+                # The binding above already proved that the provider-visible
+                # current turn matches the authoritative MemCore projection.
+                # Persisting a request audit is evidence about that request;
+                # it is not permission to send it.  A recorder outage must be
+                # observable, but must not cancel an otherwise valid Agent
+                # decision or discard completed tool results.
+                logger.warning("memcore request projection persistence failed reason=%s", failure_reason)
+                public_reason = "request_projection_record_failed"
+            failure = {
                 "status": str((result or {}).get("status") or "failed"),
-                "reason": "context_authority_failed",
+                "reason": public_reason,
+                "detail": failure_reason,
+                "delivery_status": "model_reply_preserved",
+            }
+            generation_context["memcore_request_projection"] = {
+                "status": "degraded",
+                "reason": public_reason,
                 "detail": failure_reason,
             }
+            generation_context["memcore_request_projection_failure"] = failure
+            return {"ok": True, "status": "degraded", "reason": public_reason}
 
         return observe
 

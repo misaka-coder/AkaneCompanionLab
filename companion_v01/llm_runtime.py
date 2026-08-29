@@ -146,8 +146,9 @@ OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
     verified=False,
     notes=(
         "OpenAI-compatible providers receive native tools optimistically. "
-        "Forced JSON is suppressed when tools are present; explicit provider "
-        "unsupported errors may trigger the structured JSON fallback."
+        "Forced JSON is suppressed when tools are present; an unexpected "
+        "native-tool rejection is surfaced explicitly instead of silently "
+        "removing the model's tool surface mid-turn."
     ),
 )
 # Kept as a source-compatible alias for integrations importing the old symbol.
@@ -238,6 +239,7 @@ class ChatJSONStreamResult:
     fallback_used: bool = False
     metadata_status: str = "missing"
     metadata_present: bool = False
+    finish_reason: str = ""
 
 
 @dataclass
@@ -1174,8 +1176,9 @@ class LLMRuntime:
             )
             response = self._create_completion(bundle=bundle, payload=request_payload)
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
-            self._note_truncation(response, phase="call_chat_text")
             text = self._extract_text(response)
+            if self._note_truncation(response, phase="call_chat_text"):
+                return ChatTextResult(text="", raw_text=text, error="response_truncated")
             return ChatTextResult(text=text, raw_text=text)
         except Exception as exc:
             self._record_metric("errors")
@@ -1381,6 +1384,22 @@ class LLMRuntime:
             )
             response = self._create_completion(bundle=bundle, payload=request_payload)
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
+            content = self._extract_text(response)
+            if self._note_truncation(response, phase="call_json"):
+                fallback_payload = dict(fallback)
+                metadata_status, metadata_present = _memory_metadata_truth(
+                    fallback_payload,
+                    accepted_status="accepted_host",
+                    require_signal=True,
+                )
+                return ChatJSONResult(
+                    parsed=fallback_payload,
+                    raw_text=content,
+                    error="response_truncated",
+                    fallback_used=True,
+                    metadata_status=metadata_status,
+                    metadata_present=metadata_present,
+                )
             native_tool_calls = self._extract_native_tool_calls(response, native_tools=native_tools, bundle=bundle)
             if native_tool_calls:
                 self._record_metric("native_tool_call_extracted")
@@ -1389,7 +1408,6 @@ class LLMRuntime:
                     NATIVE_TOOL_CALL_FIELD: native_tool_calls[0],
                     "tool_call": None,
                 }
-                content = self._extract_text(response)
                 native_preface_text = self._native_preface_text_from_content(content)
                 if native_preface_text:
                     parsed["speech"] = native_preface_text
@@ -1405,8 +1423,6 @@ class LLMRuntime:
                 )
             if native_requested:
                 self._record_metric("native_tool_no_call")
-            self._note_truncation(response, phase="call_json")
-            content = self._extract_text(response)
             parsed = self._extract_json(content)
             if isinstance(parsed, dict):
                 metadata_status, metadata_present = _memory_metadata_truth(
@@ -1648,6 +1664,8 @@ class LLMRuntime:
         stopped_early = False
         early_tool_call: dict[str, Any] | None = None
         tool_probe_disabled = False
+        stream_finish_reason = ""
+        last_stream_chunk: Any = None
         try:
             request_payload = self._build_completion_kwargs(
                 bundle=bundle,
@@ -1680,6 +1698,10 @@ class LLMRuntime:
             )
             response = self._create_completion(bundle=bundle, payload=request_payload)
             for chunk in response:
+                last_stream_chunk = chunk
+                chunk_finish_reason = self._response_finish_reason(chunk)
+                if chunk_finish_reason:
+                    stream_finish_reason = chunk_finish_reason
                 self._record_cache_metrics(chunk, prompt_cache_key=prompt_cache_key)
                 self._collect_stream_native_tool_call_parts(chunk, native_tool_parts, bundle=bundle)
                 text = self._extract_stream_text(chunk)
@@ -1707,6 +1729,11 @@ class LLMRuntime:
         finally:
             self._record_cache_metrics(response, prompt_cache_key=prompt_cache_key)
             self._close_stream(response)
+
+        if not stopped_early and stream_finish_reason.lower() == "length":
+            self._note_truncation(last_stream_chunk, phase="stream_chat_json")
+            if not error:
+                error = "response_truncated"
 
         raw_text = "".join(raw_parts)
         native_tool_calls = self._stream_native_tool_calls_from_parts(
@@ -1781,6 +1808,7 @@ class LLMRuntime:
             fallback_used=fallback_used,
             metadata_status=metadata_status,
             metadata_present=metadata_present,
+            finish_reason=stream_finish_reason,
         )
 
     def _try_extract_stream_tool_call(self, text: str) -> tuple[str, dict[str, Any] | None]:
@@ -3030,17 +3058,9 @@ class LLMRuntime:
                 try:
                     return bundle.client.chat.completions.create(**stripped)
                 except Exception as retry_exc:
-                    fallback = self._retry_without_unsupported_native_tools(
-                        bundle=bundle,
-                        payload=stripped,
-                        exc=retry_exc,
-                    )
-                    if fallback is not None:
-                        return fallback
+                    self._raise_if_native_tools_rejected(payload=stripped, exc=retry_exc)
                     raise
-            fallback = self._retry_without_unsupported_native_tools(bundle=bundle, payload=payload, exc=exc)
-            if fallback is not None:
-                return fallback
+            self._raise_if_native_tools_rejected(payload=payload, exc=exc)
             raise
         except Exception as exc:
             if self._should_retry_without_prompt_cache_hints(exc):
@@ -3049,38 +3069,27 @@ class LLMRuntime:
                     try:
                         return bundle.client.chat.completions.create(**stripped)
                     except Exception as retry_exc:
-                        fallback = self._retry_without_unsupported_native_tools(
-                            bundle=bundle,
-                            payload=stripped,
-                            exc=retry_exc,
-                        )
-                        if fallback is not None:
-                            return fallback
+                        self._raise_if_native_tools_rejected(payload=stripped, exc=retry_exc)
                         raise
-            fallback = self._retry_without_unsupported_native_tools(bundle=bundle, payload=payload, exc=exc)
-            if fallback is not None:
-                return fallback
+            self._raise_if_native_tools_rejected(payload=payload, exc=exc)
             raise
 
-    def _retry_without_unsupported_native_tools(
+    def _raise_if_native_tools_rejected(
         self,
         *,
-        bundle: ModelBundle,
         payload: dict[str, Any],
         exc: Exception,
-    ) -> Any:
+    ) -> None:
         if not payload.get("tools") or not self._provider_explicitly_rejects_native_tools(exc):
-            return None
-        fallback = dict(payload)
-        fallback.pop("tools", None)
-        fallback.pop("tool_choice", None)
-        fallback.pop("parallel_tool_calls", None)
-        messages = [dict(message) for message in list(fallback.get("messages") or []) if isinstance(message, dict)]
-        fallback["messages"] = messages
-        fallback["response_format"] = {"type": "json_object"}
-        self._ensure_json_keyword(messages)
+            return
+        # Native schemas and the legacy JSON tool description are mutually
+        # exclusive in the host prompt. Retrying this already-built request
+        # after silently deleting ``tools`` leaves the model with neither
+        # usable surface and can strand an open tool turn. Capability routing
+        # must choose the compatible surface before transport; an unexpected
+        # provider rejection is therefore an explicit configuration failure.
         self._record_metric("native_tool_provider_unsupported")
-        return bundle.client.chat.completions.create(**fallback)
+        raise RuntimeError("native_tools_unsupported") from exc
 
     def _provider_explicitly_rejects_native_tools(self, exc: Exception) -> bool:
         message = " ".join(str(exc or "").strip().lower().split())
@@ -3569,7 +3578,20 @@ class LLMRuntime:
             str(detail.get("message") or "provider_request_failed"),
         )
 
-    def _note_truncation(self, response: Any, *, phase: str) -> None:
+    @staticmethod
+    def _response_finish_reason(response: Any) -> str:
+        try:
+            choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+            choice = list(choices or [])[0]
+            return (
+                str(choice.get("finish_reason") or "")
+                if isinstance(choice, dict)
+                else str(getattr(choice, "finish_reason", "") or "")
+            ).strip().lower()
+        except Exception:
+            return ""
+
+    def _note_truncation(self, response: Any, *, phase: str) -> bool:
         """Surface silent length-truncation through the metric + last-error
         channels (this file's structured-failure pattern; INV-3).
 
@@ -3578,22 +3600,14 @@ class LLMRuntime:
         reason maps to finish_reason="length"; without this, a truncated reply
         is indistinguishable from a normal short answer or a fallback.
         """
-        try:
-            choice = response.choices[0]
-            finish_reason = (
-                str(choice.get("finish_reason") or "")
-                if isinstance(choice, dict)
-                else str(getattr(choice, "finish_reason", "") or "")
-            )
-        except Exception:
-            return
-        if finish_reason.strip().lower() != "length":
-            return
+        finish_reason = self._response_finish_reason(response)
+        if finish_reason != "length":
+            return False
         sample = self._extract_text(response)
         self._record_metric("response_truncated")
         lock = getattr(self, "_last_error_lock", None)
         if lock is None:
-            return
+            return True
         detail = {
             "phase": str(phase or ""),
             "type": "ResponseTruncated",
@@ -3603,6 +3617,7 @@ class LLMRuntime:
         }
         with lock:
             self._last_error = detail
+        return True
 
     def _note_parse_fallback(self, raw_text: Any, *, phase: str) -> None:
         """Record a sanitized sample when a response can't be parsed as JSON and
