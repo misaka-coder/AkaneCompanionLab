@@ -337,8 +337,8 @@ class Settings(BaseSettings):
     QQ_CHARACTER_PACK_ID: str = ""
     # QQ 回复投递模式：text=只文字 voice=只语音 both=文字+语音 auto=模型用 reply_medium 决定
     QQ_REPLY_MODE: str = "auto"
-    # 每回合最多即时推送多少个流式文字气泡；超出部分无损合并并在回合结束时补发
-    QQ_STREAM_IMMEDIATE_SEGMENTS: int = 8
+    # 每回合最多即时推送多少个流式文字气泡；0=不限，正数才在超出后延迟到回合结束补发
+    QQ_STREAM_IMMEDIATE_SEGMENTS: int = 0
     # QQ 语音合成读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
     QQ_TTS_PROFILE_USER_ID: str = ""
     # QQ 联网搜索读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）

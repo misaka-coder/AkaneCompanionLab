@@ -5514,6 +5514,10 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            if parse_fallback:
+                # This payload came from the host fallback object.  Its
+                # presentation defaults are not model-authored speech.
+                normalized["_provider_fallback"] = True
             self._attach_memory_annotation_truth(normalized, result=call_result, raw_result=result)
             self._attach_tool_execution_receipts(normalized, generation_context)
             self._attach_nonfatal_memcore_failure(
@@ -5779,16 +5783,21 @@ class AkaneMemoryEngine:
             )
             if wrapped is not None:
                 return wrapped
+        if parse_fallback:
+            if self._is_deliverable_parse_recovery(
+                normalized,
+                parse_fallback=True,
+                provider_output_raw=provider_output_raw,
+            ):
+                self._record_final_response_parse_recovery_metric()
+                normalized.pop("_provider_fallback", None)
+                if provider_output_raw:
+                    normalized["_provider_output_raw"] = provider_output_raw
+                return normalized
+            # The host fallback speech is not a model answer.  Retry unless
+            # the provider wire text proves the complete speech above.
+            return None
         if self._final_output_has_tool_call(normalized):
-            if provider_output_raw:
-                normalized["_provider_output_raw"] = provider_output_raw
-            return normalized
-        if self._is_deliverable_parse_recovery(
-            normalized,
-            parse_fallback=parse_fallback,
-            provider_output_raw=provider_output_raw,
-        ):
-            self._record_final_response_parse_recovery_metric()
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
             return normalized
@@ -6121,6 +6130,17 @@ class AkaneMemoryEngine:
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
         if self._is_retryable_final_output(output):
+            # The provider-fallback marker is expected here.  Empty or
+            # otherwise unusable speech remains retryable.
+            if not output.get("_provider_fallback") or not str(output.get("speech") or "").strip():
+                return False
+        speech = str(output.get("speech") or "").strip()
+        raw = str(provider_output_raw or "")
+        encoded_speech = {
+            json.dumps(speech, ensure_ascii=False)[1:-1],
+            json.dumps(speech, ensure_ascii=True)[1:-1],
+        }
+        if not raw.strip() or not any(candidate and candidate in raw for candidate in encoded_speech):
             return False
         # A final answer is allowed to omit the optional ``tool_call`` field.
         # Only reject recovery when the wire text explicitly contains a
@@ -6215,6 +6235,8 @@ class AkaneMemoryEngine:
         loop. Retry count alone never changes tool permissions.
         """
         if not isinstance(output, dict):
+            return True
+        if output.get("_provider_fallback"):
             return True
         if output.get("tool_call") or output.get(NATIVE_TOOL_CALL_FIELD) or output.get(NATIVE_TOOL_CALLS_FIELD):
             return False
@@ -6467,6 +6489,8 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            if parse_fallback:
+                normalized["_provider_fallback"] = True
             self._attach_memory_annotation_truth(
                 normalized,
                 result=stream_result,

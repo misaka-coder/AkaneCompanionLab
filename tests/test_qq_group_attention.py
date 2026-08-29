@@ -15,6 +15,7 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.qq_group_attention import QQGroupAttentionState
 from companion_v01.routes.qq import (
+    _apply_group_attention_actor_scope,
     _group_attention_review_event,
     _process_qq_turn_streaming,
     build_qq_router,
@@ -31,6 +32,21 @@ class QQGroupAttentionStateTests(unittest.TestCase):
             _group_attention_review_event("idle_observation"),
             "event.group_attention_idle_review",
         )
+
+    def test_actor_scope_is_kept_only_for_concrete_engaged_followup(self) -> None:
+        fields = {
+            "actor_stable_id": "qq:20002",
+            "actor_profile_user_id": "qq_actor_20002",
+            "actor_display_name": "群成员",
+            "actor_platform": "qq",
+        }
+        engaged = dict(fields)
+        _apply_group_attention_actor_scope(engaged, reason="engaged_followup")
+        self.assertEqual(engaged, fields)
+
+        idle = dict(fields)
+        _apply_group_attention_actor_scope(idle, reason="idle_observation")
+        self.assertEqual(idle, {})
 
     def test_pending_ticket_has_fixed_deadline(self) -> None:
         now = [100.0]
@@ -342,6 +358,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_idle_review")
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
+        self.assertNotIn("actor_stable_id", processed[0])
 
     def test_passive_image_is_recorded_with_handle_without_starting_attention(self) -> None:
         recorded = []

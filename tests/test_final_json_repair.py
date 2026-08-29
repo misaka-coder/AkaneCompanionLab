@@ -1495,6 +1495,78 @@ class FinalRecoveryTests(unittest.TestCase):
             )
         )
 
+    def test_parse_recovery_rejects_host_fallback_speech_absent_from_wire(self) -> None:
+        engine = self._engine(SimpleNamespace())
+
+        self.assertFalse(
+            engine._is_deliverable_parse_recovery(
+                {
+                    "speech": "我在认真听你说，要不要再多告诉我一点？",
+                    "tool_call": None,
+                    "_provider_fallback": True,
+                },
+                parse_fallback=True,
+                provider_output_raw="   ",
+            )
+        )
+
+    def test_stream_host_fallback_is_retried_instead_of_delivered(self) -> None:
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def stream_chat_json(self, **_kwargs):
+                if False:
+                    yield None
+                self.calls += 1
+                if self.calls == 1:
+                    return SimpleNamespace(
+                        parsed={
+                            "speech": "我在认真听你说，要不要再多告诉我一点？",
+                            "tool_call": None,
+                        },
+                        raw_text="   ",
+                        error="",
+                        fallback_used=True,
+                        latest_emotion="",
+                        latest_speech="",
+                        latest_reply_medium="",
+                        native_preface_text="",
+                    )
+                return SimpleNamespace(
+                    parsed={
+                        "speech": "工具预算已用完；测试仍有失败，任务尚未完成，请发送继续。",
+                        "tool_call": None,
+                    },
+                    raw_text=(
+                        '{"speech":"工具预算已用完；测试仍有失败，任务尚未完成，请发送继续。",'
+                        '"tool_call":null}'
+                    ),
+                    error="",
+                    fallback_used=False,
+                    latest_emotion="",
+                    latest_speech="",
+                    latest_reply_medium="",
+                    native_preface_text="",
+                )
+
+        llm = FakeLLM()
+        engine = self._engine(llm)
+        _events, result = self._run_stream(engine)
+
+        self.assertEqual(llm.calls, 2)
+        self.assertIn("任务尚未完成", result["speech"])
+        self.assertNotIn("我在认真听你说", result["speech"])
+        self.assertNotIn("_transient_final_failure", result)
+
     # --- Plain-text recovery rejects still-damaged output ---
 
     def test_plain_text_recovery_rejects_still_damaged_json(self) -> None:

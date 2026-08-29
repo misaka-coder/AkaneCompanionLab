@@ -392,7 +392,7 @@ _SPECS: tuple[SettingSpec, ...] = (
         "QQ_STREAM_IMMEDIATE_SEGMENTS",
         _QQ,
         SCOPE_RUNTIME,
-        "每回合即时推送的流式文字气泡数；超出部分不会丢失，会在回合结束时合并补发",
+        "每回合即时推送的流式文字气泡数；0=不限，正数超出后会在回合结束时合并补发",
     ),
     _s("QQ_TTS_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 语音合成读取的本地能力 profile"),
     _s("QQ_WEB_SEARCH_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 联网搜索读取的本地能力 profile"),

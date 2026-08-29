@@ -332,6 +332,53 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["send_result"]["streamed_count"], 2)
         self.assertGreater(result["send_result"]["deferred_count"], 0)
 
+    def test_zero_stream_immediate_quota_keeps_every_tool_preface_live(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                for index in range(1, 13):
+                    yield {"type": "speech_segment", "text": f"实时工具阶段 {index}"}
+                    yield {"type": "assistant_stage_decision", "has_tool_call": True}
+                yield {"type": "speech_segment", "text": "任务完成"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "任务完成",
+                        "speech_segments": ["任务完成"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_pri_stream_unlimited",
+                profile_user_id="qq_1",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={"message": "执行长任务"},
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=0,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        delivered = [item for batch in gateway.text_sends for item in batch]
+        for index in range(1, 13):
+            self.assertEqual(delivered.count(f"实时工具阶段 {index}"), 1)
+        self.assertEqual(delivered.count("任务完成"), 1)
+        self.assertEqual(result["send_result"]["streamed_count"], 13)
+        self.assertEqual(result["send_result"]["deferred_count"], 0)
+
     def test_long_stream_segment_is_split_without_losing_its_tail(self) -> None:
         speech = "长" * 2005
 

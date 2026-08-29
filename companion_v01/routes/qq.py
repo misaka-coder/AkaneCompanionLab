@@ -838,7 +838,7 @@ def _send_pending_stage_messages(
         for chunk in chunks:
             if not chunk:
                 continue
-            if len(streamed_messages) >= max_streamed:
+            if max_streamed > 0 and len(streamed_messages) >= max_streamed:
                 deferred_messages.append(chunk)
                 continue
             result = qq_gateway.send_reply(context, chunk)
@@ -1311,13 +1311,16 @@ def _process_qq_turn_streaming(
                 getattr(
                     config_module,
                     "QQ_STREAM_IMMEDIATE_SEGMENTS",
-                    8,
+                    0,
                 )
                 or 0
             ),
         ),
     )
-    stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and max_streamed > 0
+    # Streaming enablement and an optional transport quota are separate
+    # decisions.  Zero means no quota; it must not silently disable the
+    # model-authored progress stream.
+    stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True))
 
     engine_started_at = time.perf_counter()
     for stream_event in engine.process_turn_stream(turn_payload):
@@ -1810,6 +1813,23 @@ def _group_attention_review_event(reason: Any) -> str:
     )
 
 
+def _apply_group_attention_actor_scope(turn_payload: dict[str, Any], *, reason: Any) -> None:
+    """Keep capability ownership only for a concrete engaged follow-up.
+
+    An idle observation represents the room and must not inherit whichever
+    member happened to speak last.  An engaged follow-up, however, is armed by
+    a real inbound message from a concrete actor.  Keeping that actor scope
+    lets actor-owned tools (for example project workspaces) operate without
+    changing the separate ``message_addressing`` decision that still tells the
+    model this is an observed, optional-reply turn.
+    """
+
+    if str(reason or "").strip().lower() == "engaged_followup":
+        return
+    for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
+        turn_payload.pop(field, None)
+
+
 def build_qq_router(
     *,
     engine: Any,
@@ -2052,8 +2072,7 @@ def build_qq_router(
                     native_image_count=len(native_images),
                     native_status=str((native_result or {}).get("status") or "unavailable"),
                 )
-        for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
-            turn_payload.pop(field, None)
+        _apply_group_attention_actor_scope(turn_payload, reason=ticket.reason)
         try:
             result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
         except Exception as exc:
