@@ -146,7 +146,10 @@ class _GeminiStream:
 
     def __iter__(self) -> Iterator[Any]:
         next_tool_index = 0
-        seen_tool_calls: set[str] = set()
+        # Gemini SSE payloads can repeat the same cumulative function-call
+        # part inside one response. This only prevents duplicate emission of
+        # one wire call; it is not cross-round Agent deduplication.
+        emitted_tool_call_fingerprints: set[str] = set()
         try:
             for payload in _iter_sse_payloads(self._response):
                 usage = _gemini_usage(payload.get("usageMetadata"))
@@ -180,9 +183,9 @@ class _GeminiStream:
                         sort_keys=True,
                         separators=(",", ":"),
                     )
-                    if fingerprint in seen_tool_calls:
+                    if fingerprint in emitted_tool_call_fingerprints:
                         continue
-                    seen_tool_calls.add(fingerprint)
+                    emitted_tool_call_fingerprints.add(fingerprint)
                     if not call_id:
                         call_id = f"call_gemini_{uuid.uuid4().hex[:16]}"
                     tool_calls.append(

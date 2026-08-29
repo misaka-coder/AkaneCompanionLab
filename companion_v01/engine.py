@@ -5635,7 +5635,7 @@ class AkaneMemoryEngine:
             return "speech_empty"
         if not isinstance(normalized, dict) or not str(normalized.get("speech") or "").strip():
             return "speech_unusable"
-        return "placeholder_reply"
+        return "speech_not_deliverable"
 
     @staticmethod
     def _text_contains_tool_protocol(value: Any) -> bool:

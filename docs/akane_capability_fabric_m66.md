@@ -165,7 +165,7 @@ engine._prepare_tool_round_decisions()
 
 `ToolResultEnvelope` currently reports `status="ok"` for any non-`None` `ToolExecutionResult`, even if the actual stream event or follow-up denotes `failed` or `unavailable`. Error interpretation is separately inferred from events and `<tool_use_error>`, so the envelope is not yet a reliable broker result.
 
-Duplicate suppression is also local and short-lived: a per-round `seen_tool_calls` signature prevents repeated calls in one loop, and Memcore tracing deduplicates a trace key, but there is no cross-request execution idempotency ledger.
+The generic Agent loop no longer suppresses repeated calls by argument signature. Read retries, polling, MCP reloads, and test reruns remain model decisions and execute normally. External side-effect idempotency belongs to the concrete capability/receipt contract; MemCore trace identity prevents duplicate recording but is not execution permission.
 
 ### 4.3 Dynamic MCP, Python, and plugin tools
 
