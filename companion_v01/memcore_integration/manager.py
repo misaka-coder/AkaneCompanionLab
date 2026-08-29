@@ -103,7 +103,7 @@ def _acquire_process_runtime(memcore: Any) -> Any:
         return _PROCESS_RUNTIME
 
 
-def _release_process_runtime(runtime: Any) -> None:
+def _release_process_runtime(runtime: Any, *, wait_for_workers: bool = True) -> None:
     """Release a process-runtime lease and close only after the final owner."""
 
     global _PROCESS_RUNTIME, _PROCESS_RUNTIME_LEASES
@@ -116,7 +116,7 @@ def _release_process_runtime(runtime: Any) -> None:
             runtime_to_close = _PROCESS_RUNTIME
             _PROCESS_RUNTIME = None
     if runtime_to_close is not None:
-        runtime_to_close.close(wait=True)
+        runtime_to_close.close(wait=wait_for_workers)
 
 
 def normalize_memory_backend(value: Any) -> str:
@@ -221,8 +221,11 @@ class MemcoreManager:
         self._pending_compactions: dict[tuple[str, str, str, str], tuple[Any, str]] = {}
         self._compaction_retry_after: dict[tuple[str, str, str, str], float] = {}
         self._lock = threading.RLock()
+        self._shutdown_event = threading.Event()
         self._closing = False
         self._closed = False
+        self._close_finalizing = False
+        self._deferred_close = False
         if self.enabled:
             self._bootstrap()
 
@@ -263,20 +266,64 @@ class MemcoreManager:
             reason=self._reason,
         ).to_dict()
 
-    def close(self) -> None:
+    def request_shutdown(self) -> None:
+        """Stop new work and cooperatively cancel this manager's active jobs."""
+
         with self._lock:
-            if self._closed or self._closing:
+            if self._closed:
                 return
             self._closing = True
+            self._shutdown_event.set()
             self._pending_compactions.clear()
+            systems = list(self._systems.values())
             futures = list(self._background_futures)
-        # A shared runtime cannot cancel work by manager. Track our own jobs so
-        # this store remains valid until its running warmup/compaction finishes.
+        for system in systems:
+            request_shutdown = getattr(system, "request_shutdown", None)
+            if callable(request_shutdown):
+                try:
+                    request_shutdown()
+                except Exception as exc:
+                    logger.debug("memcore MemorySystem shutdown signal failed: %s", exc)
         for future in futures:
             future.cancel()
-        if futures:
-            wait(futures)
+
+    def close(self, *, timeout: float = 20.0) -> bool:
+        """Close without holding Host shutdown open indefinitely.
+
+        Running executor jobs cannot be force-cancelled safely.  When the
+        deadline expires their store stays open and the final Future callback
+        performs the close after the job has observed cooperative cancellation.
+        """
+
         with self._lock:
+            if self._closed:
+                return True
+        self.request_shutdown()
+        with self._lock:
+            futures = list(self._background_futures)
+        if futures:
+            wait(futures, timeout=max(0.0, float(timeout or 0.0)))
+        with self._lock:
+            active = bool(self._background_futures)
+        if active:
+            with self._lock:
+                self._deferred_close = True
+                active_count = len(self._background_futures)
+            logger.warning("memcore shutdown deferred active_jobs=%d", active_count)
+            # A Future can finish between wait() returning and the deferred
+            # flag being stored. Re-check so that race cannot strand the store.
+            self._finalize_deferred_close_if_ready()
+            with self._lock:
+                return self._closed
+        return self._finalize_close(wait_for_workers=True)
+
+    def _finalize_close(self, *, wait_for_workers: bool) -> bool:
+        with self._lock:
+            if self._closed:
+                return True
+            if self._close_finalizing or self._background_futures:
+                return False
+            self._close_finalizing = True
             systems = list(self._systems.values())
             self._systems.clear()
             store = self._store
@@ -301,11 +348,23 @@ class MemcoreManager:
             except Exception as exc:
                 logger.debug("memcore store close failed: %s", exc)
         if uses_process_runtime and runtime is not None:
-            _release_process_runtime(runtime)
+            try:
+                _release_process_runtime(runtime, wait_for_workers=wait_for_workers)
+            except Exception as exc:
+                logger.debug("memcore process runtime close failed: %s", exc)
         with self._lock:
             self._available = False
             self._closed = True
             self._closing = False
+            self._close_finalizing = False
+            self._deferred_close = False
+        return True
+
+    def _finalize_deferred_close_if_ready(self) -> None:
+        with self._lock:
+            ready = self._deferred_close and not self._background_futures
+        if ready:
+            self._finalize_close(wait_for_workers=False)
 
     def append_standalone_message(
         self,
@@ -3122,7 +3181,10 @@ class MemcoreManager:
             memcore = self._import_memcore()
 
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            self._llm_client = build_akane_llm_client(self.llm)
+            self._llm_client = build_akane_llm_client(
+                self.llm,
+                cancellation_requested=self._shutdown_event.is_set,
+            )
             self._embedding = build_akane_embedding_provider(self.embedding_provider)
             self._token_counter = build_akane_token_counter()
             self._memory_config = self._build_memory_config(memcore)
@@ -3167,6 +3229,10 @@ class MemcoreManager:
             raw_token_batch_ratio=max(
                 0.01,
                 min(0.99, float(getattr(config, "MEMCORE_RAW_TOKEN_BATCH_RATIO", 0.67) or 0.67)),
+            ),
+            llm_timeout_s=max(
+                1.0,
+                min(120.0, float(getattr(config, "MEMCORE_LLM_TIMEOUT_SECONDS", 20.0) or 20.0)),
             ),
             episodic_visible_max=max(
                 1,
@@ -4255,6 +4321,7 @@ class MemcoreManager:
                 )
             )
         )
+        future.add_done_callback(lambda _completed: self._finalize_deferred_close_if_ready())
 
     def _finish_compaction(
         self,
@@ -4318,6 +4385,7 @@ class MemcoreManager:
     def _discard_background_future(self, future: Future[Any]) -> None:
         with self._lock:
             self._background_futures.discard(future)
+        self._finalize_deferred_close_if_ready()
 
     def _run_index_warmup(
         self,

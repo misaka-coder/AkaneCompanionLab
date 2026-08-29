@@ -149,6 +149,8 @@ class Settings(BaseSettings):
     MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET: int = 12000
     # 后台压缩全局 worker 数；与用户聊天/工具并行度无关
     MEMCORE_COMPACTION_WORKERS: int = 1
+    # MemCore 单次摘要/语义请求的传输上限；停机信号会阻止后续重试和晚到提交
+    MEMCORE_LLM_TIMEOUT_SECONDS: float = 20.0
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
     # 工具结果终局紧凑投影策略（部署级开关，不属角色人格能力）：
@@ -646,7 +648,8 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_RAW_TOKEN_BATCH_RATIO, \
         MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET, \
         MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET, \
-        MEMCORE_COMPACTION_WORKERS
+        MEMCORE_COMPACTION_WORKERS, \
+        MEMCORE_LLM_TIMEOUT_SECONDS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
     global MEMCORE_OPERATION_PROJECTION_POLICY
     global WHISPER_CACHE_DIR
@@ -948,6 +951,10 @@ def _apply_settings(s: Settings) -> None:
         min(200000, int(s.MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET or 12000)),
     )
     MEMCORE_COMPACTION_WORKERS = max(1, min(8, int(s.MEMCORE_COMPACTION_WORKERS or 1)))
+    MEMCORE_LLM_TIMEOUT_SECONDS = max(
+        1.0,
+        min(120.0, float(s.MEMCORE_LLM_TIMEOUT_SECONDS or 20.0)),
+    )
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS = max(
         0.0,
         min(3600.0, float(s.MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS or 0.0)),

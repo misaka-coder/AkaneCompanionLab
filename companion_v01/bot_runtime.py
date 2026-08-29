@@ -209,6 +209,13 @@ class BotRuntime:
         voice_status: dict[str, Any] = {"status": "not_configured"}
         engine_status: dict[str, Any] = {"status": "not_started"}
 
+        request_engine_shutdown = getattr(self.engine, "request_shutdown", None)
+        if callable(request_engine_shutdown):
+            try:
+                request_engine_shutdown()
+            except Exception:
+                failures.append("engine_shutdown_signal_failed")
+
         if self.qq_followup_tasks is not None:
             try:
                 followup_status = await self.qq_followup_tasks.close(timeout=10.0)

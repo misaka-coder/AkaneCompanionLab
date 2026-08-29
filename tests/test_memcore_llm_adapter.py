@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from unittest.mock import patch
 
 from memcore import LLMRequest, TaskType
@@ -26,9 +27,11 @@ class _MemcoreJSONRuntime(_JSONRuntime):
         super().__init__(results)
         self.memcore_calls = 0
         self.aux_calls = 0
+        self.last_kwargs = {}
 
     def call_memcore_json(self, **_kwargs):
         self.memcore_calls += 1
+        self.last_kwargs = dict(_kwargs)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -56,6 +59,45 @@ class MemcoreLLMAdapterTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(runtime.memcore_calls, 1)
         self.assertEqual(runtime.aux_calls, 0)
+        self.assertEqual(runtime.last_kwargs["request_timeout_s"], 30.0)
+
+    def test_json_call_uses_memcore_request_timeout(self) -> None:
+        runtime = _MemcoreJSONRuntime([{"summary": "usable"}])
+        client = build_akane_llm_client(runtime)
+
+        result = client.call(
+            LLMRequest(
+                task_type=TaskType.SUMMARY,
+                system_prompt="system",
+                user_prompt="user",
+                timeout_s=7.5,
+                fallback={"summary": ""},
+            )
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(runtime.last_kwargs["request_timeout_s"], 7.5)
+
+    def test_shutdown_cancellation_prevents_provider_call(self) -> None:
+        cancelled = threading.Event()
+        cancelled.set()
+        runtime = _MemcoreJSONRuntime([{"summary": "must not be used"}])
+        client = build_akane_llm_client(runtime, cancellation_requested=cancelled.is_set)
+
+        result = client.call(
+            LLMRequest(
+                task_type=TaskType.SUMMARY,
+                system_prompt="system",
+                user_prompt="user",
+                max_retries=2,
+                fallback={"summary": ""},
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "shutdown_requested")
+        self.assertEqual(result.attempts, 0)
+        self.assertEqual(runtime.memcore_calls, 0)
 
     @patch("companion_v01.memcore_integration.adapters.time.sleep")
     def test_json_call_retries_fallback_and_reports_actual_attempts(self, _sleep) -> None:

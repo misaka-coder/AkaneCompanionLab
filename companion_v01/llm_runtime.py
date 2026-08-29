@@ -1004,6 +1004,7 @@ class LLMRuntime:
         fallback: dict[str, Any],
         temperature: float = 0.2,
         prompt_cache_key: str = "",
+        request_timeout_s: float = 30.0,
     ) -> dict[str, Any]:
         """Run MemCore infrastructure work through dedicated PinAI Luna.
 
@@ -1023,6 +1024,7 @@ class LLMRuntime:
             fallback=fallback,
             temperature=temperature,
             prompt_cache_key=prompt_cache_key,
+            request_timeout_s=request_timeout_s,
         )
 
     def call_chat_json(
@@ -1301,6 +1303,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
+        request_timeout_s: float = 0.0,
     ) -> dict[str, Any]:
         return self._call_json_result(
             bundle=bundle,
@@ -1318,6 +1321,7 @@ class LLMRuntime:
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
+            request_timeout_s=request_timeout_s,
         ).parsed
 
     def _call_json_result(
@@ -1339,6 +1343,7 @@ class LLMRuntime:
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
         max_output_tokens: int = 0,
+        request_timeout_s: float = 0.0,
     ) -> ChatJSONResult:
         native_requested = bool(self._normalize_native_tools(native_tools))
         content = ""
@@ -1359,6 +1364,7 @@ class LLMRuntime:
                 post_user_turns=post_user_turns,
                 prompt_audit_sections=prompt_audit_sections,
                 max_output_tokens=max_output_tokens,
+                request_timeout_s=request_timeout_s,
             )
             self._observe_completion_request(
                 bundle=bundle,
@@ -1931,6 +1937,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         max_output_tokens: int = 0,
+        request_timeout_s: float = 0.0,
     ) -> dict[str, Any]:
         user_content: str | list[dict[str, Any]]
         image_items = self._normalize_user_image_items(user_images)
@@ -1956,6 +1963,8 @@ class LLMRuntime:
             "model": bundle.model,
             "messages": messages,
         }
+        if float(request_timeout_s or 0.0) > 0:
+            payload["timeout"] = float(request_timeout_s)
         if (
             str(getattr(bundle.client, "_akane_bundle_role", "") or "").strip().lower()
             in {"chat", "vision"}

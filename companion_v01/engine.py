@@ -753,6 +753,15 @@ class AkaneMemoryEngine:
             limit=limit,
         )
 
+    def request_shutdown(self) -> None:
+        """Signal cooperative workers before bounded shutdown joins begin."""
+
+        self._embedding_reindex_stop.set()
+        memcore_manager = getattr(self, "memcore_manager", None)
+        request_shutdown = getattr(memcore_manager, "request_shutdown", None)
+        if callable(request_shutdown):
+            request_shutdown()
+
     def close(self) -> dict[str, Any]:
         """Stop all known writers before the process can be replaced/migrated."""
 
@@ -767,14 +776,19 @@ class AkaneMemoryEngine:
                     }
                 )
             self._closed = True
-            self._embedding_reindex_stop.set()
+        self.request_shutdown()
 
         failures: list[str] = []
+        deadline = time.monotonic() + 20.0
+
+        def remaining(*, cap: float | None = None) -> float:
+            value = max(0.0, deadline - time.monotonic())
+            return min(value, cap) if cap is not None else value
 
         mcp_host_manager = getattr(self, "mcp_host_manager", None)
         if mcp_host_manager is not None:
             try:
-                if not mcp_host_manager.close():
+                if not mcp_host_manager.close(timeout=remaining(cap=5.0)):
                     failures.append("mcp_host_manager_timeout")
             except Exception:
                 failures.append("mcp_host_manager_close_failed")
@@ -782,7 +796,7 @@ class AkaneMemoryEngine:
         background_tasks = getattr(self, "background_tasks", None)
         if background_tasks is not None:
             try:
-                if not background_tasks.close(timeout=10.0):
+                if not background_tasks.close(timeout=remaining(cap=5.0)):
                     failures.append("background_tasks_timeout")
             except Exception:
                 failures.append("background_tasks_close_failed")
@@ -792,14 +806,14 @@ class AkaneMemoryEngine:
             close = getattr(service, "close", None)
             if callable(close):
                 try:
-                    if close(timeout=10.0) is False:
+                    if close(timeout=remaining(cap=5.0)) is False:
                         failures.append(f"{name}_timeout")
                 except Exception:
                     failures.append(f"{name}_close_failed")
 
         thread = getattr(self, "_embedding_reindex_thread", None)
         if thread is not None and thread.is_alive():
-            thread.join(timeout=10.0)
+            thread.join(timeout=remaining(cap=5.0))
         if thread is not None and thread.is_alive():
             failures.append("embedding_reindex_timeout")
 
@@ -812,7 +826,8 @@ class AkaneMemoryEngine:
         memcore_manager = getattr(self, "memcore_manager", None)
         if memcore_manager is not None:
             try:
-                memcore_manager.close()
+                if not memcore_manager.close(timeout=remaining()):
+                    failures.append("memcore_close_deferred")
             except Exception:
                 failures.append("memcore_close_failed")
         vector_store = getattr(self, "vector_store", None)

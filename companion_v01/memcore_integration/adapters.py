@@ -7,7 +7,8 @@ still boot without loading the sibling package.
 from __future__ import annotations
 
 import time
-from typing import Any, Iterable
+import inspect
+from typing import Any, Callable, Iterable
 
 
 def _task_type_value(value: Any) -> str:
@@ -30,7 +31,22 @@ def _wait_before_retry(attempts: int) -> None:
     time.sleep(min(1.0, 0.25 * (2 ** max(0, attempts - 1))))
 
 
-def build_akane_llm_client(llm: Any) -> Any:
+def _supports_request_timeout(call: Any) -> bool:
+    try:
+        parameters = inspect.signature(call).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "request_timeout_s" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def build_akane_llm_client(
+    llm: Any,
+    *,
+    cancellation_requested: Callable[[], bool] | None = None,
+) -> Any:
     """Build a memcore.LLMClient wrapper around Akane's LLMRuntime."""
 
     from memcore import LLMClient, LLMResult
@@ -39,6 +55,10 @@ def build_akane_llm_client(llm: Any) -> Any:
         def __init__(self, runtime: Any) -> None:
             self.runtime = runtime
 
+        @staticmethod
+        def _cancelled() -> bool:
+            return bool(cancellation_requested and cancellation_requested())
+
         def call(self, request: Any) -> Any:
             start = time.perf_counter()
             fallback = request.fallback if isinstance(getattr(request, "fallback", None), dict) else {}
@@ -46,17 +66,29 @@ def build_akane_llm_client(llm: Any) -> Any:
             attempts = 0
             last_error = ""
             while attempts < max_attempts:
+                if self._cancelled():
+                    last_error = "shutdown_requested"
+                    break
                 attempts += 1
                 try:
                     call_memcore = getattr(self.runtime, "call_memcore_json", None)
                     call = call_memcore if callable(call_memcore) else self.runtime.call_aux_json
-                    data = call(
+                    kwargs = dict(
                         system_prompt=str(request.system_prompt or ""),
                         user_prompt=str(request.user_prompt or ""),
                         fallback=fallback,
                         temperature=float(getattr(request, "temperature", 0.2) or 0.2),
                         prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
                     )
+                    if _supports_request_timeout(call):
+                        kwargs["request_timeout_s"] = max(
+                            0.1,
+                            float(getattr(request, "timeout_s", 30.0) or 30.0),
+                        )
+                    data = call(**kwargs)
+                    if self._cancelled():
+                        last_error = "shutdown_requested"
+                        break
                     degraded = dict(data or {}) == fallback
                     if isinstance(data, dict) and not degraded:
                         return LLMResult(
@@ -70,7 +102,7 @@ def build_akane_llm_client(llm: Any) -> Any:
                 except Exception as exc:
                     last_error = str(exc) or exc.__class__.__name__
 
-                if attempts < max_attempts:
+                if attempts < max_attempts and not self._cancelled():
                     _wait_before_retry(attempts)
 
             return LLMResult(

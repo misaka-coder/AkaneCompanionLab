@@ -180,7 +180,7 @@ class McpHostManager:
             value = dict(self._statuses.get((str(profile_user_id), str(server_id))) or {})
         return value or {"status": "starting", "reason": "mcp_runtime_not_started"}
 
-    def close(self) -> bool:
+    def close(self, *, timeout: float = 15.0) -> bool:
         with self._lock:
             if self._closed:
                 return True
@@ -190,17 +190,25 @@ class McpHostManager:
             http = self._http
             thread = self._thread
         clean = True
+        deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.monotonic())
+
         if loop is not None:
-            try:
-                if stdio is not None:
-                    asyncio.run_coroutine_threadsafe(stdio.aclose(), loop).result(timeout=5.0)
-                if http is not None:
-                    asyncio.run_coroutine_threadsafe(http.aclose(), loop).result(timeout=5.0)
-            except Exception:
-                clean = False
+            for transport in (stdio, http):
+                if transport is None:
+                    continue
+                if remaining() <= 0:
+                    clean = False
+                    continue
+                try:
+                    asyncio.run_coroutine_threadsafe(transport.aclose(), loop).result(timeout=remaining())
+                except Exception:
+                    clean = False
             loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread.is_alive():
-            thread.join(timeout=5.0)
+            thread.join(timeout=remaining())
         return clean and not (thread is not None and thread.is_alive())
 
     async def _discover(

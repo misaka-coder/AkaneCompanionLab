@@ -346,6 +346,7 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
         )
 
         self.assertIs(captured["bundle"], runtime.memcore_summary)
+        self.assertEqual(captured["request_timeout_s"], 30.0)
 
     def test_two_runtime_instances_build_clients_from_their_own_settings(self) -> None:
         settings_a = BotSettingsView(
