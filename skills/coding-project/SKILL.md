@@ -21,8 +21,9 @@ permissions; use only the tools visible in the current request.
 - Discover the real task directory with `pwd`, `find`, or the platform equivalent; never
   guess. `project_inspect`, `workspace_write`, `workspace_patch`, and `exec_run` use the
   same cwd rules. Relative paths resolve from the supplied cwd; a discovered absolute
-  host path is valid when the host grants access. If cwd is omitted they use the selected
-  persistent project when one exists, otherwise the trusted execution root.
+  host path is valid when the host grants access. If cwd is omitted they use the same
+  trusted execution root as Shell. A persistent project is used only when explicitly
+  addressed by `workspace_id` or `cwd="alias:project"`.
 - A Project Workspace is an optional persistent identity, not a file-editing licence.
   When `manage_project_workspace` is visible, use it when a project should be found across conversations,
   needs a stable `alias:project`, or benefits from catalog ownership. Create/open/select

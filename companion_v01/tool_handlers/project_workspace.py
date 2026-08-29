@@ -45,6 +45,12 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
                 f"项目工作区操作没有完成（reason={reason or status}）。实际返回数据：{content}。"
                 "请依据 reason 调整；不要声称文件或项目已经修改。"
             )
+            if reason in {"group_actor_required", "group_actor_profile_required"}:
+                feedback += (
+                    "当前事件没有可用于跨会话项目目录归属的群成员身份。"
+                    "这不限制当前任务的源码操作：project_inspect、workspace_write、workspace_patch 和 exec_run "
+                    "省略 workspace_id/cwd 时会共同使用受信任执行根，无需重复调用本工具或要求用户授权。"
+                )
         event = {
             "type": "project_workspace_result",
             "tool_type": self.tool_type,
@@ -101,15 +107,16 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
         if clean_workspace_id:
             return {"workspace_id": clean_workspace_id, "operation_root": None, "path": clean_path}
 
-        scope = self._scope(context)
-        if not clean_cwd and self.service.current(scope=scope) is not None:
-            return {"workspace_id": "", "operation_root": None, "path": clean_path}
-
         provider = self.execution_provider
+        if not clean_cwd and provider is None:
+            scope = self._scope(context)
+            if self.service.current(scope=scope) is not None:
+                return {"workspace_id": "", "operation_root": None, "path": clean_path}
         resolver = getattr(provider, "resolve_workdir", None)
         if not callable(resolver):
             raise ProjectWorkspaceError("execution_path_authority_unavailable")
         if clean_cwd == "alias:project" or clean_cwd.startswith("alias:project/"):
+            scope = self._scope(context)
             clean_cwd = self.service.execution_cwd(
                 scope=scope,
                 alias_value=clean_cwd,
@@ -121,6 +128,19 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
             raise ProjectWorkspaceError("invalid_execution_cwd", detail=str(exc)) from exc
         return {"workspace_id": "", "operation_root": root, "path": clean_path}
 
+    def _operation_scope(self, *, context: ToolExecutionContext, location: Mapping[str, Any]):
+        """Resolve identity only when a registered project is actually used.
+
+        A cwd already authorized by the execution provider is a filesystem
+        operation, not project-catalog state.  Requiring a QQ group actor for
+        that path made basic inspect/write/patch fail during host-initiated or
+        attention continuations even though Shell could use the same cwd.
+        """
+
+        if location.get("operation_root") is not None:
+            return None
+        return self._scope(context)
+
 
 class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
     tool_type = "manage_project_workspace"
@@ -130,8 +150,8 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_project_workspace：管理当前用户跨私聊/群聊共享的持久项目目录。开始多文件/可执行项目时先 current/list；"
-            "没有合适项目就 create（只需 display_name），继续旧项目时按 workspace_id select。create 建宿主管理项目；"
+            "- manage_project_workspace：仅在项目需要跨会话查找、稳定 alias:project 或目录归属时，管理当前用户共享的持久项目目录；"
+            "它不是读写源码的前置步骤。需要持久项目时可 current/list、create/open/select；create 建宿主管理项目；"
             "用户指定桌面或其它真实位置时，先用 Shell 确认/创建绝对目录，再用 open（path，可选 display_name）注册。"
             "当前选择按会话隔离，选中后 Shell 的 cwd 使用 alias:project。"
             "archive 只归档，不删除项目文件。"
@@ -204,7 +224,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- project_inspect：只读检查源码。path 可相对 cwd、使用真实绝对路径，或省略 cwd 使用当前持久项目/执行根；"
+            "- project_inspect：只读检查源码。path 可相对 cwd、使用真实绝对路径；省略 cwd 时与 exec_run 一样使用受信任执行根；"
             "list 发现相对路径，search 按文本或正则定位到行号，"
             "read 按行读取 UTF-8 源码并返回 SHA-256。长结果按完整条目或完整代码片段分页；"
             "续读时原样重复 action 与选择参数并带 cursor，源码变化会明确返回 stale_cursor。"
@@ -269,7 +289,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                     directory_path=Path(str(call.get("path") or ".")).expanduser().is_absolute(),
                 )
                 data = self.service.inspect_list(
-                    scope=self._scope(context),
+                    scope=self._operation_scope(context=context, location=location),
                     workspace_id=str(location["workspace_id"]),
                     operation_root=location["operation_root"],
                     path=str(location["path"] or "."),
@@ -297,7 +317,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                     directory_path=Path(str(call.get("path") or ".")).expanduser().is_absolute(),
                 )
                 data = self.service.inspect_search(
-                    scope=self._scope(context),
+                    scope=self._operation_scope(context=context, location=location),
                     workspace_id=str(location["workspace_id"]),
                     operation_root=location["operation_root"],
                     path=str(location["path"] or "."),
@@ -325,7 +345,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
                 path=str(call.get("path") or ""),
             )
             data = self.service.inspect_read(
-                scope=self._scope(context),
+                scope=self._operation_scope(context=context, location=location),
                 workspace_id=str(location["workspace_id"]),
                 operation_root=location["operation_root"],
                 path=str(location["path"] or ""),
@@ -641,7 +661,8 @@ class WorkspaceWriteToolHandler(_ProjectWorkspaceHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- workspace_write：相对 cwd、真实绝对 path 或当前持久项目原子创建/替换一个 UTF-8 文件。"
-            "已有文件优先带 expected_sha256，冲突时重新读取再修改。长源码优先用本工具，不必先注册项目。"
+            "省略 cwd/workspace_id 时与 exec_run 一样使用受信任执行工作区根；已有文件优先带 expected_sha256，"
+            "冲突时重新读取再修改。长源码优先用本工具，不必先注册项目；需要已注册项目时显式使用 cwd=alias:project 或 workspace_id。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -672,7 +693,7 @@ class WorkspaceWriteToolHandler(_ProjectWorkspaceHandler):
                 path=str(call.get("path") or ""),
             )
             return self.service.write(
-                scope=self._scope(context),
+                scope=self._operation_scope(context=context, location=location),
                 workspace_id=str(location["workspace_id"]),
                 operation_root=location["operation_root"],
                 path=str(location["path"] or ""),
@@ -693,6 +714,7 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
         return (
             "- workspace_patch：对 cwd 或当前持久项目中的 UTF-8 文件应用 unified diff；不必先注册项目。"
             "支持修改、新建、删除和重命名；所有 hunk 先校验再提交，失败时不会留下半应用结果。"
+            "省略 cwd/workspace_id 时与 exec_run 一样使用受信任执行工作区根；需要已注册项目时显式使用 cwd=alias:project 或 workspace_id。"
             "可用 expected_files 绑定既有文件的旧 sha256。"
         )
 
@@ -724,7 +746,7 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
                 cwd=str(call.get("cwd") or ""),
             )
             return self.service.patch(
-                scope=self._scope(context),
+                scope=self._operation_scope(context=context, location=location),
                 workspace_id=str(location["workspace_id"]),
                 operation_root=location["operation_root"],
                 patch_text=str(call.get("patch") or ""),

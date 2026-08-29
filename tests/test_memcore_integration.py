@@ -8619,17 +8619,33 @@ class MemcoreIntegrationTests(unittest.TestCase):
     def test_tool_trace_text_is_sanitized_without_storage_side_truncation(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         source = "api_key=secret-value " + ("证据" * 900)
-        result = engine._sanitize_tool_trace_text(source)
+        with patch.object(config, "CHAT_API_KEY", "secret-value"):
+            result = engine._sanitize_tool_trace_text(source)
 
         self.assertNotIn("secret-value", result)
         self.assertNotIn("tool_trace_truncated", result)
         self.assertIn("证据" * 800, result)
 
+    def test_tool_trace_preserves_secret_shaped_source_code_and_token_fields(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        source = "Token = LexToken\nvalues = {'token': token}\n"
+
+        self.assertEqual(engine._sanitize_tool_trace_text(source), source)
+        self.assertEqual(
+            engine._sanitize_tool_trace_value({"token": "IDENTIFIER", "content": source}),
+            {"token": "IDENTIFIER", "content": source},
+        )
+        self.assertEqual(
+            engine._sanitize_tool_trace_value({"api_key": "real-secret", "content": source}),
+            {"content": source},
+        )
+
     def test_large_tool_trace_keeps_complete_model_visible_result(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         source = "api_key=secret-value\n" + ("完整证据" * 5000)
 
-        result = engine._sanitize_tool_trace_text(source)
+        with patch.object(config, "CHAT_API_KEY", "secret-value"):
+            result = engine._sanitize_tool_trace_text(source)
 
         self.assertNotIn("secret-value", result)
         self.assertNotIn("tool_trace_truncated", result)
@@ -8666,26 +8682,27 @@ class MemcoreIntegrationTests(unittest.TestCase):
             },
         )
 
-        engine._record_memcore_tool_batch(
-            items=[
-                (
-                    {
-                        "type": "read_memory_timeline",
-                        TOOL_INVOCATION_ID_FIELD: "call_timeline_1",
-                    },
-                    tool_result,
-                    evidence,
-                    "",
-                )
-            ],
-            profile_user_id="u1",
-            session_id="group:42",
-            character_pack_id="char",
-            now_ts=100,
-            current_user_source_id="current-query",
-            memcore_turn_id="turn-1",
-            recorded_tool_call_ids=set(),
-        )
+        with patch.object(config, "CHAT_API_KEY", "secret-value"):
+            engine._record_memcore_tool_batch(
+                items=[
+                    (
+                        {
+                            "type": "read_memory_timeline",
+                            TOOL_INVOCATION_ID_FIELD: "call_timeline_1",
+                        },
+                        tool_result,
+                        evidence,
+                        "",
+                    )
+                ],
+                profile_user_id="u1",
+                session_id="group:42",
+                character_pack_id="char",
+                now_ts=100,
+                current_user_source_id="current-query",
+                memcore_turn_id="turn-1",
+                recorded_tool_call_ids=set(),
+            )
 
         stored = str(manager.exchanges[0]["result"])
         self.assertNotIn("secret-value", stored)

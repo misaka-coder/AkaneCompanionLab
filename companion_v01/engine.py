@@ -8438,21 +8438,67 @@ class AkaneMemoryEngine:
         key = re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
         if not key:
             return False
-        if key in {"authorization", "password", "secret"}:
+        if key in {
+            "apikey",
+            "authorization",
+            "authtoken",
+            "accesstoken",
+            "clientsecret",
+            "cookie",
+            "password",
+            "refreshtoken",
+            "secret",
+        }:
             return True
-        if "apikey" in key or key.endswith("token") or key.endswith("secret") or key.endswith("password"):
+        if key.endswith("apikey") or key.endswith("secret") or key.endswith("password"):
             return True
         return False
 
     @staticmethod
-    def _sanitize_tool_trace_text(value: str) -> str:
+    def _configured_tool_trace_secret_values() -> tuple[str, ...]:
+        """Return exact deployment secrets that may be removed from traces.
+
+        Source code and command output are opaque model evidence.  Guessing a
+        secret from text such as ``Token = LexToken`` changes the action/result
+        that MemCore later projects and can corrupt a following file rewrite.
+        Credential-shaped structured keys are filtered separately; free text
+        is only scrubbed when it contains a value the host actually configured
+        as a credential.
+        """
+
+        markers = (
+            "API_KEY",
+            "ACCESS_TOKEN",
+            "AUTH_TOKEN",
+            "CLIENT_SECRET",
+            "COOKIE",
+            "PASSWORD",
+            "REFRESH_TOKEN",
+            "WEBHOOK_SECRET",
+        )
+        values: set[str] = set()
+        for name, raw in vars(config).items():
+            upper_name = str(name or "").upper()
+            if not any(marker in upper_name for marker in markers):
+                continue
+            if not isinstance(raw, str):
+                continue
+            secret = raw.strip()
+            if len(secret) < 8 or secret.lower() in {"configured", "redacted", "none", "null"}:
+                continue
+            values.add(secret)
+        return tuple(sorted(values, key=len, reverse=True))
+
+    @classmethod
+    def _sanitize_tool_trace_text(cls, value: str) -> str:
         text = str(value or "")
-        text = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [redacted]", text)
         text = re.sub(
-            r"(?i)\b(api[_-]?key|password|secret|token|authorization)\s*[:=]\s*[^\s,;]+",
-            r"\1=[redacted]",
+            r"(?i)(\bauthorization\s*:\s*bearer\s+)[^\s,;]+",
+            r"\1[redacted]",
             text,
         )
+        for secret in cls._configured_tool_trace_secret_values():
+            text = text.replace(secret, "[redacted]")
         return text
 
     def _tool_result_is_error(self, tool_result: ToolExecutionResult) -> bool:

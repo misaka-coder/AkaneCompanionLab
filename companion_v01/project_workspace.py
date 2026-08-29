@@ -289,7 +289,7 @@ class ProjectWorkspaceService:
     def inspect_list(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         workspace_id: str = "",
         operation_root: str | Path | None = None,
         path: str = ".",
@@ -371,7 +371,7 @@ class ProjectWorkspaceService:
     def inspect_search(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         workspace_id: str = "",
         operation_root: str | Path | None = None,
         path: str = ".",
@@ -515,7 +515,7 @@ class ProjectWorkspaceService:
     def inspect_read(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         workspace_id: str = "",
         operation_root: str | Path | None = None,
         path: str,
@@ -613,7 +613,7 @@ class ProjectWorkspaceService:
     def write(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         path: str,
         content: str,
         workspace_id: str = "",
@@ -665,7 +665,7 @@ class ProjectWorkspaceService:
     def patch(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         patch_text: str,
         workspace_id: str = "",
         operation_root: str | Path | None = None,
@@ -811,7 +811,7 @@ class ProjectWorkspaceService:
     def _resolve_operation_root(
         self,
         *,
-        scope: ProjectWorkspaceScope,
+        scope: ProjectWorkspaceScope | None,
         workspace_id: str,
         operation_root: str | Path | None,
     ) -> tuple[dict[str, Any], Path]:
@@ -824,6 +824,8 @@ class ProjectWorkspaceService:
         """
 
         if operation_root is None:
+            if scope is None:
+                raise ProjectWorkspaceError("workspace_owner_required")
             return self._resolve_project(scope=scope, workspace_id=workspace_id)
         if str(workspace_id or "").strip():
             raise ProjectWorkspaceError("workspace_and_cwd_conflict")

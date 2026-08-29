@@ -848,6 +848,59 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "succeeded")
         self.assertEqual((self.execution_root / "default.txt").read_text(encoding="utf-8"), "ok\n")
 
+    def test_file_tools_default_to_execution_root_even_when_an_old_project_is_selected(self) -> None:
+        self.service.create(scope=self.private, display_name="Old Selected Project")
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-default-selected",
+        )
+        handler = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider)
+
+        result = handler.execute(
+            call={"type": "workspace_write", "path": "current-task.txt", "content": "same cwd\n"},
+            context=self._context(),
+        )
+
+        state = result.state_updates["project_workspace"]
+        self.assertEqual(result.stream_events[0]["status"], "succeeded")
+        self.assertEqual(Path(state["cwd"]), self.execution_root.resolve())
+        self.assertEqual((self.execution_root / "current-task.txt").read_text(encoding="utf-8"), "same cwd\n")
+
+    def test_direct_file_tools_do_not_require_group_actor_identity(self) -> None:
+        provider = TrustedLocalExecutor(
+            workspace_root=self.execution_root,
+            run_log_dir=self.root / "runlogs-group-direct",
+        )
+        context = self._context(session_id="qq_group_shared_872732158")
+
+        written = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider).execute(
+            call={"type": "workspace_write", "path": "group-task/source.py", "content": "Token = LexToken\n"},
+            context=context,
+        )
+        inspected = ProjectInspectToolHandler(service=self.service, execution_provider=provider).execute(
+            call={"type": "project_inspect", "action": "read", "path": "group-task/source.py"},
+            context=context,
+        )
+        patched = WorkspacePatchToolHandler(service=self.service, execution_provider=provider).execute(
+            call={
+                "type": "workspace_patch",
+                "patch": (
+                    "--- a/group-task/source.py\n"
+                    "+++ b/group-task/source.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-Token = LexToken\n"
+                    "+Token = ParserToken\n"
+                ),
+            },
+            context=context,
+        )
+
+        self.assertEqual(written.stream_events[0]["status"], "succeeded")
+        self.assertEqual(inspected.stream_events[0]["status"], "succeeded")
+        self.assertIn("Token = LexToken", inspected.followup_context)
+        self.assertEqual(patched.stream_events[0]["status"], "succeeded")
+        self.assertEqual((self.execution_root / "group-task" / "source.py").read_text(encoding="utf-8"), "Token = ParserToken\n")
+
     def test_manage_handler_opens_existing_host_directory(self) -> None:
         external = self.root / "existing-project"
         external.mkdir()

@@ -9,7 +9,8 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_project_workspace",
     display_name="Manage coding project workspace",
     description=(
-        "List, create, open, select, or archive a durable coding project directory. The catalog follows the "
+        "Optionally list, create, open, select, or archive a durable coding project directory when work needs "
+        "cross-conversation discovery or a stable alias. Basic inspect/write/patch does not require registration. The catalog follows the "
         "same user across QQ private and group conversations while the current selection stays conversation-local. "
         "Create makes a host-managed project and requires display_name. Open registers a real existing host directory "
         "and requires path; use open, not create, when the user specifies Desktop or another host location. A selected "
@@ -70,8 +71,8 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="project_inspect",
     display_name="Inspect project source",
     description=(
-        "Inspect source through one read-only authority. Paths may resolve from cwd, an absolute host path, or the "
-        "selected persistent project. Use list to discover relative "
+        "Inspect source through one read-only authority. Omitted cwd uses the same trusted execution root as exec_run; "
+        "paths may also use cwd, an absolute host path, or an explicitly addressed persistent project. Use list to discover relative "
         "paths, search to locate text with line numbers, and read to load an exact UTF-8 line range with SHA-256. "
         "Long results return an opaque continuation cursor bound to the current session and source fingerprint."
     ),
@@ -153,8 +154,9 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_write",
     display_name="Write a project file atomically",
     description=(
-        "Create or replace one UTF-8 source file relative to cwd, at an absolute host path, or inside the selected "
-        "persistent project. Writes are atomic and may be guarded by the prior SHA-256; project registration is optional."
+        "Create or replace one UTF-8 source file. Omitted cwd uses the same trusted execution root as exec_run; "
+        "cwd, an absolute host path, or an explicitly addressed persistent project may override it. Writes are atomic "
+        "and may be guarded by the prior SHA-256; project registration is optional."
     ),
     input_schema={
         "type": "object",
@@ -210,8 +212,8 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_patch",
     display_name="Apply a unified diff atomically",
     description=(
-        "Apply a unified diff atomically to files relative to cwd or the selected persistent project. Project "
-        "registration is optional. Supports update, create, delete, and rename "
+        "Apply a unified diff atomically. Omitted cwd uses the same trusted execution root as exec_run; cwd or an "
+        "explicitly addressed persistent project may override it. Project registration is optional. Supports update, create, delete, and rename "
         "operations for UTF-8 files. All paths, hashes, and hunks are validated before commit; any failure leaves "
         "every target unchanged."
     ),
