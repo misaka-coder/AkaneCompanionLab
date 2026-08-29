@@ -5702,12 +5702,17 @@ class AkaneMemoryEngine:
             "chat_model_override": chat_model_override,
             "execution_target": execution_target,
         }
-        if not allow_tool_call:
-            kwargs["native_tools"] = []
-            kwargs["native_tool_choice"] = "none"
-        else:
-            kwargs["native_tools"] = generation_context.get("native_tools")
-            kwargs["native_tool_choice"] = generation_context.get("native_tool_choice", "")
+        # Keep the native tool schema byte-stable for the whole open turn.
+        # A consumed hard budget changes only the decision policy; removing
+        # schemas here would invalidate the provider cache prefix and switch
+        # the model onto a different wire contract at the most fragile point.
+        native_tools = generation_context.get("native_tools")
+        kwargs["native_tools"] = native_tools
+        kwargs["native_tool_choice"] = (
+            "none"
+            if native_tools and not allow_tool_call
+            else generation_context.get("native_tool_choice", "")
+        )
         if request_observer is not None:
             kwargs["request_observer"] = request_observer
         return kwargs

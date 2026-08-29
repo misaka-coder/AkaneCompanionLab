@@ -1096,7 +1096,6 @@ class LLMClientConfigTests(unittest.TestCase):
                 self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
                 self.assertEqual(payload["tool_choice"], "auto")
                 self.assertNotIn("response_format", payload)
-                self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
 
     def test_llm_runtime_strips_internal_native_tool_mapping_from_payload(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
@@ -1127,66 +1126,76 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["function"]["name"], "mcp_demo_echo_abcd123456")
         self.assertNotIn(NATIVE_TOOL_CAPABILITY_ID_FIELD, payload["tools"][0])
 
-    def test_llm_runtime_suppresses_forced_json_when_verified_profile_cannot_coexist(self) -> None:
-        runtime = LLMRuntime.__new__(LLMRuntime)
-        runtime._metrics_lock = threading.RLock()
-        runtime._metrics = {}
-        bundle = SimpleNamespace(
-            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
-            model="deepseek-v4-flash",
-        )
+    def test_llm_runtime_never_combines_native_tools_with_forced_json(self) -> None:
+        for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+            with self.subTest(model=model):
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                bundle = SimpleNamespace(
+                    client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+                    model=model,
+                )
 
-        payload = runtime._build_completion_kwargs(
-            bundle=bundle,
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    json_mode=True,
+                    native_tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "description": "Search the public web.",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    native_tool_choice="auto",
+                )
+
+                self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+                self.assertNotIn("response_format", payload)
+
+    def test_main_chat_json_protocol_does_not_force_provider_json_mode(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        captured: dict[str, object] = {}
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._request_bundle = lambda **_kwargs: SimpleNamespace()
+
+        def fake_call(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(parsed={"speech": "ok"})
+
+        runtime._call_json_result = fake_call
+        runtime.call_chat_json_result(
             system_prompt="system",
             user_prompt="user",
-            temperature=0.1,
-            json_mode=True,
-            native_tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search the public web.",
-                        "parameters": {"type": "object"},
-                    },
-                }
-            ],
-            native_tool_choice="auto",
+            fallback={"speech": "fallback"},
         )
 
-        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
-        self.assertNotIn("response_format", payload)
-        self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
+        self.assertIs(captured["force_response_json"], False)
 
-    def test_llm_runtime_keeps_forced_json_when_verified_profile_can_coexist(self) -> None:
+    def test_streaming_main_chat_does_not_force_provider_json_mode(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
-        bundle = SimpleNamespace(
-            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
-            model="deepseek-v4-pro",
+        captured: dict[str, object] = {}
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._request_bundle = lambda **_kwargs: SimpleNamespace()
+
+        def fake_stream(**kwargs):
+            captured.update(kwargs)
+            return iter(())
+
+        runtime._stream_chat_json = fake_stream
+        list(
+            runtime.stream_chat_json(
+                system_prompt="system",
+                user_prompt="user",
+                fallback={"speech": "fallback"},
+            )
         )
 
-        payload = runtime._build_completion_kwargs(
-            bundle=bundle,
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.1,
-            json_mode=True,
-            native_tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "description": "Search the public web.",
-                        "parameters": {"type": "object"},
-                    },
-                }
-            ],
-            native_tool_choice="auto",
-        )
-
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
-        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertIs(captured["force_response_json"], False)
 
     def test_llm_runtime_adds_native_tools_for_anthropic_protocol(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

@@ -188,41 +188,17 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 
 - **5f 已完成（接入 capcore-provider-openai）**：Akane 的 `native_tool_schema.py` 不再手写 OpenAI Chat Completions function-tool envelope，而是把 handler metadata/input_schema 投影为 `CapabilityToolSpec` 后交给 `capcore-provider-openai.build_openai_chat_tool_set()`。`llm_runtime.py` 的非流式与流式 `tool_calls` 解析改用 `capcore-provider-openai` parser，再映射回 Akane 的原始 tool/capability id。对于 `mcp.demo.echo` 这类 OpenAI 不允许的 dotted id，schema 内部携带 `_akane_capability_id`，provider payload 只发送 provider-safe name，回填时再还原成原始 capability id；该内部字段不得进入 provider payload 或公开最终 payload。
 
-### 8.1 Provider / Model 能力档案（3a 修正）
+### 8.1 Provider / Model 能力档案（当前口径）
 
-3c live eval 暴露了一个关键事实：`protocol="openai"` 不是足够细的能力判断。DeepSeek flash/pro 同属 `api.deepseek.com`、同走 OpenAI-compatible API，但 native tools 与强制 JSON 的组合行为不同：
-
-| Provider / Model | A 只发 tools | B tools + `response_format=json_object` | C tools + prompt-only JSON | D 无工具 + prompt-only JSON | 来源 |
-|---|---:|---:|---:|---:|---|
-| `api.deepseek.com` / `deepseek-v4-flash` | ✅ | ⚠️ 不稳定（保守按不可共存处理） | ✅ | ✅ | 本项目实测 |
-| `api.deepseek.com` / `deepseek-v4-pro` | ✅ | ✅ | ✅ | ✅ | 本项目实测 |
-| OpenAI GPT 系 | ✅* | ✅* | ✅* | ✅* | 官方文档口径，未在本项目实测 |
-| Anthropic Claude | ✅* | N/A（无 OpenAI `response_format`） | ✅* | ✅* | 官方文档口径，未在本项目实测 |
-| Gemini 3 系 | ✅* | ✅* | ✅* | ✅* | 官方文档口径，未在本项目实测 |
-
-`*` = 不能直接点亮生产 native；接入前必须先跑本项目探针并把结果登记成 `(host, model)` 档案。
+能力档案只描述 provider 的原生工具支持与调用形态，不再决定聊天 Agent 是否启用强制 JSON。主聊天链统一使用 provider 的普通文本/工具协议：需要工具时返回原生 `tool_calls`，完成时按照稳定提示词输出 Akane 最终协议；宿主仍保留诚实的纯文本恢复，但不向 provider 发送 `response_format=json_object`。
 
 硬结论：
 
-- native 能力档案的 key 必须是 **`(host, model)`**，不是 provider，也不是 `protocol`。`deepseek-v4-flash != deepseek-v4-pro` 已实测证明。
-- 未登记或未实测的模型默认 `supports_native_tools=False`，自动回退 legacy JSON，避免 OpenAI-compatible provider 静默忽略 tools。
-- native 工具轮是否保留 `response_format=json_object` 由档案决定：`native_tools_coexist_with_forced_json=False` 时，本轮不发 `response_format`，改用 prompt-only JSON + `json_repair`；为 True 时才保留强制 JSON。
-- native 工具轮的 prompt 必须避免“无条件必须输出最终表现 JSON”。正确写法是：**需要工具时走 provider `tool_calls` 且不输出正文；只有不需要工具时才输出最终表现 JSON**。3c live eval 已验证：把“必须返回 JSON”从 native 工具轮移除后，`deepseek-v4-flash` 的 `web_search` native 提取从 0/4 提升到 4/4。
-- 这不是 DeepSeek 特判。DeepSeek 只是第一批登记的 `(host, model)` 档案。
-
-当前已登记档案：
-
-```python
-("api.deepseek.com", "deepseek-v4-flash"):
-    supports_native_tools=True
-    native_tools_coexist_with_forced_json=False  # 保守值：探针结果曾冲突，prompt-only live eval 已达标
-    verified=True
-
-("api.deepseek.com", "deepseek-v4-pro"):
-    supports_native_tools=True
-    native_tools_coexist_with_forced_json=True
-    verified=True
-```
+- OpenAI-compatible provider 默认获得原生工具；不支持时必须返回明确错误，宿主不能静默藏掉工具。
+- Anthropic、Responses、Gemini 等协议仍由 profile 声明各自的原生调用形态。
+- 原生工具 schema 在一个开放回合内保持稳定。硬预算耗尽只把 `tool_choice` 改为 `none`，不删除 schema，也不切换强制 JSON。
+- `response_format=json_object` 只保留给摘要等与 Agent 工具循环隔离的内部结构化任务。
+- 原有 `NATIVE_TOOL_PROVIDER_ALLOWLIST` 与 `:json` 后缀只保留配置解析兼容，不再控制能力或强制 JSON。
 
 新增探针脚本：
 
@@ -230,7 +206,7 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 python scripts/tools/provider_tool_probe.py --models deepseek-v4-flash,deepseek-v4-pro
 ```
 
-它会跑 A/B/C/D 四个最小探针并输出建议的 `ProviderToolProfile`，但**不会自动改代码**。接入任何新 provider/model 前，先跑探针，再登记档案，再允许 native。
+它会验证普通原生工具调用、带最终协议提示的原生工具调用和无工具直接回答，并输出建议的 `ProviderToolProfile`，但**不会自动改代码**。探针不再测试或建议“原生工具 + 强制 JSON”组合。
 
 **第四步**：原型指标达标后，逐步迁更多工具；最后才考虑给大 JSON 瘦身。
 
@@ -297,7 +273,7 @@ python scripts/tools/run_native_web_search_acceptance.py --live-llm --smoke --re
 
 ## 10. 风险与待决问题
 
-- **Provider / model 行为差异**：`tools` 与强制 JSON 是否共存是 `(host, model)` 级事实，不是 provider 级事实。DeepSeek flash/pro 已实测不同；OpenAI / Anthropic / Gemini 只按官方文档记录，未在本项目实测前不点亮生产 native。adapter 要吸收这些差异，engine 不感知。→ 第三步原型重点验证。
+- **Provider / model 行为差异**：原生工具调用形态仍是协议级事实，adapter 负责吸收，engine 不感知；聊天 Agent 不再尝试把工具与 provider 强制 JSON 混用。
 - **工具轮模型可能不吐文本**：没关系，走心回复在最终表现轮；但要确保等待态事件覆盖，用户不"断片"。
 - **能力门控/权限 与新权限模型的关系**：现有 `capability_registry` + `promptExposed` 如何映射到工具自描述的 `risk/permission`，第二步要定清楚。
 - **prefix cache 对齐**：工具轮与表现轮拆开后，注意别破坏现有的 prompt 缓存分层（INV-4）。

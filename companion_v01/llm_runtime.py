@@ -133,7 +133,6 @@ class ModelExecutionTarget:
 @dataclass(frozen=True)
 class ProviderToolProfile:
     supports_native_tools: bool = False
-    native_tools_coexist_with_forced_json: bool = False
     native_call_shape: str = "openai_tool_calls"
     verified: bool = False
     notes: str = ""
@@ -142,13 +141,11 @@ class ProviderToolProfile:
 DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile()
 OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE = ProviderToolProfile(
     supports_native_tools=True,
-    native_tools_coexist_with_forced_json=False,
     verified=False,
     notes=(
         "OpenAI-compatible providers receive native tools optimistically. "
-        "Forced JSON is suppressed when tools are present; an unexpected "
-        "native-tool rejection is surfaced explicitly instead of silently "
-        "removing the model's tool surface mid-turn."
+        "An unexpected native-tool rejection is surfaced explicitly instead "
+        "of silently removing the model's tool surface mid-turn."
     ),
 )
 # Kept as a source-compatible alias for integrations importing the old symbol.
@@ -159,12 +156,10 @@ PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
         "gpt-5.6-sol",
     ): ProviderToolProfile(
         supports_native_tools=True,
-        native_tools_coexist_with_forced_json=False,
         verified=True,
         notes=(
             "Live PinAI Chat Completions probe: plain structured replies, auto single-tool calls, "
-            "parallel two-tool calls, and tool-result follow-up all passed. Keep forced JSON off "
-            "when tools are present."
+            "parallel two-tool calls, and tool-result follow-up all passed."
         ),
     ),
     (
@@ -172,33 +167,24 @@ PROVIDER_TOOL_PROFILES: dict[tuple[str, str], ProviderToolProfile] = {
         "gpt-5.6-luna",
     ): ProviderToolProfile(
         supports_native_tools=True,
-        native_tools_coexist_with_forced_json=False,
         verified=True,
-        notes=(
-            "Live PinAI Chat Completions probe: parallel two-tool calls passed with provider ids. "
-            "Keep forced JSON off when tools are present."
-        ),
+        notes="Live PinAI Chat Completions probe: parallel two-tool calls passed with provider ids.",
     ),
     (
         "api.deepseek.com",
         "deepseek-v4-flash",
     ): ProviderToolProfile(
         supports_native_tools=True,
-        native_tools_coexist_with_forced_json=False,
         verified=True,
-        notes=(
-            "Project probes showed inconsistent forced-JSON coexistence for this model; "
-            "keep prompt-only native tool rounds until repeated live eval proves forced JSON stable."
-        ),
+        notes="Project probes verified native tool calling for this model.",
     ),
     (
         "api.deepseek.com",
         "deepseek-v4-pro",
     ): ProviderToolProfile(
         supports_native_tools=True,
-        native_tools_coexist_with_forced_json=True,
         verified=True,
-        notes="Project probe: tools and response_format=json_object can coexist.",
+        notes="Project probes verified native tool calling for this model.",
     ),
 }
 
@@ -734,7 +720,6 @@ class LLMRuntime:
             "native_tool_calls_extra": 0,
             "native_tool_calls_truncated": 0,
             "native_tool_no_call": 0,
-            "native_tool_forced_json_suppressed": 0,
             "prompt_cache_retention_compat": 0,
         }
         self._last_error_lock = threading.RLock()
@@ -1111,6 +1096,7 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
             max_output_tokens=max_output_tokens,
+            force_response_json=False,
         )
 
     def call_chat_text(
@@ -1287,6 +1273,7 @@ class LLMRuntime:
             post_user_turns=post_user_turns,
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
+            force_response_json=False,
         )
 
     def _call_json(
@@ -1308,6 +1295,7 @@ class LLMRuntime:
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
         request_timeout_s: float = 0.0,
+        force_response_json: bool = True,
     ) -> dict[str, Any]:
         return self._call_json_result(
             bundle=bundle,
@@ -1326,6 +1314,7 @@ class LLMRuntime:
             prompt_audit_sections=prompt_audit_sections,
             request_observer=request_observer,
             request_timeout_s=request_timeout_s,
+            force_response_json=force_response_json,
         ).parsed
 
     def _call_json_result(
@@ -1348,6 +1337,7 @@ class LLMRuntime:
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
         max_output_tokens: int = 0,
         request_timeout_s: float = 0.0,
+        force_response_json: bool = True,
     ) -> ChatJSONResult:
         native_requested = bool(self._normalize_native_tools(native_tools))
         content = ""
@@ -1357,7 +1347,7 @@ class LLMRuntime:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=temperature,
-                json_mode=True,
+                json_mode=force_response_json,
                 prompt_cache_key=prompt_cache_key,
                 user_images=user_images,
                 native_tools=native_tools,
@@ -1475,6 +1465,7 @@ class LLMRuntime:
                     post_user_turns=post_user_turns,
                     prompt_audit_sections=prompt_audit_sections,
                     request_observer=request_observer,
+                    force_response_json=force_response_json,
                 )
                 if recovered is not None:
                     self._record_metric("chat_nonstream_stream_recoveries")
@@ -1651,6 +1642,7 @@ class LLMRuntime:
         post_user_turns: list[dict[str, Any]] | None = None,
         prompt_audit_sections: list[dict[str, Any]] | None = None,
         request_observer: Callable[[dict[str, Any]], Any] | None = None,
+        force_response_json: bool = True,
     ) -> Generator[dict[str, Any], None, ChatJSONStreamResult]:
         import time
 
@@ -1673,7 +1665,7 @@ class LLMRuntime:
                 user_prompt=user_prompt,
                 temperature=temperature,
                 stream=True,
-                json_mode=True,
+                json_mode=force_response_json,
                 prompt_cache_key=prompt_cache_key,
                 user_images=user_images,
                 native_tools=native_tools,
@@ -2016,13 +2008,14 @@ class LLMRuntime:
         normalized_tools = self._normalize_native_tools(native_tools)
         native_tool_profile = self._native_tool_profile(bundle)
         should_send_native_tools = bool(normalized_tools and native_tool_profile.supports_native_tools)
-        should_use_response_json = bool(json_mode and self._should_use_response_json_mode(bundle))
-        if json_mode and should_send_native_tools:
-            if native_tool_profile.native_tools_coexist_with_forced_json:
-                should_use_response_json = True
-            else:
-                should_use_response_json = False
-                self._record_metric("native_tool_forced_json_suppressed")
+        # Native Agent turns stay on the provider's ordinary text/tool
+        # protocol. Main chat also disables forced JSON on tool-free answers;
+        # json_mode remains available only to isolated internal JSON jobs.
+        should_use_response_json = bool(
+            json_mode
+            and not should_send_native_tools
+            and self._should_use_response_json_mode(bundle)
+        )
         if should_use_response_json:
             payload["response_format"] = {"type": "json_object"}
             self._ensure_json_keyword(messages)
@@ -2580,7 +2573,6 @@ class LLMRuntime:
         if protocol == "anthropic":
             return ProviderToolProfile(
                 supports_native_tools=True,
-                native_tools_coexist_with_forced_json=False,
                 native_call_shape="anthropic_tool_use",
                 verified=True,
                 notes="Anthropic Messages API supports native tools/tool_use; forced JSON is not sent on this protocol.",
@@ -2588,7 +2580,6 @@ class LLMRuntime:
         if protocol == "responses":
             return ProviderToolProfile(
                 supports_native_tools=True,
-                native_tools_coexist_with_forced_json=False,
                 native_call_shape="responses_function_call",
                 verified=True,
                 notes="OpenAI Responses wire protocol with function_call/function_call_output items.",
@@ -2596,7 +2587,6 @@ class LLMRuntime:
         if protocol == "gemini":
             return ProviderToolProfile(
                 supports_native_tools=True,
-                native_tools_coexist_with_forced_json=False,
                 native_call_shape="gemini_function_call",
                 verified=True,
                 notes="Gemini generateContent supports native functionCall/functionResponse items.",

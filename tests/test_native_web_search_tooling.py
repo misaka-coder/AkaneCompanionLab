@@ -920,7 +920,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertTrue(payload["parallel_tool_calls"])
         self.assertNotIn("response_format", payload)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_decision_sent"], 1)
-        self.assertEqual(runtime.snapshot_metrics()["native_tool_forced_json_suppressed"], 1)
 
     def test_unsupported_provider_does_not_send_native_tools(self) -> None:
         runtime = LLMRuntime()

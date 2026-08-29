@@ -6,7 +6,6 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,7 +28,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Probe a provider/model for native tool calling behavior. "
-            "Runs A/B/C/D checks and prints a suggested ProviderToolProfile row."
+            "Runs native-tool and ordinary-answer checks and prints a suggested ProviderToolProfile row."
         )
     )
     parser.add_argument("--base-url", default="", help="Provider base URL. Defaults to CHAT_BASE_URL.")
@@ -82,18 +81,10 @@ def main() -> int:
         )
         for model in models
     ]
-    allowlist = ",".join(
-        entry
-        for entry in (str(report.get("suggested_allowlist_entry") or "").strip() for report in reports)
-        if entry
-    )
     print(
         json.dumps(
             {
                 "status": "ok",
-                # Ready to paste into NATIVE_TOOL_PROVIDER_ALLOWLIST. Empty means
-                # no probed model supports native tools -> keep fail-closed.
-                "suggested_native_tool_provider_allowlist": allowlist,
                 "reports": reports,
             },
             ensure_ascii=False,
@@ -104,57 +95,21 @@ def main() -> int:
     return 0
 
 
-def suggested_allowlist_entry(*, base_url: str, model: str, suggested: dict[str, Any]) -> str:
-    """Render the ready-to-paste NATIVE_TOOL_PROVIDER_ALLOWLIST entry, or "" when
-    the probe says native tools are unsupported.
-
-    Empty is the fail-closed signal: no entry means the runtime keeps prompt-only
-    JSON for this provider/model (it never auto-enables). The format mirrors the
-    runtime parser (host:model[:json]); host is the base_url hostname so it
-    matches how the runtime derives it from the live client.
-    """
-    if not bool(suggested.get("supports_native_tools")):
-        return ""
-    raw = str(base_url or "").strip()
-    if raw and "://" not in raw:
-        raw = f"https://{raw}"
-    try:
-        host = str(urlparse(raw).hostname or "").strip().lower()
-    except Exception:
-        host = ""
-    clean_model = str(model or "").strip().lower()
-    if not host or not clean_model:
-        return ""
-    entry = f"{host}:{clean_model}"
-    if bool(suggested.get("native_tools_coexist_with_forced_json")):
-        entry = f"{entry}:json"
-    return entry
-
-
 def probe_model(*, client: Any, base_url: str, protocol: str, model: str, temperature: float) -> dict[str, Any]:
     cases = [
         {
             "id": "A_only_tools",
             "tools": True,
-            "forced_json": False,
             "prompt": "查一下今天上海天气。If needed, call web_search.",
         },
         {
-            "id": "B_tools_forced_json",
+            "id": "B_tools_prompt_json",
             "tools": True,
-            "forced_json": True,
             "prompt": "查一下今天上海天气。Return JSON only if you answer directly.",
         },
         {
-            "id": "C_tools_prompt_json",
-            "tools": True,
-            "forced_json": False,
-            "prompt": "查一下今天上海天气。Return JSON only if you answer directly.",
-        },
-        {
-            "id": "D_no_tool_prompt_json",
+            "id": "C_no_tool_prompt_json",
             "tools": False,
-            "forced_json": False,
             "prompt": "法国首都是哪里？Return only JSON: {\"speech\":\"...\",\"tool_call\":null}",
         },
     ]
@@ -169,17 +124,14 @@ def probe_model(*, client: Any, base_url: str, protocol: str, model: str, temper
     ]
     by_id = {str(item.get("id")): item for item in results}
     a_tools = int(by_id.get("A_only_tools", {}).get("tool_call_count") or 0) > 0
-    b_tools = int(by_id.get("B_tools_forced_json", {}).get("tool_call_count") or 0) > 0
-    c_tools = int(by_id.get("C_tools_prompt_json", {}).get("tool_call_count") or 0) > 0
-    d_json = bool(by_id.get("D_no_tool_prompt_json", {}).get("content_is_json"))
-    supports_native_tools = bool(a_tools or c_tools)
+    b_tools = int(by_id.get("B_tools_prompt_json", {}).get("tool_call_count") or 0) > 0
+    c_json = bool(by_id.get("C_no_tool_prompt_json", {}).get("content_is_json"))
+    supports_native_tools = bool(a_tools or b_tools)
     suggested = {
         "supports_native_tools": supports_native_tools,
-        "native_tools_coexist_with_forced_json": bool(supports_native_tools and b_tools),
-        "json_strategy": "forced_json" if supports_native_tools and b_tools else "prompt_only",
         "native_call_shape": "openai_tool_calls",
         "verified": all(not item.get("error") for item in results),
-        "probe_passed_prompt_json_no_tool": d_json,
+        "probe_passed_prompt_json_no_tool": c_json,
     }
     return {
         "base_url": base_url,
@@ -187,9 +139,6 @@ def probe_model(*, client: Any, base_url: str, protocol: str, model: str, temper
         "model": model,
         "cases": results,
         "suggested_profile": suggested,
-        "suggested_allowlist_entry": suggested_allowlist_entry(
-            base_url=base_url, model=model, suggested=suggested
-        ),
     }
 
 
@@ -211,9 +160,6 @@ def run_probe_case(*, client: Any, model: str, temperature: float, case: dict[st
     if case.get("tools"):
         payload["tools"] = [build_openai_native_tool_from_spec(WEB_SEARCH_TOOL_SPEC)]
         payload["tool_choice"] = "auto"
-    if case.get("forced_json"):
-        payload["response_format"] = {"type": "json_object"}
-
     try:
         response = client.chat.completions.create(**payload)
         choice = response.choices[0]

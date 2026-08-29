@@ -54,6 +54,53 @@ def _default_context(**overrides) -> dict:
 
 
 class FinalRecoveryTests(unittest.TestCase):
+    def test_hard_budget_keeps_native_schema_and_changes_only_tool_choice(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "exec_run",
+                    "description": "Run a command.",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        context = {
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "fallback": {"speech": "fallback"},
+            "native_tools": tools,
+            "native_tool_choice": "auto",
+        }
+
+        open_request = engine._build_final_response_request_kwargs(
+            generation_context=context,
+            request_projection_state=None,
+            user_images=None,
+            chat_model_override="",
+            execution_target=None,
+            prompt_cache_key="cache-key",
+            retry_note="",
+            request_observer=None,
+            allow_tool_call=True,
+        )
+        closed_request = engine._build_final_response_request_kwargs(
+            generation_context=context,
+            request_projection_state=None,
+            user_images=None,
+            chat_model_override="",
+            execution_target=None,
+            prompt_cache_key="cache-key",
+            retry_note="",
+            request_observer=None,
+            allow_tool_call=False,
+        )
+
+        self.assertEqual(closed_request["native_tools"], open_request["native_tools"])
+        self.assertEqual(closed_request["native_tool_choice"], "none")
+        self.assertEqual(open_request["native_tool_choice"], "auto")
+
     @staticmethod
     def _engine(llm, *, context: dict | None = None) -> AkaneMemoryEngine:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
