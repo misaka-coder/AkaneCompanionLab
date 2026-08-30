@@ -119,24 +119,22 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="tool_call",
                     text=(
-                        "tool_call 是 speech 之后的兼容字段。请求中直接附带的工具必须走真实工具调用，tool_call 保持 null。\n"
-                        "只有本轮出现“兼容 JSON 工具”清单时，才按清单一次调用一个；其它情况输出 null。"
+                        "本轮出现“兼容 JSON 工具”清单时，可用 tool_call 按清单一次调用一个。"
+                        "请求中直接附带的工具使用原生工具通道；未使用兼容工具时省略 tool_call。"
                     ),
                 ),
                 PromptBlock(
                     id="code_snippet",
                     text=(
-                        "如果用户明确在问编程、代码、语法、算法或调试问题，可以额外输出 code_snippet。\n"
-                        "code_snippet 只放纯代码或纯示例文本，不要带 markdown 代码块围栏；没有代码时输出空字符串。\n"
-                        "这类情况下，speech 负责自然解释，code_snippet 负责真正的示例。"
+                        "编程、代码、语法、算法或调试回答需要独立示例时，可追加 code_snippet。"
+                        "speech 写自然解释，code_snippet 写不带 markdown 围栏的纯代码或示例文本；没有示例时省略。"
                     ),
                 ),
                 PromptBlock(
                     id="status_choices",
                     text=(
-                        "仍需操作时直接发出下一项真实工具调用，status 可为 continue。没有工具调用时，"
-                        "用 status=final 交付已证实的结果或说明真实阻塞；不要用 continue 空转，也不要把未验证事项写成通过。\n"
-                        "choices 是可选项数组；没有选项时输出 []。每项包含 id 和简短 text。"
+                        "status 和 choices 是按需字段。仍需操作时直接发出下一项真实工具调用；需要显式标记状态时，"
+                        "status 使用 continue 或 final。需要用户选择时，choices 的每项包含 id 和简短 text；否则省略这些字段。"
                     ),
                 ),
                 PromptBlock(
@@ -156,7 +154,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="persona_state",
                     text=(
-                        "persona.active 表示当前表达侧面 id；保持当前值表示延续，写其它已有 id 表示切换，写空字符串或 default 表示回到默认表达。\n"
+                        "需要切换表达侧面时，追加 persona.active：填写已有 id，或用空字符串/default 回到默认表达；省略表示延续当前侧面。\n"
                         "manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。"
                     ),
                 ),
@@ -203,7 +201,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="desktop_pet_activity",
                     text=(
-                        "activity 只用于桌宠播放控制；没有播放、暂停、继续、停止、上一首、下一首或切换音频的真实意图时输出 null。\n"
+                        "桌宠需要播放、暂停、继续、停止、上一首、下一首或切换音频时，追加 activity；其它回合省略。\n"
                         'activity 格式为 {"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}。\n'
                         "activity 是给桌宠执行的请求，不是完成回执；不要在 speech 里假装动作已经播放、暂停或继续。\n"
                         "播放、暂停、继续、停止和切歌属于轻量桌宠控制，不要为这些动作创建任务工作区或委派后台任务。"

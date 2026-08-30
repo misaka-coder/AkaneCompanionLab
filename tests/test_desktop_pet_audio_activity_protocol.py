@@ -130,6 +130,7 @@ class TestLayer1PromptSchema:
         assert "activity" in combined, f"desktop_pet 协议应说明 activity:\n{combined}"
         assert '"activity":null' not in fast
         assert '"memory_metadata":{}' not in fast
+        assert "其它回合省略" in profile.system_prompt_override
         assert "没有作用的字段省略" in fast
         assert "memory_tags" not in fast
         assert "memory_tags" not in debug
