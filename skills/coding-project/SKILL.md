@@ -48,9 +48,12 @@ permissions; use only the tools visible in the current request.
 
 - Use `workspace_write` to create or replace UTF-8 source files. For an existing file,
   pass its latest SHA-256 when available so concurrent changes fail visibly.
-- Use `workspace_patch` for atomic unified diffs across UTF-8 files. It supports update,
-  create, delete, and rename in one validated transaction. On `base_hash_mismatch` or
-  `hunk_not_applicable`, reread and build a fresh patch. On `rollback_failed`, report the
+- Use `workspace_patch` for atomic count-free context patches across UTF-8 files. Do not
+  calculate unified-diff line ranges: use `*** Begin Patch`, file-operation headers,
+  `@@` with exact unchanged context, and `*** End Patch`. It supports update, create,
+  delete, and rename in one validated transaction. On `base_hash_mismatch` or
+  `hunk_not_applicable`, follow `recommended_action`, reread the current target region,
+  and build a fresh patch from exact visible text. On `rollback_failed`, report the
   affected relative paths and stop editing until their real state is inspected.
 - Do not transport source through Shell, base64, here-docs, echoed strings, or long
   `-Command` arguments. If a write or patch exceeds its declared schema budget, split
