@@ -31,7 +31,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
   bridged("overview", CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled, "settings-command", "setVoiceInputEnabled"),
   bridged("overview", CONTROL_CENTER_ACTIONS.musicPrevious, "settings-command", "previousMusic"),
   bridged("overview", CONTROL_CENTER_ACTIONS.musicNext, "settings-command", "nextMusic"),
-  bridged("overview", CONTROL_CENTER_ACTIONS.musicPause, "settings-command", "toggleMusic"),
+  bridged("overview", CONTROL_CENTER_ACTIONS.musicTogglePlayback, "settings-command", "toggleActiveMusic"),
   bridged("overview", CONTROL_CENTER_ACTIONS.musicStop, "settings-command", "stopMusic"),
   bridged("overview", CONTROL_CENTER_ACTIONS.musicClear, "settings-command", "clearMusicQueue"),
   bridged("overview", CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled, "settings-command", "setDesktopContextEnabled"),
@@ -55,7 +55,7 @@ export const CONTROL_CENTER_ACTION_SURFACES = Object.freeze([
 
   bridged("music", CONTROL_CENTER_ACTIONS.musicPrevious, "settings-command", "previousMusic"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicNext, "settings-command", "nextMusic"),
-  bridged("music", CONTROL_CENTER_ACTIONS.musicPause, "settings-command", "toggleMusic"),
+  bridged("music", CONTROL_CENTER_ACTIONS.musicTogglePlayback, "settings-command", "toggleActiveMusic"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicStop, "settings-command", "stopMusic"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicClear, "settings-command", "clearMusicQueue"),
   bridged("music", CONTROL_CENTER_ACTIONS.musicSeek, "settings-command", "seekMusic"),

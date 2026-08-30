@@ -146,7 +146,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "advanced.setHitTestEnabled": voiceActionAvailability(system.controlsAvailable),
       "advanced.setHitboxOverlay": voiceActionAvailability(system.controlsAvailable),
       "advanced.resetWindow": voiceActionAvailability(system.controlsAvailable),
-      "music.pause": { available: music.available, reason: "当前没有可控制的音乐" },
+      "music.togglePlayback": { available: music.available, reason: "当前没有可控制的音乐" },
       "window.minimize": { available: true, reason: "" },
       "window.maximize": { available: true, reason: "" },
       "window.close": { available: true, reason: "" }
@@ -280,10 +280,8 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const wasActive = Boolean(beforeActive.sending || beforeActive.replyDisplayActive);
     return wasActive && !afterActive.sending && !afterActive.replyDisplayActive;
   }
-  if (actionId === "music.pause") {
-    const beforePlayback = `${Boolean(beforeActive.musicPlaying)}:${Boolean(beforeActive.musicPaused)}`;
-    const afterPlayback = `${Boolean(afterActive.musicPlaying)}:${Boolean(afterActive.musicPaused)}`;
-    return beforePlayback !== afterPlayback;
+  if (actionId === "music.togglePlayback") {
+    return musicPlaybackSignature(before) !== musicPlaybackSignature(after);
   }
   if (actionId === "voice.test" || actionId === "voice.previewPlay") {
     return !Boolean(beforeActive.speaking) && Boolean(afterActive.speaking);
@@ -335,6 +333,22 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     return Boolean(afterExpression && afterExpression !== beforeExpression && (!expected || afterExpression === expected));
   }
   return true;
+}
+
+function musicPlaybackSignature(snapshot) {
+  const value = asObject(snapshot);
+  const active = asObject(value.active);
+  const music = asObject(value.music);
+  const localTrack = asObject(music.track);
+  const localStatePresent = Object.prototype.hasOwnProperty.call(active, "musicPlaying")
+    || Object.prototype.hasOwnProperty.call(active, "musicPaused");
+  const localAvailable = Boolean(text(localTrack.displayName) || text(music.displayName) || Number(music.queueCount));
+  const systemMedia = asObject(music.systemMedia);
+  const systemAvailable = Boolean(text(systemMedia.playbackStatus) || text(systemMedia.title));
+  if (localAvailable || (localStatePresent && !systemAvailable)) {
+    return `local:${Boolean(active.musicPlaying)}:${Boolean(active.musicPaused)}`;
+  }
+  return `system:${text(systemMedia.playbackStatus)}:${Boolean(systemMedia.isPlaying)}`;
 }
 
 function normalizeSystemRuntime(raw, live, options = {}) {

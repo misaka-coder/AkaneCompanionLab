@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { botScopedPath } from "./bot-routing.js";
+import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT
+} from "./control-center/event-bridge.js";
 
 import "./workspace.css";
 
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
-const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const PROFILE_USER_ID = "master";

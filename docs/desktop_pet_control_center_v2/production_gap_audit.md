@@ -1,6 +1,6 @@
 # Control Center V2 Production Gap Audit
 
-Status: cutover complete, 2026-08-21.
+Status: cutover complete; experiential action audit in progress, updated 2026-08-30.
 
 ## Decision
 
@@ -19,6 +19,18 @@ V2 is the production implementation behind the sole settings authority, `control
 | System & Diagnostics | implemented | health/diagnostics/metrics + Tauri live state + existing recovery/debug commands | keep; add events only after a real event source exists |
 
 Music stays in Overview and the quick card until its real feature density requires a separate V2 page. Desktop sensing belongs with Abilities & Permissions or System & Diagnostics; it should not become another top-level page by default.
+
+## Post-cutover experiential repair
+
+The cutover gates verify that enabled controls have executable boundaries, but they do not by themselves prove that the displayed state and the controlled runtime object are the same. The first live repair found that Overview could display Windows system media while its play/pause button still targeted the pet-local audio element.
+
+- `music.togglePlayback` is now the explicit Overview action; the misleading `music.pause` toggle alias is removed from the control-center contract.
+- The desktop host selects the active source: a loaded pet-local track controls the local audio element, otherwise a controllable Windows system-media session receives play/pause. A stopped but still-addressable session remains controllable; "fresh playback activity" and "controllable media session" are deliberately separate predicates.
+- Runtime confirmation observes the corresponding local or system-media state instead of treating command delivery as success.
+- Music confirmation has a dedicated four-second ceiling because the desktop gesture, Windows media-key acknowledgement and refreshed system-media snapshot can legitimately exceed the generic 1.8-second settings timeout; successful changes still confirm immediately.
+- An empty playback state remains unavailable and does not present a fake successful play action.
+
+The same acceptance rule applies to subsequent repairs: `visible state -> selected target -> host/backend execution -> observed state change -> user feedback`.
 
 ## Legacy surfaces that must not be copied
 

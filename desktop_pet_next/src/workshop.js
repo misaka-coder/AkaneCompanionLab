@@ -8,11 +8,13 @@ import {
   removeInstanceStorageItem,
   setInstanceStorageItem
 } from "./instance-storage.js";
+import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT
+} from "./control-center/event-bridge.js";
 
 import "./workshop.css";
 
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
-const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
 const DRAFT_STORAGE_PREFIX = "akane-workshop-draft:";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";

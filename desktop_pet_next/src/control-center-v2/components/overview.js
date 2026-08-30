@@ -103,7 +103,7 @@ function renderMusic(state, vm) {
       <div class="music-row">
         <span class="cover-fallback" aria-hidden="true">♫</span>
         <span class="track"><strong>${escapeHtml(vm.music.title)}</strong><small>${escapeHtml(vm.music.artist || vm.music.detail || "当前媒体")}</small>${moodLine ? `<small class="mood-line">${escapeHtml(moodLine)}</small>` : ""}</span>
-        ${renderActionButton(state, vm, "music.pause", playing ? "Ⅱ" : "▶", playing ? "暂停" : "播放", "media")}
+        ${renderActionButton(state, vm, "music.togglePlayback", playing ? "Ⅱ" : "▶", playing ? "暂停" : "播放", "media")}
       </div>
     </section>`;
 }

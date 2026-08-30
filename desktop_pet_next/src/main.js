@@ -45,6 +45,10 @@ import {
   resolveCareFeatureFromHealth
 } from "./care-feature.js";
 import { createVisualRenderer } from "./visual-renderer.js";
+import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT
+} from "./control-center/event-bridge.js";
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
 import { getBubbleSegmentDisplayDelay } from "./bubble-delivery.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
@@ -165,8 +169,6 @@ const SCALE_MAX = 1.45;
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
 const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
 const MENU_VIEWPORT_MARGIN = 8;
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
-const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const SHOP_STATUS_EVENT = "akane-next-shop-status";
 const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
@@ -1874,6 +1876,9 @@ async function handleSettingsCommand(payload) {
       break;
     case "toggleMusic":
       await toggleMusicPlayback();
+      break;
+    case "toggleActiveMusic":
+      await toggleActiveMusicPlayback();
       break;
     case "seekMusic":
       seekMusicPlayback(Number(payload.value));
@@ -6045,9 +6050,14 @@ function isOwnSystemMediaSource(sourceApp) {
 }
 
 function isFreshSystemMedia(snapshot = systemMedia) {
+  if (!isControllableSystemMedia(snapshot)) return false;
+  return snapshot.playbackStatus !== "stopped";
+}
+
+function isControllableSystemMedia(snapshot = systemMedia) {
   if (!snapshot?.ok || snapshot.status !== "ready") return false;
   if (!snapshot.title && !snapshot.artist) return false;
-  if (snapshot.playbackStatus === "closed" || snapshot.playbackStatus === "stopped") return false;
+  if (snapshot.playbackStatus === "closed") return false;
   const capturedAt = Number(snapshot.capturedAt || 0);
   return capturedAt > 0 && Date.now() - capturedAt <= SYSTEM_MEDIA_MAX_AGE_MS;
 }
@@ -8855,6 +8865,16 @@ async function toggleMusicPlayback() {
   }
   updateActivityControls();
   scheduleSettingsSnapshot();
+}
+
+async function toggleActiveMusicPlayback() {
+  if (musicTrack) {
+    return toggleMusicPlayback();
+  }
+  if (isControllableSystemMedia(systemMedia)) {
+    return controlSystemMediaPlayback(systemMedia.isPlaying ? "pause" : "play");
+  }
+  return toggleMusicPlayback();
 }
 
 function seekMusicPlayback(seconds) {

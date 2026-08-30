@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT
+} from "./control-center/event-bridge.js";
 
 import "./shop.css";
 
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
-const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const SHOP_STATUS_EVENT = "akane-next-shop-status";
 
 const els = {

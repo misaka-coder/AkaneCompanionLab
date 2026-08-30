@@ -5,9 +5,9 @@ import {
   CONTROL_CENTER_BRIDGED_ACTION_IDS,
   createNotImplementedActionResult
 } from "./action-router.js";
+import { SETTINGS_COMMAND_EVENT } from "./event-bridge.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
 const providerBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderConfigSave,
@@ -78,7 +78,7 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.characterSetOutfit]: "setOutfit",
   [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
   [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
-  [CONTROL_CENTER_ACTIONS.musicPause]: "toggleMusic",
+  [CONTROL_CENTER_ACTIONS.musicTogglePlayback]: "toggleActiveMusic",
   [CONTROL_CENTER_ACTIONS.musicStop]: "stopMusic",
   [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue",
   [CONTROL_CENTER_ACTIONS.musicSetPlayMode]: "setMusicPlayMode",

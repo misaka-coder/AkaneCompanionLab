@@ -24,8 +24,7 @@ import {
   createMockControlCenterSource,
   createTauriControlCenterSource
 } from "../src/control-center/data-sources.js";
-
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
+import { SETTINGS_COMMAND_EVENT } from "../src/control-center/event-bridge.js";
 
 const emitLog = [];
 const invokeLog = [];
@@ -251,7 +250,7 @@ const bridgedActionCases = [
   },
   { id: CONTROL_CENTER_ACTIONS.musicPrevious, payload: {}, context: {}, emit: "previousMusic" },
   { id: CONTROL_CENTER_ACTIONS.musicNext, payload: {}, context: {}, emit: "nextMusic" },
-  { id: CONTROL_CENTER_ACTIONS.musicPause, payload: {}, context: {}, emit: "toggleMusic" },
+  { id: CONTROL_CENTER_ACTIONS.musicTogglePlayback, payload: {}, context: {}, emit: "toggleActiveMusic" },
   { id: CONTROL_CENTER_ACTIONS.musicStop, payload: {}, context: {}, emit: "stopMusic" },
   { id: CONTROL_CENTER_ACTIONS.musicClear, payload: {}, context: {}, emit: "clearMusicQueue" },
   {
@@ -1113,7 +1112,7 @@ for (const actionId of deferredMusicActionIds) {
   const musicBridgedIds = [
     CONTROL_CENTER_ACTIONS.musicPrevious,
     CONTROL_CENTER_ACTIONS.musicNext,
-    CONTROL_CENTER_ACTIONS.musicPause,
+    CONTROL_CENTER_ACTIONS.musicTogglePlayback,
     CONTROL_CENTER_ACTIONS.musicStop,
     CONTROL_CENTER_ACTIONS.musicClear
   ];
@@ -1644,7 +1643,7 @@ const overviewSnapshot = createControlCenterSnapshot({
 assert.equal(overviewSnapshot.music.controls.length, 5, "overview music controls should have 5 items");
 assert.equal(overviewSnapshot.music.controls[0].actionId, "music.previous", "controls[0] should be music.previous");
 assert.equal(overviewSnapshot.music.controls[1].actionId, "music.next", "controls[1] should be music.next");
-assert.equal(overviewSnapshot.music.controls[2].actionId, "music.pause", "controls[2] should be music.pause");
+assert.equal(overviewSnapshot.music.controls[2].actionId, "music.togglePlayback", "controls[2] should toggle active playback");
 assert.equal(overviewSnapshot.music.controls[3].actionId, "music.stop", "controls[3] should be music.stop");
 assert.equal(overviewSnapshot.music.controls[4].actionId, "music.clear", "controls[4] should be music.clear");
 assert.equal(overviewSnapshot.music.controls[0].label, "上一首", "controls[0] label should be preserved");

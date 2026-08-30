@@ -9,7 +9,7 @@ const overviewActionIds = ["chat.new", "chat.stop", "workspace.open"];
 const overviewMusicControlActionIds = [
   "music.previous",
   "music.next",
-  "music.pause",
+  "music.togglePlayback",
   "music.stop",
   "music.clear"
 ];

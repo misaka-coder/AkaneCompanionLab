@@ -32,6 +32,33 @@ import {
   createBackendControlCenterSource,
   createControlCenterRuntimeSnapshot
 } from "../src/control-center/data-sources.js";
+import {
+  SETTINGS_COMMAND_EVENT,
+  createTargetedEventEmitter
+} from "../src/control-center/event-bridge.js";
+
+const targetedEvents = [];
+const fallbackEvents = [];
+const targetedEmitter = createTargetedEventEmitter({
+  targetLabel: "main",
+  eventName: SETTINGS_COMMAND_EVENT,
+  emitTo: async (...args) => targetedEvents.push(args),
+  emit: async (...args) => fallbackEvents.push(args)
+});
+const targetedPayload = { command: "toggleActiveMusic", source: "control-center-v2" };
+await targetedEmitter(SETTINGS_COMMAND_EVENT, targetedPayload);
+assert.deepEqual(targetedEvents, [["main", SETTINGS_COMMAND_EVENT, targetedPayload]]);
+assert.deepEqual(fallbackEvents, []);
+
+const fallbackEmitter = createTargetedEventEmitter({
+  targetLabel: "main",
+  eventName: SETTINGS_COMMAND_EVENT,
+  emitTo: async () => { throw new Error("target unavailable"); },
+  emit: async (...args) => fallbackEvents.push(args)
+});
+await fallbackEmitter(SETTINGS_COMMAND_EVENT, targetedPayload);
+assert.deepEqual(fallbackEvents, [[SETTINGS_COMMAND_EVENT, targetedPayload]]);
+await assert.rejects(() => targetedEmitter(SETTINGS_COMMAND_EVENT, SETTINGS_COMMAND_EVENT), /invalid_targeted_event_payload/);
 
 const rawSnapshot = {
   sourceKind: "backend",
@@ -540,9 +567,20 @@ assert.equal(isObservedActionConfirmation(
   { active: { sending: false, replyDisplayActive: false } }
 ), true);
 assert.equal(isObservedActionConfirmation(
-  "music.pause",
+  "music.togglePlayback",
   { active: { musicPlaying: true, musicPaused: false } },
   { active: { musicPlaying: false, musicPaused: true } }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "music.togglePlayback",
+  {
+    active: { musicPlaying: false, musicPaused: false },
+    music: { systemMedia: { playbackStatus: "playing", isPlaying: true } }
+  },
+  {
+    active: { musicPlaying: false, musicPaused: false },
+    music: { systemMedia: { playbackStatus: "paused", isPlaying: false } }
+  }
 ), true);
 assert.equal(isObservedActionConfirmation(
   "chat.new",

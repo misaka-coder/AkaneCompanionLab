@@ -4,6 +4,11 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 import { createControlCenterActionRouter } from "../control-center/action-router.js";
 import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT,
+  createTargetedEventEmitter
+} from "../control-center/event-bridge.js";
+import {
   buildCharacterRuntimePatchFromSettingsSnapshot,
   buildMusicRuntimePatch,
   CONTROL_CENTER_SOURCE_KIND,
@@ -18,13 +23,11 @@ import {
 import { modelServiceOperation, runModelServiceBridgeAction } from "./model-service.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
-const SETTINGS_COMMAND_EVENT = "akane-next-settings-command";
-const SETTINGS_SNAPSHOT_EVENT = "akane-next-settings-snapshot";
 const OBSERVED_ACTION_IDS = new Set([
   "chat.new",
   "chat.send",
   "chat.stop",
-  "music.pause",
+  "music.togglePlayback",
   "voice.test",
   "voice.stop",
   "voice.previewPlay",
@@ -44,6 +47,7 @@ const OBSERVED_ACTION_IDS = new Set([
   "character.refresh"
 ]);
 const ACTION_CONFIRM_TIMEOUT_MS = 1800;
+const MUSIC_PLAYBACK_CONFIRM_TIMEOUT_MS = 4000;
 const CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS = 4000;
 const VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS = 12000;
 
@@ -251,6 +255,8 @@ async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, rea
   const startedAt = Date.now();
   const timeoutMs = voicePlaybackAction(actionId)
     ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS
+    : actionId === "music.togglePlayback"
+      ? MUSIC_PLAYBACK_CONFIRM_TIMEOUT_MS
     : actionId === "character.selectPack"
       ? CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS
       : ACTION_CONFIRM_TIMEOUT_MS;
@@ -346,13 +352,12 @@ async function instanceBoundFetch(input, init = {}) {
   });
 }
 
-async function emitMainEvent(payload) {
-  try {
-    await emitTo("main", SETTINGS_COMMAND_EVENT, payload);
-  } catch {
-    await emit(SETTINGS_COMMAND_EVENT, payload);
-  }
-}
+const emitMainEvent = createTargetedEventEmitter({
+  targetLabel: "main",
+  eventName: SETTINGS_COMMAND_EVENT,
+  emitTo,
+  emit
+});
 
 function withLiveRuntime(rawSnapshot, runtimeSnapshot) {
   if (!runtimeSnapshot) return rawSnapshot;
