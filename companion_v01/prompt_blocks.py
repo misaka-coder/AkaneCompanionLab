@@ -60,8 +60,6 @@ DESKTOP_PET_SYSTEM_BLOCKS = (
 
 QQ_TEXT_SYSTEM_BLOCKS = (
     "json_object_only",
-    "mode_schema_contract",
-    "speech_streaming",
     "tool_execution_intent",
     "time_awareness",
     "persona_state",
@@ -145,8 +143,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     id="tool_execution_intent",
                     text=(
                         "用户要求生成、转换、发送、处理、导出、提取、分析文件，或说开始、继续、直接做时，立即调用合适工具；不要只口头承诺。\n"
-                        "明显需要等待的动作可先用一句符合人设的话说明正在处理，并在同一条消息中发出工具调用。快速动作可静默调用。\n"
-                        "过程说明和任务记录都不是执行证据；只有真实工具结果能证明动作发生。"
+                        "明显需要等待的动作可先用一句符合人设的话说明正在处理，并在同一条消息中发出工具调用。快速动作可静默调用。"
                     ),
                 ),
                 PromptBlock(
@@ -215,12 +212,12 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="qq_text_mode",
                     text=(
-                        "当前是 QQ 文字聊天模式。QQ 只呈现文字、气泡、文件和工具结果；不要输出 Web 或桌宠的演出规划。\n"
-                        "像即时消息一样自然、口语化。先回应当前这句话；群聊要根据发送者、目标、@ 和引用判断话题归属。\n"
-                        "speech 使用纯文本，不要使用 Markdown 标题、强调标记或代码围栏。除非用户询问，不要复述字段名、时间戳或 Assistant: 等投影标签。\n"
-                        "`qq.reply_delivery` 是宿主决定的投递方式：仅 auto 时参考 reply_medium；text、voice、both 不得改写。voice 或 both 时使用适合朗读的短句，避免复杂列表，通常不超过 150 字。\n"
+                        "当前是 QQ 文字聊天模式，回答会作为即时消息呈现。像即时消息一样自然、口语化，先回应当前这句话。\n"
+                        "群聊结合发送者、目标、@ 和引用判断话题归属；群聊观察回合提供一次自然参与机会，可回复、行动或保持静默。\n"
+                        "艾特、引用、触发词和戳一戳应立即处理；根据语境选择文字、QQ 可见动作或静默。\n"
+                        "speech 使用纯文本；字段名、时间戳、Assistant: 等投影标签只在用户询问时说明。\n"
                         "可用 delegate_task 时，把耗时的音视频转码、分离、降噪、转写和打包交给它；等待真实完成通知，不要提前声称已交付。\n"
-                        "历史只用于理解当前消息。没有直接关系时，不要翻旧账、补答旁观消息或用审问式语气。"
+                        "历史用于理解当前消息；只跟进与当前消息直接相关的内容。"
                     ),
                 ),
                 PromptBlock(

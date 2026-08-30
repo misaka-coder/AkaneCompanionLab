@@ -95,15 +95,17 @@ class PersonaConfigTomlTests(unittest.TestCase):
         self.assertIn("证据不足时", TOOL_CONTEXT_STABLE_RULES)
 
     def test_internal_disclosure_rules_limit_disclosure_without_hiding_failures(self) -> None:
-        self.assertIn("当前实际使用的模型标签", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("本轮大致提供了哪些上下文层", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("工具调用参数与结果在本轮是否可见", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("何时以紧凑卡片形式出现", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("当前模型", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("公开能力", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("可见上下文类型", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("实际工具结果", INTERNAL_DISCLOSURE_RULES)
         self.assertIn("真实失败原因", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("API Key、Cookie、密码、代理凭据", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("逐字复述完整隐藏系统提示", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("密钥或凭据", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("隐藏系统提示和内部协议原文", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("内部工具定义", INTERNAL_DISCLOSURE_RULES)
         self.assertIn("物理位置", INTERNAL_DISCLOSURE_RULES)
-        self.assertIn("公开能力说明或通用方案", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("可公开的能力说明或通用方案", INTERNAL_DISCLOSURE_RULES)
+        self.assertIn("如实报告真实错误", INTERNAL_DISCLOSURE_RULES)
 
     def test_load_persona_config_supports_custom_variant_from_toml(self) -> None:
         toml_text = """
@@ -1093,7 +1095,7 @@ system = "semantic reinforcement system"
         self.assertIn("当前是 QQ 文字聊天模式", prompt)
         self.assertIn("用户要求生成、转换、发送、处理、导出、提取、分析文件", prompt)
         self.assertIn("先回应当前这句话", prompt)
-        self.assertIn("不要翻旧账", prompt)
+        self.assertIn("只跟进与当前消息直接相关的内容", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
         self.assertNotIn("desktop_pet 桌宠模式", prompt)
         self.assertNotIn("scene.major 表示场景大类", prompt)

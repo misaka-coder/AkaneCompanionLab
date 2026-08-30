@@ -161,24 +161,24 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertIn("当前是 QQ 文字聊天模式", profile.system_prompt_override)
         self.assertIn("speech 使用纯文本", profile.system_prompt_override)
         self.assertEqual(profile.system_prompt_override.count("speech 使用纯文本"), 1)
-        self.assertIn("不要使用 Markdown 标题、强调标记或代码围栏", profile.system_prompt_override)
         self.assertIn("发送者、目标、@ 和引用判断话题归属", profile.system_prompt_override)
-        self.assertIn("不要复述字段名、时间戳或 Assistant: 等投影标签", profile.system_prompt_override)
-        self.assertIn("`qq.reply_delivery` 是宿主决定的投递方式", profile.system_prompt_override)
-        self.assertIn("voice 或 both 时", profile.system_prompt_override)
+        self.assertIn("群聊观察回合提供一次自然参与机会", profile.system_prompt_override)
+        self.assertIn("根据语境选择文字、QQ 可见动作或静默", profile.system_prompt_override)
         self.assertIn("可用 delegate_task 时", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn(
-            "有文字时按 emotion、reply_medium、speech 的顺序输出",
-            profile.mode_prompt_override(debug_enabled=False),
-        )
+        self.assertIn("常规回复", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("字段含义", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn(
             '"reply_medium":"text","speech":"主人，我在哦。"',
             profile.mode_prompt_override(debug_enabled=False),
         )
         self.assertIn('{"speech":""}', profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("不强制输出文字", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("最终 JSON 不输出 tool_call、status 或 choices", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("有真实作用时", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("QQ 纯文本和完整自然句", profile.mode_prompt_override(debug_enabled=False))
+        self.assertNotIn("内部协议", profile.mode_prompt_override(debug_enabled=False))
+        self.assertNotIn("原生工具", profile.mode_prompt_override(debug_enabled=False))
+        self.assertNotIn("status", profile.mode_prompt_override(debug_enabled=False))
+        self.assertNotIn("choices", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("speech_segments", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("不要输出 scene", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("thought", profile.mode_prompt_override(debug_enabled=True))
@@ -188,8 +188,10 @@ class ClientProtocolTests(unittest.TestCase):
         ):
             self.assertNotIn('"attention":"silent"', mode_prompt)
             self.assertNotIn("response_expectation", mode_prompt)
-            self.assertIn("event.group_attention_followup_review", mode_prompt)
-            self.assertIn("只表示一次是否自然参与当前群聊的判断机会", mode_prompt)
+            self.assertNotIn("event.group_attention_followup_review", mode_prompt)
+            self.assertNotIn("event.group_attention_idle_review", mode_prompt)
+            self.assertNotIn("event.qq_optional_reply_review", mode_prompt)
+            self.assertEqual(mode_prompt, profile.mode_prompt_override(debug_enabled=False))
 
     def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
         text = PromptBlockRegistry().require("field_order").text

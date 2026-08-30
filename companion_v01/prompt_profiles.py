@@ -44,6 +44,23 @@ SCENE_STATIC_PROMPT_MODULES = (
 )
 
 
+QQ_TEXT_MODE_PROMPT = """
+当前模式：qq_text。
+常规回复：
+{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。"}
+
+字段含义：
+- emotion：当前表达情绪。
+- reply_medium：QQ 自动投递偏好，可填 text、voice 或 both。代码、长解释、列表和文件说明使用 text；适合朗读的短句可使用 voice 或 both。`qq.reply_delivery` 已固定为 text、voice 或 both 时遵循宿主设置。
+- speech：用户看到或听到的完整正文，使用 QQ 纯文本和完整自然句。
+
+不需要文字时输出：
+{"speech":""}
+
+有真实作用时，可按对应字段说明追加 memory_metadata、persona 或本轮明确提供的其它扩展字段。
+""".strip()
+
+
 @dataclass(frozen=True)
 class PromptProfile:
     id: str
@@ -142,26 +159,8 @@ class PromptProfileRegistry:
                 supports_thought_debug=False,
                 system_block_ids=QQ_TEXT_SYSTEM_BLOCKS,
                 system_prompt_override=build_qq_text_system_prompt(),
-                fast_mode_prompt=(
-                    "\n当前模式：qq_text。\n"
-                    "有文字时按 emotion、reply_medium、speech 的顺序输出；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实作用时追加。\n"
-                    'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
-                    "艾特、引用、触发词和戳一戳表示本次事件应立即处理，但不强制输出文字。成功的 QQ 可见动作本身可以构成回应；若无需补充文字，只输出 {\"speech\":\"\"}。不要为了确认动作成功而机械追加文字。\n"
-                    "event.group_attention_followup_review、event.group_attention_idle_review、event.qq_optional_reply_review 只表示一次是否自然参与当前群聊的判断机会；有必要时回复或行动，否则按上述空 speech 规则保持静默，不要复述事件名。\n"
-                    "原生工具走请求中直接附带的工具入口；最终 JSON 不输出 tool_call、status 或 choices。只有本轮明确出现兼容 JSON 工具清单时，才按清单临时追加非空 tool_call。\n"
-                    "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。"}\n'
-                ),
-                debug_mode_prompt=(
-                    "\n当前模式：qq_text。\n"
-                    "有文字时按 emotion、reply_medium、speech 的顺序输出；memory_metadata、persona 及当前启用的其它扩展字段仅在有真实作用时追加。\n"
-                    'reply_medium 只用于 QQ 自动回复模式的投递偏好，只能是 "text"、"voice" 或 "both"；代码、长解释、列表和文件说明优先 text，短句、亲密私聊或用户发来语音时可用 voice。\n'
-                    "艾特、引用、触发词和戳一戳表示本次事件应立即处理，但不强制输出文字。成功的 QQ 可见动作本身可以构成回应；若无需补充文字，只输出 {\"speech\":\"\"}。不要为了确认动作成功而机械追加文字。\n"
-                    "event.group_attention_followup_review、event.group_attention_idle_review、event.qq_optional_reply_review 只表示一次是否自然参与当前群聊的判断机会；有必要时回复或行动，否则按上述空 speech 规则保持静默，不要复述事件名。\n"
-                    "原生工具走请求中直接附带的工具入口；最终 JSON 不输出 tool_call、status 或 choices。只有本轮明确出现兼容 JSON 工具清单时，才按清单临时追加非空 tool_call。\n"
-                    "输出格式示例如下：\n"
-                    '{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。"}\n'
-                ),
+                fast_mode_prompt=QQ_TEXT_MODE_PROMPT,
+                debug_mode_prompt=QQ_TEXT_MODE_PROMPT,
             ),
         }
 
