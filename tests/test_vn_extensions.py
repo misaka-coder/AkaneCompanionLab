@@ -1157,7 +1157,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("可按需激活的能力", prompt)
             self.assertIn("当前会话和可见工作区里还没有可处理的文档材料", prompt)
             self.assertIn("用户上传音频/视频、提供可下载的公开媒体链接", prompt)
-            self.assertIn("用户问“你会什么/能做什么”时", TOOL_CONTEXT_STABLE_RULES)
+            self.assertIn("用户询问能力时", TOOL_CONTEXT_STABLE_RULES)
             self.assertNotIn("短任务直接调用工具完成", prompt)
             self.assertIn("文档", prompt)
             self.assertIn("音频/视频", prompt)
@@ -1225,7 +1225,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- transcribe_media", prompt)
             self.assertNotIn("还没有可处理的文档材料", prompt)
             self.assertNotIn("还没有可处理的音频或视频", prompt)
-            self.assertIn("当前会话或工作区已经有对应材料时，不要让用户重复上传", TOOL_CONTEXT_STABLE_RULES)
+            self.assertIn("已有材料按 handle、名称或“最近”读取，无需让用户重复上传", TOOL_CONTEXT_STABLE_RULES)
 
             qq_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "qq_text"})
             qq_prompt = self.engine._build_tool_prompt_context(
