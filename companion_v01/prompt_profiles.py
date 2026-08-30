@@ -52,9 +52,9 @@ QQ_TEXT_MODE_PROMPT = """
 字段含义：
 - emotion：当前表达情绪。
 - reply_medium：QQ 自动投递偏好，可填 text、voice 或 both。代码、长解释、列表和文件说明使用 text；适合朗读的短句可使用 voice 或 both。`qq.reply_delivery` 已固定为 text、voice 或 both 时遵循宿主设置。
-- speech：用户看到或听到的完整正文，使用 QQ 纯文本和完整自然句。
+- speech：发送给用户的完整消息正文。
 
-整条响应只输出 JSON 对象；自然语言只写在 speech 字段内，不要直接输出裸文本。
+整条响应只输出 JSON 对象；要发送的话只写在 speech 字段内，不要直接输出裸文本。
 
 不需要文字时输出：
 {"speech":""}
