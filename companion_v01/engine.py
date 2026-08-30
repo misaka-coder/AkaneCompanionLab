@@ -9157,11 +9157,27 @@ class AkaneMemoryEngine:
             else {}
         )
         runtime = str(dependency_storage.get("runtime") or "host_path")
+        raw_credential_refs = (
+            host_access.get("credential_env_refs")
+            if isinstance(host_access.get("credential_env_refs"), dict)
+            else {}
+        )
+        credential_refs = ", ".join(
+            f"{name}={str(raw_credential_refs[name] or 'missing')}"
+            for name in sorted(str(item) for item in raw_credential_refs)
+        )
+        credential_context = ""
+        if credential_refs:
+            credential_context = (
+                f" credential_env_refs: {credential_refs}. "
+                "命令可按当前 Shell 语法使用 configured 引用；真实值由执行器注入并从输出中遮蔽。"
+            )
         return (
             "【执行宿主】"
             f"platform={platform}; command_shell={command_shell}; script_shell={script_shell}; "
             f"filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}. "
             "普通环境与 PATH 按宿主继承，凭据类和 Akane 内部变量除外；依赖缓存共享，项目依赖遵循清单与锁文件。"
+            f"{credential_context}"
         )
 
     def _build_tool_prompt_context(

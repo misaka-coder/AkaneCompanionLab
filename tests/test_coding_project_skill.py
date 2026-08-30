@@ -99,9 +99,8 @@ class CodingProjectSkillTests(unittest.TestCase):
         content = self.registry.load("coding-project").content
         for marker in (
             "Keep engineering authoritative",
-            "Establish the working location",
-            "Freeze scope and acceptance",
-            "Write through project tools",
+            "Work in the real project",
+            "Inspect and edit deliberately",
             "Execute and diagnose honestly",
             "Verify and deliver",
         ):
@@ -111,33 +110,22 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn("workspace_write", content)
         self.assertIn("project_inspect", content)
         self.assertIn("workspace_patch", content)
-        self.assertIn("atomic count-free context patches", content)
-        self.assertIn("Do not\n  calculate unified-diff line ranges", content)
-        self.assertIn("`*** Begin Patch`", content)
-        self.assertIn("follow `recommended_action`", content)
-        self.assertNotIn("atomic unified diffs", content)
-        self.assertIn("base_hash_mismatch", content)
-        self.assertIn("private character threshold", content)
+        self.assertIn("current tool definitions own the exact syntax", content)
+        self.assertIn("follow its structured feedback", content)
         self.assertIn("$LASTEXITCODE", content)
         self.assertIn('$ErrorActionPreference = "Stop"', content)
-        self.assertIn("node --check file.js", content)
-        self.assertIn("python -m py_compile", content)
-        self.assertIn("已进入发送队列", content)
         self.assertIn("Shell-based generation remains valid", content)
         self.assertIn("do not substitute a smaller MVP", content)
         self.assertIn("use it as a lightweight task checklist", content)
         self.assertIn("must not become a gate", content)
-        self.assertIn("Engineering completion and chat file delivery are separate", content)
-        self.assertIn("arbitrary host-absolute cwd cannot be\n  registered directly", content)
-        self.assertIn("complete logical pages", content)
-        self.assertIn("supports update, create,\n  delete, and rename", content)
-        self.assertIn("rollback_failed", content)
-        self.assertIn("Probe exact tool availability", content)
         self.assertIn("A command snippet is not an automated test suite", content)
-        self.assertIn("assert the intended\n  intermediate state", content)
         self.assertIn('never emit a tool-less `status="continue"`', content)
-        self.assertIn("`CONTINUATION.md`", content)
-        self.assertIn("not content for the user-facing `speech`", content)
+        self.assertNotIn("`*** Begin Patch`", content)
+        self.assertNotIn("base_hash_mismatch", content)
+        self.assertNotIn("CONTINUATION.md", content)
+        self.assertNotIn("output_globs", content)
+        self.assertNotIn("lease behavior", content)
+        self.assertNotIn("scheduler code", content)
         self.assertNotIn("V1 patching does not create", content)
         self.assertNotIn("toolchain manifest in the `exec_run` instruction", content)
 
@@ -178,13 +166,14 @@ class ToolDescriptionBoundaryTests(unittest.TestCase):
         self.assertIn("不代表修改解决了运行问题", description)
         self.assertIn("局部修改", description)
 
-    def test_exec_run_spec_guides_long_tasks_and_failure_propagation(self) -> None:
+    def test_exec_run_spec_states_the_shell_boundary_without_repeating_parameter_manuals(self) -> None:
         description = EXEC_RUN_TOOL_SPEC.description
-        self.assertIn("running 是命令仍在执行的正常状态", description)
-        self.assertIn("抑制或缓冲实时输出", description)
-        self.assertIn("按当前 Shell 显式保留并检查每一步失败状态", description)
+        self.assertIn("仍在运行时返回 run_id", description)
         self.assertIn("不是 Shell 沙箱", description)
         self.assertIn("当前宿主用户权限", description)
+        self.assertIn("精确路径约束见对应参数", description)
+        self.assertNotIn("credential_env_refs", description)
+        self.assertNotIn("send_file", description)
 
     def test_send_file_spec_keeps_queue_vs_receipt_distinction(self) -> None:
         description = SEND_FILE_TOOL_SPEC.description

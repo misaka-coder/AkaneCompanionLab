@@ -169,10 +169,10 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         instruction = self._handler().build_prompt_instruction()
 
         self.assertIn("上方宿主事实", instruction)
-        self.assertIn("精确运行时版本需要时先用命令探测", instruction)
         self.assertNotIn("toolchain=", instruction)
         self.assertNotIn("unavailable", instruction)
         self.assertNotIn(str(self.base_dir), instruction)
+        self.assertLess(len(instruction), 600)
 
     def test_native_and_legacy_tool_context_share_one_execution_host_block(self) -> None:
         provider = SimpleNamespace(
@@ -257,6 +257,33 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertNotIn("22.1.0", AkaneMemoryEngine._build_execution_host_context(first))
         self.assertEqual(FINAL_PROMPT_CACHE_LAYOUT_VERSION, "responses-unified-timeline-v3")
 
+    def test_execution_host_context_discloses_only_configured_credential_references(self) -> None:
+        handler = SimpleNamespace(
+            execution_provider=SimpleNamespace(
+                prompt_environment=lambda: {
+                    "platform": "linux",
+                    "command_shell": "/bin/sh",
+                    "preferred_script_shell": "/bin/bash",
+                    "host_access": {
+                        "filesystem": "host_user_permissions",
+                        "absolute_cwd": "supported",
+                        "credential_env_refs": {
+                            "GITHUB_TOKEN": "configured",
+                            "OPTIONAL_TOKEN": "missing",
+                        },
+                    },
+                    "dependency_storage": {"runtime": "host_path"},
+                }
+            )
+        )
+
+        context = AkaneMemoryEngine._build_execution_host_context(handler)
+
+        self.assertIn("GITHUB_TOKEN=configured", context)
+        self.assertIn("OPTIONAL_TOKEN=missing", context)
+        self.assertIn("真实值由执行器注入并从输出中遮蔽", context)
+        self.assertNotIn("secret-value", context)
+
     def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:
         saved = save_capability_approval_mode(
             base_dir=self.base_dir,
@@ -338,13 +365,15 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("不是 Shell 沙箱", instruction)
         self.assertIn("真实宿主绝对目录", instruction)
         self.assertIn("真实输出发现路径", instruction)
-        self.assertIn("input_resources 与 cwd 互斥", instruction)
-        self.assertIn("output_globs 可以与 cwd=alias:project 一起使用", instruction)
-        self.assertIn("本次新建或变更的产物", instruction)
+        self.assertIn("input_resources", instruction)
+        self.assertIn("不能与 cwd 同用", instruction)
+        self.assertIn("output_globs", instruction)
+        self.assertIn("alias:project", instruction)
         self.assertIn("上方宿主事实", instruction)
-        self.assertIn("先用只读命令核对真实目标", instruction)
-        self.assertIn("与自己向用户说明的范围完全一致", instruction)
-        self.assertIn("timed_out/failed", instruction)
+        self.assertIn("改变大量文件前先只读核对目标", instruction)
+        self.assertNotIn("manage_project_workspace(open)", instruction)
+        self.assertNotIn("TMPDIR", instruction)
+        self.assertNotIn("send_file", instruction)
 
     def test_exec_status_and_cancel_are_owner_scoped_without_ask(self) -> None:
         status_handler = ExecStatusToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir)

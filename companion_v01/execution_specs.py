@@ -180,25 +180,11 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     capability_id=EXEC_RUN_TOOL_NAME,
     display_name="Run a command in the trusted execution workspace",
     description=(
-        "使用拥有当前宿主用户权限的受信任执行器运行命令或脚本；它不是 Shell 沙箱。cwd 可以使用工作区"
-        "相对路径、已配置挂载别名或真实存在的宿主绝对目录，访问范围由宿主用户权限决定。先用 pwd/find 等"
-        "真实输出发现目录，不要猜测路径。"
-        "默认继承宿主的普通环境变量与 PATH，凭据类和 Akane 内部变量会被移除；若宿主显式配置了凭据环境变量引用，"
-        "可用名称及 configured/missing 状态会显示在宿主事实中，命令按当前 Shell 的普通环境变量语法使用，真实值不会进入"
-        "工具参数、提示历史或持久输出。本工具不接受模型临时传入环境变量值。"
-        "短命令在本轮直接返回最终状态；"
-        "超过初始等待窗口仍存活的命令返回 run_id 与 running 状态，之后用 exec_status 查询进度、"
-        "exec_cancel 停止；running 是命令仍在执行的正常状态，不是失败。安装、构建等长任务不要接会"
-        "抑制或缓冲实时输出的过滤管道；多步骤命令要按当前 Shell 显式保留并检查每一步失败状态，"
-        "不要用最后一步成功掩盖前面的失败。"
-        "普通输出会在本次结果中足量返回；仅超长或持续增长的输出才通过 next_cursor"
-        "按需续读。需要命令读取已有材料时用 input_resources 声明句柄与命令工作区内的 as 相对路径，"
-        "输入会复制进本次运行的独立工作区，且 input_resources 不能与 cwd 同时使用。需要命令产出文件时用"
-        "output_globs 声明相对当前目录的输出；它可以与 cwd=alias:project 一起使用，直接登记所选项目中"
-        "本次新建或变更的产物。带 input_resources，或省略 cwd 但声明 output_globs 时，使用本次受管临时目录；"
-        "既无资源参数又省略 cwd 时，使用受信任执行工作区根。不要切换到 /tmp 等外部目录。命令完成后"
-        "只登记明确声明的输出为 gen_*，再用 send_file 交付。执行失败、超时或取消都会明确返回对应状态，"
-        "不会声称成功；登记失败也会与命令成功明确区分。"
+        "使用当前宿主用户权限运行 Shell 命令或脚本；它不是 Shell 沙箱。cwd 可为工作区相对路径、"
+        "已配置别名或真实宿主绝对目录，省略时使用受信任执行根；先从真实命令输出发现路径。"
+        "短命令直接返回终态，仍在运行时返回 run_id，之后用 exec_status 或 exec_cancel。"
+        "input_resources 用于暂存现有材料，output_globs 用于登记生成资源；精确路径约束见对应参数。"
+        "根据 status、exit_code、stdout、stderr、reason 和 recommended_action 判断真实结果。"
     ),
     input_schema={
         "type": "object",

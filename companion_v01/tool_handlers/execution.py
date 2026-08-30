@@ -362,28 +362,11 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- exec_run：以宿主用户权限运行命令或脚本，不是 Shell 沙箱；命令参数字段名是 command（不是 cmd）。"
-            "平台、Shell、绝对 cwd 与依赖存储见上方宿主事实；精确运行时版本需要时先用命令探测。"
-            "cwd 可用工作区相对路径、挂载别名或真实宿主绝对目录；已注册项目可使用 alias:project。"
-            "先从 pwd、find 等真实输出发现路径，不要猜测。不要把运行时下载到项目目录；依赖按项目清单/锁文件解析。"
-            "宿主事实若列出 credential_env_refs，可按当前 Shell 的普通环境变量语法使用 configured 的引用；"
-            "真实值由执行器注入并从输出中遮蔽，不要尝试打印或复制明文。本工具不接受模型临时传入环境变量值。短命令直接返回结果；"
-            "命令仍在执行时返回 run_id 与 running 状态，用 exec_status 查询进度、exec_cancel 停止；"
-            "running 是正常状态，不是失败。安装、构建等长任务不要接会抑制或缓冲实时输出的过滤管道；"
-            "多步骤命令要按当前 Shell 显式保留并检查每一步失败状态，不要用最后一步成功掩盖前面的失败。"
-            "输出超过限额时通过 next_cursor 增量读取。需要命令读取已有材料时，用 input_resources 声明句柄"
-            "（使用材料索引实际显示的 file_* / img_* / audio_* / gen_*）与命令工作区内相对路径 as，"
-            "输入会复制进本次运行的独立工作区，因此 input_resources 与 cwd 互斥；"
-            "output_globs 可以与 cwd=alias:project 一起使用，直接登记所选项目中本次新建或变更的产物；"
-            "宿主绝对 cwd 可用于检查、构建和测试；若要登记其产物，先用 manage_project_workspace(open) 注册并改用 alias:project；"
-            "使用 input_resources 或省略 cwd 只声明 output_globs 时，当前目录以及 TMPDIR/TMP/TEMP 都指向本次受管临时目录，"
-            "既无 input_resources/output_globs 又省略 cwd 时，则从受信任执行工作区根启动；"
-            "这类需登记资源的命令不要 cd 到 /tmp 等外部目录；"
-            "需要命令产出文件时，用 output_globs 声明相对当前目录的输出路径，并直接把产物写在该目录内，"
-            "命令完成后会自动登记为 gen_*，"
-            "然后用 send_file 交付。对批量移动、改名、覆盖或删除等会改变文件系统的任务，先用只读命令核对真实目标，"
-            "再让执行命令与自己向用户说明的范围完全一致；执行后根据真实状态和结果复核，不要把 timed_out/failed 当成功。"
-            "高风险命令会按当前用户策略请求确认。"
+            "- exec_run：用 command 在上方宿主事实所示的 Shell 中运行命令；它不是 Shell 沙箱。"
+            "cwd 可为工作区相对路径、alias:project 或真实宿主绝对目录，省略时使用受信任执行根；先从真实输出发现路径。"
+            "短命令返回终态；running 与 run_id 表示仍在执行，用 exec_status 续读或 exec_cancel 停止。"
+            "input_resources 会把材料句柄复制到 as 相对路径且不能与 cwd 同用；output_globs 登记当前受管目录或 alias:project 中的匹配产物。"
+            "按 status、exit_code、stdout、stderr、reason 与 recommended_action 判断结果；改变大量文件前先只读核对目标。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
