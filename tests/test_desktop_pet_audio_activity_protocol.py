@@ -126,11 +126,11 @@ class TestLayer1PromptSchema:
         profile = registry.get(ClientMode.DESKTOP_PET)
         fast = profile.fast_mode_prompt
         debug = profile.debug_mode_prompt
-        assert "activity" in fast, f"desktop_pet fast_mode 应含 activity:\n{fast}"
-        assert "activity" in debug, f"desktop_pet debug_mode 应含 activity:\n{debug}"
-        assert '"activity":null' in fast
-        assert "memory_metadata" in fast
-        assert "memory_metadata" in debug
+        combined = "\n".join((profile.system_prompt_override, fast, debug))
+        assert "activity" in combined, f"desktop_pet 协议应说明 activity:\n{combined}"
+        assert '"activity":null' not in fast
+        assert '"memory_metadata":{}' not in fast
+        assert "没有作用的字段省略" in fast
         assert "memory_tags" not in fast
         assert "memory_tags" not in debug
 
@@ -256,6 +256,55 @@ class TestLayer3NormalizeFinalOutput:
     @pytest.fixture
     def engine_qq(self):
         return FakeEngine_qq()
+
+    def test_minimal_desktop_reply_receives_host_defaults(self, engine_desktop):
+        result = normalize_final_output(
+            engine_desktop,
+            result={"emotion": "normal", "speech": "我在哦。"},
+            visual_defaults=_VISUAL_DEFAULTS,
+            profile_user_id="test",
+            session_id="test",
+            allow_tool_call=False,
+            debug_enabled=False,
+            user_message="在吗",
+        )
+
+        assert result["status"] == "final"
+        assert result["speech"] == "我在哦。"
+        assert result["tool_call"] is None
+        assert result["memory_metadata"]["entity_anchors"] == []
+        assert result["persona"] == {"active": ""}
+        assert result.get("activity") is None
+        assert result["character"] == {"outfit": "default"}
+        assert result["scene"] == {
+            "major": "default",
+            "minor": "default",
+            "background": "evening",
+            "bgm": "",
+        }
+
+    def test_minimal_scene_reply_receives_host_defaults(self, engine_static):
+        result = normalize_final_output(
+            engine_static,
+            result={"emotion": "normal", "speech": "欢迎回来。"},
+            visual_defaults=_VISUAL_DEFAULTS,
+            profile_user_id="test",
+            session_id="test",
+            allow_tool_call=False,
+            debug_enabled=False,
+            user_message="我回来了",
+        )
+
+        assert result["status"] == "final"
+        assert result["tool_call"] is None
+        assert result["choices"] == []
+        assert result["character"] == {"outfit": "default"}
+        assert result["scene"] == {
+            "major": "default",
+            "minor": "default",
+            "background": "evening",
+            "bgm": "",
+        }
 
     def test_desktop_pet_preserves_activity(self, engine_desktop):
         """Layer 3A: LLM 输出 activity → desktop_pet 模式下保留。"""

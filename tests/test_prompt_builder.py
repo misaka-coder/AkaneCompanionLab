@@ -1014,10 +1014,12 @@ system = "semantic reinforcement system"
         persona = load_persona_config()
         builder = PromptBuilder(persona)
 
-        self.assertIn("字段固定为 emotion, speech, tool_call", persona.final_fast_mode_prompt)
-        self.assertIn('"speech":"我在哦，欢迎回来。","tool_call":null', persona.final_fast_mode_prompt)
-        self.assertIn("字段固定为 thought, emotion, speech, tool_call", persona.final_debug_mode_prompt)
-        self.assertIn('"speech":"我在哦，欢迎回来。","tool_call":null', persona.final_debug_mode_prompt)
+        self.assertIn('"emotion":"normal","speech":"我在哦，欢迎回来。"', persona.final_fast_mode_prompt)
+        self.assertIn('"thought":"用户只是和我打招呼', persona.final_debug_mode_prompt)
+        self.assertNotIn('"tool_call":null', persona.final_fast_mode_prompt)
+        self.assertNotIn('"status":"final"', persona.final_fast_mode_prompt)
+        self.assertNotIn('"choices":[]', persona.final_fast_mode_prompt)
+        self.assertIn("没有作用的字段省略", persona.final_fast_mode_prompt)
         self.assertNotIn("speech_segments", persona.final_fast_mode_prompt)
         self.assertNotIn("speech_segments", persona.final_debug_mode_prompt)
         prompt = build_scene_static_system_prompt()
@@ -1178,7 +1180,8 @@ system = "semantic reinforcement system"
         self.assertNotIn("角色包身份：Mika", result["system_prompt"])
         self.assertIn("角色包身份：Mika", _history_text(result))
         self.assertNotIn("角色包身份：Mika", result["user_prompt"])
-        self.assertIn("字段固定为 emotion, speech", result["system_prompt"])
+        self.assertIn("当前模式：desktop_pet", result["system_prompt"])
+        self.assertIn("没有作用的字段省略", result["system_prompt"])
         self.assertIn("memory_metadata", result["system_prompt"])
         self.assertIn("memory_metadata", result["fallback"])
         self.assertIn("mood_tags", result["fallback"]["memory_metadata"])
@@ -1200,8 +1203,8 @@ system = "semantic reinforcement system"
         self.assertIn("emotion", desktop.fast_mode_prompt)
         self.assertIn("speech", desktop.fast_mode_prompt)
         self.assertNotIn("speech_segments", desktop.fast_mode_prompt)
-        self.assertIn("tool_call", desktop.fast_mode_prompt)
-        self.assertIn("memory_metadata", desktop.fast_mode_prompt)
+        self.assertNotIn('"tool_call":null', desktop.fast_mode_prompt)
+        self.assertNotIn('"memory_metadata":{}', desktop.fast_mode_prompt)
 
     def test_strip_care_prompt_contract_preserves_non_care_json_fields(self) -> None:
         source = (

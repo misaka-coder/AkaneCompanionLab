@@ -136,16 +136,16 @@ class PromptProfileRegistry:
                 system_block_ids=DESKTOP_PET_SYSTEM_BLOCKS,
                 system_prompt_override=build_desktop_pet_system_prompt(),
                 fast_mode_prompt=(
-                    "\n当前模式：desktop_pet。\n"
-                    "字段固定为 emotion, speech, tool_call, status, choices, persona, activity, memory_metadata, state_request，禁止输出 thought、character、scene。\n"
-                    "输出格式示例如下：\n"
-                    '{"emotion":"normal","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{},"state_request":null}\n'
+                    "当前模式：desktop_pet。\n"
+                    "常规回复：\n"
+                    '{"emotion":"normal","speech":"主人，我在哦。"}\n'
+                    "其它字段仅在有真实作用时按上文定义追加；没有作用的字段省略。"
                 ),
                 debug_mode_prompt=(
-                    "\n当前模式：desktop_pet。\n"
-                    "字段固定为 thought, emotion, speech, tool_call, status, choices, persona, activity, memory_metadata, state_request，且必须把 tool_call 放在 speech 后面；禁止输出 character、scene。\n"
-                    "输出格式示例如下：\n"
-                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。","tool_call":null,"status":"final","choices":[],"persona":{"active":""},"activity":null,"memory_metadata":{},"state_request":null}\n'
+                    "当前模式：desktop_pet（调试输出）。\n"
+                    "常规回复：\n"
+                    '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。"}\n'
+                    "其它字段仅在有真实作用时按上文定义追加；没有作用的字段省略。"
                 ),
             ),
             ClientMode.QQ_TEXT: PromptProfile(
