@@ -29,6 +29,37 @@ PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
 _EPHEMERAL_PROVIDER_BLOCK_TYPES = frozenset(
     {"image_url", "input_image", "image", "input_audio", "audio", "input_file", "file"}
 )
+_CAPABILITY_CONTEXT_SNAPSHOT_NAME = "capabilities"
+
+
+def _capability_context_snapshot_text(tool_context: str) -> str:
+    text = str(tool_context or "").strip()
+    if not text:
+        return ""
+    return (
+        "【当前系统能力与工具上下文】\n"
+        "这是宿主当前真实提供的能力说明；本快照取代更早的同名能力快照。\n"
+        f"{text}"
+    )
+
+
+def _visible_projection_source_ids(projection: dict[str, Any]) -> list[str]:
+    """Return authoritative source ids in the order visible to the model."""
+
+    source_ids = [
+        str(source_id or "").strip()
+        for source_id in list((projection or {}).get("source_ids") or [])
+        if str(source_id or "").strip()
+    ]
+    for message in list((projection or {}).get("current_turn_messages") or []):
+        if not isinstance(message, dict):
+            continue
+        source_ids.extend(
+            str(source_id or "").strip()
+            for source_id in list(message.get("source_ids") or [])
+            if str(source_id or "").strip()
+        )
+    return list(dict.fromkeys(source_ids))
 
 
 def _overlay_ephemeral_provider_evidence(
@@ -674,6 +705,71 @@ def prepare_context(
             ]
             if part
         )
+    tool_context_snapshot: dict[str, Any] = {
+        "ok": False,
+        "status": "skipped",
+        "reason": "projection_not_authoritative",
+    }
+    tool_context_snapshot_visible = False
+    snapshot_writer = getattr(getattr(engine, "memcore_manager", None), "record_prompt_context_snapshot", None)
+    capability_snapshot_lifecycle_enabled = bool(
+        callable(snapshot_writer)
+        and normalized_prompt_scope != "plugin_proactive"
+        and str(tool_prompt_context or "").strip()
+    )
+    if (
+        projection_authoritative
+        and projection_read_active
+        and capability_snapshot_lifecycle_enabled
+    ):
+        tool_context_snapshot = snapshot_writer(
+            snapshot_name=_CAPABILITY_CONTEXT_SNAPSHOT_NAME,
+            content=_capability_context_snapshot_text(tool_prompt_context),
+            visible_source_ids=_visible_projection_source_ids(provider_projection),
+            anchor_source_id=current_source_id,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            timestamp=now_ts,
+        )
+        if tool_context_snapshot.get("ok") and tool_context_snapshot.get("changed"):
+            refreshed_projection = _build_memcore_provider_history(
+                engine,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                current_source_id=current_source_id,
+                allow_history_only=normalized_prompt_scope == "qq_attention",
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                exclude_source_ids=list(excluded_prompt_sources),
+            )
+            if refreshed_projection.get("ok"):
+                provider_projection = refreshed_projection
+                projected_current_message = _projected_current_message_text(
+                    provider_projection,
+                    current_source_id=current_source_id,
+                )
+                if projected_current_message:
+                    current_message_text = projected_current_message
+            else:
+                tool_context_snapshot = {
+                    **dict(tool_context_snapshot),
+                    "ok": False,
+                    "status": "projection_refresh_failed",
+                    "reason": str(refreshed_projection.get("reason") or "projection_build_failed"),
+                }
+        snapshot_source_id = str(tool_context_snapshot.get("source_id") or "").strip()
+        tool_context_snapshot_visible = bool(
+            tool_context_snapshot.get("ok")
+            and (
+                tool_context_snapshot.get("status") == "unchanged"
+                or (
+                    snapshot_source_id
+                    and snapshot_source_id in _visible_projection_source_ids(provider_projection)
+                )
+            )
+        )
     effective_post_user_turns = [
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
@@ -778,6 +874,7 @@ def prepare_context(
             visual_defaults=visual_defaults,
             allow_tool_call=effective_allow_tool_call,
             tool_prompt_context=tool_prompt_context,
+            tool_context_snapshot_visible=tool_context_snapshot_visible,
             debug_enabled=debug_enabled,
             system_prompt_override=system_prompt_override,
             mode_prompt_override=mode_prompt_override,
@@ -806,10 +903,17 @@ def prepare_context(
         }
         if projection_recovery_failure is not None:
             generation_context["memcore_projection_recovery"] = dict(projection_recovery_failure)
-        generation_context["prompt_context_lifecycle"] = {
+        prompt_context_lifecycle = {
             "event_timeline_authoritative": event_timeline_authoritative,
             "skipped_event_backed": list(materialized_contexts.skipped_event_backed),
         }
+        if capability_snapshot_lifecycle_enabled:
+            prompt_context_lifecycle["capability_snapshot"] = {
+                "status": str(tool_context_snapshot.get("status") or "skipped"),
+                "visible": tool_context_snapshot_visible,
+                "changed": bool(tool_context_snapshot.get("changed")),
+            }
+        generation_context["prompt_context_lifecycle"] = prompt_context_lifecycle
         return generation_context
 
     generation_context = _build_generation_context()

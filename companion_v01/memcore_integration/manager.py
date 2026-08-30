@@ -48,6 +48,16 @@ logger = logging.getLogger("akane.memcore")
 _EXPLICIT_RETRIEVAL_KIND_ROOTS = ("tool", "event", "skill", "material")
 _EXPLICIT_KIND_PATTERN = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?")
 _STALE_OPEN_TURN_MAX_AGE_SECONDS = 30 * 60
+_PROMPT_CONTEXT_SOURCE_PREFIX = "prompt-context"
+_PROMPT_CONTEXT_KIND_PREFIX = "material.runtime_context"
+_PROMPT_CONTEXT_RENDERER_ID = "akane.prompt_context_snapshot"
+
+
+def _render_prompt_context_snapshot(entry: Any, timezone: str) -> str:
+    """Render trusted host context as instructions, without timeline metadata."""
+
+    del timezone
+    return str(getattr(entry, "semantic_text", "") or "").strip()
 
 
 _PROCESS_RUNTIME_LOCK = threading.RLock()
@@ -1407,6 +1417,111 @@ class MemcoreManager:
             failed_reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore %s failed: %s", operation, failed_reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=failed_reason)
+
+    def record_prompt_context_snapshot(
+        self,
+        *,
+        snapshot_name: str,
+        content: str,
+        visible_source_ids: list[str] | tuple[str, ...],
+        anchor_source_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        timestamp: int = 0,
+    ) -> dict[str, Any]:
+        """Append one trusted runtime-context snapshot only when it changed.
+
+        The caller supplies source ids from the authoritative MemCore surface.
+        This keeps the decision tied to what the model can actually see: an
+        unchanged visible snapshot is reused, while a changed or compacted-away
+        snapshot is appended after the current stimulus.  The entry is prompt
+        visible but never indexed or retrievable as user memory.
+        """
+
+        operation = "record_prompt_context_snapshot"
+        name = self._kind_segment(snapshot_name, fallback="context")
+        text = str(content or "").strip()
+        if not text:
+            return self._status(operation, False, "invalid_request", reason="snapshot_content_required")
+        digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+        source_prefix = f"{_PROMPT_CONTEXT_SOURCE_PREFIX}:{name}:"
+        latest_hash = ""
+        latest_source_id = ""
+        for raw_source_id in reversed(list(visible_source_ids or [])):
+            source_id = str(raw_source_id or "").strip()
+            if not source_id.startswith(source_prefix):
+                continue
+            parts = source_id.split(":", 4)
+            latest_hash = parts[2] if len(parts) >= 3 else ""
+            latest_source_id = source_id
+            break
+        if latest_hash == digest[:24]:
+            return {
+                **self._status(operation, True, "unchanged"),
+                "changed": False,
+                "snapshot_hash": digest,
+            }
+
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(operation, False, "unavailable", reason=self._reason)
+
+        scope_material = "\x00".join(
+            (
+                str(profile_user_id or ""),
+                str(session_id or ""),
+                str(character_pack_id or ""),
+            )
+        )
+        scope_hash = hashlib.sha256(scope_material.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        anchor_material = "\x00".join(
+            (
+                str(anchor_source_id or "").strip() or f"projection:{int(timestamp or time.time())}",
+                latest_source_id or "initial",
+            )
+        )
+        anchor_hash = hashlib.sha256(anchor_material.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        source_id = f"{source_prefix}{digest[:24]}:{scope_hash}:{anchor_hash}"
+        try:
+            memcore = self._memcore_module or self._import_memcore()
+            stored = system.append_standalone_entry(
+                memcore.TimelineEntryInput(
+                    source_id=source_id,
+                    # Runtime context is prompt material, not a user episode.
+                    # MemCore therefore compacts it as an operational record
+                    # and never lets it become autobiographical memory.
+                    kind=f"{_PROMPT_CONTEXT_KIND_PREFIX}.{name}",
+                    origin=memcore.EntryOrigin.ENVIRONMENT,
+                    turn_role=None,
+                    semantic_text=text,
+                    payload={"snapshot_name": name, "snapshot_hash": digest},
+                    timestamp=int(timestamp or time.time()),
+                    memory_metadata={},
+                    annotation_status=memcore.AnnotationStatus.UNANNOTATED,
+                    retrieval_policy=memcore.RetrievalPolicy.NEVER,
+                    retrieval_visibility=memcore.RetrievalVisibility.NEVER,
+                    semanticize=False,
+                    prompt_visible=True,
+                    trust=memcore.EntryTrust.TRUSTED_INSTRUCTION,
+                    compatibility_role=f"{_PROMPT_CONTEXT_KIND_PREFIX}.{name}",
+                )
+            )
+            return {
+                **self._status(operation, True, "recorded", source_id=stored.source_id),
+                "changed": True,
+                "snapshot_hash": digest,
+            }
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
 
     def record_task_event(
         self,
@@ -4235,6 +4350,14 @@ class MemcoreManager:
                         persona_text = self._persona_text_provider(profile_user_id, character_pack_id)
                     except Exception as exc:
                         logger.debug("memcore persona_text_provider failed: %s", exc)
+                renderer_registry = self._memcore_module.default_renderer_registry()
+                renderer_registry.register_prefix(
+                    _PROMPT_CONTEXT_KIND_PREFIX,
+                    renderer_id=_PROMPT_CONTEXT_RENDERER_ID,
+                    version=1,
+                    renderer=_render_prompt_context_snapshot,
+                    compact_renderer=_render_prompt_context_snapshot,
+                )
                 existing = self._memcore_module.MemorySystem(
                     llm=self._llm_client,
                     namespace=namespace,
@@ -4247,6 +4370,7 @@ class MemcoreManager:
                     token_counter=self._token_counter,
                     persona_text=persona_text,
                     prompt_overrides=self._build_prompt_overrides(persona_text),
+                    renderer_registry=renderer_registry,
                     runtime=self._runtime,
                 )
                 self._systems[key] = existing

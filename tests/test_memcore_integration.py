@@ -5783,6 +5783,89 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(projected_text.count("source: workspace_management"), 1)
         self.assertIn("action: purge", projected_text)
 
+    def test_prompt_context_snapshot_appends_only_on_visible_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "memcore_v01.db",
+                visible_scope="conversation",
+                enable_flavor=True,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                first_text = "【当前系统能力与工具上下文】\nSkill: coding-project"
+                first = manager.record_prompt_context_snapshot(
+                    snapshot_name="capabilities",
+                    content=first_text,
+                    visible_source_ids=[],
+                    anchor_source_id="user-1",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    timestamp=100,
+                )
+                unchanged = manager.record_prompt_context_snapshot(
+                    snapshot_name="capabilities",
+                    content=first_text,
+                    visible_source_ids=[first["source_id"]],
+                    anchor_source_id="user-2",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    timestamp=110,
+                )
+                second_text = "【当前系统能力与工具上下文】\nSkill: coding-project, video-editor"
+                second = manager.record_prompt_context_snapshot(
+                    snapshot_name="capabilities",
+                    content=second_text,
+                    visible_source_ids=[first["source_id"]],
+                    anchor_source_id="user-3",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    timestamp=120,
+                )
+                third = manager.record_prompt_context_snapshot(
+                    snapshot_name="capabilities",
+                    content=first_text,
+                    visible_source_ids=[first["source_id"], second["source_id"]],
+                    anchor_source_id="user-3",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    timestamp=121,
+                )
+                projection = manager.build_context_projection(
+                    provider_profile="openai_chat",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                )
+                first_record = manager._store.get_record_by_source_id(first["source_id"])
+            finally:
+                manager.close()
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(first["changed"])
+        self.assertEqual(unchanged["status"], "unchanged")
+        self.assertFalse(unchanged["changed"])
+        self.assertTrue(second["changed"])
+        self.assertTrue(third["changed"])
+        self.assertNotEqual(first["source_id"], second["source_id"])
+        self.assertNotEqual(first["source_id"], third["source_id"])
+        self.assertNotEqual(second["source_id"], third["source_id"])
+        self.assertEqual(first_record["kind"], "material.runtime_context.capabilities")
+        self.assertEqual(first_record["retrieval_policy"], "never")
+        self.assertEqual(first_record["retrieval_visibility"], "never")
+        self.assertEqual(first_record["trust"], "trusted_instruction")
+        projected_text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
+        self.assertIn(first_text, projected_text)
+        self.assertIn(second_text, projected_text)
+        self.assertNotIn("material.runtime_context", projected_text)
+        self.assertNotIn("snapshot_hash", projected_text)
+
     def test_failed_material_trace_preserves_structured_failure_evidence(self) -> None:
         item = {
             "attachment_id": "attachment::failed",
@@ -7147,6 +7230,75 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("tool result", repr(captured["history_turns"]))
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
+
+    def test_capability_snapshot_is_refreshed_into_the_current_provider_turn(self) -> None:
+        class _SnapshotManager(_PromptContextMemcoreManager):
+            def __init__(self) -> None:
+                super().__init__(
+                    {},
+                    projection_payload={
+                        "ok": True,
+                        "status": "ok",
+                        "provider_profile": "openai_chat",
+                        "messages": [
+                            {
+                                "turn_id": "turn-current",
+                                "payload": {"role": "user", "content": "继续实现"},
+                                "source_ids": ["current"],
+                            }
+                        ],
+                        "stable_prefix_hash": "a" * 64,
+                        "projection_version": 1,
+                        "projection_generation": 1,
+                    },
+                )
+                self.snapshot_calls: list[dict[str, object]] = []
+
+            def record_prompt_context_snapshot(self, **kwargs) -> dict[str, object]:
+                self.snapshot_calls.append(dict(kwargs))
+                source_id = "prompt-context:capabilities:abc123"
+                self.projection_payload["messages"].append(
+                    {
+                        "turn_id": "turn-current",
+                        "payload": {"role": "user", "content": str(kwargs.get("content") or "")},
+                        "source_ids": [source_id],
+                    }
+                )
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "changed": True,
+                    "source_id": source_id,
+                }
+
+        class _SnapshotEngine(_PromptContextEngine):
+            def _build_tool_prompt_context(self, **_kwargs) -> str:
+                return "【当前可用能力概览】\n- coding-project：读取后执行编程任务。"
+
+        manager = _SnapshotManager()
+        engine = _SnapshotEngine(memcore_manager=manager)
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="继续实现",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                character_pack_id="char",
+            )
+
+        self.assertEqual(len(manager.snapshot_calls), 1)
+        self.assertIn("current", manager.snapshot_calls[0]["visible_source_ids"])
+        self.assertTrue(engine.prompt_builder.calls[0]["tool_context_snapshot_visible"])
+        self.assertEqual(len(result["post_user_turns"]), 1)
+        self.assertIn("coding-project", result["post_user_turns"][0]["content"])
+        lifecycle = result["prompt_context_lifecycle"]["capability_snapshot"]
+        self.assertEqual(lifecycle["status"], "recorded")
+        self.assertTrue(lifecycle["visible"])
 
     def test_authoritative_open_turn_keeps_request_only_media_blocks(self) -> None:
         projection_messages = [

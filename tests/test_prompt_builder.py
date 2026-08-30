@@ -433,6 +433,43 @@ system = "semantic reinforcement system"
         self.assertEqual(latent["user_prompt"], "User: 请处理这个文件")
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
+    def test_visible_capability_snapshot_keeps_tool_catalog_out_of_stable_prefix(self) -> None:
+        builder = PromptBuilder(load_persona_config())
+        tool_context = "【当前可用能力概览】\n- coding-project：读取后执行编程任务。"
+        result = builder.build_final_generation_context(
+            now_ts=1_712_400_000,
+            raw_text="User: 继续实现",
+            current_message_text="User: 继续实现",
+            episodic_summary_text="",
+            semantic_summary_text="",
+            memory_text="",
+            current_visual_context="",
+            resource_context="",
+            extra_context="",
+            visual_defaults={
+                "major": "home",
+                "minor": "room",
+                "background": "morning",
+                "bgm": "",
+                "outfit": "default",
+                "emotion": "normal",
+            },
+            allow_tool_call=True,
+            tool_prompt_context=tool_context,
+            tool_context_snapshot_visible=True,
+            debug_enabled=False,
+        )
+
+        history = list(result["history_turns"])
+        self.assertNotIn("【本轮系统能力与工具上下文】", str(history[0].get("content") or ""))
+        self.assertNotIn("coding-project", str(history[0].get("content") or ""))
+        self.assertEqual(
+            result["tool_prompt_context_hash"],
+            hashlib.sha256(tool_context.encode("utf-8")).hexdigest(),
+        )
+        audit = {section["name"]: section["text"] for section in result["prompt_audit_sections"]}
+        self.assertEqual(audit["user.tool_context"], "")
+
     def test_runtime_context_precedes_append_only_history_without_entering_current_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())
         common = {
