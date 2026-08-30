@@ -7451,6 +7451,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         mode_prompt = str(engine.prompt_builder.calls[0]["mode_prompt_override"])
         self.assertIn('"emotion":"normal"', mode_prompt)
         self.assertNotIn('"emotion":"angry"', mode_prompt)
+        self.assertIn("整条响应只能输出一个合法 JSON 对象", mode_prompt)
+        self.assertIn("必须同时包含 emotion、reply_medium、speech 三个常规字段", mode_prompt)
+        self.assertIn("emotion 是历史回复当时的 JSON emotion 字段", mode_prompt)
+        self.assertIn("time 是宿主渲染的历史时间，不是输出字段", mode_prompt)
 
     def test_prompt_budget_compacts_then_refreshes_only_provider_projection(self) -> None:
         initial_projection = {

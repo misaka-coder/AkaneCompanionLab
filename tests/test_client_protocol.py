@@ -166,15 +166,21 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertIn("根据语境选择文字、QQ 可见动作或静默", profile.system_prompt_override)
         self.assertIn("可用 delegate_task 时", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("常规回复", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("非静默回复", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("字段含义", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn(
             '"reply_medium":"text","speech":"主人，我在哦。"',
             profile.mode_prompt_override(debug_enabled=False),
         )
         self.assertIn('{"speech":""}', profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("整条响应只输出 JSON 对象", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("整条响应只能输出一个合法 JSON 对象", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn(
+            "必须同时包含 emotion、reply_medium、speech 三个常规字段",
+            profile.mode_prompt_override(debug_enabled=False),
+        )
         self.assertIn("不要直接输出裸文本", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("emotion 是历史回复当时的 JSON emotion 字段", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("time 是宿主渲染的历史时间，不是输出字段", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("有真实作用时", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("发送给用户的完整消息正文", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("内部协议", profile.mode_prompt_override(debug_enabled=False))

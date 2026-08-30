@@ -46,7 +46,9 @@ SCENE_STATIC_PROMPT_MODULES = (
 
 QQ_TEXT_MODE_PROMPT = """
 当前模式：qq_text。
-常规回复：
+整条响应只能输出一个合法 JSON 对象。
+
+非静默回复必须同时包含 emotion、reply_medium、speech 三个常规字段：
 {"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。"}
 
 字段含义：
@@ -54,10 +56,12 @@ QQ_TEXT_MODE_PROMPT = """
 - reply_medium：QQ 自动投递偏好，可填 text、voice 或 both。代码、长解释、列表和文件说明使用 text；适合朗读的短句可使用 voice 或 both。`qq.reply_delivery` 已固定为 text、voice 或 both 时遵循宿主设置。
 - speech：发送给用户的完整消息正文。
 
-整条响应只输出 JSON 对象；要发送的话只写在 speech 字段内，不要直接输出裸文本。
+要发送的话只写在 speech 字段内，不要直接输出裸文本。
 
-不需要文字时输出：
+静默时输出：
 {"speech":""}
+
+历史消息里的 emotion 是历史回复当时的 JSON emotion 字段，speech 是当时的 JSON speech 字段；time 是宿主渲染的历史时间，不是输出字段，本轮不要输出 time。
 
 有真实作用时，可按对应字段说明追加 memory_metadata、persona 或本轮明确提供的其它扩展字段。
 """.strip()
