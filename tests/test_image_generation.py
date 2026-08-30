@@ -69,8 +69,8 @@ class ImageGenerationTests(unittest.TestCase):
         inspect_description = INSPECT_ATTACHMENT_TOOL_SPEC.description
         load_description = LOAD_MATERIAL_TOOL_SPEC.description
 
-        self.assertIn("never sends original image pixels", inspect_description)
-        self.assertIn("use load_material", inspect_description)
+        self.assertIn("metadata and any existing summary", inspect_description)
+        self.assertIn("pass the exact returned handle to load_material", inspect_description)
         self.assertIn("original pixels", load_description)
         self.assertIn("regardless of who sent them", load_description)
 

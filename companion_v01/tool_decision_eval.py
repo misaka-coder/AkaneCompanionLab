@@ -759,10 +759,10 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
         )
     if "open_memory" in names:
         lines.append(
-            "open_memory 只展开记忆工具明确返回的 memory_id；正文已足够或与答案无关时不要调用。"
+            "记忆工具返回 memory_id 后，open_memory 可展开对应正文或来源；紧凑结果缺少作答所需证据时使用。"
         )
     if {"retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"} & names:
-        lines.append("不要为了普通闲聊、稳定常识、情绪陪伴、或当前上下文已经足够的问题调用记忆工具。")
+        lines.append("当前上下文足以作答时直接回复；需要未显示的旧事实、原始时间线或记忆来源时使用相应记忆工具。")
     if "list_reminders" in names:
         lines.append(
             "list_reminders 只用于用户想查看自己当前有哪些提醒；普通闲聊或设置新提醒时不要调用。"

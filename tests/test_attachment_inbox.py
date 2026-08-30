@@ -799,8 +799,8 @@ class AttachmentInboxTests(unittest.TestCase):
 
             inspect_handler = InspectAttachmentToolHandler(attachment_service=service)
             inspect_instruction = inspect_handler.build_prompt_instruction()
-            self.assertIn("不会把图片原始像素交给视觉模型", inspect_instruction)
-            self.assertIn("再调用 load_material", inspect_instruction)
+            self.assertIn("元数据和已有摘要", inspect_instruction)
+            self.assertIn("由 load_material 读取", inspect_instruction)
             inspected = inspect_handler.execute(
                 call=inspect_handler.normalize_call({"type": "inspect_attachment", "target": "晚餐"}) or {},
                 context=context,

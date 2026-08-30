@@ -463,7 +463,7 @@ class McpManagementService:
             f"【可按需加载的 MCP｜目录 {revision}】",
             "MCP 工具默认不占用本轮 schema。可见历史已明确给出准确 server_id、tool_name 和参数契约时，"
             "可用 invoke_mcp 直接复用；否则调用 load_mcp 查看完整工具定义，可一次加载多个。"
-            "两者都不安装软件、不改变权限；load_mcp 展开的 schema 仅在当前任务回合有效。",
+            "调用只使用已注册连接及其现有权限；load_mcp 展开的 schema 仅在当前任务回合有效。",
         ]
         lines.extend(f"- {server_id}：{description}" for server_id, _name, description, _count in rows)
         return "\n".join(lines)

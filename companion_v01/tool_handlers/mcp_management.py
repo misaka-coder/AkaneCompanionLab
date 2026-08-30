@@ -51,7 +51,7 @@ class LoadMcpToolHandler(BaseToolHandler):
         return {"enabled": self.service is not None, "status": "ready" if self.service is not None else "unavailable"}
 
     def build_prompt_instruction(self) -> str:
-        return "- load_mcp：按提示中的 MCP 目录加载一个或多个 MCP；原生工具只在当前任务回合可用。"
+        return "- load_mcp：按 MCP 目录的 server_id 加载一个或多个服务器的完整工具定义；定义仅在当前任务回合可用。"
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
@@ -103,7 +103,7 @@ class InvokeMcpToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- invoke_mcp：若当前可见历史已明确给出 MCP 的 server_id、tool_name 和参数格式，可直接复用；"
-            "不知道准确契约时先调用 load_mcp。它不会绕过目标工具原有的校验、权限或审批。"
+            "不知道准确契约时先调用 load_mcp；调用沿用目标工具的校验、权限和审批。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

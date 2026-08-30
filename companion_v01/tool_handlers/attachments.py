@@ -32,12 +32,10 @@ class InspectAttachmentToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- inspect_attachment：只用于列出当前材料，或读取单个材料的元数据和已有摘要；"
-            "它不会把图片原始像素交给视觉模型。"
+            "- inspect_attachment：列出当前材料，或读取单个材料的元数据和已有摘要。"
             '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
-            "群聊中的 latest 只指本轮 QQ 消息明确绑定的材料；本轮没有材料时会要求先列出工作台或使用精确 handle，"
-            "不会把其他群友或更早的材料冒充成本轮图片。"
-            "如果需要实际查看图片内容、辨认文字或核对视觉细节，先取得精确 handle，再调用 load_material。"
+            "群聊中的 latest 只指本轮 QQ 消息明确绑定的材料；本轮没有绑定材料时，结果会要求列出工作台或使用精确 handle。"
+            "图片像素、文字和视觉细节由 load_material 读取，参数使用本工具返回的精确 handle。"
             "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
             "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
         )
@@ -159,14 +157,11 @@ class LoadMaterialToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- load_material：把当前会话工作区里较早图片的原始像素交给视觉模型，"
-            "这是实际查看历史图片内容的入口；不受图片发送者身份影响。"
+            "用于实际查看历史图片内容，图片发送者不影响读取。"
             '格式为 {"type":"load_material","targets":["img_001","gen_002"],'
             '"purpose":"重新比较细节"}。'
-            "inspect_attachment 只能提供元数据和已有摘要，不能代替本工具。"
-            "当前消息已经通过原生多模态通道带图、或已有摘要足够时不必重复调用。"
-            "purpose 可省略，只用于写中性的核验目标，不是图片内容证据；不得在其中预设人物、数字或结论，"
-            "实际像素和可见上下文始终优先。"
-            "只能填写工作区 handle，不能填写路径、URL 或 base64。"
+            "purpose 可省略，只描述中性的核验目标；像素和可见上下文是图像内容证据。"
+            "targets 使用工作区 handle，不使用路径、URL 或 base64。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:

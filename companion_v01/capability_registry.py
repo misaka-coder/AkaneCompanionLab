@@ -869,8 +869,8 @@ INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
     display_name="Inspect attachment",
     description=(
         "List the current attachment workspace, or read one material's metadata and existing summary. "
-        "This tool never sends original image pixels to the vision model; use load_material with the exact handle "
-        "when image contents, visible text, or visual details must actually be examined. "
+        "The result contains metadata and any existing summary. To examine image pixels, visible text, or visual "
+        "details, pass the exact returned handle to load_material. "
         "In QQ groups, 'latest' is restricted to attachments explicitly bound to the current turn; "
         "use 'all' or an exact handle for historical materials. "
         "To compare multiple materials, prefer sync_attachment_workspace."
@@ -900,8 +900,8 @@ LOAD_MATERIAL_TOOL_SPEC = CapabilityToolSpec(
     display_name="Load material",
     description=(
         "Send the original pixels of one to five images from the current session's workspace into the next multimodal "
-        "model round. This is the tool for actually examining historical image contents, regardless of who sent them; "
-        "inspect_attachment only returns metadata and an existing summary."
+        "model round. It examines historical image contents regardless of who sent them. Use inspect_attachment first "
+        "when the exact handle is unknown."
     ),
     input_schema={
         "type": "object",
@@ -2785,7 +2785,7 @@ class CapabilityRegistry:
                 layer="common",
                 modes=COMMON_CLIENT_MODES,
                 tools=COMMON_TOOL_NAMES,
-                light_hint="需要过去对话、长期事实、偏好或约定时用 retrieve_memory；跨多日或群聊记录很多时用 browse_memory 先看目录；已知具体时段时用 read_memory_timeline 读原文；工具返回 memory_id 且紧凑内容不足时用 open_memory 展开。任务明确匹配 Skills 目录中的说明时用 load_skill 渐进加载操作手册。普通闲聊和稳定常识直接回复。你还可以设置/查看/取消提醒、维护表达侧面、记录任务或委派后台工坊。",
+                light_hint="记忆：retrieve_memory 查找旧事实、偏好与约定；browse_memory 浏览多日目录；read_memory_timeline 读取已知时段的原始时间线；open_memory 用返回的 memory_id 展开正文或来源。Skills：任务匹配目录说明时用 load_skill 加载手册。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -2793,10 +2793,10 @@ class CapabilityRegistry:
                 layer="web",
                 modes=COMMON_CLIENT_MODES,
                 tools=WEB_SEARCH_TOOL_NAMES,
-                light_hint="需要当前/最新/实时/近期的公开信息时用 web_search，不必等用户说“搜索”；例：日经指数、七月新番、最新模型价格。稳定常识和闲聊直接回复。不要访问私密、内网或登录内容。",
+                light_hint="web_search 检索当前、实时或需要公开来源验证的信息，例如指数、新番目录和模型价格；它只访问公开互联网，私密、内网和登录资源会返回不可用。",
                 trigger=_always,
                 unavailable_reason="联网搜索服务当前正在检测，或没有通过所在网络节点的可用性检查。",
-                recovery_hint="网络或搜索服务恢复后会自动重新开放；当前不要假装已经查到实时结果。",
+                recovery_hint="网络或搜索服务恢复后会自动重新开放；恢复前可基于已有稳定知识回答，并明确实时信息尚未核验。",
             ),
             CapabilityModule(
                 name="execution",
@@ -2804,13 +2804,9 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "桌宠本机模式下，project_inspect、workspace_write/workspace_patch 与 exec_run 共用 cwd 路径规则，"
-                    "可直接在已发现的真实目录读写、局部修改、构建和测试；需要跨会话查找项目时再用 manage_project_workspace 注册/选择并使用 alias:project；"
-                    "当明确需要查文件、处理数据、跑脚本或做批量操作时，可以用 exec_run "
-                    "以宿主用户权限在受信任工作区执行命令，用 exec_status 查询进度、exec_cancel 停止；"
-                    "只有宿主在本机启用执行时这项能力才会出现；需要创建或更新 Skill 时，可在执行工作区写草稿后用 manage_skill 原子发布；"
-                    "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录；"
-                    "主人可用 mcp_manage 管理本 Host 的 MCP 连接，安装外部包仍用 exec_run。"
+                    "桌宠本机执行：project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
+                    "可在已发现的真实目录读取、修改、构建和测试；manage_project_workspace 只为跨会话发现和 alias:project。"
+                    "exec_status 查询长命令进度，exec_cancel 停止命令。"
                 ),
                 trigger=_execution_enabled,
                 unavailable_reason="本机执行提供者当前没有通过可用性检查。",
@@ -2822,14 +2818,9 @@ class CapabilityRegistry:
                 modes=(ClientMode.QQ_TEXT,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "当前 QQ 会话已由主人开放 Shell；project_inspect、workspace_write/workspace_patch 与 exec_run 共用 cwd 路径规则，"
-                    "可直接在后端机器已发现的真实目录读写、局部修改、构建和测试；需要跨会话查找项目时再用 manage_project_workspace 注册/选择并使用 alias:project；"
-                    "当明确需要查询后端机器状态、处理数据或跑脚本时，可以用 exec_run "
-                    "执行命令、用 exec_status 查询进度、exec_cancel 停止；命令运行在 QQ Bot 后端所在机器，"
-                    "不会隐式访问聊天成员的个人电脑。主人还可把执行工作区中的 Skill 草稿用 manage_skill 原子发布；"
-                    "删除 managed Skill 时先 load_skill 确认来源，再用 Shell 在 alias:skills 删除精确相对目录；"
-                    "主人可用 mcp_manage 管理 Bot Host 的 MCP 连接，安装外部包仍用 exec_run；"
-                    "主人可用 /shell status 查看本会话权限。"
+                    "当前 QQ 会话已由主人开放 Shell；project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
+                    "可在 QQ Bot 后端所在机器的已发现真实目录中读取、修改、构建和测试；manage_project_workspace 只为跨会话发现和 alias:project。"
+                    "exec_status 查询长命令进度，exec_cancel 停止命令；/shell status 查看本会话权限。"
                 ),
                 trigger=_execution_qq_enabled,
                 unavailable_reason="当前 QQ 会话的 Shell 没有开放，或执行提供者没有通过可用性检查。",
@@ -2880,7 +2871,7 @@ class CapabilityRegistry:
                 layer="shared_image_material",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=IMAGE_MATERIAL_TOOL_NAMES,
-                light_hint="需要重新观察当前会话较早的原图或生成图时，可以按 handle 加载原始图片；当前轮已经带图或摘要足够时不必重复加载。",
+                light_hint="load_material 按 handle 把当前会话较早原图或生成图的像素送入视觉回合；inspect_attachment 用于先确认材料及其 handle。",
                 trigger=_has_image_context,
                 latent_reason="当前会话还没有可重新加载的图片材料。",
                 activation_hint="用户上传图片或生成一张图片后，这项材料读取能力会自动开放。",

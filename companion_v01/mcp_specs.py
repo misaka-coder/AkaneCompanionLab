@@ -10,8 +10,8 @@ LOAD_MCP_TOOL_SPEC = CapabilityToolSpec(
     display_name="Load MCP tools",
     description=(
         "Load the native tools from one or more installed and enabled MCP servers for the current "
-        "agent turn. Use the compact MCP directory in the prompt to choose server_ids. This does "
-        "not install software, change permissions, or persist tool schemas into later turns."
+        "agent turn. Use the compact MCP directory in the prompt to choose server_ids. The call reads registered "
+        "servers under their existing permissions; expanded schemas remain available for this turn only."
     ),
     input_schema={
         "type": "object",
@@ -44,8 +44,8 @@ INVOKE_MCP_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "Invoke one exact tool on an installed and enabled MCP server without loading every tool schema. "
         "Use this when the server_id, tool_name, and arguments are already known from visible history or "
-        "earlier work. If the exact contract is unknown, call load_mcp first. The selected MCP tool still "
-        "uses its own validation, permission, approval, and execution policy."
+        "earlier work. If the exact contract is unknown, call load_mcp first. The selected MCP tool uses its "
+        "registered validation, permission, approval, and execution policy."
     ),
     input_schema={
         "type": "object",
