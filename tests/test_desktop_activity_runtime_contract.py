@@ -106,11 +106,11 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("affection: 62/100 (affection_tier=warm)", prompt)
         self.assertIn("time_phase:", prompt)
         self.assertNotIn("历史聊天、历史投喂、历史道具效果", prompt)
-        self.assertIn("可信当前状态，优先级高于历史聊天、记忆、旧投喂", system_prompt)
+        self.assertIn("可信当前状态，覆盖较早的聊天、记忆、投喂和台词", system_prompt)
         self.assertIn("hunger_level=critical", system_prompt)
-        self.assertIn("不能说成不饿、胃口消失或继续硬撑", system_prompt)
-        self.assertIn("warm 可以偶尔柔软、打趣或主动说话", system_prompt)
-        self.assertIn("不要生硬复述数值", system_prompt)
+        self.assertIn("饥饿可讨食或请求投喂", system_prompt)
+        self.assertIn("warm 可柔软、打趣或主动", system_prompt)
+        self.assertIn("不复述数值", system_prompt)
 
     def test_desktop_care_prompt_combines_hungry_and_sleepy_state(self) -> None:
         prompt = self.engine._build_turn_extra_user_context(
@@ -133,10 +133,10 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("hunger=5/100, hunger_level=critical", prompt)
         self.assertIn("energy=4/100, energy_level=critical", prompt)
         self.assertIn("affection_tier=stranger", prompt)
-        self.assertIn("两项同时 critical", system_prompt)
-        self.assertIn("直接讨食、请求投喂", system_prompt)
-        self.assertIn("显出疲惫、话变少或想休息", system_prompt)
-        self.assertIn("stranger 保持礼貌距离", system_prompt)
+        self.assertIn("两项同时 critical 时同时体现", system_prompt)
+        self.assertIn("饥饿可讨食或请求投喂", system_prompt)
+        self.assertIn("疲惫可话少或想休息", system_prompt)
+        self.assertIn("stranger 礼貌有距离", system_prompt)
 
     def test_desktop_pet_frontend_consumes_authoritative_care_snapshot(self) -> None:
         source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
@@ -190,7 +190,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("energy=23/100, energy_level=low", prompt)
         self.assertIn("affection: 14/100 (affection_tier=stranger)", prompt)
         self.assertIn("scope=qq_text", system_prompt)
-        self.assertIn("不要混用两条关系线", system_prompt)
+        self.assertIn("使用 QQ 独立好感", system_prompt)
 
     def test_audio_playback_prompt_does_not_imply_interruption(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
@@ -312,7 +312,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             profile.mode_prompt_override(debug_enabled=True),
         ]
 
-        self.assertTrue(any("activity 只用于桌宠播放控制" in prompt for prompt in prompts))
+        self.assertTrue(any("桌宠需要播放、暂停、继续、停止" in prompt for prompt in prompts))
         self.assertTrue(any("activity 是给桌宠执行的请求" in prompt for prompt in prompts))
         self.assertTrue(any("不要在 speech 里假装动作已经播放、暂停或继续" in prompt for prompt in prompts))
 

@@ -1083,7 +1083,7 @@ system = "semantic reinforcement system"
         self.assertIn("只能从本轮给你的角色包资源清单里选择，不要编造不存在的 emotion", prompt)
         self.assertIn("用户要求生成、转换、发送、处理、导出、提取、分析文件", prompt)
         self.assertIn("activity 是给桌宠执行的请求", prompt)
-        self.assertIn("affinity 是本轮好感度变化量", prompt)
+        self.assertIn("affinity 是本轮好感变化量", prompt)
         self.assertIn("不是当前总值", prompt)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", prompt)
         self.assertNotIn("scene.major 表示场景大类", prompt)
