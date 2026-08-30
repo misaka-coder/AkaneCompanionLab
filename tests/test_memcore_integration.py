@@ -1010,7 +1010,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(steer_message["payload"]["role"], "user")
         self.assertIn("改一下，先把测试补齐", str(steer_message["payload"]["content"]))
-        self.assertRegex(str(steer_message["payload"]["content"]), r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]")
+        self.assertRegex(str(steer_message["payload"]["content"]), r"time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}")
         self.assertEqual(steer_message["turn_id"], opened["turn_id"])
 
     def test_provider_protocol_maps_to_projection_profile_without_bot_specific_branching(self) -> None:
@@ -4327,19 +4327,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
         projected = [str(payload.get("content") or "") for payload in projection["payloads"]]
         self.assertTrue(
             any(
-                "message.user.observed" in text
-                and "actor: 张三 (id=qq:1)" in text
-                and "target_actor: 天为 (id=qq:40004)" in text
+                "actor: 张三 (id=qq:1)" in text
+                and "target: 天为 (id=qq:40004)" in text
                 and "【张三】这是群友之间的讨论" in text
-                and '"actor_display_name":"天为"' in text
-                and '"actor_id":"qq:40004"' in text
-                and '"attachment_count":2' in text
-                and '"conversation_id":"group-1"' in text
-                and '"conversation_kind":"group"' in text
-                and '"excerpt":"今晚八点开黑"' in text
-                and '"message_id":"qq-message-previous"' in text
-                and f'"timestamp":{_ts(2026, 7, 29, 11, 30)}' in text
-                and '"forward_references":[{' in text
+                and "reply_to:" in text
+                and "actor: 天为 (id=qq:40004)" in text
+                and "attachment_count: 2" in text
+                and "conversation_id: group-1" in text
+                and "conversation_kind: group" in text
+                and "text: 今晚八点开黑" in text
+                and "message_id: qq-message-previous" in text
+                and "time: 2026-07-29 11:30" in text
+                and "forwards: [{" in text
                 and '"source_part_id":"group-observed-1:2:forward"' in text
                 and '"text":"转发节点正文"' in text
                 for text in projected
@@ -4348,11 +4347,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "message.user" in text
-                and "actor: 李四 (id=qq:2)" in text
-                and "target_actor: assistant" in text
-                and "【李四】你怎么看?" in text
-                and '"mentioned_actors":[{"actor_id":"qq:40004","display_name":"天为"}]' in text
+                "actor: 李四 (id=qq:2)" in text
+                and "target: assistant" in text
+                and "【李四】你怎么看？" in text
+                and 'mentions: ["天为 (id=qq:40004)"]' in text
                 for text in projected
             ),
             projected,
@@ -8991,7 +8989,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
 
 
-    def test_empty_speech_closes_turn_with_exact_provider_envelope_without_fake_semantic_text(self) -> None:
+    def test_empty_speech_keeps_raw_audit_without_replaying_provider_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",
@@ -9037,12 +9035,109 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="s1",
                     character_pack_id="char",
                 )
+                stored_final = manager._store.get_record_by_source_id("assistant_silent_test")
             finally:
                 manager.close()
 
         payloads = list(projection["payloads"])
-        self.assertIn({"role": "assistant", "content": '{"speech":""}'}, payloads)
+        self.assertEqual(stored_final["payload"]["provider_output_raw"], '{"speech":""}')
+        self.assertTrue(
+            any(
+                payload.get("role") == "assistant"
+                and str(payload.get("content") or "").endswith("speech:")
+                for payload in payloads
+            )
+        )
+        self.assertNotIn('{"speech":""}', repr(payloads))
         self.assertNotIn({"role": "assistant", "content": ""}, payloads)
+
+
+    def test_engine_completion_keeps_raw_as_audit_and_does_not_freeze_it_as_history(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        captured: dict[str, object] = {}
+
+        class _Manager:
+            def complete_input_turn(self, **kwargs):
+                captured.update(kwargs)
+                return {"ok": True, "status": "completed"}
+
+        engine._memcore_manager_if_enabled = lambda: _Manager()
+        engine._chat_provider_protocol_for_memcore = lambda **_kwargs: "responses"
+        engine._warn_memcore_write_result = lambda *_args, **_kwargs: None
+
+        result = engine._complete_memcore_input_turn(
+            turn_id="projection-v5-turn",
+            assistant_record={
+                "source_id": "projection-v5-assistant",
+                "content": "完成了。",
+                "timestamp": 100,
+                "memory_metadata": {"response_emotion": "得意"},
+            },
+            memory_metadata={},
+            provider_output_raw='{"status":"final","speech":"完成了。"}',
+            profile_user_id="u1",
+            session_id="s1",
+            character_pack_id="char",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["provider_profile"], "responses")
+        self.assertEqual(captured["provider_output_raw"], '{"status":"final","speech":"完成了。"}')
+        self.assertNotIn("provider_projection", captured)
+
+    def test_manager_projects_parsed_emotion_without_replaying_raw_json(self) -> None:
+        from companion_v01.memcore_integration.manager import MemcoreManager
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(
+                backend="memcore",
+                storage_path=Path(temp_dir) / "projection-v5.sqlite3",
+                visible_scope="conversation",
+                enable_flavor=False,
+                shadow_compare=False,
+                llm=_FakeLLM(),
+                embedding_provider=_FakeEmbeddingProvider(),
+            )
+            try:
+                opened = manager.begin_input_turn(
+                    {"source_id": "projection-v5-user", "content": "小灵聪明", "timestamp": 100},
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                completed = manager.complete_input_turn(
+                    turn_id=str(opened["turn_id"]),
+                    assistant_record={
+                        "source_id": "projection-v5-final",
+                        "content": "那可不。",
+                        "timestamp": 101,
+                        "memory_metadata": {"response_emotion": "得意"},
+                    },
+                    memory_metadata={},
+                    provider_output_raw=(
+                        '{"tool_call":null,"status":"final","emotion":"得意",'
+                        '"speech":"那可不。","choices":[]}'
+                    ),
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+                self.assertTrue(completed["ok"], completed)
+                projection = manager.build_context_projection(
+                    provider_profile="responses",
+                    profile_user_id="u1",
+                    session_id="s1",
+                    character_pack_id="char",
+                )
+            finally:
+                manager.close()
+
+        assistant_content = projection["payloads"][-1]["content"]
+        self.assertIn("emotion: 得意", assistant_content)
+        self.assertIn("speech:\n那可不。", assistant_content)
+        self.assertNotIn("tool_call", assistant_content)
+        self.assertNotIn("choices", assistant_content)
 
 
 class _CaptureBatchManager:

@@ -1481,25 +1481,16 @@ class AkaneMemoryEngine:
         if manager is None or not str(turn_id or "").strip():
             return {}
         try:
-            provider_profile = ""
-            provider_projection: dict[str, Any] | None = None
-            if str(provider_output_raw or ""):
-                provider_profile = self._chat_provider_protocol_for_memcore(
-                    chat_model_override=chat_model_override,
-                    execution_target=execution_target,
-                )
-                if provider_profile:
-                    provider_projection = {
-                        "role": "assistant",
-                        "content": str(provider_output_raw),
-                    }
+            provider_profile = self._chat_provider_protocol_for_memcore(
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+            )
             result = manager.complete_input_turn(
                 turn_id=turn_id,
                 assistant_record=assistant_record,
                 memory_metadata=memory_metadata,
                 provider_output_raw=str(provider_output_raw or ""),
                 provider_profile=provider_profile,
-                provider_projection=provider_projection,
                 annotation_status=(
                     str(annotation_status or "").strip()
                     or ("accepted_model" if isinstance(memory_metadata, dict) else "missing")

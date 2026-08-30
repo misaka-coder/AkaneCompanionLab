@@ -1701,11 +1701,18 @@ class MemcoreManager:
         if system is None:
             return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
         try:
-            resolved_provider_profile = (
-                resolve_memcore_provider_profile(provider_profile)
-                if isinstance(provider_projection, dict)
+            resolved_provider_profile = resolve_memcore_provider_profile(provider_profile) if provider_profile else ""
+            assistant_metadata = (assistant_record or {}).get("memory_metadata")
+            emotion = (
+                str(assistant_metadata.get("response_emotion") or "").strip()
+                if isinstance(assistant_metadata, dict)
                 else ""
             )
+            final_payload: dict[str, Any] = {
+                "semantic_tags": list((assistant_record or {}).get("semantic_tags") or []),
+            }
+            if emotion:
+                final_payload["emotion"] = emotion
             result = system.complete_turn(
                 turn_id=resolved_turn_id,
                 semantic_text=str((assistant_record or {}).get("content") or ""),
@@ -1714,9 +1721,7 @@ class MemcoreManager:
                 annotation_status=str(annotation_status or "missing"),
                 timestamp=int((assistant_record or {}).get("timestamp") or time.time()),
                 source_id=source_id,
-                payload={
-                    "semantic_tags": list((assistant_record or {}).get("semantic_tags") or []),
-                },
+                payload=final_payload,
                 provider_profile=resolved_provider_profile,
                 provider_projection=(
                     dict(provider_projection)
@@ -3803,6 +3808,10 @@ class MemcoreManager:
             content = str(raw.get("content") or "")
             semantic_text = content
             payload = {"text": content}
+            if role == "assistant":
+                emotion = str(metadata.get("response_emotion") or "").strip()
+                if emotion:
+                    payload["emotion"] = emotion
             forward_references = raw.get("forward_references")
             if not forward_references and isinstance(metadata, dict):
                 forward_references = metadata.get("forward_references")
