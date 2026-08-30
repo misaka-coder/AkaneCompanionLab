@@ -53,8 +53,9 @@ permissions; use only the tools visible in the current request.
   or a real external blocker remains.
 - Inspect the working location before changing it. Use `project_inspect(action="list")`
   to discover paths, `search` to locate symbols or text with line numbers, and `read`
-  for exact line ranges plus the current SHA-256. Continue a paged result only when the
-  visible evidence is insufficient; repeat its selectors exactly with the opaque cursor.
+  for exact line ranges plus the current SHA-256. Paged results are complete logical pages.
+  Continue only when the visible evidence is insufficient, and repeat its selectors exactly
+  with the opaque cursor.
   A `stale_cursor` means the source changed, so start a fresh inspection instead of
   combining old and new pages. Use Shell for version-control state and specialized
   repository queries, then preserve user work and local conventions.
@@ -93,8 +94,7 @@ permissions; use only the tools visible in the current request.
   dependency graph remains version-correct. For Python, Rust, Go, Java, and other
   ecosystems, respect the existing project environment and lock files; create a new
   project-local environment only when version isolation is actually required.
-- Run commands in the same cwd used by the file tools; a registered project may use
-  `cwd="alias:project"`. Prefer `workspace_write` or `workspace_patch` for long source
+- Prefer `workspace_write` or `workspace_patch` for long source
   because they avoid quoting and preserve atomic/hash checks, but valid Shell commands
   are not rejected solely for crossing a private character threshold.
 - Preserve dependent-step failures. Use `&&` or explicit status checks on POSIX/cmd.
@@ -103,8 +103,6 @@ permissions; use only the tools visible in the current request.
   failure.
 - `running` plus `run_id` is a live task, not failure. Use `exec_status` and its cursor;
   cancel only when warranted, and claim cancellation only after confirmed `cancelled`.
-- Long tool results are complete logical pages. If the current page is enough, answer;
-  otherwise use its cursor. On stale/changed cursors, do not combine old and new pages.
 - Treat `status`, `reason`, `recommended_action`, stdout, stderr, and exit code as the
   next-step API. Do not blindly repeat an unchanged failed call.
 

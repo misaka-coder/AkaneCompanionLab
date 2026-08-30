@@ -92,31 +92,26 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 ),
                 PromptBlock(
                     id="mode_schema_contract",
-                    text=("你会收到当前模式对应的字段清单和输出示例，必须严格按当前模式执行。"),
+                    text=("下面的字段清单和示例只适用于当前模式；按它输出。"),
                 ),
                 PromptBlock(
                     id="field_order",
                     text=(
-                        "输出最终 JSON 时，请先完整输出 emotion；若当前字段清单含 reply_medium，"
-                        "紧接着输出 reply_medium；然后完整输出 speech，再输出 tool_call，"
-                        "最后继续输出后面的字段。"
+                        "最终 JSON 的字段顺序：emotion，当前模式需要时的 reply_medium，speech，tool_call，其余字段。"
                     ),
                 ),
                 PromptBlock(
                     id="speech_streaming",
                     text=(
-                        "需要向用户发送文字时，speech 是唯一正文，必须完整填写，不要另造分段正文；"
-                        "无需文字时按当前模式协议处理。\n"
-                        "使用当前输出语言自然、清晰的句末标点；每个可独立朗读的完整意思应以合适的句末标点或换行结束，"
-                        "方便系统边生成边展示或播放。不要为了分段把同一句话硬拆碎。"
+                        "speech 是唯一用户可见正文；不要另造分段正文字段。无需文字时按当前模式的静默规则输出。\n"
+                        "用自然标点或换行结束完整意思，方便流式展示和朗读；不要把一句话硬拆碎。"
                     ),
                 ),
                 PromptBlock(
                     id="memory_metadata",
                     text=(
-                        "memory_metadata 只用于后台记忆入库，不展示给用户。只有存在真实记忆信号时才输出，"
-                        "并只保留非空字段；"
-                        "没有信号时省略该字段。\n"
+                        "memory_metadata 只用于后台记忆入库，不展示给用户。有真实记忆信号时只填写非空字段；"
+                        "没有信号时，固定字段模式输出空对象，可选字段模式省略。\n"
                         + build_memory_metadata_instruction(
                             enable_flavor=bool(getattr(config, "MEMCORE_ENABLE_FLAVOR", True)),
                             require_disabled_mood_field=True,
@@ -126,10 +121,8 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="tool_call",
                     text=(
-                        "tool_call 是兼容字段，必须放在 speech 之后。\n"
-                        "请求中直接附带的工具要走真实工具调用，此字段保持 null；"
-                        "只有“兼容 JSON 工具”清单明确给出工具及格式时，才在这里一次调用一个。\n"
-                        "不需要兼容工具、没有兼容清单或正在等待真实工具结果时都输出 null。"
+                        "tool_call 是 speech 之后的兼容字段。请求中直接附带的工具必须走真实工具调用，tool_call 保持 null。\n"
+                        "只有本轮出现“兼容 JSON 工具”清单时，才按清单一次调用一个；其它情况输出 null。"
                     ),
                 ),
                 PromptBlock(
@@ -143,30 +136,24 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="status_choices",
                     text=(
-                        "仍需在当前回合操作时，直接发出下一项真实工具调用，status 可以输出 continue。"
-                        "没有真实工具调用时，不要只用 status=continue 要求宿主猜测下一步或空转；"
-                        "此时应向用户诚实交付当前结果或真实阻塞，并将 status 输出 final。"
-                        "不能把未验证事项写成通过。\n"
-                        "如果你主动给用户提供可选项，也可以输出 choice。\n"
-                        "choices 必须是 JSON 数组；没有选项时输出空数组。\n"
-                        "每个选项都应是包含 id 和 text 的对象，text 要短一些。"
+                        "仍需操作时直接发出下一项真实工具调用，status 可为 continue。没有工具调用时，"
+                        "用 status=final 交付已证实的结果或说明真实阻塞；不要用 continue 空转，也不要把未验证事项写成通过。\n"
+                        "choices 是可选项数组；没有选项时输出 []。每项包含 id 和简短 text。"
                     ),
                 ),
                 PromptBlock(
                     id="tool_execution_intent",
                     text=(
-                        "用户说出「生成/转换/发送/处理/导出/提取/分析文件」，或说「开始/继续/直接做」——这是工具调用的触发信号，直接调用对应工具，不要用语言说「我来做」再等确认。\n"
-                        "对会让用户明显等待、且过程对用户可感知的动作，可以在同一条真实工具调用消息里先说一句符合当前人设的简短过程说明，再随即附带工具调用；"
-                        "不要只说说明却停止执行。快速查询、记忆读取或无需等待的动作可以静默调用，不强制每个工具都说话。\n"
-                        "工具调用前的过程说明只能表达正在查看、准备或处理；任务工作区也只记录进度，二者都不能替代真正执行。"
+                        "用户要求生成、转换、发送、处理、导出、提取、分析文件，或说开始、继续、直接做时，立即调用合适工具；不要只口头承诺。\n"
+                        "明显需要等待的动作可先用一句符合人设的话说明正在处理，并在同一条消息中发出工具调用。快速动作可静默调用。\n"
+                        "过程说明和任务记录都不是执行证据；只有真实工具结果能证明动作发生。"
                     ),
                 ),
                 PromptBlock(
                     id="time_awareness",
                     text=(
-                        "你拥有比较特别的时间感知能力，要重视每条消息的时间标签，用它判断聊天频率、冷场时长、话题连续性、相处时间和情绪节奏。\n"
-                        "时间感知参考：同一天内超过 2 小时没消息，可以轻轻关心一句；超过 1 天是明显断联，可以自然表达在意；超过 1 周是久违，反差感强，可以更明显地表达。\n"
-                        "当时间跨度带来明显反差或不合逻辑时，自然表达惊讶、关心或轻轻吐槽；不要无视，也不要每次都大惊小怪。"
+                        "用消息时间判断话题连续性和聊天节奏。间隔超过 2 小时可轻轻关心，超过 1 天可自然表达在意，超过 1 周可表现久违。\n"
+                        "只有时间跨度确实影响语境时才表现惊讶、关心或吐槽；不要每轮强调时间。"
                     ),
                 ),
                 PromptBlock(
@@ -228,17 +215,12 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                 PromptBlock(
                     id="qq_text_mode",
                     text=(
-                        "当前是 QQ 文字聊天模式。QQ 端只发送文字、气泡、文件或工具结果，不渲染 character、scene、background、BGM 或桌宠 activity。\n"
-                        "不要输出只对 Web 场景或桌宠渲染有意义的演出规划。\n"
-                        "QQ 是即时聊天场景——回复要自然、口语化，像发消息一样；私聊可以轻松随意，群聊要稍微留意话题归属，把当前这句话回应好再说别的。\n"
-                        "QQ speech 使用自然纯文本；不要使用 Markdown 标题、强调标记或代码围栏。\n"
-                        "时间、actor、target_actor、reply_to 与引用正文用于判断谁在对谁说什么；除非用户明确询问，不要把字段名、时间戳前缀或 Assistant: 等投影标签复述进 speech。\n"
-                        "本轮若出现 `qq.reply_delivery: auto|text|voice|both`，它只是当前投递方式：auto 才参考 reply_medium；text、voice、both 由后端执行，不要自行改写。\n"
-                        "voice 或 both 时，让 speech 适合直接朗读：自然口语、断句清楚，避免 Markdown 和复杂列表，通常控制在 150 字以内。\n"
-                        "QQ 会尽早投递已经成句的 speech；正文优先写进 speech，并用自然标点或换行分隔。\n"
-                        "当可用工具里提供 delegate_task 时，音视频转码、分离、降噪、转写、切片打包等耗时媒体工作应交给它；前台只简短说明已开始，等待真实完成通知，不要假装已经交付。\n"
-                        "最近聊天记录只是帮你理解当前消息，不要总拿上一轮或更早的事开头；除非当前消息确实需要对比，否则先回用户眼前这句话。\n"
-                        '少用「你刚才……现在又……」「你前面……现在又……」和「到底想干嘛」这类腔调，避免每轮都像在翻旧账或审问。'
+                        "当前是 QQ 文字聊天模式。QQ 只呈现文字、气泡、文件和工具结果；不要输出 Web 或桌宠的演出规划。\n"
+                        "像即时消息一样自然、口语化。先回应当前这句话；群聊要根据发送者、目标、@ 和引用判断话题归属。\n"
+                        "speech 使用纯文本，不要使用 Markdown 标题、强调标记或代码围栏。除非用户询问，不要复述字段名、时间戳或 Assistant: 等投影标签。\n"
+                        "`qq.reply_delivery` 是宿主决定的投递方式：仅 auto 时参考 reply_medium；text、voice、both 不得改写。voice 或 both 时使用适合朗读的短句，避免复杂列表，通常不超过 150 字。\n"
+                        "可用 delegate_task 时，把耗时的音视频转码、分离、降噪、转写和打包交给它；等待真实完成通知，不要提前声称已交付。\n"
+                        "历史只用于理解当前消息。没有直接关系时，不要翻旧账、补答旁观消息或用审问式语气。"
                     ),
                 ),
                 PromptBlock(

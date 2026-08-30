@@ -117,31 +117,8 @@ class PromptBuilder:
             if forced_retrieval_hint
             else ""
         )
-        instruction_text = (
-            "请先判断：这句话是在接当前话题，还是在向过去要事实。\n"
-            "接前文、当下闲聊、当前观点、新的当下话题，通常 need_retrieval=false；问昨天买了什么、之前去过哪里、上次说过什么，通常 need_retrieval=true。\n"
-            "注意：接当前话题不等于一定不检索。如果用户虽然在接前文，但让当前助手回想、再想想、帮忙想起、补全若干旧事实或模糊实体，应判为 need_retrieval=true。\n"
-            "如果用户在问共同经历、曾经说过/聊过/约定过的内容、过去的用户偏好或“叫什么来着”这类回忆问题，即使没写“你还记得吗”，也倾向 need_retrieval=true。\n"
-            "如果用户问自己的生日、重要日期、偏好、称呼、旧约定、跨端聊过的人/事/项目等个人旧事实，而最近上下文没有明确答案，把检索当作当前助手自己的深层记忆空间，倾向 need_retrieval=true。\n"
-            "过去记忆线索包括：以前、曾经、过去、当时、那时候、那天、那次、前几天、上回、聊过、说过、提过、约定、计划、记不清、想不起来、再想想、回想一下。\n"
-            "像“我也记不清了，反正有几个扬州城地点，你再想想”这种话，本质是在让当前助手从过去对话里找地点，应判为 need_retrieval=true。\n"
-            "如果当前句有“那个/那几个/那件事/那个地方/那个项目”等模糊指代，并要求当前助手想起具体内容，通常也需要检索。\n"
-            "当你在 direct_answer 和 memory_search 之间犹豫，而用户明显在要求回忆旧信息时，优先选择 memory_search；检索校验器会再判断命中质量。\n"
-            "但如果用户只是陈述一个新的过去事实，例如“我昨天没睡好”，并没有要求当前助手回忆既有信息，通常 need_retrieval=false。\n"
-            "不要把“最近窗口里有没有完整答案”当成标准；如果当前问题需要更早历史事实，应该检索。\n"
-            "如果需要检索，rewritten_query 请写成简短搜索短句，不要写成“请查找……”这类任务描述。\n"
-            "当用户围绕某个明确日期/时间段要求回忆，例如“4月12日晚上那件事”“4月12日晚上的事情”，rewritten_query 应抽象成“YYYY-MM-DD 晚上 发生了什么”或“YYYY-MM-DD 晚上 聊过什么”，不要只是同义改写“你再回忆一下”。\n"
-            "改写时必须先看最近上下文：如果当前消息包含“这个/那个/它/这些/那几个/这件事/再想想/有执念”等模糊指代，要用最近上下文里最具体的实体、地点、物品、话题或事件替换它。\n"
-            "不要只盯着当前一句复制“我对这个有执念”“你再回忆一下”；应把最近上下文里的锚点写进 rewritten_query 和 keywords，例如把“这个”改成前文提到的“扬州城地点/二十四桥/瘦西湖”等具体词。\n"
-            "如果最近上下文能解析指代，rewritten_query 应优先包含解析后的对象 + 用户要回忆的属性；如果解析不了，才保留当前原话里的模糊词。\n"
-            "不要输出“主人对什么有执念”“具体的事情或话题”“请回忆一下”这类空泛追问式检索词。\n\n"
-            "只有 need_retrieval=true 时，才顺手判断这条原始消息本身是否值得成为未来 raw 检索材料；普通对话让 index_current_message=true，信息量很低的纯追问可以设为 false。index_current_message 只影响是否索引当前原句，不影响是否需要检索。\n\n"
-            "请严格按 NDJSON 输出：第一行 decision；若 need_retrieval=true 再输出第二行 query；只有 debug_enabled=true 时才允许最后输出 debug。每个事件对象输出完就立刻换行。"
-        )
         user_prompt = (
-            f"debug_enabled={str(debug_enabled).lower()}\n"
             f"{forced_hint_text}"
-            f"{instruction_text}\n\n"
             f"当前时间：{datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M')}\n"
             f"最近上下文（仅包含紧邻当前消息之前的局部窗口，不包含当前用户这句话；这部分内容也会直接提供给主回复模型）：\n{recent_context_text or '(无)'}\n\n"
             f"当前用户消息（带时间标签）：\n{current_message_text}\n"
@@ -162,16 +139,7 @@ class PromptBuilder:
         system_prompt = self.persona.verifier_system_prompt + (
             self.persona.verifier_debug_mode_prompt if debug_enabled else self.persona.verifier_fast_mode_prompt
         )
-        instruction_text = (
-            "选择片段时，不只看内容相关，也要看时间是否和用户问题一致；如果用户明显在问昨天、上次、前几天，而片段时间明显冲突，就不要轻易选中。\n"
-            "如果只是轻微模糊或口语化时间表达，不要过度苛刻。\n\n"
-            "如果需要 retry，retry_query 必须是更具体的搜索短句，不要写成任务指令或反问句。\n"
-            "retry_query 应继承“检索改写问题”和“检索关键词”里的具体实体，不要退化成“请回忆一下具体的事情或话题”“主人对什么有执念”这类空泛问题。\n\n"
-            "请严格按 NDJSON 输出：第一行 decision；若 match=true 再输出第二行 selection；若 mismatch 且 need_retry=true 再输出第二行 retry；只有 debug_enabled=true 时才允许最后输出 debug。每个事件对象输出完就立刻换行。"
-        )
         user_prompt = (
-            f"debug_enabled={str(debug_enabled).lower()}\n"
-            f"{instruction_text}\n\n"
             f"用户原始问题：{original_query}\n"
             f"检索改写问题：{rewritten_query}\n"
             f"检索关键词：{keywords_json}\n"
