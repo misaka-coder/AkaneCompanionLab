@@ -2159,19 +2159,16 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                 )
                 self.assertTrue(projection["ok"], projection)
                 projected_text = "\n".join(str(payload.get("content") or "") for payload in projection["payloads"])
-                self.assertIn("medium: voice", projected_text)
-                self.assertIn("text:\n请继续讲这个方案", projected_text)
-                self.assertIn("speech:\n好，我从状态机的边界继续讲。", projected_text)
-                self.assertIn("delivery: text_only", projected_text)
-                self.assertIn("delivery: interrupted", projected_text)
+                self.assertIn("message.user.voice", projected_text)
+                self.assertIn("message.assistant.voice", projected_text)
+                self.assertIn('"delivery_status":"text_only"', projected_text)
+                self.assertIn('"delivery_status":"interrupted"', projected_text)
                 self.assertNotIn("event.voice.asr_checkpoint", projected_text)
                 self.assertNotIn("provider_output_raw", projected_text)
                 projected_voice_user = next(
                     str(payload.get("content") or "")
                     for payload in projection["payloads"]
-                    if payload.get("role") == "user"
-                    and "medium: voice" in str(payload.get("content") or "")
-                    and "text:\n请继续讲这个方案" in str(payload.get("content") or "")
+                    if payload.get("role") == "user" and "message.user.voice" in str(payload.get("content") or "")
                 )
                 current_voice_message = next(
                     message
