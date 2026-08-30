@@ -98,8 +98,9 @@ class CodingProjectSkillTests(unittest.TestCase):
     def test_load_skill_returns_the_full_closed_loop(self) -> None:
         content = self.registry.load("coding-project").content
         for marker in (
+            "Keep engineering authoritative",
             "Establish the working location",
-            "Scope a verifiable increment",
+            "Freeze scope and acceptance",
             "Write through project tools",
             "Execute and diagnose honestly",
             "Verify and deliver",
@@ -122,7 +123,12 @@ class CodingProjectSkillTests(unittest.TestCase):
         self.assertIn("node --check file.js", content)
         self.assertIn("python -m py_compile", content)
         self.assertIn("已进入发送队列", content)
-        self.assertIn("Do not transport source through Shell", content)
+        self.assertIn("Shell-based generation remains valid", content)
+        self.assertIn("do not substitute a smaller MVP", content)
+        self.assertIn("use it as a lightweight task checklist", content)
+        self.assertIn("must not become a gate", content)
+        self.assertIn("Engineering completion and chat file delivery are separate", content)
+        self.assertIn("arbitrary host-absolute cwd cannot be\n  registered directly", content)
         self.assertIn("complete logical pages", content)
         self.assertIn("supports update, create,\n  delete, and rename", content)
         self.assertIn("rollback_failed", content)

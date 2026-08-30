@@ -16,6 +16,20 @@ metadata:
 Turn “generate code” into a project with real run evidence. This Skill adds no tools or
 permissions; use only the tools visible in the current request.
 
+## Keep engineering authoritative
+
+- During a coding task, character style may shape wording, but it must not change the
+  requested scope, technical judgment, verification standard, or completion criteria.
+- Convert explicit requirements into a short acceptance checklist before substantial
+  edits. Inspect enough of the repository and its conventions to choose a coherent
+  approach, then execute; do not substitute a smaller MVP for requirements the user
+  already specified. Planning is preparation for the next real action, not a separate
+  ceremony or a reason to delay useful work.
+- When `manage_task_workspace` is visible and the task has many acceptance items or may
+  span a long run, use it as a lightweight task checklist. Update it at meaningful phase
+  boundaries or when evidence changes, not after every command. The checklist supports
+  execution; it must not become a gate before useful tools can run.
+
 ## Establish the working location
 
 - Discover the real task directory with `pwd`, `find`, or the platform equivalent; never
@@ -32,10 +46,11 @@ permissions; use only the tools visible in the current request.
 - `workspace:/` is a material-reading namespace, not the coding directory, and
   task-workspace records are not a filesystem.
 
-## Scope a verifiable increment
+## Freeze scope and acceptance
 
-- For open-ended requests, choose and state a concrete MVP that can be verified now.
-  Continue until that scope works or a real external blocker remains.
+- For genuinely open-ended requests, choose and state a concrete verifiable scope. For
+  detailed requests, preserve the full acceptance checklist and continue until it passes
+  or a real external blocker remains.
 - Inspect the working location before changing it. Use `project_inspect(action="list")`
   to discover paths, `search` to locate symbols or text with line numbers, and `read`
   for exact line ranges plus the current SHA-256. Continue a paged result only when the
@@ -55,9 +70,12 @@ permissions; use only the tools visible in the current request.
   `hunk_not_applicable`, follow `recommended_action`, reread the current target region,
   and build a fresh patch from exact visible text. On `rollback_failed`, report the
   affected relative paths and stop editing until their real state is inspected.
-- Do not transport source through Shell, base64, here-docs, echoed strings, or long
-  `-Command` arguments. If a write or patch exceeds its declared schema budget, split
-  it into coherent files or edits; never hide missing content.
+- Prefer these file tools for authored source because they preserve atomicity, hashes,
+  and precise failure feedback. Shell-based generation remains valid when it is the
+  clearest mechanical workflow or a specialized file operation cannot express the edit;
+  keep the resulting files inspectable and verify them afterward. Do not use quoting,
+  base64, or command construction merely to evade a tool contract, and never hide
+  missing content.
 - Build in small verified increments. Fix the narrow root cause instead of regenerating
   the project or changing unrelated code.
 
@@ -111,6 +129,9 @@ permissions; use only the tools visible in the current request.
   actually execute after their counters and terminal states are reset.
 - Claim only the level actually observed. Without a real browser/runtime observation,
   say interactive verification was not run. `open_browser` is a request, not evidence.
+- Before finishing, reconcile the acceptance checklist against real files and command
+  output. Report what passed, what was not run, and any remaining blocker; a progress
+  narration or generated file alone is not completion evidence.
 - Keep working in the same user turn while requested, executable work remains. Each
   decision either issues the next real tool call or delivers an honest user reply;
   never emit a tool-less `status="continue"` frame and expect the host to guess the
@@ -122,6 +143,12 @@ permissions; use only the tools visible in the current request.
   work, known failures, and the next concrete action. Do not paste large existing tool
   output or invent MemCore/source IDs. This is a real project artifact for later work,
   not content for the user-facing `speech`; skip it when the task can finish now.
-- Register deliverables with `output_globs` relative to `alias:project`, then use the
-  returned `gen_*` handle with `send_file` when that tool is available. Queue success
-  means “已进入发送队列”, not that the user received it.
+- Engineering completion and chat file delivery are separate. Do not mark working code
+  incomplete merely because it has no `gen_*` handle, and do not rewrite or relocate a
+  project only to manufacture one.
+- When the user asks to receive a file, use `output_globs` only in a supported managed
+  run directory or with `cwd="alias:project"`; an arbitrary host-absolute cwd cannot be
+  registered directly. A stable project may be registered when cross-conversation
+  identity is genuinely useful, while a one-off deliverable may be copied or packaged
+  explicitly in a managed run. Then use the returned `gen_*` handle with `send_file`.
+  Queue success means “已进入发送队列”, not that the user received it.
