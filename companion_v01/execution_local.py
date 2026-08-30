@@ -250,6 +250,7 @@ class TrustedLocalExecutor(ExecutionProvider):
         self._unusable_logs: set[str] = set()
         self._pending_reasons: dict[str, str] = {}
         self._run_secret_values: dict[str, tuple[str, ...]] = {}
+        self._shutdown_requested = threading.Event()
         self.prune_run_logs()
 
     # -- ExecutionProvider interface -------------------------------------------------
@@ -463,6 +464,8 @@ class TrustedLocalExecutor(ExecutionProvider):
     ) -> ExecRunStart:
         if not self._owner_matches(owner):
             return ExecRunStart(status=EXEC_STATUS_EXECUTION_UNKNOWN, reason="execution_provider_mismatch")
+        if self._shutdown_requested.is_set():
+            return ExecRunStart(status=EXEC_STATUS_FAILED, reason="execution_provider_stopping")
         clean_command = str(command or "").strip()
         if not clean_command:
             return ExecRunStart(status=EXEC_STATUS_FAILED, reason="invalid_execution_command")
@@ -507,6 +510,10 @@ class TrustedLocalExecutor(ExecutionProvider):
 
         with self._lock:
             self._procs[run_id] = proc
+        if self._shutdown_requested.is_set():
+            # Close the narrow race where Host shutdown begins after the
+            # admission check but before the process handle is registered.
+            self.store.request_cancel(run_id, owner=owner)
         threading.Thread(
             target=self._watcher,
             args=(run_id, owner, proc, normalize_timeout_seconds(timeout_seconds)),
@@ -522,6 +529,12 @@ class TrustedLocalExecutor(ExecutionProvider):
         return self._window(run_id, owner) or ExecRunStart(
             status=EXEC_STATUS_EXECUTION_UNKNOWN, run_id=run_id, reason="run_record_missing"
         )
+
+    def request_shutdown(self) -> int:
+        """Stop accepting work and cooperatively terminate every active process tree."""
+
+        self._shutdown_requested.set()
+        return self.store.request_cancel_all(provider_id=self.provider_id)
 
     def status(
         self,

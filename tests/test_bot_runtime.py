@@ -194,6 +194,37 @@ class BotRegistryTests(unittest.TestCase):
 
 
 class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_deadline_does_not_depend_on_runtime_cancellation_cooperation(self) -> None:
+        release = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class CancellationResistantRuntime:
+            bot_id = "bot-a"
+            display_name = "bot-a"
+            runtime_layout = SimpleNamespace(data_root=Path("bot-a"))
+
+            async def stop(self) -> dict[str, str]:
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await release.wait()
+                return {"status": "stopped"}
+
+        registry = BotRegistry(default_bot_id="bot-a")
+        registry.add(CancellationResistantRuntime(), default=True)
+        started_at = asyncio.get_running_loop().time()
+
+        stopped = await registry.stop("bot-a", timeout_seconds=0.1)
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(stopped["status"], "degraded")
+        self.assertEqual(stopped["reason"], "bot_stop_timeout")
+        await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+        release.set()
+        await asyncio.sleep(0)
+
     async def test_stop_all_stops_runtimes_concurrently_under_one_host_deadline(self) -> None:
         all_stopping = asyncio.Event()
         stopping_count = 0

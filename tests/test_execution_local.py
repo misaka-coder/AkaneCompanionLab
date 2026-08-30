@@ -611,6 +611,25 @@ class TrustedLocalExecutorTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
 
+    def test_shutdown_rejects_new_runs_and_cancels_existing_process_trees(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+
+        requested = executor.request_shutdown()
+
+        self.assertEqual(requested, 1)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = executor.status(owner=self.owner, run_id=start.run_id)
+            if status.status == EXEC_STATUS_CANCELLED:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
+        rejected = executor.run(owner=self.owner, command="echo too-late", initial_wait_seconds=1)
+        self.assertEqual(rejected.status, EXEC_STATUS_FAILED)
+        self.assertEqual(rejected.reason, "execution_provider_stopping")
+
     def test_utf8_multibyte_output_survives_read_chunk_boundaries(self) -> None:
         executor = self._executor()
         unit = "中文你好-😀"

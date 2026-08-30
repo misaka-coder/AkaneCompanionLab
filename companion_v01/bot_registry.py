@@ -45,6 +45,7 @@ class BotRegistry:
     def __init__(self, *, default_bot_id: str = "") -> None:
         self._entries: dict[str, _RegistryEntry] = {}
         self._root_identities: set[Path] = set()
+        self._detached_stop_tasks: set[asyncio.Task[Any]] = set()
         self._default_bot_id = self._require_safe_bot_id(default_bot_id) if default_bot_id else ""
         self._guard = threading.RLock()
 
@@ -196,18 +197,30 @@ class BotRegistry:
             entry.last_status = "stopping"
             runtime = entry.runtime
 
+        stop_task = asyncio.create_task(runtime.stop())
         try:
-            result = await asyncio.wait_for(runtime.stop(), timeout=max(0.1, float(timeout_seconds)))
-        except asyncio.TimeoutError:
-            status, state, reason = "degraded", "degraded", "bot_stop_timeout"
+            done, _pending = await asyncio.wait(
+                (stop_task,),
+                timeout=max(0.1, float(timeout_seconds)),
+            )
+            if not done:
+                stop_task.cancel()
+                self._track_detached_stop_task(stop_task)
+                status, state, reason = "degraded", "degraded", "bot_stop_timeout"
+            else:
+                result = stop_task.result()
+                status = str(result.get("status") or "degraded") if isinstance(result, dict) else "degraded"
+                state = "stopped" if status == "stopped" else "degraded"
+                reason = self._safe_reason(result.get("reason") if isinstance(result, dict) else "")
+                if state == "degraded" and not reason:
+                    reason = "bot_stop_degraded"
+        except asyncio.CancelledError:
+            if not stop_task.done():
+                stop_task.cancel()
+                self._track_detached_stop_task(stop_task)
+            raise
         except Exception:
             status, state, reason = "degraded", "degraded", "bot_stop_failed"
-        else:
-            status = str(result.get("status") or "degraded") if isinstance(result, dict) else "degraded"
-            state = "stopped" if status == "stopped" else "degraded"
-            reason = self._safe_reason(result.get("reason") if isinstance(result, dict) else "")
-            if state == "degraded" and not reason:
-                reason = "bot_stop_degraded"
 
         with self._guard:
             current = self._entries.get(normalized)
@@ -217,6 +230,20 @@ class BotRegistry:
                 current.last_status = status
                 return self._entry_snapshot(normalized, current)
         raise BotRegistryError(status="not_found", reason="bot_not_registered", bot_id=normalized)
+
+    def _track_detached_stop_task(self, task: asyncio.Task[Any]) -> None:
+        """Keep a timed-out cleanup observable without extending the Host deadline."""
+
+        self._detached_stop_tasks.add(task)
+
+        def consume_result(completed: asyncio.Task[Any]) -> None:
+            self._detached_stop_tasks.discard(completed)
+            try:
+                completed.exception()
+            except (asyncio.CancelledError, asyncio.InvalidStateError):
+                pass
+
+        task.add_done_callback(consume_result)
 
     async def start_all(self, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         with self._guard:

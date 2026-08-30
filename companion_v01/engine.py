@@ -757,6 +757,13 @@ class AkaneMemoryEngine:
         """Signal cooperative workers before bounded shutdown joins begin."""
 
         self._embedding_reindex_stop.set()
+        execution_provider = getattr(self, "execution_provider", None)
+        request_execution_shutdown = getattr(execution_provider, "request_shutdown", None)
+        if callable(request_execution_shutdown):
+            try:
+                request_execution_shutdown()
+            except Exception:
+                logger.warning("execution provider shutdown signal failed")
         memcore_manager = getattr(self, "memcore_manager", None)
         request_shutdown = getattr(memcore_manager, "request_shutdown", None)
         if callable(request_shutdown):

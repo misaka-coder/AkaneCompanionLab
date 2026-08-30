@@ -327,6 +327,24 @@ class ExecutionRunStore:
             record.updated_at = self._now()
             return "cancel_requested"
 
+    def request_cancel_all(self, *, provider_id: str) -> int:
+        """Signal every active run owned by one provider during Host shutdown."""
+
+        clean_provider_id = str(provider_id or "").strip()
+        if not clean_provider_id:
+            return 0
+        requested = 0
+        with self._lock:
+            now = self._now()
+            for record in self._runs.values():
+                if record.status != EXEC_STATUS_RUNNING or record.owner.provider_id != clean_provider_id:
+                    continue
+                if not record.cancel_requested:
+                    record.cancel_requested = True
+                    record.updated_at = now
+                    requested += 1
+        return requested
+
     def cancel_requested(self, run_id: str, *, owner: ExecutionRunOwner) -> bool:
         with self._lock:
             record = self._owned_record_locked(run_id, owner)

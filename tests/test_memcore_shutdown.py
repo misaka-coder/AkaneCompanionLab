@@ -4,6 +4,7 @@ from concurrent.futures import Future
 import threading
 import unittest
 
+from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
 
 
@@ -20,6 +21,20 @@ class _Closable:
 
 
 class MemcoreShutdownTests(unittest.TestCase):
+    def test_engine_shutdown_signals_execution_and_memcore_before_joining(self) -> None:
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._embedding_reindex_stop = threading.Event()
+        execution = _Closable()
+        memcore = _Closable()
+        engine.execution_provider = execution
+        engine.memcore_manager = memcore
+
+        engine.request_shutdown()
+
+        self.assertTrue(engine._embedding_reindex_stop.is_set())
+        self.assertTrue(execution.shutdown_requested)
+        self.assertTrue(memcore.shutdown_requested)
+
     @staticmethod
     def _manager_with_running_future() -> tuple[MemcoreManager, Future, _Closable, _Closable]:
         manager = MemcoreManager.__new__(MemcoreManager)
