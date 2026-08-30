@@ -398,34 +398,34 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.service.create(scope=self.private, display_name="Patcher")
         self.service.write(scope=self.private, path="a.txt", content="alpha\nbeta\n")
         self.service.write(scope=self.private, path="b.txt", content="one\ntwo\n")
-        patch = """--- a/a.txt
-+++ b/a.txt
-@@ -1,2 +1,2 @@
+        patch = """*** Begin Patch
+*** Update File: a.txt
+@@
  alpha
 -beta
 +gamma
---- a/b.txt
-+++ b/b.txt
-@@ -1,2 +1,2 @@
+*** Update File: b.txt
+@@
  one
 -two
 +three
+*** End Patch
 """
         result = self.service.patch(scope=self.private, patch_text=patch)
         self.assertEqual([item["path"] for item in result["files"]], ["a.txt", "b.txt"])
 
-        failing = """--- a/a.txt
-+++ b/a.txt
-@@ -1,2 +1,2 @@
+        failing = """*** Begin Patch
+*** Update File: a.txt
+@@
  alpha
 -gamma
 +changed
---- a/b.txt
-+++ b/b.txt
-@@ -1,2 +1,2 @@
+*** Update File: b.txt
+@@
  missing
 -three
 +broken
+*** End Patch
 """
         with self.assertRaisesRegex(ProjectWorkspaceError, "hunk_not_applicable"):
             self.service.patch(scope=self.private, patch_text=failing)
@@ -433,7 +433,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual((project / "a.txt").read_text(encoding="utf-8"), "alpha\ngamma\n")
         self.assertEqual((project / "b.txt").read_text(encoding="utf-8"), "one\nthree\n")
 
-    def test_patch_relocates_a_uniquely_matching_hunk_when_line_numbers_drift(self) -> None:
+    def test_patch_locates_a_unique_hunk_without_model_supplied_line_numbers(self) -> None:
         created = self.service.create(scope=self.private, display_name="Offset Patcher")
         self.service.write(
             scope=self.private,
@@ -441,13 +441,14 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             path="module.py",
             content="preface\nalpha\nbeta\ngamma\n",
         )
-        patch = """--- a/module.py
-+++ b/module.py
-@@ -1,3 +1,3 @@
+        patch = """*** Begin Patch
+*** Update File: module.py
+@@
  alpha
 -beta
 +changed
  gamma
+*** End Patch
 """
 
         result = self.service.patch(
@@ -471,11 +472,12 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             path="module.py",
             content="header\nrepeat\nother\nrepeat\n",
         )
-        patch = """--- a/module.py
-+++ b/module.py
-@@ -1 +1 @@
+        patch = """*** Begin Patch
+*** Update File: module.py
+@@
 -repeat
 +changed
+*** End Patch
 """
 
         with self.assertRaises(ProjectWorkspaceError) as raised:
@@ -494,23 +496,143 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             "header\nrepeat\nother\nrepeat\n",
         )
 
+    def test_patch_anchor_disambiguates_repeated_context_without_line_numbers(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Anchored Patcher")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="class First:\n    value = 1\nclass Second:\n    value = 1\n",
+        )
+
+        result = self.service.patch(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            patch_text=(
+                "*** Begin Patch\n"
+                "*** Update File: module.py\n"
+                "@@ class Second:\n"
+                "-    value = 1\n"
+                "+    value = 2\n"
+                "*** End Patch\n"
+            ),
+        )
+
+        self.assertEqual(result["status"], "succeeded")
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual(
+            (project / "module.py").read_text(encoding="utf-8"),
+            "class First:\n    value = 1\nclass Second:\n    value = 2\n",
+        )
+
+    def test_patch_rejects_traditional_unified_diff_with_actionable_format_feedback(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Format Feedback")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="value = 1\n",
+        )
+
+        with self.assertRaises(ProjectWorkspaceError) as raised:
+            self.service.patch(
+                scope=self.private,
+                workspace_id=created["workspace_id"],
+                patch_text=(
+                    "--- a/module.py\n+++ b/module.py\n@@ -1 +1 @@\n"
+                    "-value = 1\n+value = 2\n"
+                ),
+            )
+
+        self.assertEqual(raised.exception.reason, "patch_format_invalid")
+        self.assertEqual(
+            raised.exception.details["recommended_action"],
+            "use_the_count_free_workspace_patch_format",
+        )
+
+    def test_patch_syntax_error_reports_the_bad_line_and_expected_prefixes(self) -> None:
+        self.service.create(scope=self.private, display_name="Syntax Feedback")
+        self.service.write(scope=self.private, path="module.py", content="value = 1\n")
+        handler = WorkspacePatchToolHandler(service=self.service)
+
+        result = handler.execute(
+            call={
+                "type": "workspace_patch",
+                "patch": (
+                    "*** Begin Patch\n*** Update File: module.py\n@@\n"
+                    "value = 1\n+value = 2\n*** End Patch\n"
+                ),
+            },
+            context=self._context(),
+        )
+
+        self.assertEqual(result.stream_events[0]["status"], "rejected")
+        self.assertIn("patch_line_prefix_invalid", result.followup_context)
+        self.assertIn("space for context, - for removed text, or + for added text", result.followup_context)
+
+    def test_patch_rejects_numeric_hunk_ranges_inside_the_new_envelope(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Range Feedback")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="value = 1\n",
+        )
+
+        with self.assertRaises(ProjectWorkspaceError) as raised:
+            self.service.patch(
+                scope=self.private,
+                workspace_id=created["workspace_id"],
+                patch_text=(
+                    "*** Begin Patch\n*** Update File: module.py\n@@ -1 +1 @@\n"
+                    "-value = 1\n+value = 2\n*** End Patch\n"
+                ),
+            )
+
+        self.assertEqual(raised.exception.reason, "patch_numeric_range_not_allowed")
+        self.assertEqual(
+            raised.exception.details["recommended_action"],
+            "remove_the_old_and_new_line_ranges_from_the_hunk_header",
+        )
+
+    def test_patch_anchor_can_insert_immediately_after_an_existing_line(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Anchored Insert")
+        self.service.write(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            path="module.py",
+            content="class Demo:\n    tail = True\n",
+        )
+
+        self.service.patch(
+            scope=self.private,
+            workspace_id=created["workspace_id"],
+            patch_text=(
+                "*** Begin Patch\n*** Update File: module.py\n@@ class Demo:\n"
+                "+    value = 1\n*** End Patch\n"
+            ),
+        )
+
+        project = self.execution_root / "Projects" / created["workspace_id"]
+        self.assertEqual(
+            (project / "module.py").read_text(encoding="utf-8"),
+            "class Demo:\n    value = 1\n    tail = True\n",
+        )
+
     def test_patch_atomically_creates_deletes_and_renames_utf8_files(self) -> None:
         created = self.service.create(scope=self.private, display_name="Full Patch")
         self.service.write(scope=self.private, path="old.txt", content="old\n")
         self.service.write(scope=self.private, path="remove.txt", content="remove\n")
-        patch = """--- /dev/null
-+++ b/new.txt
-@@ -0,0 +1 @@
+        patch = """*** Begin Patch
+*** Add File: new.txt
 +new
---- a/old.txt
-+++ b/moved.txt
-@@ -1 +1 @@
+*** Update File: old.txt
+*** Move to: moved.txt
+@@
 -old
 +moved
---- a/remove.txt
-+++ /dev/null
-@@ -1 +0,0 @@
--remove
+*** Delete File: remove.txt
+*** End Patch
 """
 
         result = self.service.patch(scope=self.private, patch_text=patch)
@@ -533,7 +655,12 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
 
         result = self.service.patch(
             scope=self.private,
-            patch_text="--- a/before.txt\n+++ b/nested/after.txt\n",
+            patch_text=(
+                "*** Begin Patch\n"
+                "*** Update File: before.txt\n"
+                "*** Move to: nested/after.txt\n"
+                "*** End Patch\n"
+            ),
         )
 
         project = self.execution_root / "Projects" / created["workspace_id"]
@@ -545,16 +672,17 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         created = self.service.create(scope=self.private, display_name="Conflict Patch")
         self.service.write(scope=self.private, path="a.txt", content="a\n")
         self.service.write(scope=self.private, path="occupied.txt", content="occupied\n")
-        patch = """--- a/a.txt
-+++ b/a.txt
-@@ -1 +1 @@
+        patch = """*** Begin Patch
+*** Update File: a.txt
+@@
 -a
 +changed
---- a/a.txt
-+++ b/occupied.txt
-@@ -1 +1 @@
+*** Update File: a.txt
+*** Move to: occupied.txt
+@@
 -a
 +moved
+*** End Patch
 """
 
         with self.assertRaisesRegex(ProjectWorkspaceError, "duplicate_patch_target"):
@@ -570,19 +698,15 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         created = self.service.create(scope=self.private, display_name="Rollback Patch")
         self.service.write(scope=self.private, path="remove.txt", content="remove\n")
         self.service.write(scope=self.private, path="keep.txt", content="keep\n")
-        patch = """--- a/remove.txt
-+++ /dev/null
-@@ -1 +0,0 @@
--remove
---- /dev/null
-+++ b/generated/new.txt
-@@ -0,0 +1 @@
+        patch = """*** Begin Patch
+*** Delete File: remove.txt
+*** Add File: generated/new.txt
 +new
---- a/keep.txt
-+++ b/keep.txt
-@@ -1 +1 @@
+*** Update File: keep.txt
+@@
 -keep
 +changed
+*** End Patch
 """
         real_write = self.service._atomic_write
         calls = 0
@@ -609,15 +733,13 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         created = self.service.create(scope=self.private, display_name="Rollback Failure")
         self.service.write(scope=self.private, path="remove.txt", content="remove\n")
         self.service.write(scope=self.private, path="keep.txt", content="keep\n")
-        patch = """--- a/remove.txt
-+++ /dev/null
-@@ -1 +0,0 @@
--remove
---- a/keep.txt
-+++ b/keep.txt
-@@ -1 +1 @@
+        patch = """*** Begin Patch
+*** Delete File: remove.txt
+*** Update File: keep.txt
+@@
 -keep
 +changed
+*** End Patch
 """
 
         with mock_patch.object(self.service, "_atomic_write", side_effect=OSError("disk unavailable")):
@@ -638,8 +760,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         spec = handler.tool_spec()
         item_schema = spec.output_schema["properties"]["files"]["items"]
 
-        self.assertEqual(spec.spec_version, "1.2.0")
-        self.assertEqual(spec.schema_version, 3)
+        self.assertEqual(spec.spec_version, "2.0.0")
+        self.assertEqual(spec.schema_version, 4)
         self.assertEqual(
             item_schema["properties"]["operation"]["enum"],
             ["update", "create", "delete", "rename"],
@@ -652,6 +774,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(native["parameters"], spec.input_schema)
         for operation in ("update", "create", "delete", "rename"):
             self.assertIn(operation, native["description"])
+        self.assertIn("Do not calculate unified-diff line ranges", native["description"])
+        self.assertIn("*** Begin Patch", native["parameters"]["properties"]["patch"]["description"])
 
     def test_project_inspect_schema_and_native_projection_expose_one_read_authority(self) -> None:
         from companion_v01.native_tool_schema import build_openai_native_tool_specs
@@ -796,7 +920,10 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         patched = patch.execute(
             call={
                 "type": "workspace_patch",
-                "patch": "--- a/main.js\n+++ b/main.js\n@@ -1 +1 @@\n-let x = 1;\n+let x = 2;\n",
+                "patch": (
+                    "*** Begin Patch\n*** Update File: main.js\n@@\n"
+                    "-let x = 1;\n+let x = 2;\n*** End Patch\n"
+                ),
             },
             context=self._context(),
         )
@@ -842,7 +969,10 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             call={
                 "type": "workspace_patch",
                 "cwd": str(external),
-                "patch": "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+                "patch": (
+                    "*** Begin Patch\n*** Update File: src/main.py\n@@\n"
+                    "-value = 1\n+value = 2\n*** End Patch\n"
+                ),
             },
             context=self._context(),
         )
@@ -946,11 +1076,12 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             call={
                 "type": "workspace_patch",
                 "patch": (
-                    "--- a/group-task/source.py\n"
-                    "+++ b/group-task/source.py\n"
-                    "@@ -1 +1 @@\n"
+                    "*** Begin Patch\n"
+                    "*** Update File: group-task/source.py\n"
+                    "@@\n"
                     "-Token = LexToken\n"
                     "+Token = ParserToken\n"
+                    "*** End Patch\n"
                 ),
             },
             context=context,

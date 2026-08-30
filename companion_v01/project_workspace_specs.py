@@ -210,9 +210,14 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
 
 WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_patch",
-    display_name="Apply a unified diff atomically",
+    display_name="Apply a count-free source patch atomically",
     description=(
-        "Apply a unified diff atomically. Omitted cwd uses the same trusted execution root as exec_run; cwd or an "
+        "Apply a count-free context patch atomically. Do not calculate unified-diff line ranges. Use exactly: "
+        "*** Begin Patch, then one or more *** Update File: path / *** Add File: path / *** Delete File: path "
+        "sections, then *** End Patch. Update sections contain @@ (or @@ followed by one unique existing anchor "
+        "line), with unchanged lines prefixed by one space, removed lines by -, and added lines by +. A rename "
+        "uses *** Update File: old followed by *** Move to: new. Prefix every Add File content line with +; a "
+        "Delete File section has no body. Omitted cwd uses the same trusted execution root as exec_run; cwd or an "
         "explicitly addressed persistent project may override it. Project registration is optional. Supports update, create, delete, and rename "
         "operations for UTF-8 files. All paths, hashes, and hunks are validated before commit; any failure leaves "
         "every target unchanged."
@@ -227,7 +232,16 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
                 "maxLength": 512,
                 "description": "Optional execution cwd using the same path rules as exec_run; patch paths stay relative to it.",
             },
-            "patch": {"type": "string", "minLength": 1, "maxLength": PROJECT_PATCH_MAX_CHARS},
+            "patch": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": PROJECT_PATCH_MAX_CHARS,
+                "description": (
+                    "Count-free patch text bounded by *** Begin Patch and *** End Patch. Never include numeric "
+                    "unified-diff ranges such as @@ -10,2 +10,3 @@. Example: *** Begin Patch\\n*** Update File: "
+                    "src/app.py\\n@@\\n-old_value\\n+new_value\\n*** End Patch"
+                ),
+            },
             "expected_files": {
                 "type": "object",
                 "additionalProperties": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
@@ -275,8 +289,8 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="1.2.0",
-    schema_version=3,
+    spec_version="2.0.0",
+    schema_version=4,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=32 * 1024,

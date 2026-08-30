@@ -27,7 +27,9 @@ PROJECT_INSPECT_MAX_MATCHES = 20_000
 PROJECT_INSPECT_SEARCH_PREVIEW_CHARS = 800
 PROJECT_INSPECT_SEARCH_TIMEOUT_SECONDS = 8.0
 _PROJECT_ID_RE = re.compile(r"^proj_[a-f0-9]{32}$")
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_PATCH_BEGIN = "*** Begin Patch"
+_PATCH_END = "*** End Patch"
+_PATCH_FILE_PREFIXES = ("*** Add File:", "*** Delete File:", "*** Update File:")
 _ROOT_KIND_MANAGED = "managed"
 _ROOT_KIND_HOST_BOUND = "host_bound"
 _INSPECTION_SKIPPED_DIRECTORIES = frozenset(
@@ -686,7 +688,7 @@ class ProjectWorkspaceService:
             workspace_id=workspace_id,
             operation_root=operation_root,
         )
-        file_patches = self._parse_unified_diff(text)
+        file_patches = self._parse_model_patch(text)
         expected = {
             self._relative_path(key).as_posix(): str(value or "").lower()
             for key, value in dict(expected_files or {}).items()
@@ -721,13 +723,16 @@ class ProjectWorkspaceService:
                     original_text = original.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise ProjectWorkspaceError("source_not_utf8", path=source_relative.as_posix()) from exc
-                updated = self._apply_hunks(
-                    original_text,
-                    file_patch["hunks"],
-                    path=source_relative.as_posix(),
-                ).encode("utf-8")
-                if operation == "delete" and updated:
-                    raise ProjectWorkspaceError("delete_patch_not_empty", path=source_relative.as_posix())
+                if operation == "create":
+                    updated = str(file_patch.get("content") or "").encode("utf-8")
+                elif operation == "delete":
+                    updated = b""
+                else:
+                    updated = self._apply_hunks(
+                        original_text,
+                        file_patch["hunks"],
+                        path=source_relative.as_posix(),
+                    ).encode("utf-8")
                 for item_path, item_relative in ((source, source_relative), (target, relative)):
                     key = item_relative.as_posix()
                     if key not in affected:
@@ -1118,77 +1123,177 @@ class ProjectWorkspaceService:
             current = current.parent
 
     @staticmethod
-    def _parse_unified_diff(text: str) -> list[dict[str, Any]]:
+    def _parse_model_patch(text: str) -> list[dict[str, Any]]:
+        """Parse the count-free patch language exposed to the model.
+
+        The model states file operations and supplies old/new context, while
+        the host derives locations and line counts.  This deliberately avoids
+        traditional unified-diff range bookkeeping such as
+        ``@@ -12,7 +12,8 @@``: those numbers are useful to ``patch(1)`` but
+        are brittle, non-semantic work for a language model.
+        """
+
         lines = text.splitlines(keepends=True)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines or lines[0].rstrip("\r\n") != _PATCH_BEGIN or lines[-1].rstrip("\r\n") != _PATCH_END:
+            raise ProjectWorkspaceError(
+                "patch_format_invalid",
+                expected="*** Begin Patch ... *** End Patch",
+                recommended_action="use_the_count_free_workspace_patch_format",
+            )
+
         patches: list[dict[str, Any]] = []
-        index = 0
-        while index < len(lines):
-            if not lines[index].startswith("--- "):
+        index = 1
+        end_index = len(lines) - 1
+        while index < end_index:
+            line = lines[index].rstrip("\r\n")
+            if not line.strip():
                 index += 1
                 continue
-            old_path = lines[index][4:].strip().split("\t", 1)[0]
-            index += 1
-            if index >= len(lines) or not lines[index].startswith("+++ "):
-                raise ProjectWorkspaceError("patch_parse_failed")
-            new_path = lines[index][4:].strip().split("\t", 1)[0]
-            index += 1
-            old_normalized = (
-                None if old_path == "/dev/null" else (old_path[2:] if old_path.startswith("a/") else old_path)
-            )
-            path = None if new_path == "/dev/null" else (new_path[2:] if new_path.startswith("b/") else new_path)
-            if not old_normalized and not path:
-                raise ProjectWorkspaceError("patch_path_missing")
-            operation = (
-                "create"
-                if not old_normalized
-                else "delete"
-                if not path
-                else "rename"
-                if old_normalized != path
-                else "update"
-            )
+            operation = ""
+            source_path: str | None = None
+            path = ""
+            if line.startswith("*** Add File:"):
+                operation = "create"
+                path = line[len("*** Add File:") :].strip()
+            elif line.startswith("*** Delete File:"):
+                operation = "delete"
+                source_path = line[len("*** Delete File:") :].strip()
+                path = source_path
+            elif line.startswith("*** Update File:"):
+                operation = "update"
+                source_path = line[len("*** Update File:") :].strip()
+                path = source_path
+            else:
+                raise ProjectWorkspaceError(
+                    "patch_file_header_expected",
+                    line=index + 1,
+                    found=line[:160],
+                    expected="*** Add File, *** Delete File, or *** Update File",
+                    recommended_action="start_each_file_change_with_a_patch_file_header",
+                )
+            if not path:
+                raise ProjectWorkspaceError("patch_path_missing", line=index + 1)
             hunks: list[dict[str, Any]] = []
-            while index < len(lines) and not lines[index].startswith("--- "):
-                match = _HUNK_RE.match(lines[index])
-                if not match:
-                    if lines[index].strip():
-                        raise ProjectWorkspaceError("patch_parse_failed", path=path)
-                    index += 1
-                    continue
-                old_count = int(match.group(2) or 1)
-                new_count = int(match.group(4) or 1)
-                hunk = {
-                    "old_start": int(match.group(1)),
-                    "old_count": old_count,
-                    "new_start": int(match.group(3)),
-                    "new_count": new_count,
-                    "lines": [],
-                }
+            content = ""
+            index += 1
+
+            if operation == "update" and index < end_index and lines[index].startswith("*** Move to:"):
+                path = lines[index].rstrip("\r\n")[len("*** Move to:") :].strip()
+                if not path:
+                    raise ProjectWorkspaceError("patch_path_missing", line=index + 1)
+                operation = "rename"
                 index += 1
-                while index < len(lines) and not lines[index].startswith(("@@ ", "--- ")):
-                    line = lines[index]
-                    if line.startswith("\\ No newline at end of file"):
-                        index += 1
-                        continue
-                    if not line.startswith((" ", "+", "-")):
-                        raise ProjectWorkspaceError("patch_parse_failed", path=path)
-                    hunk["lines"].append(line)
+
+            if operation == "create":
+                content_lines: list[str] = []
+                while index < end_index and not lines[index].startswith(_PATCH_FILE_PREFIXES):
+                    raw = lines[index]
+                    if not raw.startswith("+"):
+                        raise ProjectWorkspaceError(
+                            "patch_add_line_prefix_missing",
+                            path=path,
+                            line=index + 1,
+                            found=raw.rstrip("\r\n")[:160],
+                            expected="prefix every new file line with +",
+                            recommended_action="prefix_each_added_line_with_plus",
+                        )
+                    content_lines.append(raw[1:])
                     index += 1
-                hunks.append(hunk)
-            if not hunks and operation == "update":
-                raise ProjectWorkspaceError("patch_parse_failed", path=path)
+                content = "".join(content_lines)
+            elif operation == "delete":
+                if index < end_index and not lines[index].startswith(_PATCH_FILE_PREFIXES):
+                    raise ProjectWorkspaceError(
+                        "patch_delete_has_body",
+                        path=path,
+                        line=index + 1,
+                        recommended_action="delete_file_headers_do_not_need_file_contents",
+                    )
+            else:
+                while index < end_index and not lines[index].startswith(_PATCH_FILE_PREFIXES):
+                    header = lines[index].rstrip("\r\n")
+                    if not header.startswith("@@"):
+                        raise ProjectWorkspaceError(
+                            "patch_hunk_header_expected",
+                            path=source_path,
+                            line=index + 1,
+                            found=header[:160],
+                            expected="@@ or @@ <unique anchor line>",
+                            recommended_action="start_each_update_hunk_with_at_at",
+                        )
+                    if re.match(r"^@@\s+-\d", header):
+                        raise ProjectWorkspaceError(
+                            "patch_numeric_range_not_allowed",
+                            path=source_path,
+                            line=index + 1,
+                            found=header[:160],
+                            expected="@@ or @@ <unique anchor line>",
+                            recommended_action="remove_the_old_and_new_line_ranges_from_the_hunk_header",
+                        )
+                    anchor = header[2:].strip()
+                    hunk = {"anchor": anchor, "lines": []}
+                    index += 1
+                    while (
+                        index < end_index
+                        and not lines[index].startswith(_PATCH_FILE_PREFIXES)
+                        and not lines[index].startswith("@@")
+                    ):
+                        raw = lines[index]
+                        if not raw.startswith((" ", "+", "-")):
+                            raise ProjectWorkspaceError(
+                                "patch_line_prefix_invalid",
+                                path=source_path,
+                                line=index + 1,
+                                found=raw.rstrip("\r\n")[:160],
+                                expected="space for context, - for removed text, or + for added text",
+                                recommended_action="prefix_every_hunk_line_with_space_minus_or_plus",
+                            )
+                        hunk["lines"].append(raw)
+                        index += 1
+                    if not hunk["lines"]:
+                        raise ProjectWorkspaceError(
+                            "patch_hunk_empty",
+                            path=source_path,
+                            line=index + 1,
+                            recommended_action="include_context_and_changed_lines_after_the_hunk_header",
+                        )
+                    if not any(raw.startswith(("+", "-")) for raw in hunk["lines"]):
+                        raise ProjectWorkspaceError(
+                            "patch_hunk_has_no_changes",
+                            path=source_path,
+                            hunk=len(hunks) + 1,
+                            recommended_action="include_at_least_one_added_or_removed_line",
+                        )
+                    hunks.append(hunk)
+                if operation == "update" and not hunks:
+                    raise ProjectWorkspaceError(
+                        "patch_update_missing_hunk",
+                        path=source_path,
+                        recommended_action="add_an_at_at_hunk_or_use_a_move_for_a_content_preserving_rename",
+                    )
             patches.append(
                 {
                     "operation": operation,
-                    "old_path": old_normalized,
-                    "path": path or old_normalized,
+                    "old_path": source_path,
+                    "path": path,
                     "hunks": hunks,
+                    **({"content": content} if operation == "create" else {}),
                 }
             )
         if not patches:
-            raise ProjectWorkspaceError("patch_parse_failed")
+            raise ProjectWorkspaceError(
+                "patch_has_no_file_changes",
+                recommended_action="add_at_least_one_file_operation_between_the_patch_markers",
+            )
         paths = [item["path"] for item in patches]
-        paths.extend(item["old_path"] for item in patches if item.get("old_path") != item.get("path"))
+        paths.extend(
+            item["old_path"]
+            for item in patches
+            if item.get("old_path") and item.get("old_path") != item.get("path")
+        )
         if len(paths) != len(set(paths)):
             raise ProjectWorkspaceError("duplicate_patch_target")
         return patches
@@ -1214,15 +1319,34 @@ class ProjectWorkspaceService:
                 for raw in hunk["lines"]
                 if raw[0] in {" ", "-"}
             ]
-            new_line_count = sum(1 for raw in hunk["lines"] if raw[0] in {" ", "+"})
-            if len(old_lines) != int(hunk["old_count"]) or new_line_count != int(hunk["new_count"]):
-                raise ProjectWorkspaceError("patch_count_mismatch", path=path, hunk=hunk_index)
+            anchor = str(hunk.get("anchor") or "")
+            search_start = cursor
+            if anchor:
+                anchor_candidates = [
+                    candidate
+                    for candidate in range(cursor, len(source))
+                    if source[candidate].rstrip("\r\n") == anchor
+                ]
+                if len(anchor_candidates) != 1:
+                    raise ProjectWorkspaceError(
+                        "hunk_not_applicable",
+                        path=path,
+                        hunk=hunk_index,
+                        mismatch="anchor_not_found" if not anchor_candidates else "anchor_ambiguous",
+                        anchor=anchor,
+                        candidate_lines=[candidate + 1 for candidate in anchor_candidates[:8]],
+                        recommended_action=(
+                            "reread_the_target_region_and_use_an_existing_anchor"
+                            if not anchor_candidates
+                            else "use_a_more_specific_anchor_or_add_unique_unchanged_context"
+                        ),
+                    )
+                search_start = anchor_candidates[0] + 1
 
-            expected_start = max(0, int(hunk["old_start"]) - 1)
-            if old_lines and not matches_at(expected_start, old_lines):
+            if old_lines:
                 candidates = [
                     candidate
-                    for candidate in range(cursor, len(source) - len(old_lines) + 1)
+                    for candidate in range(search_start, len(source) - len(old_lines) + 1)
                     if matches_at(candidate, old_lines)
                 ]
                 if len(candidates) != 1:
@@ -1231,30 +1355,26 @@ class ProjectWorkspaceService:
                         path=path,
                         hunk=hunk_index,
                         mismatch="context_not_found" if not candidates else "context_ambiguous",
-                        expected_line=expected_start + 1,
                         candidate_lines=[candidate + 1 for candidate in candidates[:8]],
                         recommended_action=(
-                            "reread_the_target_region_and_regenerate_the_hunk"
+                            "reread_the_target_region_and_copy_the_current_text_exactly"
                             if not candidates
-                            else "add_unchanged_context_to_make_the_hunk_unique"
+                            else "add_unchanged_context_or_an_at_at_anchor_to_make_the_hunk_unique"
                         ),
                     )
                 start = candidates[0]
             else:
-                start = expected_start
+                start = search_start if anchor else len(source)
             if start < cursor or start > len(source):
                 raise ProjectWorkspaceError(
                     "hunk_not_applicable",
                     path=path,
                     hunk=hunk_index,
                     mismatch="invalid_insertion_point",
-                    expected_line=expected_start + 1,
                     recommended_action="reread_the_target_region_and_regenerate_the_hunk",
                 )
             output.extend(source[cursor:start])
             cursor = start
-            consumed = 0
-            produced = 0
             for raw in hunk["lines"]:
                 marker = raw[0]
                 body = raw[1:]
@@ -1262,15 +1382,10 @@ class ProjectWorkspaceService:
                 if marker in {" ", "-"}:
                     if marker == " ":
                         output.append(source[cursor])
-                        produced += 1
                     cursor += 1
-                    consumed += 1
                 elif marker == "+":
                     has_eol = body.endswith(("\n", "\r"))
                     output.append(body_without_eol + (newline if has_eol else ""))
-                    produced += 1
-            if consumed != int(hunk["old_count"]) or produced != int(hunk["new_count"]):
-                raise ProjectWorkspaceError("patch_count_mismatch", path=path, hunk=hunk_index)
         output.extend(source[cursor:])
         return "".join(output)
 

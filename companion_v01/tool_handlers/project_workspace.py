@@ -712,7 +712,10 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- workspace_patch：对 cwd 或当前持久项目中的 UTF-8 文件应用 unified diff；不必先注册项目。"
+            "- workspace_patch：对 cwd 或当前持久项目中的 UTF-8 文件应用无行数上下文补丁；不必先注册项目。"
+            "格式为 `*** Begin Patch` → `*** Update File: 路径`（或 Add/Delete File）→ `@@` → "
+            "空格前缀的原文、`-` 删除行、`+` 新增行 → `*** End Patch`；不要填写 unified diff 的行号和行数。"
+            "Add File 的每一行以 `+` 开头；Delete File 不附带正文。"
             "支持修改、新建、删除和重命名；所有 hunk 先校验再提交，失败时不会留下半应用结果。"
             "省略 cwd/workspace_id 时与 exec_run 一样使用受信任执行工作区根；需要已注册项目时显式使用 cwd=alias:project 或 workspace_id。"
             "可用 expected_files 绑定既有文件的旧 sha256。"

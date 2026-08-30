@@ -69,9 +69,9 @@ execution workspace 均列为受保护根；选择其自身、子目录或包含
 
 - `workspace_write(workspace_id?, path, content, expected_sha256?, mode?)`：UTF-8，单次最多
   256 Ki chars，临时文件 + flush/fsync + replace 原子提交；支持 create/replace/create_or_replace。
-- `workspace_patch(workspace_id?, patch, expected_files?)`：标准 unified diff，单次最多 256 Ki chars；
-  V1 只修改既有 UTF-8 文件，不 create/delete/rename。所有文件、hash 和 hunks 先验证，再逐文件
-  原子替换；失败会回滚已替换目标。
+- `workspace_patch(workspace_id?, patch, expected_files?)`：当前契约为无行数上下文补丁，单次最多
+  256 Ki chars；支持 UTF-8 文件的 update/create/delete/rename。模型不填写 unified diff 范围数字；
+  所有文件、hash 和 hunks 先验证，再逐文件原子替换，失败会回滚已替换目标。
 - 并发保护返回 `base_hash_mismatch` 和实际 SHA-256；路径、解析、hunk、大小和写入失败均为稳定 reason。
 
 ## 7. Shell 长命令反馈

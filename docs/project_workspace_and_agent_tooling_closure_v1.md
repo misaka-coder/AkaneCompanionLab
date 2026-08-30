@@ -308,7 +308,7 @@ created_at/updated_at
 ```json
 {
   "workspace_id": "...",
-  "patch": "unified diff",
+  "patch": "*** Begin Patch\\n*** Update File: src/main.js\\n@@\\n-old\\n+new\\n*** End Patch",
   "expected_files": {
     "src/main.js": "sha256"
   }
@@ -317,7 +317,9 @@ created_at/updated_at
 
 要求：
 
-- 支持标准 unified diff；
+- 使用面向模型的无行数上下文补丁，不要求手算 unified diff 的 old/new 行数；
+- `Update/Add/Delete File` 与可选 `Move to` 表达修改、新建、删除和重命名；
+- `@@` 后直接给出空格前缀的原文、`-` 删除行与 `+` 新增行；重复上下文可用 `@@ <唯一原文锚点>` 消歧；
 - 先完整校验所有目标和 hunks，再原子提交；
 - 文件级/hunk 级结构化失败；
 - 默认禁止补丁越出项目根；
@@ -335,7 +337,11 @@ workspace_archived
 path_outside_workspace
 path_conflict
 base_hash_mismatch
-patch_parse_failed
+patch_format_invalid
+patch_file_header_expected
+patch_hunk_header_expected
+patch_numeric_range_not_allowed
+patch_line_prefix_invalid
 hunk_not_applicable
 content_too_large
 write_failed
