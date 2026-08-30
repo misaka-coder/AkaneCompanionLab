@@ -33,6 +33,10 @@ TOOL_PARSE_ERROR_FIELD = "_tool_parse_error"
 TOOL_RAW_ARGUMENTS_FIELD = "_tool_raw_arguments"
 NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
 NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
+# Provider-private reasoning that must accompany a DeepSeek assistant tool call
+# when the same open turn is replayed. This is an in-process wire sidecar, not
+# durable conversation content and not a MemCore record field.
+NATIVE_REASONING_CONTENT_FIELD = "_native_reasoning_content"
 TOOL_EXECUTION_RECEIPT_FIELD = "_tool_execution_receipt"
 TOOL_EXECUTION_RECEIPTS_FIELD = "_tool_execution_receipts"
 # M66-C: Frozen round — carry the per-turn CapabilitySelection from prepare_context

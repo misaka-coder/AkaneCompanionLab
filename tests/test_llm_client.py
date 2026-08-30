@@ -15,6 +15,7 @@ from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import (
     NATIVE_ANTHROPIC,
     NATIVE_OPENAI,
+    NATIVE_REASONING_CONTENT_FIELD,
     NATIVE_TOOL_CALL_FIELD,
     NATIVE_TOOL_CALLS_FIELD,
     TOOL_INVOCATION_ID_FIELD,
@@ -1793,6 +1794,7 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime._create_completion = lambda **_kwargs: object()
         runtime._record_cache_metrics = lambda _response, **_kwargs: None
         runtime._extract_text = lambda _response: "我先查一下。"
+        runtime._extract_reasoning_content = lambda _response: "private tool reasoning"
         runtime._extract_native_tool_calls = lambda _response, **_kwargs: [
             {
                 "type": "web_search",
@@ -1817,6 +1819,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(len(result[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result[NATIVE_REASONING_CONTENT_FIELD], "private tool reasoning")
         self.assertEqual(result["speech"], "我先查一下。")
         self.assertNotIn("speech_segments", result)
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
@@ -1940,6 +1943,7 @@ class LLMClientConfigTests(unittest.TestCase):
                 choices=[
                     SimpleNamespace(
                         delta=SimpleNamespace(
+                            reasoning_content="private stream reasoning",
                             tool_calls=[
                                 SimpleNamespace(
                                     index=0,
@@ -1979,6 +1983,7 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(len(result.parsed[NATIVE_TOOL_CALLS_FIELD]), 1)
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
         self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result.parsed[NATIVE_REASONING_CONTENT_FIELD], "private stream reasoning")
         self.assertEqual(result.parsed["speech"], "我先查一下。")
         self.assertEqual(result.native_preface_text, "我先查一下。")
         self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
@@ -2218,10 +2223,15 @@ class LLMClientConfigTests(unittest.TestCase):
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime.settings = BotSettingsView(
             llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
             prompt_cache_hints_enabled=False,
         )
         bundle = SimpleNamespace(
-            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
             model="deepseek-v4-flash",
         )
 
@@ -2234,8 +2244,152 @@ class LLMClientConfigTests(unittest.TestCase):
             json_mode=True,
         )
 
-        self.assertEqual(payload["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(
+            payload["extra_body"],
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+        )
         self.assertNotIn("temperature", payload)
+
+    def test_deepseek_open_tool_reasoning_is_wire_only_and_not_persistent(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+        post_user = [
+            {
+                "role": "assistant",
+                "reasoning_content": "private provider reasoning",
+                "tool_calls": [
+                    {
+                        "id": "call_reasoning_1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"Akane"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_reasoning_1", "content": "result"},
+        ]
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="current user",
+            post_user_turns=post_user,
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=None,
+            ephemeral_turns=None,
+            post_user_turns=post_user,
+        )
+
+        self.assertEqual(payload["messages"][2]["reasoning_content"], "private provider reasoning")
+        self.assertNotIn("reasoning_content", persistent[1])
+        self.assertNotIn("private provider reasoning", json.dumps(persistent, ensure_ascii=False))
+
+    def test_deepseek_reasoning_keeps_stable_prefix_and_tool_schema_unchanged(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        common = dict(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="current user",
+            history_turns=[{"role": "assistant", "content": "stable history"}],
+            native_tools=tools,
+            temperature=0.1,
+        )
+        first = runtime._build_completion_kwargs(**common)
+        second = runtime._build_completion_kwargs(
+            **common,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "reasoning_content": "request-local reasoning",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+            ],
+        )
+
+        self.assertEqual(first["extra_body"], second["extra_body"])
+        self.assertEqual(first["tools"], second["tools"])
+        self.assertEqual(first["messages"], second["messages"][: len(first["messages"])])
+        self.assertEqual(second["messages"][-2]["reasoning_content"], "request-local reasoning")
+
+    def test_non_deepseek_history_drops_provider_private_reasoning(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(llm_thinking_mode="enabled")
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="chat-model",
+        )
+
+        normalized = runtime._normalize_post_user_turn_for_payload(
+            {
+                "role": "assistant",
+                "reasoning_content": "must not cross providers",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            bundle=bundle,
+        )
+
+        self.assertNotIn("reasoning_content", normalized or {})
+
+    def test_reasoning_content_extractors_support_nonstream_and_stream_shapes(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(reasoning_content="reasoning A"))]
+        )
+        chunk = {"choices": [{"delta": {"reasoning_content": "reasoning B"}}]}
+
+        self.assertEqual(runtime._extract_reasoning_content(response), "reasoning A")
+        self.assertEqual(runtime._extract_stream_reasoning_content(chunk), "reasoning B")
 
     def test_non_deepseek_model_keeps_temperature_when_thinking_setting_is_enabled(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)

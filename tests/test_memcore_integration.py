@@ -2242,11 +2242,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
             character_pack_id="char",
             memcore_turn_id="active-turn",
             current_user_source_id="active-user",
+            native_reasoning_by_call_id={"active-call": "private open-turn reasoning"},
         )
 
         self.assertTrue(projected["ok"], projected)
         self.assertEqual(FocusedProjectionManager.focused_calls[0]["turn_id"], "active-turn")
         self.assertEqual([item["role"] for item in history], ["assistant", "tool"])
+        self.assertEqual(history[0]["reasoning_content"], "private open-turn reasoning")
+        self.assertNotIn("reasoning_content", repr(FocusedProjectionManager.build_open_turn_projection()["messages"]))
 
     def test_hidden_attention_tool_batch_keeps_native_call_before_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

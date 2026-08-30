@@ -88,7 +88,7 @@ from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
-from .tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
+from .tool_invocation import NATIVE_REASONING_CONTENT_FIELD, NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_ARGUMENTS_FIELD, TOOL_MODEL_NAME_FIELD
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
 from .tool_invocation import (
@@ -4373,6 +4373,7 @@ class AkaneMemoryEngine:
         tool_events: list[dict[str, Any]] = []
         tool_followups: list[str] = []
         tool_history_turns: list[dict[str, Any]] = []
+        native_reasoning_by_call_id: dict[str, str] = {}
         recorded_tool_call_ids: set[str] = set()
         if speculative_voice_candidate:
             max_tool_rounds = -1
@@ -4555,6 +4556,7 @@ class AkaneMemoryEngine:
                     )
                     continue
             provider_output_raw = str(final_output.pop("_provider_output_raw", "") or "")
+            native_reasoning_content = str(final_output.pop(NATIVE_REASONING_CONTENT_FIELD, "") or "").strip()
             final_output, tool_calls, rejections = self._prepare_tool_round_decisions(
                 final_output=final_output,
                 user_message=user_message,
@@ -4686,6 +4688,11 @@ class AkaneMemoryEngine:
             # the generic model loop must not silently discard a legal call or
             # convert repetition into a terminal no-tools phase.
             executable_calls = list(tool_calls)
+            if native_reasoning_content:
+                for executable_call in executable_calls:
+                    call_id = str(executable_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+                    if call_id:
+                        native_reasoning_by_call_id[call_id] = native_reasoning_content
 
             preface_source_id = self._record_assistant_preface_for_tool_call(
                 tool_call=executable_calls[0],
@@ -4741,6 +4748,7 @@ class AkaneMemoryEngine:
                 domain_profile_id=turn_domain_profile_id,
                 memcore_turn_id=memcore_turn_id,
                 execution_target=turn_execution_target,
+                native_reasoning_by_call_id=native_reasoning_by_call_id,
             )
             tool_result = batch_results[-1] if batch_results else None
             tool_protocol_attempts = 0
@@ -5526,6 +5534,7 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            self._attach_native_reasoning_content(normalized, raw_result=result)
             if parse_fallback:
                 # This payload came from the host fallback object.  Its
                 # presentation defaults are not model-authored speech.
@@ -6506,6 +6515,10 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
             )
+            self._attach_native_reasoning_content(
+                normalized,
+                raw_result=getattr(stream_result, "parsed", None),
+            )
             if parse_fallback:
                 normalized["_provider_fallback"] = True
             self._attach_memory_annotation_truth(
@@ -6627,6 +6640,7 @@ class AkaneMemoryEngine:
                     domain_profile_id=domain_profile_id,
                     capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
                 )
+                self._attach_native_reasoning_content(normalized, raw_result=fallback_result)
                 self._attach_memory_annotation_truth(
                     normalized,
                     result=fallback_call_result,
@@ -6684,6 +6698,7 @@ class AkaneMemoryEngine:
                         domain_profile_id=domain_profile_id,
                         capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
                     )
+                    self._attach_native_reasoning_content(normalized, raw_result=uncached_result)
                     self._attach_memory_annotation_truth(
                         normalized,
                         result=uncached_call_result,
@@ -7183,6 +7198,25 @@ class AkaneMemoryEngine:
             capability_selection=capability_selection,
         )
 
+    @staticmethod
+    def _attach_native_reasoning_content(
+        normalized: dict[str, Any],
+        *,
+        raw_result: Any,
+    ) -> None:
+        """Carry private reasoning only with a real native tool decision."""
+
+        if not isinstance(raw_result, Mapping):
+            return
+        if not (
+            raw_result.get(NATIVE_TOOL_CALL_FIELD)
+            or raw_result.get(NATIVE_TOOL_CALLS_FIELD)
+        ):
+            return
+        reasoning_content = str(raw_result.get(NATIVE_REASONING_CONTENT_FIELD) or "").strip()
+        if reasoning_content:
+            normalized[NATIVE_REASONING_CONTENT_FIELD] = reasoning_content
+
     def _normalize_speech_payload(
         self,
         *,
@@ -7677,6 +7711,7 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
         memcore_turn_id: str = "",
         execution_target: Any = None,
+        native_reasoning_by_call_id: Mapping[str, str] | None = None,
     ) -> tuple[list[ToolExecutionResult], list[dict[str, Any]]]:
         calls = [dict(call) for call in tool_calls if isinstance(call, dict) and call]
         if not calls:
@@ -7852,6 +7887,7 @@ class AkaneMemoryEngine:
             character_pack_id=character_pack_id,
             memcore_turn_id=memcore_turn_id,
             current_user_source_id=current_user_source_id,
+            native_reasoning_by_call_id=native_reasoning_by_call_id,
         )
         manager = getattr(self, "memcore_manager", None)
         memcore_required = bool(
@@ -8036,6 +8072,7 @@ class AkaneMemoryEngine:
         character_pack_id: str,
         memcore_turn_id: str = "",
         current_user_source_id: str = "",
+        native_reasoning_by_call_id: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         if tool_history_turns is None:
             return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
@@ -8167,6 +8204,10 @@ class AkaneMemoryEngine:
                 legacy_assistant_written = True
             elif has_legacy_calls and legacy_result_ids.intersection(message_source_ids):
                 payload = self._legacy_tool_result_history_message(payload)
+            payload = self._overlay_native_reasoning_content(
+                payload,
+                native_reasoning_by_call_id=native_reasoning_by_call_id,
+            )
             projected_messages.append(payload)
         covered_ids = {
             str(source_id or "").strip()
@@ -8190,6 +8231,35 @@ class AkaneMemoryEngine:
             "message_count": len(projected_messages),
             "source_count": len(covered_ids),
         }
+
+    @staticmethod
+    def _overlay_native_reasoning_content(
+        payload: dict[str, Any],
+        *,
+        native_reasoning_by_call_id: Mapping[str, str] | None,
+    ) -> dict[str, Any]:
+        """Decorate an open-turn tool call after MemCore projection.
+
+        The mapping exists only for the active host turn. MemCore remains the
+        authority for message order and durable action/result data; private
+        reasoning is overlaid only on the provider wire shape that requires it.
+        """
+
+        if str(payload.get("role") or "").strip().lower() != "assistant":
+            return payload
+        reasoning_map = native_reasoning_by_call_id or {}
+        tool_calls = payload.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return payload
+        matched = [
+            str(reasoning_map.get(str(call.get("id") or "").strip()) or "").strip()
+            for call in tool_calls
+            if isinstance(call, dict) and str(call.get("id") or "").strip()
+        ]
+        reasoning_content = next((value for value in matched if value), "")
+        if not reasoning_content:
+            return payload
+        return {**payload, "reasoning_content": reasoning_content}
 
     @staticmethod
     def _legacy_tool_result_history_message(payload: dict[str, Any]) -> dict[str, Any]:

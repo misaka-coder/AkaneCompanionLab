@@ -31,6 +31,7 @@ from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
 from .runtime_settings import BotSettingsView, normalize_reasoning_effort, normalize_thinking_mode
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
+from .tool_invocation import NATIVE_REASONING_CONTENT_FIELD
 from .tool_invocation import NATIVE_TOOL_CALL_FIELD
 from .tool_invocation import NATIVE_TOOL_CALLS_FIELD
 from .tool_invocation import TOOL_MODEL_NAME_FIELD
@@ -1401,6 +1402,9 @@ class LLMRuntime:
                 native_preface_text = self._native_preface_text_from_content(content)
                 if native_preface_text:
                     parsed["speech"] = native_preface_text
+                reasoning_content = self._extract_reasoning_content(response)
+                if reasoning_content:
+                    parsed[NATIVE_REASONING_CONTENT_FIELD] = reasoning_content
                 metadata_status, metadata_present = _memory_metadata_truth(
                     parsed,
                     accepted_status="accepted_model",
@@ -1650,6 +1654,7 @@ class LLMRuntime:
         response: Any = None
         error = ""
         raw_parts: list[str] = []
+        reasoning_parts: list[str] = []
         native_tool_parts: dict[Any, dict[str, Any]] = {}
         tap = _TopLevelJSONStreamTap()
         start_at = time.perf_counter()
@@ -1696,6 +1701,9 @@ class LLMRuntime:
                     stream_finish_reason = chunk_finish_reason
                 self._record_cache_metrics(chunk, prompt_cache_key=prompt_cache_key)
                 self._collect_stream_native_tool_call_parts(chunk, native_tool_parts, bundle=bundle)
+                reasoning_delta = self._extract_stream_reasoning_content(chunk)
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
                 text = self._extract_stream_text(chunk)
                 if not text:
                     continue
@@ -1749,6 +1757,9 @@ class LLMRuntime:
             native_preface_text = tap.delivered_speech or self._native_preface_text_from_content(raw_text)
             if native_preface_text:
                 parsed["speech"] = native_preface_text
+            reasoning_content = "".join(reasoning_parts).strip()
+            if reasoning_content:
+                parsed[NATIVE_REASONING_CONTENT_FIELD] = reasoning_content
         elif native_requested:
             self._record_metric("native_tool_no_call")
             parsed = self._extract_json(raw_text)
@@ -1897,6 +1908,11 @@ class LLMRuntime:
         except Exception:
             return ""
 
+    def _extract_reasoning_content(self, response: Any) -> str:
+        message = self._chat_response_message(response)
+        value = self._get_attr_or_key(message, "reasoning_content")
+        return str(value or "").strip()
+
     @staticmethod
     def _native_preface_text_from_content(content: Any) -> str:
         """Return only user-facing assistant text emitted before a native tool call."""
@@ -1997,7 +2013,7 @@ class LLMRuntime:
         # Current OpenAI reasoning models reject sampling controls when explicit
         # reasoning effort is selected. Keep temperature for all legacy paths.
         if not (
-            (self._is_responses_protocol(bundle) and self._responses_reasoning_effort(bundle))
+            (self._is_responses_protocol(bundle) and self._configured_reasoning_effort(bundle))
             or self._deepseek_thinking_mode(bundle) == "enabled"
         ):
             payload["temperature"] = temperature
@@ -2159,6 +2175,9 @@ class LLMRuntime:
                     message: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
                     if content:
                         message["content"] = content
+                    reasoning_content = str(turn.get("reasoning_content") or "").strip()
+                    if reasoning_content and self._deepseek_thinking_mode(bundle) == "enabled":
+                        message["reasoning_content"] = reasoning_content
                     return message
             if role == "tool":
                 tool_call_id = str(turn.get("tool_call_id") or "").strip()
@@ -2876,12 +2895,17 @@ class LLMRuntime:
 
     def _build_reasoning_control_kwargs(self, *, bundle: ModelBundle) -> dict[str, Any]:
         if self._is_responses_protocol(bundle):
-            effort = self._responses_reasoning_effort(bundle)
+            effort = self._configured_reasoning_effort(bundle)
             return {"reasoning": {"effort": effort}} if effort else {}
         mode = self._deepseek_thinking_mode(bundle)
         if not mode:
             return {}
-        return {"extra_body": {"thinking": {"type": mode}}}
+        extra_body: dict[str, Any] = {"thinking": {"type": mode}}
+        if mode == "enabled":
+            effort = self._configured_reasoning_effort(bundle)
+            if effort in {"high", "max"}:
+                extra_body["reasoning_effort"] = effort
+        return {"extra_body": extra_body}
 
     def _deepseek_thinking_mode(self, bundle: ModelBundle) -> str:
         mode = normalize_thinking_mode(self._settings_view().llm_thinking_mode)
@@ -2891,7 +2915,7 @@ class LLMRuntime:
             return ""
         return mode
 
-    def _responses_reasoning_effort(self, bundle: ModelBundle | None = None) -> str:
+    def _configured_reasoning_effort(self, bundle: ModelBundle | None = None) -> str:
         client = getattr(bundle, "client", bundle)
         role = str(getattr(client, "_akane_bundle_role", "") or "").strip().lower()
         settings = self._settings_view()
@@ -3140,7 +3164,14 @@ class LLMRuntime:
         post_user_start = current_index + 1 + ephemeral_count
         if post_user_start + post_user_count > len(messages):
             return []
-        return [current, *[dict(message) for message in messages[post_user_start : post_user_start + post_user_count]]]
+        persistent = [current, *[dict(message) for message in messages[post_user_start : post_user_start + post_user_count]]]
+        # DeepSeek requires reasoning_content to be replayed on the next
+        # provider request, but it is private open-turn wire state. The request
+        # observer is MemCore's durable boundary, so remove it here rather than
+        # teaching MemCore a private reasoning record type.
+        for message in persistent:
+            message.pop("reasoning_content", None)
+        return persistent
 
     def _observe_completion_request(
         self,
@@ -3481,6 +3512,15 @@ class LLMRuntime:
                     parts.append(text)
             return "".join(parts)
         return str(content or "")
+
+    def _extract_stream_reasoning_content(self, chunk: Any) -> str:
+        try:
+            choice = chunk.choices[0]
+        except Exception:
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            choice = list(choices or [None])[0]
+        delta = self._get_attr_or_key(choice, "delta")
+        return str(self._get_attr_or_key(delta, "reasoning_content") or "")
 
     def _drain_ndjson_buffer(self, buffer: str) -> tuple[str, list[dict[str, Any]]]:
         remaining = str(buffer or "")
