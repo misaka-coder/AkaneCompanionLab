@@ -339,7 +339,11 @@ prompt、工具 Schema 或 MemCore，因此不改变模型缓存前缀。Hook �
 
 ### M67-D：三个真实样例
 
-1. 事件型：QQ 戳一戳/消息事件插件，不注册工具；
+1. 事件型：QQ 戳一戳/消息事件插件，不注册工具；已完成首个可安装样例
+   `examples/plugins/akane_poke_streak`。同一发送者在同一会话 90 秒内连续戳一戳时，
+   从第二次起仅向当轮追加结构化连续次数事实；普通消息、首个戳、非 QQ 来源与重复
+   `event_id` 均静默放行。样例没有 Capability、稳定提示块或 MemCore 写入，wheel 与
+   正式插件使用同一 entry point 和审计链；
 2. 工具型：一个真实只读能力，经过 CapCore、Broker、MemCore 和产物链；
 3. 混合型：后台观察、事件、Skill、工具、配置和主动推理组成的陪伴插件。
 
