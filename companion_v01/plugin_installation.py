@@ -31,12 +31,12 @@ from typing import Any, Iterable, Mapping
 
 from .distribution_artifacts import audit_distribution_artifact
 from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP, is_valid_permission_id, is_valid_plugin_id
+from .plugin_generation import PluginGenerationError, PluginGenerationProcess
 
 
 PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION = 1
 PLUGIN_ARTIFACT_CATALOG_FILENAME = "plugin-artifacts.json"
 PLUGIN_STAGE_METADATA_FILENAME = "stage.json"
-PLUGIN_PROBE_RESULT_FILENAME = "probe-result.json"
 PLUGIN_INSTALL_TIMEOUT_SECONDS = 600.0
 PLUGIN_PROBE_TIMEOUT_SECONDS = 45.0
 PLUGIN_SOURCE_BUILD_TIMEOUT_SECONDS = 600.0
@@ -201,7 +201,7 @@ class ManagedPluginArtifactStore:
                 raise PluginInstallationError("plugin_wheel_changed_during_stage")
             self._install_wheel(staged_wheel, site_dir)
             plugin_id, distribution_name, version = _inspect_installed_site(site_dir)
-            probe = self._probe(site_dir, plugin_id, stage_dir / PLUGIN_PROBE_RESULT_FILENAME)
+            probe = self._probe(site_dir, plugin_id, stage_dir / "probe-data")
             permissions = _normalize_permissions(probe.get("permissions"))
             contribution = probe.get("contribution_snapshot")
             if not isinstance(contribution, Mapping):
@@ -610,57 +610,31 @@ class ManagedPluginArtifactStore:
         if completed.returncode != 0:
             raise PluginInstallationError("plugin_wheel_install_failed")
 
-    def _probe(self, site_dir: Path, plugin_id: str, result_path: Path) -> dict[str, Any]:
-        launcher = (
-            "import sys;"
-            "sys.path.insert(0,sys.argv[1]);"
-            "from companion_v01.plugin_install_probe import main;"
-            "raise SystemExit(main(sys.argv[2:]))"
+    def _probe(self, site_dir: Path, plugin_id: str, work_dir: Path) -> dict[str, Any]:
+        generation = PluginGenerationProcess(
+            project_root=self.project_root,
+            site_dir=site_dir,
+            plugin_id=plugin_id,
+            work_dir=work_dir,
+            python_executable=self.python_executable,
+            start_timeout_seconds=PLUGIN_PROBE_TIMEOUT_SECONDS,
         )
-        work_dir = result_path.parent / "probe-data"
         try:
-            completed = subprocess.run(
-                [
-                    self.python_executable,
-                    "-c",
-                    launcher,
-                    str(self.project_root),
-                    "--site",
-                    str(site_dir),
-                    "--plugin-id",
-                    plugin_id,
-                    "--work-dir",
-                    str(work_dir),
-                    "--result",
-                    str(result_path),
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=PLUGIN_PROBE_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise PluginInstallationError("plugin_probe_timeout") from exc
-        except OSError as exc:
-            raise PluginInstallationError("plugin_probe_unavailable") from exc
-        try:
-            if completed.returncode != 0 or not result_path.is_file():
-                raise PluginInstallationError("plugin_probe_failed")
-            try:
-                payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise PluginInstallationError("plugin_probe_result_invalid") from exc
-            if not isinstance(payload, Mapping):
-                raise PluginInstallationError("plugin_probe_result_invalid")
-            if not payload.get("ok"):
-                reason = str(payload.get("reason") or "plugin_probe_failed")
-                raise PluginInstallationError(reason)
-            return dict(payload)
+            return generation.start()
+        except PluginGenerationError as exc:
+            reason = exc.reason
+            if reason == "plugin_generation_timeout":
+                reason = "plugin_probe_timeout"
+            elif reason in {
+                "plugin_generation_unavailable",
+                "plugin_generation_exited",
+            }:
+                reason = "plugin_probe_unavailable"
+            elif reason.startswith("plugin_generation_"):
+                reason = "plugin_probe_failed"
+            raise PluginInstallationError(reason) from exc
         finally:
-            try:
-                result_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            generation.stop()
             shutil.rmtree(work_dir, ignore_errors=True)
 
     def _read_stage_locked(self, stage_id: str) -> StagedPluginArtifact:
