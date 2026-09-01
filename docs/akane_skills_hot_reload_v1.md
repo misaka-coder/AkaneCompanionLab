@@ -52,6 +52,9 @@ description: Use when diagnosing services, ports, processes, logs, or deployment
 份 reference、怎样运行脚本、输入输出是什么、如何判断失败；不能要求模型把整个目录一次性
 读进上下文。
 
+`metadata.required_tools` 接受原生工具名，也接受带点号/短横线的 CapCore capability ID；
+因此插件 Skill 可以按真实能力 ID 控制目录可见性，不需要再造一个只为通过校验的别名工具。
+
 ## 3. 模型可见契约
 
 ### 3.1 Skills 目录

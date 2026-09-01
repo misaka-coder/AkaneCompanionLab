@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-gentle-checkin"
+version = "0.1.0"
+description = "Akane mixed companion plugin example with progressive Skill and proactive reasoning"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.entry-points."akane.plugins.v1"]
+"akane.sample.gentle-checkin" = "akane_gentle_checkin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+akane_gentle_checkin = ["skills/gentle-checkin/SKILL.md"]

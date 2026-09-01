@@ -24,7 +24,7 @@ import yaml
 
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-SKILL_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+SKILL_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
 SKILL_MAX_DESCRIPTION_CHARS = 512
 SKILL_MAX_INSTRUCTION_BYTES = 256 * 1024
 SKILL_MAX_RESOURCE_BYTES = 256 * 1024

@@ -350,12 +350,18 @@ prompt、工具 Schema 或 MemCore，因此不改变模型缓存前缀。Hook �
    完整调用与结果由 MemCore 保存并可召回，Markdown 字节经宿主托管产物链登记和投递。
    单响应、请求时限、条目数和报告大小边界在样例常量、工具 Schema 与 README 中一致公开；
    部分条目失败时保留已取得结果并明确遗漏，全部失败时不生成假产物；
-3. 混合型：后台观察、事件、Skill、工具、配置和主动推理组成的陪伴插件。
+3. 混合型：已完成可安装样例 `examples/plugins/akane_gentle_checkin`。它观察 direct/group
+   入站事件但不另开 Agent 回合，把配置和最近活动写入插件隔离目录；私聊可由模型通过一个
+   `plugin_state` CapCore 工具配置，群聊由群主/管理员使用 `/checkin` 配置。随 wheel 发布的
+   `gentle-checkin` Skill 只在工具真实可用时出现在按需目录，正文不常驻。后台服务在会话安静
+   到期后通过正式 reasoning port 进入原会话的 Engine/MemCore，再经通知端口幂等投递一句角色化
+   问候；每段静默最多一次，新消息会重新计时，推理期间到达的新消息会使旧问候作废。插件停用
+   同时撤下工具、事件、服务、命令与 Skill；配置损坏返回结构化错误，不伪装成空配置。
 
-混合型前置契约中的插件 Skill 接入已完成：插件声明 `skill.contribute` 后，可在启动事务中
-注册随 wheel 发布的完整 Skill 包；宿主复用单一 `SkillRegistry` 做目录投影、按需读取、
-last-good 与执行挂载，插件停用后自然撤载。下一刀处理本地插件状态能力的诚实权限/效果声明，
-随后实现混合样例本体，避免它为了通过旧策略虚构网络访问。
+混合样例还验证了本地能力不必虚构网络访问：`trusted.stateful-plugin.v1` 由 CapCore 的
+`risk/confirm/effects` 表达审批语义，宿主只交叉核对已知效果与权限；未来领域效果不会因为
+不在今天的固定白名单里而被拒绝。插件 Skill 复用单一 `SkillRegistry` 的目录投影、按需读取、
+last-good 和执行挂载，不复制到 managed 目录，也不增加第二套 Skill 生命周期。
 
 验收覆盖群聊、私聊、切会话、慢请求、重复事件、取消、插件崩溃、禁用、卸载和重启。
 记录缓存命中、首响应时间、常驻 Token 与事件尾部大小。
