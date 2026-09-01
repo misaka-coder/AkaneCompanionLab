@@ -121,8 +121,6 @@ class Settings(BaseSettings):
     SUMMARY_TRIGGER_COUNT: int = 30
     # 摘要批处理大小
     SUMMARY_BATCH_SIZE: int = 20
-    # 最近可见摘要数量
-    RECENT_SUMMARY_LIMIT: int = 5
     # 情节记忆压缩触发阈值（条数）
     EPISODIC_COMPACT_TRIGGER_COUNT: int = 10
     # 情节记忆压缩批处理大小
@@ -309,16 +307,10 @@ class Settings(BaseSettings):
     # 实际选出的全部工具都走 provider-native schema；不支持 native 的 provider
     # 才回退 legacy JSON。显式列名仅用于有意做受限 profile 的场景。
     NATIVE_TOOL_DECISION_ALLOWLIST: str = "*"
-    # 历史兼容字段：不再作为 OpenAI-compatible native tools 的能力门控。
-    # 保留 host:model[:json] 解析，供旧配置和探针工具读取；provider 明确拒绝
-    # native tools 时由请求级错误识别触发一次 JSON fallback。
-    NATIVE_TOOL_PROVIDER_ALLOWLIST: str = ""
     # AnySearch MCP 单次调用超时。batch_search 可能同时覆盖多个查询，默认比普通本地 MCP 更宽松。
     WEB_SEARCH_MCP_TIMEOUT_SECONDS: float = 35.0
     # 单次模型决策若既不是合法工具调用也不是可交付回复，最多生成几次。
     CHAT_MODEL_DECISION_MAX_ATTEMPTS: int = 3
-    # 后台 Workshop Worker 最大循环轮次
-    MAX_TASK_WORKER_ROUNDS: int = 3
     # Akane 可访问的单一文件工作区；留空时使用桌面/Akane Workspace
     AKANE_WORKSPACE_ROOT: str = ""
     # 单个工作区文件允许直接读取的最大字节数（技术保护，不是 prompt 预算）
@@ -397,8 +389,6 @@ class Settings(BaseSettings):
     # === 远程媒体 (yt-dlp) ===
     # Cookie 文件路径（需登录的平台）
     REMOTE_MEDIA_YTDLP_COOKIEFILE: str = ""
-    # 已停用：仅为旧配置提供结构化迁移提示；请改用受域名校验的 cookies.txt。
-    REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER: str = ""
     # 自定义 User-Agent
     REMOTE_MEDIA_YTDLP_USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -479,6 +469,8 @@ _KNOWN_EXTERNAL_ENV_KEYS: set[str] = {
     "EMQUANT_CALLBACK_QUEUE_MAX",
     "EMQUANT_ENABLED",
     "EMQUANT_SUBSCRIPTION_STATE_PATH",
+    # Read by huggingface_hub / transformers rather than Akane Settings.
+    "HF_ENDPOINT",
 }
 
 
@@ -499,6 +491,17 @@ _RETIRED_DECISION_LOOP_ENV_KEYS = {
     "TOOL_DECISION_RETRY_LIMIT",
 }
 
+_RETIRED_HOST_ENV_KEYS = {
+    "MAX_TASK_WORKER_ROUNDS",
+    "NATIVE_TOOL_PROVIDER_ALLOWLIST",
+    "RECENT_SUMMARY_LIMIT",
+    "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
+}
+
+_RENAMED_ENV_KEYS = {
+    "QQ_GROUP_FOLLOW_TTL_SECONDS": "QQ_GROUP_ATTENTION_TTL_SECONDS",
+}
+
 
 def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     """Warn about .env keys that don't match any Settings field.
@@ -512,10 +515,12 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
     if not env_path.exists():
         return
 
-    known = set(settings_obj.model_fields.keys()) | _KNOWN_EXTERNAL_ENV_KEYS
+    known = set(type(settings_obj).model_fields.keys()) | _KNOWN_EXTERNAL_ENV_KEYS
 
     retired_finance: list[str] = []
     retired_decision_loop: list[str] = []
+    retired_host: list[str] = []
+    renamed: list[str] = []
     unknown: list[str] = []
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -531,6 +536,10 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
                     retired_finance.append(key)
                 elif key in _RETIRED_DECISION_LOOP_ENV_KEYS:
                     retired_decision_loop.append(key)
+                elif key in _RETIRED_HOST_ENV_KEYS:
+                    retired_host.append(key)
+                elif key in _RENAMED_ENV_KEYS:
+                    renamed.append(key)
                 else:
                     unknown.append(key)
     except OSError:
@@ -548,6 +557,20 @@ def _warn_unknown_env_keys(settings_obj: Settings) -> None:
             "TOOL_ROUND_WARNING_REMAINING and CHAT_MODEL_DECISION_MAX_ATTEMPTS: %s",
             env_file,
             ", ".join(sorted(retired_decision_loop)),
+        )
+    if retired_host:
+        logger.warning(
+            "Retired host keys in %s are ignored: %s",
+            env_file,
+            ", ".join(sorted(retired_host)),
+        )
+    if renamed:
+        logger.warning(
+            "Renamed keys in %s are ignored; migrate them as follows: %s",
+            env_file,
+            ", ".join(
+                f"{key}->{_RENAMED_ENV_KEYS[key]}" for key in sorted(renamed)
+            ),
         )
     if unknown:
         logger.warning(
@@ -596,9 +619,8 @@ def _apply_settings(s: Settings) -> None:
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, TOOL_ROUND_HARD_LIMIT
     global TOOL_ROUND_WARNING_REMAINING
     global ENABLE_NATIVE_TOOL_DECISION
-    global NATIVE_TOOL_DECISION_ALLOWLIST, NATIVE_TOOL_PROVIDER_ALLOWLIST
+    global NATIVE_TOOL_DECISION_ALLOWLIST
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_MODEL_DECISION_MAX_ATTEMPTS
-    global MAX_TASK_WORKER_ROUNDS
     global AKANE_WORKSPACE_ROOT, AKANE_WORKSPACE_MAX_READ_BYTES
     global QQ_BRIDGE_ENABLED, QQ_ONEBOT_HTTP_URL, QQ_ONEBOT_CACHE_ROOTS, QQ_CHANNEL_PROFILE_REF, QQ_BOT_QQ
     global QQ_WEBHOOK_SECRET, QQ_ONEBOT_ACCESS_TOKEN, QQ_CHARACTER_PACK_ID
@@ -625,7 +647,7 @@ def _apply_settings(s: Settings) -> None:
         QQ_ATTACHMENT_SOURCE_LOCATOR_TTL_SECONDS, \
         QQ_TEXT_ATTACHMENT_MAX_READ_BYTES
     global BACKGROUND_DEFAULT_WORKERS, BACKGROUND_ATTACHMENT_WORKERS
-    global REMOTE_MEDIA_YTDLP_COOKIEFILE, REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER
+    global REMOTE_MEDIA_YTDLP_COOKIEFILE
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
     global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
     global RUN_MODE, AKANE_INSTANCE_ID, PERSONA_CONFIG_PATH, PERSONA_VARIANT
@@ -648,7 +670,7 @@ def _apply_settings(s: Settings) -> None:
     global BROWSER_PAGE_HEADLESS
     global LLM_PROMPT_AUDIT_ENABLED, LLM_PROMPT_AUDIT_INCLUDE_AUX
     global ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
-    global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
+    global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
@@ -788,10 +810,8 @@ def _apply_settings(s: Settings) -> None:
     TOOL_ROUND_WARNING_REMAINING = max(0, int(s.TOOL_ROUND_WARNING_REMAINING))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "*").strip()
-    NATIVE_TOOL_PROVIDER_ALLOWLIST = str(s.NATIVE_TOOL_PROVIDER_ALLOWLIST or "").strip()
     WEB_SEARCH_MCP_TIMEOUT_SECONDS = max(5.0, min(90.0, float(s.WEB_SEARCH_MCP_TIMEOUT_SECONDS)))
     CHAT_MODEL_DECISION_MAX_ATTEMPTS = max(1, int(s.CHAT_MODEL_DECISION_MAX_ATTEMPTS))
-    MAX_TASK_WORKER_ROUNDS = max(1, min(5, int(s.MAX_TASK_WORKER_ROUNDS)))
     AKANE_WORKSPACE_ROOT = str(s.AKANE_WORKSPACE_ROOT or "").strip()
     AKANE_WORKSPACE_MAX_READ_BYTES = max(1024, int(s.AKANE_WORKSPACE_MAX_READ_BYTES))
 
@@ -876,7 +896,6 @@ def _apply_settings(s: Settings) -> None:
 
     # === remote media ===
     REMOTE_MEDIA_YTDLP_COOKIEFILE = str(s.REMOTE_MEDIA_YTDLP_COOKIEFILE or "").strip()
-    REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER = str(s.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER or "").strip()
     REMOTE_MEDIA_YTDLP_USER_AGENT = (
         str(s.REMOTE_MEDIA_YTDLP_USER_AGENT or "").strip()
         or Settings.model_fields["REMOTE_MEDIA_YTDLP_USER_AGENT"].default
@@ -929,7 +948,6 @@ def _apply_settings(s: Settings) -> None:
     DRIFT_PROBABILITY = float(max(0.0, min(1.0, s.DRIFT_PROBABILITY)))
     SUMMARY_TRIGGER_COUNT = max(1, int(s.SUMMARY_TRIGGER_COUNT))
     SUMMARY_BATCH_SIZE = max(1, int(s.SUMMARY_BATCH_SIZE))
-    RECENT_SUMMARY_LIMIT = max(1, int(s.RECENT_SUMMARY_LIMIT))
     EPISODIC_COMPACT_TRIGGER_COUNT = max(1, int(s.EPISODIC_COMPACT_TRIGGER_COUNT))
     EPISODIC_COMPACT_BATCH_SIZE = max(1, int(s.EPISODIC_COMPACT_BATCH_SIZE))
     EPISODIC_VISIBLE_MAX = max(1, int(s.EPISODIC_VISIBLE_MAX))

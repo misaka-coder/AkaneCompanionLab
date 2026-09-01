@@ -314,7 +314,7 @@ def execute_retrieve_memory_tool(
     )
     importance_min = None
     limit = None
-    episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))))
+    episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
     semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
     recent_raw = engine.store.get_unsummarized_messages(
         context.session_id,

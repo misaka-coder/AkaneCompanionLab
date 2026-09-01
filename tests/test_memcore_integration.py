@@ -4646,9 +4646,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual([row["source_id"] for row in recent_raw], ["legacy-raw", "current"])
         self.assertEqual(episodic[0]["summary_id"], "legacy-episodic")
         self.assertEqual(semantic[0]["semantic_id"], "legacy-semantic")
-        episodic_limit = max(
-            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
-        )
+        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         self.assertEqual(
             store.calls,

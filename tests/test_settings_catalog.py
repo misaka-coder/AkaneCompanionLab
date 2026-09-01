@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -74,6 +78,45 @@ class SettingsCatalogDriftTests(unittest.TestCase):
         self.assertFalse(entries["STREAMING_TTS_ENABLED"]["editable"])
         self.assertEqual(entries["VISION_BASE_URL"]["managedIn"], sc.MANAGED_MODEL_SERVICE)
         self.assertFalse(entries["VISION_BASE_URL"]["editable"])
+
+    def test_external_huggingface_and_current_attention_keys_are_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "HF_ENDPOINT=https://example.invalid\n"
+                "QQ_GROUP_ATTENTION_TTL_SECONDS=120\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {"AKANE_ENV_FILE": str(env_path)}),
+                patch.object(config.logger, "warning") as warning,
+            ):
+                config._warn_unknown_env_keys(config.Settings(_env_file=None))
+            warning.assert_not_called()
+
+    def test_retired_and_renamed_keys_receive_migration_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "FINANCE_ASSISTANT_ENABLED=false\n"
+                "MAX_TASK_WORKER_ROUNDS=3\n"
+                "QQ_GROUP_FOLLOW_TTL_SECONDS=120\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {"AKANE_ENV_FILE": str(env_path)}),
+                patch.object(config.logger, "warning") as warning,
+            ):
+                config._warn_unknown_env_keys(config.Settings(_env_file=None))
+            rendered = "\n".join(
+                str(call.args[0]) % tuple(call.args[1:]) for call in warning.call_args_list
+            )
+            self.assertIn("FINANCE_ASSISTANT_ENABLED", rendered)
+            self.assertIn("MAX_TASK_WORKER_ROUNDS", rendered)
+            self.assertIn(
+                "QQ_GROUP_FOLLOW_TTL_SECONDS->QQ_GROUP_ATTENTION_TTL_SECONDS",
+                rendered,
+            )
 
 
 class SettingsCatalogEndpointTests(unittest.TestCase):

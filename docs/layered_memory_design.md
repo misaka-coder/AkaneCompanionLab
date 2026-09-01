@@ -24,7 +24,7 @@ Current implementation already does:
 - raw messages trigger compaction when unsummarized count reaches `SUMMARY_TRIGGER_COUNT=30`
 - the oldest `SUMMARY_BATCH_SIZE=20` raw messages are summarized into one episodic summary
 - this naturally leaves about `10` raw messages visible after each compaction cycle
-- recent episodic summaries are shown via `get_recent_summaries(..., limit=RECENT_SUMMARY_LIMIT)`
+- recent episodic summaries are shown via `get_recent_summaries(..., limit=EPISODIC_VISIBLE_MAX)`
 - episodic summaries are stored in SQLite and also upserted into vector memory
 
 This means the raw layer already has a healthy "high watermark -> compact older part -> keep recent tail" pattern.

@@ -57,9 +57,6 @@ EXCLUDED_KEYS: frozenset[str] = frozenset(
         # different values and cannot be switched safely as a live UI setting.
         "BROWSER_PAGE_PRIVATE_NETWORK_ACCESS",
         "BROWSER_PAGE_HEADLESS",
-        # Accepted only to return an actionable deprecation error. Remote media
-        # fetches must never import an entire browser cookie database.
-        "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
     }
 )
 
@@ -140,7 +137,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("DRIFT_PROBABILITY", _MEM, SCOPE_RUNTIME, "“走神”概率，偶尔插入不相关检索（0.0~1.0）"),
     _s("SUMMARY_TRIGGER_COUNT", _MEM, SCOPE_RUNTIME, "触发摘要的累积消息数"),
     _s("SUMMARY_BATCH_SIZE", _MEM, SCOPE_RUNTIME, "摘要批处理大小"),
-    _s("RECENT_SUMMARY_LIMIT", _MEM, SCOPE_RUNTIME, "最近可见摘要数量"),
     _s("EPISODIC_COMPACT_TRIGGER_COUNT", _MEM, SCOPE_RUNTIME, "情节记忆压缩触发阈值（条数）"),
     _s("EPISODIC_COMPACT_BATCH_SIZE", _MEM, SCOPE_RUNTIME, "情节记忆压缩批处理大小"),
     _s("EPISODIC_VISIBLE_MAX", _MEM, SCOPE_RUNTIME, "可见情节记忆最大条数"),
@@ -170,7 +166,14 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RESTART_CLIENT,
         "memcore 单次检索结果 token 预算（0=不限）",
     ),
+    _s(
+        "MEMCORE_NATIVE_TIMELINE_PAGE_TOKEN_BUDGET",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 原生时间线单页 token 上限",
+    ),
     _s("MEMCORE_COMPACTION_WORKERS", _MEM, SCOPE_RESTART_CLIENT, "memcore 后台压缩全局 worker 数"),
+    _s("MEMCORE_LLM_TIMEOUT_SECONDS", _MEM, SCOPE_RESTART_CLIENT, "memcore 单次摘要/语义请求超时秒数"),
     _s(
         "MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS",
         _MEM,
@@ -230,6 +233,12 @@ _SPECS: tuple[SettingSpec, ...] = (
         "聊天模型明确支持图片输入（仅当未配置独立视觉模型时作为回落）",
     ),
     _s("LLM_THINKING_MODE", _LLM, SCOPE_RUNTIME, "OpenAI 兼容思考模式：default/disabled/enabled"),
+    _s("LLM_REASONING_EFFORT", _LLM, SCOPE_RUNTIME, "Responses 默认推理强度"),
+    _s("LLM_AUX_REASONING_EFFORT", _LLM, SCOPE_RUNTIME, "Responses 辅助模型推理强度"),
+    _s("LLM_CHAT_REASONING_EFFORT", _LLM, SCOPE_RUNTIME, "Responses 聊天模型推理强度"),
+    _s("LLM_DISABLE_RESPONSE_STORAGE", _LLM, SCOPE_RUNTIME, "禁止 Provider 保存 Responses 请求"),
+    _s("LLM_CONTEXT_WINDOW", _LLM, SCOPE_RUNTIME, "模型上下文窗口提示值（0=自动）"),
+    _s("LLM_AUTO_COMPACT_TOKEN_LIMIT", _LLM, SCOPE_RUNTIME, "Provider 自动压缩 token 提示值（0=关闭）"),
     # 视觉 / 图像理解（接入由模型服务页管理，行为开关本目录）
     _s("VISION_API_KEY", _VIS, SCOPE_RUNTIME, "视觉 API Key", sensitive=True, managed_in=MANAGED_MODEL_SERVICE),
     _s("VISION_BASE_URL", _VIS, SCOPE_RUNTIME, "视觉 base_url", managed_in=MANAGED_MODEL_SERVICE),
@@ -270,6 +279,10 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("TTS_VOLUME", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 音量"),
     _s("TTS_PITCH", _TTS, SCOPE_RESTART_CLIENT, "Edge TTS 音调"),
     _s("WHISPER_CACHE_DIR", _TTS, SCOPE_RESTART_CLIENT, "Whisper / faster-whisper 模型缓存目录（留空=默认）"),
+    _s("AKANE_LOCAL_WHISPER_MODEL", _TTS, SCOPE_RESTART_CLIENT, "本地 Whisper 模型", managed_in=MANAGED_CAPABILITIES),
+    _s("AKANE_LOCAL_ASR_DEVICE", _TTS, SCOPE_RESTART_CLIENT, "本地 ASR 设备", managed_in=MANAGED_CAPABILITIES),
+    _s("AKANE_LOCAL_ASR_COMPUTE_TYPE", _TTS, SCOPE_RESTART_CLIENT, "本地 ASR 计算类型", managed_in=MANAGED_CAPABILITIES),
+    _s("AKANE_LOCAL_RVC_SEPARATION_MODEL", _TTS, SCOPE_RESTART_CLIENT, "本地 RVC 分离模型", managed_in=MANAGED_CAPABILITIES),
     _s("STREAMING_TTS_ENABLED", _TTS, SCOPE_RUNTIME, "流式 TTS（边生成边播放）", managed_in=MANAGED_CAPABILITIES),
     _s(
         "GPT_SOVITS_TTS_TIMEOUT_SECONDS",
@@ -295,6 +308,14 @@ _SPECS: tuple[SettingSpec, ...] = (
         managed_in=MANAGED_CAPABILITIES,
     ),
     _s("GPT_SOVITS_TEXT_SPLIT_METHOD", _TTS, SCOPE_RUNTIME, "GPT-SoVITS 文本切分方法", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_REALTIME_ENABLED", _TTS, SCOPE_RUNTIME, "Fun-ASR 实时转写开关", managed_in=MANAGED_CAPABILITIES),
+    _s("DASHSCOPE_API_KEY", _TTS, SCOPE_RESTART_CLIENT, "百炼 API Key", sensitive=True, managed_in=MANAGED_CAPABILITIES),
+    _s("DASHSCOPE_API_HOST", _TTS, SCOPE_RESTART_CLIENT, "百炼业务空间 API Host", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_REALTIME_MODEL", _TTS, SCOPE_RUNTIME, "Fun-ASR 实时模型", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_AUDIO_FORMAT", _TTS, SCOPE_RUNTIME, "Fun-ASR 音频格式", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_SAMPLE_RATE", _TTS, SCOPE_RUNTIME, "Fun-ASR 采样率", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_MAX_SENTENCE_SILENCE", _TTS, SCOPE_RUNTIME, "Fun-ASR 最大句内静音毫秒数", managed_in=MANAGED_CAPABILITIES),
+    _s("FUN_ASR_VOCABULARY_ID", _TTS, SCOPE_RUNTIME, "Fun-ASR 热词表 ID", managed_in=MANAGED_CAPABILITIES),
     # 系统音乐感知 / 在线歌词
     _s(
         "MUSIC_ONLINE_LYRICS_ENABLED",
@@ -323,13 +344,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
     _s("CHAT_MODEL_DECISION_MAX_ATTEMPTS", _TOOL, SCOPE_RUNTIME, "模型决策未形成合法工具调用或交付时的生成次数"),
     _s("NATIVE_TOOL_DECISION_ALLOWLIST", _TOOL, SCOPE_RUNTIME, "native tool 允许列表；* 表示当前场景选中的全部工具"),
-    _s(
-        "NATIVE_TOOL_PROVIDER_ALLOWLIST",
-        _TOOL,
-        SCOPE_RUNTIME,
-        "兼容保留的 provider/model 探针记录（不控制 native 工具暴露；host:model[:json]）",
-    ),
-    _s("MAX_TASK_WORKER_ROUNDS", _TOOL, SCOPE_RUNTIME, "后台 Workshop Worker 最大循环轮次"),
     _s(
         "AKANE_WORKSPACE_ROOT",
         _TOOL,
@@ -416,6 +430,10 @@ _SPECS: tuple[SettingSpec, ...] = (
         SCOPE_RUNTIME,
         "被动群记忆 denylist 群号（逗号、分号或空白分隔；旧 allowlist 值不再作为门控）",
     ),
+    _s("QQ_GROUP_ATTENTION_MODE", _QQ, SCOPE_RUNTIME, "普通群消息注意力模式：off/engaged/adaptive"),
+    _s("QQ_GROUP_ATTENTION_TTL_SECONDS", _QQ, SCOPE_RUNTIME, "群聊参与后的注意力窗口秒数"),
+    _s("QQ_GROUP_ATTENTION_DELAY_SECONDS", _QQ, SCOPE_RUNTIME, "普通群消息注意力判断延迟秒数"),
+    _s("QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", _QQ, SCOPE_RUNTIME, "非活跃群环境观察冷却秒数"),
     _s("QQ_ATTACHMENT_DEBOUNCE_SECONDS", _QQ, SCOPE_RUNTIME, "附件去抖间隔（秒）"),
     _s("QQ_ATTACHMENT_READY_WAIT_SECONDS", _QQ, SCOPE_RUNTIME, "附件就绪等待时间（秒）"),
     _s("QQ_REPLY_SEGMENT_DELAY_SECONDS", _QQ, SCOPE_RUNTIME, "多消息段发送间隔（秒）"),

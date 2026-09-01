@@ -198,7 +198,7 @@ INV-2 是"一轮一个工具"，但 native 通道一次响应**可能返回多�
 - Anthropic、Responses、Gemini 等协议仍由 profile 声明各自的原生调用形态。
 - 原生工具 schema 在一个开放回合内保持稳定。硬预算耗尽只把 `tool_choice` 改为 `none`，不删除 schema，也不切换强制 JSON。
 - `response_format=json_object` 只保留给摘要等与 Agent 工具循环隔离的内部结构化任务。
-- 原有 `NATIVE_TOOL_PROVIDER_ALLOWLIST` 与 `:json` 后缀只保留配置解析兼容，不再控制能力或强制 JSON。
+- `NATIVE_TOOL_PROVIDER_ALLOWLIST` 与 `:json` 后缀已经退出运行时配置；未知 OpenAI-compatible provider 统一 native-first，明确拒绝时才按请求回退。
 
 新增探针脚本：
 

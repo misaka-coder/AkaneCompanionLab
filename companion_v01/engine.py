@@ -916,9 +916,7 @@ class AkaneMemoryEngine:
         )
         if include_transient_user_record:
             recent_raw = [*recent_raw, user_record]
-        episodic_limit = max(
-            1, int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5)))
-        )
+        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
         semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
         recent_episodic_summaries = self.store.get_visible_episodic_summaries(
             profile_user_id,

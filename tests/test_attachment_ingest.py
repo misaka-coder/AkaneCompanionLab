@@ -1787,28 +1787,6 @@ class AttachmentIngestTests(unittest.TestCase):
             first_target = request_redirect.call_args_list[0].kwargs["target"]
             self.assertEqual(first_target.hostname, "b23.tv")
 
-    def test_ytdlp_common_options_reject_browser_cookie_import(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root / "db")
-            inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
-            service = AttachmentIngestService(
-                base_dir=root / "attachments",
-                store=store,
-                attachment_service=inbox,
-                vision_service=FakeVisionService(store),  # type: ignore[arg-type]
-            )
-
-            with patch("companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE", ""):
-                with patch(
-                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "edge:Default"
-                ):
-                    with self.assertRaisesRegex(
-                        AttachmentMaterializationError,
-                        "remote_media_browser_cookies_forbidden",
-                    ):
-                        service._yt_dlp_common_options(timeout=12.0)
-
     def test_ytdlp_cookiefile_rejects_non_provider_domains(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1828,15 +1806,9 @@ class AttachmentIngestTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with (
-                patch(
-                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE",
-                    str(cookiefile),
-                ),
-                patch(
-                    "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
-                    "",
-                ),
+            with patch(
+                "companion_v01.attachment_ingest.config.REMOTE_MEDIA_YTDLP_COOKIEFILE",
+                str(cookiefile),
             ):
                 with self.assertRaisesRegex(
                     AttachmentMaterializationError,

@@ -293,10 +293,7 @@ class MemoryCompactionService:
         transcript = render_chat_timeline(batch)
         summary_reference_text = ""
         if profile_user_id:
-            summary_reference_limit = max(
-                1,
-                int(getattr(config, "EPISODIC_VISIBLE_MAX", getattr(config, "RECENT_SUMMARY_LIMIT", 5))),
-            )
+            summary_reference_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
             reference_summaries = self.store.get_visible_episodic_summaries(
                 profile_user_id,
                 limit=summary_reference_limit,

@@ -1074,25 +1074,24 @@ class LLMClientConfigTests(unittest.TestCase):
                     model=model,
                 )
 
-                with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
-                    payload = runtime._build_completion_kwargs(
-                        bundle=bundle,
-                        system_prompt="system",
-                        user_prompt="user",
-                        temperature=0.1,
-                        json_mode=True,
-                        native_tools=[
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "web_search",
-                                    "description": "Search the public web.",
-                                    "parameters": {"type": "object"},
-                                },
-                            }
-                        ],
-                        native_tool_choice="auto",
-                    )
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    json_mode=True,
+                    native_tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "description": "Search the public web.",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    native_tool_choice="auto",
+                )
 
                 self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
                 self.assertEqual(payload["tool_choice"], "auto")
@@ -1235,85 +1234,82 @@ class LLMClientConfigTests(unittest.TestCase):
             model="gpt-5",
         )
 
-        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
-            payload = runtime._build_completion_kwargs(
-                bundle=bundle,
-                system_prompt="system",
-                user_prompt="user",
-                temperature=0.1,
-                native_tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "description": "Search the public web.",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
-                native_tool_choice="auto",
-            )
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
 
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")
 
-    def test_llm_runtime_allowlist_no_longer_gates_openai_compatible_native_profile(self) -> None:
+    def test_llm_runtime_unknown_openai_compatible_provider_is_native_first(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
             model="deepseek-v4-pro",
         )
 
-        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
-            payload = runtime._build_completion_kwargs(
-                bundle=bundle,
-                system_prompt="system",
-                user_prompt="user",
-                temperature=0.1,
-                json_mode=True,
-                native_tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "description": "Search the public web.",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
-                native_tool_choice="auto",
-            )
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
 
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")
         self.assertNotIn("response_format", payload)
 
-    def test_llm_runtime_legacy_allowlist_cannot_force_json_mode_with_native_tools(self) -> None:
+    def test_llm_runtime_native_tools_do_not_force_json_mode(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         bundle = SimpleNamespace(
             client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
             model="deepseek-v4-pro",
         )
 
-        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", "opencode.ai:*:json"):
-            payload = runtime._build_completion_kwargs(
-                bundle=bundle,
-                system_prompt="system",
-                user_prompt="user",
-                temperature=0.1,
-                json_mode=True,
-                native_tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "description": "Search the public web.",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
-                native_tool_choice="auto",
-            )
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
 
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertNotIn("response_format", payload)
@@ -1325,25 +1321,24 @@ class LLMClientConfigTests(unittest.TestCase):
             model="deepseek-v4-flash-0731",
         )
 
-        with patch("config.NATIVE_TOOL_PROVIDER_ALLOWLIST", ""):
-            payload = runtime._build_completion_kwargs(
-                bundle=bundle,
-                system_prompt="system",
-                user_prompt="user",
-                temperature=0.1,
-                json_mode=True,
-                native_tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "description": "Search the public web.",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
-                native_tool_choice="auto",
-            )
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
 
         self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
         self.assertEqual(payload["tool_choice"], "auto")

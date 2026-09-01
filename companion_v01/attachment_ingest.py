@@ -1486,8 +1486,6 @@ class AttachmentIngestService:
         cookiefile = str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIEFILE", "") or "").strip()
         if cookiefile:
             options["cookiefile"] = self._validated_ytdlp_cookiefile(cookiefile)
-        elif str(getattr(config, "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER", "") or "").strip():
-            raise AttachmentMaterializationError("remote_media_browser_cookies_forbidden")
         return options
 
     def _validated_ytdlp_cookiefile(self, value: str) -> str:

@@ -3281,14 +3281,7 @@ class MemcoreManager:
             ),
             episodic_visible_max=max(
                 1,
-                int(
-                    getattr(
-                        config,
-                        "EPISODIC_VISIBLE_MAX",
-                        getattr(config, "RECENT_SUMMARY_LIMIT", 8),
-                    )
-                    or 8
-                ),
+                int(getattr(config, "EPISODIC_VISIBLE_MAX", 10) or 10),
             ),
             episodic_compact_trigger_count=max(
                 1,

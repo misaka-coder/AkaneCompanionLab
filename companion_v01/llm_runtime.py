@@ -2623,48 +2623,6 @@ class LLMRuntime:
         # text protocol such as DSML.
         return OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE
 
-    def _configured_native_tool_profile(self, *, host: str, model: str) -> ProviderToolProfile:
-        """Return the legacy optimistic profile for old callers.
-
-        ``NATIVE_TOOL_PROVIDER_ALLOWLIST`` is no longer a capability gate. It
-        remains parseable for configuration compatibility, but unknown
-        OpenAI-compatible providers use the same native-first policy.
-        """
-        return OPENAI_COMPAT_DEFAULT_PROVIDER_TOOL_PROFILE
-
-    def _parse_native_tool_provider_allowlist_item(self, item: str) -> tuple[str, str, bool] | None:
-        text = str(item or "").strip().lower()
-        if not text:
-            return None
-        if "://" in text:
-            parsed_url = urlparse(text)
-            text = parsed_url.netloc or parsed_url.path
-            if parsed_url.path and parsed_url.netloc and ":" in parsed_url.path.strip("/"):
-                text = f"{parsed_url.netloc}:{parsed_url.path.strip('/')}"
-        parts = [part.strip() for part in text.split(":") if part.strip()]
-        if not parts:
-            return None
-        host = self._normalize_native_tool_allowlist_host(parts[0])
-        model = parts[1] if len(parts) >= 2 else "*"
-        mode = parts[2] if len(parts) >= 3 else ""
-        if not host or not model:
-            return None
-        return host, model, mode in {"json", "response_json", "forced_json"}
-
-    def _normalize_native_tool_allowlist_host(self, value: str) -> str:
-        raw = str(value or "").strip().lower()
-        if raw == "*":
-            return raw
-        if "://" in raw:
-            raw = urlparse(raw).netloc
-        if "/" in raw:
-            raw = raw.split("/", 1)[0]
-        if "@" in raw:
-            raw = raw.rsplit("@", 1)[-1]
-        if ":" in raw:
-            raw = raw.split(":", 1)[0]
-        return raw.strip()
-
     def _bundle_base_host(self, bundle: ModelBundle) -> str:
         raw = str(getattr(bundle.client, "base_url", "") or "").strip()
         if raw and "://" not in raw:
