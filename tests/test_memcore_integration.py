@@ -5467,7 +5467,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored["memory_metadata"]["topic_terms"], ["基金偏好"])
             manager.close()
 
-    def test_manager_does_not_expose_standalone_external_event_adapter(self) -> None:
+    def test_manager_exposes_typed_standalone_event_without_restoring_v1_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="dual",
@@ -5479,6 +5479,23 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 embedding_provider=_FakeEmbeddingProvider(),
             )
             self.assertFalse(hasattr(manager, "record_external_event"))
+            recorded = manager.append_standalone_event(
+                {
+                    "event_type": "game.boss_defeated",
+                    "source": "plugin.game",
+                    "fields": {"name": "Scarlet", "difficulty": "hard"},
+                },
+                source_id="plugin:event-1",
+                profile_user_id="u1",
+                session_id="s1",
+                character_pack_id="char",
+                timestamp=1_777_777_000,
+            )
+            stored = manager._store.get_record_by_source_id("plugin:event-1")
+            self.assertTrue(recorded["ok"], recorded)
+            self.assertEqual(stored["kind"], "event.game.boss_defeated")
+            self.assertEqual(stored["payload"]["name"], "Scarlet")
+            self.assertEqual(stored["payload"]["source"], "plugin.game")
             manager.close()
 
     def test_manager_marks_explicit_legacy_message_imports(self) -> None:

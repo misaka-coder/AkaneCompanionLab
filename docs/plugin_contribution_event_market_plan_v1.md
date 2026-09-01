@@ -132,8 +132,9 @@ material_handles: []
 同一种事件可以逐次选择不同去向。核心系统不规定“受伤必须入库”或“截图只能临时”，
 避免为尚未出现的游戏形态预先写死规则。
 
-事件处理器还可以返回：继续传播、消费事件、标准出站计划、请求一次正常 Agent 回合。
-请求模型不等于强制回复；模型仍按当前输出协议决定回复或静默。
+第一版事件桥允许处理器选择投递去向，并请求一次正常 Agent 回合。请求模型不等于强制
+回复；模型仍按当前输出协议决定回复或静默。消费宿主消息和直接贡献标准出站计划需要
+与 M67-C 的出站 Hook、失败反馈和权限语义一起落地，第一版不提前开放半套拦截接口。
 
 ### 5.3 并发与重复
 
@@ -255,9 +256,9 @@ Akane 可以在开发模式下：
 共用快照；保持旧插件兼容。
 
 当前实现由 `PluginHost` 在一代插件完成激活时一次生成不可变
-`PluginContributionSnapshot`，只列出现阶段真实可执行的 Capability、QQ 指令、旧式默认
-后台服务和提示块。状态 API 在原有兼容字段之外返回每个活动插件的
-`contribution_snapshot`；停机后快照随能力一同清空。事件、Hook、Skill、Provider 和 UI
+`PluginContributionSnapshot`，只列出现阶段真实可执行的 Capability、QQ 指令、事件
+处理器、旧式默认后台服务和提示块。状态 API 在原有兼容字段之外返回每个活动插件的
+`contribution_snapshot`；停机后快照随能力一同清空。Hook、Skill、Provider 和 UI
 Page 尚未具备对应运行契约，因此没有进入空占位字段。该变化不修改插件注册接口、模型
 工具投影或稳定提示内容。
 
@@ -266,8 +267,21 @@ Page 尚未具备对应运行契约，因此没有进入空占位字段。该变
 
 ### M67-B：事件桥
 
+状态：已完成第一版。
+
 工作：增加通用事件信封、channelcore 消息事件适配、事件处理结果和 internal/
 current_turn/timeline 三种投递。
+
+当前实现以 `channel.qq.inbound` 暴露 QQ 入站观察点。事件信封直接携带不可变的
+channelcore-onebot `InboundMessage`，引用、@、有序段、附件和转发引用不再被插件层重复
+解析。PluginHost 并发隔离事件观察器并发布真实 `event_handlers` 贡献快照：默认
+`internal` 不改变主链；`current_turn` 只追加当轮尾部结构化事件并进入既有 Agent 仲裁；
+`timeline` 通过 MemCore `append_standalone_event` 写入原生事件记录。事件处理器异常、超时
+或时间线写入失败只产生结构化降级日志，不吞 QQ 消息，不伪造回复。
+
+事件处理器没有数量魔法上限；时延敏感的单处理器探测边界和事件字段资源边界公开在
+PluginHost 状态契约中。事件不进入稳定 system prompt，因此未注册事件插件时模型前缀、
+工具 Schema 和缓存命中路径均不变化。
 
 验收：事件插件无需 Capability 即可激活；默认观察不抢答；临时事件不入库；timeline
 事件能被压缩和召回；引用、@、附件不降级。

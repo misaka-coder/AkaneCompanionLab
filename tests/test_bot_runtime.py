@@ -35,6 +35,9 @@ class _FakePluginHost:
         self.host_registrations = host_registrations
         return "broker"
 
+    def build_event_broker(self) -> str:
+        return "event-broker"
+
     async def stop(self) -> dict[str, Any]:
         self.stop_count += 1
         return {"status": "stopped", "close_failure_count": 0}

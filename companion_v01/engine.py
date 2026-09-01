@@ -3579,6 +3579,38 @@ class AkaneMemoryEngine:
     def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._record_passive_qq_message(payload, schedule_maintenance=True)
 
+    def record_plugin_timeline_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist a typed plugin event without opening a model-response turn."""
+
+        manager = self._memcore_manager_if_enabled()
+        if manager is None:
+            return {"ok": False, "status": "unavailable", "reason": "memcore_not_enabled"}
+        source_id = str(payload.get("source_id") or "").strip()
+        session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
+        profile_user_id = str(payload.get("real_user_id") or payload.get("profile_user_id") or session_id)
+        character_pack_id = self._resolve_payload_character_pack_id(payload)
+        event = payload.get("event") if isinstance(payload.get("event"), dict) else None
+        if not source_id or event is None:
+            return {"ok": False, "status": "invalid_event", "reason": "event_contract_invalid"}
+        result = manager.append_standalone_event(
+            event,
+            source_id=source_id,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            timestamp=int(payload.get("timestamp") or time.time()),
+        )
+        if bool(result.get("ok")) and self._memcore_owns_compaction():
+            result = {
+                **result,
+                "compaction": self._schedule_memcore_compaction(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=character_pack_id,
+                ),
+            }
+        return result
+
     def record_passive_qq_messages(self, payloads: list[dict[str, Any]]) -> dict[str, Any]:
         """Record one ordered passive-message batch and schedule maintenance once."""
 

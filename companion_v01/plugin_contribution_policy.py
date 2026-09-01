@@ -17,6 +17,7 @@ from .plugin_api import (
     BACKGROUND_JOB_PERMISSION,
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     DIAGNOSTICS_INVOKE_PERMISSION,
+    EVENT_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
     MODEL_REASONING_PERMISSION,
     NETWORK_READ_PERMISSION,
@@ -61,6 +62,7 @@ class PluginContributionPolicy(Protocol):
         manifest: PluginManifest,
         capability_count: int,
         qq_command_count: int,
+        event_handler_count: int,
         has_background_job: bool,
         prompt_block_count: int,
     ) -> ContributionPolicyDecision: ...
@@ -184,6 +186,7 @@ class TrustedStatefulPluginContributionPolicy:
             PLUGIN_QQ_COMMAND_PERMISSION,
             MODEL_REASONING_PERMISSION,
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
+            EVENT_SUBSCRIBE_PERMISSION,
         }
     )
     _CONTRIBUTION_PERMISSIONS = frozenset(
@@ -192,6 +195,7 @@ class TrustedStatefulPluginContributionPolicy:
             BACKGROUND_JOB_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
+            EVENT_SUBSCRIBE_PERMISSION,
         }
     )
 

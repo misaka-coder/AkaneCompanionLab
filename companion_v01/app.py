@@ -107,6 +107,7 @@ async def startup_event() -> None:
             json.dumps(startup_status, ensure_ascii=False, sort_keys=True),
         )
     app.state.akane_plugin_command_broker = bot_runtime.plugin_command_broker
+    app.state.akane_plugin_event_broker = bot_runtime.plugin_event_broker
 
 
 if ASSETS_DIR.exists():
@@ -162,6 +163,7 @@ async def shutdown_event() -> None:
     else:
         logger.info("Bot registry shutdown completed in %.1f ms", shutdown_duration_ms)
     app.state.akane_plugin_command_broker = None
+    app.state.akane_plugin_event_broker = None
     # Keep root leases until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here
     # would let a replacement process overlap those final writers/handles.
@@ -226,6 +228,7 @@ for qq_bot_runtime in bot_registry.values():
         "channel_config": qq_bot_runtime.qq_channel_config,
         "admin_auth": qq_bot_runtime.admin_write_auth,
         "plugin_command_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_command_broker,
+        "plugin_event_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_event_broker,
         "thinking_mode_setter": qq_bot_runtime.set_llm_thinking_mode,
         "turn_coordinator": qq_bot_runtime.turn_coordinator,
     }

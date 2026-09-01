@@ -101,6 +101,7 @@ class BotRuntime:
     config_module: Any = field(repr=False)
     logger: logging.Logger = field(repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
+    plugin_event_broker: Any = field(default=None, init=False, repr=False)
     voice_runtime_service: AkaneVoiceRuntimeService | None = field(
         default=None,
         init=False,
@@ -196,6 +197,7 @@ class BotRuntime:
         self.plugin_command_broker = self.plugin_host.build_qq_command_broker(
             host_registrations=host_commands
         )
+        self.plugin_event_broker = self.plugin_host.build_event_broker()
         self._started = True
         status = "degraded" if plugin_status.get("status") == "degraded" else "active"
         return {
@@ -240,6 +242,7 @@ class BotRuntime:
             plugin_status = {"status": "error", "reason": "plugin_host_shutdown_failed"}
 
         self.plugin_command_broker = None
+        self.plugin_event_broker = None
         if self.voice_runtime_service is not None:
             try:
                 # Runtime cleanup owns blocking worker/thread joins. Keep those

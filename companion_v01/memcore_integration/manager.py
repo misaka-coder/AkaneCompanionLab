@@ -432,6 +432,89 @@ class MemcoreManager:
             target_actor_display_name=target_actor_display_name,
         )
 
+    def append_standalone_event(
+        self,
+        event: dict[str, Any],
+        *,
+        source_id: str,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        timestamp: int = 0,
+    ) -> dict[str, Any]:
+        """Append one structured external event through MemCore's event path."""
+
+        operation = "append_standalone_event"
+        normalized_source_id = str(source_id or "").strip()
+        if not normalized_source_id:
+            return self._status(operation, False, "invalid_event", reason="source_id_required")
+        if not isinstance(event, dict) or not str(event.get("event_type") or "").strip():
+            return self._status(
+                operation,
+                False,
+                "invalid_event",
+                source_id=normalized_source_id,
+                reason="event_type_required",
+            )
+        fields = event.get("fields")
+        if not isinstance(fields, dict):
+            return self._status(
+                operation,
+                False,
+                "invalid_event",
+                source_id=normalized_source_id,
+                reason="event_fields_must_be_object",
+            )
+        system = self._get_system_or_none(
+            operation=operation,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+        )
+        if system is None:
+            return self._status(
+                operation,
+                False,
+                "unavailable",
+                source_id=normalized_source_id,
+                reason=self._reason,
+            )
+        effective_timestamp = int(timestamp or time.time())
+        try:
+            entry = self._build_timeline_input(
+                role="event",
+                record={
+                    "source_id": normalized_source_id,
+                    "timestamp": effective_timestamp,
+                    "memory_metadata": {},
+                    "index_in_vector": True,
+                },
+                turn_role=None,
+                external_event={
+                    "event_type": str(event.get("event_type") or "").strip(),
+                    "source": str(event.get("source") or "").strip(),
+                    "fields": {str(key): str(value) for key, value in fields.items()},
+                },
+            )
+            written = system.append_standalone_entry(entry)
+            return self._status(
+                operation,
+                True,
+                "recorded",
+                source_id=str(written.source_id or normalized_source_id),
+                index_status=str(written.index_status or ""),
+            )
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            logger.warning("memcore %s failed: %s", operation, reason)
+            return self._status(
+                operation,
+                False,
+                "failed",
+                source_id=normalized_source_id,
+                reason=reason,
+            )
+
     def record_voice_projection(
         self,
         projection_record: dict[str, Any],

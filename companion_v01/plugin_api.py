@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from capcore import CapabilityAdapter
+from channelcore_onebot import InboundMessage
 
 
 AKANE_PLUGIN_API_VERSION = 1
@@ -27,6 +28,7 @@ NOTIFICATION_SEND_PERMISSION = "notification.send"
 PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
 MODEL_REASONING_PERMISSION = "model.reasoning"
 SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
+EVENT_SUBSCRIBE_PERMISSION = "event.subscribe"
 MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
@@ -230,6 +232,58 @@ class PluginExternalEvent:
     source: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Event contribution contracts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PluginEventEnvelope:
+    """One immutable host event delivered to plugin observers.
+
+    QQ events retain the authoritative channelcore-onebot ``InboundMessage``
+    instead of flattening reply, mention, attachment, and forward segments into
+    another host-specific message shape.  Non-channel sources use the same
+    small envelope without setting ``channel_message``.
+    """
+
+    event_id: str
+    event_type: str
+    source: str
+    occurred_at: int
+    subject: str = ""
+    fields: tuple[tuple[str, str], ...] = ()
+    material_handles: tuple[str, ...] = ()
+    channel_message: InboundMessage | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PluginEventResult:
+    """Typed outcome of one plugin event observer.
+
+    ``delivery`` selects where the optional structured event goes:
+
+    - ``internal``: no model context and no MemCore write;
+    - ``current_turn``: request-local model context only;
+    - ``timeline``: persist through MemCore's public event path.
+
+    ``request_agent_turn`` asks the channel host to run its ordinary Agent
+    decision path.  It never means "force a visible reply".
+    """
+
+    delivery: str = "internal"
+    event: PluginExternalEvent | None = None
+    request_agent_turn: bool = False
+    reason: str = ""
+
+
+class PluginEventHandler(Protocol):
+    """Observe one exact event type registered during plugin activation."""
+
+    async def handle_event(self, event: PluginEventEnvelope) -> PluginEventResult:
+        """Return one typed result; exceptions are isolated by PluginHost."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class PluginReasoningRequest:
     """Bounded proactive reasoning request using the host's normal model/tool loop."""
@@ -394,6 +448,16 @@ class PluginRegistrar(Protocol):
         """
         ...
 
+    def add_event_handler(self, event_type: str, handler: "PluginEventHandler") -> None:
+        """Register one exact-match event observer.
+
+        The plugin must declare ``event.subscribe``. Event handlers receive
+        immutable snapshots and default to internal observation: registration
+        alone does not wake the model, write memory, send a message, or block
+        the channel's ordinary path.
+        """
+        ...
+
 
 class AkanePlugin(Protocol):
     manifest: PluginManifest
@@ -407,6 +471,7 @@ __all__ = [
     "BACKGROUND_JOB_PERMISSION",
     "CAPABILITY_PROMPT_INVOKE_PERMISSION",
     "DIAGNOSTICS_INVOKE_PERMISSION",
+    "EVENT_SUBSCRIBE_PERMISSION",
     "MANAGED_ARTIFACT_WRITE_PERMISSION",
     "MAX_MANAGED_ARTIFACT_BYTES",
     "MODEL_REASONING_PERMISSION",
@@ -423,6 +488,9 @@ __all__ = [
     "NotificationResult",
     "PluginBackgroundJob",
     "PluginExternalEvent",
+    "PluginEventEnvelope",
+    "PluginEventHandler",
+    "PluginEventResult",
     "PluginJobController",
     "PluginManifest",
     "PluginQQCommandHandler",

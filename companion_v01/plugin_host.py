@@ -29,6 +29,7 @@ from .plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
     BACKGROUND_JOB_PERMISSION,
+    EVENT_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
     MAX_MANAGED_ARTIFACT_BYTES,
     MODEL_REASONING_PERMISSION,
@@ -45,6 +46,14 @@ from .plugin_api import (
     is_valid_plugin_id,
 )
 from .plugin_jobs import _HostJobController, run_supervised_job
+from .plugin_events import (
+    DEFAULT_EVENT_HANDLER_TIMEOUT_SECONDS,
+    MAX_EVENT_FIELD_CHARS,
+    MAX_EVENT_FIELDS,
+    MAX_EVENT_TOTAL_CHARS,
+    PluginEventBroker,
+    _PluginEventRegistration,
+)
 from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
@@ -84,6 +93,7 @@ class PluginStatus:
     permissions: tuple[str, ...] = ()
     capability_ids: tuple[str, ...] = ()
     qq_commands: tuple[str, ...] = ()
+    event_types: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -102,6 +112,8 @@ class PluginStatus:
             payload["capability_ids"] = list(self.capability_ids)
         if self.qq_commands:
             payload["qq_commands"] = list(self.qq_commands)
+        if self.event_types:
+            payload["event_types"] = list(self.event_types)
         return payload
 
 
@@ -109,16 +121,16 @@ class PluginStatus:
 class PluginContributionSnapshot:
     """Immutable inventory of one active plugin's real host contributions.
 
-    M67-A intentionally lists only contribution kinds that PluginHost can
-    execute today.  Event handlers, hooks, skills, providers, and UI pages are
-    added only when their runtime contracts exist; empty future placeholders
-    must not be advertised as supported capabilities.
+    Only contribution kinds that PluginHost can execute today are listed.
+    Hooks, skills, providers, and UI pages are added only when their runtime
+    contracts exist; empty future placeholders are never advertised.
     """
 
     plugin_id: str
     generation: int
     capability_ids: tuple[str, ...] = ()
     qq_commands: tuple[str, ...] = ()
+    event_types: tuple[str, ...] = ()
     background_service_ids: tuple[str, ...] = ()
     prompt_block_ids: tuple[str, ...] = ()
     prompt_character_count: int = 0
@@ -130,6 +142,8 @@ class PluginContributionSnapshot:
             kinds.append("capabilities")
         if self.qq_commands:
             kinds.append("commands")
+        if self.event_types:
+            kinds.append("event_handlers")
         if self.background_service_ids:
             kinds.append("background_services")
         if self.prompt_block_ids:
@@ -143,6 +157,7 @@ class PluginContributionSnapshot:
             "types": list(self.contribution_types),
             "capabilities": list(self.capability_ids),
             "commands": list(self.qq_commands),
+            "event_handlers": list(self.event_types),
             "background_services": list(self.background_service_ids),
             "prompt_blocks": list(self.prompt_block_ids),
             "prompt_character_count": self.prompt_character_count,
@@ -170,6 +185,7 @@ class _ActivePlugin:
     capability_ids: tuple[str, ...]
     job: Any  # PluginBackgroundJob | None
     qq_command_registrations: tuple[_PluginCommandRegistration, ...] = ()
+    event_registrations: tuple[_PluginEventRegistration, ...] = ()
     prompt_block_registrations: tuple[_PromptBlockRegistration, ...] = ()
 
 
@@ -194,6 +210,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._reasoning_permission: bool = False
         self._qq_commands: list[_PluginCommandRegistration] = []
         self._qq_command_permission: bool = False
+        self._event_registrations: list[_PluginEventRegistration] = []
+        self._event_permission: bool = False
         self._prompt_blocks: list[_PromptBlockRegistration] = []
         self._prompt_permission: bool = False
 
@@ -293,9 +311,29 @@ class _StagedRegistrar(PluginRegistrar):
             handler=handler,
         ))
 
+    def add_event_handler(self, event_type: str, handler: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._event_permission:
+            raise RuntimeError("event_subscribe_permission_required")
+        normalized = str(event_type or "").strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,119}", normalized) is None:
+            raise RuntimeError("invalid_plugin_event_type")
+        if not callable(getattr(handler, "handle_event", None)):
+            raise RuntimeError("invalid_plugin_event_handler")
+        if any(item.event_type == normalized for item in self._event_registrations):
+            raise RuntimeError("duplicate_plugin_event_handler")
+        self._event_registrations.append(
+            _PluginEventRegistration(plugin_id="", event_type=normalized, handler=handler)
+        )
+
     @property
     def qq_commands(self) -> tuple[Any, ...]:
         return tuple(self._qq_commands)
+
+    @property
+    def event_registrations(self) -> tuple[_PluginEventRegistration, ...]:
+        return tuple(self._event_registrations)
 
     @property
     def prompt_blocks(self) -> tuple[_PromptBlockRegistration, ...]:
@@ -318,6 +356,9 @@ class _StagedRegistrar(PluginRegistrar):
 
     def _set_qq_command_permission(self, allowed: bool) -> None:
         self._qq_command_permission = allowed
+
+    def _set_event_permission(self, allowed: bool) -> None:
+        self._event_permission = allowed
 
     def _set_prompt_permission(self, allowed: bool) -> None:
         self._prompt_permission = allowed
@@ -346,6 +387,7 @@ class PluginHost:
         invoke_timeout_seconds: float | None = None,
         managed_artifact_timeout_seconds: float = 5.0,
         close_timeout_seconds: float = 2.0,
+        event_handler_timeout_seconds: float = DEFAULT_EVENT_HANDLER_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(selections, tuple) or any(
             not isinstance(selection, PluginSelection) for selection in selections
@@ -368,6 +410,7 @@ class PluginHost:
         )
         self._managed_artifact_timeout_seconds = max(0.1, float(managed_artifact_timeout_seconds))
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
+        self._event_handler_timeout_seconds = max(0.01, float(event_handler_timeout_seconds))
 
         self._state = "created"
         self._plugin_statuses: tuple[PluginStatus, ...] = tuple(
@@ -490,6 +533,9 @@ class PluginHost:
             "prompt_block_count": sum(
                 len(item.prompt_block_ids) for item in self._contribution_snapshots
             ),
+            "event_handler_count": sum(
+                len(item.event_types) for item in self._contribution_snapshots
+            ),
             "job_count": len(self._job_tasks),
             "running_job_count": sum(
                 1 for item in self._job_statuses.values() if item.get("status") == "running"
@@ -506,6 +552,9 @@ class PluginHost:
                     "prompt_block_chars": _MAX_PROMPT_BLOCK_CHARS,
                     "prompt_block_total_chars": _MAX_PROMPT_BLOCK_TOTAL_CHARS,
                     "permissions_per_plugin": _MAX_PERMISSIONS_PER_PLUGIN,
+                    "event_fields": MAX_EVENT_FIELDS,
+                    "event_field_chars": MAX_EVENT_FIELD_CHARS,
+                    "event_total_chars": MAX_EVENT_TOTAL_CHARS,
                 },
                 "timeouts": {
                     "activation_step_seconds": self._activation_timeout_seconds,
@@ -513,6 +562,7 @@ class PluginHost:
                     "managed_artifact_seconds": self._managed_artifact_timeout_seconds,
                     "adapter_close_seconds": self._close_timeout_seconds,
                     "background_job_stop_seconds": self._job_stop_timeout_seconds,
+                    "event_handler_seconds": self._event_handler_timeout_seconds,
                 },
             },
             "plugins": plugin_statuses,
@@ -580,11 +630,28 @@ class PluginHost:
             registrations_provider=self._qq_command_registrations_snapshot,
         )
 
+    def build_event_broker(self) -> PluginEventBroker:
+        """Build a generation-aware observer over active event handlers."""
+
+        return PluginEventBroker(
+            self._event_registrations_snapshot(),
+            handler_timeout_seconds=self._event_handler_timeout_seconds,
+            availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+            registrations_provider=self._event_registrations_snapshot,
+        )
+
     def _qq_command_registrations_snapshot(self) -> tuple[_PluginCommandRegistration, ...]:
         return tuple(
             registration
             for active in self._active_plugins.values()
             for registration in active.qq_command_registrations
+        )
+
+    def _event_registrations_snapshot(self) -> tuple[_PluginEventRegistration, ...]:
+        return tuple(
+            registration
+            for active in self._active_plugins.values()
+            for registration in active.event_registrations
         )
 
     async def start(self) -> dict[str, Any]:
@@ -1074,6 +1141,8 @@ class PluginHost:
             # Inject QQ command permission flag if declared
             if PLUGIN_QQ_COMMAND_PERMISSION in manifest.permissions:
                 registrar._set_qq_command_permission(True)
+            if EVENT_SUBSCRIBE_PERMISSION in manifest.permissions:
+                registrar._set_event_permission(True)
             if SYSTEM_PROMPT_CONTRIBUTION_PERMISSION in manifest.permissions:
                 registrar._set_prompt_permission(True)
             register = getattr(plugin, "register", None)
@@ -1155,6 +1224,7 @@ class PluginHost:
                         manifest=manifest,
                         capability_count=len(registrations),
                         qq_command_count=len(registrar.qq_commands),
+                        event_handler_count=len(registrar.event_registrations),
                         has_background_job=registrar.job is not None,
                         prompt_block_count=len(registrar.prompt_blocks),
                     ),
@@ -1163,6 +1233,7 @@ class PluginHost:
             if not (
                 registrations
                 or registrar.qq_commands
+                or registrar.event_registrations
                 or registrar.job is not None
                 or registrar.prompt_blocks
             ):
@@ -1181,6 +1252,14 @@ class PluginHost:
                     )
                     for reg in registrar.qq_commands
                 ),
+                event_registrations=tuple(
+                    _PluginEventRegistration(
+                        plugin_id=selection.plugin_id,
+                        event_type=reg.event_type,
+                        handler=reg.handler,
+                    )
+                    for reg in registrar.event_registrations
+                ),
                 prompt_block_registrations=tuple(registrar.prompt_blocks),
             )
             return (
@@ -1192,6 +1271,7 @@ class PluginHost:
                     permissions=tuple(manifest.permissions),
                     capability_ids=tuple(registration.descriptor.id for registration in registrations),
                     qq_commands=tuple(reg.command for reg in registrar.qq_commands),
+                    event_types=tuple(reg.event_type for reg in registrar.event_registrations),
                 ),
                 active,
                 tuple(registrations),
@@ -1571,6 +1651,9 @@ def _build_contribution_snapshots(
                 capability_ids=tuple(sorted(active.capability_ids)),
                 qq_commands=tuple(
                     sorted(item.command for item in active.qq_command_registrations)
+                ),
+                event_types=tuple(
+                    sorted(item.event_type for item in active.event_registrations)
                 ),
                 background_service_ids=(
                     (_LEGACY_BACKGROUND_SERVICE_ID,) if active.job is not None else ()
