@@ -215,6 +215,31 @@ def _make_double_job_plugin(job: Any) -> Callable:
     return factory
 
 
+def _make_services_plugin(
+    services: tuple[tuple[str, Any], ...],
+    *,
+    permissions: tuple[str, ...] = (BACKGROUND_JOB_PERMISSION,),
+) -> Callable:
+    """Return a plugin factory that registers the supplied named services."""
+
+    def factory():
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id=PLUGIN_ID,
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=permissions,
+            )
+
+            def register(self, registrar: Any) -> None:
+                for service_id, service in services:
+                    registrar.add_background_service(service_id, service)
+
+        return Plugin()
+
+    return factory
+
+
 # ---------------------------------------------------------------------------
 # _HostJobController unit tests
 # ---------------------------------------------------------------------------
@@ -296,6 +321,9 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         status = await host.start()
 
         self.assertEqual(status["status"], "active")
+        self.assertEqual(status["background_service_count"], 1)
+        self.assertEqual(status["running_background_service_count"], 1)
+        self.assertEqual(status["background_services"][0]["service_id"], "default")
         self.assertEqual(status["job_count"], 1)
         self.assertEqual(status["running_job_count"], 1)
 
@@ -409,6 +437,133 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plugin_info["status"], "failed")
         self.assertEqual(plugin_info["reason"], "plugin_registration_failed")
 
+    async def test_two_named_services_run_and_stop_independently(self) -> None:
+        first = _CooperativeJob()
+        second = _CooperativeJob()
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(
+                _make_services_plugin((("alerts", first), ("telemetry", second)))
+            ),
+        )
+
+        status = await host.start()
+        await asyncio.sleep(0)
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["background_service_count"], 2)
+        self.assertEqual(status["running_background_service_count"], 2)
+        self.assertEqual(
+            [item["service_id"] for item in status["background_services"]],
+            ["alerts", "telemetry"],
+        )
+        self.assertEqual(
+            status["plugins"][0]["contribution_snapshot"]["background_services"],
+            ["alerts", "telemetry"],
+        )
+        self.assertTrue(first.started)
+        self.assertTrue(second.started)
+
+        stopped = await host.stop()
+        self.assertEqual(host.state, "stopped")
+        self.assertEqual(stopped["background_service_count"], 2)
+        self.assertEqual(stopped["running_background_service_count"], 0)
+        self.assertEqual(
+            {item["status"] for item in stopped["background_services"]},
+            {"stopped"},
+        )
+
+    async def test_one_named_service_failure_does_not_stop_sibling(self) -> None:
+        sibling = _CooperativeJob()
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(
+                _make_services_plugin((("crash", _CrashingJob()), ("worker", sibling)))
+            ),
+        )
+
+        status = await host.start()
+        await asyncio.sleep(0)
+        status = host.status_snapshot()
+        services = {item["service_id"]: item for item in status["background_services"]}
+
+        self.assertEqual(status["status"], "degraded")
+        self.assertEqual(services["crash"]["status"], "failed")
+        self.assertEqual(services["crash"]["reason"], "job_failed")
+        self.assertEqual(services["worker"]["status"], "running")
+        self.assertTrue(sibling.started)
+        await host.stop()
+
+    async def test_duplicate_named_service_id_fails_activation(self) -> None:
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(
+                _make_services_plugin(
+                    (("poller", _CooperativeJob()), ("poller", _CooperativeJob()))
+                )
+            ),
+        )
+
+        status = await host.start()
+        await host.stop()
+
+        self.assertEqual(status["plugins"][0]["status"], "failed")
+        self.assertEqual(status["plugins"][0]["reason"], "plugin_registration_failed")
+
+    async def test_invalid_named_service_id_fails_activation(self) -> None:
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(
+                _make_services_plugin((("Not A Stable ID", _CooperativeJob()),))
+            ),
+        )
+
+        status = await host.start()
+        await host.stop()
+
+        self.assertEqual(status["plugins"][0]["status"], "failed")
+        self.assertEqual(status["plugins"][0]["reason"], "plugin_registration_failed")
+
+    async def test_legacy_default_and_named_service_share_one_runtime(self) -> None:
+        legacy = _CooperativeJob()
+        named = _CooperativeJob()
+
+        def factory():
+            class Plugin:
+                manifest = PluginManifest(
+                    plugin_id=PLUGIN_ID,
+                    plugin_version="0.1.0",
+                    plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                    permissions=(BACKGROUND_JOB_PERMISSION,),
+                )
+
+                def register(self, registrar: Any) -> None:
+                    registrar.add_background_job(legacy)
+                    registrar.add_background_service("named", named)
+
+            return Plugin()
+
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(factory),
+        )
+
+        status = await host.start()
+        await asyncio.sleep(0)
+
+        self.assertEqual(
+            [item["service_id"] for item in status["background_services"]],
+            ["default", "named"],
+        )
+        self.assertTrue(legacy.started)
+        self.assertTrue(named.started)
+        await host.stop()
+
     async def test_job_task_cancelled_gracefully_when_stop_times_out(self) -> None:
         """A job that ignores shutdown is force-cancelled after the bounded stop timeout."""
         job = _HangingJob()
@@ -419,7 +574,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
             entry_points_provider=_plugin_entry_points(factory),
         )
         # Use a very short stop timeout so the test does not take seconds.
-        host._job_stop_timeout_seconds = 0.05
+        host._background_service_stop_timeout_seconds = 0.05
 
         status = await host.start()
         self.assertEqual(status["status"], "active")
@@ -428,11 +583,17 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         # stop() must complete even though the job never voluntarily exits.
-        await host.stop()
+        stopped = await host.stop()
 
         self.assertEqual(host.state, "stopped")
         # The host issued a secondary stop signal.
         self.assertTrue(job.stop_called)
+        self.assertEqual(stopped["background_service_stop_failure_count"], 1)
+        self.assertEqual(stopped["background_services"][0]["status"], "degraded")
+        self.assertEqual(
+            stopped["background_services"][0]["reason"],
+            "service_stop_timeout",
+        )
 
     async def test_shutdown_remains_bounded_when_job_delays_cancellation(self) -> None:
         host = PluginHost(
@@ -441,7 +602,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
             entry_points_provider=_plugin_entry_points(_make_job_plugin(_SlowCancellationJob())),
             close_timeout_seconds=0.01,
         )
-        host._job_stop_timeout_seconds = 0.01
+        host._background_service_stop_timeout_seconds = 0.01
         await host.start()
 
         started_at = asyncio.get_running_loop().time()

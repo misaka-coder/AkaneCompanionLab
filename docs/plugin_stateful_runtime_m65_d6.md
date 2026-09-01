@@ -8,7 +8,7 @@ M65-D6 opens the minimum restart-only surfaces needed by the next private
 finance consumer without restoring any finance implementation in public Akane:
 
 - one host-owned storage directory per instance and plugin;
-- at most one supervised background job per plugin;
+- supervised background services (the original API exposed one job per plugin);
 - one plugin-scoped proactive notification port;
 - bounded exact-match QQ slash-command registrations.
 
@@ -23,12 +23,18 @@ registration, job creation, and command publication happen only after artifact
 audit and manifest policy acceptance. A failed plugin contributes no adapter,
 capability, job, or command.
 
-Jobs start after capability activation. An exception, cancellation, or clean
+Services start after capability activation. An exception, cancellation, or clean
 exit before host shutdown is a runtime failure: the host becomes `degraded` and
 diagnostics expose only `job_failed`, `job_cancelled`, or `job_exited`. On
 shutdown the host rejects new capability, command, and notification work,
 signals jobs, invokes bounded `stop()`, then closes adapters in reverse
 activation order.
+
+M67-C generalized this foundation to multiple stable service ids through
+`add_background_service(service_id, service)`. Each service is supervised and
+reported independently. The original `add_background_job(job)` remains only as
+an adapter for the `default` service id; it does not retain a second lifecycle
+implementation.
 
 ## Storage Ownership
 

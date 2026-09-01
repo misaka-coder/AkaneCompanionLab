@@ -163,7 +163,7 @@ class TrustedReadNetworkContributionPolicy:
 class TrustedStatefulPluginContributionPolicy:
     """Trusted in-process plugins with explicitly declared host services.
 
-    A plugin may contribute capabilities, QQ commands, a background job, or
+    A plugin may contribute capabilities, QQ commands, background services, or
     stable prompt blocks without pretending to provide all four. Capability
     plugins declare ``capability.prompt.invoke``; that permission requires
     ``network.read`` under this policy. Other permissions are independent and

@@ -80,6 +80,8 @@ _MAX_PROMPT_BLOCK_TOTAL_CHARS = 32_000
 _MAX_PERMISSIONS_PER_PLUGIN = 32
 _PROMPT_BLOCK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _LEGACY_BACKGROUND_SERVICE_ID = "default"
+_MAX_BACKGROUND_SERVICE_ID_CHARS = 64
+_BACKGROUND_SERVICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,11 +181,17 @@ class _PromptBlockRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class _BackgroundServiceRegistration:
+    service_id: str
+    service: Any  # PluginBackgroundJob
+
+
+@dataclass(frozen=True, slots=True)
 class _ActivePlugin:
     plugin: Any
     adapters: tuple[CapabilityAdapter, ...]
     capability_ids: tuple[str, ...]
-    job: Any  # PluginBackgroundJob | None
+    background_services: tuple[_BackgroundServiceRegistration, ...] = ()
     qq_command_registrations: tuple[_PluginCommandRegistration, ...] = ()
     event_registrations: tuple[_PluginEventRegistration, ...] = ()
     prompt_block_registrations: tuple[_PromptBlockRegistration, ...] = ()
@@ -202,7 +210,7 @@ class _StagedRegistrar(PluginRegistrar):
         self._adapters: list[CapabilityAdapter] = []
         self._sealed = False
         self._storage_dir: Path | None = None
-        self._job: Any = None  # PluginBackgroundJob | None
+        self._background_services: list[_BackgroundServiceRegistration] = []
         self._job_permission: bool = False
         self._notification_port: Any = None  # NotificationPort | None
         self._notification_permission: bool = False
@@ -220,8 +228,8 @@ class _StagedRegistrar(PluginRegistrar):
         return tuple(self._adapters)
 
     @property
-    def job(self) -> Any:
-        return self._job
+    def background_services(self) -> tuple[_BackgroundServiceRegistration, ...]:
+        return tuple(self._background_services)
 
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None:
         if self._sealed:
@@ -259,15 +267,24 @@ class _StagedRegistrar(PluginRegistrar):
         )
 
     def add_background_job(self, job: Any) -> None:
+        """Compatibility adapter for the original one-job registration API."""
+
+        self.add_background_service(_LEGACY_BACKGROUND_SERVICE_ID, job)
+
+    def add_background_service(self, service_id: str, service: Any) -> None:
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
         if not self._job_permission:
             raise RuntimeError("job_permission_required")
-        if self._job is not None:
-            raise RuntimeError("duplicate_plugin_job")
-        if not callable(getattr(job, "start", None)) or not callable(getattr(job, "stop", None)):
-            raise RuntimeError("invalid_plugin_job")
-        self._job = job
+        if not isinstance(service_id, str) or _BACKGROUND_SERVICE_ID_PATTERN.fullmatch(service_id) is None:
+            raise RuntimeError("invalid_background_service_id")
+        if any(item.service_id == service_id for item in self._background_services):
+            raise RuntimeError("duplicate_background_service_id")
+        if not callable(getattr(service, "start", None)) or not callable(getattr(service, "stop", None)):
+            raise RuntimeError("invalid_background_service")
+        self._background_services.append(
+            _BackgroundServiceRegistration(service_id=service_id, service=service)
+        )
 
     def get_storage_dir(self) -> Path:
         if self._sealed:
@@ -434,10 +451,12 @@ class PluginHost:
         self._notification_port: Any = None  # NotificationPort | None
         self._reasoning_port: Any = None  # PluginReasoningPort | None
         self._notification_ledger = _NotificationDeliveryLedger()
-        self._job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
-        self._job_statuses: dict[str, dict[str, str]] = {}
-        self._job_stop_timeout_seconds: float = 10.0
-        self._job_stop_failure_count = 0
+        self._background_service_tasks: dict[
+            tuple[str, str], tuple[Any, _HostJobController, asyncio.Task]
+        ] = {}
+        self._background_service_statuses: dict[tuple[str, str], dict[str, str]] = {}
+        self._background_service_stop_timeout_seconds: float = 10.0
+        self._background_service_stop_failure_count = 0
         self._generation = 0
 
         self._management_lock = asyncio.Lock()
@@ -496,18 +515,22 @@ class PluginHost:
         if self._state == "degraded":
             reason = (
                 "plugin_runtime_failed"
-                if any(item.get("status") == "failed" for item in self._job_statuses.values())
+                if any(
+                    item.get("status") in {"degraded", "failed"}
+                    for item in self._background_service_statuses.values()
+                )
                 else "plugin_activation_failed"
             )
         elif self._state not in _HOST_AVAILABLE_STATES:
             reason = "host_unavailable"
-        job_statuses = [
+        background_service_statuses = [
             {
                 "plugin_id": _public_plugin_id(plugin_id),
+                "service_id": service_id,
                 "status": item.get("status", "unknown"),
                 "reason": item.get("reason", ""),
             }
-            for plugin_id, item in self._job_statuses.items()
+            for (plugin_id, service_id), item in sorted(self._background_service_statuses.items())
         ]
         contribution_by_plugin = {
             item.plugin_id: item for item in self._contribution_snapshots
@@ -536,12 +559,24 @@ class PluginHost:
             "event_handler_count": sum(
                 len(item.event_types) for item in self._contribution_snapshots
             ),
-            "job_count": len(self._job_tasks),
-            "running_job_count": sum(
-                1 for item in self._job_statuses.values() if item.get("status") == "running"
+            "background_service_count": len(self._background_service_statuses),
+            "running_background_service_count": sum(
+                1
+                for item in self._background_service_statuses.values()
+                if item.get("status") == "running"
             ),
-            "job_stop_failure_count": self._job_stop_failure_count,
-            "jobs": job_statuses,
+            "background_service_stop_failure_count": self._background_service_stop_failure_count,
+            "background_services": background_service_statuses,
+            # Compatibility aliases for control-center consumers from M65-D6.
+            # They are views of the same service state, not a second runtime.
+            "job_count": len(self._background_service_tasks),
+            "running_job_count": sum(
+                1
+                for item in self._background_service_statuses.values()
+                if item.get("status") == "running"
+            ),
+            "job_stop_failure_count": self._background_service_stop_failure_count,
+            "jobs": background_service_statuses,
             "close_failure_count": self._close_failure_count,
             "contract": {
                 "registration_limits": {
@@ -551,6 +586,7 @@ class PluginHost:
                     "prompt_blocks_per_plugin": _MAX_PROMPT_BLOCKS_PER_PLUGIN,
                     "prompt_block_chars": _MAX_PROMPT_BLOCK_CHARS,
                     "prompt_block_total_chars": _MAX_PROMPT_BLOCK_TOTAL_CHARS,
+                    "background_service_id_chars": _MAX_BACKGROUND_SERVICE_ID_CHARS,
                     "permissions_per_plugin": _MAX_PERMISSIONS_PER_PLUGIN,
                     "event_fields": MAX_EVENT_FIELDS,
                     "event_field_chars": MAX_EVENT_FIELD_CHARS,
@@ -561,7 +597,8 @@ class PluginHost:
                     "invoke_seconds": self._invoke_timeout_seconds,
                     "managed_artifact_seconds": self._managed_artifact_timeout_seconds,
                     "adapter_close_seconds": self._close_timeout_seconds,
-                    "background_job_stop_seconds": self._job_stop_timeout_seconds,
+                    "background_service_stop_seconds": self._background_service_stop_timeout_seconds,
+                    "background_job_stop_seconds": self._background_service_stop_timeout_seconds,
                     "event_handler_seconds": self._event_handler_timeout_seconds,
                 },
             },
@@ -737,31 +774,49 @@ class PluginHost:
                 working_plugins,
                 generation=self._generation,
             )
-            # Start supervised job tasks for every successfully activated plugin with a job
-            job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
-            self._job_statuses = {}
+            # Publish one independently supervised task for every registered
+            # service.  The tuple key avoids ambiguous string concatenation and
+            # lets sibling services keep running when one exits.
+            service_tasks: dict[
+                tuple[str, str], tuple[Any, _HostJobController, asyncio.Task]
+            ] = {}
+            self._background_service_statuses = {}
             for plugin_id, active_plugin in working_plugins.items():
-                if active_plugin.job is None:
-                    continue
-                controller = _HostJobController()
-                controller._arm()
-                task = asyncio.create_task(run_supervised_job(active_plugin.job, controller))
-                self._job_statuses[plugin_id] = {"status": "running", "reason": ""}
-                task.add_done_callback(
-                    lambda done, pid=plugin_id, ctl=controller: self._on_job_task_done(pid, ctl, done)
-                )
-                job_tasks[plugin_id] = (active_plugin.job, controller, task)
-            self._job_tasks = job_tasks
+                for registration in active_plugin.background_services:
+                    service_key = (plugin_id, registration.service_id)
+                    controller = _HostJobController()
+                    controller._arm()
+                    task = asyncio.create_task(
+                        run_supervised_job(registration.service, controller),
+                        name=f"plugin-service:{plugin_id}:{registration.service_id}",
+                    )
+                    self._background_service_statuses[service_key] = {
+                        "status": "running",
+                        "reason": "",
+                    }
+                    task.add_done_callback(
+                        lambda done, key=service_key, ctl=controller: self._on_background_service_done(
+                            key,
+                            ctl,
+                            done,
+                        )
+                    )
+                    service_tasks[service_key] = (registration.service, controller, task)
+            self._background_service_tasks = service_tasks
             enabled_failures = any(status.enabled and status.status != "active" for status in statuses)
             async with self._invoke_lock:
                 self._state = "degraded" if enabled_failures else "active"
-            if job_tasks:
-                # Give every job one scheduling opportunity so an immediate exit
+            if service_tasks:
+                # Give every service one scheduling opportunity so an immediate exit
                 # is reflected in the startup snapshot instead of fake readiness.
                 await asyncio.sleep(0)
-                for plugin_id, (_job, controller, task) in job_tasks.items():
-                    if task.done() and self._job_statuses.get(plugin_id, {}).get("status") == "running":
-                        self._on_job_task_done(plugin_id, controller, task)
+                for service_key, (_service, controller, task) in service_tasks.items():
+                    if (
+                        task.done()
+                        and self._background_service_statuses.get(service_key, {}).get("status")
+                        == "running"
+                    ):
+                        self._on_background_service_done(service_key, controller, task)
             return self.status_snapshot()
 
     async def stop(self) -> dict[str, Any]:
@@ -818,15 +873,15 @@ class PluginHost:
             except (TimeoutError, asyncio.TimeoutError):
                 pass
 
-            # Stop supervised job tasks before closing capability adapters
-            await self._stop_job_tasks()
+            # Stop supervised services before closing capability adapters.
+            await self._stop_background_services()
 
             await self._close_adapters(reversed(self._activation_order))
             self._active_plugins = MappingProxyType({})
             self._capabilities = MappingProxyType({})
             self._contribution_snapshots = ()
             self._activation_order = ()
-            self._job_tasks = {}
+            self._background_service_tasks = {}
             self._state = "stopped"
             self._runtime_loop = None
             return self.status_snapshot()
@@ -1225,7 +1280,7 @@ class PluginHost:
                         capability_count=len(registrations),
                         qq_command_count=len(registrar.qq_commands),
                         event_handler_count=len(registrar.event_registrations),
-                        has_background_job=registrar.job is not None,
+                        has_background_job=bool(registrar.background_services),
                         prompt_block_count=len(registrar.prompt_blocks),
                     ),
                     stage="registration_contributions",
@@ -1234,7 +1289,7 @@ class PluginHost:
                 registrations
                 or registrar.qq_commands
                 or registrar.event_registrations
-                or registrar.job is not None
+                or registrar.background_services
                 or registrar.prompt_blocks
             ):
                 raise _ActivationFailure("plugin_registered_no_contributions")
@@ -1243,7 +1298,7 @@ class PluginHost:
                 plugin=plugin,
                 adapters=registrar.adapters,
                 capability_ids=tuple(registration.descriptor.id for registration in registrations),
-                job=registrar.job,
+                background_services=registrar.background_services,
                 qq_command_registrations=tuple(
                     _PluginCommandRegistration(
                         plugin_id=selection.plugin_id,
@@ -1305,20 +1360,25 @@ class PluginHost:
                 (),
             )
 
-    def _on_job_task_done(
+    def _on_background_service_done(
         self,
-        plugin_id: str,
+        service_key: tuple[str, str],
         controller: _HostJobController,
         task: asyncio.Task,
     ) -> None:
-        """Record a background job outcome without exposing its exception text."""
+        """Record one service outcome without exposing its exception text."""
 
         if controller.shutdown_requested or self._state in {"stopping", "stopped"}:
             try:
                 task.exception()
             except (asyncio.CancelledError, Exception):
                 pass
-            self._job_statuses[plugin_id] = {"status": "stopped", "reason": ""}
+            previous = self._background_service_statuses.get(service_key, {})
+            if previous.get("status") != "degraded":
+                self._background_service_statuses[service_key] = {
+                    "status": "stopped",
+                    "reason": str(previous.get("reason") or ""),
+                }
             return
 
         if task.cancelled():
@@ -1331,39 +1391,62 @@ class PluginHost:
                 reason = "job_cancelled"
             else:
                 reason = "job_failed" if exception is not None else "job_exited"
-        self._job_statuses[plugin_id] = {"status": "failed", "reason": reason}
+        self._background_service_statuses[service_key] = {
+            "status": "failed",
+            "reason": reason,
+        }
         if self._state in _HOST_AVAILABLE_STATES:
             self._state = "degraded"
 
-    async def _stop_job_tasks(self) -> None:
-        """Signal all supervised job tasks to stop and await their completion."""
-        if not self._job_tasks:
+    async def _stop_background_services(self) -> None:
+        """Signal every supervised service and await independent shutdown."""
+        if not self._background_service_tasks:
             return
-        # Signal shutdown on all controllers
-        for _job, controller, _task in self._job_tasks.values():
+        for _service, controller, _task in self._background_service_tasks.values():
             controller.signal_shutdown()
-        # Secondary stop signal
-        for _job, controller, _task in reversed(tuple(self._job_tasks.values())):
+        for service_key, (service, _controller, _task) in reversed(
+            tuple(self._background_service_tasks.items())
+        ):
             try:
-                await asyncio.wait_for(_job.stop(), timeout=self._close_timeout_seconds)
+                await asyncio.wait_for(service.stop(), timeout=self._close_timeout_seconds)
             except asyncio.CancelledError:
                 if _current_task_is_cancelling():
                     raise
-                self._job_stop_failure_count += 1
+                self._record_background_service_stop_failure(service_key, "service_stop_cancelled")
             except Exception:
-                self._job_stop_failure_count += 1
-        # Await all tasks with bounded timeout
-        active_tasks = [task for _, _, task in self._job_tasks.values() if not task.done()]
+                self._record_background_service_stop_failure(service_key, "service_stop_failed")
+        active_tasks = {
+            service_key: task
+            for service_key, (_service, _controller, task) in self._background_service_tasks.items()
+            if not task.done()
+        }
         if active_tasks:
             _done, pending = await asyncio.wait(
-                active_tasks,
-                timeout=self._job_stop_timeout_seconds,
+                tuple(active_tasks.values()),
+                timeout=self._background_service_stop_timeout_seconds,
             )
             if pending:
-                self._job_stop_failure_count += len(pending)
+                pending_set = set(pending)
+                for service_key, task in active_tasks.items():
+                    if task in pending_set:
+                        self._record_background_service_stop_failure(
+                            service_key,
+                            "service_stop_timeout",
+                        )
                 for task in pending:
                     task.cancel()
                 await asyncio.wait(pending, timeout=self._close_timeout_seconds)
+
+    def _record_background_service_stop_failure(
+        self,
+        service_key: tuple[str, str],
+        reason: str,
+    ) -> None:
+        self._background_service_stop_failure_count += 1
+        self._background_service_statuses[service_key] = {
+            "status": "degraded",
+            "reason": reason,
+        }
 
     async def _close_adapters(self, adapters: Iterable[CapabilityAdapter]) -> None:
         for adapter in adapters:
@@ -1655,8 +1738,8 @@ def _build_contribution_snapshots(
                 event_types=tuple(
                     sorted(item.event_type for item in active.event_registrations)
                 ),
-                background_service_ids=(
-                    (_LEGACY_BACKGROUND_SERVICE_ID,) if active.job is not None else ()
+                background_service_ids=tuple(
+                    sorted(item.service_id for item in active.background_services)
                 ),
                 prompt_block_ids=tuple(item.block_id for item in prompt_blocks),
                 prompt_character_count=sum(len(item.text) for item in prompt_blocks),

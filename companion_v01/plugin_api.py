@@ -136,9 +136,12 @@ class PluginJobController(Protocol):
 
 
 class PluginBackgroundJob(Protocol):
-    """A supervised, restart-only background task contributed by a plugin.
+    """A supervised, restart-only background service contributed by a plugin.
 
-    The plugin registers one job via ``registrar.add_background_job(job)``.
+    Plugins register one or more named services with
+    ``registrar.add_background_service(service_id, service)``.  The legacy
+    ``add_background_job(job)`` entry point registers the same contract under
+    the stable service id ``default``.
     The host wraps ``start(controller)`` in an asyncio task on the lifecycle
     loop after the plugin's staged contributions are published. A plugin may
     contribute this job without registering a capability adapter. The job runs until
@@ -412,13 +415,29 @@ class PluginRegistrar(Protocol):
         ...
 
     def add_background_job(self, job: "PluginBackgroundJob") -> None:
-        """Register one supervised background job.
+        """Register the legacy ``default`` supervised background service.
 
         The host starts the job (as an asyncio task on the lifecycle loop) after
         all capabilities are activated, and stops it before closing adapters.
         The plugin must declare ``job.run`` permission; calling this method
         without that permission raises RuntimeError at activation time.
-        At most one job per plugin is accepted by the host.
+        This is exactly equivalent to
+        ``add_background_service("default", job)``.
+        """
+        ...
+
+    def add_background_service(
+        self,
+        service_id: str,
+        service: "PluginBackgroundJob",
+    ) -> None:
+        """Register one independently supervised named background service.
+
+        ``service_id`` is stable within the plugin and is used for lifecycle
+        status and diagnostics.  A plugin may register any number of services;
+        duplicate or malformed ids fail plugin activation.  Every service has
+        its own controller and task, so one service failing does not stop its
+        siblings.  The plugin must declare ``job.run`` permission.
         """
         ...
 

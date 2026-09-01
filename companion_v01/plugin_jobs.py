@@ -1,11 +1,11 @@
-"""Host-owned job controller for supervised plugin background tasks.
+"""Host-owned controller for supervised plugin background services.
 
-PluginHost creates one _HostJobController per plugin that registers a job.
+PluginHost creates one _HostJobController per registered background service.
 The controller is armed (event created) on the lifecycle event loop in
 PluginHost.start(), then passed to PluginBackgroundJob.start(controller).
 
 The host signals shutdown by calling controller.signal_shutdown() and then
-awaiting the job task with a bounded timeout before proceeding to close adapters.
+awaiting each service task with a bounded stop timeout before closing adapters.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class _HostJobController:
 
 
 async def run_supervised_job(job: Any, controller: _HostJobController) -> None:
-    """Run a plugin job while leaving its outcome observable to PluginHost."""
+    """Run one plugin service while leaving its outcome observable to PluginHost."""
 
     await job.start(controller)
 
