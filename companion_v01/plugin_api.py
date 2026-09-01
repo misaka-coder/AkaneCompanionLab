@@ -28,8 +28,11 @@ PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
 MODEL_REASONING_PERMISSION = "model.reasoning"
 SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
 EVENT_SUBSCRIBE_PERMISSION = "event.subscribe"
+HOOK_SUBSCRIBE_PERMISSION = "hook.subscribe"
 DIRECT_CONVERSATION_EVENT = "conversation.direct.inbound"
 GROUP_CONVERSATION_EVENT = "conversation.group.inbound"
+BEFORE_TOOL_CALL_HOOK = "before_tool_call"
+AFTER_TOOL_CALL_HOOK = "after_tool_call"
 MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
@@ -288,6 +291,75 @@ class PluginEventHandler(Protocol):
         ...
 
 
+# ---------------------------------------------------------------------------
+# Execution hook contracts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PluginToolCallSnapshot:
+    """Immutable, provider-neutral view of one tool request.
+
+    ``arguments_json`` contains the complete non-secret tool arguments as
+    canonical JSON. Credential values are represented as configured;
+    provider-private ``_tool_*`` sidecars and the legacy ``type`` field are not
+    included. The string form keeps nested input immutable without handing a
+    plugin a live Engine-owned dictionary.
+    """
+
+    invocation_id: str
+    tool_name: str
+    source: str
+    profile_user_id: str
+    session_id: str
+    character_pack_id: str
+    arguments_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class PluginToolResultSnapshot:
+    """Immutable public outcome of one completed tool request."""
+
+    invocation_id: str
+    tool_name: str
+    status: str
+    duration_ms: float
+    reason: str = ""
+    model_feedback: str = ""
+    event_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHookEnvelope:
+    """One immutable lifecycle observation delivered to a plugin Hook."""
+
+    hook_id: str
+    hook_type: str
+    occurred_at: int
+    subject: str
+    payload: PluginToolCallSnapshot | PluginToolResultSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHookResult:
+    """Typed Hook outcome.
+
+    Tool Hooks are observational in the first runtime slice. ``diagnostics``
+    contains stable machine-readable codes for host status and debugging; it
+    does not rewrite tool arguments, tool results, prompts, or model-visible
+    memory.
+    """
+
+    diagnostics: tuple[str, ...] = ()
+
+
+class PluginHookHandler(Protocol):
+    """Observe one exact execution Hook registered during activation."""
+
+    async def handle_hook(self, hook: PluginHookEnvelope) -> PluginHookResult:
+        """Return typed diagnostics; exceptions are isolated by PluginHost."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class PluginReasoningRequest:
     """Bounded proactive reasoning request using the host's normal model/tool loop."""
@@ -478,6 +550,15 @@ class PluginRegistrar(Protocol):
         """
         ...
 
+    def add_hook_handler(self, hook_type: str, handler: "PluginHookHandler") -> None:
+        """Register one exact execution lifecycle Hook.
+
+        The plugin must declare ``hook.subscribe``. The currently executable
+        Hook types are ``before_tool_call`` and ``after_tool_call``. Handlers
+        receive immutable snapshots and cannot mutate prompts or the tool call.
+        """
+        ...
+
 
 class AkanePlugin(Protocol):
     manifest: PluginManifest
@@ -493,7 +574,10 @@ __all__ = [
     "DIAGNOSTICS_INVOKE_PERMISSION",
     "DIRECT_CONVERSATION_EVENT",
     "EVENT_SUBSCRIBE_PERMISSION",
+    "HOOK_SUBSCRIBE_PERMISSION",
     "GROUP_CONVERSATION_EVENT",
+    "BEFORE_TOOL_CALL_HOOK",
+    "AFTER_TOOL_CALL_HOOK",
     "MANAGED_ARTIFACT_WRITE_PERMISSION",
     "MAX_MANAGED_ARTIFACT_BYTES",
     "MODEL_REASONING_PERMISSION",
@@ -513,6 +597,9 @@ __all__ = [
     "PluginEventEnvelope",
     "PluginEventHandler",
     "PluginEventResult",
+    "PluginHookEnvelope",
+    "PluginHookHandler",
+    "PluginHookResult",
     "PluginJobController",
     "PluginManifest",
     "PluginQQCommandHandler",
@@ -524,6 +611,8 @@ __all__ = [
     "PluginRegistrar",
     "PluginResultExperience",
     "PluginResultPayload",
+    "PluginToolCallSnapshot",
+    "PluginToolResultSnapshot",
     "is_valid_capability_id",
     "is_valid_permission_id",
     "is_valid_plugin_id",

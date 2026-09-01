@@ -30,6 +30,7 @@ from .plugin_api import (
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
     BACKGROUND_JOB_PERMISSION,
     EVENT_SUBSCRIBE_PERMISSION,
+    HOOK_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
     MAX_MANAGED_ARTIFACT_BYTES,
     MODEL_REASONING_PERMISSION,
@@ -46,6 +47,12 @@ from .plugin_api import (
     is_valid_plugin_id,
 )
 from .plugin_jobs import _HostJobController, run_supervised_job
+from .plugin_hooks import (
+    DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS,
+    PluginHookBroker,
+    SUPPORTED_TOOL_HOOK_TYPES,
+    _PluginHookRegistration,
+)
 from .plugin_events import (
     DEFAULT_EVENT_HANDLER_TIMEOUT_SECONDS,
     MAX_EVENT_FIELD_CHARS,
@@ -96,6 +103,7 @@ class PluginStatus:
     capability_ids: tuple[str, ...] = ()
     qq_commands: tuple[str, ...] = ()
     event_types: tuple[str, ...] = ()
+    hook_types: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -116,6 +124,8 @@ class PluginStatus:
             payload["qq_commands"] = list(self.qq_commands)
         if self.event_types:
             payload["event_types"] = list(self.event_types)
+        if self.hook_types:
+            payload["hook_types"] = list(self.hook_types)
         return payload
 
 
@@ -133,6 +143,7 @@ class PluginContributionSnapshot:
     capability_ids: tuple[str, ...] = ()
     qq_commands: tuple[str, ...] = ()
     event_types: tuple[str, ...] = ()
+    hook_types: tuple[str, ...] = ()
     background_service_ids: tuple[str, ...] = ()
     prompt_block_ids: tuple[str, ...] = ()
     prompt_character_count: int = 0
@@ -146,6 +157,8 @@ class PluginContributionSnapshot:
             kinds.append("commands")
         if self.event_types:
             kinds.append("event_handlers")
+        if self.hook_types:
+            kinds.append("hooks")
         if self.background_service_ids:
             kinds.append("background_services")
         if self.prompt_block_ids:
@@ -160,6 +173,7 @@ class PluginContributionSnapshot:
             "capabilities": list(self.capability_ids),
             "commands": list(self.qq_commands),
             "event_handlers": list(self.event_types),
+            "hooks": list(self.hook_types),
             "background_services": list(self.background_service_ids),
             "prompt_blocks": list(self.prompt_block_ids),
             "prompt_character_count": self.prompt_character_count,
@@ -194,6 +208,7 @@ class _ActivePlugin:
     background_services: tuple[_BackgroundServiceRegistration, ...] = ()
     qq_command_registrations: tuple[_PluginCommandRegistration, ...] = ()
     event_registrations: tuple[_PluginEventRegistration, ...] = ()
+    hook_registrations: tuple[_PluginHookRegistration, ...] = ()
     prompt_block_registrations: tuple[_PromptBlockRegistration, ...] = ()
 
 
@@ -220,6 +235,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._qq_command_permission: bool = False
         self._event_registrations: list[_PluginEventRegistration] = []
         self._event_permission: bool = False
+        self._hook_registrations: list[_PluginHookRegistration] = []
+        self._hook_permission: bool = False
         self._prompt_blocks: list[_PromptBlockRegistration] = []
         self._prompt_permission: bool = False
 
@@ -344,6 +361,22 @@ class _StagedRegistrar(PluginRegistrar):
             _PluginEventRegistration(plugin_id="", event_type=normalized, handler=handler)
         )
 
+    def add_hook_handler(self, hook_type: str, handler: Any) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._hook_permission:
+            raise RuntimeError("hook_subscribe_permission_required")
+        normalized = str(hook_type or "").strip().lower()
+        if normalized not in SUPPORTED_TOOL_HOOK_TYPES:
+            raise RuntimeError("unsupported_plugin_hook_type")
+        if not callable(getattr(handler, "handle_hook", None)):
+            raise RuntimeError("invalid_plugin_hook_handler")
+        if any(item.hook_type == normalized for item in self._hook_registrations):
+            raise RuntimeError("duplicate_plugin_hook_handler")
+        self._hook_registrations.append(
+            _PluginHookRegistration(plugin_id="", hook_type=normalized, handler=handler)
+        )
+
     @property
     def qq_commands(self) -> tuple[Any, ...]:
         return tuple(self._qq_commands)
@@ -351,6 +384,10 @@ class _StagedRegistrar(PluginRegistrar):
     @property
     def event_registrations(self) -> tuple[_PluginEventRegistration, ...]:
         return tuple(self._event_registrations)
+
+    @property
+    def hook_registrations(self) -> tuple[_PluginHookRegistration, ...]:
+        return tuple(self._hook_registrations)
 
     @property
     def prompt_blocks(self) -> tuple[_PromptBlockRegistration, ...]:
@@ -376,6 +413,9 @@ class _StagedRegistrar(PluginRegistrar):
 
     def _set_event_permission(self, allowed: bool) -> None:
         self._event_permission = allowed
+
+    def _set_hook_permission(self, allowed: bool) -> None:
+        self._hook_permission = allowed
 
     def _set_prompt_permission(self, allowed: bool) -> None:
         self._prompt_permission = allowed
@@ -405,6 +445,7 @@ class PluginHost:
         managed_artifact_timeout_seconds: float = 5.0,
         close_timeout_seconds: float = 2.0,
         event_handler_timeout_seconds: float = DEFAULT_EVENT_HANDLER_TIMEOUT_SECONDS,
+        hook_handler_timeout_seconds: float = DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(selections, tuple) or any(
             not isinstance(selection, PluginSelection) for selection in selections
@@ -428,6 +469,7 @@ class PluginHost:
         self._managed_artifact_timeout_seconds = max(0.1, float(managed_artifact_timeout_seconds))
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
         self._event_handler_timeout_seconds = max(0.01, float(event_handler_timeout_seconds))
+        self._hook_handler_timeout_seconds = max(0.01, float(hook_handler_timeout_seconds))
 
         self._state = "created"
         self._plugin_statuses: tuple[PluginStatus, ...] = tuple(
@@ -458,6 +500,7 @@ class PluginHost:
         self._background_service_stop_timeout_seconds: float = 10.0
         self._background_service_stop_failure_count = 0
         self._generation = 0
+        self._hook_broker: PluginHookBroker | None = None
 
         self._management_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
@@ -559,6 +602,20 @@ class PluginHost:
             "event_handler_count": sum(
                 len(item.event_types) for item in self._contribution_snapshots
             ),
+            "hook_handler_count": sum(
+                len(item.hook_types) for item in self._contribution_snapshots
+            ),
+            "hook_runtime": (
+                self._hook_broker.status_snapshot()
+                if self._hook_broker is not None
+                else {
+                    "dispatch_count": 0,
+                    "dispatch_failure_count": 0,
+                    "diagnostic_count": 0,
+                    "last_diagnostics": [],
+                    "last_failures": [],
+                }
+            ),
             "background_service_count": len(self._background_service_statuses),
             "running_background_service_count": sum(
                 1
@@ -600,6 +657,7 @@ class PluginHost:
                     "background_service_stop_seconds": self._background_service_stop_timeout_seconds,
                     "background_job_stop_seconds": self._background_service_stop_timeout_seconds,
                     "event_handler_seconds": self._event_handler_timeout_seconds,
+                    "hook_handler_seconds": self._hook_handler_timeout_seconds,
                 },
             },
             "plugins": plugin_statuses,
@@ -677,6 +735,19 @@ class PluginHost:
             registrations_provider=self._event_registrations_snapshot,
         )
 
+    def build_hook_broker(self) -> PluginHookBroker:
+        """Build the generation-aware execution Hook observer."""
+
+        broker = PluginHookBroker(
+            self._hook_registrations_snapshot(),
+            handler_timeout_seconds=self._hook_handler_timeout_seconds,
+            availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+            registrations_provider=self._hook_registrations_snapshot,
+            runtime_loop_provider=lambda: self._runtime_loop,
+        )
+        self._hook_broker = broker
+        return broker
+
     def _qq_command_registrations_snapshot(self) -> tuple[_PluginCommandRegistration, ...]:
         return tuple(
             registration
@@ -689,6 +760,13 @@ class PluginHost:
             registration
             for active in self._active_plugins.values()
             for registration in active.event_registrations
+        )
+
+    def _hook_registrations_snapshot(self) -> tuple[_PluginHookRegistration, ...]:
+        return tuple(
+            registration
+            for active in self._active_plugins.values()
+            for registration in active.hook_registrations
         )
 
     async def start(self) -> dict[str, Any]:
@@ -1198,6 +1276,8 @@ class PluginHost:
                 registrar._set_qq_command_permission(True)
             if EVENT_SUBSCRIBE_PERMISSION in manifest.permissions:
                 registrar._set_event_permission(True)
+            if HOOK_SUBSCRIBE_PERMISSION in manifest.permissions:
+                registrar._set_hook_permission(True)
             if SYSTEM_PROMPT_CONTRIBUTION_PERMISSION in manifest.permissions:
                 registrar._set_prompt_permission(True)
             register = getattr(plugin, "register", None)
@@ -1280,6 +1360,7 @@ class PluginHost:
                         capability_count=len(registrations),
                         qq_command_count=len(registrar.qq_commands),
                         event_handler_count=len(registrar.event_registrations),
+                        hook_handler_count=len(registrar.hook_registrations),
                         has_background_job=bool(registrar.background_services),
                         prompt_block_count=len(registrar.prompt_blocks),
                     ),
@@ -1289,6 +1370,7 @@ class PluginHost:
                 registrations
                 or registrar.qq_commands
                 or registrar.event_registrations
+                or registrar.hook_registrations
                 or registrar.background_services
                 or registrar.prompt_blocks
             ):
@@ -1315,6 +1397,14 @@ class PluginHost:
                     )
                     for reg in registrar.event_registrations
                 ),
+                hook_registrations=tuple(
+                    _PluginHookRegistration(
+                        plugin_id=selection.plugin_id,
+                        hook_type=reg.hook_type,
+                        handler=reg.handler,
+                    )
+                    for reg in registrar.hook_registrations
+                ),
                 prompt_block_registrations=tuple(registrar.prompt_blocks),
             )
             return (
@@ -1327,6 +1417,7 @@ class PluginHost:
                     capability_ids=tuple(registration.descriptor.id for registration in registrations),
                     qq_commands=tuple(reg.command for reg in registrar.qq_commands),
                     event_types=tuple(reg.event_type for reg in registrar.event_registrations),
+                    hook_types=tuple(reg.hook_type for reg in registrar.hook_registrations),
                 ),
                 active,
                 tuple(registrations),
@@ -1737,6 +1828,9 @@ def _build_contribution_snapshots(
                 ),
                 event_types=tuple(
                     sorted(item.event_type for item in active.event_registrations)
+                ),
+                hook_types=tuple(
+                    sorted(item.hook_type for item in active.hook_registrations)
                 ),
                 background_service_ids=tuple(
                     sorted(item.service_id for item in active.background_services)

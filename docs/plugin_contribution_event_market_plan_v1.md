@@ -293,7 +293,7 @@ PluginHost 状态契约中。事件不进入稳定 system prompt，因此未注�
 
 ### M67-C：Hook 与多后台服务
 
-状态：多后台服务已完成第一版；Hook 待下一切片。
+状态：多后台服务、工具调用前后 Hook 已完成第一版；出站前后 Hook 待下一切片。
 
 工作：落地五个 Hook；后台任务改为按 ID 的服务集合；补齐取消、幂等、状态和失败隔离。
 
@@ -307,6 +307,21 @@ PluginHost 状态契约中。事件不进入稳定 system prompt，因此未注�
 服务表，不存在新旧两套监督循环。服务数量不设魔法上限；稳定 ID 只接受公开的 64 字符
 小写标识格式，状态接口同时公开该边界和停止探测时限。具名服务不进入模型提示、工具
 Schema 或 MemCore 投影，因此未安装相关插件时缓存前缀不变。
+
+工具 Hook 现由 `PluginRegistrar.add_hook_handler(hook_type, handler)` 注册，首个真实执行切片
+只发布 `before_tool_call` 与 `after_tool_call`。`channel_event_received` 已由 M67-B 的
+`conversation.direct.inbound` / `conversation.group.inbound` 事件桥权威表达，不再并行派发一份
+同义 Hook。调用前快照保存 provider-neutral 工具名、调用 ID、来源、会话归属和完整公开参数；
+参数使用 canonical JSON 固化，凭据键只标记为已配置，`_tool_*` provider sidecar 不暴露。
+执行器仍接收原始参数，观察快照不会改变任务语义。调用后快照保存真实状态、
+结构化原因、耗时、模型可见工具反馈和事件类型。快照不会进入 prompt 或 MemCore，也不能由
+插件改写；没有 Hook 观察器时宿主跳过参数序列化与快照构造，普通工具调用路径没有新增等待。
+
+Hook 处理器在 PluginHost 生命周期事件循环并发执行，Engine 工作线程通过明确桥接等待这次
+观察完成。单处理器时限公开在 `contract.timeouts.hook_handler_seconds`；超时、异常和非法结果
+只进入 `hook_runtime` 诊断计数，不改变工具成功/失败、不吞模型原有反馈，也不将插件异常文字
+发给用户。Hook 处理器数量没有另设魔法上限，注册类型只接受宿主当前真实可调用的 Hook，
+未实现的 `before_outbound_plan` / `after_delivery` 不做 future-only 占位。
 
 验收：同插件两个服务可独立运行和停止；长任务中的新事件不产生重复 Agent 回合；Hook
 错误得到结构化反馈且不吞主流程。

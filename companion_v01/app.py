@@ -108,6 +108,7 @@ async def startup_event() -> None:
         )
     app.state.akane_plugin_command_broker = bot_runtime.plugin_command_broker
     app.state.akane_plugin_event_broker = bot_runtime.plugin_event_broker
+    app.state.akane_plugin_hook_broker = bot_runtime.plugin_hook_broker
 
 
 if ASSETS_DIR.exists():
@@ -164,6 +165,7 @@ async def shutdown_event() -> None:
         logger.info("Bot registry shutdown completed in %.1f ms", shutdown_duration_ms)
     app.state.akane_plugin_command_broker = None
     app.state.akane_plugin_event_broker = None
+    app.state.akane_plugin_hook_broker = None
     # Keep root leases until process exit. Some legacy stores still release
     # native handles only when the interpreter exits; dropping the lock here
     # would let a replacement process overlap those final writers/handles.
