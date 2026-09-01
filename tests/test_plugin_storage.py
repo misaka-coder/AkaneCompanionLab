@@ -15,6 +15,7 @@ from companion_v01.plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     NETWORK_READ_PERMISSION,
+    PLUGIN_STATE_EFFECT,
     PLUGIN_STORAGE_WRITE_PERMISSION,
     PluginManifest,
 )
@@ -110,7 +111,7 @@ class FakeEntryPoint:
         return self._factory
 
 
-def _descriptor() -> CapabilityDescriptor:
+def _descriptor(*, effects: tuple[str, ...] = ("network",)) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id=CAPABILITY_ID,
         display_name="Storage query",
@@ -119,7 +120,7 @@ def _descriptor() -> CapabilityDescriptor:
         prompt_exposed=True,
         risk="low",
         confirm="never",
-        effects=("network",),
+        effects=effects,
         trigger=None,
         inputs=(),
         outputs=(),
@@ -131,15 +132,16 @@ class FakeAdapter:
     provider_id = "provider.test.storage"
     _captured_storage_dir: Path | None = None
 
-    def __init__(self, *, storage_dir: Path | None = None) -> None:
+    def __init__(self, *, storage_dir: Path | None = None, effects: tuple[str, ...] = ("network",)) -> None:
         self._storage_dir = storage_dir
+        self._effects = effects
         FakeAdapter._captured_storage_dir = storage_dir
 
     async def health(self) -> HealthStatus:
         return HealthStatus(ok=True, status="ok")
 
     async def list_capabilities(self) -> tuple[CapabilityDescriptor, ...]:
-        return (_descriptor(),)
+        return (_descriptor(effects=self._effects),)
 
     async def invoke(
         self,
@@ -156,7 +158,6 @@ class FakeAdapter:
 def _make_plugin_with_storage(
     permissions: tuple[str, ...] = (
         CAPABILITY_PROMPT_INVOKE_PERMISSION,
-        NETWORK_READ_PERMISSION,
         PLUGIN_STORAGE_WRITE_PERMISSION,
     ),
 ) -> tuple[Callable, list[Path | None]]:
@@ -175,7 +176,7 @@ def _make_plugin_with_storage(
             def register(self, registrar):
                 storage_dir = registrar.get_storage_dir()
                 captured.append(storage_dir)
-                adapter = FakeAdapter(storage_dir=storage_dir)
+                adapter = FakeAdapter(storage_dir=storage_dir, effects=(PLUGIN_STATE_EFFECT,))
                 registrar.add_capability_adapter(adapter)
 
         return Plugin()
@@ -401,6 +402,29 @@ class TrustedStatefulStoragePolicyTests(unittest.TestCase):
         )
         self.assertTrue(policy.validate_manifest(manifest).accepted)
 
+    def test_accepts_prompt_capability_with_scoped_state_but_no_network(self) -> None:
+        policy = self._policy()
+        manifest = PluginManifest(
+            plugin_id=PLUGIN_ID,
+            plugin_version="0.1.0",
+            plugin_api_version=AKANE_PLUGIN_API_VERSION,
+            permissions=(
+                CAPABILITY_PROMPT_INVOKE_PERMISSION,
+                PLUGIN_STORAGE_WRITE_PERMISSION,
+            ),
+        )
+        descriptor = _descriptor(effects=(PLUGIN_STATE_EFFECT,))
+        self.assertTrue(policy.validate_manifest(manifest).accepted)
+        self.assertTrue(
+            policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=descriptor).accepted
+        )
+        self.assertTrue(
+            policy.validate_capability_permissions(
+                manifest=manifest,
+                descriptor=descriptor,
+            ).accepted
+        )
+
     def test_rejects_storage_only_permissions(self) -> None:
         policy = self._policy()
         manifest = PluginManifest(
@@ -427,24 +451,53 @@ class TrustedStatefulStoragePolicyTests(unittest.TestCase):
         )
         self.assertTrue(policy.validate_manifest(manifest).accepted)
 
-    def test_capability_validation_matches_read_policy(self) -> None:
-        """Capability rules are identical to TrustedReadNetworkContributionPolicy."""
+    def test_stateful_capability_uses_capcore_risk_and_confirmation_semantics(self) -> None:
         policy = self._policy()
-        read_policy = TrustedReadNetworkContributionPolicy()
-        for desc in (
-            _descriptor(),
-            CapabilityDescriptor(
-                id=CAPABILITY_ID,
-                display_name="Bad", short_hint="bad",
-                visible_in=("base",), prompt_exposed=False,
-                risk="low", confirm="never", effects=("network",),
-                trigger=None, inputs=(), outputs=(), raw={},
-            ),
-        ):
-            with self.subTest(desc=desc.id, prompt_exposed=desc.prompt_exposed):
-                expected = read_policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=desc)
-                actual = policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=desc)
-                self.assertEqual(expected.accepted, actual.accepted)
+        medium_confirmed = CapabilityDescriptor(
+            id=CAPABILITY_ID,
+            display_name="State mutation", short_hint="Update plugin state.",
+            visible_in=("base",), prompt_exposed=True,
+            risk="medium", confirm="first_time", effects=("future_domain_effect",),
+            trigger=None, inputs=(), outputs=(), raw={},
+        )
+        medium_unconfirmed = CapabilityDescriptor(
+            id=CAPABILITY_ID,
+            display_name="Bad", short_hint="bad",
+            visible_in=("base",), prompt_exposed=True,
+            risk="medium", confirm="never", effects=("future_domain_effect",),
+            trigger=None, inputs=(), outputs=(), raw={},
+        )
+        hidden = CapabilityDescriptor(
+            id=CAPABILITY_ID,
+            display_name="Bad", short_hint="bad",
+            visible_in=("base",), prompt_exposed=False,
+            risk="low", confirm="never", effects=(),
+            trigger=None, inputs=(), outputs=(), raw={},
+        )
+        self.assertTrue(policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=medium_confirmed).accepted)
+        self.assertFalse(policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=medium_unconfirmed).accepted)
+        self.assertFalse(policy.validate_capability(plugin_id=PLUGIN_ID, descriptor=hidden).accepted)
+
+    def test_known_effects_must_match_declared_permissions(self) -> None:
+        policy = self._policy()
+        compute_only = PluginManifest(
+            plugin_id=PLUGIN_ID,
+            plugin_version="0.1.0",
+            plugin_api_version=AKANE_PLUGIN_API_VERSION,
+            permissions=(CAPABILITY_PROMPT_INVOKE_PERMISSION,),
+        )
+        self.assertFalse(
+            policy.validate_capability_permissions(
+                manifest=compute_only,
+                descriptor=_descriptor(effects=("network",)),
+            ).accepted
+        )
+        self.assertFalse(
+            policy.validate_capability_permissions(
+                manifest=compute_only,
+                descriptor=_descriptor(effects=(PLUGIN_STATE_EFFECT,)),
+            ).accepted
+        )
 
 
 if __name__ == "__main__":

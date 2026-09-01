@@ -77,15 +77,25 @@ raw exception text never enter QQ.
 
 ## Contribution Policy
 
-The production composition root uses `trusted.stateful-plugin.v1`. It preserves
-the existing low-risk prompt-visible network-read descriptor requirements while
-allowing explicitly declared optional permissions:
+The production composition root uses `trusted.stateful-plugin.v1`. Prompt-visible
+capabilities no longer have to pretend that every operation reads the network.
+Their CapCore descriptor declares honest `risk`, `confirm`, and domain effects;
+medium/high risk cannot use `confirm=never`. The host cross-checks the known
+effects against explicitly declared permissions:
 
+- `network` -> `network.read`
+- `plugin_state` -> `storage.write`
+- generated-file output -> `artifact.write`
 - `storage.write`
 - `job.run`
 - `notification.send`
 - `artifact.write`
 - `qq.command.register`
+
+Future domain effects are not rejected merely because this document predates
+them; CapCore confirmation remains authoritative. This keeps permission
+declarations honest without turning today's effect vocabulary into a hidden
+plugin capability ceiling.
 
 The policy is permission- and descriptor-based, not finance-plugin-id-based.
 Enabled plugin failure still degrades only the plugin host and does not block

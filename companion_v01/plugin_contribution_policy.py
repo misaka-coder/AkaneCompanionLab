@@ -24,6 +24,7 @@ from .plugin_api import (
     NETWORK_READ_PERMISSION,
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
+    PLUGIN_STATE_EFFECT,
     PLUGIN_STORAGE_WRITE_PERMISSION,
     SKILL_CONTRIBUTION_PERMISSION,
     SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
@@ -84,6 +85,25 @@ def _validate_trusted_read_capability(
     artifact_outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file")
     expected_effects = ("network", "filesystem") if artifact_outputs else ("network",)
     if descriptor.effects != expected_effects:
+        return ContributionPolicyDecision.reject()
+    return ContributionPolicyDecision.allow()
+
+
+def _validate_trusted_stateful_capability(
+    descriptor: CapabilityDescriptor,
+) -> ContributionPolicyDecision:
+    """Validate honest CapCore semantics without freezing a domain-effect list."""
+
+    if not descriptor.prompt_exposed:
+        return ContributionPolicyDecision.reject()
+    if descriptor.risk not in {"low", "medium", "high"}:
+        return ContributionPolicyDecision.reject()
+    if descriptor.confirm not in {"never", "first_time", "always"}:
+        return ContributionPolicyDecision.reject()
+    if descriptor.risk != "low" and descriptor.confirm == "never":
+        return ContributionPolicyDecision.reject()
+    artifact_outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file")
+    if artifact_outputs and "filesystem" not in descriptor.effects:
         return ContributionPolicyDecision.reject()
     return ContributionPolicyDecision.allow()
 
@@ -169,12 +189,11 @@ class TrustedStatefulPluginContributionPolicy:
 
     A plugin may contribute capabilities, QQ commands, background services, or
     stable prompt blocks without pretending to provide all four. Capability
-    plugins declare ``capability.prompt.invoke``; that permission requires
-    ``network.read`` under this policy. Other permissions are independent and
-    are enforced by the registrar that exposes the corresponding host port.
-
-    Capability-level rules remain identical to
-    :class:`TrustedReadNetworkContributionPolicy`.
+    plugins declare ``capability.prompt.invoke``. Network, scoped plugin state,
+    and managed artifacts are independent permissions whose known effects are
+    cross-checked against the manifest. CapCore remains authoritative for
+    risk/confirmation semantics; this policy deliberately does not freeze an
+    allowlist of future domain effects.
     """
 
     policy_id: str = field(default="trusted.stateful-plugin.v1", init=False)
@@ -213,8 +232,6 @@ class TrustedStatefulPluginContributionPolicy:
             return ContributionPolicyDecision.reject()
         if not perms.intersection(self._CONTRIBUTION_PERMISSIONS):
             return ContributionPolicyDecision.reject()
-        if CAPABILITY_PROMPT_INVOKE_PERMISSION in perms and NETWORK_READ_PERMISSION not in perms:
-            return ContributionPolicyDecision.reject()
         if MANAGED_ARTIFACT_WRITE_PERMISSION in perms and CAPABILITY_PROMPT_INVOKE_PERMISSION not in perms:
             return ContributionPolicyDecision.reject()
         return ContributionPolicyDecision.allow()
@@ -226,7 +243,24 @@ class TrustedStatefulPluginContributionPolicy:
         descriptor: CapabilityDescriptor,
     ) -> ContributionPolicyDecision:
         del plugin_id
-        return _validate_trusted_read_capability(descriptor)
+        return _validate_trusted_stateful_capability(descriptor)
+
+    def validate_capability_permissions(
+        self,
+        *,
+        manifest: PluginManifest,
+        descriptor: CapabilityDescriptor,
+    ) -> ContributionPolicyDecision:
+        permissions = frozenset(manifest.permissions)
+        effects = frozenset(descriptor.effects)
+        if "network" in effects and NETWORK_READ_PERMISSION not in permissions:
+            return ContributionPolicyDecision.reject()
+        if PLUGIN_STATE_EFFECT in effects and PLUGIN_STORAGE_WRITE_PERMISSION not in permissions:
+            return ContributionPolicyDecision.reject()
+        if any(output.delivery == "generated_file" for output in descriptor.outputs):
+            if MANAGED_ARTIFACT_WRITE_PERMISSION not in permissions:
+                return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
 
     def validate_registration(
         self,

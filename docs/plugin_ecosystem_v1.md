@@ -99,6 +99,9 @@
 即可激活；完全没有运行时贡献的空插件会收到 `plugin_registered_no_contributions`。
 辅助权限不算独立贡献，例如只申请存储目录而不注册任何功能仍会被拒绝。QQ 命令、
 事件处理器、后台任务和稳定提示块不需要为了通过启动而虚构 Capability 或声明网络读取权限。
+Capability 也按真实效果声明：纯计算可以只有 `capability.prompt.invoke`，读取网络再声明
+`network.read`，读写插件隔离状态使用 `plugin_state + storage.write`。宿主核对已知权限与效果，
+但不把今天已知的效果名称做成未来插件的固定白名单；中高风险仍必须由 CapCore 要求确认。
 
 Capability 调用默认没有统一的固定时长上限；用户取消和任务取消仍会沿调用链传播。
 部署方确有资源边界时可以显式设置调用超时，届时超时原因会结构化返回。健康检查和

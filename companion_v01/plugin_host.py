@@ -1408,6 +1408,19 @@ class PluginHost:
                         ),
                         stage="capability_contributions",
                     )
+                    validate_permissions = getattr(
+                        self._contribution_policy,
+                        "validate_capability_permissions",
+                        None,
+                    )
+                    if callable(validate_permissions):
+                        _require_policy_acceptance(
+                            lambda: validate_permissions(
+                                manifest=manifest,
+                                descriptor=descriptor,
+                            ),
+                            stage="capability_permissions",
+                        )
                     descriptor_snapshot = _copy_descriptor_snapshot(descriptor)
                     capability_id = descriptor_snapshot.id
                     if capability_id in local_capability_ids:
