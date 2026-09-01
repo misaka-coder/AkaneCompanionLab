@@ -67,11 +67,31 @@ def _envelope() -> PluginEventEnvelope:
         source="channelcore-onebot",
         occurred_at=int(inbound.timestamp),
         subject="qq-group:200",
-        channel_message=inbound,
+        payload=inbound,
     )
 
 
 class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_platform_payload_passes_through_without_onebot_shape(self) -> None:
+        handler = _Handler(PluginEventResult())
+        broker = PluginEventBroker(
+            (_PluginEventRegistration(PLUGIN_ID, "companion.desktop.input", handler),)
+        )
+        payload = ("desktop", "hello")
+        envelope = PluginEventEnvelope(
+            event_id="desktop-event-1",
+            event_type="companion.desktop.input",
+            source="desktop-pet-next",
+            occurred_at=int(time.time()),
+            subject="desktop:default",
+            payload=payload,
+        )
+
+        result = await broker.dispatch(envelope)
+
+        self.assertTrue(result.ok)
+        self.assertIs(handler.received[0].payload, payload)
+
     async def test_internal_observer_keeps_full_channelcore_chain_and_emits_nothing(self) -> None:
         handler = _Handler(PluginEventResult())
         broker = PluginEventBroker(
@@ -85,7 +105,7 @@ class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.current_turn_events, ())
         self.assertEqual(result.timeline_events, ())
         self.assertFalse(result.request_agent_turn)
-        inbound = handler.received[0].channel_message
+        inbound = handler.received[0].payload
         self.assertIsNotNone(inbound)
         assert inbound is not None
         self.assertEqual([part.kind for part in inbound.chain.parts], ["reply", "mention", "text", "attachment"])

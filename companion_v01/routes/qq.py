@@ -1963,7 +1963,7 @@ def build_qq_router(
                 ("conversation_id", str(getattr(inbound.conversation, "id", "") or "")),
                 ("actor_id", str(getattr(inbound.actor, "id", "") or "")),
             ),
-            channel_message=inbound,
+            payload=inbound,
         )
         try:
             dispatch = await broker.dispatch(envelope)

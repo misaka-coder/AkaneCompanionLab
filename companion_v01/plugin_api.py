@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from capcore import CapabilityAdapter
-from channelcore_onebot import InboundMessage
 
 
 AKANE_PLUGIN_API_VERSION = 1
@@ -240,10 +239,10 @@ class PluginExternalEvent:
 class PluginEventEnvelope:
     """One immutable host event delivered to plugin observers.
 
-    QQ events retain the authoritative channelcore-onebot ``InboundMessage``
-    instead of flattening reply, mention, attachment, and forward segments into
-    another host-specific message shape.  Non-channel sources use the same
-    small envelope without setting ``channel_message``.
+    ``payload`` retains the source adapter's authoritative immutable event
+    object instead of flattening it into another host-specific message shape.
+    For example, QQ supplies its channelcore-onebot ``InboundMessage`` while a
+    desktop companion or another channel may supply its own event snapshot.
     """
 
     event_id: str
@@ -253,7 +252,7 @@ class PluginEventEnvelope:
     subject: str = ""
     fields: tuple[tuple[str, str], ...] = ()
     material_handles: tuple[str, ...] = ()
-    channel_message: InboundMessage | None = None
+    payload: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
