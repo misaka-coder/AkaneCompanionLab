@@ -7,13 +7,11 @@ from unittest.mock import patch
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.store import MemoryStore
-from companion_v01.task_workspace import TaskWorkspaceService
 from companion_v01.tool_runtime import (
     ClearAttachmentFocusToolHandler,
     InspectAttachmentToolHandler,
     ReadAttachmentSectionToolHandler,
     RetryAttachmentToolHandler,
-    SyncAttachmentWorkspaceToolHandler,
     ToolExecutionContext,
 )
 
@@ -586,7 +584,8 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("发送者：休比", prompt)
             self.assertIn("正在处理", prompt)
             self.assertIn("draft.txt", prompt)
-            self.assertIn("sync_attachment_workspace", prompt)
+            self.assertNotIn("sync_attachment_workspace", prompt)
+            self.assertIn("load_material", prompt)
 
     def test_sync_workspace_focuses_arbitrary_targets_without_renumbering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -780,16 +779,6 @@ class AttachmentInboxTests(unittest.TestCase):
                 detail={"mood_tags": ["温暖"]},
                 timestamp=110,
             )
-            task_service = TaskWorkspaceService(store)
-            task = task_service.create_task(
-                profile_user_id="user",
-                session_id="session",
-                raw_request_text="分析晚餐图片。",
-                normalized_goal="读取并分析图片。",
-                metadata={"workshop": {"inputs": [pending["attachment_handle"]]}},
-                status="waiting_user",
-                timestamp=111,
-            )
             context = ToolExecutionContext(
                 profile_user_id="user",
                 session_id="session",
@@ -872,19 +861,14 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertNotIn("这不是本轮绑定的图片", bound_group_latest.followup_context)
             self.assertEqual(bound_group_latest.stream_events[0]["type"], "attachment_inspected")
 
-            clear_handler = ClearAttachmentFocusToolHandler(
-                attachment_service=service,
-                task_workspace_service=task_service,
-            )
+            clear_handler = ClearAttachmentFocusToolHandler(attachment_service=service)
             cleared = clear_handler.execute(
                 call=clear_handler.normalize_call({"type": "clear_attachment_focus", "target": "晚餐"}) or {},
                 context=context,
             )
             self.assertIn("移除了 1 个材料", cleared.followup_context)
-            self.assertIn("关闭了 1 个", cleared.followup_context)
             self.assertEqual(cleared.stream_events[0]["type"], "attachment_focus_cleared")
-            self.assertEqual(cleared.stream_events[1]["type"], "task_workspaces_cleaned")
-            self.assertEqual(task_service.get_task(task["task_id"])["status"], "cleaned")
+            self.assertEqual(len(cleared.stream_events), 1)
 
     def test_inspect_attachment_requests_confirmation_for_ambiguous_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1303,53 +1287,6 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertIn("多个候选", result["followup_context"])
             self.assertIn("img_001", result["followup_context"])
             self.assertIn("img_002", result["followup_context"])
-
-    def test_sync_workspace_tool_handler_returns_focused_cards(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            service = AttachmentInboxService(store=store)
-            for index in range(1, 3):
-                item = service.create_pending(
-                    profile_user_id="user",
-                    session_id="session",
-                    source="qq",
-                    kind="image",
-                    origin_name=f"pic-{index}.png",
-                    timestamp=100 + index,
-                )
-                service.mark_ready(
-                    profile_user_id="user",
-                    session_id="session",
-                    attachment_id=item["attachment_id"],
-                    summary_title=f"图{index}",
-                    short_hint=f"图{index}摘要。",
-                    timestamp=110 + index,
-                )
-            context = ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=120,
-                visual_payload={},
-            )
-            handler = SyncAttachmentWorkspaceToolHandler(attachment_service=service)
-            result = handler.execute(
-                call=handler.normalize_call(
-                    {
-                        "type": "sync_attachment_workspace",
-                        "focus_targets": ["img_001", "第二张图"],
-                        "kind": "image",
-                    }
-                )
-                or {},
-                context=context,
-            )
-
-            self.assertIn("2 个材料放到了当前工作台", result.followup_context)
-            self.assertEqual(result.stream_events[0]["type"], "attachment_workspace_synced")
-            self.assertEqual(
-                [item["attachment_handle"] for item in result.stream_events[0]["items"]],
-                ["img_001", "img_002"],
-            )
 
     def test_retry_attachment_tool_handler_dispatches_retry(self) -> None:
         class FakeIngestService:

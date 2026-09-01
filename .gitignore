@@ -74,6 +74,10 @@ web/assets/bgm/
 # Local reference copies not part of the Akane app
 claude_code_annotated/
 
+# Local coding-agent evaluation projects (not Akane source)
+/gargantua/
+/minecraft_clone/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

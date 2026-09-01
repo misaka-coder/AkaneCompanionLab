@@ -67,6 +67,7 @@ Manual acceptance for this stage:
 8. Abilities & Permissions reads the real capability catalog, shows the current safety boundary, and changes approval mode only through the profile approval-policy route.
 9. Full authoring, uploads, and framing calibration remain in the character workshop instead of creating a second character-pack authority.
 10. Voice toggles, volume, speed, wake settings, preview, and stop use the existing settings-command bridge; preview reports success only after the live snapshot shows playback.
-11. System & Diagnostics distinguishes backend health from desktop live-state availability, exposes no sensitive paths, and leaves recent events empty until a real event source exists.
+11. System & Diagnostics distinguishes backend health from desktop live-state availability, exposes no sensitive paths, and omits recent events until a real event source exists.
+12. Chat loads older history through the read-only session cursor, preserves the visible reading position after prepending rows, and keeps newly arriving tail messages behind an unread affordance when the reader is away from the bottom.
 
 The 2026-08-21 acceptance pass covered real Tauri connection loss, window chrome, drag/minimize/maximize/restore, workspace/workshop/folder entrances, repeated action pending state, slow model discovery, model secret masking, model deep-link startup, and canonical entry startup.

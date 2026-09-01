@@ -52,7 +52,7 @@ class ToolInvocationTests(unittest.TestCase):
             {"type": "retrieve_memory", "query": "我的生日"},
             {"type": "web_search", "action": "batch_search", "queries": ["a", "b"], "max_results": 5},
             {"type": "send_sticker", "sticker": "haoxingfu"},
-            {"type": "manage_task_workspace", "action": "create", "title": "t", "steps": []},
+            {"type": "manage_project_workspace", "action": "inspect", "workspace_id": "project_1"},
         ]:
             inv = legacy_tool_call_to_invocation(tc)
             assert inv is not None
@@ -252,36 +252,6 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertFalse(separated["send_to_user"])
         self.assertEqual(cover["delivery"], "none")
         self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
-
-    def test_qq_media_agent_delegation_is_rejected_in_favor_of_direct_tools(self) -> None:
-        engine = FakeEngine(RecordingHandler())
-        context = ClientProtocolContext(
-            requested_mode=ClientMode.QQ_TEXT,
-            effective_mode=ClientMode.QQ_TEXT,
-        )
-        call = {
-            "type": "delegate_task",
-            "agent": "media_agent",
-            "brief": "后台做人声分离",
-        }
-
-        normalized = tool_orchestration_engine.normalize_tool_call(
-            engine,
-            call,
-            client_context=context,
-            profile_user_id="alice",
-            session_id="s1",
-        )
-        self.assertEqual(normalized, call)
-        rejection = tool_orchestration_engine.classify_tool_call_rejection(
-            engine,
-            call,
-            client_context=context,
-            profile_user_id="alice",
-            session_id="s1",
-        )
-        self.assertIn("不能委派给后台工坊", rejection)
-        self.assertIn("separate_audio_stems", rejection)
 
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:
         handler = RecordingHandler()
@@ -512,14 +482,14 @@ class ShapeToolFollowupTests(unittest.TestCase):
         # Claude Code's empty-tool-result guard: a successful-but-silent tool
         # must still feed the model something, never an empty result.
         for empty in ["", "   ", "\n\t", None]:
-            shaped = tool_orchestration_engine.shape_tool_followup(empty, tool_type="list_reminders")
-            self.assertIn("list_reminders", shaped)
+            shaped = tool_orchestration_engine.shape_tool_followup(empty, tool_type="inspect_media_info")
+            self.assertIn("inspect_media_info", shaped)
             self.assertIn("没有返回可展示的内容", shaped)
 
     def test_normal_result_passes_through_unchanged(self) -> None:
-        text = "当前待处理提醒如下：\n1. 明天买牛奶"
+        text = "媒体时长：183 秒"
         self.assertEqual(
-            tool_orchestration_engine.shape_tool_followup(text, tool_type="list_reminders"),
+            tool_orchestration_engine.shape_tool_followup(text, tool_type="inspect_media_info"),
             text,
         )
 

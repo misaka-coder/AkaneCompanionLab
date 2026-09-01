@@ -156,6 +156,120 @@ class OneBotActionContractTests(unittest.TestCase):
             {"group_id": 20001, "user_id": 10002},
         )
 
+    def test_gateway_resolves_current_and_replied_message_selectors_to_real_ids(self) -> None:
+        gateway = object.__new__(NapCatQQGateway)
+        gateway._onebot_transport = _Transport()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="mention",
+            is_group=True,
+            target_id=20001,
+            user_id=10001,
+            group_id=20001,
+            source_message_id="30001",
+            reply_reference={"message_id": "29999"},
+        )
+
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+            current = gateway.call_model_onebot_action(
+                context,
+                action="set_msg_emoji_like",
+                params={"emoji_id": 66},
+                message_selector={"kind": "current_message"},
+            )
+            replied = gateway.call_model_onebot_action(
+                context,
+                action="delete_msg",
+                params={},
+                message_selector={"kind": "replied_message"},
+            )
+
+        self.assertTrue(current["ok"])
+        self.assertTrue(replied["ok"])
+        self.assertEqual(gateway._onebot_transport.calls[0][1]["message_id"], "30001")
+        self.assertEqual(gateway._onebot_transport.calls[1][1]["message_id"], "29999")
+        self.assertEqual(current["message_selector_applied"], "current_message")
+        self.assertEqual(replied["message_selector_applied"], "replied_message")
+
+    def test_recent_bot_message_selector_uses_only_successful_outbound_receipts(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway._onebot_transport = _Transport()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="mention",
+            is_group=True,
+            target_id=20001,
+            user_id=10001,
+            group_id=20001,
+            source_message_id="30001",
+        )
+
+        sent = gateway.send_reply(context, "第一条")
+        self.assertTrue(sent["ok"])
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+            result = gateway.call_model_onebot_action(
+                context,
+                action="delete_msg",
+                params={},
+                message_selector={"kind": "recent_bot_message", "position": 1},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(gateway._onebot_transport.calls[-1][1]["message_id"], "77")
+        self.assertEqual(result["message_selector_applied"], "recent_bot_message")
+
+    def test_unavailable_message_selector_returns_structured_feedback_without_transport_call(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway._onebot_transport = _Transport()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="mention",
+            is_group=True,
+            target_id=20001,
+            user_id=10001,
+            group_id=20001,
+            source_message_id="30001",
+        )
+
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+            result = gateway.call_model_onebot_action(
+                context,
+                action="delete_msg",
+                params={},
+                message_selector={"kind": "replied_message"},
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reason"], "replied_message_unavailable")
+        self.assertEqual(gateway._onebot_transport.calls, [])
+
+    def test_non_owner_can_react_to_host_resolved_replied_message_in_current_conversation(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway._onebot_transport = _Transport()
+        context = QQMessageContext(
+            should_respond=True,
+            reason="mention",
+            is_group=True,
+            target_id=20001,
+            user_id=10002,
+            group_id=20001,
+            source_message_id="30001",
+            reply_reference={"message_id": "29999"},
+        )
+
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+            result = gateway.call_model_onebot_action(
+                context,
+                action="set_msg_emoji_like",
+                params={"emoji_id": 66},
+                message_selector={"kind": "replied_message"},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["scope"], "current_conversation_message")
+        self.assertEqual(gateway._onebot_transport.calls[-1][1]["message_id"], "29999")
+
     def test_handler_preserves_large_complete_result_for_memcore_settlement(self) -> None:
         large_text = "结果" * 50_000
         port = _Port(
@@ -277,6 +391,8 @@ class OneBotActionContractTests(unittest.TestCase):
             first[0]["function"]["parameters"]["properties"]["action"]["enum"],
             list(MODEL_ONEBOT_ACTION_NAMES),
         )
+        selector = first[0]["function"]["parameters"]["properties"]["message_selector"]
+        self.assertEqual(selector["properties"]["position"]["minimum"], 1)
 
 
 if __name__ == "__main__":

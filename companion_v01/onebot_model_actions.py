@@ -64,6 +64,30 @@ _ACTIONS = (
 MODEL_ONEBOT_ACTIONS: dict[str, ModelOneBotAction] = {item.name: item for item in _ACTIONS}
 MODEL_ONEBOT_ACTION_NAMES: tuple[str, ...] = ("capabilities",) + tuple(MODEL_ONEBOT_ACTIONS)
 MODEL_ONEBOT_ACTION_METHODS: dict[str, str] = {name: "POST" for name in MODEL_ONEBOT_ACTIONS}
+MODEL_ONEBOT_MESSAGE_CREATING_ACTIONS: frozenset[str] = frozenset(
+    {
+        "send_group_msg",
+        "send_private_msg",
+        "send_group_forward_msg",
+        "send_private_forward_msg",
+        "forward_group_single_msg",
+        "forward_friend_single_msg",
+        "upload_group_file",
+        "upload_private_file",
+    }
+)
+MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS: tuple[str, ...] = (
+    "current_message",
+    "replied_message",
+    "recent_bot_message",
+)
+_MESSAGE_ID_ACTIONS = {
+    "get_msg",
+    "delete_msg",
+    "set_msg_emoji_like",
+    "forward_group_single_msg",
+    "forward_friend_single_msg",
+}
 
 
 def model_onebot_action_is_user_visible(action: str) -> bool:
@@ -84,11 +108,45 @@ def model_onebot_capabilities() -> dict[str, Any]:
         "scope_policy": {
             "same_conversation": "ordinary participants may use same-group or same-private chat interactions",
             "context_defaults": "current group, current private peer, current sender or current message may be inferred when unambiguous",
+            "message_selectors": "current_message, replied_message, or recent_bot_message(position=N) resolve real message ids in the current conversation",
             "cross_conversation": "requires the configured Akane owner",
             "owner_only": "message recall, global contact/history discovery and other explicitly marked actions",
             "excluded": "credentials, account exit, friend deletion, kick/ban and group/account administration",
         },
     }
+
+
+def resolve_model_onebot_message_selector(
+    action: str,
+    params: Mapping[str, Any],
+    selector: Mapping[str, Any] | None,
+    *,
+    source_message_id: str,
+    replied_message_id: str,
+    recent_bot_message_id: str,
+) -> tuple[dict[str, Any], str, str]:
+    """Resolve host-side message references without sending selector metadata to OneBot."""
+
+    resolved = dict(params or {})
+    if _id_text(resolved.get("message_id")):
+        return resolved, "explicit_message_id", ""
+    if not selector:
+        return resolved, "", ""
+    if str(action or "").strip() not in _MESSAGE_ID_ACTIONS:
+        return resolved, "", "message_selector_action_unsupported"
+    kind = str(selector.get("kind") or "").strip()
+    if kind not in MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS:
+        return resolved, "", "message_selector_kind_invalid"
+    if kind == "current_message":
+        message_id = _id_text(source_message_id)
+    elif kind == "replied_message":
+        message_id = _id_text(replied_message_id)
+    else:
+        message_id = _id_text(recent_bot_message_id)
+    if not message_id:
+        return resolved, kind, f"{kind}_unavailable"
+    resolved["message_id"] = message_id
+    return resolved, kind, ""
 
 
 def resolve_model_onebot_params(
@@ -147,6 +205,7 @@ def authorize_model_onebot_action(
     group_id: int,
     user_id: int,
     source_message_id: str,
+    message_selector_applied: str = "",
 ) -> tuple[bool, str, str]:
     """Authorize one action against the triggering QQ conversation.
 
@@ -194,6 +253,14 @@ def authorize_model_onebot_action(
         return _same_target(target_user, current_user, "current_private")
     if action == "send_like":
         return _same_target(target_user, current_user, "current_sender")
+    if action in {"get_msg", "set_msg_emoji_like"} and message_selector_applied in {
+        "current_message",
+        "replied_message",
+        "recent_bot_message",
+    }:
+        # These ids were resolved by the host from the current conversation,
+        # rather than supplied as an arbitrary cross-conversation id.
+        return True, "", "current_conversation_message"
     if action in {"get_msg", "set_msg_emoji_like"}:
         return _same_target(target_message, current_message, "current_message")
     return False, "owner_required", "owner_only"

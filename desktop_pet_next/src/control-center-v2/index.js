@@ -2,6 +2,7 @@ import { createControlCenterBridge } from "./bridge.js";
 import { renderControlCenterShell } from "./components/shell.js";
 import { createInitialControlCenterState, createControlCenterStore } from "./store.js";
 import { normalizeActionPresentation } from "./view-model.js";
+import { prependedHistoryScrollTop } from "./chat-history.js";
 import {
   applyModelProvider,
   createModelServiceDraft,
@@ -26,6 +27,8 @@ let chatDraft = "";
 let chatScrollTop = 0;
 let chatWasAtBottom = true;
 let lastChatMessageId = "";
+let renderedChatSessionId = "";
+let chatPrependAnchor = null;
 let voicePreviewDraft = "";
 let wakeWordDraft = "";
 let voiceProfilePreviewAudio = null;
@@ -45,6 +48,9 @@ bridge.subscribe((viewModel) => {
     const packId = String(viewModel?.character?.packId || "default").trim() || "default";
     const packChanged = state.presentationPackId !== packId;
     const firstModelRead = !state.modelDraft && viewModel?.model?.available;
+    const previousChatSessionId = String(state.viewModel?.chat?.sessionId || "");
+    const nextChatSessionId = String(viewModel?.chat?.sessionId || "");
+    const chatSessionChanged = Boolean(previousChatSessionId && nextChatSessionId && previousChatSessionId !== nextChatSessionId);
     if (packChanged) livePresentationPreferences = null;
     return {
       ...state,
@@ -56,12 +62,20 @@ bridge.subscribe((viewModel) => {
       presentationPreferences: packChanged
         ? loadPresentationPreferences(packId)
         : state.presentationPreferences,
-      modelDraft: firstModelRead ? createModelServiceDraft(viewModel.model) : state.modelDraft
+      modelDraft: firstModelRead ? createModelServiceDraft(viewModel.model) : state.modelDraft,
+      chatHistory: chatSessionChanged
+        ? { phase: "idle", error: "", sessionId: nextChatSessionId }
+        : state.chatHistory
     };
   });
 });
 
 root.addEventListener("click", (event) => {
+  const olderMessagesButton = event.target.closest("button[data-chat-load-older]");
+  if (olderMessagesButton && !olderMessagesButton.disabled) {
+    void loadOlderChatHistory();
+    return;
+  }
   const voiceProfileEditButton = event.target.closest("button[data-voice-profile-edit]");
   if (voiceProfileEditButton && !voiceProfileEditButton.disabled) {
     editVoiceProfile(voiceProfileEditButton.dataset.providerId, voiceProfileEditButton.dataset.voiceProfileEdit);
@@ -515,6 +529,7 @@ root.addEventListener("scroll", (event) => {
   chatWasAtBottom = isNearBottom(viewport);
   const jumpButton = root.querySelector("[data-chat-jump-latest]");
   if (jumpButton && chatWasAtBottom) jumpButton.hidden = true;
+  if (viewport.scrollTop <= 72) void loadOlderChatHistory(viewport);
 }, true);
 
 root.addEventListener("pointerdown", (event) => {
@@ -597,6 +612,49 @@ async function runAction(actionId, payload = {}) {
   return result;
 }
 
+async function loadOlderChatHistory(viewport = root.querySelector("[data-chat-viewport]")) {
+  const state = store.getState();
+  const chat = state.viewModel?.chat;
+  if (!chat?.history?.hasMore || state.chatHistory?.phase === "loading") return null;
+  const beforeSeq = Number(chat.history.nextBeforeSeq);
+  if (!Number.isFinite(beforeSeq) || beforeSeq <= 0) return null;
+  const sessionId = String(chat.sessionId || "");
+  const firstMessageId = String(chat.messages?.[0]?.id || "");
+  chatPrependAnchor = viewport
+    ? {
+        sessionId,
+        firstMessageId,
+        scrollHeight: viewport.scrollHeight,
+        scrollTop: viewport.scrollTop
+      }
+    : null;
+  store.patch({ chatHistory: { phase: "loading", error: "", sessionId } });
+  let result;
+  try {
+    result = await bridge.loadOlderChatMessages({ beforeSeq, limit: 60 });
+  } catch (error) {
+    result = { ok: false, status: "failed", reason: friendlyError(error) };
+  }
+  const latestSessionId = String(store.getState().viewModel?.chat?.sessionId || "");
+  if (latestSessionId !== sessionId || result?.status === "stale") {
+    chatPrependAnchor = null;
+    return result;
+  }
+  if (result?.ok) {
+    store.patch({ chatHistory: { phase: "idle", error: "", sessionId } });
+  } else {
+    chatPrependAnchor = null;
+    store.patch({
+      chatHistory: {
+        phase: "failed",
+        error: result?.status === "no-more-history" ? "已经没有更早消息" : "更早消息暂时没有加载出来",
+        sessionId
+      }
+    });
+  }
+  return result;
+}
+
 async function runModelAction(actionId) {
   const state = store.getState();
   const draft = readModelServiceForm(state.modelDraft);
@@ -625,10 +683,18 @@ function render(state) {
   setupCoreComplete = state.viewModel?.setup ? nextSetupCoreComplete : null;
   const currentPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (currentPageViewport && renderedPage) pageScrollTop.set(renderedPage, currentPageViewport.scrollTop);
+  const nextChatSessionId = String(state.viewModel?.chat?.sessionId || "");
+  const chatSessionChanged = Boolean(renderedChatSessionId && nextChatSessionId && renderedChatSessionId !== nextChatSessionId);
   const currentViewport = root.querySelector("[data-chat-viewport]");
-  if (currentViewport) {
+  if (currentViewport && !chatSessionChanged) {
     chatScrollTop = currentViewport.scrollTop;
     chatWasAtBottom = isNearBottom(currentViewport);
+  }
+  if (chatSessionChanged) {
+    chatScrollTop = 0;
+    chatWasAtBottom = true;
+    lastChatMessageId = "";
+    chatPrependAnchor = null;
   }
   const currentInput = root.querySelector("[data-chat-input]");
   if (currentInput) chatDraft = currentInput.value;
@@ -662,9 +728,22 @@ function render(state) {
   const nextViewport = root.querySelector("[data-chat-viewport]");
   if (!nextViewport) return;
   const messages = state.viewModel?.chat?.messages || [];
+  const nextFirstId = String(messages[0]?.id || "");
   const nextLastId = messages.at(-1)?.id || "";
   const hasNewMessage = Boolean(lastChatMessageId && nextLastId && nextLastId !== lastChatMessageId);
-  if (!lastChatMessageId || chatWasAtBottom) {
+  const prependedHistory = Boolean(
+    chatPrependAnchor &&
+    chatPrependAnchor.sessionId === nextChatSessionId &&
+    chatPrependAnchor.firstMessageId &&
+    nextFirstId &&
+    chatPrependAnchor.firstMessageId !== nextFirstId
+  );
+  if (prependedHistory) {
+    nextViewport.scrollTop = prependedHistoryScrollTop(chatPrependAnchor, nextViewport.scrollHeight);
+    chatScrollTop = nextViewport.scrollTop;
+    chatWasAtBottom = isNearBottom(nextViewport);
+    chatPrependAnchor = null;
+  } else if (!lastChatMessageId || chatWasAtBottom) {
     nextViewport.scrollTop = nextViewport.scrollHeight;
     chatWasAtBottom = true;
   } else {
@@ -673,6 +752,7 @@ function render(state) {
     if (jumpButton) jumpButton.hidden = !hasNewMessage;
   }
   lastChatMessageId = nextLastId;
+  renderedChatSessionId = nextChatSessionId;
 }
 
 function captureCapabilityUiState() {

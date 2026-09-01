@@ -32,6 +32,7 @@ import config
 from capcore import PermissionDecision
 
 from ..capcore_runtime import (
+    authorization_profile_user_id,
     approval_required_event,
     manual_permission_request,
     resolve_permission_for_profile,
@@ -210,14 +211,16 @@ class _ExecToolHandlerBase(BaseToolHandler):
         request_id: str = "",
         fingerprint: str = "",
     ) -> ToolExecutionResult:
+        approval_reason, title, summary, followup = self._approval_explanation(context)
         event = approval_required_event(
             capability_id=self.tool_type,
             action_id=self.tool_type,
-            title="执行命令需要确认",
-            summary="Akane 想以宿主用户权限运行一条命令。",
+            title=title,
+            summary=summary,
             client_mode=str(context.client_mode or ""),
             decision=decision,
         )
+        event["approvalReason"] = approval_reason
         if request_id:
             event["requestId"] = request_id
         if fingerprint:
@@ -225,16 +228,38 @@ class _ExecToolHandlerBase(BaseToolHandler):
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=[event],
-            followup_context=(
-                "这个命令需要用户确认后才能执行；请自然说明需要用户在能力审批中允许后再执行，不要声称已经完成。"
-            ),
+            followup_context=followup,
             state_updates={
                 "capability_execution": {
                     "tool_type": self.tool_type,
                     "status": "approval_required",
-                    "reason": "requires_user_decision",
+                    "reason": approval_reason,
                 }
             },
+        )
+
+    @staticmethod
+    def _approval_explanation(context: ToolExecutionContext) -> tuple[str, str, str, str]:
+        profile_user_id = str(context.profile_user_id or "").strip()
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        actor_profile_user_id = str(request_context.get("actor_profile_user_id") or "").strip()
+        shared_group_actor = (
+            profile_user_id.startswith("qq_group_shared_")
+            and actor_profile_user_id
+            and actor_profile_user_id != profile_user_id
+        )
+        if shared_group_actor:
+            return (
+                "group_actor_host_execution_requires_confirmation",
+                "群成员触发的宿主命令需要确认",
+                "这条命令由当前群成员触发；群聊上下文不会让该成员继承设备主人的宿主权限。",
+                "[approval required: 当前群成员没有自动执行宿主命令的授权；设备主人可重新发起，或批准这次请求]",
+            )
+        return (
+            "command_execution_requires_confirmation",
+            "执行命令需要确认",
+            "Akane 想以宿主用户权限运行一条命令。",
+            "[approval required: 请在能力审批中允许这次宿主命令]",
         )
 
     def _blocked(self, reason: str) -> ToolExecutionResult:
@@ -362,9 +387,13 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- exec_run：用 command 在上方宿主事实所示的 Shell 中运行命令；它不是 Shell 沙箱。"
+            "- exec_run：command 直接由上方宿主事实中的 command_shell 解释，不经过另一层隐式 Shell；它不是 Shell 沙箱。"
+            "Windows 默认使用 PowerShell；确需 cmd 语法时显式调用 cmd.exe /c。"
             "cwd 可为工作区相对路径、alias:project 或真实宿主绝对目录，省略时使用受信任执行根；先从真实输出发现路径。"
-            "短命令返回终态；running 与 run_id 表示仍在执行，用 exec_status 续读或 exec_cancel 停止。"
+            "工具结果只描述这一条命令，不代表整个任务：running 用 exec_status 续读或 exec_cancel 停止；"
+            "failed/timed_out 时依据真实输出修正命令或换路，确实无法继续时再说明阻塞。"
+            "本机所需程序未运行时，先查找安装位置并启动；Windows 长驻进程用 Start-Process 后验证端口或进程，"
+            "不要把前台服务挂到超时。"
             "input_resources 会把材料句柄复制到 as 相对路径且不能与 cwd 同用；output_globs 登记当前受管目录或 alias:project 中的匹配产物。"
             "按 status、exit_code、stdout、stderr、reason 与 recommended_action 判断结果；改变大量文件前先只读核对目标。"
         )
@@ -605,6 +634,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
     ) -> str:
         if self.approval_store is None:
             return ""
+        approval_reason, title, summary, _followup = self._approval_explanation(context)
         request = decision.request
         preview = dict(getattr(request, "args_preview", None) or {}) if request is not None else {}
         result = self.approval_store.create_request(
@@ -615,9 +645,9 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 "actionId": self.tool_type,
                 "risk": "high",
                 "approvalMode": "ask_each_time",
-                "title": "执行命令需要确认",
-                "summary": "Akane 想以宿主用户权限运行一条命令。",
-                "approvalReason": "command_execution_requires_confirmation",
+                "title": title,
+                "summary": summary,
+                "approvalReason": approval_reason,
                 "payloadPreview": preview,
                 "requestFingerprint": fingerprint,
                 "resource": resource,
@@ -643,7 +673,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return resolve_permission_for_profile(
             request,
             base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
-            profile_user_id=str(context.profile_user_id or ""),
+            profile_user_id=authorization_profile_user_id(context),
         )
 
 

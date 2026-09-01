@@ -13,9 +13,7 @@ const REQUIRED_FILES = [
   "control-center-v2.html",
   "src/control-center-lab.js",
   "src/control-center/action-router.js",
-  "src/control-center/action-surface-contract.js",
   "src/control-center/data-sources.js",
-  "src/control-center/data-adapter.js",
   "src/control-center-v2/index.js",
   "src/control-center-v2/bridge.js",
   "src/control-center-v2/view-model.js",
@@ -32,6 +30,10 @@ const FORBIDDEN_LEGACY_FILES = [
   "src/settings.js",
   "src/settings.css",
   "src/control-center-lab.css",
+  "src/control-center/action-surface-contract.js",
+  "src/control-center/data-adapter.js",
+  "src/control-center/mock-data.js",
+  "src/control-center/snapshot-schema.js",
 ];
 
 function checkRequiredFiles() {

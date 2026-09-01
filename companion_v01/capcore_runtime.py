@@ -20,6 +20,23 @@ from .local_capability_config import approval_mode_for_capability, get_approval_
 APPROVAL_POLICY_MODES = {"ask_each_time", "trusted_auto_allow", "disabled"}
 
 
+def authorization_profile_user_id(context: Any) -> str:
+    """Resolve the actor principal that owns host capability permissions.
+
+    Shared QQ conversation storage belongs to ``qq_group_shared_*``. Host
+    actions, however, must be authorized by the actor that requested them.
+    System/background turns have no actor and fall back to the conversation
+    profile.
+    """
+
+    request_context = getattr(context, "request_context", None)
+    if isinstance(request_context, Mapping):
+        actor_profile = str(request_context.get("actor_profile_user_id") or "").strip()
+        if actor_profile:
+            return actor_profile
+    return str(getattr(context, "profile_user_id", "") or "").strip()
+
+
 def invocation_context_from_execution(context: Any) -> InvocationContext:
     return InvocationContext(
         profile_user_id=str(getattr(context, "profile_user_id", "") or ""),

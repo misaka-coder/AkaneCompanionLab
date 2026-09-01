@@ -163,8 +163,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn("real_user_id: PROFILE_USER_ID", main_source)
         self.assertIn("WORKSPACE_REFRESH_EVENT", main_source)
         self.assertIn("showFileDropHint", main_source)
-        self.assertIn("scheduleWorkspaceTaskWatch", main_source)
-        self.assertIn("announceWorkspaceTaskChanges", main_source)
+        self.assertNotIn("scheduleWorkspaceTaskWatch", main_source)
+        self.assertNotIn("announceWorkspaceTaskChanges", main_source)
         self.assertIn("/desktop-pet/workspace/summary", main_source)
         self.assertIn("handleDesktopFileDeliveryEvent", main_source)
         self.assertIn("applyPayloadFileDeliveries", main_source)
@@ -184,7 +184,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("fn prepare_audio_asset_blocking", tauri_source)
         self.assertIn("function renderMusic(state, vm)", control_center_source)
         self.assertIn('class="music-card glass-panel"', control_center_source)
-        self.assertIn('renderActionButton(state, vm, "music.pause"', control_center_source)
+        self.assertIn('renderActionButton(state, vm, "music.togglePlayback"', control_center_source)
         self.assertNotIn("data-music-progress-track", control_center_source)
         self.assertNotIn("data-music-volume-track", control_center_source)
         self.assertIn('id="workspace-music"', workspace_html)
@@ -192,9 +192,9 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("buildMusicLyricText", workspace_source)
         self.assertIn("WORKSPACE_REFRESH_EVENT", workspace_source)
         self.assertIn("scheduleWorkspaceRefresh(120)", workspace_source)
-        self.assertIn("TASK_AUTO_REFRESH_MS", workspace_source)
+        self.assertNotIn("TASK_AUTO_REFRESH_MS", workspace_source)
         self.assertIn("resolveItemStatusGroup", workspace_source)
-        self.assertIn("status_group", workspace_source)
+        self.assertNotIn("sections.tasks", workspace_source)
         self.assertIn("SETTINGS_COMMAND_EVENT", workspace_source)
         self.assertIn("openWorkspaceItem", workspace_source)
         self.assertIn("revealWorkspaceItem", workspace_source)
@@ -419,14 +419,12 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
     def test_character_pack_install_commands_remain_owned_by_tauri_and_workshop(self) -> None:
         control_center_source = _read("desktop_pet_next/src/control-center-v2/components/overview.js")
-        action_contract = _read("desktop_pet_next/src/control-center/action-surface-contract.js")
         workshop_source = _read("desktop_pet_next/src/workshop.js")
         tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
         main_source = _read("desktop_pet_next/src/main.js")
 
         self.assertIn('"character.openWorkshop"', control_center_source)
         self.assertNotIn("characterImportZip", control_center_source)
-        self.assertIn('deferred("character", CONTROL_CENTER_ACTIONS.characterImportZip', action_contract)
         self.assertIn('invoke("install_character_pack_zip_bytes"', workshop_source)
         self.assertIn('invoke("open_character_packs_folder"', workshop_source)
         self.assertIn("fn install_character_pack_zip", tauri_source)
@@ -476,7 +474,6 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
     def test_control_center_abilities_reads_capability_catalog_as_dashboard(self) -> None:
         data_source = _read("desktop_pet_next/src/control-center/data-sources.js")
-        data_adapter = _read("desktop_pet_next/src/control-center/data-adapter.js")
         control_center_source = _read("desktop_pet_next/src/control-center-v2/components/abilities.js")
         control_center_css = _read("desktop_pet_next/src/control-center-v2/styles.css")
         runtime_probe = _read("desktop_pet_next/scripts/control-center-runtime-probe.mjs")
@@ -487,8 +484,11 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("data-approval-mode", control_center_source)
         self.assertIn("能力目录还没有同步", control_center_source)
         self.assertIn(".ccv2-abilities", control_center_css)
-        self.assertIn("transcribe_media", runtime_probe)
-        self.assertIn("runtime.productization", data_adapter)
+        self.assertIn("capabilityCatalog", runtime_probe)
+        self.assertFalse((ROOT / "desktop_pet_next/src/control-center/data-adapter.js").exists())
+        self.assertFalse((ROOT / "desktop_pet_next/src/control-center/mock-data.js").exists())
+        self.assertFalse((ROOT / "desktop_pet_next/src/control-center/snapshot-schema.js").exists())
+        self.assertFalse((ROOT / "desktop_pet_next/src/control-center/action-surface-contract.js").exists())
 
     def test_next_settings_uses_control_center_navigation_layout(self) -> None:
         compatibility_module = _read("desktop_pet_next/src/control-center-lab.js")
@@ -762,6 +762,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
     def test_next_character_runtime_state_is_pack_scoped(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         control_center_source = _read("desktop_pet_next/src/control-center-v2/bridge.js")
+        data_sources = _read("desktop_pet_next/src/control-center/data-sources.js")
         tauri_source = _read("desktop_pet_next/src-tauri/src/main.rs")
 
         self.assertIn("characters: {}", main_source)
@@ -810,8 +811,38 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('emitTo("settings", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
         self.assertIn('emitTo("workshop", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
         self.assertIn('emitTo("workspace", SETTINGS_SNAPSHOT_EVENT, payload)', main_source)
+        self.assertIn("settingsBridgeRegistered = true;\n  // Close the startup race", main_source)
+        self.assertIn("await broadcastSettingsSnapshot();", main_source)
         self.assertIn("emit: emitMainEvent", control_center_source)
-        self.assertIn('emitTo("main", SETTINGS_COMMAND_EVENT, payload)', control_center_source)
+        self.assertIn('targetLabel: "main"', control_center_source)
+        self.assertIn("createTargetedEventEmitter", control_center_source)
+        self.assertEqual(
+            control_center_source.count(
+                'emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" })'
+            ),
+            2,
+        )
+        self.assertNotIn('emitMainEvent({ command: "requestSnapshot" })', control_center_source)
+        self.assertIn(
+            "const [capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([",
+            data_sources,
+        )
+        self.assertIn("const [next, modelRuntime, botCatalog] = await Promise.all([", control_center_source)
+        self.assertIn("await refreshChatSession();", control_center_source)
+        self.assertIn("loadOlderChatMessages", control_center_source)
+        self.assertIn("mergeChatSessions", control_center_source)
+        self.assertIn('buildBackendUrl(botBaseUrl, "/sessions/messages"', data_sources)
+        self.assertIn('inferLatencyLabel(runtimeMetrics, ["tts", "asr"])', data_sources)
+        self.assertIn('inferLatencyLabel(runtimeMetrics, ["capabilities.catalog"])', data_sources)
+        self.assertNotIn('import * as mockData from "./mock-data.js";', data_sources)
+        self.assertIn('const kind = options.kind || CONTROL_CENTER_SOURCE_KIND.backend;', data_sources)
+        self.assertNotIn("if (kind === CONTROL_CENTER_SOURCE_KIND.mock)", data_sources)
+        self.assertNotIn("...mockData", data_sources)
+        self.assertNotIn('"预留"', data_sources)
+        self.assertNotIn("buildPerceptionRuntimePatch", data_sources)
+        self.assertNotIn("buildAdvancedAbilityOverview", data_sources)
+        self.assertNotIn("buildAbilityWorkflows", data_sources)
+        self.assertNotIn('"Live2D 预留状态"', data_sources)
         self.assertIn("withLiveRuntime", control_center_source)
         self.assertIn("buildCharacterRuntimePatchFromSettingsSnapshot", control_center_source)
         self.assertIn("buildMusicRuntimePatch", control_center_source)
@@ -979,7 +1010,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("systemMedia: summarizeSystemMedia()", main_source)
         self.assertIn("systemLyrics: summarizeSystemMediaLyrics()", main_source)
         self.assertIn("lyric_status:", main_source)
-        self.assertIn("const hasSystemTrack = systemMedia.ready", data_sources)
+        self.assertIn('controlTarget === "system"', data_sources)
+        self.assertIn("legacySystemTrack", data_sources)
         self.assertIn("!Boolean(musicSnapshot.paused)", data_sources)
         self.assertIn("!Boolean(localDisplayName)", data_sources)
         self.assertIn("!Number(musicSnapshot.queueCount)", data_sources)

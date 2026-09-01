@@ -11,7 +11,6 @@ from ..capability_registry import (
     INSPECT_ATTACHMENT_TOOL_SPEC,
     LOAD_MATERIAL_TOOL_SPEC,
     READ_ATTACHMENT_SECTION_TOOL_SPEC,
-    SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
 )
 from .core import (
     BaseToolHandler,
@@ -36,8 +35,8 @@ class InspectAttachmentToolHandler(BaseToolHandler):
             '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
             "群聊中的 latest 只指本轮 QQ 消息明确绑定的材料；本轮没有绑定材料时，结果会要求列出工作台或使用精确 handle。"
             "图片像素、文字和视觉细节由 load_material 读取，参数使用本工具返回的精确 handle。"
-            "工作台材料只是临时上下文，不是礼物、角色资源或长期记忆；单独查看某个材料时使用。"
-            "如果要同时对比多份材料，优先使用 sync_attachment_workspace。"
+            "工作台材料只是临时上下文，不是角色资源或长期记忆。"
+            "对比多张图片时，先取得精确 handle，再一次传给 load_material。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -416,101 +415,11 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
         return "document"
 
 
-class SyncAttachmentWorkspaceToolHandler(BaseToolHandler):
-    tool_type = "sync_attachment_workspace"
-
-    def __init__(self, *, attachment_service) -> None:
-        self.attachment_service = attachment_service
-
-    def tool_spec(self):  # M66-C
-        return SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- sync_attachment_workspace：当你需要整理当前材料工作台时使用。新发来的图片/文件通常会自动进入工作台；"
-            "这个工具主要用于收起暂时不分析的材料、重新指定重点材料，或切换要对比的对象。"
-            '格式为 {"type":"sync_attachment_workspace","focus_targets":["img_001","第2张图","菜单照片"],"kind":"any|image|file|document|audio","reason":"为什么需要这些材料"}。'
-            "focus_targets 是整理后的最终工作台清单；可以一次保留多张图片或多个文件进行对比。"
-            "未列入的其它材料会留在旁边材料清单，只给识别信息。"
-            "系统会按上下文预算尽量展开你选中的材料；如果某些大文件放不下，会提示你用 read_attachment_section 指定页、行或 sheet。"
-            "不要用一连串打开/关闭操作；一次性提交整理后的最终清单即可。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        targets = value.get("focus_targets")
-        if targets is None:
-            targets = value.get("targets") or value.get("attachment_ids") or value.get("target") or []
-        normalized_targets = self._normalize_targets(targets)
-        return {
-            "type": self.tool_type,
-            "focus_targets": normalized_targets[:30],
-            "kind": self._normalize_kind(value.get("kind") or "any"),
-            "reason": str(value.get("reason") or "").strip()[:160],
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.attachment_service.sync_workspace(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            focus_targets=list(call.get("focus_targets") or []),
-            kind=str(call.get("kind") or "any"),
-            reason=str(call.get("reason") or ""),
-            timestamp=context.now_ts,
-        )
-        focused = list(result.get("focused") or []) if isinstance(result, dict) else []
-        events = []
-        if focused:
-            events.append(
-                {
-                    "type": "attachment_workspace_synced",
-                    "items": focused,
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_targets(self, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            raw_items = [item.strip() for item in value.replace("，", ",").replace("、", ",").split(",")]
-        elif isinstance(value, (list, tuple, set)):
-            raw_items = list(value)
-        else:
-            raw_items = [value]
-        targets: list[str] = []
-        for item in raw_items:
-            text = str(item or "").strip()
-            if text and text not in targets:
-                targets.append(text[:120])
-        return targets
-
-    def _normalize_kind(self, value: Any) -> str:
-        kind = str(value or "any").strip().lower()
-        if kind in {"photo", "picture", "pic", "img"}:
-            return "image"
-        if kind in {"doc", "text", "txt", "pdf"}:
-            return "document"
-        if kind in {"music", "song", "voice"}:
-            return "audio"
-        if kind in {"any", "image", "file", "document", "audio"}:
-            return kind
-        return "any"
-
-
 class ClearAttachmentFocusToolHandler(BaseToolHandler):
     tool_type = "clear_attachment_focus"
 
-    def __init__(self, *, attachment_service, task_workspace_service=None) -> None:
+    def __init__(self, *, attachment_service) -> None:
         self.attachment_service = attachment_service
-        self.task_workspace_service = task_workspace_service
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -518,7 +427,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
             '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","delete_storage":false,"reason":"可选原因"}。'
             "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
             "默认只让材料退出当前工作台；只有用户明确要求删除原始附件文件时才把 delete_storage 设为 true。"
-            "关联这些材料、仍未收尾的任务白板会一并关闭，避免旧任务继续占用上下文；它不删除聊天记忆、生成成果或礼物。"
+            "它不删除聊天记忆、生成成果或礼物。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -553,7 +462,6 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
         )
         cleared = list(result.get("cleared") or []) if isinstance(result, dict) else []
         events = []
-        cleaned_tasks: list[dict[str, Any]] = []
         if cleared:
             events.append(
                 {
@@ -561,35 +469,7 @@ class ClearAttachmentFocusToolHandler(BaseToolHandler):
                     "items": cleared,
                 }
             )
-            if self.task_workspace_service is not None:
-                artifact_ids = {
-                    str(value or "").strip()
-                    for item in cleared
-                    if isinstance(item, dict)
-                    for value in (item.get("attachment_id"), item.get("attachment_handle"))
-                    if str(value or "").strip()
-                }
-                cleaned_tasks = self.task_workspace_service.cleanup_tasks_for_artifacts(
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    artifact_ids=artifact_ids,
-                    reason=str(call.get("reason") or "").strip() or "关联材料已退出当前工作台。",
-                    timestamp=context.now_ts,
-                )
-                if cleaned_tasks:
-                    events.append(
-                        {
-                            "type": "task_workspaces_cleaned",
-                            "task_ids": [str(task.get("task_id") or "") for task in cleaned_tasks],
-                            "reason": "material_cleared",
-                        }
-                    )
         followup_context = str(result.get("followup_context") or "") if isinstance(result, dict) else ""
-        if cleaned_tasks:
-            followup_context += (
-                f"\n系统同时关闭了 {len(cleaned_tasks)} 个依赖这些材料的未收尾任务白板；"
-                "这些旧任务不再是当前待办，不要主动继续汇报或追问。"
-            )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,

@@ -65,7 +65,6 @@ from .desktop_screen_vision import DesktopScreenVisionWorkspace
 from .deployment_security import QQChannelRuntimeConfig
 from . import desktop_context_engine
 from .mode_profiles import ModeProfileRegistry
-from .npc_runtime import GenericNPCRuntime
 from .output_adapters import OutputAdapterRegistry
 from .persona_config import PERSONA
 from .persona_system import PersonaCardService
@@ -74,17 +73,12 @@ from .prompt_builder import PromptBuilder
 from .prompt_profiles import PromptModule, PromptProfileRegistry
 from . import final_output_engine
 from .local_capability_config import load_capability_config
-from . import reminder_engine
 from .retrieval_service import RetrievalService
 from .retrieval_types import RetrievalPipelineResult
 from . import retrieval_engine
 from .resource_manifest import ResourceManifest
 from .runtime_settings import BotSettingsView
 from .sticker_assets import StickerAssetService
-from .task_workspace import TaskWorkspaceService
-from . import task_workspace_engine
-from .task_worker import TaskWorkerService
-from .task_worker_tool import DelegateTaskToolHandler
 from . import tool_orchestration_engine
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
@@ -102,9 +96,6 @@ from .tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
     BaseToolHandler,
     BrowserPageToolHandler,
-    CallNPCToolHandler,
-    CancelReminderToolHandler,
-    CheckInventoryToolHandler,
     CleanVoiceTrackToolHandler,
     CoverSongToolHandler,
     ClearAttachmentFocusToolHandler,
@@ -113,20 +104,14 @@ from .tool_runtime import (
     BrowseMemoryToolHandler,
     DesktopSatelliteToolHandler,
     FetchMediaFromUrlToolHandler,
-    FocusWorkspaceToolHandler,
     GenerateImageToolHandler,
     InspectAttachmentToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
-    ListRemindersToolHandler,
     ListWorkspaceToolHandler,
     LoadCharacterContextToolHandler,
     LoadMaterialToolHandler,
-    ManageArtifactToolHandler,
     ManageGeneratedFileToolHandler,
-    ManageGiftToolHandler,
-    ManagePersonaToolHandler,
-    ManageTaskWorkspaceToolHandler,
     OpenBrowserToolHandler,
     OpenMusicSearchToolHandler,
     PrepareVoiceDatasetToolHandler,
@@ -141,8 +126,6 @@ from .tool_runtime import (
     SendFileToolHandler,
     SendStickerToolHandler,
     SeparateAudioStemsToolHandler,
-    SetReminderToolHandler,
-    SyncAttachmentWorkspaceToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
     TranscribeMediaToolHandler,
@@ -350,6 +333,7 @@ class AkaneMemoryEngine:
         instance_context: InstanceContext | None = None,
         runtime_layout: InstanceRuntimeLayout | None = None,
         plugin_capability_source: Any = None,
+        extension_management_service: Any = None,
         stable_system_blocks_provider: Callable[[], tuple[str, ...]] | None = None,
         qq_channel_config: QQChannelRuntimeConfig | None = None,
         capability_offer_source: Any = None,
@@ -390,6 +374,7 @@ class AkaneMemoryEngine:
             engine_dir=self.base_dir,
         )
         self.plugin_capability_source = plugin_capability_source
+        self.extension_management_service = extension_management_service
         self.stable_system_blocks_provider = stable_system_blocks_provider
         self.qq_channel_config = qq_channel_config
         self.capability_offer_source = capability_offer_source
@@ -464,10 +449,6 @@ class AkaneMemoryEngine:
             public_path_builder=self.gift_service._build_public_path,
         )
         self.persona_card_service = PersonaCardService(store=self.store)
-        self.task_workspace_service = TaskWorkspaceService(
-            store=self.store,
-            timeline_event_recorder=self._record_task_workspace_trace,
-        )
         self.local_media_executor = self._create_local_media_executor()
         self.generated_file_service = GeneratedFileService(
             base_dir=generated_workspace_dir,
@@ -489,7 +470,6 @@ class AkaneMemoryEngine:
             background_tasks=self.background_tasks,
         )
         self.gift_assets = self.gift_service
-        self.npc_runtime = GenericNPCRuntime(self.base_dir / "generic_npc_memory_v01", self.llm)
         sticker_assets_dir = (
             Path(getattr(resource_manifest, "assets_dir"))
             if resource_manifest is not None and getattr(resource_manifest, "assets_dir", None)
@@ -552,16 +532,6 @@ class AkaneMemoryEngine:
         else:
             self.retrieval_service = None
             self.compaction_service = None
-        self.task_worker_service = TaskWorkerService(
-            llm=self.llm,
-            task_workspace_service=self.task_workspace_service,
-            background_tasks=self.background_tasks,
-            tool_handlers_provider=lambda: getattr(self, "tool_handlers", {}) or {},
-            attachment_context_builder=self._build_task_worker_attachment_context,
-            generated_context_builder=self._build_task_worker_generated_context,
-            record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
-            engine_ref=self,  # M66-F: route worker tool calls through execute_tool_invocation
-        )
         from .mcp_host_manager import McpHostManager, McpManagementService
 
         self.mcp_host_manager = McpHostManager()
@@ -610,7 +580,6 @@ class AkaneMemoryEngine:
             self.vision_service.reset()
         if self.desktop_screen_vision is not None:
             self.desktop_screen_vision.reset()
-        self.npc_runtime.reset()
 
     def reload_model_services(
         self,
@@ -791,6 +760,15 @@ class AkaneMemoryEngine:
         def remaining(*, cap: float | None = None) -> float:
             value = max(0.0, deadline - time.monotonic())
             return min(value, cap) if cap is not None else value
+
+        browser_handler = (getattr(self, "tool_handlers", {}) or {}).get("browser_page")
+        browser_close = getattr(browser_handler, "close", None)
+        if callable(browser_close):
+            try:
+                if browser_close(timeout=remaining(cap=5.0)) is False:
+                    failures.append("browser_page_close_failed")
+            except Exception:
+                failures.append("browser_page_close_failed")
 
         mcp_host_manager = getattr(self, "mcp_host_manager", None)
         if mcp_host_manager is not None:
@@ -1743,30 +1721,6 @@ class AkaneMemoryEngine:
             logger.warning("memcore generated workspace cleanup failed: %s", exc)
             return {"ok": False, "status": "failed", "reason": str(exc)}
 
-    def _record_task_workspace_trace(
-        self,
-        *,
-        task: dict[str, Any],
-        event: dict[str, Any],
-    ) -> dict[str, Any]:
-        manager = self._memcore_manager_if_enabled()
-        if manager is None:
-            return {"ok": True, "status": "skipped", "reason": "memcore_disabled"}
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
-        character_pack_id = str(metadata.get("character_pack_id") or delivery.get("character_pack_id") or "").strip()
-        try:
-            return manager.record_task_event(
-                task=task,
-                event=event,
-                profile_user_id=str(task.get("profile_user_id") or ""),
-                session_id=str(task.get("session_id") or ""),
-                character_pack_id=character_pack_id,
-            )
-        except Exception as exc:
-            logger.warning("memcore task workspace trace failed: %s", exc)
-            return {"ok": False, "status": "failed", "reason": str(exc)}
-
     def _schedule_memcore_compaction(
         self,
         *,
@@ -2328,52 +2282,7 @@ class AkaneMemoryEngine:
                     client_mode="memory",
                 )
             )
-        persona_service = self._get_persona_card_service() if not character_pack_id else None
-        if persona_service is not None and profile_user_id and session_id:
-            try:
-                contexts.append(
-                    persona_service.build_prompt_context(
-                        profile_user_id=profile_user_id,
-                        session_id=session_id,
-                        visible_limit=5,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("memory compaction persona context failed: %s", exc)
         return self._merge_prompt_persona_contexts(*contexts)
-
-    def _get_task_workspace_service(self) -> TaskWorkspaceService | None:
-        service = getattr(self, "task_workspace_service", None)
-        if service is not None:
-            return service
-        store = getattr(self, "store", None)
-        if store is None:
-            return None
-        service = TaskWorkspaceService(
-            store=store,
-            timeline_event_recorder=self._record_task_workspace_trace,
-        )
-        self.task_workspace_service = service
-        return service
-
-    def _get_task_worker_service(self) -> TaskWorkerService | None:
-        service = getattr(self, "task_worker_service", None)
-        if service is not None:
-            return service
-        task_workspace_service = self._get_task_workspace_service()
-        if task_workspace_service is None:
-            return None
-        service = TaskWorkerService(
-            llm=self.llm,
-            task_workspace_service=task_workspace_service,
-            background_tasks=getattr(self, "background_tasks", None),
-            tool_handlers_provider=lambda: getattr(self, "tool_handlers", {}) or {},
-            attachment_context_builder=self._build_task_worker_attachment_context,
-            generated_context_builder=self._build_task_worker_generated_context,
-            record_tool_artifacts=self._record_tool_result_artifacts_in_task_workspace,
-        )
-        self.task_worker_service = service
-        return service
 
     def _get_attachment_inbox_service(self) -> AttachmentInboxService | None:
         service = getattr(self, "attachment_inbox_service", None)
@@ -3514,6 +3423,22 @@ class AkaneMemoryEngine:
                 reply_attachment_count = max(0, int(reply_raw.get("attachment_count") or 0))
             except (TypeError, ValueError):
                 reply_attachment_count = 0
+            reply_mentions: list[dict[str, Any]] = []
+            seen_reply_mentions: set[str] = set()
+            for item in list(reply_raw.get("mentions") or [])[:16]:
+                if not isinstance(item, dict):
+                    continue
+                mention_id = str(item.get("actor_id") or "").strip()[:160]
+                if not mention_id or mention_id in seen_reply_mentions:
+                    continue
+                seen_reply_mentions.add(mention_id)
+                reply_mentions.append(
+                    {
+                        "actor_id": mention_id,
+                        "display_name": str(item.get("display_name") or "").strip()[:160],
+                        "is_assistant": bool(item.get("is_assistant")),
+                    }
+                )
             if reply_actor_id or reply_message_id or reply_excerpt:
                 reply_reference = {
                     "actor_id": reply_actor_id,
@@ -3529,6 +3454,8 @@ class AkaneMemoryEngine:
                     reply_reference["conversation_id"] = reply_conversation_id
                 if reply_attachment_count > 0:
                     reply_reference["attachment_count"] = reply_attachment_count
+                if reply_mentions:
+                    reply_reference["mentions"] = reply_mentions
         primary_raw = raw.get("primary_target")
         primary = dict(primary_raw) if isinstance(primary_raw, dict) else {}
         target_id = str(primary.get("actor_id") or "").strip()[:160]
@@ -3609,6 +3536,24 @@ class AkaneMemoryEngine:
                     ).strip(),
                     "text": str(raw_node.get("text") or ""),
                 }
+                mentions: list[dict[str, Any]] = []
+                seen_mentions: set[str] = set()
+                for raw_mention in list(raw_node.get("mentions") or [])[:16]:
+                    if not isinstance(raw_mention, dict):
+                        continue
+                    mention_id = str(raw_mention.get("actor_id") or "").strip()[:160]
+                    if not mention_id or mention_id in seen_mentions:
+                        continue
+                    seen_mentions.add(mention_id)
+                    mentions.append(
+                        {
+                            "actor_id": mention_id,
+                            "display_name": str(raw_mention.get("display_name") or "").strip()[:160],
+                            "is_assistant": bool(raw_mention.get("is_assistant")),
+                        }
+                    )
+                if mentions:
+                    node["mentions"] = mentions
                 message_id = str(raw_node.get("message_id") or "").strip()
                 if timestamp > 0:
                     node["timestamp"] = timestamp
@@ -3707,6 +3652,7 @@ class AkaneMemoryEngine:
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
         profile_user_id = str(payload.get("real_user_id") or session_id)
         user_message = str(payload.get("message") or "").strip()
+        memory_user_message = str(payload.get("memory_message") or user_message).strip()
         if not user_message:
             return {
                 "ok": False,
@@ -3736,14 +3682,17 @@ class AkaneMemoryEngine:
             session_id=session_id,
             character_pack_id=turn_character_pack_id,
             role="user",
-            content=user_message,
+            content=memory_user_message,
             timestamp=now_ts,
             date_label=date_label,
             time_of_day=time_of_day,
-            semantic_tags=extract_semantic_tags(user_message),
+            semantic_tags=extract_semantic_tags(memory_user_message),
             memory_metadata=memory_metadata,
             index_in_vector=False,
         )
+        source_message_id = str(payload.get("source_message_id") or "").strip()
+        if source_message_id:
+            user_record["source_message_id"] = source_message_id
         target_actor_id, target_actor_display_name = self._apply_message_addressing(
             user_record,
             addressing,
@@ -4156,6 +4105,7 @@ class AkaneMemoryEngine:
             ),
         )
         user_message = str(payload.get("message") or "").strip()
+        memory_user_message = str(payload.get("memory_message") or user_message).strip()
         now_ts = int(payload.get("timestamp") or time.time())
         payload = self._prepare_care_context_for_turn(
             payload,
@@ -4187,14 +4137,6 @@ class AkaneMemoryEngine:
         transient_user_turn = self._is_transient_user_turn(payload) or externally_managed_memcore_turn
         persist_assistant_turn = self._should_persist_assistant_turn(payload) and not externally_managed_memcore_turn
         external_event_turn = plugin_external_event is not None
-
-        if not speculative_voice_candidate:
-            self.consume_due_reminders(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                now_ts=now_ts,
-                current_visual_payload=payload.get("current_visual"),
-            )
 
         if transient_user_turn:
             user_record = self._build_transient_user_record(
@@ -4232,14 +4174,17 @@ class AkaneMemoryEngine:
                 session_id=session_id,
                 character_pack_id=turn_character_pack_id,
                 role=(f"event.{plugin_external_event['event_type']}" if plugin_external_event is not None else "user"),
-                content=user_message,
+                content=memory_user_message,
                 timestamp=now_ts,
                 date_label=date_label,
                 time_of_day=time_of_day,
-                semantic_tags=extract_semantic_tags(user_message),
+                semantic_tags=extract_semantic_tags(memory_user_message),
                 memory_metadata=user_memory_metadata or None,
                 source_id=user_memory_source_id,
             )
+            source_message_id = str(payload.get("source_message_id") or "").strip()
+            if source_message_id:
+                user_record["source_message_id"] = source_message_id
             if not self._memcore_owns_compaction():
                 self._schedule_summary_cycle(
                     profile_user_id=profile_user_id,
@@ -7807,10 +7752,10 @@ class AkaneMemoryEngine:
 
         batch_events: list[dict[str, Any]] = []
         followup_start = len(tool_followups)
-        history_items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]] = []
+        history_items: list[tuple[dict[str, Any], ToolExecutionResult, str]] = []
         for call, result in zip(calls, executed):
             assert result is not None
-            current_events, shaped_followup, workspace_followup = self._record_tool_round_result(
+            current_events, shaped_followup = self._record_tool_round_result(
                 tool_call=call,
                 tool_result=result,
                 tool_results=tool_results,
@@ -7824,7 +7769,7 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
             )
             batch_events.extend(current_events)
-            history_items.append((call, result, shaped_followup, workspace_followup))
+            history_items.append((call, result, shaped_followup))
         trace_source_ids, trace_record_failure = self._record_memcore_tool_batch(
             items=history_items,
             profile_user_id=profile_user_id,
@@ -7837,7 +7782,7 @@ class AkaneMemoryEngine:
         )
         batch_model_images = self._merge_tool_model_image_inputs(
             [],
-            [result for _call, result, _shaped, _workspace in history_items],
+            [result for _call, result, _shaped in history_items],
         )
         chat_model_override = str((request_context or {}).get("chat_model_override") or "").strip()
         # The next request may be sent to a different provider when this batch
@@ -7926,10 +7871,8 @@ class AkaneMemoryEngine:
         if tool_projection.get("ok") and tool_projection.get("status") == "projected" and not has_native_calls:
             del tool_followups[followup_start:]
         if not tool_projection.get("ok") and has_native_calls:
-            for _call, result, shaped_followup, workspace_followup in history_items:
-                feedback = "\n\n".join(
-                    part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
-                )
+            for _call, result, shaped_followup in history_items:
+                feedback = str(shaped_followup or "").strip()
                 if feedback:
                     tool_followups.append(
                         "【本轮真实工具结果】\n"
@@ -7964,17 +7907,10 @@ class AkaneMemoryEngine:
         session_id: str,
         character_pack_id: str,
         now_ts: int,
-    ) -> tuple[list[dict[str, Any]], str, str]:
+    ) -> tuple[list[dict[str, Any]], str]:
 
         tool_results.append(tool_result)
         current_events = list(tool_result.stream_events)
-        workspace_events, workspace_followup = self._record_tool_result_artifacts_in_task_workspace(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            tool_result=tool_result,
-            now_ts=now_ts,
-        )
-        current_events.extend(workspace_events)
         tool_events.extend(current_events)
         result_followup = tool_orchestration_engine.append_structured_artifact_receipts(
             tool_result.followup_context,
@@ -7990,8 +7926,6 @@ class AkaneMemoryEngine:
         )
         if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}:
             tool_followups.append(f"第 {len(tool_results)} 次工具（{tool_result.tool_type}）结果：\n{shaped_followup}")
-            if workspace_followup:
-                tool_followups.append(workspace_followup)
         current_tool_turns = list(tool_result.raw_turns)
         tool_turns.extend(current_tool_turns)
         for tool_turn in current_tool_turns:
@@ -8016,7 +7950,7 @@ class AkaneMemoryEngine:
                     character_pack_id=character_pack_id,
                 )
             recent_raw_for_turn.append(tool_record)
-        return current_events, shaped_followup, workspace_followup
+        return current_events, shaped_followup
 
     @staticmethod
     def _merge_model_image_inputs(
@@ -8061,7 +7995,7 @@ class AkaneMemoryEngine:
         self,
         *,
         tool_history_turns: list[dict[str, Any]] | None,
-        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str]],
         trace_source_ids: list[str],
         media_source_ids: list[str] | None = None,
         model_image_inputs: list[dict[str, Any]] | None = None,
@@ -8078,7 +8012,7 @@ class AkaneMemoryEngine:
             return {"ok": True, "status": "skipped", "reason": "history_target_missing"}
         sources = {
             str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
-            for tool_call, _result, _shaped, _workspace in items
+            for tool_call, _result, _shaped in items
             if str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
         }
         media_ids = {
@@ -8086,7 +8020,7 @@ class AkaneMemoryEngine:
         }
         has_legacy_calls = any(
             str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip() not in {NATIVE_ANTHROPIC, NATIVE_OPENAI}
-            for tool_call, _result, _shaped, _workspace in items
+            for tool_call, _result, _shaped in items
         )
         if sources and has_legacy_calls:
             return {"ok": False, "status": "failed", "reason": "mixed_tool_history_modes"}
@@ -8376,7 +8310,7 @@ class AkaneMemoryEngine:
     def _record_memcore_tool_batch(
         self,
         *,
-        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str]],
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
@@ -8390,7 +8324,7 @@ class AkaneMemoryEngine:
             return [], None
         exchanges: list[dict[str, Any]] = []
         trace_keys: list[str] = []
-        for tool_call, tool_result, shaped_followup, workspace_followup in items:
+        for tool_call, tool_result, shaped_followup in items:
             tool_type = str(tool_call.get("type") or tool_result.tool_type or "unknown").strip() or "unknown"
             call_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
             if not call_id:
@@ -8402,9 +8336,7 @@ class AkaneMemoryEngine:
                 if trace_key in recorded_tool_call_ids:
                     continue
             trace_keys.append(trace_key)
-            feedback = "\n\n".join(
-                part for part in [str(shaped_followup or "").strip(), str(workspace_followup or "").strip()] if part
-            )
+            feedback = str(shaped_followup or "").strip()
             stored_result: Any = self._sanitize_tool_trace_text(feedback)
             trace_receipt = getattr(tool_result, "trace_receipt", None)
             retention_anchor = (
@@ -8628,76 +8560,6 @@ class AkaneMemoryEngine:
             ):
                 return status
         return "error" if self._tool_result_is_error(tool_result) else "success"
-
-    def _record_tool_result_artifacts_in_task_workspace(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        tool_result: ToolExecutionResult,
-        now_ts: int,
-        task_id: str = "",
-    ) -> tuple[list[dict[str, Any]], str]:
-        return task_workspace_engine.record_tool_result_artifacts_in_task_workspace(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            tool_result=tool_result,
-            now_ts=now_ts,
-            task_id=task_id,
-        )
-
-    def _extract_task_workspace_artifacts_from_tool_events(
-        self,
-        *,
-        tool_type: str,
-        stream_events: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        return task_workspace_engine.extract_task_workspace_artifacts_from_tool_events(
-            tool_type=tool_type,
-            stream_events=stream_events,
-        )
-
-    def _task_workspace_artifact_from_generated_file(
-        self,
-        *,
-        generated: Any,
-        tool_type: str,
-        send_to_user: bool,
-    ) -> dict[str, Any] | None:
-        return task_workspace_engine.task_workspace_artifact_from_generated_file(
-            generated=generated,
-            tool_type=tool_type,
-            send_to_user=send_to_user,
-        )
-
-    def _task_workspace_artifact_from_attachment_item(
-        self,
-        *,
-        item: Any,
-        tool_type: str,
-    ) -> dict[str, Any] | None:
-        return task_workspace_engine.task_workspace_artifact_from_attachment_item(
-            item=item,
-            tool_type=tool_type,
-        )
-
-    def _merge_task_workspace_artifacts(
-        self,
-        *,
-        existing: list[dict[str, Any]],
-        additions: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        return task_workspace_engine.merge_task_workspace_artifacts(
-            existing=existing,
-            additions=additions,
-        )
-
-    def _task_workspace_artifact_identity(self, artifact: dict[str, Any]) -> str:
-        return task_workspace_engine.task_workspace_artifact_identity(artifact)
-
-    def _compact_task_workspace_for_event(self, task: dict[str, Any]) -> dict[str, Any]:
-        return task_workspace_engine.compact_task_workspace_for_event(task)
 
     def _build_multi_tool_followup_context(
         self,
@@ -8987,10 +8849,6 @@ class AkaneMemoryEngine:
 
         return build_builtin_tool_handlers(
             store=self.store,
-            npc_runtime=self.npc_runtime,
-            gift_service=self.gift_service,
-            artifact_service=self.artifact_service,
-            persona_card_service=self.persona_card_service,
             sticker_assets=self.sticker_assets,
             capability_offer_source=self.capability_offer_source,
             capability_config_base_dir=self.capability_config_base_dir,
@@ -9002,22 +8860,18 @@ class AkaneMemoryEngine:
             ),
             attachment_service=self._get_attachment_inbox_service(),
             image_material_resolver=self._get_image_material_resolver(),
-            task_workspace_service=self._get_task_workspace_service(),
             project_workspace_service=self._get_project_workspace_service(),
             workspace_file_service=self._get_workspace_file_service(),
             attachment_ingest_service=self._get_attachment_ingest_service(),
             generated_file_service=self._get_generated_file_service(),
             image_generation_service=self._get_image_generation_service(),
             cover_song_service=self._get_cover_song_service(),
-            task_worker_service=self._get_task_worker_service(),
             retrieve_fn=self._execute_retrieve_memory_tool,
-            describe_scene=self._describe_tool_scene_context,
-            build_npc_followup_context=self._build_npc_followup_context,
-            observe_gift_image_fn=self.observe_gift_image_once,
             skill_registry=self._get_skill_registry(),
             execution_provider=self._build_execution_provider(),
             approval_store=self._get_approval_store(),
             mcp_management_service=getattr(self, "mcp_management_service", None),
+            extension_management_service=getattr(self, "extension_management_service", None),
         )
 
     def bind_qq_delivery_port(self, delivery_port: Any | None) -> None:
@@ -9404,28 +9258,6 @@ class AkaneMemoryEngine:
     def _format_activity_time(self, value: Any) -> str:
         return desktop_context_engine.format_activity_time(value)
 
-    def _build_task_worker_attachment_context(self, profile_user_id: str, session_id: str) -> str:
-        service = self._get_attachment_inbox_service()
-        if service is None:
-            return ""
-        return service.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            detail_limit=8,
-            index_limit=24,
-            pending_limit=8,
-        )
-
-    def _build_task_worker_generated_context(self, profile_user_id: str, session_id: str) -> str:
-        service = self._get_generated_file_service()
-        if service is None:
-            return ""
-        return service.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=8,
-        )
-
     def _normalize_tool_call(
         self,
         value: Any,
@@ -9523,104 +9355,6 @@ class AkaneMemoryEngine:
             call=call,
             context=context,
         )
-
-    def _describe_tool_scene_context(self, visual_payload: dict[str, Any]) -> str:
-        return visual_context_engine.describe_tool_scene_context(self, visual_payload)
-
-    def _normalize_npc_tool_call(self, value: Any) -> dict[str, str] | None:
-        handlers = getattr(self, "tool_handlers", {}) or {}
-        handler = handlers.get("call_npc")
-        if handler is not None:
-            normalized = handler.normalize_call(value)
-            return normalized if isinstance(normalized, dict) else None
-
-        if not isinstance(value, dict):
-            return None
-
-        call_type = str(value.get("type") or "").strip()
-        if call_type != "call_npc":
-            return None
-
-        query = str(value.get("query") or value.get("question") or value.get("prompt") or "").strip()
-        if not query:
-            return None
-
-        npc_name = str(value.get("npc_name") or value.get("name") or "路人").strip() or "路人"
-        npc_role = str(value.get("npc_role") or value.get("role") or "通用NPC").strip() or "通用NPC"
-        return {
-            "type": "call_npc",
-            "npc_name": npc_name[:24],
-            "npc_role": npc_role[:40],
-            "query": query[:120],
-        }
-
-    def _build_npc_followup_context(self, npc_turn: dict[str, Any]) -> str:
-        speaker = str(npc_turn.get("speaker") or "NPC").strip() or "NPC"
-        speech = str(npc_turn.get("speech") or "").strip()
-        if not speech:
-            return ""
-        return f"场景里刚刚有一位 NPC 说了话：\n{speaker}: {speech}\n\n请你在知道这句 NPC 台词的前提下继续自然回应。"
-
-    def consume_due_reminders(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        now_ts: int | None = None,
-        current_visual_payload: Any = None,
-        limit: int = 3,
-    ) -> list[dict[str, Any]]:
-        return reminder_engine.consume_due_reminders(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            now_ts=now_ts,
-            current_visual_payload=current_visual_payload,
-            limit=limit,
-        )
-
-    def _build_reminder_notification_payload(
-        self,
-        *,
-        reminder: dict[str, Any],
-        visual_payload: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        return reminder_engine.build_reminder_notification_payload(
-            self,
-            reminder=reminder,
-            visual_payload=visual_payload,
-        )
-
-    def _generate_reminder_notification_speech(
-        self,
-        *,
-        reminder: dict[str, Any],
-        visual_payload: dict[str, Any],
-    ) -> str:
-        return reminder_engine.generate_reminder_notification_speech(
-            self,
-            reminder=reminder,
-            visual_payload=visual_payload,
-        )
-
-    def _persist_due_reminder_notification(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        notification: dict[str, Any],
-        now_ts: int,
-    ) -> None:
-        reminder_engine.persist_due_reminder_notification(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            notification=notification,
-            now_ts=now_ts,
-        )
-
-    def _format_reminder_notification(self, reminder: dict[str, Any]) -> str:
-        return reminder_engine.format_reminder_notification(reminder)
 
     def _build_current_visual_context(
         self,

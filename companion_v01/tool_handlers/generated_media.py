@@ -1686,16 +1686,7 @@ class SendStickerToolHandler(BaseToolHandler):
             return None
         if str(value.get("type") or "").strip() != self.tool_type:
             return None
-        target = (
-            value.get("sticker")
-            if value.get("sticker") is not None
-            else value.get("sticker_id")
-            if value.get("sticker_id") is not None
-            else value.get("name")
-            if value.get("name") is not None
-            else value.get("label")
-        )
-        sticker = str(target or "").strip()
+        sticker = str(value.get("sticker") or "").strip()
         if not sticker:
             return None
         return {
@@ -2037,9 +2028,8 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
 class ManageGeneratedFileToolHandler(BaseToolHandler):
     tool_type = "manage_generated_file"
 
-    def __init__(self, *, generated_file_service, task_workspace_service=None) -> None:
+    def __init__(self, *, generated_file_service) -> None:
         self.generated_file_service = generated_file_service
-        self.task_workspace_service = task_workspace_service
 
     def build_prompt_instruction(self) -> str:
         return (
@@ -2089,7 +2079,6 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
         events = []
         managed = [dict(item) for item in list(result.get("managed") or []) if isinstance(item, dict)]
         failures = [dict(item) for item in list(result.get("failures") or []) if isinstance(item, dict)]
-        cleaned_tasks: list[dict[str, Any]] = []
         if managed:
             events.append(
                 {
@@ -2099,28 +2088,6 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
                     "unresolved": list(result.get("unresolved") or []),
                 }
             )
-            if self.task_workspace_service is not None:
-                artifact_ids = {
-                    str(value or "").strip()
-                    for item in managed
-                    for value in (item.get("generated_id"), item.get("generated_handle"))
-                    if str(value or "").strip()
-                }
-                cleaned_tasks = self.task_workspace_service.cleanup_tasks_for_artifacts(
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    artifact_ids=artifact_ids,
-                    reason=str(call.get("reason") or "").strip() or "关联生成文件已退出当前工作台。",
-                    timestamp=context.now_ts,
-                )
-                if cleaned_tasks:
-                    events.append(
-                        {
-                            "type": "task_workspaces_cleaned",
-                            "task_ids": [str(task.get("task_id") or "") for task in cleaned_tasks],
-                            "reason": "generated_file_cleared",
-                        }
-                    )
         if failures:
             events.append(
                 {
@@ -2130,11 +2097,6 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
                 }
             )
         followup_context = str(result.get("followup_context") or "") if isinstance(result, dict) else ""
-        if cleaned_tasks:
-            followup_context += (
-                f"\n系统同时关闭了 {len(cleaned_tasks)} 个依赖这些生成文件的未收尾任务白板；"
-                "这些旧任务不再是当前待办，不要主动继续汇报或追问。"
-            )
         return ToolExecutionResult(
             tool_type=self.tool_type,
             stream_events=events,

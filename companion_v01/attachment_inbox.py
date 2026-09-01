@@ -324,7 +324,7 @@ class AttachmentInboxService:
         if overflow:
             lines.append(f"此外还有 {overflow} 个较早材料未展开。")
         lines.append(
-            "需要收起暂时不分析的材料、重新指定重点材料，或切换对比对象时，使用 sync_attachment_workspace 整理当前材料工作台；"
+            "需要正文时使用 read_attachment_section；需要查看图片时使用 load_material；"
             "聊完或用户说不用了，可用 clear_attachment_focus 清理。"
         )
         return "\n".join(lines)

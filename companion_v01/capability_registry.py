@@ -12,7 +12,7 @@ from memcore import build_native_memory_tool_specs
 
 from .client_protocol import ClientMode
 from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
-from .onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES
+from .onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES, MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS
 
 
 DOCUMENT_ATTACHMENT_FORMATS = {
@@ -141,7 +141,6 @@ def _clarify_explicit_kind_contract(schema: dict[str, Any]) -> dict[str, Any]:
 _RETRIEVE_MEMORY_SCHEMA = _clarify_explicit_kind_contract(_RETRIEVE_MEMORY_SCHEMA)
 
 COMMON_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D, ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
-WEB_SCENE_CLIENT_MODES = (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D)
 CHAT_FILE_CLIENT_MODES = (ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET)
 
 COMMON_TOOL_NAMES = (
@@ -153,12 +152,6 @@ COMMON_TOOL_NAMES = (
     "load_mcp",
     "invoke_mcp",
     "load_character_context",
-    "set_reminder",
-    "list_reminders",
-    "cancel_reminder",
-    "manage_persona",
-    "manage_task_workspace",
-    "delegate_task",
 )
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
@@ -173,26 +166,18 @@ EXEC_TOOL_NAMES = (
     "manage_skill",
     "mcp_manage",
 )
+EXTENSION_MANAGEMENT_TOOL_NAMES = ("manage_extension",)
 DESKTOP_BROWSER_TOOL_NAMES = ("browser_page",)
 DESKTOP_MUSIC_REQUEST_TOOL_NAMES = ("open_music_search",)
 DESKTOP_WORKSPACE_TOOL_NAMES = (
     "list_workspace",
     "read_workspace",
-    "focus_workspace",
     "register_workspace_items",
-)
-
-WEB_SCENE_TOOL_NAMES = (
-    "call_npc",
-    "check_inventory",
-    "manage_gift",
-    "manage_artifact",
 )
 
 REMOTE_MEDIA_TOOL_NAMES = ("fetch_media_from_url",)
 
 ATTACHMENT_WORKSPACE_TOOL_NAMES = (
-    "sync_attachment_workspace",
     "inspect_attachment",
     "retry_attachment",
     "clear_attachment_focus",
@@ -471,273 +456,12 @@ LOAD_CHARACTER_CONTEXT_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=32768,
 )
 
-SET_REMINDER_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="set_reminder",
-    display_name="Set reminder",
-    description="Create a reminder to notify the user at a specified time. Use only when the user explicitly asks to be reminded later.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "content": {"type": "string", "maxLength": 120, "description": "What to remind the user about."},
-            "time_text": {"type": "string", "maxLength": 60, "description": "Original time expression from the user."},
-            "date_label": {"type": "string", "maxLength": 10, "description": "YYYY-MM-DD date, if known."},
-            "time_of_day": {"type": "string", "enum": ["morning", "afternoon", "night", "midnight"]},
-            "hour": {"type": "integer", "minimum": 0, "maximum": 23, "description": "Hour (0-23)."},
-            "minute": {"type": "integer", "minimum": 0, "maximum": 59, "description": "Minute (0-59)."},
-            "offset_minutes": {"type": "integer", "minimum": 1, "description": "Relative offset in minutes from now."},
-        },
-        "required": ["content"],
-    },
-    risk="low",
-    confirm="never",
-    effects=("reminder_create",),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=4096,
-)
-
-LIST_REMINDERS_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="list_reminders",
-    display_name="List reminders",
-    description="List the user's reminders. Use it when the user asks what reminders they currently have.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "status": {"type": "string", "enum": ["pending", "done", "all"], "description": "Which reminders to list. Default pending."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum reminders to return. Default 5."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=(),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="read_only",
-    max_result_bytes=8192,
-)
-
-CANCEL_REMINDER_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="cancel_reminder",
-    display_name="Cancel reminder",
-    description="Cancel an existing pending reminder. Use only when the user explicitly asks to cancel a specific reminder.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "reminder_id": {"type": "string", "description": "Exact reminder ID, if known."},
-            "target_text": {"type": "string", "maxLength": 80, "description": "Text hint identifying the reminder to cancel."},
-            "target_index": {"type": "integer", "description": "1-based index from list_reminders output."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=("reminder_cancel",),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=4096,
-)
-CALL_NPC_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="call_npc",
-    display_name="Call NPC",
-    description="Interact with an NPC in the web scene world. Sends a message or action to the specified NPC.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "npc_id": {"type": "string", "description": "NPC identifier."},
-            "message": {"type": "string", "maxLength": 500, "description": "Message or action to send to the NPC."},
-            "action": {"type": "string", "description": "Optional action type."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=("npc_interaction",),
-    visible_in=("web",),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-
-CHECK_INVENTORY_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="check_inventory",
-    display_name="Check inventory",
-    description="Check gift inventory. Use it when the user asks about gifts on hand or in the gift box.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "scope": {"type": "string", "enum": ["pending_recent", "pending_all", "kept", "internalized"], "description": "Inventory scope. Prefer pending_recent for what's on hand."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum items. Default 3 for pending_recent, else 5."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=(),
-    visible_in=("web",),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="read_only",
-    max_result_bytes=8192,
-)
-
-MANAGE_GIFT_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="manage_gift",
-    display_name="Manage gift",
-    description="Manage gifts in the scene world: accept, keep, internalize, or return a gift item.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": ["accept", "keep", "internalize", "return", "inspect"], "description": "Gift action."},
-            "gift_id": {"type": "string", "description": "Gift identifier."},
-            "reason": {"type": "string", "maxLength": 200, "description": "Optional reason or reaction."},
-        },
-        "required": ["action"],
-    },
-    risk="low",
-    confirm="never",
-    effects=("gift_state_change",),
-    visible_in=("web",),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=4096,
-)
-MANAGE_ARTIFACT_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="manage_artifact",
-    display_name="Manage artifact",
-    description="Manage artifacts in the scene world: inspect, equip, use, or store an artifact item.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": ["inspect", "equip", "use", "store", "list"], "description": "Artifact action."},
-            "artifact_id": {"type": "string", "description": "Artifact identifier."},
-            "reason": {"type": "string", "maxLength": 200, "description": "Optional reason."},
-        },
-        "required": ["action"],
-    },
-    risk="low",
-    confirm="never",
-    effects=("artifact_state_change",),
-    visible_in=("web",),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=4096,
-)
-
-MANAGE_PERSONA_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="manage_persona",
-    display_name="Manage persona",
-    description=(
-        "Create, update, or inspect expression facets (persona cards) that shape how Akane communicates. "
-        "Use to remember or adjust tone, style, nickname, or recurring expression preferences."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": ["create", "update", "inspect", "list", "delete", "activate", "deactivate"], "description": "Persona action."},
-            "persona_id": {"type": "string", "maxLength": 80, "description": "Persona identifier; omit for create."},
-            "name": {"type": "string", "maxLength": 80, "description": "Persona name for create/update."},
-            "description": {"type": "string", "maxLength": 500, "description": "Persona description or instruction."},
-            "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Optional tags."},
-        },
-        "required": ["action"],
-    },
-    risk="medium",
-    confirm="never",
-    effects=("persona_change",),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-MANAGE_TASK_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="manage_task_workspace",
-    display_name="Manage task workspace",
-    description=(
-        "Create or update a task whiteboard to track multi-step work: record goals, steps, "
-        "artifacts, and progress. Use only for tasks that genuinely need tracking."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": ["create", "update_steps", "add_artifact", "ask_user", "complete", "cleanup", "inspect"], "description": "Task action."},
-            "task_id": {"type": "string", "maxLength": 96, "description": "Existing task ID; omit to act on the most recent open task."},
-            "goal": {"type": "string", "maxLength": 400, "description": "Task goal for create action."},
-            "steps": {"type": "array", "items": {"type": "object"}, "description": "Step list for update_steps."},
-            "artifacts": {"type": "array", "items": {"type": "object"}, "description": "Artifact list for add_artifact."},
-            "question": {"type": "string", "maxLength": 300, "description": "Question for ask_user action."},
-            "reason": {"type": "string", "maxLength": 300, "description": "Optional reason or note."},
-        },
-        "required": ["action"],
-    },
-    risk="medium",
-    confirm="never",
-    effects=("task_workspace_change",),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-
-DELEGATE_TASK_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="delegate_task",
-    display_name="Delegate task",
-    description="Delegate a sub-task to a background worker agent. Use for work that runs independently and reports back.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "task": {"type": "string", "maxLength": 500, "description": "Task description for the background worker."},
-            "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "Allowed tool names for the worker."},
-            "context": {"type": "string", "maxLength": 1000, "description": "Additional context for the worker."},
-            "task_id": {"type": "string", "maxLength": 80, "description": "Optional task workspace ID to update on completion."},
-        },
-        "required": ["task"],
-    },
-    risk="medium",
-    confirm="never",
-    effects=("background_task_spawn",),
-    visible_in=("desktop", "qq", "web"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
 BROWSER_PAGE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="browser_page",
     display_name="Browser page",
     description=(
         "Open and operate the Akane-managed visible browser window: navigate to a public page, "
-        "read its text, take an accessibility snapshot, scroll, list visible elements, or click/fill/press "
+        "read its text, take an accessibility snapshot or viewport screenshot, scroll, list visible elements, or click/fill/press "
         "authorized controls. Does not log in, download, upload, or access private/intranet content. "
         "Returned page state is evidence of what was observed, not proof that an action changed the page."
     ),
@@ -747,10 +471,10 @@ BROWSER_PAGE_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"],
+                "enum": ["navigate", "read_text", "current", "snapshot", "screenshot", "scroll", "elements", "click", "fill", "press"],
                 "description": (
                     "navigate=open a public URL; read_text=extract current page text; current=page status; "
-                    "snapshot=accessibility snapshot with element refs; scroll=scroll current page; "
+                    "snapshot=accessibility snapshot with element refs; screenshot=capture the visible viewport as a generated PNG; scroll=scroll current page; "
                     "elements=visible link/button/input candidates; click/fill/press=authorized controls."
                 ),
             },
@@ -774,7 +498,7 @@ BROWSER_PAGE_TOOL_SPEC = CapabilityToolSpec(
     risk="medium",
     confirm="first_time",
     effects=("browser_action",),
-    visible_in=("desktop",),
+    visible_in=("desktop", "qq"),
     spec_version="1.1.0",
     schema_version=1,
     execution_class="sync",
@@ -837,33 +561,6 @@ FETCH_MEDIA_FROM_URL_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=8192,
 )
 
-SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="sync_attachment_workspace",
-    display_name="Sync attachment workspace",
-    description=(
-        "Reorganize the attachment workspace: keep the final set of materials to focus on and collapse the rest. "
-        "Submit the final list once; do not toggle items one by one."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "focus_targets": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 30, "description": "Final workspace list after reorg: ids / '第2张图' / descriptive names."},
-            "kind": {"type": "string", "enum": ["any", "image", "file", "document", "audio"], "description": "Optional kind filter. Default any."},
-            "reason": {"type": "string", "maxLength": 160, "description": "Why these materials are needed."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=("workspace_reorg",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="idempotent",
-    max_result_bytes=8192,
-)
 INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="inspect_attachment",
     display_name="Inspect attachment",
@@ -873,7 +570,7 @@ INSPECT_ATTACHMENT_TOOL_SPEC = CapabilityToolSpec(
         "details, pass the exact returned handle to load_material. "
         "In QQ groups, 'latest' is restricted to attachments explicitly bound to the current turn; "
         "use 'all' or an exact handle for historical materials. "
-        "To compare multiple materials, prefer sync_attachment_workspace."
+        "For multiple images, pass up to five exact handles to load_material."
     ),
     input_schema={
         "type": "object",
@@ -1052,31 +749,6 @@ READ_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     schema_version=1,
     execution_class="sync",
     idempotency="read_only",
-    max_result_bytes=65536,
-)
-
-FOCUS_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="focus_workspace",
-    display_name="Focus workspace",
-    description="Mark one or more workspace items as focused for the current session context.",
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": ["add", "set", "remove"], "description": "Add, replace, or remove focused workspace files. Default add."},
-            "targets": {"type": "array", "items": {"type": "string"}, "maxItems": 500, "description": "workspace:/ relative paths to focus. May be empty only with action=set to clear focus."},
-            "recursive": {"type": "boolean", "description": "Expand directory targets recursively. Default true."},
-        },
-        "required": [],
-    },
-    risk="low",
-    confirm="never",
-    effects=("workspace_focus",),
-    visible_in=("desktop",),
-    spec_version="1.1.0",
-    schema_version=1,
-    execution_class="sync",
-    idempotency="idempotent",
     max_result_bytes=65536,
 )
 
@@ -1456,22 +1128,25 @@ SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
 SEND_STICKER_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_sticker",
     display_name="Send sticker",
-    description="Send a static sticker in QQ chat when the atmosphere calls for it.",
+    description="Send one available static sticker in the current QQ conversation.",
     input_schema={
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "emotion": {"type": "string", "maxLength": 40, "description": "Emotion or mood for the sticker selection."},
-            "sticker_id": {"type": "string", "maxLength": 80, "description": "Optional specific sticker identifier."},
+            "sticker": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "Exact sticker id from the available sticker list in the current prompt.",
+            },
         },
-        "required": [],
+        "required": ["sticker"],
     },
     risk="low",
     confirm="never",
     effects=("sticker_delivery",),
     visible_in=("qq",),
-    spec_version="1.0.0",
-    schema_version=1,
+    spec_version="2.0.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=2048,
@@ -1487,6 +1162,8 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
         "Unambiguous current group, private peer, sender and current-message ids may be omitted. "
         "Ordinary participants are limited to the current conversation; cross-conversation actions and "
         "delete_msg require the configured owner. Credentials and account/group administration are not exposed. "
+        "For actions that take message_id, message_selector can resolve the current message, its quoted message, "
+        "or the Nth most recent successfully sent Bot message in this conversation. "
         "Pass the exact params object for the chosen action ({} for capabilities), and treat the returned "
         "ok/status/reason as authoritative instead of assuming delivery or success."
     ),
@@ -1504,6 +1181,25 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
                 "additionalProperties": True,
                 "description": "Exact OneBot request object for the chosen action; use {} for capabilities.",
             },
+            "message_selector": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": list(MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS),
+                        "description": "Resolve a real message_id from the current QQ conversation.",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64,
+                        "description": "For recent_bot_message only; 1 is the latest successful Bot message.",
+                    },
+                },
+                "required": ["kind"],
+                "description": "Optional host-side message reference; omit when params.message_id is explicit.",
+            },
         },
         "required": ["action", "params"],
     },
@@ -1511,8 +1207,8 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("qq_interaction",),
     visible_in=("qq",),
-    spec_version="1.1.0",
-    schema_version=1,
+    spec_version="1.2.0",
+    schema_version=2,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=512 * 1024,
@@ -2372,10 +2068,6 @@ def _has_deliverable_file(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_any_attachment or snapshot.has_generated_file
 
 
-def _is_web_scene(snapshot: CapabilitySnapshot) -> bool:
-    return snapshot.client_mode in {ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D}
-
-
 # ── M66-E: Server-local offer index ─────────────────────────────────────────
 # Replaces ToolReadinessGate for server-local tools. Every concrete handler is
 # registered. Handlers with a capability_status() probe are checked with TTL
@@ -2827,11 +2519,19 @@ class CapabilityRegistry:
                 recovery_hint="主人可在当前私聊或群聊发送 /shell on；当前不要假装已经执行命令。",
             ),
             CapabilityModule(
+                name="extension_management",
+                layer="extension",
+                modes=(ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT),
+                tools=EXTENSION_MANAGEMENT_TOOL_NAMES,
+                light_hint="manage_extension 查看、持久启停或重启当前 Host 已安装的插件；只有主人可以修改。",
+                trigger=_always,
+            ),
+            CapabilityModule(
                 name="desktop_managed_browser",
                 layer="desktop_browser",
-                modes=(ClientMode.DESKTOP_PET,),
+                modes=(ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT),
                 tools=DESKTOP_BROWSER_TOOL_NAMES,
-                light_hint="桌宠模式下，browser_page 会打开并操作 Akane 可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
+                light_hint="browser_page 会打开并操作当前 Akane 宿主的可见托管浏览器窗口，用于读取、滚动、按可见候选序号打开链接，以及经授权的点击/输入。不要接管用户手动打开的浏览器标签页，不要登录、下载、上传或访问私密/内网内容。",
                 trigger=_always,
             ),
             CapabilityModule(
@@ -2994,14 +2694,6 @@ class CapabilityRegistry:
                 tools=GENERATED_FILE_MANAGEMENT_TOOL_NAMES,
                 light_hint="你可以回看、交付、归档、删除或清理自己刚生成的文件。",
                 trigger=_has_generated_file,
-            ),
-            CapabilityModule(
-                name="web_scene_world",
-                layer="web_scene",
-                modes=WEB_SCENE_CLIENT_MODES,
-                tools=WEB_SCENE_TOOL_NAMES,
-                light_hint="你可以围绕当前场景、礼物、藏品和临时 NPC 参与小世界构建。",
-                trigger=_is_web_scene,
             ),
         )
 

@@ -24,16 +24,7 @@ from companion_v01.store import MemoryStore
 from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
 from companion_v01.artifact_system import ArtifactContainerService
 from companion_v01.gift_system import GiftSystemService
-from companion_v01.tool_runtime import (
-    CancelReminderToolHandler,
-    CheckInventoryToolHandler,
-    ListRemindersToolHandler,
-    ManageArtifactToolHandler,
-    ManageGiftToolHandler,
-    SetReminderToolHandler,
-    ToolExecutionContext,
-    ToolExecutionResult,
-)
+from companion_v01.tool_runtime import ToolExecutionContext, ToolExecutionResult
 from companion_v01.workspace_files import WorkspaceFileService
 
 
@@ -563,31 +554,6 @@ class EngineExtensionTests(unittest.TestCase):
             )
         )
 
-    def test_normalize_npc_tool_call_accepts_common_aliases(self) -> None:
-        normalized = self.engine._normalize_npc_tool_call(
-            {
-                "type": "call_npc",
-                "name": "摊主",
-                "role": "卖菜的",
-                "question": "这个青菜怎么卖？",
-            }
-        )
-
-        self.assertEqual(
-            normalized,
-            {
-                "type": "call_npc",
-                "npc_name": "摊主",
-                "npc_role": "卖菜的",
-                "query": "这个青菜怎么卖？",
-            },
-        )
-
-    def test_normalize_npc_tool_call_rejects_incomplete_payload(self) -> None:
-        self.assertIsNone(self.engine._normalize_npc_tool_call(None))
-        self.assertIsNone(self.engine._normalize_npc_tool_call({"type": "call_npc"}))
-        self.assertIsNone(self.engine._normalize_npc_tool_call({"type": "other", "query": "hi"}))
-
     def test_build_assistant_dialogue_turn_keeps_preface(self) -> None:
         turn = self.engine._build_assistant_dialogue_turn("我帮你问问摊主。")
         self.assertEqual(
@@ -838,77 +804,6 @@ class EngineExtensionTests(unittest.TestCase):
 
         self.assertIsNone(repaired["tool_call"])
 
-    def test_tool_prompt_context_is_filtered_by_client_mode(self) -> None:
-        class StubTool:
-            def __init__(self, name: str) -> None:
-                self.name = name
-
-            def build_prompt_instruction(self) -> str:
-                return f"- {self.name}：测试用工具。"
-
-            def normalize_call(self, value):
-                if value.get("type") != self.name:
-                    return None
-                return {"type": self.name}
-
-        self.engine.tool_handlers = {
-            name: StubTool(name)
-            for name in [
-                "set_reminder",
-                "list_reminders",
-                "cancel_reminder",
-                "manage_persona",
-                "manage_gift",
-                "check_inventory",
-                "manage_artifact",
-                "call_npc",
-                "sync_attachment_workspace",
-                "inspect_attachment",
-                "retry_attachment",
-                "clear_attachment_focus",
-            ]
-        }
-        registry = ModeProfileRegistry()
-        qq_context = registry.resolve_from_payload({"client_mode": "qq_text"})
-        scene_context = registry.resolve_from_payload({"client_mode": "scene_static"})
-
-        qq_prompt = self.engine._build_tool_prompt_context(
-            allow_tool_call=True,
-            client_context=qq_context,
-        )
-        scene_prompt = self.engine._build_tool_prompt_context(
-            allow_tool_call=True,
-            client_context=scene_context,
-        )
-
-        self.assertIn("set_reminder", qq_prompt)
-        self.assertIn("manage_persona", qq_prompt)
-        self.assertIn("sync_attachment_workspace", qq_prompt)
-        self.assertIn("inspect_attachment", qq_prompt)
-        self.assertIn("retry_attachment", qq_prompt)
-        self.assertIn("clear_attachment_focus", qq_prompt)
-        self.assertNotIn("manage_gift", qq_prompt)
-        self.assertNotIn("check_inventory", qq_prompt)
-        self.assertIn("manage_gift", scene_prompt)
-        self.assertIn("check_inventory", scene_prompt)
-        self.assertNotIn("inspect_attachment", scene_prompt)
-        self.assertNotIn("retry_attachment", scene_prompt)
-        self.assertNotIn("sync_attachment_workspace", scene_prompt)
-        self.assertEqual(
-            self.engine._normalize_tool_call(
-                {"type": "manage_gift"},
-                client_context=qq_context,
-            ),
-            {"type": "manage_gift"},
-        )
-        self.assertEqual(
-            self.engine._normalize_tool_call(
-                {"type": "manage_gift"},
-                client_context=scene_context,
-            ),
-            {"type": "manage_gift"},
-        )
-
     def test_capability_registry_declares_client_tool_layers(self) -> None:
         registry = CapabilityRegistry()
 
@@ -916,8 +811,8 @@ class EngineExtensionTests(unittest.TestCase):
         qq_tools = registry.tool_names_for_mode(ClientMode.QQ_TEXT)
         desktop_tools = registry.tool_names_for_mode(ClientMode.DESKTOP_PET)
 
-        self.assertIn("manage_gift", scene_tools)
-        self.assertIn("call_npc", scene_tools)
+        self.assertNotIn("manage_gift", scene_tools)
+        self.assertNotIn("call_npc", scene_tools)
         self.assertIn("web_search", scene_tools)
         self.assertNotIn("open_browser", scene_tools)
         self.assertNotIn("browser_page", scene_tools)
@@ -930,7 +825,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("send_sticker", qq_tools)
         self.assertIn("web_search", qq_tools)
         self.assertNotIn("open_browser", qq_tools)
-        self.assertNotIn("browser_page", qq_tools)
+        self.assertIn("browser_page", qq_tools)
         self.assertNotIn("open_music_search", qq_tools)
         self.assertNotIn("manage_gift", qq_tools)
 
@@ -971,6 +866,8 @@ class EngineExtensionTests(unittest.TestCase):
 
         qq_selection = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
         self.assertIn("qq_delivery", qq_selection.layer_names)
+        self.assertIn("desktop_managed_browser", qq_selection.module_names)
+        self.assertIn("browser_page", qq_selection.tool_names)
         self.assertIn("send_sticker", qq_selection.tool_names)
         self.assertNotIn("media_workbench", qq_selection.module_names)
 
@@ -993,7 +890,7 @@ class EngineExtensionTests(unittest.TestCase):
                 has_media_generated_file=True,
             )
         )
-        self.assertIn("web_scene", scene_selection_with_files.layer_names)
+        self.assertNotIn("web_scene", scene_selection_with_files.layer_names)
         self.assertNotIn("media_workbench", scene_selection_with_files.module_names)
         self.assertNotIn("qq_delivery", scene_selection_with_files.layer_names)
         self.assertNotIn("desktop_workspace", scene_selection_with_files.layer_names)
@@ -1019,7 +916,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.tool_handlers = {
                 name: StubTool(name)
                 for name in [
-                    "set_reminder",
                     "manage_persona",
                     "fetch_media_from_url",
                     "sync_attachment_workspace",
@@ -1068,7 +964,7 @@ class EngineExtensionTests(unittest.TestCase):
                 session_id="desktop_pet_test",
             )
 
-            self.assertIn("\n- sync_attachment_workspace", prompt_with_media)
+            self.assertNotIn("\n- sync_attachment_workspace", prompt_with_media)
             self.assertIn("\n- inspect_media_info", prompt_with_media)
             self.assertIn("\n- convert_media_file", prompt_with_media)
             self.assertIn("\n- transcribe_media", prompt_with_media)
@@ -1125,9 +1021,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.tool_handlers = {
                 name: StubTool(name)
                 for name in [
-                    "set_reminder",
-                    "list_reminders",
-                    "cancel_reminder",
                     "manage_persona",
                     "fetch_media_from_url",
                     "compose_file",
@@ -1306,9 +1199,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.tool_handlers = {
                 name: StubTool(name)
                 for name in [
-                    "set_reminder",
-                    "list_reminders",
-                    "cancel_reminder",
                     "manage_persona",
                     "fetch_media_from_url",
                     "sync_attachment_workspace",
@@ -1369,7 +1259,7 @@ class EngineExtensionTests(unittest.TestCase):
                 session_id="qq_pri_1",
             )
 
-            self.assertIn("\n- sync_attachment_workspace", prompt)
+            self.assertNotIn("\n- sync_attachment_workspace", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- read_attachment_section", prompt)
             self.assertIn("\n- separate_audio_stems", prompt)
@@ -1613,365 +1503,6 @@ class EngineExtensionTests(unittest.TestCase):
             ToolExecutionResult(tool_type="fake_tool", followup_context="session-1"),
         )
 
-    def test_set_reminder_tool_handler_creates_reminder_and_followup_context(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            handler = SetReminderToolHandler(store=store)
-            result = handler.execute(
-                call={
-                    "type": "set_reminder",
-                    "content": "复习微积分",
-                    "time_text": "明天晚上八点",
-                    "date_label": "",
-                    "time_of_day": "night",
-                    "hour": 20,
-                    "minute": 0,
-                },
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 0, 0).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertEqual(result.tool_type, "set_reminder")
-            self.assertIn("成功设置", result.followup_context)
-            claimed = store.claim_due_reminders(
-                profile_user_id="user-1",
-                session_id="session-1",
-                now_ts=int(datetime(2024, 4, 11, 20, 0).timestamp()),
-            )
-            self.assertEqual(len(claimed), 1)
-            self.assertEqual(claimed[0]["content"], "复习微积分")
-
-    def test_set_reminder_tool_handler_supports_relative_offset_minutes(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            handler = SetReminderToolHandler(store=store)
-            now_ts = int(datetime(2024, 4, 10, 12, 0).timestamp())
-            result = handler.execute(
-                call={
-                    "type": "set_reminder",
-                    "content": "喝水",
-                    "time_text": "五分钟后",
-                    "offset_minutes": 5,
-                    "date_label": "",
-                    "time_of_day": "",
-                    "hour": None,
-                    "minute": None,
-                },
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=now_ts,
-                    visual_payload={},
-                ),
-            )
-
-            claimed = store.claim_due_reminders(
-                profile_user_id="user-1",
-                session_id="session-1",
-                now_ts=now_ts + 5 * 60,
-            )
-            self.assertEqual(result.tool_type, "set_reminder")
-            self.assertEqual(len(claimed), 1)
-            self.assertEqual(claimed[0]["content"], "喝水")
-
-    def test_set_reminder_tool_handler_returns_clarification_context_when_time_is_ambiguous(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            handler = SetReminderToolHandler(store=store)
-            result = handler.execute(
-                call={
-                    "type": "set_reminder",
-                    "content": "收快递",
-                    "time_text": "周末",
-                    "date_label": "",
-                    "time_of_day": "",
-                    "hour": None,
-                    "minute": None,
-                    "offset_minutes": None,
-                },
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 0).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertIn("确认更具体的提醒时间", result.followup_context)
-            claimed = store.claim_due_reminders(
-                profile_user_id="user-1",
-                session_id="session-1",
-                now_ts=int(datetime(2024, 4, 20, 12, 0).timestamp()),
-            )
-            self.assertEqual(claimed, [])
-
-    def test_list_reminders_tool_handler_builds_numbered_context(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="喝水",
-                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
-                raw_time_text="五分钟后",
-            )
-            store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="背单词",
-                due_ts=int(datetime(2024, 4, 10, 20, 0).timestamp()),
-                raw_time_text="今晚八点",
-            )
-            handler = ListRemindersToolHandler(store=store)
-
-            result = handler.execute(
-                call={"type": "list_reminders", "status": "pending", "limit": 5},
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 0).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertEqual(result.tool_type, "list_reminders")
-            self.assertIn("1.", result.followup_context)
-            self.assertIn("2.", result.followup_context)
-            self.assertIn("喝水", result.followup_context)
-
-    def test_cancel_reminder_tool_handler_cancels_by_target_text(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="喝水",
-                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
-                raw_time_text="五分钟后",
-            )
-            handler = CancelReminderToolHandler(store=store)
-
-            result = handler.execute(
-                call={"type": "cancel_reminder", "target_text": "喝水"},
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertEqual(result.tool_type, "cancel_reminder")
-            self.assertIn("成功取消", result.followup_context)
-            pending = store.list_reminders(
-                profile_user_id="user-1",
-                session_id="session-1",
-                status="pending",
-            )
-            self.assertEqual(pending, [])
-
-    def test_cancel_reminder_tool_handler_asks_for_clarification_when_match_is_ambiguous(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="复习英语",
-                due_ts=int(datetime(2024, 4, 10, 18, 0).timestamp()),
-                raw_time_text="今晚六点",
-            )
-            store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="复习高数",
-                due_ts=int(datetime(2024, 4, 10, 20, 0).timestamp()),
-                raw_time_text="今晚八点",
-            )
-            handler = CancelReminderToolHandler(store=store)
-
-            result = handler.execute(
-                call={"type": "cancel_reminder", "target_text": "复习"},
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertIn("确认具体要取消哪一条", result.followup_context)
-
-    def test_check_inventory_tool_handler_reads_recent_pending_gifts(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root / "db")
-            service = GiftSystemService(root / "gifts", store=store)
-            handler = CheckInventoryToolHandler(gift_service=service)
-
-            service.ingest_upload(
-                profile_user_id="user-1",
-                session_id="session-1",
-                filename="夜色.flac",
-                content_type="audio/flac",
-                content=b"stub-audio",
-                now_ts=100,
-            )
-            service.ingest_upload(
-                profile_user_id="user-1",
-                session_id="session-1",
-                filename="雨声.flac",
-                content_type="audio/flac",
-                content=b"stub-audio",
-                now_ts=101,
-            )
-
-            result = handler.execute(
-                call={"type": "check_inventory", "scope": "pending_recent", "limit": 3},
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
-                    visual_payload={},
-                ),
-            )
-
-            self.assertEqual(result.tool_type, "check_inventory")
-            self.assertIn("scope=pending_recent", result.followup_context)
-            self.assertIn("音乐: 雨声", result.followup_context)
-            self.assertEqual(result.stream_events[0]["type"], "inventory_snapshot")
-
-    def test_manage_gift_tool_handler_uses_session_focus(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root / "db")
-            service = GiftSystemService(root / "gifts", store=store)
-            handler = ManageGiftToolHandler(gift_service=service)
-
-            asset = service.ingest_upload(
-                profile_user_id="user-1",
-                session_id="session-1",
-                filename="夜色.flac",
-                content_type="audio/flac",
-                content=b"stub-audio",
-                now_ts=100,
-            )
-
-            result = handler.execute(
-                call={"type": "manage_gift", "action": "internalize"},
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
-                    visual_payload={},
-                    current_user_source_id="msg::gift_intent",
-                ),
-            )
-
-            updated = store.get_gift_asset(
-                profile_user_id="user-1",
-                asset_id=str(asset["asset_id"]),
-            )
-            session = store.get_session("user-1", "session-1")
-
-            self.assertEqual(result.tool_type, "manage_gift")
-            self.assertIn("已经把礼物", result.followup_context)
-            self.assertEqual(result.stream_events[0]["type"], "gift_updated")
-            self.assertIsNotNone(updated)
-            self.assertEqual(updated["status"], "internalized")
-            self.assertIsNotNone(session)
-            self.assertEqual(session["current_gift_focus_asset_id"], asset["asset_id"])
-
-    def test_manage_artifact_tool_handler_claims_focused_image(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root / "db")
-            gift_service = GiftSystemService(root / "gifts", store=store)
-            artifact_service = ArtifactContainerService(store=store)
-            handler = ManageArtifactToolHandler(artifact_service=artifact_service)
-
-            asset = gift_service.ingest_upload(
-                profile_user_id="user-1",
-                session_id="session-1",
-                filename="akane_shy.png",
-                content_type="image/png",
-                content=b"stub-image",
-                now_ts=100,
-            )
-
-            result = handler.execute(
-                call={
-                    "type": "manage_artifact",
-                    "action": "claim",
-                    "display_name": "shy 水手服",
-                    "collection_key": "daily_wardrobe",
-                    "collection_name": "常服衣柜",
-                    "asset_role": "outfit",
-                },
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=int(datetime(2024, 4, 10, 12, 1).timestamp()),
-                    visual_payload={},
-                    current_user_source_id="msg::artifact_claim",
-                ),
-            )
-
-            updated = store.get_gift_asset(
-                profile_user_id="user-1",
-                asset_id=str(asset["asset_id"]),
-            )
-
-            self.assertEqual(result.tool_type, "manage_artifact")
-            self.assertEqual(result.stream_events[0]["type"], "artifact_updated")
-            self.assertIn("正式认领", result.followup_context)
-            self.assertIsNotNone(updated)
-            assert updated is not None
-            self.assertEqual(updated["display_name"], "shy 水手服")
-            self.assertEqual(updated["status"], "internalized")
-            self.assertEqual(updated["payload"]["asset_role"], "outfit")
-            self.assertEqual(updated["payload"]["projection_role"], "character")
-            self.assertEqual(updated["payload"]["character_outfit_id"], "daily_wardrobe")
-            self.assertEqual(updated["payload"]["character_emotion_id"], "normal")
-            self.assertEqual(updated["payload"]["collection_key"], "daily_wardrobe")
-            self.assertEqual(updated["source_ids"], ["msg::artifact_claim"])
-
-    def test_consume_due_reminders_uses_llm_speech_and_persists_into_history(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-            engine.store = MemoryStore(Path(temp_dir))
-            engine.resource_manifest = None
-            engine._upsert_raw_record = lambda record: None
-            engine._schedule_summary_cycle = lambda **kwargs: None
-
-            class StubLLM:
-                def call_chat_json(self, **kwargs):
-                    return {"speech": "喵，我来提醒你，该喝水啦。"}
-
-            engine.llm = StubLLM()
-            engine.store.add_reminder(
-                profile_user_id="user-1",
-                session_id="session-1",
-                content="喝水",
-                due_ts=int(datetime(2024, 4, 10, 12, 5).timestamp()),
-                raw_time_text="五分钟后",
-            )
-
-            notifications = engine.consume_due_reminders(
-                profile_user_id="user-1",
-                session_id="session-1",
-                now_ts=int(datetime(2024, 4, 10, 12, 6).timestamp()),
-            )
-
-            self.assertEqual(len(notifications), 1)
-            self.assertEqual(notifications[0]["speech"], "喵，我来提醒你，该喝水啦。")
-            rows = engine.store.get_unsummarized_messages("session-1")
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["role"], "assistant")
-            self.assertEqual(rows[0]["content"], "喵，我来提醒你，该喝水啦。")
 
     def test_build_memory_snippets_can_render_semantic_summary_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -7,17 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from companion_v01.capability_registry import (
-    FOCUS_WORKSPACE_TOOL_SPEC,
-    READ_WORKSPACE_TOOL_SPEC,
-    REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
-)
+from companion_v01.capability_registry import READ_WORKSPACE_TOOL_SPEC, REGISTER_WORKSPACE_ITEMS_TOOL_SPEC
 from companion_v01.paged_reading import slice_page
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.attachments import ReadAttachmentSectionToolHandler
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.workspace import (
-    FocusWorkspaceToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
 )
@@ -82,19 +77,6 @@ class LongToolResultRepairTests(unittest.TestCase):
         )
         self.assertEqual(set(normalized or {}), {"type", "targets"})
 
-    def test_focus_large_file_returns_read_workspace_continuation(self) -> None:
-        target = self.root / "workspace" / "Inbox" / "large.md"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("line payload\n" * 10_000, encoding="utf-8")
-        handler = FocusWorkspaceToolHandler(workspace_service=self.workspace)
-        result = handler.execute(
-            call={"type": "focus_workspace", "action": "add", "targets": ["workspace:/Inbox/large.md"]},
-            context=_context(),
-        )
-        self.assertFalse(result.followup_envelope.complete)
-        self.assertEqual(result.followup_envelope.continuation["type"], "read_workspace")
-        self.assertLess(len(result.followup_context), 55_000)
-
     def test_register_batch_exposes_every_handle_across_pages(self) -> None:
         directory = self.root / "workspace" / "Many"
         directory.mkdir(parents=True)
@@ -146,10 +128,8 @@ class LongToolResultRepairTests(unittest.TestCase):
         self.assertEqual(seen, text)
         self.assertGreater(pages, 1)
 
-    def test_native_workspace_specs_match_handler_contracts(self) -> None:
-        focus = FOCUS_WORKSPACE_TOOL_SPEC.input_schema["properties"]
+    def test_native_workspace_registration_spec_matches_handler_contract(self) -> None:
         register = REGISTER_WORKSPACE_ITEMS_TOOL_SPEC.input_schema["properties"]
-        self.assertEqual(set(focus), {"action", "targets", "recursive"})
         self.assertEqual(set(register), {"targets", "recursive", "max_files", "cursor"})
 
 

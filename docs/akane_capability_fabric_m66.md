@@ -87,7 +87,7 @@ Key implementation areas inspected:
 
 - Model/tool path: `companion_v01/engine.py`, `engine_services/response_builder.py`, `engine_services/tool_rounds.py`, `tool_orchestration_engine.py`, `native_tool_schema.py`, `tool_invocation.py`, `tool_runtime.py`.
 - Selection/readiness/catalog: `capability_registry.py`, `tool_readiness.py`, `local_capability_catalog.py`, `local_capability_config.py`, `domain_profiles.py`, `capcore_runtime.py`.
-- Adapters/extensions: `capability_adapters/`, `plugin_host.py`, `plugin_tool_bridge.py`, `task_worker.py`, `local_workflow_execution.py`, `local_workflow_runners/comfyui.py`, `routes/capabilities.py`.
+- Adapters/extensions: `capability_adapters/`, `plugin_host.py`, `plugin_tool_bridge.py`, `local_workflow_execution.py`, `local_workflow_runners/comfyui.py`, `routes/capabilities.py`.
 - Desktop/file/voice boundary: `desktop_pet_next/src/main.js`, `desktop_pet_next/src-tauri/src/main.rs`, `routes/desktop_pet.py`, `desktop_pet_engine.py`, `client_protocol.py`, `routes/voice.py`, `cover_song.py`, `generated_files_media.py`, `generated_files_cards.py`, `start_akane_next.ps1`.
 - Reused package contract: capcore's current `CapabilityDescriptor`, `CapabilityToolSpec`, registry, permission, and projection types.
 

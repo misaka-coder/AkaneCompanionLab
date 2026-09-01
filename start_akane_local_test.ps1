@@ -84,6 +84,7 @@ $env:COMPANION_HOST = "127.0.0.1"
 $env:HOST = "127.0.0.1"
 $env:QQ_BRIDGE_ENABLED = "false"
 $env:EXECUTION_QQ_ENABLED = "false"
+$env:BROWSER_PAGE_PRIVATE_NETWORK_ACCESS = "true"
 $env:AKANE_ADMIN_TOKEN = New-AkaneLocalTestSatelliteToken
 $env:AKANE_DESKTOP_SATELLITE_TOKEN = New-AkaneLocalTestSatelliteToken
 Remove-Item Env:\AKANE_BACKEND_URL -ErrorAction SilentlyContinue
@@ -151,6 +152,12 @@ if (-not $SkipPackageSync) {
 $localPython = Join-Path $projectDir ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $localPython -PathType Leaf)) {
     throw "local_test_python_not_found"
+}
+if (-not (Test-AkaneLocalPackageContracts -PythonPath $localPython)) {
+    throw "local_package_contract_validation_failed: restart without -SkipPackageSync"
+}
+if ($SkipPackageSync -and -not (Test-AkaneLocalPackagesCurrent -ProjectRoot $projectDir -PythonPath $localPython)) {
+    throw "local_package_content_mismatch: restart without -SkipPackageSync"
 }
 $policyInitializer = Join-Path $projectDir "scripts\initialize_akane_local_test_policy.py"
 $policyResult = & $localPython $policyInitializer `

@@ -270,6 +270,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                         "sender": {"user_id": USER_ID, "card": "伙伴"},
                         "time": 1_721_485_640,
                         "message": [
+                            {"type": "at", "data": {"qq": "40004", "name": "天为"}},
                             {"type": "text", "data": {"text": "这是很久以前的原话"}},
                             {"type": "image", "data": {"file": "quoted.png"}},
                         ],
@@ -295,6 +296,10 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["quoted_message"]["timestamp"], 1_721_485_640)
         self.assertEqual(result["quoted_message"]["conversation_kind"], "group")
         self.assertEqual(result["quoted_message"]["conversation_id"], GROUP_ID)
+        self.assertEqual(
+            result["quoted_message"]["mentions"],
+            [{"actor_id": "qq:40004", "display_name": "天为", "is_assistant": False}],
+        )
         self.assertEqual(result["attachments"][0]["quoted_message_id"], "quoted-1")
         self.assertEqual(result["attachments"][0]["sender_label"], "伙伴")
 

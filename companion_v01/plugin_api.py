@@ -137,7 +137,8 @@ class PluginBackgroundJob(Protocol):
 
     The plugin registers one job via ``registrar.add_background_job(job)``.
     The host wraps ``start(controller)`` in an asyncio task on the lifecycle
-    loop after all capability adapters are activated.  The job runs until
+    loop after the plugin's staged contributions are published. A plugin may
+    contribute this job without registering a capability adapter. The job runs until
     ``controller.shutdown_requested`` becomes True or ``stop()`` is called.
 
     Constraints:

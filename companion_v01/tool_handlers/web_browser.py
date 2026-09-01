@@ -18,9 +18,10 @@ from urllib.parse import quote_plus, urlparse
 import config
 
 from ..anysearch_rest_client import AnySearchRestClient, AnySearchRestError
-from ..browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
+from ..browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner, ManagedBrowserSessionManager
 from ..capability_registry import OPEN_BROWSER_TOOL_SPEC, WEB_SEARCH_TOOL_SPEC
 from ..capcore_runtime import (
+    authorization_profile_user_id as capcore_authorization_profile_user_id,
     approval_required_event as capcore_approval_required_event,
     manual_permission_request as capcore_manual_permission_request,
     resolve_permission_for_profile as capcore_resolve_permission_for_profile,
@@ -237,7 +238,18 @@ class OpenMusicSearchToolHandler(BaseToolHandler):
 class BrowserPageToolHandler(BaseToolHandler):
     tool_type = "browser_page"
 
-    ALLOWED_ACTIONS = {"navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"}
+    ALLOWED_ACTIONS = {
+        "navigate",
+        "read_text",
+        "current",
+        "snapshot",
+        "screenshot",
+        "scroll",
+        "elements",
+        "click",
+        "fill",
+        "press",
+    }
     CONTROL_ACTIONS = {"click", "fill", "press"}
     CONTROL_ACTION_ID_PREFIX = "browser_page"
     ALLOWED_PRESS_KEYS = {
@@ -262,43 +274,52 @@ class BrowserPageToolHandler(BaseToolHandler):
         self,
         *,
         browser_runner: Any = None,
+        generated_file_service: Any = None,
+        image_material_resolver: Any = None,
+        allow_private_network_urls: bool | None = None,
         config_base_dir: Path | str | None = None,
         approval_checker: Callable[..., bool] | None = None,
     ) -> None:
-        self.browser_runner = browser_runner or ManagedBrowserPageRunner()
+        if browser_runner is None:
+            headless = bool(getattr(config, "BROWSER_PAGE_HEADLESS", False))
+            self.browser_runner = ManagedBrowserSessionManager(
+                runner_factory=lambda: ManagedBrowserPageRunner(headless=headless),
+            )
+        else:
+            self.browser_runner = browser_runner
+        self.generated_file_service = generated_file_service
+        self.image_material_resolver = image_material_resolver
+        self.allow_private_network_urls = (
+            bool(getattr(config, "BROWSER_PAGE_PRIVATE_NETWORK_ACCESS", False))
+            if allow_private_network_urls is None
+            else bool(allow_private_network_urls)
+        )
         self.config_base_dir = config_base_dir if config_base_dir is not None else getattr(config, "DATA_DIR", None)
         self.approval_checker = approval_checker
 
     def build_prompt_instruction(self) -> str:
+        network_scope = (
+            "当前宿主已允许访问 localhost 和私网地址，可用于本机 ComfyUI、控制中心或用户明确指定的局域网服务。"
+            if self.allow_private_network_urls
+            else "当前宿主只允许公开 http(s) 页面；localhost 和私网地址会被拒绝。"
+        )
         return (
-            "- browser_page：仅在桌宠模式下，当用户明确要你打开并读取、滚动或操作一个公开网页，"
-            "或继续处理 Akane 托管浏览器窗口的当前页时才使用 browser_page。"
-            "它只操作 Akane 自己启动的可见托管浏览器窗口，不会接管用户手动打开的 Edge/Chrome 标签页。"
-            "推荐闭环：navigate 打开 → snapshot 看结构和 ref / elements 看可见候选 → click/fill/press 操作。"
-            'navigate 格式为 {"type":"browser_page","action":"navigate","url":"https://..."}；'
-            "一般不需要 open_for_user；只有用户还要求额外用系统浏览器打开同一链接给人看时，"
-            '才加 "open_for_user":true；'
-            'snapshot 返回 accessibility snapshot 与元素 ref，格式为 {"type":"browser_page","action":"snapshot"}；'
-            'elements 列出可见链接/按钮/输入框候选，格式为 {"type":"browser_page","action":"elements","element_limit":20}；'
-            '按候选序号点击格式为 {"type":"browser_page","action":"click","candidate_index":1}，'
-            '用 ref 点击格式为 {"type":"browser_page","action":"click","ref":"e3"}；'
-            '输入格式为 {"type":"browser_page","action":"fill","ref":"e4","text":"搜索词"}；'
-            '按键格式为 {"type":"browser_page","action":"press","ref":"e4","key":"Enter"}；'
-            'read_text/scroll/current 分别读取正文、滚动并返回滚动后状态、查看当前页状态。'
-            "页面快照还有未展示部分时，结果会带 cursor：cursor 只读取同一份已捕获快照的剩余内容，"
-            "不会再次滚动或点击；如果当前内容已经足够回答，可以直接回答，不要机械翻完所有分页。"
-            "scroll 是移动真实页面并产生新快照；操作是否生效要看操作后的真实页面状态。"
-            "如果用户已经给出多步浏览目标（例如打开某站、滚动、点第一个视频、告诉我当前页），"
-            "不要每完成一步就询问用户；在工具轮次预算和授权边界内继续调用，直到任务完成、候选不存在、页面不可用，"
-            "或需要登录/支付/上传/下载等真实阻塞。"
-            "控制动作（click/fill/press）只在用户已批准或能力策略为完全访问时执行；"
-            "不可用于登录、支付、下单、授权、删除、发布、下载、上传、文件选择、私密表单、localhost/内网/file 路径。"
-            "返回的页面状态是读取到的证据，不等于整站阅读，也不等于操作已经改变页面；"
-            "scroll 只返回滚动后的页面状态，elements 只列出候选，不要声称已经点击或输入。"
-            "如果用户只要求“打开给我看/在普通浏览器打开”且不需要你读取或操作，使用 open_browser；"
-            "只有用户要你自己读取、总结、核对页面正文时才使用 browser_page。"
-            "如果只是搜索资料，优先用 web_search；web_search 只返回结果，不会打开或滚动浏览器，"
-            "需要打开某条搜索结果时再用 browser_page.navigate 或 open_browser。"
+            "- browser_page：需要自己读取、总结、核对页面正文或操作页面时才使用 browser_page；"
+            "它操作当前会话独立的 Akane 可见托管浏览器窗口，"
+            "它不会接管用户手动打开的 Edge/Chrome 标签页。"
+            '先用 {"type":"browser_page","action":"navigate","url":"https://..."} 打开页面；'
+            "用 snapshot 读取 accessibility snapshot 和 ref，或用 elements 读取带 candidate_index 的可见候选；"
+            "随后可用 click/fill/press/scroll 完成操作，并根据返回的最新页面证据继续。"
+            "screenshot 会把当前可见画面直接交给你查看，同时返回 gen_* 文件句柄；"
+            "只有用户要收到图片文件时才继续调用 send_file。"
+            "工具失败结果会说明状态、是否可恢复和建议的下一动作：按该反馈继续，不要把 browser_closed 当成网络失败，"
+            "也不要编造未读取到的页面内容。页面关闭后，navigate 可新建窗口继续；stale_target 后重新 snapshot/elements。"
+            "cursor 只续读同一份已捕获快照，不会再次操作页面。"
+            "elements 只是候选，不要声称已经点击或输入。用户给出完整多步目标时持续执行到完成或真实阻塞，"
+            "不要每完成一步就询问用户。"
+            "click/fill/press 遵循当前能力审批；登录、支付、发布、删除、上传下载和私密表单需要相应授权。"
+            '只需替用户打开链接而不读取时使用 open_browser；若还要额外在系统浏览器给用户打开，可加 "open_for_user":true；'
+            f"只需检索资料时优先 web_search。{network_scope}"
         )
 
     def capability_status(self) -> dict[str, Any]:
@@ -315,6 +336,19 @@ class BrowserPageToolHandler(BaseToolHandler):
                     "reason": str(status.get("reason") or "").strip()[:160],
                 }
         return {"enabled": True, "status": "ready", "reason": ""}
+
+    def close(self, *, timeout: float = 5.0) -> bool:
+        shutdown = getattr(self.browser_runner, "shutdown", None)
+        if not callable(shutdown):
+            return True
+        try:
+            try:
+                shutdown(timeout=timeout)
+            except TypeError:
+                shutdown()
+            return True
+        except Exception:
+            return False
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
@@ -389,6 +423,36 @@ class BrowserPageToolHandler(BaseToolHandler):
             if not authorization.get("ok"):
                 return self._approval_required(action=action, call=call, context=context, authorization=authorization)
         run_kwargs: dict[str, Any] = {"action": action, "url": url, "max_chars": 50_000}
+        screenshot_output_path: Path | None = None
+        if action == "screenshot":
+            if self.generated_file_service is None:
+                return self._failure(
+                    BrowserPageResult(
+                        ok=False,
+                        status="unavailable",
+                        action=action,
+                        reason="generated_file_service_unavailable",
+                    )
+                )
+            try:
+                screenshot_output_path = self.generated_file_service.allocate_output_path(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    title="browser-screenshot",
+                    output_format="png",
+                    timestamp=context.now_ts,
+                )
+                screenshot_output_path.parent.mkdir(parents=True, exist_ok=True)
+                run_kwargs["screenshot_path"] = str(screenshot_output_path)
+            except Exception:
+                return self._failure(
+                    BrowserPageResult(
+                        ok=False,
+                        status="unavailable",
+                        action=action,
+                        reason="screenshot_output_allocation_failed",
+                    )
+                )
         if action == "scroll":
             run_kwargs["scroll_delta"] = scroll_delta
         if action == "elements":
@@ -400,8 +464,9 @@ class BrowserPageToolHandler(BaseToolHandler):
             run_kwargs["key"] = key
             if action == "click":
                 run_kwargs["candidate_index"] = candidate_index
+        runner = self._runner_for_context(context)
         try:
-            result = self.browser_runner.run(**run_kwargs)
+            result = runner.run(**run_kwargs)
         except Exception:
             result = BrowserPageResult(
                 ok=False,
@@ -417,6 +482,11 @@ class BrowserPageToolHandler(BaseToolHandler):
             else None
         )
         if not normalized.ok:
+            if screenshot_output_path is not None:
+                try:
+                    screenshot_output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return self._failure(normalized, open_event=open_event)
 
         safe_url = self._sanitize_output(normalized.url)[:800]
@@ -429,6 +499,58 @@ class BrowserPageToolHandler(BaseToolHandler):
             lines.append(f"标题：{safe_title}")
         if normalized.page_revision:
             lines.append(f"页面版本：{normalized.page_revision}")
+        generated_screenshot: dict[str, Any] | None = None
+        model_image_inputs: list[dict[str, Any]] = []
+        if normalized.action == "screenshot" and screenshot_output_path is not None:
+            try:
+                generated_screenshot = self.generated_file_service.register_generated_artifact(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    output_path=screenshot_output_path,
+                    output_title="browser-screenshot",
+                    output_format="png",
+                    mime_type="image/png",
+                    content_card={"kind": "browser_screenshot", "url": safe_url, "title": safe_title},
+                    summary=f"托管浏览器截图：{safe_title or safe_url or '当前页面'}",
+                    created_by_tool="browser_page",
+                    send_to_user=False,
+                    timestamp=context.now_ts,
+                )
+            except Exception:
+                try:
+                    screenshot_output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return self._failure(
+                    BrowserPageResult(
+                        ok=False,
+                        status="unavailable",
+                        action=action,
+                        reason="screenshot_registration_failed",
+                    )
+                )
+            handle = str(generated_screenshot.get("generated_handle") or "").strip()
+            if self.image_material_resolver is not None and handle:
+                try:
+                    image_result = self.image_material_resolver.build_model_image_inputs(
+                        profile_user_id=context.profile_user_id,
+                        session_id=context.session_id,
+                        targets=[handle],
+                        max_count=1,
+                    )
+                    model_image_inputs = list(image_result.get("images") or [])
+                except Exception:
+                    model_image_inputs = []
+            if model_image_inputs:
+                lines.append(
+                    f"已截取当前可见区域并登记为 {handle}；截图像素已随本次工具结果直接交给你查看。"
+                    "请先依据图像与页面状态继续；只有用户要收到文件时才调用 send_file。"
+                )
+            else:
+                lines.append(
+                    f"已截取当前可见区域并登记为 {handle}，但本次未能直接加载图像像素。"
+                    f"需要看图时调用 load_material 加载 {handle}；用户要收到文件时调用 send_file。"
+                )
         if safe_text:
             lines.append("元素摘要：" if normalized.action == "elements" else "页面状态快照：")
             lines.append(safe_text)
@@ -471,6 +593,29 @@ class BrowserPageToolHandler(BaseToolHandler):
         events = []
         if open_event:
             events.append(open_event)
+        if generated_screenshot is not None:
+            public_generated = {
+                key: generated_screenshot.get(key)
+                for key in (
+                    "generated_id",
+                    "generated_handle",
+                    "output_title",
+                    "output_format",
+                    "file_ext",
+                    "mime_type",
+                    "file_size",
+                )
+                if generated_screenshot.get(key) not in (None, "")
+            }
+            events.append(
+                {
+                    "type": "generated_file_ready",
+                    # Public event contract: the stable handle is sufficient
+                    # for send_file. Managed storage paths remain host-only.
+                    "generated_file": public_generated,
+                    "send_to_user": False,
+                }
+            )
         events.append(
             {
                 "type": "browser_page_read",
@@ -512,7 +657,13 @@ class BrowserPageToolHandler(BaseToolHandler):
                 else 0,
                 "browser_page_next_hint": next_hint,
                 "browser_control_status": normalized.status if normalized.action in self.CONTROL_ACTIONS else "",
+                "browser_screenshot_handle": (
+                    str(generated_screenshot.get("generated_handle") or "")
+                    if generated_screenshot is not None
+                    else ""
+                ),
             },
+            model_image_inputs=model_image_inputs,
         )
 
     def _execute_snapshot_continuation(
@@ -539,9 +690,10 @@ class BrowserPageToolHandler(BaseToolHandler):
             offset = max(0, int(payload.get("o") or 0))
         except (TypeError, ValueError):
             return self._snapshot_failure("cursor_invalid", "cursor 偏移无效")
-        record = self.browser_runner.read_snapshot(snapshot_id) if hasattr(self.browser_runner, "read_snapshot") else None
+        runner = self._runner_for_context(context)
+        record = runner.read_snapshot(snapshot_id) if hasattr(runner, "read_snapshot") else None
         if record is None:
-            has_live = bool(getattr(self.browser_runner, "has_live_page", None) and self.browser_runner.has_live_page())
+            has_live = bool(getattr(runner, "has_live_page", None) and runner.has_live_page())
             return self._snapshot_failure(
                 "page_closed" if not has_live else "snapshot_expired",
                 "浏览器页面已关闭" if not has_live else "该快照已过期，需要重新读取当前页面",
@@ -670,13 +822,16 @@ class BrowserPageToolHandler(BaseToolHandler):
         events = []
         if open_event:
             events.append(open_event)
+        feedback, retryable, next_action = self._browser_failure_feedback(result)
         events.append(
             {
                 "type": "browser_page_read",
                 "provider": "managed_browser",
                 "action": str(result.action or "current").strip() or "current",
-                "status": "unavailable",
+                "status": status,
                 "reason": reason or status,
+                "retryable": retryable,
+                "next_action": next_action,
             }
         )
         open_note = "已另外请求桌宠打开该公开网页给用户看；" if open_event else ""
@@ -684,12 +839,13 @@ class BrowserPageToolHandler(BaseToolHandler):
             tool_type=self.tool_type,
             stream_events=events,
             followup_context=(
-                f"{open_note}Akane 托管浏览器页面暂时不可用：{status}"
-                f"{' / ' + reason if reason else ''}。请自然告诉用户这次没有读取到网页内容，不要编造页面结果。"
+                f"{open_note}{feedback}"
             ),
             state_updates={
-                "browser_page_status": "unavailable",
+                "browser_page_status": status,
                 "browser_page_reason": reason or status,
+                "browser_page_retryable": retryable,
+                "browser_page_next_action": next_action,
                 "browser_open_requested": bool(open_event),
             },
         )
@@ -712,8 +868,52 @@ class BrowserPageToolHandler(BaseToolHandler):
                 shown_chars=int(value.get("shown_chars") or 0),
                 total_chars=int(value.get("total_chars") or 0),
                 page_revision=str(value.get("page_revision") or ""),
+                retryable=bool(value.get("retryable")),
+                next_action=str(value.get("next_action") or ""),
             )
         return BrowserPageResult(ok=False, status="unavailable", action=fallback_action, reason="invalid_runner_result")
+
+    def _runner_for_context(self, context: ToolExecutionContext) -> Any:
+        get_runner = getattr(self.browser_runner, "runner_for_session", None)
+        if callable(get_runner):
+            return get_runner(context.profile_user_id, context.session_id)
+        return self.browser_runner
+
+    def _browser_failure_feedback(self, result: BrowserPageResult) -> tuple[str, bool, str]:
+        status = str(result.status or "unavailable").strip() or "unavailable"
+        reason = self._clip(self._sanitize_output(result.reason), 180)
+        retryable = bool(result.retryable)
+        next_action = str(result.next_action or "").strip()
+        if status in {"no_page", "browser_closed"}:
+            retryable = True
+            next_action = next_action or "navigate"
+            message = (
+                "当前会话没有可读取的浏览器页面，可能是窗口尚未打开或已被关闭；这不是网页内容或网络结论。"
+                "如果任务里已有目标 URL，下一步调用 browser_page.navigate，宿主会创建新窗口继续。"
+            )
+        elif status in {"stale_target", "target_not_found"} or reason == "candidate_not_found":
+            retryable = True
+            next_action = next_action or "snapshot"
+            message = "目标元素已变化或不存在。下一步重新调用 snapshot 或 elements 获取当前 ref/候选，再继续操作；不要复用旧 ref。"
+        elif status in {"navigation_timeout", "site_unreachable"}:
+            retryable = True
+            next_action = next_action or "navigate"
+            message = "页面导航没有完成。可以用同一 URL 再调用一次 navigate；若仍失败，再向用户说明站点或网络暂时不可达。"
+        elif status == "invalid_request":
+            retryable = False
+            message = "浏览器调用参数无效。根据 reason 修正参数后重新调用；不要把这次失败描述成已执行。"
+        elif status == "missing_executor" or reason == "playwright_not_installed":
+            retryable = False
+            message = (
+                "浏览器能力暂时不可用：当前宿主没有浏览器执行器，无法在本轮自行恢复；"
+                "请明确告诉用户该能力未安装，不要编造页面结果。"
+            )
+        else:
+            message = "浏览器页面暂时不可用，没有产生可用页面证据。不要编造页面结果；可按 next_action 再试一次，仍失败再向用户说明。"
+        detail = f"状态：{status}；原因：{reason or '未提供'}；可恢复：{'是' if retryable else '否'}"
+        if next_action:
+            detail += f"；建议下一动作：browser_page.{next_action}"
+        return f"{detail}。{message}", retryable, next_action
 
     def _build_browser_next_hint(self, action: str, text: str) -> str:
         clean_action = str(action or "").strip()
@@ -739,6 +939,11 @@ class BrowserPageToolHandler(BaseToolHandler):
             return (
                 "下一步提示：如果元素摘要里有目标，可继续用 ref 或 candidate_index 操作；"
                 "如果没有目标，先 snapshot 或 scroll 获取更多上下文。"
+            )
+        if clean_action == "screenshot":
+            return (
+                "下一步提示：截图像素会直接随工具结果供你观察；结合图像完成判断。"
+                "只有用户要求接收截图文件时，才调用 send_file 发送返回的句柄。"
             )
         if clean_action in self.CONTROL_ACTIONS:
             return (
@@ -798,7 +1003,7 @@ class BrowserPageToolHandler(BaseToolHandler):
         if re.search(r"(?i)(api[_-]?key|password|secret|token)=", parsed.query or ""):
             return ""
         hostname = parsed.hostname or ""
-        if not hostname or self._is_private_or_local_host(hostname):
+        if not hostname or (self._is_private_or_local_host(hostname) and not self.allow_private_network_urls):
             return ""
         return url
 
@@ -904,7 +1109,7 @@ class BrowserPageToolHandler(BaseToolHandler):
         decision = capcore_resolve_permission_for_profile(
             request,
             base_dir=self.config_base_dir,
-            profile_user_id=context.profile_user_id,
+            profile_user_id=capcore_authorization_profile_user_id(context),
         )
         if decision.allowed:
             return {"ok": True, "mode": decision.mode, "reason": decision.reason}

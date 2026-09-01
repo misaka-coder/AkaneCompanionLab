@@ -418,7 +418,6 @@ class EngineOneWayUpgradeTests(unittest.TestCase):
                     {"type": "load_material", "_tool_source": "native_anthropic"},
                     self._image_result(),
                     "loaded",
-                    "",
                 )
             ],
             trace_source_ids=["tool-action", "tool-observation"],

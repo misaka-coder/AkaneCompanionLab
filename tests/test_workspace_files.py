@@ -15,7 +15,6 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import (
-    FocusWorkspaceToolHandler,
     ListWorkspaceToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
@@ -514,28 +513,19 @@ class WorkspaceToolHandlerTests(unittest.TestCase):
     def test_handlers_support_batch_paths_and_return_relative_context(self) -> None:
         list_handler = ListWorkspaceToolHandler(workspace_service=self.service)
         read_handler = ReadWorkspaceToolHandler(workspace_service=self.service)
-        focus_handler = FocusWorkspaceToolHandler(workspace_service=self.service)
 
         list_call = list_handler.normalize_call(
             {"type": "list_workspace", "paths": ["workspace:/Inbox", "workspace:/Outputs"]}
         )
         read_call = read_handler.normalize_call({"type": "read_workspace", "targets": ["workspace:/Inbox/note.md"]})
-        focus_call = focus_handler.normalize_call(
-            {"type": "focus_workspace", "action": "add", "targets": ["workspace:/Inbox/note.md"]}
-        )
-
         self.assertIsNotNone(list_call)
         self.assertIsNotNone(read_call)
-        self.assertIsNotNone(focus_call)
         list_result = list_handler.execute(call=list_call or {}, context=self.context)
         read_result = read_handler.execute(call=read_call or {}, context=self.context)
-        focus_result = focus_handler.execute(call=focus_call or {}, context=self.context)
         self.assertIn("workspace:/Inbox/note.md", list_result.followup_context)
         self.assertIn("tool content", read_result.followup_context)
-        self.assertIn("tool content", focus_result.followup_context)
         self.assertNotIn(str(self.root), list_result.followup_context)
         self.assertNotIn(str(self.root), read_result.followup_context)
-        self.assertNotIn(str(self.root), focus_result.followup_context)
 
     def test_register_handler_batches_directories_without_leaking_absolute_paths(self) -> None:
         project = self.root / "Project"
@@ -581,7 +571,7 @@ class WorkspaceToolHandlerTests(unittest.TestCase):
         desktop = registry.select(CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET))
         qq = registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT))
 
-        for tool_name in ("list_workspace", "read_workspace", "focus_workspace", "register_workspace_items"):
+        for tool_name in ("list_workspace", "read_workspace", "register_workspace_items"):
             self.assertIn(tool_name, desktop.tool_names)
             self.assertNotIn(tool_name, qq.tool_names)
         self.assertIn("desktop_file_workspace", desktop.module_names)

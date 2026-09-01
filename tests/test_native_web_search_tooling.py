@@ -504,11 +504,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         # constraints, additionalProperties:False), not the loose generic spec.
         from companion_v01.native_tool_schema import build_openai_native_tool_specs
 
-        for name, required_props in (
-            ("list_reminders", ()),
-            ("check_inventory", ()),
-            ("inspect_media_info", ("source_id",)),
-        ):
+        for name, required_props in (("inspect_media_info", ("source_id",)),):
             specs = build_openai_native_tool_specs({name: FakeNativeHandler(name)})
             self.assertEqual(len(specs), 1, name)
             fn = specs[0]["function"]
@@ -528,7 +524,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             "load_character_context": {"targets"},
             "inspect_attachment": set(),
             "read_attachment_section": set(),
-            "sync_attachment_workspace": set(),
             "list_workspace": set(),
             "read_workspace": set(),
             "inspect_generated_file": set(),
@@ -1303,7 +1298,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(tool_result["type"], "tool_result")
         self.assertEqual(tool_result["tool_use_id"], "toolu_1")
         self.assertIn("echo ok", tool_result["content"])
-        self.assertIn("workspace artifact recorded", tool_result["content"])
+        self.assertNotIn("workspace artifact recorded", tool_result["content"])
         self.assertNotIn("is_error", tool_result)
 
     def test_engine_tool_preface_dual_writes_visible_assistant_turn(self) -> None:
@@ -2436,18 +2431,13 @@ class NativeCanonicalDescriptionTests(unittest.TestCase):
 
     def test_canonical_handler_descriptions_have_no_legacy_envelope(self) -> None:
         from companion_v01.native_tool_schema import build_openai_native_tool_specs
-        from companion_v01.tool_runtime import CallNPCToolHandler, ComposeFileToolHandler
+        from companion_v01.tool_runtime import ComposeFileToolHandler
 
         handlers = {
             "compose_file": ComposeFileToolHandler(generated_file_service=None),
-            "call_npc": CallNPCToolHandler(
-                npc_runtime=None,
-                describe_scene=lambda _ctx: "",
-                build_followup_context=lambda _ctx: "",
-            ),
         }
         specs = build_openai_native_tool_specs(handlers)
-        self.assertEqual(len(specs), 2)
+        self.assertEqual(len(specs), 1)
         for spec in specs:
             desc = spec["function"]["description"]
             self.assertTrue(desc.strip(), spec["function"]["name"])

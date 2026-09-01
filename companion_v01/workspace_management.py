@@ -113,7 +113,6 @@ def clear_workspace_files(
     normalized_kind = _normalize_kind(kind)
     attachment_service = _engine_service(engine, "_get_attachment_inbox_service")
     generated_service = _engine_service(engine, "_get_generated_file_service")
-    task_service = _engine_service(engine, "_get_task_workspace_service")
 
     clear_all = lowered_target in {"current", "all", "全部", "当前", "工作台", "*"}
     latest_attachment = lowered_target in {"latest", "最近", "最新"}
@@ -224,25 +223,6 @@ def clear_workspace_files(
         record_empty_attempt=include_generated and not clear_all and not cleared_attachments,
     )
 
-    artifact_ids = _artifact_ids(cleared_attachments, managed_generated)
-    cleaned_tasks: list[dict[str, Any]] = []
-    if task_service is not None and artifact_ids:
-        try:
-            cleaned_tasks = [
-                dict(item)
-                for item in task_service.cleanup_tasks_for_artifacts(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    artifact_ids=artifact_ids,
-                    reason=str(reason or "").strip() or "关联文件已退出当前工作台。",
-                    timestamp=effective_ts,
-                )
-                if isinstance(item, dict)
-            ]
-        except Exception:
-            logger.exception("Failed to clean task workspaces linked to cleared files")
-            failures.append(_failure("tasks", "linked_cleanup_failed", "关联任务白板未能完成清理。"))
-
     changed = bool(cleared_attachments or managed_generated)
     available = attachment_service is not None or generated_service is not None
     if not available:
@@ -267,7 +247,6 @@ def clear_workspace_files(
         "status": status,
         "attachments": attachment_result,
         "generated_files": generated_result,
-        "cleaned_tasks": cleaned_tasks,
         "failures": failures,
         "unresolved": unresolved,
         "delete_storage": bool(delete_storage),
@@ -408,19 +387,6 @@ def _normalize_kind(value: Any) -> str:
     }
     normalized = aliases.get(kind, kind)
     return normalized if normalized in {"any", "image", "file", "document", "audio", "video"} else "any"
-
-
-def _artifact_ids(
-    attachments: list[dict[str, Any]],
-    generated_files: list[dict[str, Any]],
-) -> set[str]:
-    values: set[str] = set()
-    for item in [*attachments, *generated_files]:
-        for key in ("attachment_id", "attachment_handle", "generated_id", "generated_handle"):
-            value = str(item.get(key) or "").strip()
-            if value:
-                values.add(value)
-    return values
 
 
 def _combined_unresolved(

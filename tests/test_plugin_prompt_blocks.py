@@ -90,6 +90,7 @@ class _Plugin:
     blocks: tuple[tuple[str, str], ...]
     permissions: tuple[str, ...]
     healthy: bool = True
+    include_capability: bool = True
 
     @property
     def manifest(self) -> PluginManifest:
@@ -103,7 +104,8 @@ class _Plugin:
     def register(self, registrar: Any) -> None:
         for block_id, text in self.blocks:
             registrar.add_prompt_block(block_id, text)
-        registrar.add_capability_adapter(_Adapter(self.plugin_id, healthy=self.healthy))
+        if self.include_capability:
+            registrar.add_capability_adapter(_Adapter(self.plugin_id, healthy=self.healthy))
 
 
 def _entry_point(plugin: _Plugin) -> _EntryPoint:
@@ -152,7 +154,7 @@ def _build_final_context(
 
 
 class PluginPromptContributionPolicyTests(unittest.TestCase):
-    def test_prompt_permission_is_optional_but_requires_trusted_base_permissions(self) -> None:
+    def test_prompt_permission_does_not_require_unrelated_capability_permissions(self) -> None:
         policy = TrustedStatefulPluginContributionPolicy()
         allowed = PluginManifest(
             plugin_id="akane.test.prompt",
@@ -168,10 +170,26 @@ class PluginPromptContributionPolicyTests(unittest.TestCase):
         )
 
         self.assertTrue(policy.validate_manifest(allowed).accepted)
-        self.assertFalse(policy.validate_manifest(prompt_only).accepted)
+        self.assertTrue(policy.validate_manifest(prompt_only).accepted)
 
 
 class PluginPromptContributionHostTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_only_plugin_activates_without_fake_capability(self) -> None:
+        plugin = _Plugin(
+            plugin_id="akane.test.prompt",
+            blocks=(("research", "stable research method"),),
+            permissions=(SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,),
+            include_capability=False,
+        )
+        host = _host(plugin)
+
+        status = await host.start()
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["capability_count"], 0)
+        self.assertEqual(host.stable_system_prompt_blocks(), ("stable research method",))
+        await host.stop()
+
     async def test_permission_is_required_and_failed_registration_publishes_nothing(self) -> None:
         plugin = _Plugin(
             plugin_id="akane.test.prompt",

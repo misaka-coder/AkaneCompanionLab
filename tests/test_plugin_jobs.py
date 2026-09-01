@@ -167,6 +167,8 @@ def _make_job_plugin(
         NETWORK_READ_PERMISSION,
         BACKGROUND_JOB_PERMISSION,
     ),
+    *,
+    include_capability: bool = True,
 ) -> Callable:
     """Return a zero-parameter factory for a plugin that registers one background job."""
     def factory():
@@ -180,7 +182,8 @@ def _make_job_plugin(
 
             def register(self, registrar: Any) -> None:
                 registrar.add_background_job(job)
-                registrar.add_capability_adapter(FakeAdapter())
+                if include_capability:
+                    registrar.add_capability_adapter(FakeAdapter())
 
         return Plugin()
 
@@ -303,6 +306,29 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await host.stop()
 
         self.assertEqual(host.state, "stopped")
+
+    async def test_background_job_only_plugin_activates_without_fake_capability(self) -> None:
+        job = _CooperativeJob()
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_plugin_entry_points(
+                _make_job_plugin(
+                    job,
+                    permissions=(BACKGROUND_JOB_PERMISSION,),
+                    include_capability=False,
+                )
+            ),
+        )
+
+        status = await host.start()
+        await asyncio.sleep(0)
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["capability_count"], 0)
+        self.assertEqual(status["job_count"], 1)
+        self.assertTrue(job.started)
+        await host.stop()
 
     async def test_crashed_job_degrades_host_with_safe_diagnostics(self) -> None:
         host = PluginHost(

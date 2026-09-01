@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createControlCenterViewModel,
   isObservedActionConfirmation,
+  observedActionOutcome,
   normalizeActionPresentation
 } from "../src/control-center-v2/view-model.js";
 import { renderCharacterAppearance } from "../src/control-center-v2/components/appearance.js";
@@ -12,6 +13,7 @@ import { renderVoice } from "../src/control-center-v2/components/voice.js";
 import { renderSystem } from "../src/control-center-v2/components/system.js";
 import { renderModelService } from "../src/control-center-v2/components/model.js";
 import { renderOverview } from "../src/control-center-v2/components/overview.js";
+import { createTrailingAsyncRefresh, mergeChatSessions, prependedHistoryScrollTop } from "../src/control-center-v2/chat-history.js";
 import {
   createModelServiceDraft,
   modelServicePayload,
@@ -19,6 +21,10 @@ import {
   runModelServiceBridgeAction
 } from "../src/control-center-v2/model-service.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
+import {
+  resolveActiveMediaControl,
+  resolveMediaControlAction
+} from "../src/media-control.js";
 import {
   loadPresentationPreferences,
   normalizePresentationPreferences,
@@ -29,6 +35,8 @@ import {
   updatePresentationFrame
 } from "../src/control-center-v2/presentation-preferences.js";
 import {
+  buildMusicRuntimePatch,
+  buildCharacterRuntimePatchFromSettingsSnapshot,
   createBackendControlCenterSource,
   createControlCenterRuntimeSnapshot
 } from "../src/control-center/data-sources.js";
@@ -45,7 +53,7 @@ const targetedEmitter = createTargetedEventEmitter({
   emitTo: async (...args) => targetedEvents.push(args),
   emit: async (...args) => fallbackEvents.push(args)
 });
-const targetedPayload = { command: "toggleActiveMusic", source: "control-center-v2" };
+const targetedPayload = { command: "controlActiveMusic", action: "toggle", value: { action: "toggle" }, source: "control-center-v2" };
 await targetedEmitter(SETTINGS_COMMAND_EVENT, targetedPayload);
 assert.deepEqual(targetedEvents, [["main", SETTINGS_COMMAND_EVENT, targetedPayload]]);
 assert.deepEqual(fallbackEvents, []);
@@ -59,6 +67,37 @@ const fallbackEmitter = createTargetedEventEmitter({
 await fallbackEmitter(SETTINGS_COMMAND_EVENT, targetedPayload);
 assert.deepEqual(fallbackEvents, [[SETTINGS_COMMAND_EVENT, targetedPayload]]);
 await assert.rejects(() => targetedEmitter(SETTINGS_COMMAND_EVENT, SETTINGS_COMMAND_EVENT), /invalid_targeted_event_payload/);
+
+const refreshResolvers = [];
+let refreshRunCount = 0;
+const trailingRefresh = createTrailingAsyncRefresh(() => {
+  refreshRunCount += 1;
+  return new Promise((resolve) => refreshResolvers.push(resolve));
+});
+const firstRefresh = trailingRefresh();
+assert.equal(trailingRefresh(), firstRefresh, "overlapping refreshes should share the active request");
+assert.equal(refreshRunCount, 1);
+refreshResolvers.shift()("stale");
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(refreshRunCount, 2, "a refresh requested in flight must run once more after the active request");
+refreshResolvers.shift()("fresh");
+assert.equal(await firstRefresh, "fresh", "callers should observe the trailing refresh result");
+
+const liveCharacterPatch = buildCharacterRuntimePatchFromSettingsSnapshot({
+  state: { characterPackId: "reimu", currentEmotion: "不满" },
+  character: { appName: "灵梦Pet" },
+  currentExpression: { id: "不满", name: "不满", image: "asset://localhost/reimu/unhappy.png" },
+  resource: {
+    activeOutfit: "default",
+    emotions: [
+      { id: "普通", name: "普通", image: "asset://localhost/reimu/normal.png" },
+      { id: "不满", name: "不满", image: "asset://localhost/reimu/unhappy.png" }
+    ]
+  }
+});
+assert.equal(liveCharacterPatch.emotions.length, 2);
+assert.equal(liveCharacterPatch.emotions.find((item) => item.current)?.id, "不满");
+assert.notEqual(liveCharacterPatch.emotions[0].image, liveCharacterPatch.emotions[1].image);
 
 const rawSnapshot = {
   sourceKind: "backend",
@@ -257,6 +296,7 @@ const rawSnapshot = {
   },
   chatSession: {
     session: { session_id: "session-chat", display_title: "下午的对话" },
+    message_page: { limit: 120, has_more: true, next_before_seq: 1 },
     messages: [
       { source_id: "msg-user", seq_no: 1, role: "user", content: "今天一起做什么？", timestamp: 1787198400 },
       { source_id: "msg-assistant", seq_no: 2, role: "assistant", content: "先把界面做舒服。", timestamp: 1787198460 },
@@ -367,7 +407,6 @@ assert.equal(viewModel.system.services.every((item) => item.ready), true);
 assert.equal(viewModel.system.metrics.some((item) => item.label === "CPU" && item.value === "18%"), true);
 assert.equal(viewModel.system.settings[0].enabled, true);
 assert.equal(viewModel.system.settings[1].enabled, false);
-assert.equal(viewModel.system.hasEventSource, false);
 assert.equal(viewModel.actions["abilities.approvalPolicy.save"].available, true);
 assert.equal(viewModel.actions["abilities.provider.config.save"].available, true);
 assert.equal(viewModel.actions["abilities.mcp.discover"].available, true);
@@ -380,6 +419,8 @@ assert.equal(viewModel.actions[MODEL_SERVICE_ACTIONS.save].available, true);
 assert.equal(viewModel.chat.title, "下午的对话");
 assert.equal(viewModel.chat.messages.length, 3);
 assert.equal(viewModel.chat.messages[2].intermediate, true);
+assert.equal(viewModel.chat.history.hasMore, true);
+assert.equal(viewModel.chat.history.nextBeforeSeq, 1);
 assert.equal(viewModel.actions["chat.send"].available, false);
 assert.equal(viewModel.actions["chat.stop"].available, true);
 assert.equal(viewModel.actions["character.openWorkshop"].available, true);
@@ -495,26 +536,131 @@ assert.equal(isObservedActionConfirmation(
   { active: { sending: false } },
   {
     active: { sending: true },
-    settingsCommandResult: { command: "sendChatMessage", status: "accepted" }
+    settingsCommandResult: { command: "sendChatMessage", operationId: "chat-op-1", ok: true, status: "accepted" }
   },
-  { text: "你好" }
+  { text: "你好", operationId: "chat-op-1" }
 ), true);
+assert.equal(isObservedActionConfirmation(
+  "music.togglePlayback",
+  { settingsCommandResult: null },
+  {
+    settingsCommandResult: {
+      command: "controlActiveMusic",
+      operationId: "music-op-1",
+      ok: true,
+      status: "completed",
+      target: "system",
+      action: "pause"
+    }
+  },
+  { operationId: "music-op-1" }
+), true);
+assert.equal(isObservedActionConfirmation(
+  "music.togglePlayback",
+  { settingsCommandResult: null },
+  {
+    settingsCommandResult: {
+      command: "controlActiveMusic",
+      operationId: "older-op",
+      ok: true,
+      status: "completed"
+    }
+  },
+  { operationId: "music-op-2" }
+), false);
+assert.deepEqual(observedActionOutcome(
+  "music.togglePlayback",
+  { operationId: "music-op-3" },
+  {
+    settingsCommandResult: {
+      command: "controlActiveMusic",
+      operationId: "music-op-3",
+      ok: false,
+      status: "execution_unknown",
+      reason: "media_state_not_confirmed",
+      target: "system",
+      action: "play"
+    }
+  }
+), {
+  ok: false,
+  status: "execution_unknown",
+  reason: "media_state_not_confirmed",
+  target: "system",
+  targetId: "",
+  mediaAction: "play"
+});
+
+const stoppedLocalVsPlayingSystem = resolveActiveMediaControl({
+  localTrack: { sourceId: "local-stale" },
+  localPlaying: false,
+  localPaused: false,
+  systemMedia: { trackKey: "system-live", playbackStatus: "playing", isPlaying: true },
+  systemControllable: true
+});
+assert.equal(stoppedLocalVsPlayingSystem.target, "system");
+assert.equal(resolveMediaControlAction("toggle", stoppedLocalVsPlayingSystem), "pause");
+const pausedLocalVsPausedSystem = resolveActiveMediaControl({
+  localTrack: { sourceId: "local-paused" },
+  localPaused: true,
+  systemMedia: { trackKey: "system-paused", playbackStatus: "paused", isPlaying: false },
+  systemControllable: true
+});
+assert.equal(pausedLocalVsPausedSystem.target, "local");
+const canonicalSystemMusicPatch = buildMusicRuntimePatch({
+  musicSnapshot: {
+    track: { displayName: "旧的本地曲目" },
+    queue: [{ displayName: "旧的本地曲目" }],
+    queueCount: 1,
+    playing: false,
+    paused: false,
+    control: { target: "system", targetId: "system-live", playbackStatus: "playing", isPlaying: true, available: true },
+    systemMedia: {
+      ok: true,
+      status: "ready",
+      fresh: true,
+      controllable: true,
+      title: "当前系统曲目",
+      artist: "系统播放器",
+      playbackStatus: "playing",
+      isPlaying: true
+    }
+  },
+  petState: {}
+});
+assert.equal(canonicalSystemMusicPatch.control.target, "system");
+assert.equal(canonicalSystemMusicPatch.nowPlaying.title, "当前系统曲目 - 系统播放器");
 assert.equal(isObservedActionConfirmation(
   "chat.send",
   { active: { sending: false } },
   {
     active: { sending: false },
-    settingsCommandResult: { command: "sendChatMessage", status: "busy" }
+    settingsCommandResult: { command: "sendChatMessage", operationId: "chat-op-busy", ok: false, status: "busy" }
   },
-  { text: "你好" }
-), false);
+  { text: "你好", operationId: "chat-op-busy" }
+), true);
 
 assert.equal(isObservedActionConfirmation(
   "voice.previewPlay",
   { active: { speaking: false } },
-  { active: { speaking: true } },
-  { text: "试听" }
+  { active: { speaking: true }, settingsCommandResult: { command: "previewTts", operationId: "voice-op-1", ok: true, status: "completed" } },
+  { text: "试听", operationId: "voice-op-1" }
 ), true);
+assert.equal(isObservedActionConfirmation(
+  "character.previewEmotion",
+  { state: { currentEmotion: "normal" }, currentExpression: { id: "normal" } },
+  { state: { currentEmotion: "normal" }, currentExpression: { id: "normal" }, settingsCommandResult: { command: "previewEmotion", operationId: "emotion-op-1", ok: true, status: "completed" } },
+  { value: "normal", operationId: "emotion-op-1" }
+), true);
+assert.deepEqual(observedActionOutcome(
+  "chat.send",
+  { operationId: "chat-op-busy" },
+  { settingsCommandResult: { command: "sendChatMessage", operationId: "chat-op-busy", ok: false, status: "busy", reason: "reply_in_progress" } }
+), {
+  ok: false,
+  status: "busy",
+  reason: "reply_in_progress"
+});
 assert.equal(isObservedActionConfirmation(
   "voice.stop",
   { active: { speaking: true } },
@@ -603,8 +749,8 @@ assert.equal(isObservedActionConfirmation(
 assert.equal(isObservedActionConfirmation(
   "character.previewEmotion",
   { currentExpression: { id: "happy" } },
-  { currentExpression: { id: "thinking" } },
-  { value: "thinking" }
+  { currentExpression: { id: "thinking" }, settingsCommandResult: { command: "previewEmotion", operationId: "emotion-op-2", ok: true, status: "completed" } },
+  { value: "thinking", operationId: "emotion-op-2" }
 ), true);
 assert.equal(isObservedActionConfirmation(
   "character.selectPack",
@@ -711,6 +857,7 @@ assert.equal(savePresentationPreferences("pack-a", movedPresentation, { storage:
 const chatHtml = renderChat({
   viewModel,
   actionStates: {},
+  chatHistory: { phase: "idle", error: "", sessionId: "session-chat" },
   phase: "ready"
 });
 assert.match(chatHtml, /下午的对话/);
@@ -719,7 +866,27 @@ assert.match(chatHtml, /先把界面做舒服/);
 assert.match(chatHtml, /data-chat-viewport/);
 assert.match(chatHtml, /data-chat-form/);
 assert.match(chatHtml, /data-action="chat\.new"/);
+assert.match(chatHtml, /data-chat-load-older/);
+assert.match(chatHtml, /加载更早消息/);
 assert.doesNotMatch(chatHtml, /假消息|演示消息/);
+assert.match(renderChat({
+  viewModel,
+  actionStates: {},
+  chatHistory: { phase: "loading", error: "", sessionId: "session-chat" },
+  phase: "ready"
+}), /正在加载更早消息/);
+assert.match(renderChat({
+  viewModel,
+  actionStates: {},
+  chatHistory: { phase: "failed", error: "网络暂时不可用", sessionId: "session-chat" },
+  phase: "ready"
+}), /网络暂时不可用[\s\S]*重试/);
+assert.match(renderChat({
+  viewModel: { ...viewModel, chat: { ...viewModel.chat, history: { pageKnown: true, hasMore: false, nextBeforeSeq: 0 } } },
+  actionStates: {},
+  chatHistory: { phase: "idle", error: "", sessionId: "session-chat" },
+  phase: "ready"
+}), /已到这轮对话的最早消息/);
 
 const abilitiesHtml = renderAbilities({ viewModel, actionStates: {}, phase: "ready" });
 assert.match(abilitiesHtml, /她现在能做什么/);
@@ -836,8 +1003,7 @@ assert.match(systemHtml, /核心服务/);
 assert.match(systemHtml, /data-action="perception\.runDiagnostics"/);
 assert.match(systemHtml, /data-action="advanced\.setHitTestEnabled"/);
 assert.match(systemHtml, /data-action="advanced\.setHitboxOverlay"/);
-assert.match(systemHtml, /没有结构化事件来源/);
-assert.match(systemHtml, /不会用健康检查结果拼出假日志/);
+assert.doesNotMatch(systemHtml, /RECENT EVENTS|没有结构化事件来源|以后接入宿主事件流/);
 assert.doesNotMatch(systemHtml, /Health check passed|Backend connected|Live2D|api_key|local_path|cached_path/);
 
 const chatRequests = [];
@@ -855,10 +1021,17 @@ const chatSource = createBackendControlCenterSource({
         headers: { "Content-Type": "application/json" }
       });
     }
-    return new Response(JSON.stringify({
-      session: { session_id: "session-live" },
-      messages: [{ role: "assistant", content: "真实历史" }]
-    }), {
+    const payload = String(url).includes("/sessions/messages")
+      ? {
+          session_id: "session-live",
+          messages: [{ source_id: "older-1", seq_no: 1, role: "user", content: "更早历史" }],
+          message_page: { limit: 60, has_more: false, next_before_seq: null }
+        }
+      : {
+          session: { session_id: "session-live" },
+          messages: [{ role: "assistant", content: "真实历史" }]
+        };
+    return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -869,5 +1042,38 @@ assert.equal(liveChatSession.messages[0].content, "真实历史");
 const chatRequestBody = JSON.parse(chatRequests.find((item) => item.url.includes("/sessions/ensure")).init.body);
 assert.equal(chatRequestBody.session_id, "session-live");
 assert.equal(chatRequestBody.character_pack_id, "second_character");
+const olderChatPage = await chatSource.readChatHistoryPage({
+  sessionId: "session-live",
+  characterPackId: "second_character",
+  beforeSeq: 12,
+  limit: 60
+});
+assert.equal(olderChatPage.messages[0].content, "更早历史");
+const olderChatRequest = chatRequests.find((item) => item.url.includes("/sessions/messages"));
+assert.match(olderChatRequest.url, /before_seq=12/);
+assert.match(olderChatRequest.url, /limit=60/);
+assert.match(olderChatRequest.url, /character_pack_id=second_character/);
+
+const loadedHistory = {
+  session: { session_id: "session-merge" },
+  messages: Array.from({ length: 60 }, (_, index) => ({ source_id: `message-${index + 1}`, seq_no: index + 1 })),
+  message_page: { has_more: false, next_before_seq: null }
+};
+const refreshedTail = {
+  session: { session_id: "session-merge" },
+  messages: Array.from({ length: 60 }, (_, index) => ({ source_id: `message-${index + 41}`, seq_no: index + 41 })),
+  message_page: { has_more: true, next_before_seq: 41 }
+};
+const mergedAfterRefresh = mergeChatSessions(loadedHistory, refreshedTail);
+assert.deepEqual(mergedAfterRefresh.messages.map((item) => item.seq_no), Array.from({ length: 100 }, (_, index) => index + 1));
+assert.equal(mergedAfterRefresh.message_page.has_more, false, "live refresh must preserve the already loaded oldest window");
+const mergedOlderPage = mergeChatSessions(refreshedTail, {
+  session: { session_id: "session-merge" },
+  messages: Array.from({ length: 40 }, (_, index) => ({ source_id: `message-${index + 1}`, seq_no: index + 1 })),
+  message_page: { has_more: false, next_before_seq: null }
+}, { preferIncomingPage: true });
+assert.deepEqual(mergedOlderPage.messages.map((item) => item.seq_no), Array.from({ length: 100 }, (_, index) => index + 1));
+assert.equal(mergedOlderPage.message_page.has_more, false);
+assert.equal(prependedHistoryScrollTop({ scrollHeight: 800, scrollTop: 36 }, 1280), 516);
 
 console.log("control-center V2 smoke passed");

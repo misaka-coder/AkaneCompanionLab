@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
 from dataclasses import dataclass
 from typing import Any, Callable
+from pathlib import Path
 
 import httpx
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus, InvocationContext
@@ -12,6 +14,7 @@ from fastapi import FastAPI
 
 from companion_v01.distribution_artifacts import audit_distribution_artifact
 from companion_v01.instance_profile import PluginSelection
+from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore
 from companion_v01.plugin_contribution_policy import (
     ContributionPolicyDecision,
     M65CDiagnosticContributionPolicy,
@@ -293,6 +296,8 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         after_stop = await host.invoke(CAPABILITY_ID, {"probe": "ready"}, context=context)
 
         self.assertEqual(first["status"], "active")
+        self.assertIsNone(first["contract"]["timeouts"]["invoke_seconds"])
+        self.assertEqual(first["contract"]["registration_limits"]["capabilities_per_plugin"], 64)
         self.assertEqual(second, first)
         self.assertEqual(provider_calls, 1)
         self.assertEqual(entry_point.load_count, 1)
@@ -315,6 +320,48 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped_again, stopped)
         self.assertEqual(adapter.close_count, 1)
         self.assertEqual(after_stop.status, "host_unavailable")
+
+    async def test_empty_plugin_is_rejected_but_capability_is_not_mandatory(self) -> None:
+        host = _host(
+            (PluginSelection(PLUGIN_ID, True),),
+            entry_points_provider=lambda: (_entry_point_for(FakePlugin(())),),
+        )
+
+        status = await host.start()
+
+        self.assertEqual(status["status"], "degraded")
+        self.assertEqual(status["plugins"][0]["reason"], "plugin_registered_no_contributions")
+        await host.stop()
+
+    async def test_invocation_timeout_is_opt_in(self) -> None:
+        class SlowAdapter(FakeAdapter):
+            async def invoke(self, capability_id: str, args: dict[str, Any], ctx: Any) -> CapabilityResult:
+                await asyncio.sleep(0.15)
+                return await super().invoke(capability_id, args, ctx)
+
+        unlimited_adapter = SlowAdapter()
+        unlimited = _host(
+            (PluginSelection(PLUGIN_ID, True),),
+            entry_points_provider=lambda: (_entry_point_for(FakePlugin((unlimited_adapter,))),),
+        )
+        bounded_adapter = SlowAdapter()
+        bounded = _host(
+            (PluginSelection(PLUGIN_ID, True),),
+            entry_points_provider=lambda: (_entry_point_for(FakePlugin((bounded_adapter,))),),
+            invoke_timeout_seconds=0.1,
+        )
+        context = InvocationContext(client_mode="test")
+
+        await unlimited.start()
+        completed = await unlimited.invoke(CAPABILITY_ID, {}, context=context)
+        await unlimited.stop()
+        await bounded.start()
+        timed_out = await bounded.invoke(CAPABILITY_ID, {}, context=context)
+        await bounded.stop()
+
+        self.assertFalse(completed.is_error)
+        self.assertTrue(timed_out.is_error)
+        self.assertEqual(timed_out.reason, "plugin_invoke_timeout")
 
     async def test_missing_enabled_plugin_degrades_without_removing_active_plugin(self) -> None:
         active_id = PLUGIN_ID
@@ -569,21 +616,78 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.close_count, 1)
         self.assertEqual(second.close_count, 1)
 
+    async def test_restart_recreates_installed_plugin_instances_and_advances_generation(self) -> None:
+        adapters: list[FakeAdapter] = []
+
+        def factory() -> FakePlugin:
+            adapter = FakeAdapter()
+            adapters.append(adapter)
+            return FakePlugin((adapter,))
+
+        entry_point = FakeEntryPoint(PLUGIN_ID, factory)
+        host = _host(
+            (PluginSelection(PLUGIN_ID, True),),
+            entry_points_provider=lambda: (entry_point,),
+        )
+        context = InvocationContext(client_mode="test")
+
+        first = await host.start()
+        before = await host.invoke(CAPABILITY_ID, {}, context=context)
+        restarted = await host.restart()
+        after = await host.invoke(CAPABILITY_ID, {}, context=context)
+        await host.stop()
+
+        self.assertEqual(first["generation"], 1)
+        self.assertEqual(restarted["generation"], 2)
+        self.assertEqual(restarted["status"], "active")
+        self.assertEqual(entry_point.load_count, 2)
+        self.assertEqual(len(adapters), 2)
+        self.assertFalse(before.is_error)
+        self.assertFalse(after.is_error)
+        self.assertEqual(adapters[0].invoke_count, 1)
+        self.assertEqual(adapters[0].close_count, 1)
+        self.assertEqual(adapters[1].invoke_count, 1)
+        self.assertEqual(adapters[1].close_count, 1)
+
 
 class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.adapter = FakeAdapter()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.adapters: list[FakeAdapter] = []
+
+        def factory() -> FakePlugin:
+            adapter = FakeAdapter()
+            self.adapters.append(adapter)
+            return FakePlugin((adapter,))
+
+        self.entry_point = FakeEntryPoint(PLUGIN_ID, factory)
         self.host = _host(
             (PluginSelection(PLUGIN_ID, True),),
-            entry_points_provider=lambda: (_entry_point_for(FakePlugin((self.adapter,))),),
+            entry_points_provider=lambda: (self.entry_point,),
         )
         await self.host.start()
+        self.selection_store = PluginSelectionStore(
+            Path(self.temp_dir.name) / "plugin-selections.json",
+            defaults=(PluginSelection(PLUGIN_ID, True),),
+            instance_id="test-instance",
+        )
+        self.extension_management = ExtensionManagementService(
+            plugin_host=self.host,
+            selection_store=self.selection_store,
+        )
+        self.adapter = self.adapters[0]
         app = FastAPI()
-        app.include_router(build_plugins_router(plugin_host=self.host))
+        app.include_router(
+            build_plugins_router(
+                plugin_host=self.host,
+                extension_management_service=self.extension_management,
+            )
+        )
         self.app = app
 
     async def asyncTearDown(self) -> None:
         await self.host.stop()
+        self.temp_dir.cleanup()
 
     async def _request(self, *, peer: str = "127.0.0.1") -> httpx.AsyncClient:
         transport = httpx.ASGITransport(app=self.app, client=(peer, 54321))
@@ -606,6 +710,81 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unknown.status_code, 404)
         self.assertFalse(unknown.json()["ok"])
         self.assertEqual(unknown.json()["reason"], "unknown_capability")
+
+    async def test_restart_route_recreates_instances_and_reports_real_generation(self) -> None:
+        async with await self._request() as client:
+            before = await client.get("/admin/plugins/status")
+            restarted = await client.post("/admin/plugins/restart")
+            invoked = await client.post(f"/admin/plugins/capabilities/{CAPABILITY_ID}/invoke", json={})
+
+        self.assertEqual(before.status_code, 200)
+        self.assertEqual(before.json()["generation"], 1)
+        self.assertEqual(restarted.status_code, 200)
+        self.assertEqual(restarted.json()["generation"], 2)
+        self.assertEqual(restarted.json()["status"], "active")
+        self.assertEqual(self.entry_point.load_count, 2)
+        self.assertEqual(len(self.adapters), 2)
+        self.assertEqual(self.adapters[0].close_count, 1)
+        self.assertEqual(invoked.status_code, 200)
+        self.assertEqual(self.adapters[1].invoke_count, 1)
+
+    async def test_enable_route_persists_and_reconfigures_the_real_host(self) -> None:
+        async with await self._request() as client:
+            disabled = await client.patch(
+                f"/admin/plugins/{PLUGIN_ID}/enabled",
+                json={"enabled": False},
+            )
+            after_disable = await client.get("/admin/plugins/status")
+            enabled = await client.patch(
+                f"/admin/plugins/{PLUGIN_ID}/enabled",
+                json={"enabled": True},
+            )
+
+        self.assertEqual(disabled.status_code, 200)
+        self.assertEqual(disabled.json()["status"], "disabled")
+        self.assertEqual(after_disable.json()["plugins"][0]["status"], "disabled")
+        self.assertEqual(enabled.status_code, 200)
+        self.assertEqual(enabled.json()["status"], "enabled")
+        self.assertTrue(self.selection_store.load()[0].enabled)
+
+    async def test_model_sync_bridge_runs_lifecycle_on_host_loop(self) -> None:
+        disabled = await asyncio.to_thread(
+            self.extension_management.execute_sync,
+            action="disable",
+            plugin_id=PLUGIN_ID,
+        )
+        enabled = await asyncio.to_thread(
+            self.extension_management.execute_sync,
+            action="enable",
+            plugin_id=PLUGIN_ID,
+        )
+
+        self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["status"], "disabled")
+        self.assertTrue(enabled["ok"])
+        self.assertEqual(enabled["status"], "enabled")
+
+    async def test_enable_missing_candidate_rolls_back_without_persisting(self) -> None:
+        await self.host.stop()
+        missing_host = _host(
+            (PluginSelection(PLUGIN_ID, False),),
+            entry_points_provider=lambda: (),
+        )
+        await missing_host.start()
+        store = PluginSelectionStore(
+            Path(self.temp_dir.name) / "missing-plugin-selections.json",
+            defaults=(PluginSelection(PLUGIN_ID, False),),
+            instance_id="test-instance",
+        )
+        service = ExtensionManagementService(plugin_host=missing_host, selection_store=store)
+
+        result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "activation_failed")
+        self.assertEqual(missing_host.status_snapshot()["plugins"][0]["status"], "disabled")
+        self.assertFalse(store.path.exists())
+        await missing_host.stop()
 
     async def test_forwarded_headers_cannot_turn_non_loopback_peer_into_local_request(self) -> None:
         async with await self._request(peer="203.0.113.8") as client:

@@ -423,7 +423,6 @@ def build_desktop_pet_workspace_panel(
     fetch_limit = min(max_items * 3, 180)
     attachment_service = engine._get_attachment_inbox_service()
     generated_service = engine._get_generated_file_service()
-    task_service = engine._get_task_workspace_service()
 
     files: list[dict[str, Any]] = []
     if attachment_service is not None:
@@ -446,27 +445,16 @@ def build_desktop_pet_workspace_panel(
         )
         outputs = [desktop_workspace_generated_card(item) for item in generated]
 
-    tasks: list[dict[str, Any]] = []
-    if task_service is not None:
-        task_items = task_service.list_status_summaries(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=min(12, max_items),
-        )
-        tasks = [desktop_workspace_task_card(item) for item in task_items]
-
     return {
         "ok": True,
         "updated_at": int(time.time()),
         "sections": {
             "files": files,
             "outputs": outputs,
-            "tasks": tasks,
         },
         "counts": {
             "files": len(files),
             "outputs": len(outputs),
-            "tasks": len(tasks),
         },
     }
 
@@ -555,7 +543,7 @@ def manage_desktop_pet_workspace_panel(
     normalized_target = str(target or "").strip()
     now_ts = int(time.time())
 
-    if normalized_action not in {"clear", "hide", "archive", "clear_completed_tasks", "clear_files", "clear_workspace_files"}:
+    if normalized_action not in {"clear", "hide", "archive", "clear_files", "clear_workspace_files"}:
         return {"ok": False, "error": "unsupported_action", "managed": []}
 
     if normalized_action in {"clear_files", "clear_workspace_files"}:
@@ -564,14 +552,6 @@ def manage_desktop_pet_workspace_panel(
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
-            timestamp=now_ts,
-        )
-
-    if normalized_action == "clear_completed_tasks":
-        return clear_desktop_workspace_completed_tasks(
-            engine,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
             timestamp=now_ts,
         )
 
@@ -629,31 +609,6 @@ def manage_desktop_pet_workspace_panel(
             "failures": list(result.get("failures") or []),
             "action": "archive",
             "item_type": "generated",
-        }
-
-    if normalized_type == "task":
-        if not normalized_target:
-            return {"ok": False, "error": "missing_target", "managed": []}
-        service = engine._get_task_workspace_service()
-        if service is None:
-            return {"ok": False, "error": "task_service_unavailable", "managed": []}
-        task = service.get_task(normalized_target)
-        if not task:
-            return {"ok": False, "error": "task_not_found", "managed": []}
-        status = str(task.get("status") or "").strip().lower()
-        if status not in {"completed", "failed", "canceled", "waiting_user"}:
-            return {"ok": False, "error": "task_not_clearable", "managed": []}
-        cleaned = service.cleanup_task(
-            task_id=normalized_target,
-            mode="desktop_panel",
-            reason="用户从桌宠手边物品面板清理。",
-            timestamp=now_ts,
-        )
-        return {
-            "ok": bool(cleaned),
-            "managed": [desktop_workspace_task_card(cleaned)] if cleaned else [],
-            "action": "clear",
-            "item_type": "task",
         }
 
     return {"ok": False, "error": "unsupported_item_type", "managed": []}
@@ -720,43 +675,6 @@ def clear_desktop_workspace_files(
     }
 
 
-def clear_desktop_workspace_completed_tasks(
-    engine: Any,
-    *,
-    profile_user_id: str,
-    session_id: str,
-    timestamp: int,
-) -> dict[str, Any]:
-    service = engine._get_task_workspace_service()
-    if service is None:
-        return {"ok": False, "error": "task_service_unavailable", "managed": []}
-    tasks = engine.store.list_task_workspaces(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        statuses=["completed", "failed", "canceled"],
-        limit=50,
-    )
-    managed: list[dict[str, Any]] = []
-    for task in tasks:
-        task_id = str(task.get("task_id") or "").strip()
-        if not task_id:
-            continue
-        cleaned = service.cleanup_task(
-            task_id=task_id,
-            mode="desktop_panel_batch",
-            reason="用户从桌宠手边物品面板清理已完成任务。",
-            timestamp=timestamp,
-        )
-        if cleaned:
-            managed.append(desktop_workspace_task_card(cleaned))
-    return {
-        "ok": True,
-        "managed": managed,
-        "action": "clear_completed_tasks",
-        "item_type": "task",
-    }
-
-
 def desktop_workspace_attachment_card(item: dict[str, Any]) -> dict[str, Any]:
     detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
     media_info = detail.get("media_info") if isinstance(detail.get("media_info"), dict) else {}
@@ -804,36 +722,6 @@ def desktop_workspace_generated_card(item: dict[str, Any]) -> dict[str, Any]:
         "updated_at": int(item.get("updated_at") or item.get("created_at") or 0),
         "can_open": status == "ready",
         "can_clear": status in {"ready", "failed"},
-    }
-
-
-def desktop_workspace_task_card(item: dict[str, Any] | None) -> dict[str, Any]:
-    task = item if isinstance(item, dict) else {}
-    task_id = str(task.get("task_id") or "").strip()
-    status = str(task.get("status") or "").strip().lower()
-    title = clip_desktop_workspace_text(task.get("title") or "后台任务", 80)
-    summary = clip_desktop_workspace_text(task.get("summary") or "", 120)
-    handoff = task.get("handoff") if isinstance(task.get("handoff"), dict) else {}
-    artifacts = [str(value or "").strip() for value in list(handoff.get("artifacts") or [])]
-    artifacts = [value for value in artifacts if value]
-    next_action = clip_desktop_workspace_text(handoff.get("next_action") or "", 100)
-    status_group = desktop_workspace_task_status_group(status)
-    subtitle = desktop_workspace_task_subtitle(status=status, summary=summary, artifact_count=len(artifacts))
-    return {
-        "item_type": "task",
-        "id": task_id,
-        "handle": task_id,
-        "title": title,
-        "subtitle": subtitle,
-        "summary": summary,
-        "status": status,
-        "status_label": desktop_workspace_status_label(status),
-        "status_group": status_group,
-        "artifact_count": len(artifacts),
-        "next_action": next_action,
-        "updated_at": int(task.get("updated_at") or 0),
-        "can_open": False,
-        "can_clear": status in {"completed", "failed", "canceled", "blocked", "waiting_user"},
     }
 
 
@@ -887,40 +775,6 @@ def desktop_workspace_status_label(status: str) -> str:
         "canceled": "已取消",
         "cleaned": "已收起",
     }.get(str(status or "").strip().lower(), str(status or "").strip() or "未知")
-
-
-def desktop_workspace_task_status_group(status: str) -> str:
-    normalized = str(status or "").strip().lower()
-    if normalized in {"queued", "running"}:
-        return "active"
-    if normalized in {"completed"}:
-        return "done"
-    if normalized in {"failed"}:
-        return "failed"
-    if normalized in {"blocked", "waiting_user", "partial"}:
-        return "attention"
-    if normalized in {"canceled", "cleaned"}:
-        return "idle"
-    return "idle"
-
-
-def desktop_workspace_task_subtitle(*, status: str, summary: str, artifact_count: int) -> str:
-    normalized = str(status or "").strip().lower()
-    if artifact_count > 0:
-        return f"{summary} · {artifact_count} 个产物" if summary else f"已有 {artifact_count} 个产物"
-    if summary:
-        return summary
-    fallback = {
-        "queued": "已排队，等待后台工坊接手",
-        "running": "后台工坊正在处理",
-        "blocked": "需要你确认后继续",
-        "waiting_user": "需要你确认后继续",
-        "partial": "已有部分结果，等前台接手",
-        "completed": "已完成，结果会放回手边",
-        "failed": "执行失败，可以查看原因后重试",
-        "canceled": "任务已取消",
-    }
-    return fallback.get(normalized, "后台任务")
 
 
 def clip_desktop_workspace_text(value: Any, limit: int) -> str:

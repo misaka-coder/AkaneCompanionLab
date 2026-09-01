@@ -1,7 +1,9 @@
 """Host-owned broker for QQ command contributions from supervised plugins.
 
 After PluginHost.start() activates all plugins, the composition root calls
-PluginHost.build_qq_command_broker() to obtain an immutable PluginQQCommandBroker.
+PluginHost.build_qq_command_broker() to obtain a stable broker.  The broker may
+read immutable registration snapshots from PluginHost so a controlled host
+restart cannot leave QQ command routing pinned to closed plugin instances.
 The QQ route calls broker.dispatch() before starting an LLM turn; if any plugin
 handles the command the LLM turn is skipped and the plugin's reply (if any) is
 sent directly.
@@ -43,10 +45,11 @@ class _PluginCommandRegistration:
 
 
 class PluginQQCommandBroker:
-    """Immutable command index built from activated plugin registrations.
+    """Command broker backed by immutable point-in-time registration snapshots.
 
-    Constructed by PluginHost.build_qq_command_broker() after start().  It holds
-    references to handler objects but never to raw adapters or the gateway.
+    A static snapshot remains supported for compatibility.  PluginHost uses a
+    provider so every dispatch resolves the current published generation while
+    an already-created QQ route can keep the same broker object.
     """
 
     def __init__(
@@ -56,23 +59,21 @@ class PluginQQCommandBroker:
         host_registrations: tuple[_PluginCommandRegistration, ...] = (),
         handler_timeout_seconds: float = DEFAULT_HANDLER_TIMEOUT_SECONDS,
         availability_provider: Callable[[], bool] | None = None,
+        registrations_provider: Callable[[], tuple[_PluginCommandRegistration, ...]] | None = None,
     ) -> None:
         self._handler_timeout_seconds = max(0.01, float(handler_timeout_seconds))
         self._availability_provider = availability_provider or (lambda: True)
-        # Fast lookup: normalised command → first matching registration.
-        # Host builtin commands take precedence over plugin registrations.
-        self._index: dict[str, _PluginCommandRegistration] = {}
-        for reg in (*host_registrations, *registrations):
-            if reg.command not in self._index:
-                self._index[reg.command] = reg
+        self._host_registrations = tuple(host_registrations)
+        self._static_registrations = tuple(registrations)
+        self._registrations_provider = registrations_provider
 
     @property
     def registered_commands(self) -> tuple[str, ...]:
-        return tuple(self._index)
+        return tuple(self._current_index())
 
     def handles(self, command: str) -> bool:
         """True if any plugin handles this exact command."""
-        return _normalise_command(command) in self._index
+        return _normalise_command(command) in self._current_index()
 
     async def dispatch(
         self,
@@ -94,7 +95,7 @@ class PluginQQCommandBroker:
         Never raises; handler exceptions are caught and returned as errors.
         """
         key = _normalise_command(command)
-        registration = self._index.get(key)
+        registration = self._current_index().get(key)
         if registration is None:
             return PluginQQCommandResult(handled=False, reason="no_matching_command")
         try:
@@ -189,6 +190,34 @@ class PluginQQCommandBroker:
             reply_text=reply_text,
             reason=_safe_reason(result.reason),
         )
+
+    def _current_index(self) -> dict[str, _PluginCommandRegistration]:
+        plugin_registrations = self._static_registrations
+        if self._registrations_provider is not None:
+            try:
+                provided = self._registrations_provider()
+            except Exception:
+                provided = ()
+            if isinstance(provided, tuple):
+                try:
+                    host_available = bool(self._availability_provider())
+                except Exception:
+                    host_available = False
+                # During a controlled restart the host briefly publishes no
+                # active registrations.  Keep the last snapshot for matching
+                # so dispatch reports host_unavailable instead of leaking the
+                # command into the LLM route.  Once a generation is available,
+                # even an intentionally empty tuple becomes authoritative.
+                if host_available:
+                    self._static_registrations = provided
+                plugin_registrations = self._static_registrations
+
+        # Host builtin commands take precedence over plugin registrations.
+        index: dict[str, _PluginCommandRegistration] = {}
+        for registration in (*self._host_registrations, *plugin_registrations):
+            if isinstance(registration, _PluginCommandRegistration):
+                index.setdefault(registration.command, registration)
+        return index
 
 
 def _normalise_command(command: str) -> str:

@@ -9,7 +9,6 @@ from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
-from companion_v01.task_workspace import TaskWorkspaceService
 
 
 class _NoopVisionService:
@@ -37,7 +36,6 @@ def _make_workspace_engine(root: Path) -> AkaneMemoryEngine:
         store=engine.store,
         attachment_service=engine.attachment_inbox_service,
     )
-    engine.task_workspace_service = TaskWorkspaceService(store=engine.store)
     return engine
 
 
@@ -67,29 +65,19 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 created_by_tool="compose_file",
                 timestamp=110,
             )
-            engine.store.add_task_workspace(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                status="completed",
-                normalized_goal="整理音频结果",
-                timestamp=120,
-            )
-
             panel = engine.build_desktop_pet_workspace_panel(
                 profile_user_id="master",
                 session_id="desktop_pet_test",
             )
 
             self.assertTrue(panel["ok"])
-            self.assertEqual(panel["counts"], {"files": 1, "outputs": 1, "tasks": 1})
+            self.assertEqual(panel["counts"], {"files": 1, "outputs": 1})
             file_card = panel["sections"]["files"][0]
             output_card = panel["sections"]["outputs"][0]
-            task_card = panel["sections"]["tasks"][0]
             self.assertEqual(file_card["title"], "一首歌")
             self.assertEqual(file_card["subtitle"], "音频 · FLAC")
             self.assertEqual(output_card["title"], "整理好的歌词")
             self.assertIn("做好的东西", output_card["subtitle"])
-            self.assertEqual(task_card["title"], "整理音频结果")
             self.assertNotIn("profile_user_id", file_card)
             self.assertNotIn("session_id", output_card)
 
@@ -116,14 +104,6 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 created_by_tool="compose_file",
                 timestamp=110,
             )
-            task = engine.store.add_task_workspace(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                status="completed",
-                normalized_goal="收尾任务",
-                timestamp=120,
-            )
-
             attachment_result = engine.manage_desktop_pet_workspace_panel(
                 profile_user_id="master",
                 session_id="desktop_pet_test",
@@ -138,15 +118,8 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 item_type="generated",
                 target=generated["generated_handle"],
             )
-            tasks_result = engine.manage_desktop_pet_workspace_panel(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                action="clear_completed_tasks",
-            )
-
             self.assertTrue(attachment_result["ok"])
             self.assertTrue(generated_result["ok"])
-            self.assertTrue(tasks_result["ok"])
             self.assertEqual(
                 engine.store.get_attachment_inbox_item(
                     profile_user_id="master",
@@ -163,13 +136,12 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 )["status"],
                 "removed",
             )
-            self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "cleaned")
 
     def test_panel_single_item_actions_require_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = _make_workspace_engine(Path(temp_dir))
 
-            for item_type in ("attachment", "generated", "task"):
+            for item_type in ("attachment", "generated"):
                 result = engine.manage_desktop_pet_workspace_panel(
                     profile_user_id="master",
                     session_id="desktop_pet_test",
@@ -261,7 +233,7 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 )
             )
 
-    def test_clear_files_action_clears_sources_and_generated_without_tasks(self) -> None:
+    def test_clear_files_action_clears_sources_and_generated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = _make_workspace_engine(Path(temp_dir))
             attachment = engine.store.add_attachment_inbox_item(
@@ -284,14 +256,6 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 created_by_tool="compose_file",
                 timestamp=110,
             )
-            task = engine.store.add_task_workspace(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                status="completed",
-                normalized_goal="不要被一键文件清理影响",
-                timestamp=120,
-            )
-
             result = engine.manage_desktop_pet_workspace_panel(
                 profile_user_id="master",
                 session_id="desktop_pet_test",
@@ -317,48 +281,6 @@ class DesktopWorkspacePanelTests(unittest.TestCase):
                 )["status"],
                 "removed",
             )
-            self.assertEqual(engine.store.get_task_workspace(task["task_id"])["status"], "completed")
-
-    def test_task_cards_expose_status_group_and_handoff_summary(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            engine = _make_workspace_engine(Path(temp_dir))
-            task = engine.store.add_task_workspace(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                status="waiting_user",
-                normalized_goal="整理音频并生成摘要",
-                pending_question={"text": "要不要保留时间轴？"},
-                timestamp=130,
-            )
-            engine.store.append_task_workspace_event(
-                task_id=task["task_id"],
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-                event_type="workshop_handoff",
-                from_actor="worker",
-                payload={
-                    "handoff": {
-                        "status": "partial",
-                        "summary": "转写稿已生成，时间轴格式待确认。",
-                        "next_action": "询问用户是否保留时间轴。",
-                        "artifacts": [{"id": "gen_001", "title": "转写稿"}],
-                    },
-                },
-                status="pending",
-                timestamp=135,
-            )
-
-            panel = engine.build_desktop_pet_workspace_panel(
-                profile_user_id="master",
-                session_id="desktop_pet_test",
-            )
-
-            task_card = panel["sections"]["tasks"][0]
-            self.assertEqual(task_card["status"], "partial")
-            self.assertEqual(task_card["status_group"], "attention")
-            self.assertEqual(task_card["artifact_count"], 1)
-            self.assertIn("转写稿已生成", task_card["subtitle"])
-            self.assertIn("询问用户", task_card["next_action"])
 
     def test_local_path_import_copies_supported_files_into_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -22,7 +22,6 @@ from companion_v01.capability_registry import (
 from companion_v01.client_protocol import ClientMode
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
 from companion_v01.routes.capabilities import _run_bound_workflow_job
-from companion_v01.task_worker import TaskWorkerService
 from companion_v01.tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD, ToolInvocation
 from companion_v01.tool_orchestration_engine import (
     execute_tool_invocation,
@@ -355,37 +354,6 @@ class CapabilityFabricRepairTests(unittest.TestCase):
         self.assertEqual(conflict.reason, "invocation_id_request_conflict")
         self.assertEqual(other_session.result, {"call": 2})
         self.assertEqual(calls, 2)
-
-    def test_worker_broker_failure_never_falls_back_to_direct_handler(self) -> None:
-        class FailingBroker:
-            def execute_server_local(self, **_kwargs: Any):
-                raise RuntimeError("broker down")
-
-        handler = _Handler("compose_file")
-        engine = _Engine({"compose_file": handler}, broker=FailingBroker())
-        worker = TaskWorkerService(
-            llm=None,  # type: ignore[arg-type]
-            task_workspace_service=None,  # type: ignore[arg-type]
-            background_tasks=None,
-            tool_handlers_provider=lambda: {"compose_file": handler},
-            attachment_context_builder=lambda *_args: "",
-            generated_context_builder=lambda *_args: "",
-            record_tool_artifacts=lambda **_kwargs: ([], ""),
-            engine_ref=engine,
-        )
-
-        result = worker._execute_worker_tool(
-            tool_call={"type": "compose_file", "content_markdown": "hello"},
-            handlers={"compose_file": handler},
-            profile_user_id="alice",
-            session_id="same-session",
-            task_id="task_1",
-        )
-
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.state_updates["worker_tool_status"], "execution_unknown")
-        self.assertEqual(handler.execute_calls, 0)
 
     def test_browser_page_uses_its_own_server_offer_not_open_browser_satellite(self) -> None:
         ready_handler = _Handler("browser_page", ready=True)

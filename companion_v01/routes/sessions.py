@@ -13,6 +13,8 @@ from ..store import normalize_character_pack_id
 ResolveIdentity = Callable[[dict[str, Any]], tuple[str, str]]
 ResolveQueryIdentity = Callable[[Request], tuple[str, str]]
 LogEvent = Callable[..., None]
+DEFAULT_SESSION_MESSAGE_LIMIT = 120
+MAX_SESSION_MESSAGE_LIMIT = 120
 
 
 def build_sessions_router(
@@ -87,11 +89,11 @@ def build_sessions_router(
             limit=50,
             character_pack_id=character_pack_id,
         )
-        messages = engine.store.get_session_messages(
+        messages, message_page = read_message_page(
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
-            limit=120,
+            limit=DEFAULT_SESSION_MESSAGE_LIMIT,
         )
         latest_eval = engine.store.get_latest_eval_turn_for_session(
             profile_user_id=profile_user_id,
@@ -106,7 +108,33 @@ def build_sessions_router(
             "session": session,
             "sessions": sessions,
             "messages": messages,
+            "message_page": message_page,
             "latest_final_json": latest_final_json,
+        }
+
+    def read_message_page(
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str | None,
+        limit: int,
+        before_seq: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, object]]:
+        page_limit = max(1, min(MAX_SESSION_MESSAGE_LIMIT, int(limit)))
+        rows = engine.store.get_session_messages(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            limit=page_limit + 1,
+            before_seq=before_seq,
+        )
+        has_more = len(rows) > page_limit
+        messages = rows[-page_limit:]
+        next_before_seq = int(messages[0].get("seq_no") or 0) if has_more and messages else None
+        return messages, {
+            "limit": page_limit,
+            "has_more": has_more,
+            "next_before_seq": next_before_seq,
         }
 
     @router.get("/sessions")
@@ -133,6 +161,87 @@ def build_sessions_router(
                 "sessions": sessions,
                 "current_session_id": session_id,
             }
+        )
+
+    @router.get("/sessions/messages")
+    async def sessions_messages(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        session_id, profile_user_id = resolve_identity_from_query(request)
+        character_pack_id = resolve_character_pack_id_from_query(request)
+        try:
+            limit = int(request.query_params.get("limit") or 60)
+            raw_before_seq = str(request.query_params.get("before_seq") or "").strip()
+            before_seq = int(raw_before_seq) if raw_before_seq else None
+            if before_seq is not None and before_seq <= 0:
+                raise ValueError("before_seq must be positive")
+        except (TypeError, ValueError) as exc:
+            runtime_metrics.observe_request(
+                "sessions_messages",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="invalid_pagination",
+                    message=str(exc)[:160] or "无效的历史分页参数",
+                    retryable=False,
+                ),
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        session = (
+            engine.store.get_character_session(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id or "",
+            )
+            if character_pack_id is not None
+            else engine.store.get_session(profile_user_id, session_id)
+        )
+        if session is None:
+            runtime_metrics.observe_request(
+                "sessions_messages",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            raise HTTPException(status_code=404, detail="session not found")
+
+        try:
+            messages, message_page = read_message_page(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                limit=limit,
+                before_seq=before_seq,
+            )
+        except Exception as exc:
+            runtime_metrics.observe_request(
+                "sessions_messages",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "sessions_messages_error",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                message=str(exc),
+            )
+            raise
+
+        runtime_metrics.observe_request(
+            "sessions_messages",
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+            ok=True,
+        )
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "character_pack_id": character_pack_id or "",
+                "messages": messages,
+                "message_page": message_page,
+            },
+            headers={"Cache-Control": "no-store"},
         )
 
     @router.post("/sessions/ensure")

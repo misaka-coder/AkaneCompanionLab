@@ -1,6 +1,6 @@
 # Tool Interface
 
-`AkaneMemoryEngine` now resolves model-emitted `tool_call` payloads through a small handler registry instead of hardcoding `call_npc` inside the main turn flow.
+`AkaneMemoryEngine` resolves model tool calls through one handler registry and one canonical capability schema per tool.
 
 ## Current Shape
 
@@ -17,18 +17,9 @@ Tools are split into capability packs:
 - `base`
   - `retrieve_memory`
   - `read_memory_timeline`
-  - `set_reminder`
-  - `list_reminders`
-  - `cancel_reminder`
-  - `manage_persona`
-- `web_scene`
-  - `call_npc`
-  - `check_inventory`
-  - `manage_gift`
-  - `manage_artifact`
+  - `load_character_context`
 - `qq`
   - `fetch_media_from_url`
-  - `sync_attachment_workspace`
   - `inspect_attachment`
   - `read_attachment_section`
   - `retry_attachment`
@@ -50,9 +41,7 @@ Tools are split into capability packs:
   - `open_music_search`
   - `list_workspace`
   - `read_workspace`
-  - `focus_workspace`
   - `register_workspace_items`
-  - `sync_attachment_workspace`
   - `inspect_attachment`
   - `read_attachment_section`
   - `retry_attachment`
@@ -126,20 +115,6 @@ Each tool handler should:
 - `open_memory`
   - opens selected raw/summary nodes as card/content, or follows one node's exact source tree with `sources`
   - supports batch `memory_ids` for card/content; sources remains single-ID because each tree owns its cursor
-- `call_npc`
-  - asks a temporary NPC for one short reply
-  - streams an `npc_turn` event to the frontend
-  - feeds the NPC line back into Akane for a follow-up answer
-- `set_reminder`
-  - stores a future reminder after backend-side time resolution
-  - streams a `reminder_set` event when creation succeeds
-  - if the time is still ambiguous, it does not create a reminder and instead pushes clarification context back to Akane
-- `list_reminders`
-  - reads current pending reminders for the session
-  - feeds a numbered reminder list back into Akane so she can naturally summarize it to the user
-- `cancel_reminder`
-  - cancels a pending reminder by `reminder_id`, by list index, or by a text clue
-  - if multiple reminders match, it refuses to guess and asks Akane to clarify with the user
 - `inspect_attachment`
   - expands a temporary attachment card from the current session's Attachment Inbox
   - used by QQ / desktop-style clients when Akane needs details about an earlier image or file
@@ -149,12 +124,6 @@ Each tool handler should:
   - prefers rereading the stored original attachment when available; falls back to the current parsed attachment card
   - if the file has no text layer or parser support, it returns a clear failure context
   - intended for long documents where Akane should not load every detail into the prompt by default
-- `sync_attachment_workspace`
-  - declaratively reorganizes the current detailed attachment workbench with a final target list
-  - new QQ attachments are auto-focused first; this tool is mainly for narrowing, switching, or comparing selected materials after the batch arrives
-  - accepts handles such as `img_001`, sequence clues such as `第2张图`, or title/file-name hints
-  - supports multi-image / multi-file comparison; other attachments remain in the lightweight Manifest
-  - uses a context-budget guard instead of a fixed 3-item cap, and asks Akane to use `read_attachment_section` for oversized files
 - `clear_attachment_focus`
   - marks temporary attachments as `cleared` so they stop being injected into prompt context
   - clears only the focus inbox; it does not delete raw chat memory or gift assets
@@ -270,16 +239,16 @@ Each tool handler should:
 且无需第二套兼容实现。
 
 - **永久保留（不能被 Shell 粗暴替代）**：MemCore 记忆工具（`retrieve_memory` 等）、
-  提醒/人格/NPC/礼物/世界状态工具、`send_file`/`send_sticker` 等表现层交付、
-  Desktop Satellite 系统能力、`open_browser`、`web_search`、审批与任务委派、
+  `send_file`/`send_sticker` 等表现层交付、角色包上下文、
+  Desktop Satellite 系统能力、浏览器与联网能力、审批边界、
   安全工作区/附件句柄工具、仍承担生成物生命周期的文档和媒体工具。
 - **可 Skill 化但暂不退役**：`inspect_media_info`、`convert_media_file`、
   批量重命名、文本/数据处理等未来小能力。它们依赖 `workspace:/`→执行输入的
   安全映射、Shell 产物自动登记、MIME/格式识别、`gen_*` 生命周期、文件交付、
   脱敏、云端/本地执行位置与结构化失败。在 exec artifact bridge 落地前，媒体和
   文档专用工具继续保留。
-- **已退役**：`send_generated_file`（旧格式兼容入口，`send_file` 已完整覆盖，
-  从未进入 capability selection / native schema / legacy prompt）。
+- **已退役**：`send_generated_file`，以及旧的 NPC/礼物/资产/persona-card、
+  工作区 focus、附件 sync 工具。完整清单与替代路径见 `retired_host_tool_surfaces_v1.md`。
 
 历史 MemCore 中的 `tool.send_generated_file.*` 记录只作为历史轨迹读取，按 kind
 投影，不要求旧 handler 存在；因此删除 handler 不影响历史记录展示。

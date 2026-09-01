@@ -43,10 +43,6 @@ export function renderSystem(state) {
             ${system.issues.length ? `<div class="system-issue-list">${system.issues.map(renderIssue).join("")}</div>` : `<div class="system-all-clear"><i>✓</i><span><strong>没有发现需要用户处理的问题</strong><small>这代表当前可见检查均正常，不代表宿主拥有完整日志监控。</small></span></div>`}
           </section>
 
-          <section class="system-panel glass-panel">
-            <div class="system-panel-head"><div><p class="eyebrow">RECENT EVENTS</p><h3>最近事件</h3></div><span class="mini-chip">未接入</span></div>
-            <div class="system-event-empty"><span>没有结构化事件来源</span><p>当前接口没有提供真实故障时间线，因此这里不会用健康检查结果拼出假日志。以后接入宿主事件流后再展示。</p></div>
-          </section>
         </div>
 
         <aside class="system-side-column">

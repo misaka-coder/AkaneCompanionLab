@@ -55,14 +55,13 @@ V1 modules:
 
 | Module | Light Hint | Full Tools | Trigger |
 | --- | --- | --- | --- |
-| `base` | reminders and persona cards | `set_reminder`, `list_reminders`, `cancel_reminder`, `manage_persona` | always when tool actions are enabled |
+| `base` | memory and character-pack context | `retrieve_memory`, `read_memory_timeline`, `load_character_context` | always when tool actions are enabled |
 | `remote_media_fetch` | can download public audio/video links into temporary workspace | `fetch_media_from_url` | QQ/Desktop always |
-| `attachment_workspace` | can receive, send, and organize temporary attachments | `sync_attachment_workspace`, `inspect_attachment`, `retry_attachment`, `clear_attachment_focus`, `send_file` | QQ/Desktop with any active attachment, pending/ready/failed |
+| `attachment_workspace` | can inspect and clear temporary attachments | `inspect_attachment`, `retry_attachment`, `clear_attachment_focus`, `send_file` | QQ/Desktop with any active attachment, pending/ready/failed |
 | `conversation_file_authoring` | can generate a file from current conversation even without attachments | `compose_file` | QQ/Desktop always |
 | `document_workbench` | can read, summarize, convert, style documents | `read_attachment_section`, `compose_file`, `revise_generated_file`, `apply_style_to_existing_file` | active document/text attachment, or generated document/table file |
 | `media_workbench` | can inspect and polish audio/video | `inspect_media_info`, `separate_audio_stems`, `clean_voice_track`, `transcribe_media`, `prepare_voice_dataset`, `convert_media_file` | active audio/video attachment, or generated media file |
 | `generated_file_management` | can inspect, resend, archive, delete generated outputs | `inspect_generated_file`, `send_file`, `manage_generated_file` | generated file exists in current session |
-| `web_scene_world` | can manage gifts, artifacts, and inventory | `call_npc`, `check_inventory`, `manage_gift`, `manage_artifact` | Web scene modes |
 
 Future modules:
 

@@ -1,4 +1,4 @@
-"""Restart-only host for explicitly allowlisted, trusted in-process plugins."""
+"""Lifecycle host for explicitly allowlisted, trusted in-process plugins."""
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ _QQ_COMMAND_PATTERN = re.compile(r"^/[^\s/]{1,63}$")
 _MAX_PROMPT_BLOCKS_PER_PLUGIN = 8
 _MAX_PROMPT_BLOCK_CHARS = 16_000
 _MAX_PROMPT_BLOCK_TOTAL_CHARS = 32_000
+_MAX_PERMISSIONS_PER_PLUGIN = 32
 _PROMPT_BLOCK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
@@ -79,6 +80,9 @@ class PluginStatus:
     reason: str = ""
     plugin_version: str = ""
     stage: str = ""
+    permissions: tuple[str, ...] = ()
+    capability_ids: tuple[str, ...] = ()
+    qq_commands: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -91,6 +95,12 @@ class PluginStatus:
             payload["plugin_version"] = self.plugin_version
         if self.stage:
             payload["stage"] = self.stage
+        if self.permissions:
+            payload["permissions"] = list(self.permissions)
+        if self.capability_ids:
+            payload["capability_ids"] = list(self.capability_ids)
+        if self.qq_commands:
+            payload["qq_commands"] = list(self.qq_commands)
         return payload
 
 
@@ -272,11 +282,13 @@ class _StagedRegistrar(PluginRegistrar):
 
 
 class PluginHost:
-    """Own plugin discovery, activation, immutable registration, and shutdown.
+    """Own plugin discovery, generation-scoped registration, and shutdown.
 
-    Construction only captures an immutable instance selection and callables.
+    Each running generation uses one immutable selection snapshot.  The
+    extension-management service may replace that snapshot only by draining the
+    current generation and starting a new one through :meth:`reconfigure`.
     Discovery, artifact audit, imports, factories, registration, health checks,
-    and capability enumeration happen exclusively in :meth:`start`.
+    and capability enumeration happen exclusively during lifecycle startup.
     """
 
     def __init__(
@@ -286,7 +298,7 @@ class PluginHost:
         contribution_policy: PluginContributionPolicy,
         entry_points_provider: Callable[[], Iterable[Any]] | None = None,
         activation_timeout_seconds: float = 5.0,
-        invoke_timeout_seconds: float = 5.0,
+        invoke_timeout_seconds: float | None = None,
         managed_artifact_timeout_seconds: float = 5.0,
         close_timeout_seconds: float = 2.0,
     ) -> None:
@@ -306,7 +318,9 @@ class PluginHost:
         self._contribution_policy_id = contribution_policy_id
         self._entry_points_provider = entry_points_provider or _installed_plugin_entry_points
         self._activation_timeout_seconds = max(0.1, float(activation_timeout_seconds))
-        self._invoke_timeout_seconds = max(0.1, float(invoke_timeout_seconds))
+        self._invoke_timeout_seconds = (
+            None if invoke_timeout_seconds is None else max(0.1, float(invoke_timeout_seconds))
+        )
         self._managed_artifact_timeout_seconds = max(0.1, float(managed_artifact_timeout_seconds))
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
 
@@ -335,7 +349,9 @@ class PluginHost:
         self._job_statuses: dict[str, dict[str, str]] = {}
         self._job_stop_timeout_seconds: float = 10.0
         self._job_stop_failure_count = 0
+        self._generation = 0
 
+        self._management_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
         self._invoke_lock = asyncio.Lock()
         self._inflight_count = 0
@@ -345,6 +361,14 @@ class PluginHost:
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def selections(self) -> tuple[PluginSelection, ...]:
+        return tuple(self._selections)
+
+    @property
+    def runtime_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._runtime_loop
 
     @property
     def capability_ids(self) -> tuple[str, ...]:
@@ -395,6 +419,8 @@ class PluginHost:
             "status": self._state,
             "reason": reason,
             "contribution_policy": self._contribution_policy_id,
+            "generation": self._generation,
+            "configured_plugin_count": len(self._plugin_statuses),
             "plugin_count": len(self._active_plugins),
             "capability_count": len(self._capabilities),
             "prompt_block_count": sum(
@@ -408,6 +434,24 @@ class PluginHost:
             "job_stop_failure_count": self._job_stop_failure_count,
             "jobs": job_statuses,
             "close_failure_count": self._close_failure_count,
+            "contract": {
+                "registration_limits": {
+                    "adapters_per_plugin": _MAX_ADAPTERS_PER_PLUGIN,
+                    "capabilities_per_plugin": _MAX_CAPABILITIES_PER_PLUGIN,
+                    "qq_commands_per_plugin": _MAX_QQ_COMMANDS_PER_PLUGIN,
+                    "prompt_blocks_per_plugin": _MAX_PROMPT_BLOCKS_PER_PLUGIN,
+                    "prompt_block_chars": _MAX_PROMPT_BLOCK_CHARS,
+                    "prompt_block_total_chars": _MAX_PROMPT_BLOCK_TOTAL_CHARS,
+                    "permissions_per_plugin": _MAX_PERMISSIONS_PER_PLUGIN,
+                },
+                "timeouts": {
+                    "activation_step_seconds": self._activation_timeout_seconds,
+                    "invoke_seconds": self._invoke_timeout_seconds,
+                    "managed_artifact_seconds": self._managed_artifact_timeout_seconds,
+                    "adapter_close_seconds": self._close_timeout_seconds,
+                    "background_job_stop_seconds": self._job_stop_timeout_seconds,
+                },
+            },
             "plugins": [status.as_dict() for status in self._plugin_statuses],
         }
 
@@ -466,23 +510,36 @@ class PluginHost:
         ``host_registrations`` may carry host builtin commands (e.g. ``/能力``);
         they take precedence over plugin registrations with the same token.
         """
-        registrations: list[_PluginCommandRegistration] = []
-        for active in self._active_plugins.values():
-            for reg in active.qq_command_registrations:
-                registrations.append(reg)
         return PluginQQCommandBroker(
-            tuple(registrations),
+            self._qq_command_registrations_snapshot(),
             host_registrations=tuple(host_registrations or ()),
             availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+            registrations_provider=self._qq_command_registrations_snapshot,
+        )
+
+    def _qq_command_registrations_snapshot(self) -> tuple[_PluginCommandRegistration, ...]:
+        return tuple(
+            registration
+            for active in self._active_plugins.values()
+            for registration in active.qq_command_registrations
         )
 
     async def start(self) -> dict[str, Any]:
+        async with self._management_lock:
+            return await self._start_once()
+
+    async def _start_once(self, *, allow_stopped: bool = False) -> dict[str, Any]:
         async with self._lifecycle_lock:
-            if self._state in _HOST_AVAILABLE_STATES or self._state in {"starting", "stopping", "stopped"}:
+            if self._state in _HOST_AVAILABLE_STATES or self._state in {"starting", "stopping"}:
+                return self.status_snapshot()
+            if self._state == "stopped" and not allow_stopped:
                 return self.status_snapshot()
 
             self._runtime_loop = asyncio.get_running_loop()
             self._state = "starting"
+            # Adapter identities are scoped to one lifecycle generation.  Old
+            # references have already been closed by _stop_once().
+            self._closed_adapters = []
             working_plugins: dict[str, _ActivePlugin] = {}
             working_capabilities: dict[str, _CapabilityRegistration] = {}
             working_qq_commands: set[str] = set()
@@ -545,6 +602,7 @@ class PluginHost:
             self._active_plugins = MappingProxyType(dict(working_plugins))
             self._capabilities = MappingProxyType(dict(working_capabilities))
             self._activation_order = tuple(activation_order)
+            self._generation += 1
             # Start supervised job tasks for every successfully activated plugin with a job
             job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
             self._job_statuses = {}
@@ -573,6 +631,38 @@ class PluginHost:
             return self.status_snapshot()
 
     async def stop(self) -> dict[str, Any]:
+        async with self._management_lock:
+            return await self._stop_once()
+
+    async def restart(self) -> dict[str, Any]:
+        """Recreate installed plugin instances without claiming code hot reload.
+
+        The current selection snapshot remains authoritative.  This operation
+        drains active calls, stops jobs, closes adapters, then re-runs discovery
+        and activation.  Imported Python modules may still come from the current
+        process cache; true code-generation hot swap belongs to the future
+        isolated PluginHost runtime.
+        """
+
+        async with self._management_lock:
+            await self._stop_once()
+            return await self._start_once(allow_stopped=True)
+
+    async def reconfigure(self, selections: tuple[PluginSelection, ...]) -> dict[str, Any]:
+        """Apply one validated selection snapshot through the normal lifecycle."""
+
+        if not isinstance(selections, tuple) or any(not isinstance(item, PluginSelection) for item in selections):
+            raise TypeError("plugin_selections_must_be_snapshot")
+        if any(not is_valid_plugin_id(item.plugin_id) or not isinstance(item.enabled, bool) for item in selections):
+            raise ValueError("invalid_plugin_selection")
+        if len({item.plugin_id for item in selections}) != len(selections):
+            raise ValueError("duplicate_plugin_selection")
+        async with self._management_lock:
+            await self._stop_once()
+            self._selections = tuple(selections)
+            return await self._start_once(allow_stopped=True)
+
+    async def _stop_once(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
             if self._state == "stopped":
                 return self.status_snapshot()
@@ -584,9 +674,12 @@ class PluginHost:
                 self._state = "stopping"
 
             try:
-                await asyncio.wait_for(
+                await _await_with_optional_timeout(
                     self._inflight_zero.wait(),
-                    timeout=self._invoke_timeout_seconds + self._managed_artifact_timeout_seconds + 0.5,
+                    timeout_seconds=_combined_invocation_timeout(
+                        self._invoke_timeout_seconds,
+                        self._managed_artifact_timeout_seconds,
+                    ),
                 )
             except (TimeoutError, asyncio.TimeoutError):
                 pass
@@ -640,9 +733,12 @@ class PluginHost:
                 reason="host_unavailable",
             )
         try:
-            return await asyncio.wait_for(
+            return await _await_with_optional_timeout(
                 asyncio.wrap_future(concurrent_future),
-                timeout=self._invoke_timeout_seconds + self._managed_artifact_timeout_seconds + 0.5,
+                timeout_seconds=_combined_invocation_timeout(
+                    self._invoke_timeout_seconds,
+                    self._managed_artifact_timeout_seconds,
+                ),
             )
         except asyncio.CancelledError:
             concurrent_future.cancel()
@@ -702,13 +798,13 @@ class PluginHost:
                     content={"errors": [error.as_dict() for error in validation.errors]},
                 )
             try:
-                result = await asyncio.wait_for(
+                result = await _await_with_optional_timeout(
                     registration.adapter.invoke(
                         registration.descriptor.id,
                         validation.normalized_args,
                         context,
                     ),
-                    timeout=self._invoke_timeout_seconds,
+                    timeout_seconds=self._invoke_timeout_seconds,
                 )
             except asyncio.CancelledError:
                 if _current_task_is_cancelling():
@@ -932,8 +1028,6 @@ class PluginHost:
                 raise _ActivationFailure("invalid_plugin_registration_result")
             if any(reg.command in reserved_qq_commands for reg in registrar.qq_commands):
                 raise _ActivationFailure("qq_command_conflict")
-            if not registrar.adapters:
-                raise _ActivationFailure("plugin_registered_no_adapters")
             if len(registrar.adapters) > _MAX_ADAPTERS_PER_PLUGIN:
                 raise _ActivationFailure("too_many_plugin_adapters")
             if len({id(adapter) for adapter in registrar.adapters}) != len(registrar.adapters):
@@ -986,8 +1080,25 @@ class PluginHost:
                     )
                     if len(registrations) > _MAX_CAPABILITIES_PER_PLUGIN:
                         raise _ActivationFailure("too_many_plugin_capabilities")
-            if not registrations:
-                raise _ActivationFailure("plugin_registered_no_capabilities")
+            validate_registration = getattr(self._contribution_policy, "validate_registration", None)
+            if callable(validate_registration):
+                _require_policy_acceptance(
+                    lambda: validate_registration(
+                        manifest=manifest,
+                        capability_count=len(registrations),
+                        qq_command_count=len(registrar.qq_commands),
+                        has_background_job=registrar.job is not None,
+                        prompt_block_count=len(registrar.prompt_blocks),
+                    ),
+                    stage="registration_contributions",
+                )
+            if not (
+                registrations
+                or registrar.qq_commands
+                or registrar.job is not None
+                or registrar.prompt_blocks
+            ):
+                raise _ActivationFailure("plugin_registered_no_contributions")
 
             active = _ActivePlugin(
                 plugin=plugin,
@@ -1010,6 +1121,9 @@ class PluginHost:
                     enabled=True,
                     status="active",
                     plugin_version=manifest.plugin_version,
+                    permissions=tuple(manifest.permissions),
+                    capability_ids=tuple(registration.descriptor.id for registration in registrations),
+                    qq_commands=tuple(reg.command for reg in registrar.qq_commands),
                 ),
                 active,
                 tuple(registrations),
@@ -1156,7 +1270,7 @@ def _validate_manifest(manifest: Any, *, expected_plugin_id: str, artifact_versi
         raise _ActivationFailure("plugin_version_mismatch")
     if (
         not isinstance(manifest.permissions, tuple)
-        or len(manifest.permissions) > 32
+        or len(manifest.permissions) > _MAX_PERMISSIONS_PER_PLUGIN
         or len(set(manifest.permissions)) != len(manifest.permissions)
         or any(not is_valid_permission_id(permission) for permission in manifest.permissions)
     ):
@@ -1334,6 +1448,21 @@ def _require_policy_acceptance(evaluate: Callable[[], Any], *, stage: str) -> No
         raise _ActivationFailure("contribution_policy_failed", stage=stage)
     if not decision.accepted:
         raise _ActivationFailure("contribution_policy_rejected", stage=stage)
+
+
+def _combined_invocation_timeout(
+    invoke_timeout_seconds: float | None,
+    managed_artifact_timeout_seconds: float,
+) -> float | None:
+    if invoke_timeout_seconds is None:
+        return None
+    return invoke_timeout_seconds + managed_artifact_timeout_seconds + 0.5
+
+
+async def _await_with_optional_timeout(awaitable: Any, *, timeout_seconds: float | None) -> Any:
+    if timeout_seconds is None:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
 
 
 async def _bounded_adapter_call(awaitable: Any, *, timeout_seconds: float, failure_reason: str) -> Any:

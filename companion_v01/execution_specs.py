@@ -182,6 +182,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     description=(
         "使用当前宿主用户权限运行 Shell 命令或脚本；它不是 Shell 沙箱。cwd 可为工作区相对路径、"
         "已配置别名或真实宿主绝对目录，省略时使用受信任执行根；先从真实命令输出发现路径。"
+        "命令语言以执行宿主事实中的 command_shell 为准；Windows 使用 PowerShell，需用 cmd 时显式调用 cmd.exe /c。"
         "短命令直接返回终态，仍在运行时返回 run_id，之后用 exec_status 或 exec_cancel。"
         "input_resources 用于暂存现有材料，output_globs 用于登记生成资源；精确路径约束见对应参数。"
         "根据 status、exit_code、stdout、stderr、reason 和 recommended_action 判断真实结果。"
@@ -194,6 +195,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "minLength": 1,
                 "description": (
                     "要执行的命令或脚本。参数字段名必须是 command（不是 cmd）。"
+                    "命令直接交给执行宿主声明的 command_shell，不经过另一层隐式 Shell。"
                     "长源码优先用 workspace_write/workspace_patch 传输，但执行器不按命令字符数拒绝有效命令。"
                 ),
             },

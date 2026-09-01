@@ -37,21 +37,40 @@ function Get-AkaneLocalPackageFingerprint {
     if (-not $packageNames.Contains("capcore-host-utils")) {
         $packageNames.Add("capcore-host-utils")
     }
+    $ignoredParts = @(".git", ".venv", ".claude", ".agents", ".vscode", ".ruff_cache", ".pytest_cache", "build", "dist", "__pycache__")
     foreach ($packageName in $packageNames) {
         $packageRoot = Join-Path $SourceRoot $packageName
-        if (-not (Test-Path -LiteralPath (Join-Path $packageRoot ".git") -PathType Container)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $packageRoot "pyproject.toml") -PathType Leaf)) {
             throw "local_package_source_missing:$packageName"
         }
-        $commitOutput = @(& git -C $packageRoot rev-parse HEAD 2>$null)
-        $commit = $commitOutput | Select-Object -First 1
-        if ([string]::IsNullOrWhiteSpace([string]$commit)) {
-            throw "local_package_revision_unavailable:$packageName"
+        $packageFiles = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+        foreach ($metadataName in @("pyproject.toml", "README.md", "LICENSE", "MANIFEST.in")) {
+            $metadataPath = Join-Path $packageRoot $metadataName
+            if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+                $packageFiles.Add((Get-Item -LiteralPath $metadataPath))
+            }
         }
-        $trackedChanges = @(& git -C $packageRoot status --porcelain --untracked-files=no 2>$null)
-        if ($trackedChanges.Count -gt 0) {
-            throw "local_package_source_dirty:$packageName"
+        $moduleRoot = Join-Path $packageRoot $packageName.Replace("-", "_")
+        if (-not (Test-Path -LiteralPath $moduleRoot -PathType Container)) {
+            throw "local_package_module_missing:$packageName"
         }
-        $entries.Add("$packageName=$(([string]$commit).Trim())")
+        Get-ChildItem -LiteralPath $moduleRoot -Recurse -File | Where-Object {
+            $relative = [System.IO.Path]::GetRelativePath($packageRoot, $_.FullName)
+            $parts = $relative -split "[\\/]"
+            $ignored = $false
+            foreach ($part in $parts) {
+                if ($ignoredParts -contains $part -or $part.EndsWith(".egg-info")) {
+                    $ignored = $true
+                    break
+                }
+            }
+            -not $ignored
+        } | ForEach-Object { $packageFiles.Add($_) }
+        foreach ($file in ($packageFiles | Sort-Object FullName -Unique)) {
+            $relative = [System.IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace("\", "/")
+            $fileHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $entries.Add("$packageName/$relative=$fileHash")
+        }
     }
 
     $payload = [System.Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
@@ -67,12 +86,34 @@ function Test-AkaneLocalPackageContracts {
     param([Parameter(Mandatory = $true)][string]$PythonPath)
 
     & $PythonPath -c @"
+from channelcore_onebot import ForwardNode, MessageChain, QuotedMessage
 from memcore import build_native_memory_tool_specs
 names = {str(item.get('name') or '') for item in build_native_memory_tool_specs(tool_format='plain', include_material_tool=False)}
 required = {'retrieve_for_turn', 'read_timeline', 'browse_memory', 'open_memory'}
-raise SystemExit(0 if required <= names else 1)
+channel_ready = callable(getattr(MessageChain, 'render_text_with_mentions', None))
+resolved_chain_ready = isinstance(getattr(QuotedMessage, 'mentions', None), property) and isinstance(getattr(ForwardNode, 'mentions', None), property)
+raise SystemExit(0 if required <= names and channel_ready and resolved_chain_ready else 1)
 "@ 2>$null
     return ($LASTEXITCODE -eq 0)
+}
+
+function Test-AkaneLocalPackagesCurrent {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$PythonPath
+    )
+
+    $resolvedProject = [System.IO.Path]::GetFullPath($ProjectRoot)
+    $expected = Get-AkaneLocalPackageFingerprint `
+        -ProjectRoot $resolvedProject `
+        -SourceRoot (Split-Path -Parent $resolvedProject)
+    $stamp = Join-Path $resolvedProject ".venv\.akane-local-packages.sha256"
+    $installed = if (Test-Path -LiteralPath $stamp -PathType Leaf) {
+        ([System.IO.File]::ReadAllText($stamp)).Trim()
+    } else {
+        ""
+    }
+    return ($installed -eq $expected -and (Test-AkaneLocalPackageContracts -PythonPath $PythonPath))
 }
 
 function Sync-AkaneLocalPackages {

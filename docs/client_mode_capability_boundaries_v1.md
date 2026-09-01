@@ -2,6 +2,8 @@
 
 本文档记录 Akane 在 Web 场景端、QQ 端、未来桌宠端之间的能力分工、工具挂载原则与身份边界。
 
+> 2026-09 更新：早期 `manage_persona`、NPC/礼物/资产工具，以及 `focus_workspace`、`sync_attachment_workspace` 已退出运行时；替代路径见 `retired_host_tool_surfaces_v1.md`。
+
 核心目标：同一个 Akane 共享长期记忆和核心世界，但不同客户端只暴露符合当前场景的能力。不要把所有端都做成同一个 Galgame，也不要把所有工具无差别塞给模型。
 
 ---
@@ -58,7 +60,6 @@ QQ 端承担“现实聊天窗口里的轻量陪伴和功能助手”体验。
 - 看图
 - 读文件
 - 摘要、解释、提取重点
-- 提醒
 - 轻量问答
 - 群聊中的点名回复
 
@@ -84,7 +85,7 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 - 触摸 / 双击 / 拖拽交互
 - 轻量快捷操作
 - 本地文件上下文
-- 桌面级提醒与陪伴
+- 桌面陪伴
 
 默认语义：
 
@@ -106,17 +107,13 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 
 候选工具：
 
-- `set_reminder`
-- `list_reminders`
-- `cancel_reminder`
-- `manage_persona`
 - 未来的 `search_memory`
 
 特点：
 
 - 不依赖具体 UI。
 - 不强绑定 Web 场景。
-- 结果进入统一 Memory / Persona / Reminder 层。
+- 结果进入统一 Memory / Persona 层。
 
 ### 3.2 `web_scene_tools`
 
@@ -124,10 +121,7 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 
 候选工具：
 
-- `manage_gift`
-- `check_inventory`
-- `manage_artifact`
-- 场景 / BGM / 服装资源相关管理工具
+- 角色包、场景 / BGM / 服装资源由角色工坊与插件接口提供
 
 特点：
 
@@ -143,7 +137,6 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 
 - `fetch_media_from_url`
 - `inspect_attachment`
-- `sync_attachment_workspace`
 - `read_attachment_section`
 - `retry_attachment`
 - `clear_attachment_focus`
@@ -179,7 +172,7 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 - `send_file` 可把已有临时附件 `file_001/img_001/audio_001` 或生成物 `gen_001/gen_002` 交给当前客户端发送，不重新生成、不修改。
 - `manage_generated_file` 可归档、删除或彻底清理 `gen_001/gen_002` 这类生成物；它不处理用户原始附件。
 - `compose_file` / `revise_generated_file` 可通过声明式 `formatting` 做常见 `docx/xlsx` 样式，例如表头加粗、列/行标色、关键词高亮。
-- 可在用户明确要求时桥接到 `manage_artifact` 或长期记忆工具。
+- 可在用户明确要求时桥接到长期记忆或插件能力。
 
 ### 3.4 `desktop_tools`
 
@@ -192,7 +185,6 @@ QQ 端不应该默认进入礼物系统。只有用户明确表达“收下、�
 - `inspect_active_window`
 - `read_selected_file`
 - `inspect_attachment`
-- `sync_attachment_workspace`
 - `read_attachment_section`
 - `compose_file`
 - `revise_generated_file`
@@ -410,10 +402,10 @@ base_tools + mode_specific_tools(client_mode)
 
 当前落地：
 
-- `base` 工具包已包含提醒与人设卡工具。
-- `web_scene` 工具包已包含 NPC、礼物、手边库存、相册 / 曲库 / 场景资产管理工具。
-- `qq_text` 目前只挂载 `base`，不会看到或执行 Web 礼物类工具。
-- `desktop_pet` 目前只挂载 `base`，桌面感知工具留待客户端出现后加入。
+- `base` 工具包包含记忆、Skill、MCP 与角色包上下文工具。
+- `qq_text` 挂载 QQ 交付、附件、文件、媒体与 OneBot 能力。
+- `desktop_pet` 挂载桌面工作区、浏览器和 Desktop Satellite 能力。
+- Web 场景不再挂载旧 NPC、礼物、库存和资产管理工具。
 - Prompt 注入和后端工具执行都使用同一套模式过滤，避免模型幻觉调用未挂载工具。
 
 ### P2：QQ 附件感知

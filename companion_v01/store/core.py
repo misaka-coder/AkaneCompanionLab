@@ -1329,6 +1329,7 @@ class MemoryStore:
         session_id: str,
         character_pack_id: str | None = None,
         limit: int = 120,
+        before_seq: int | None = None,
     ) -> list[dict[str, Any]]:
         normalized_character_pack_id = (
             normalize_character_pack_id(character_pack_id) if character_pack_id is not None else None
@@ -1340,6 +1341,7 @@ class MemoryStore:
                     SELECT * FROM chat_messages
                     WHERE profile_user_id = ? AND session_id = ?
                       AND (? IS NULL OR character_pack_id = ?)
+                      AND (? IS NULL OR seq_no < ?)
                     ORDER BY seq_no DESC
                     LIMIT ?
                 )
@@ -1350,6 +1352,8 @@ class MemoryStore:
                     str(session_id),
                     normalized_character_pack_id,
                     normalized_character_pack_id,
+                    before_seq,
+                    before_seq,
                     max(1, int(limit)),
                 ),
             ).fetchall()

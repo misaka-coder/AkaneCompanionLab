@@ -52,22 +52,7 @@ class GiftDecisionService:
         overflow = int(pending_items.get("overflow_count") or 0)
         if overflow > 0:
             lines.append(f"除此之外，旁边的盒子里还有 {overflow} 件较早的未处理礼物。")
-        lines.append(
-            "除非用户主动提起或你确实需要处理它们，否则不用逐个展开；"
-            "如果需要查看完整清单，请调用 check_inventory 工具。"
-        )
-        lines.append(
-            "如果用户明确表示要留下、吃掉、先放着、不要了、只看看，或要从自己的收藏里移出/彻底删除，"
-            "并且礼物对象明确，请调用 manage_gift 工具执行；"
-            "如果礼物对象不明确，就先追问，不要擅自处理。"
-        )
-        lines.append(
-            "如果用户和你已经明确讨论好某张图片/资产的正式名字、集合或用途"
-            "（例如新场景、新衣服、新立绘、表情图），请使用 manage_artifact 工具落库；"
-            "如果只是想看一眼或普通收下，不要使用 manage_artifact。"
-            "整理时注意：场景/相册用场景或相册集合；服装/表情/形象用服装或形象集合，"
-            "不要把表情图塞进看起来像纯场景的集合。"
-        )
+        lines.append("这是旧礼物记录的只读摘要；当前运行时不提供礼物或世界资产管理动作。")
         return "\n".join(lines)
 
     def list_inventory(

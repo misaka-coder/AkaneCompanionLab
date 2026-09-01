@@ -24,6 +24,9 @@ tzdata
 yt-dlp
 syncedlyrics
 json-repair
+# Managed browser automation. Browser binaries remain an explicit host install:
+# local Windows can use Edge, while headless servers install Chromium separately.
+playwright==1.60.0
 # Bounded regular-expression search for the model-facing project inspector.
 regex>=2024.11,<2027
 # Realtime microphone PCM normalization for capcore-adapter-speech.

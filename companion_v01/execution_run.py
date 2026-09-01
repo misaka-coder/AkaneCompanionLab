@@ -604,7 +604,7 @@ def _unknown_mapped(reason: str, *, run_start: ExecRunStart | None = None) -> Ex
         envelope_status="error",
         event_status=EXEC_STATUS_EXECUTION_UNKNOWN,
         reason=clean_reason,
-        model_feedback="命令执行结果无法确认。请明确说明无法确认，不要声称命令已经成功或已经停止。",
+        model_feedback=f"[command status: unknown; reason={clean_reason}]",
         data=data,
         event={
             "type": "capability_execution_result",
@@ -642,7 +642,7 @@ def _rejected_mapped(
             "请使用短的工作区相对路径或挂载别名。"
         )
     else:
-        feedback = f"这次命令没有执行：{clean_reason}。请修正参数后再试，不要声称已经执行。"
+        feedback = f"[command status: rejected; reason={clean_reason}]"
     return ExecMappedResult(
         envelope_status="error",
         event_status="rejected",
@@ -708,43 +708,34 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
     event = {"type": "capability_execution_result", "tool_type": EXEC_RUN_TOOL_NAME, "status": status}
 
     if status == EXEC_STATUS_COMPLETED:
-        followup = (
-            f"输出尚未读完，请调用 exec_status(run_id={run_id}, cursor={run_start.next_cursor}, "
-            "wait_seconds=30) 继续读取。"
-            if run_start.next_cursor
-            else ""
-        )
-        compacted = (
-            f"较早输出不在当前内存窗口，可按 output_ref={output_ref} 重新读取完整日志。"
-            if reason == "output_compacted" and output_ref
-            else "较早输出已不在当前可读窗口。"
-            if reason == "output_compacted"
-            else ""
-        )
         output = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"])
-        feedback = f"命令已执行完成（exit_code=0，run_id={run_id}）。{output}{compacted}{followup}"
+        markers = [f"[exit code: 0; run_id={run_id}]"]
+        if reason == "output_compacted":
+            markers.append(f"[output compacted; output_ref={output_ref or 'unavailable'}]")
+        if run_start.next_cursor:
+            markers.append(
+                f"[output continues: exec_status(run_id={run_id}, cursor={run_start.next_cursor})]"
+            )
+        feedback = _append_execution_markers(output, markers)
         return ExecMappedResult("ok", status, reason, feedback, data, event)
     if status == EXEC_STATUS_RUNNING:
         output = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"])
-        continuation = (
-            f"当前增量读取位置为 cursor={run_start.next_cursor}。"
-            if run_start.next_cursor
-            else ""
-        )
-        output_ref_hint = f"完整日志引用：output_ref={output_ref}。" if output_ref else ""
-        feedback = (
-            f"命令仍在执行中（run_id={run_id}），尚未完成。请用 exec_status 查询进度、exec_cancel 停止；"
-            f"等待型任务优先用 wait_seconds=30 在同一次状态调用内等待，避免频繁轮询；"
-            f"不要声称命令已经完成。{continuation}{output_ref_hint}{output}"
+        marker = f"[running: run_id={run_id}; cursor={run_start.next_cursor}"
+        if output_ref:
+            marker += f"; output_ref={output_ref}"
+        marker += "]"
+        feedback = _append_execution_markers(
+            output,
+            [
+                marker,
+                f"[next: exec_status(run_id={run_id}, cursor={run_start.next_cursor}, wait_seconds=30) or exec_cancel]",
+            ],
         )
         return ExecMappedResult("ok", status, reason, feedback, data, event)
     if status == EXEC_STATUS_UNAVAILABLE:
         clean_reason = reason or "execution_unavailable"
         event = {**event, "reason": clean_reason}
-        feedback = (
-            f"<capability_unavailable>当前无法执行命令：{clean_reason}。"
-            "请直接说明这次不能执行，不要假装已经执行。</capability_unavailable>"
-        )
+        feedback = f"[command status: unavailable; reason={clean_reason}]"
         return ExecMappedResult("unavailable", status, clean_reason, feedback, data, event)
 
     default_reasons = {
@@ -754,12 +745,20 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
     }
     clean_reason = reason or default_reasons[status]
     if status == EXEC_STATUS_FAILED:
-        detail = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"]) or clean_reason
-        feedback = f"命令执行失败（exit_code={run_start.exit_code!r}）。{detail}请明确说明这次没有完成，不要声称成功。"
+        feedback = _append_execution_markers(
+            _format_execution_output(stdout=data["stdout"], stderr=data["stderr"]),
+            [f"[exit code: {run_start.exit_code!r}; reason={clean_reason}]"],
+        )
     elif status == EXEC_STATUS_TIMED_OUT:
-        feedback = "命令执行超时，执行器报告进程组已终止。请明确说明这次没有完成，不要声称成功。"
+        feedback = _append_execution_markers(
+            _format_execution_output(stdout=data["stdout"], stderr=data["stderr"]),
+            [f"[timed out; reason={clean_reason}; process_group=terminated]"],
+        )
     else:
-        feedback = "命令已被执行器确认取消。请明确说明命令没有完成，不要声称成功。"
+        feedback = _append_execution_markers(
+            _format_execution_output(stdout=data["stdout"], stderr=data["stderr"]),
+            [f"[cancelled; reason={clean_reason}]"],
+        )
     return ExecMappedResult("error", status, clean_reason, feedback, data, {**event, "reason": clean_reason})
 
 
@@ -816,14 +815,6 @@ def execute_exec_run(
 def _unavailable_mapped(reason: str) -> ExecMappedResult:
     clean_reason = str(reason or "execution_unavailable")
     return map_exec_run_outcome(ExecRunStart(status=EXEC_STATUS_UNAVAILABLE, reason=clean_reason))
-
-
-def _execution_status_timing_text(*, finished_at: float, observed_at: float) -> str:
-    if finished_at <= 0:
-        return ""
-    finished_label = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(finished_at))
-    observed_label = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(observed_at))
-    return f"任务完成时间={finished_label}；本次查询时间={observed_label}；"
 
 
 def execute_exec_status(
@@ -917,27 +908,25 @@ def execute_exec_status(
     }
     event = {"type": "capability_execution_result", "tool_type": EXEC_STATUS_TOOL_NAME, "status": status}
     if status == EXEC_STATUS_RUNNING:
-        output = f"\n本次增量输出：\n{safe_tail}" if safe_tail else ""
-        continuation = (
-            f"\n输出尚未读完，请调用 exec_status(run_id={clean_run_id}, "
-            f"cursor={status_result.next_cursor}, wait_seconds=30) 等待新输出或终态。"
-            if status_result.next_cursor
-            else ""
+        marker = f"[running: run_id={clean_run_id}; cursor={status_result.next_cursor}"
+        if output_ref:
+            marker += f"; output_ref={output_ref}"
+        marker += "]"
+        feedback = _append_execution_markers(
+            safe_tail,
+            [
+                marker,
+                f"[next: exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor}, wait_seconds=30) or exec_cancel]",
+            ],
         )
-        output_ref_hint = f"\n完整日志引用：output_ref={output_ref}。" if output_ref else ""
-        feedback = f"命令仍在执行；这是当前增量输出，不要声称已经完成。{output_ref_hint}{output}{continuation}"
         return ExecMappedResult("ok", status, safe_reason, feedback, data, event)
     if status == EXEC_STATUS_COMPLETED:
-        followup = "输出尚未读完，请继续使用 next_cursor。" if status_result.next_cursor else "输出已读完。"
-        output = f"\n本次增量输出：\n{safe_tail}" if safe_tail else ""
-        continuation = (
-            f"\n请调用 exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor}) 继续读取。"
-            if status_result.next_cursor
-            else ""
-        )
-        output_ref_hint = f"\n完整日志引用：output_ref={output_ref}。" if output_ref else ""
-        timing = _execution_status_timing_text(finished_at=finished_at, observed_at=observed_at)
-        feedback = f"命令已完成（exit_code=0）；{timing}{output_ref_hint}{output}{continuation}\n{followup}"
+        markers = [f"[exit code: 0; run_id={clean_run_id}]"]
+        if status_result.next_cursor:
+            markers.append(
+                f"[output continues: exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor})]"
+            )
+        feedback = _append_execution_markers(safe_tail, markers)
         return ExecMappedResult("ok", status, safe_reason, feedback, data, event)
     if status == EXEC_STATUS_UNKNOWN:
         return _status_unknown_result(clean_run_id, safe_reason or "run_not_found")
@@ -946,7 +935,7 @@ def execute_exec_status(
             "error",
             status,
             safe_reason or "termination_unconfirmed",
-            "无法确认该命令是否仍在执行；不要声称命令已完成或已停止。",
+            f"[command status: unknown; reason={safe_reason or 'termination_unconfirmed'}]",
             data,
             {**event, "reason": safe_reason or "termination_unconfirmed"},
         )
@@ -956,27 +945,25 @@ def execute_exec_status(
             "unavailable",
             status,
             clean_reason,
-            "当前无法查询该命令；不要据此声称命令已完成或已停止。",
+            f"[command status: unavailable; reason={clean_reason}]",
             data,
             {**event, "reason": clean_reason},
         )
     clean_reason = safe_reason or f"execution_{status}"
-    output = f"\n终止前的增量输出：\n{safe_tail}" if safe_tail else ""
-    exit_detail = f"，exit_code={status_result.exit_code!r}" if status_result.exit_code is not None else ""
     if status == EXEC_STATUS_FAILED:
-        feedback = (
-            f"命令执行失败（status=failed{exit_detail}，reason={clean_reason}）。{output}"
-            "请依据这份真实结果修正命令或如实说明失败，不要声称成功。"
+        feedback = _append_execution_markers(
+            safe_tail,
+            [f"[exit code: {status_result.exit_code!r}; reason={clean_reason}]"],
         )
     elif status == EXEC_STATUS_TIMED_OUT:
-        feedback = (
-            f"命令执行超时（status=timed_out，reason={clean_reason}），执行器已确认进程组终止。{output}"
-            "这次操作没有完成；可缩小范围或修正命令后重试，不要声称成功。"
+        feedback = _append_execution_markers(
+            safe_tail,
+            [f"[timed out; reason={clean_reason}; process_group=terminated]"],
         )
     else:
-        feedback = (
-            f"命令已被执行器确认取消（status=cancelled，reason={clean_reason}）。{output}"
-            "这次操作没有完成，不要声称成功。"
+        feedback = _append_execution_markers(
+            safe_tail,
+            [f"[cancelled; reason={clean_reason}]"],
         )
     return ExecMappedResult(
         "error",
@@ -993,10 +980,17 @@ def _format_execution_output(*, stdout: Any = "", stderr: Any = "") -> str:
     clean_stdout = str(stdout or "")
     clean_stderr = str(stderr or "")
     if clean_stdout:
-        parts.append(f"\nstdout：\n{clean_stdout}")
+        parts.append(clean_stdout.rstrip("\n"))
     if clean_stderr:
-        parts.append(f"\nstderr：\n{clean_stderr}")
-    return "".join(parts)
+        stderr_body = clean_stderr.rstrip("\r\n")
+        parts.append(f"[stderr]\n{stderr_body}")
+    return "\n".join(parts) if parts else "(no output)"
+
+
+def _append_execution_markers(output: str, markers: list[str]) -> str:
+    body = str(output or "").rstrip("\n") or "(no output)"
+    clean_markers = [str(marker or "").strip() for marker in markers if str(marker or "").strip()]
+    return body if not clean_markers else f"{body}\n" + "\n".join(clean_markers)
 
 
 def execute_exec_cancel(
@@ -1043,7 +1037,7 @@ def _status_unknown_result(run_id: str, reason: str, *, execution_unknown: bool 
         "error",
         status,
         clean_reason,
-        "无法确认该命令的当前状态；不要声称命令已完成或已停止。",
+        f"[command status: {status}; reason={clean_reason}]",
         data,
         {
             "type": "capability_execution_result",
@@ -1059,13 +1053,13 @@ def _cancel_result(run_id: str, *, ok: bool, status: str, reason: str) -> ExecMa
     clean_reason = _sanitize_model_text(reason or "")
     data = {"ok": ok, "status": status, "run_id": clean_run_id, "reason": clean_reason}
     if status == EXEC_STATUS_CANCELLED and ok:
-        envelope, feedback = "ok", "执行器已确认命令停止。"
+        envelope, feedback = "ok", "[cancelled]"
     elif status == "already_ended" and ok:
-        envelope, feedback = "ok", "命令此前已经结束，没有再次执行取消动作。"
+        envelope, feedback = "ok", "[already ended; no cancel action taken]"
     elif status == EXEC_STATUS_UNKNOWN:
-        envelope, feedback = "error", "找不到该命令或无权访问；不要声称命令已停止。"
+        envelope, feedback = "error", f"[cancel status: unknown; reason={clean_reason or 'run_not_found'}]"
     else:
-        envelope, feedback = "error", "无法确认命令已经停止；不要声称取消成功。"
+        envelope, feedback = "error", f"[cancel status: unconfirmed; reason={clean_reason or 'cancel_failed'}]"
     return ExecMappedResult(
         envelope,
         status,

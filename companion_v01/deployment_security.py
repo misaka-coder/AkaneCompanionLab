@@ -9,6 +9,7 @@ snapshot containing secret material.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -63,7 +64,7 @@ class QQChannelRuntimeConfig:
     local_data_root: str = field(default="", repr=False)
     onebot_shared_data_root: str = field(default="", repr=False)
 
-    def authorize_webhook(self, request: Any) -> AuthorizationDecision:
+    def authorize_webhook(self, request: Any, *, body: bytes | None = None) -> AuthorizationDecision:
         if not self.require_webhook_auth:
             return AuthorizationDecision(True)
         supplied = _request_token(
@@ -72,6 +73,17 @@ class QQChannelRuntimeConfig:
         )
         if supplied and hmac.compare_digest(supplied, self.webhook_secret):
             return AuthorizationDecision(True)
+        signature = _clean(getattr(request, "headers", {}).get("x-signature", ""))
+        if signature and body is not None:
+            algorithm, separator, digest = signature.partition("=")
+            if separator and algorithm.lower() == "sha1" and digest:
+                expected = hmac.new(
+                    self.webhook_secret.encode("utf-8"),
+                    bytes(body),
+                    hashlib.sha1,
+                ).hexdigest()
+                if hmac.compare_digest(digest.lower(), expected):
+                    return AuthorizationDecision(True)
         return AuthorizationDecision(False, 401, "qq_webhook_auth_required")
 
     def authorize_event_identity(self, event: Any) -> AuthorizationDecision:

@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # 可选的宿主代理。仅在端到端健康探测成功时注入子进程；不可用时保持直连。
     # 地址和健康状态不会进入模型提示词、工具 schema 或 MemCore。
     EXECUTION_PROXY_URL: str = ""
+    # 浏览器访问 loopback/RFC1918 私网地址。云端默认关闭；受信任的纯本地
+    # 启动器可显式开启，用于 ComfyUI、控制中心和本机开发服务器。
+    BROWSER_PAGE_PRIVATE_NETWORK_ACCESS: bool = False
+    # 托管浏览器默认保持可见；无桌面的服务器可显式开启无头模式。
+    # 这只改变浏览器的呈现方式，不改变网络范围或工具协议。
+    BROWSER_PAGE_HEADLESS: bool = False
     # Responses API controls. These are deliberately separate from the legacy
     # DeepSeek thinking switch because they have different wire semantics.
     LLM_REASONING_EFFORT: str = ""
@@ -638,7 +644,8 @@ def _apply_settings(s: Settings) -> None:
     global PROMPT_CACHE_HINTS_ENABLED, PROMPT_CACHE_HINTS_FORCE, PROMPT_CACHE_NAMESPACE, PROMPT_CACHE_RETENTION
     global EXECUTION_ENABLED, EXECUTION_QQ_ENABLED
     global EXECUTION_WORKSPACE_ROOT, EXECUTION_RUN_LOG_DIR, EXECUTION_ALLOWED_ENV_NAMES
-    global EXECUTION_CREDENTIAL_ENV_NAMES, EXECUTION_PROXY_URL
+    global EXECUTION_CREDENTIAL_ENV_NAMES, EXECUTION_PROXY_URL, BROWSER_PAGE_PRIVATE_NETWORK_ACCESS
+    global BROWSER_PAGE_HEADLESS
     global LLM_PROMPT_AUDIT_ENABLED, LLM_PROMPT_AUDIT_INCLUDE_AUX
     global ROUTER_DEBUG, VERIFIER_DEBUG, FINAL_DEBUG
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE, RECENT_SUMMARY_LIMIT
@@ -912,6 +919,8 @@ def _apply_settings(s: Settings) -> None:
     EXECUTION_ALLOWED_ENV_NAMES = str(s.EXECUTION_ALLOWED_ENV_NAMES or "").strip()
     EXECUTION_CREDENTIAL_ENV_NAMES = str(s.EXECUTION_CREDENTIAL_ENV_NAMES or "").strip()
     EXECUTION_PROXY_URL = str(s.EXECUTION_PROXY_URL or "").strip()
+    BROWSER_PAGE_PRIVATE_NETWORK_ACCESS = bool(s.BROWSER_PAGE_PRIVATE_NETWORK_ACCESS)
+    BROWSER_PAGE_HEADLESS = bool(s.BROWSER_PAGE_HEADLESS)
     LLM_PROMPT_AUDIT_ENABLED = bool(s.LLM_PROMPT_AUDIT_ENABLED)
     LLM_PROMPT_AUDIT_INCLUDE_AUX = bool(s.LLM_PROMPT_AUDIT_INCLUDE_AUX)
     ROUTER_DEBUG = bool(s.ROUTER_DEBUG)

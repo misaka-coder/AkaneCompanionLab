@@ -37,7 +37,6 @@ COMMON_RESPONSE_BLOCKS = (
     "tool_call",
     "tool_execution_intent",
     "time_awareness",
-    "persona_state",
     "memory_metadata",
     "state_request",
 )
@@ -62,7 +61,6 @@ QQ_TEXT_SYSTEM_BLOCKS = (
     "json_object_only",
     "tool_execution_intent",
     "time_awareness",
-    "persona_state",
     "memory_metadata",
     "state_request",
     "care_runtime",
@@ -152,13 +150,6 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                     ),
                 ),
                 PromptBlock(
-                    id="persona_state",
-                    text=(
-                        "需要切换表达侧面时，追加 persona.active：填写已有 id，或用空字符串/default 回到默认表达；省略表示延续当前侧面。\n"
-                        "manage_persona 只用于创建、微调、查看、归档或删除表达侧面卡片本身。"
-                    ),
-                ),
-                PromptBlock(
                     id="state_request",
                     text=(
                         "互动明显推进或伤害关系时，可追加 state_request；普通闲聊、工具执行和日常问答省略。\n"
@@ -200,7 +191,7 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                         "桌宠需要播放、暂停、继续、停止、上一首、下一首或切换音频时，追加 activity；其它回合省略。\n"
                         'activity 格式为 {"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 file/audio/gen handle"}。\n'
                         "activity 是给桌宠执行的请求，不是完成回执；不要在 speech 里假装动作已经播放、暂停或继续。\n"
-                        "播放、暂停、继续、停止和切歌属于轻量桌宠控制，不要为这些动作创建任务工作区或委派后台任务。"
+                        "播放、暂停、继续、停止和切歌属于轻量桌宠控制。"
                     ),
                 ),
                 PromptBlock(
@@ -210,7 +201,6 @@ class PromptBlockRegistry(CorePromptBlockRegistry):
                         "群聊结合发送者、目标、@ 和引用判断话题归属；群聊观察回合提供一次自然参与机会，可回复、行动或保持静默。\n"
                         "艾特、引用、触发词和戳一戳应立即处理；根据语境选择文字、QQ 可见动作或静默。\n"
                         "speech 是发送到 QQ 的消息正文；只写要对用户说的话，不抄写上下文中的字段名、时间戳或 Assistant: 等投影标签。\n"
-                        "可用 delegate_task 时，把耗时的音视频转码、分离、降噪、转写和打包交给它；等待真实完成通知，不要提前声称已交付。\n"
                         "历史用于理解当前消息；只跟进与当前消息直接相关的内容。"
                     ),
                 ),

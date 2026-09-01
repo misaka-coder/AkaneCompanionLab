@@ -46,20 +46,28 @@ def _context(
     profile_user_id: str = "alice",
     session_id: str = "s1",
     actor_stable_id: str = "",
+    actor_profile_user_id: str = "",
 ) -> ToolExecutionContext:
+    request_context = {}
+    if actor_stable_id:
+        request_context["actor_stable_id"] = actor_stable_id
+    if actor_profile_user_id:
+        request_context["actor_profile_user_id"] = actor_profile_user_id
     return ToolExecutionContext(
         profile_user_id=profile_user_id,
         session_id=session_id,
         now_ts=0,
         visual_payload={},
         client_mode="qq",
-        request_context={"actor_stable_id": actor_stable_id} if actor_stable_id else {},
+        request_context=request_context,
     )
 
 
 def _python_command(code: str) -> str:
     if os.name == "nt":
-        return subprocess.list2cmdline([sys.executable, "-c", code])
+        executable = str(sys.executable).replace("'", "''")
+        script = str(code).replace("'", "''")
+        return f"& '{executable}' -c '{script}'"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -99,8 +107,28 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         handler = self._handler()
         result = handler.execute(call={"type": "exec_run", "command": "echo hi"}, context=_context())
         self.assertEqual(result.stream_events[0]["type"], "capability_approval_required")
-        self.assertIn("需要用户确认", result.followup_context)
+        self.assertIn("[approval required", result.followup_context)
         self.assertEqual(result.state_updates["capability_execution"]["status"], "approval_required")
+
+    def test_group_member_approval_explains_actor_scoped_host_permission(self) -> None:
+        handler = self._handler()
+        result = handler.execute(
+            call={"type": "exec_run", "command": "Get-ChildItem -Recurse"},
+            context=_context(
+                profile_user_id="qq_group_shared_20001",
+                session_id="qq_group_shared_20001",
+                actor_stable_id="qq:10003",
+                actor_profile_user_id="qq_user_10003",
+            ),
+        )
+
+        self.assertEqual(result.stream_events[0]["type"], "capability_approval_required")
+        self.assertEqual(
+            result.stream_events[0]["approvalReason"],
+            "group_actor_host_execution_requires_confirmation",
+        )
+        self.assertIn("当前群成员没有自动执行宿主命令的授权", result.followup_context)
+        self.assertIn("设备主人", result.followup_context)
 
     def test_exec_run_blocked_when_policy_disabled(self) -> None:
         handler = self._handler()
@@ -125,8 +153,8 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
         self.assertEqual(result.stream_events[0]["type"], "capability_execution_result")
         self.assertEqual(result.stream_events[0]["status"], "completed")
-        self.assertIn("完成", result.followup_context)
-        self.assertIn("stdout", result.followup_context)
+        self.assertIn("hi", result.followup_context)
+        self.assertIn("[exit code: 0", result.followup_context)
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertTrue(result.state_updates["capability_execution"]["run_id"].startswith("execrun_"))
@@ -169,6 +197,8 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         instruction = self._handler().build_prompt_instruction()
 
         self.assertIn("上方宿主事实", instruction)
+        self.assertIn("Start-Process", instruction)
+        self.assertIn("验证端口或进程", instruction)
         self.assertNotIn("toolchain=", instruction)
         self.assertNotIn("unavailable", instruction)
         self.assertNotIn(str(self.base_dir), instruction)
@@ -479,10 +509,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             )
             handlers = build_builtin_tool_handlers(
                 store=None,
-                npc_runtime=None,
-                gift_service=None,
-                artifact_service=None,
-                persona_card_service=None,
                 sticker_assets=None,
                 capability_offer_source=None,
                 capability_config_base_dir=None,
@@ -490,17 +516,12 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
                 context_libraries=None,
                 attachment_service=None,
                 image_material_resolver=None,
-                task_workspace_service=None,
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
                 image_generation_service=None,
                 cover_song_service=None,
-                task_worker_service=None,
                 retrieve_fn=None,
-                describe_scene=None,
-                build_npc_followup_context=None,
-                observe_gift_image_fn=None,
                 execution_provider=provider,
                 project_workspace_service=service,
             )
@@ -517,31 +538,23 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
+            capability_config_base_dir = Path(tmp) / "users_data"
             provider = TrustedLocalExecutor(workspace_root=workspace, run_log_dir=Path(tmp) / "runlogs")
             handlers = build_builtin_tool_handlers(
                 store=None,
-                npc_runtime=None,
-                gift_service=None,
-                artifact_service=None,
-                persona_card_service=None,
                 sticker_assets=None,
                 capability_offer_source=None,
-                capability_config_base_dir=None,
+                capability_config_base_dir=capability_config_base_dir,
                 memory_timeline_service=None,
                 context_libraries=None,
                 attachment_service=None,
                 image_material_resolver=None,
-                task_workspace_service=None,
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
                 image_generation_service=None,
                 cover_song_service=None,
-                task_worker_service=None,
                 retrieve_fn=None,
-                describe_scene=None,
-                build_npc_followup_context=None,
-                observe_gift_image_fn=None,
                 execution_provider=provider,
             )
             self.assertIn("exec_run", handlers)
@@ -555,14 +568,11 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             self.assertTrue(handlers["exec_run"].policy_accepted_native_tool)
             self.assertTrue(handlers["exec_status"].policy_accepted_native_tool)
             self.assertTrue(handlers["exec_cancel"].policy_accepted_native_tool)
+            self.assertEqual(handlers["browser_page"].config_base_dir, capability_config_base_dir)
 
     def test_catalog_omits_exec_handlers_without_provider(self) -> None:
         handlers = build_builtin_tool_handlers(
             store=None,
-            npc_runtime=None,
-            gift_service=None,
-            artifact_service=None,
-            persona_card_service=None,
             sticker_assets=None,
             capability_offer_source=None,
             capability_config_base_dir=None,
@@ -570,17 +580,12 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             context_libraries=None,
             attachment_service=None,
             image_material_resolver=None,
-            task_workspace_service=None,
             workspace_file_service=None,
             attachment_ingest_service=None,
             generated_file_service=None,
             image_generation_service=None,
             cover_song_service=None,
-            task_worker_service=None,
             retrieve_fn=None,
-            describe_scene=None,
-            build_npc_followup_context=None,
-            observe_gift_image_fn=None,
         )
         self.assertNotIn("exec_run", handlers)
         self.assertNotIn("exec_status", handlers)

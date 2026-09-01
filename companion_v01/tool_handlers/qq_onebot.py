@@ -37,11 +37,18 @@ class OneBotActionToolHandler(BaseToolHandler):
             params = {}
         if not isinstance(params, dict):
             return None
-        return {"type": self.tool_type, "action": action, "params": dict(params)}
+        selector = value.get("message_selector")
+        if selector is not None and not isinstance(selector, dict):
+            return None
+        normalized = {"type": self.tool_type, "action": action, "params": dict(params)}
+        if isinstance(selector, dict):
+            normalized["message_selector"] = dict(selector)
+        return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         action = str(call.get("action") or "").strip()
         params = dict(call.get("params") or {})
+        message_selector = call.get("message_selector")
         if str(context.client_mode or "").strip().lower() != "qq_text":
             return self._result(
                 {"ok": False, "status": "unavailable", "reason": "qq_only", "action": action}
@@ -79,6 +86,7 @@ class OneBotActionToolHandler(BaseToolHandler):
                     request_context=context.request_context,
                     action=action,
                     params=params,
+                    message_selector=dict(message_selector) if isinstance(message_selector, dict) else None,
                 )
             )
         except Exception:

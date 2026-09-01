@@ -1516,10 +1516,21 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         # The canonical ToolSpec (native schema authority) must expose exactly
         # the actions the handler actually accepts, and nothing else.
         self.assertEqual(sorted(enum_actions), sorted(handler.ALLOWED_ACTIONS))
-        self.assertEqual(len(enum_actions), 9)
+        self.assertEqual(len(enum_actions), 10)
         self.assertEqual(
             enum_actions,
-            ["navigate", "read_text", "current", "snapshot", "scroll", "elements", "click", "fill", "press"],
+            [
+                "navigate",
+                "read_text",
+                "current",
+                "snapshot",
+                "screenshot",
+                "scroll",
+                "elements",
+                "click",
+                "fill",
+                "press",
+            ],
         )
 
         minimal_calls = {
@@ -1527,6 +1538,7 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
             "read_text": {"type": "browser_page", "action": "read_text"},
             "current": {"type": "browser_page", "action": "current"},
             "snapshot": {"type": "browser_page", "action": "snapshot"},
+            "screenshot": {"type": "browser_page", "action": "screenshot"},
             "scroll": {"type": "browser_page", "action": "scroll"},
             "elements": {"type": "browser_page", "action": "elements"},
             "click": {"type": "browser_page", "action": "click", "ref": "e1"},
@@ -1550,6 +1562,8 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         self.assertIn("自己读取、总结、核对页面正文", instruction)
         self.assertIn("才使用 browser_page", instruction)
         self.assertIn("snapshot", instruction)
+        self.assertIn("screenshot", instruction)
+        self.assertIn("send_file", instruction)
         self.assertIn("ref", instruction)
         self.assertIn("candidate_index", instruction)
         self.assertIn("不要每完成一步就询问用户", instruction)
@@ -1662,6 +1676,27 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
                 handler.normalize_call({"type": "browser_page", "action": "navigate", "url": url}),
                 url,
             )
+
+    def test_trusted_local_profile_accepts_loopback_and_private_http_targets(self) -> None:
+        handler = BrowserPageToolHandler(
+            browser_runner=object(),
+            allow_private_network_urls=True,
+        )
+
+        for url in (
+            "http://127.0.0.1:8188/",
+            "http://localhost:11999/control-center-lab.html",
+            "http://192.168.1.20:8188/",
+        ):
+            call = handler.normalize_call({"type": "browser_page", "action": "navigate", "url": url})
+            self.assertIsNotNone(call, url)
+            self.assertEqual(call["url"], url)
+        self.assertIsNone(
+            handler.normalize_call(
+                {"type": "browser_page", "action": "navigate", "url": "http://127.0.0.1:8188/?token=secret"}
+            )
+        )
+        self.assertIn("本机 ComfyUI", handler.build_prompt_instruction())
 
     def test_execute_returns_bounded_page_excerpt_without_streaming_body_text(self) -> None:
         class FakeRunner:
@@ -1868,6 +1903,119 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
             self.assertEqual(result.state_updates["browser_control_status"], "executed")
             self.assertIn("高风险浏览器控制动作已在授权边界内执行", result.followup_context)
 
+    def test_group_action_uses_requesting_actor_policy_not_shared_memory_profile(self) -> None:
+        class FakeRunner:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def run(self, **kwargs) -> BrowserPageResult:
+                self.calls.append(dict(kwargs))
+                return BrowserPageResult(
+                    ok=True,
+                    status="executed",
+                    action=str(kwargs.get("action") or ""),
+                    url="https://example.com/next",
+                    title="Next",
+                    text="下一页",
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={"defaultMode": "trusted_auto_allow"},
+            )
+            save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="qq_group_shared_123",
+                payload={"defaultMode": "ask_each_time"},
+            )
+            runner = FakeRunner()
+            handler = BrowserPageToolHandler(browser_runner=runner, config_base_dir=temp_dir)
+            call = handler.normalize_call({"type": "browser_page", "action": "click", "ref": "e1"})
+            assert call is not None
+            context = ToolExecutionContext(
+                profile_user_id="qq_group_shared_123",
+                session_id="qq_group_shared_123",
+                now_ts=1712400000,
+                visual_payload={},
+                client_mode="qq_text",
+                request_context={"actor_profile_user_id": "master"},
+            )
+
+            result = handler.execute(call=call, context=context)
+
+        self.assertEqual(runner.calls[0]["action"], "click")
+        self.assertEqual(result.state_updates["browser_control_status"], "executed")
+
+    def test_execute_screenshot_registers_generated_png_for_send_file(self) -> None:
+        class FakeGeneratedFileService:
+            def __init__(self, root: Path) -> None:
+                self.root = root
+                self.registered: list[dict[str, object]] = []
+
+            def allocate_output_path(self, **_kwargs) -> Path:
+                return self.root / "browser-screenshot.png"
+
+            def register_generated_artifact(self, **kwargs) -> dict[str, object]:
+                self.registered.append(dict(kwargs))
+                return {
+                    "generated_handle": "gen_007",
+                    "file_size": Path(kwargs["output_path"]).stat().st_size,
+                    "output_format": "png",
+                }
+
+        class FakeRunner:
+            def run(self, **kwargs) -> BrowserPageResult:
+                Path(str(kwargs["screenshot_path"])).write_bytes(b"\x89PNG\r\n\x1a\nreal-pixels")
+                return BrowserPageResult(
+                    ok=True,
+                    status="available",
+                    action="screenshot",
+                    url="https://example.com/video",
+                    title="Video",
+                    text="video player",
+                    page_revision="r2",
+                )
+
+        class FakeImageResolver:
+            def build_model_image_inputs(self, **kwargs) -> dict[str, object]:
+                self.targets = list(kwargs["targets"])
+                return {
+                    "ok": True,
+                    "images": [
+                        {
+                            "attachment_id": "generated:gen_007",
+                            "attachment_handle": "gen_007",
+                            "title": "browser-screenshot",
+                            "media_type": "image/png",
+                            "data_url": "data:image/png;base64,iVBORw0KGgo=",
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = FakeGeneratedFileService(Path(temp_dir))
+            resolver = FakeImageResolver()
+            handler = BrowserPageToolHandler(
+                browser_runner=FakeRunner(),
+                generated_file_service=service,
+                image_material_resolver=resolver,
+            )
+            call = handler.normalize_call({"type": "browser_page", "action": "screenshot"})
+            assert call is not None
+
+            result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(service.registered[0]["created_by_tool"], "browser_page")
+        self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
+        self.assertEqual(result.state_updates["browser_screenshot_handle"], "gen_007")
+        self.assertIn("gen_007", result.followup_context)
+        self.assertIn("send_file", result.followup_context)
+        self.assertEqual(resolver.targets, ["gen_007"])
+        self.assertEqual(result.model_image_inputs[0]["attachment_handle"], "gen_007")
+        self.assertIn("直接交给你查看", result.followup_context)
+
     def test_execute_click_can_use_visible_candidate_index(self) -> None:
         class FakeRunner:
             def __init__(self) -> None:
@@ -1960,6 +2108,29 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
         self.assertIn("暂时不可用", result.followup_context)
         self.assertIn("不要编造页面结果", result.followup_context)
         self.assertEqual(result.state_updates["browser_page_status"], "unavailable")
+
+    def test_closed_page_feedback_tells_model_exact_recovery_action(self) -> None:
+        class ClosedRunner:
+            def run(self, **kwargs) -> BrowserPageResult:
+                return BrowserPageResult(
+                    ok=False,
+                    status="browser_closed",
+                    action=str(kwargs.get("action") or "current"),
+                    reason="Target page, context or browser has been closed",
+                    retryable=True,
+                    next_action="navigate",
+                )
+
+        handler = BrowserPageToolHandler(browser_runner=ClosedRunner())
+        call = handler.normalize_call({"type": "browser_page", "action": "current"})
+        assert call is not None
+        result = handler.execute(call=call, context=self._context())
+
+        self.assertEqual(result.stream_events[0]["status"], "browser_closed")
+        self.assertTrue(result.stream_events[0]["retryable"])
+        self.assertEqual(result.stream_events[0]["next_action"], "navigate")
+        self.assertIn("这不是网页内容或网络结论", result.followup_context)
+        self.assertIn("下一步调用 browser_page.navigate", result.followup_context)
 
     def test_managed_browser_runner_defaults_to_visible_desktop_window(self) -> None:
         runner = ManagedBrowserPageRunner()

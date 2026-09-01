@@ -549,7 +549,7 @@ Files likely touched:
 - `desktop_pet_next/src-tauri/Cargo.toml`
 - `desktop_pet_next/src-tauri/src/main.rs`
 - `desktop_pet_next/src/main.js`
-- `desktop_pet_next/src/control-center/data-adapter.js`
+- `desktop_pet_next/src/control-center-v2/view-model.js`
 - `docs/control-center-lab-contract.md`
 - tests/smoke scripts if needed
 

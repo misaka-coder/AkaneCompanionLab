@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..task_worker_tool import DelegateTaskToolHandler
 from .adapters import DesktopSatelliteToolHandler
 from .attachments import (
     ClearAttachmentFocusToolHandler,
@@ -19,20 +18,10 @@ from .attachments import (
     LoadMaterialToolHandler,
     ReadAttachmentSectionToolHandler,
     RetryAttachmentToolHandler,
-    SyncAttachmentWorkspaceToolHandler,
 )
 from .execution import ExecCancelToolHandler, ExecRunToolHandler, ExecStatusToolHandler
-from .character_world import (
-    CallNPCToolHandler,
-    CancelReminderToolHandler,
-    CheckInventoryToolHandler,
-    ListRemindersToolHandler,
-    LoadCharacterContextToolHandler,
-    ManageArtifactToolHandler,
-    ManageGiftToolHandler,
-    ManagePersonaToolHandler,
-    SetReminderToolHandler,
-)
+from .extensions import ManageExtensionToolHandler
+from .character_world import LoadCharacterContextToolHandler
 from .core import BaseToolHandler
 from .generated_media import (
     ApplyStyleToExistingFileToolHandler,
@@ -74,9 +63,7 @@ from .web_browser import (
     WebSearchToolHandler,
 )
 from .workspace import (
-    FocusWorkspaceToolHandler,
     ListWorkspaceToolHandler,
-    ManageTaskWorkspaceToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
 )
@@ -85,10 +72,6 @@ from .workspace import (
 def build_builtin_tool_handlers(
     *,
     store: Any,
-    npc_runtime: Any,
-    gift_service: Any,
-    artifact_service: Any,
-    persona_card_service: Any,
     sticker_assets: Any,
     capability_offer_source: Any,
     capability_config_base_dir: Any,
@@ -96,22 +79,18 @@ def build_builtin_tool_handlers(
     context_libraries: Any,
     attachment_service: Any,
     image_material_resolver: Any,
-    task_workspace_service: Any,
     workspace_file_service: Any,
     attachment_ingest_service: Any,
     generated_file_service: Any,
     image_generation_service: Any | None,
     cover_song_service: Any | None,
-    task_worker_service: Any,
     retrieve_fn: Any,
-    describe_scene: Any,
-    build_npc_followup_context: Any,
-    observe_gift_image_fn: Any,
     skill_registry: Any | None = None,
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
     project_workspace_service: Any | None = None,
     mcp_management_service: Any | None = None,
+    extension_management_service: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
@@ -135,30 +114,16 @@ def build_builtin_tool_handlers(
         "load_character_context": LoadCharacterContextToolHandler(
             context_library_service=context_libraries,
         ),
-        "call_npc": CallNPCToolHandler(
-            npc_runtime=npc_runtime,
-            describe_scene=describe_scene,
-            build_followup_context=build_npc_followup_context,
-        ),
-        "set_reminder": SetReminderToolHandler(store=store),
-        "list_reminders": ListRemindersToolHandler(store=store),
-        "cancel_reminder": CancelReminderToolHandler(store=store),
-        "check_inventory": CheckInventoryToolHandler(gift_service=gift_service),
         "inspect_attachment": InspectAttachmentToolHandler(attachment_service=attachment_service),
         "load_material": LoadMaterialToolHandler(image_material_resolver=image_material_resolver),
         "read_attachment_section": ReadAttachmentSectionToolHandler(
             attachment_service=attachment_service
         ),
-        "sync_attachment_workspace": SyncAttachmentWorkspaceToolHandler(
-            attachment_service=attachment_service
-        ),
         "clear_attachment_focus": ClearAttachmentFocusToolHandler(
             attachment_service=attachment_service,
-            task_workspace_service=task_workspace_service,
         ),
         "list_workspace": ListWorkspaceToolHandler(workspace_service=workspace_file_service),
         "read_workspace": ReadWorkspaceToolHandler(workspace_service=workspace_file_service),
-        "focus_workspace": FocusWorkspaceToolHandler(workspace_service=workspace_file_service),
         "register_workspace_items": RegisterWorkspaceItemsToolHandler(
             workspace_service=workspace_file_service,
             attachment_ingest_service=attachment_ingest_service,
@@ -206,23 +171,6 @@ def build_builtin_tool_handlers(
         "onebot_action": OneBotActionToolHandler(),
         "manage_generated_file": ManageGeneratedFileToolHandler(
             generated_file_service=generated_file_service,
-            task_workspace_service=task_workspace_service,
-        ),
-        "manage_gift": ManageGiftToolHandler(
-            gift_service=gift_service,
-            observe_image_fn=observe_gift_image_fn,
-        ),
-        "manage_artifact": ManageArtifactToolHandler(
-            artifact_service=artifact_service,
-        ),
-        "manage_persona": ManagePersonaToolHandler(
-            persona_service=persona_card_service,
-        ),
-        "manage_task_workspace": ManageTaskWorkspaceToolHandler(
-            task_workspace_service=task_workspace_service,
-        ),
-        "delegate_task": DelegateTaskToolHandler(
-            task_worker_service=task_worker_service,
         ),
         "web_search": WebSearchToolHandler(
             config_base_dir=capability_config_base_dir,
@@ -253,7 +201,11 @@ def build_builtin_tool_handlers(
             offer_source=capability_offer_source,
         ),
         "open_music_search": OpenMusicSearchToolHandler(),
-        "browser_page": BrowserPageToolHandler(),
+        "browser_page": BrowserPageToolHandler(
+            generated_file_service=generated_file_service,
+            image_material_resolver=image_material_resolver,
+            config_base_dir=capability_config_base_dir,
+        ),
     }
     if skill_registry is not None:
         handlers["load_skill"] = LoadSkillToolHandler(registry=skill_registry)
@@ -261,6 +213,8 @@ def build_builtin_tool_handlers(
         handlers["load_mcp"] = LoadMcpToolHandler(service=mcp_management_service)
         handlers["invoke_mcp"] = InvokeMcpToolHandler()
         handlers["mcp_manage"] = McpManageToolHandler(service=mcp_management_service)
+    if extension_management_service is not None:
+        handlers["manage_extension"] = ManageExtensionToolHandler(service=extension_management_service)
     if execution_provider is not None:
         resource_bridge = None
         workspace_root = getattr(execution_provider, "workspace_root", None)

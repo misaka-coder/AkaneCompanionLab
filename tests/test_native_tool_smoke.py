@@ -5,9 +5,7 @@ import unittest
 from companion_v01.tool_runtime import ToolExecutionContext
 from scripts.tools.run_native_web_search_smoke import (
     SmokeBrowseMemoryHandler,
-    SmokeCheckInventoryHandler,
     SmokeInspectMediaInfoHandler,
-    SmokeListRemindersHandler,
     SmokeOpenMemoryHandler,
     SmokeReadMemoryTimelineHandler,
     SmokeRetrieveMemoryHandler,
@@ -43,8 +41,6 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
                 "browse_memory",
                 "read_memory_timeline",
                 "open_memory",
-                "list_reminders",
-                "check_inventory",
                 "inspect_media_info",
             },
         )
@@ -88,8 +84,6 @@ class NativeToolSmokeHelpersTests(unittest.TestCase):
             "browse_memory",
             "read_memory_timeline",
             "open_memory",
-            "list_reminders",
-            "check_inventory",
             "inspect_media_info",
         }
         self.assertEqual(set(handlers.keys()), expected)
@@ -167,28 +161,7 @@ class SmokeMemoryHandlerTests(unittest.TestCase):
 
 
 class SmokeReadTierHandlerTests(unittest.TestCase):
-    """The reminder/inventory/media fixtures must be fully canned (no real store)."""
-
-    def test_list_reminders_fixture_is_canned(self) -> None:
-        handler = SmokeListRemindersHandler()
-        normalized = handler.normalize_call({"type": "list_reminders", "status": "pending"})
-        self.assertIsNotNone(normalized)
-        result = handler.execute(call=normalized, context=_context())
-        self.assertEqual(result.tool_type, "list_reminders")
-        self.assertEqual(result.stream_events[0]["type"], "reminder_list")
-        self.assertTrue(result.followup_context.strip())
-        self.assertEqual(handler.executed_calls[0]["status"], "pending")
-        self.assertNotIn("_tool_source", handler.executed_calls[0])
-
-    def test_check_inventory_fixture_is_canned(self) -> None:
-        handler = SmokeCheckInventoryHandler()
-        normalized = handler.normalize_call({"type": "check_inventory", "scope": "pending_recent"})
-        self.assertIsNotNone(normalized)
-        result = handler.execute(call=normalized, context=_context())
-        self.assertEqual(result.tool_type, "check_inventory")
-        self.assertEqual(result.stream_events[0]["type"], "inventory_snapshot")
-        self.assertTrue(result.followup_context.strip())
-        self.assertEqual(handler.executed_calls[0]["scope"], "pending_recent")
+    """The media fixture must be fully canned (no real store)."""
 
     def test_inspect_media_info_fixture_is_canned(self) -> None:
         handler = SmokeInspectMediaInfoHandler()

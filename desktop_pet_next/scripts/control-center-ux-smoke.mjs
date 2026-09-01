@@ -141,7 +141,7 @@ if (puppeteer) {
 
     for (const [name, navId, viewport] of pageNavMap) {
       await pages.setViewport(viewport);
-      const url = `${baseUrl}/control-center-lab.html?page=${navId}&source=mock`;
+      const url = `${baseUrl}/control-center-lab.html?page=${navId}`;
       await pages.goto(url, { waitUntil: "networkidle0", timeout: 15000 });
       try {
         await pages.waitForSelector(".ccv2-shell", { timeout: 5000 });
@@ -157,7 +157,7 @@ if (puppeteer) {
 
     for (const viewport of [{ width: 1440, height: 900 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
       await pages.setViewport(viewport);
-      await pages.goto(`${baseUrl}/control-center-lab.html?page=chat&source=mock`, { waitUntil: "networkidle0", timeout: 15000 });
+      await pages.goto(`${baseUrl}/control-center-lab.html?page=chat`, { waitUntil: "networkidle0", timeout: 15000 });
       const geometry = await pages.evaluate(() => {
         const shell = document.querySelector(".ccv2-shell");
         const page = document.querySelector(".ccv2-scroll.is-chat");

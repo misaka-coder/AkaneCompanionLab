@@ -51,6 +51,12 @@ import {
 } from "./control-center/event-bridge.js";
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
 import { getBubbleSegmentDisplayDelay } from "./bubble-delivery.js";
+import {
+  MEDIA_CONTROL_TARGETS,
+  normalizeMediaControlAction,
+  resolveActiveMediaControl,
+  resolveMediaControlAction
+} from "./media-control.js";
 import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
 import "./styles.css";
 
@@ -120,9 +126,6 @@ const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1200;
 const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 2400;
 const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
-const WORKSPACE_TASK_POLL_MS = 12 * 1000;
-const WORKSPACE_TASK_IDLE_POLL_MS = 30 * 1000;
-const WORKSPACE_TASK_RECENT_UPDATE_MS = 5 * 60 * 1000;
 const VOICE_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -747,11 +750,6 @@ let backendRetryTimer = 0;
 let backendSwitchToken = 0;
 let backendSwitchPending = false;
 let validatedBotBindingKey = "";
-let workspaceTaskPollTimer = 0;
-let workspaceTaskWatchPrimed = false;
-let workspaceTaskStatusCache = new Map();
-let workspaceTaskWatchKey = "";
-const workspaceTaskAnnounced = new Set();
 let desktopFileDeliveryHandled = new Set();
 let lastDesktopForeground = null;
 
@@ -856,7 +854,6 @@ async function boot() {
     scheduleSystemMediaPoll({ immediate: true });
     scheduleScreenVisionCapture({ immediate: true });
     scheduleProactiveWake();
-    scheduleWorkspaceTaskWatch({ delayMs: 2000 });
     scheduleWorkspaceMusicRecommendationsRefresh();
   } catch (error) {
     setStatus(`Tauri init failed: ${formatError(error)}`);
@@ -1212,19 +1209,19 @@ function bindUi() {
   });
 
   els.previousMusic.addEventListener("click", () => {
-    void playPreviousMusicTrack();
+    void controlActiveMusic("previous", { source: "pet-controls" });
   });
 
   els.nextMusic.addEventListener("click", () => {
-    void playNextMusicTrack();
+    void controlActiveMusic("next", { source: "pet-controls" });
   });
 
   els.toggleMusic.addEventListener("click", () => {
-    void toggleMusicPlayback();
+    void controlActiveMusic("toggle", { source: "pet-controls" });
   });
 
   els.stopMusic.addEventListener("click", () => {
-    stopMusic({ announce: true });
+    void controlActiveMusic("stop", { source: "pet-controls" });
   });
 
   els.clearMusicQueue.addEventListener("click", () => {
@@ -1626,7 +1623,6 @@ async function registerWindowListeners() {
     stopPetPhysics({ restore: false, reschedule: false });
     stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
-    window.clearTimeout(workspaceTaskPollTimer);
     window.clearTimeout(transientEmotionTimer);
     if (thinkController) thinkController.abort();
     if (asrController) asrController.abort();
@@ -1666,6 +1662,9 @@ async function registerSettingsBridge() {
   });
   unlistenFns.push(unlisten);
   settingsBridgeRegistered = true;
+  // Close the startup race where the settings window requests a snapshot
+  // before the main window has finished registering this listener.
+  await broadcastSettingsSnapshot();
 }
 
 async function registerCharacterActivationBridge() {
@@ -1747,6 +1746,8 @@ async function applyPersistedCharacterActivation(packId) {
 async function handleSettingsCommand(payload) {
   const command = String(payload?.command || "").trim();
   if (!command) return;
+  const operationId = String(payload?.operationId || "").trim();
+  let commandHandled = true;
 
   switch (command) {
     case "requestSnapshot":
@@ -1774,6 +1775,7 @@ async function handleSettingsCommand(payload) {
         command,
         ok: true,
         status: "completed",
+        operationId,
         boundBotId: state.boundBotId,
         at: Date.now()
       };
@@ -1846,10 +1848,10 @@ async function handleSettingsCommand(payload) {
       await previewTts(payload.value);
       break;
     case "previousMusic":
-      await playPreviousMusicTrack();
+      await controlActiveMusic("previous", payload);
       break;
     case "nextMusic":
-      await playNextMusicTrack();
+      await controlActiveMusic("next", payload);
       break;
     case "playMusicTrack":
       await playMusicTrackBySourceId(payload.value);
@@ -1878,13 +1880,18 @@ async function handleSettingsCommand(payload) {
       await toggleMusicPlayback();
       break;
     case "toggleActiveMusic":
-      await toggleActiveMusicPlayback();
+      await controlActiveMusic("toggle", payload);
       break;
+    case "controlActiveMusic": {
+      const raw = payload.value && typeof payload.value === "object" ? payload.value : payload;
+      await controlActiveMusic(raw.action || payload.action || payload.value, payload);
+      break;
+    }
     case "seekMusic":
       seekMusicPlayback(Number(payload.value));
       break;
     case "stopMusic":
-      stopMusic({ announce: true });
+      await controlActiveMusic("stop", payload);
       break;
     case "clearMusicQueue":
       clearMusicQueue({ announce: true });
@@ -1924,6 +1931,7 @@ async function handleSettingsCommand(payload) {
           ok: false,
           status: "invalid-payload",
           reason: "message_required",
+          operationId,
           at: Date.now()
         };
         scheduleSettingsSnapshot();
@@ -1935,6 +1943,7 @@ async function handleSettingsCommand(payload) {
           ok: false,
           status: "busy",
           reason: "reply_in_progress",
+          operationId,
           at: Date.now()
         };
         scheduleSettingsSnapshot();
@@ -1944,6 +1953,7 @@ async function handleSettingsCommand(payload) {
         command,
         ok: true,
         status: "accepted",
+        operationId,
         messageLength: text.length,
         at: Date.now()
       };
@@ -1954,7 +1964,16 @@ async function handleSettingsCommand(payload) {
       await reloadCharacterResources({ userTriggered: true });
       break;
     case "previewEmotion":
-      previewEmotion(payload.value);
+      if (!previewEmotion(payload.value)) {
+        lastSettingsCommandResult = {
+          command,
+          ok: false,
+          status: "busy",
+          reason: sending ? "reply_in_progress" : "emotion_required",
+          operationId,
+          at: Date.now()
+        };
+      }
       break;
     case "closePet":
       await closePetWindow();
@@ -1981,10 +2000,29 @@ async function handleSettingsCommand(payload) {
       break;
     default:
       setRuntimeStatus(`未知设置命令：${command}`);
+      commandHandled = false;
       break;
   }
 
-  scheduleSettingsSnapshot();
+  if (operationId && commandHandled && lastSettingsCommandResult?.operationId !== operationId) {
+    lastSettingsCommandResult = {
+      command,
+      ok: true,
+      status: "completed",
+      operationId,
+      at: Date.now()
+    };
+  } else if (operationId && !commandHandled) {
+    lastSettingsCommandResult = {
+      command,
+      ok: false,
+      status: "not-supported",
+      reason: "unknown_settings_command",
+      operationId,
+      at: Date.now()
+    };
+  }
+  scheduleSettingsSnapshot(operationId ? 0 : 40);
 }
 
 function reportSettingsCommandFailure(payload, error) {
@@ -1994,6 +2032,7 @@ function reportSettingsCommandFailure(payload, error) {
     ok: false,
     status: "failed",
     reason: message,
+    operationId: String(payload?.operationId || "").trim(),
     boundBotId: state.boundBotId,
     at: Date.now()
   };
@@ -4663,7 +4702,7 @@ function pickLocalClickLine() {
 }
 
 function previewEmotion(emotion) {
-  if (sending || !emotion) return;
+  if (sending || !emotion) return false;
   const previous = previewEmotionRestore || state.currentEmotion || getProfileDefaultEmotion();
   const token = ++previewEmotionToken;
   window.clearTimeout(previewEmotionTimer);
@@ -4674,6 +4713,7 @@ function previewEmotion(emotion) {
     if (token !== previewEmotionToken || sending) return;
     cancelEmotionPreview({ restore: true });
   }, 2300);
+  return true;
 }
 
 function cancelEmotionPreview({ restore = false } = {}) {
@@ -5277,12 +5317,6 @@ async function resetInstanceBoundRuntimeForBackendSwitch() {
   interruptReply({ announce: false });
   await cancelVoiceRecording();
   clearBackendRetry();
-  window.clearTimeout(workspaceTaskPollTimer);
-  workspaceTaskPollTimer = 0;
-  workspaceTaskWatchPrimed = false;
-  workspaceTaskStatusCache = new Map();
-  workspaceTaskWatchKey = "";
-  workspaceTaskAnnounced.clear();
   desktopFileDeliveryHandled.clear();
   resourceState.manifest = null;
   resourceState.health = "checking";
@@ -5862,7 +5896,6 @@ async function ensureBackendSession({ restoreLatest = false, retriedCharacterMis
     } else {
       setRuntimeStatus("后端已就绪", { mode: "idle" });
     }
-    scheduleWorkspaceTaskWatch({ delayMs: 1200 });
     return bundle;
   } catch (error) {
     resourceState.health = "offline";
@@ -6082,7 +6115,8 @@ function summarizeSystemMedia(snapshot = systemMedia) {
     isPlaying: Boolean(snapshot?.isPlaying),
     positionSeconds: safePositiveSeconds(snapshot?.positionSeconds),
     durationSeconds: safePositiveSeconds(snapshot?.durationSeconds),
-    fresh: isFreshSystemMedia(snapshot)
+    fresh: isFreshSystemMedia(snapshot),
+    controllable: isControllableSystemMedia(snapshot)
   };
 }
 
@@ -7570,10 +7604,12 @@ function triggerPetReachGesture() {
 async function controlSystemMediaPlayback(action) {
   if (!isTauriRuntime) {
     notifyMusicActivityUnavailable("系统媒体控制只在桌面端可用。");
-    return false;
+    return { ok: false, status: "unavailable", reason: "desktop_runtime_required" };
   }
   const normalized = normalizeSystemMediaControlAction(action);
-  if (!["play", "pause", "stop", "next", "previous"].includes(normalized)) return false;
+  if (!["play", "pause", "stop", "next", "previous"].includes(normalized)) {
+    return { ok: false, status: "invalid_action", reason: "invalid_action", action: normalized };
+  }
 
   await triggerPetReachGesture();
 
@@ -7582,25 +7618,21 @@ async function controlSystemMediaPlayback(action) {
     const message = systemMediaControlMessage(normalized, result);
     setRuntimeStatus(message, { mode: normalized === "pause" || normalized === "stop" ? "music-paused" : "music" });
     showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
-    window.setTimeout(() => {
-      void refreshSystemMediaSnapshot();
-    }, normalized === "next" || normalized === "previous" ? 600 : 180);
+    await refreshSystemMediaSnapshot().catch(() => {});
     window.setTimeout(() => {
       lastActivityActionSignature = "";
     }, 900);
-    return true;
+    return { ...result, action: normalized };
   }
   if (result?.status === "execution_unknown") {
     const message = `已向系统播放器发送${normalizeSystemMediaControlActionLabel(normalized)}指令，但还没有确认到播放状态变化。`;
     setRuntimeStatus(message, { mode: "music" });
     showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
-    window.setTimeout(() => {
-      void refreshSystemMediaSnapshot();
-    }, 600);
+    await refreshSystemMediaSnapshot().catch(() => {});
     window.setTimeout(() => {
       lastActivityActionSignature = "";
     }, 900);
-    return true;
+    return { ...result, ok: false, action: normalized };
   }
   const reason = String(result?.reason || "unavailable").trim();
   const message = reason === "no_active_session"
@@ -7609,7 +7641,7 @@ async function controlSystemMediaPlayback(action) {
       ? "这个播放器暂时不接受系统媒体控制。"
       : "系统媒体控制暂时不可用。";
   notifyMusicActivityUnavailable(message);
-  return false;
+  return { ...result, ok: false, status: result?.status || "unavailable", reason, action: normalized };
 }
 
 function applyPayloadActivity(payload) {
@@ -8427,131 +8459,7 @@ async function notifyWorkspaceRefresh() {
   } catch {
     // The workspace window may not be open yet.
   }
-  scheduleWorkspaceTaskWatch({ immediate: true });
   scheduleWorkspaceMusicRecommendationsRefresh();
-}
-
-function scheduleWorkspaceTaskWatch({ immediate = false, delayMs = null } = {}) {
-  if (!isTauriRuntime) return;
-  window.clearTimeout(workspaceTaskPollTimer);
-  const delay = immediate ? 0 : Number.isFinite(Number(delayMs)) ? Number(delayMs) : WORKSPACE_TASK_POLL_MS;
-  workspaceTaskPollTimer = window.setTimeout(() => {
-    workspaceTaskPollTimer = 0;
-    void refreshWorkspaceTaskWatch();
-  }, Math.max(0, delay));
-}
-
-async function refreshWorkspaceTaskWatch() {
-  if (!isTauriRuntime) return;
-  const sessionId = String(state.sessionId || "").trim();
-  if (!sessionId || resourceState.health !== "online") {
-    scheduleWorkspaceTaskWatch({ delayMs: WORKSPACE_TASK_IDLE_POLL_MS });
-    return;
-  }
-  const watchKey = `${state.profileUserId || PROFILE_USER_ID}|${sessionId}`;
-  if (workspaceTaskWatchKey !== watchKey) {
-    workspaceTaskWatchKey = watchKey;
-    workspaceTaskWatchPrimed = false;
-    workspaceTaskStatusCache = new Map();
-    workspaceTaskAnnounced.clear();
-  }
-
-  let hasActiveTasks = false;
-  try {
-    const query = {
-      user_id: sessionId,
-      real_user_id: getProfileUserId(),
-      limit: 12,
-      t: Date.now()
-    };
-    const response = await backendFetch(
-      buildBackendEndpointUrl("desktop_workspace_summary", "/desktop-pet/workspace/summary", query),
-      {
-        method: "GET",
-        cache: "no-store",
-        connectTimeout: 5000
-      }
-    );
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw new Error(extractBackendErrorMessage(payload) || `HTTP ${response.status}`);
-    const tasks = normalizeWorkspaceSummaryTasks(payload);
-    hasActiveTasks = tasks.some(isActiveWorkspaceTask);
-    announceWorkspaceTaskChanges(tasks);
-  } catch {
-    scheduleWorkspaceTaskWatch({ delayMs: WORKSPACE_TASK_IDLE_POLL_MS });
-    return;
-  }
-  scheduleWorkspaceTaskWatch({ delayMs: hasActiveTasks ? WORKSPACE_TASK_POLL_MS : WORKSPACE_TASK_IDLE_POLL_MS });
-}
-
-function normalizeWorkspaceSummaryTasks(payload) {
-  const sections = payload?.sections && typeof payload.sections === "object" ? payload.sections : {};
-  return (Array.isArray(sections.tasks) ? sections.tasks : [])
-    .filter((item) => item && typeof item === "object")
-    .map((item) => ({
-      id: String(item.id || item.handle || "").trim(),
-      title: String(item.title || "后台任务").trim(),
-      status: String(item.status || "").trim().toLowerCase(),
-      statusGroup: String(item.status_group || item.statusGroup || "").trim().toLowerCase(),
-      updatedAt: Number(item.updated_at || item.updatedAt || 0),
-      artifactCount: Number(item.artifact_count || item.artifactCount || 0)
-    }))
-    .filter((item) => item.id);
-}
-
-function isActiveWorkspaceTask(task) {
-  return task.statusGroup === "active" || ["queued", "running"].includes(task.status);
-}
-
-function announceWorkspaceTaskChanges(tasks) {
-  const nextCache = new Map();
-  for (const task of tasks) {
-    const signature = `${task.status}:${task.updatedAt}:${task.artifactCount}`;
-    nextCache.set(task.id, { status: task.status, signature });
-    const previous = workspaceTaskStatusCache.get(task.id);
-    if (shouldAnnounceWorkspaceTask(task, previous)) {
-      announceWorkspaceTask(task);
-      workspaceTaskAnnounced.add(workspaceTaskAnnouncementKey(task));
-    }
-  }
-  workspaceTaskStatusCache = nextCache;
-  workspaceTaskWatchPrimed = true;
-}
-
-function shouldAnnounceWorkspaceTask(task, previous) {
-  if (!["completed", "failed", "blocked", "waiting_user", "partial"].includes(task.status)) return false;
-  const key = workspaceTaskAnnouncementKey(task);
-  if (workspaceTaskAnnounced.has(key)) return false;
-  if (previous && previous.status !== task.status) return true;
-  const updatedAtMs = Number(task.updatedAt || 0) * 1000;
-  return workspaceTaskWatchPrimed && updatedAtMs > 0 && Date.now() - updatedAtMs < WORKSPACE_TASK_RECENT_UPDATE_MS;
-}
-
-function workspaceTaskAnnouncementKey(task) {
-  return `${task.id}:${task.status}:${task.updatedAt || 0}`;
-}
-
-function announceWorkspaceTask(task) {
-  const title = task.title ? `：${task.title}` : "";
-  let message = `后台任务有新状态${title}`;
-  let bubble = "后台任务有新进展。";
-  let mode = "idle";
-  if (task.status === "completed") {
-    message = `后台任务已完成${title}`;
-    bubble = task.artifactCount > 0 ? "我处理好了，结果放到手边了。" : "我处理好了。";
-  } else if (task.status === "failed") {
-    message = `后台任务失败${title}`;
-    bubble = "后台任务失败了，我把状态放在手边了。";
-    mode = "error";
-  } else if (["blocked", "waiting_user", "partial"].includes(task.status)) {
-    message = `后台任务需要确认${title}`;
-    bubble = "后台任务等你确认一下。";
-  }
-  setRuntimeStatus(message, { mode });
-  if (!sending && !replyDisplayActive) {
-    showBubbleText(bubble, { transient: true, durationMs: 2600, kind: "status" });
-  }
-  void emit(WORKSPACE_REFRESH_EVENT, { t: Date.now() }).catch(() => {});
 }
 
 function isSupportedMusicPath(path) {
@@ -8842,7 +8750,7 @@ async function toggleMusicPlayback() {
   if (!musicTrack) {
     showBubbleText("把音频文件拖给我就能放啦。", { transient: true, durationMs: 2200, kind: "music" });
     setRuntimeStatus("等待拖入音频文件", { mode: "idle" });
-    return;
+    return false;
   }
   if (musicPlaying) {
     els.musicPlayer.pause();
@@ -8861,20 +8769,81 @@ async function toggleMusicPlayback() {
       scheduleBackendMusicTimeline(musicTrack, { immediate: true });
     } catch (error) {
       setRuntimeStatus(`音乐继续失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+      return false;
     }
   }
   updateActivityControls();
   scheduleSettingsSnapshot();
+  return true;
 }
 
-async function toggleActiveMusicPlayback() {
-  if (musicTrack) {
-    return toggleMusicPlayback();
+function buildActiveMediaControlSnapshot() {
+  return resolveActiveMediaControl({
+    localTrack: musicTrack,
+    localPlaying: musicPlaying,
+    localPaused: musicPaused,
+    systemMedia,
+    systemControllable: isControllableSystemMedia(systemMedia)
+  });
+}
+
+async function controlActiveMusic(action, payload = {}) {
+  const control = buildActiveMediaControlSnapshot();
+  const normalized = normalizeMediaControlAction(action);
+  const resolvedAction = resolveMediaControlAction(normalized, control);
+  const operationId = String(payload?.operationId || "").trim();
+  let outcome;
+
+  if (!normalized) {
+    outcome = { ok: false, status: "invalid_action", reason: "invalid_media_action" };
+  } else if (control.target === MEDIA_CONTROL_TARGETS.none) {
+    showBubbleText("现在没有可控制的音乐。", { transient: true, durationMs: 1800, kind: "music" });
+    setRuntimeStatus("暂无可控制的音乐", { mode: "idle" });
+    outcome = { ok: false, status: "unavailable", reason: "no_active_media" };
+  } else if (control.target === MEDIA_CONTROL_TARGETS.system) {
+    const result = await controlSystemMediaPlayback(resolvedAction);
+    outcome = {
+      ok: Boolean(result?.ok),
+      status: result?.ok ? "completed" : result?.status || "failed",
+      reason: result?.reason || "",
+      providerStatus: result?.status || "",
+      playbackStatus: result?.playbackStatus || result?.playback_status || ""
+    };
+  } else {
+    let ok = false;
+    if (resolvedAction === "play") {
+      ok = musicPlaying ? true : await toggleMusicPlayback();
+    } else if (resolvedAction === "pause") {
+      ok = musicPlaying ? await toggleMusicPlayback() : musicPaused;
+    } else if (resolvedAction === "next") {
+      ok = await playNextMusicTrack();
+    } else if (resolvedAction === "previous") {
+      ok = await playPreviousMusicTrack();
+    } else if (resolvedAction === "stop") {
+      stopMusic({ announce: true });
+      ok = true;
+    }
+    outcome = {
+      ok,
+      status: ok ? "completed" : "failed",
+      reason: ok ? "" : `local_media_${resolvedAction}_failed`,
+      playbackStatus: buildActiveMediaControlSnapshot().playbackStatus
+    };
   }
-  if (isControllableSystemMedia(systemMedia)) {
-    return controlSystemMediaPlayback(systemMedia.isPlaying ? "pause" : "play");
-  }
-  return toggleMusicPlayback();
+
+  lastSettingsCommandResult = {
+    command: "controlActiveMusic",
+    operationId,
+    target: control.target,
+    targetId: control.targetId,
+    action: resolvedAction || normalized,
+    ...outcome,
+    at: Date.now()
+  };
+  scheduleSettingsSnapshot(0);
+  return lastSettingsCommandResult;
 }
 
 function seekMusicPlayback(seconds) {
@@ -9993,7 +9962,8 @@ function buildMusicSnapshot() {
     displayName: getMusicDisplayName(),
     systemMedia: summarizeSystemMedia(),
     systemLyrics: summarizeSystemMediaLyrics(),
-    recommendations: buildMusicRecommendationsSnapshot()
+    recommendations: buildMusicRecommendationsSnapshot(),
+    control: buildActiveMediaControlSnapshot()
   };
 }
 
@@ -10771,24 +10741,25 @@ function setRuntimeStatus(message, { mode = null } = {}) {
 }
 
 function updateActivityControls() {
+  const mediaControl = buildActiveMediaControlSnapshot();
   if (els.stopReply) {
     els.stopReply.disabled = !isReplyActive();
   }
   if (els.toggleMusic) {
-    els.toggleMusic.disabled = !musicTrack || musicLoading;
-    els.toggleMusic.textContent = musicPlaying ? "暂停音乐" : musicTrack ? "继续音乐" : "音乐";
+    els.toggleMusic.disabled = !mediaControl.available || musicLoading;
+    els.toggleMusic.textContent = mediaControl.isPlaying ? "暂停音乐" : mediaControl.available ? "继续音乐" : "音乐";
   }
   if (els.stopMusic) {
-    els.stopMusic.disabled = !musicTrack && !musicLoading;
+    els.stopMusic.disabled = musicLoading || !mediaControl.available;
   }
   if (els.clearMusicQueue) {
     els.clearMusicQueue.disabled = musicLoading || (!musicTrack && !musicQueue.length);
   }
   if (els.previousMusic) {
-    els.previousMusic.disabled = musicLoading || !hasPreviousMusicTrack();
+    els.previousMusic.disabled = musicLoading || !mediaControl.available || (mediaControl.target === MEDIA_CONTROL_TARGETS.local && !hasPreviousMusicTrack());
   }
   if (els.nextMusic) {
-    els.nextMusic.disabled = musicLoading || !hasNextMusicTrack();
+    els.nextMusic.disabled = musicLoading || !mediaControl.available || (mediaControl.target === MEDIA_CONTROL_TARGETS.local && !hasNextMusicTrack());
   }
 }
 
@@ -11001,6 +10972,7 @@ function serializeEmotion(emotion) {
     id,
     name: String(emotion?.name || emotion?.id || "").trim(),
     aliases: normalizeAliases(emotion?.aliases),
+    image: String(emotion?.image || emotion?.url || "").trim(),
     path: String(emotion?.path || "").trim(),
     url: String(emotion?.url || "").trim()
   };

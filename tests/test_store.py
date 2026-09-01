@@ -237,6 +237,15 @@ class MemoryStoreEvalTurnTests(unittest.TestCase):
             self.assertEqual([item["seq_no"] for item in recent_messages], [3, 4, 5])
             self.assertEqual([item["content"] for item in recent_messages], ["message-3", "message-4", "message-5"])
 
+            older_messages = store.get_session_messages(
+                profile_user_id="user_a",
+                session_id="session_a",
+                before_seq=4,
+                limit=2,
+            )
+
+            self.assertEqual([item["seq_no"] for item in older_messages], [2, 3])
+
     def test_add_message_reuses_matching_caller_source_id_without_duplicate_notification(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

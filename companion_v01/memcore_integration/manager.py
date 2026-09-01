@@ -81,21 +81,38 @@ def _project_forward_references(value: object) -> list[dict[str, Any]]:
         for raw_node in list(raw.get("nodes") or []):
             if not isinstance(raw_node, dict):
                 continue
-            nodes.append(
-                {
-                    key: raw_node[key]
-                    for key in (
-                        "index",
-                        "actor_id",
-                        "actor_display_name",
-                        "text",
-                        "timestamp",
-                        "message_id",
-                        "attachment_count",
-                    )
-                    if key in raw_node
-                }
-            )
+            node = {
+                key: raw_node[key]
+                for key in (
+                    "index",
+                    "actor_id",
+                    "actor_display_name",
+                    "text",
+                    "timestamp",
+                    "message_id",
+                    "attachment_count",
+                )
+                if key in raw_node
+            }
+            mentions: list[dict[str, object]] = []
+            seen_mentions: set[str] = set()
+            for raw_mention in list(raw_node.get("mentions") or [])[:16]:
+                if not isinstance(raw_mention, dict):
+                    continue
+                mention_id = str(raw_mention.get("actor_id") or "").strip()[:160]
+                if not mention_id or mention_id in seen_mentions:
+                    continue
+                seen_mentions.add(mention_id)
+                mentions.append(
+                    {
+                        "actor_id": mention_id,
+                        "display_name": str(raw_mention.get("display_name") or "").strip()[:160],
+                        "is_assistant": bool(raw_mention.get("is_assistant")),
+                    }
+                )
+            if mentions:
+                node["mentions"] = mentions
+            nodes.append(node)
         entry["nodes"] = nodes
         references.append(entry)
     return references
@@ -1518,93 +1535,6 @@ class MemcoreManager:
                 "changed": True,
                 "snapshot_hash": digest,
             }
-        except Exception as exc:
-            reason = str(exc) or exc.__class__.__name__
-            logger.warning("memcore %s failed: %s", operation, reason)
-            return self._status(operation, False, "failed", source_id=source_id, reason=reason)
-
-    def record_task_event(
-        self,
-        *,
-        task: dict[str, Any],
-        event: dict[str, Any],
-        profile_user_id: str = "",
-        session_id: str = "",
-        character_pack_id: str = "",
-    ) -> dict[str, Any]:
-        operation = "record_task_event"
-        if not isinstance(task, dict) or not isinstance(event, dict):
-            return self._status(operation, False, "invalid_record", reason="task_and_event_required")
-        task_id = self._safe_task_event_text(task.get("task_id"), limit=120)
-        event_id = self._safe_task_event_text(event.get("event_id"), limit=160)
-        if not task_id or not event_id:
-            return self._status(operation, False, "invalid_record", reason="task_id_and_event_id_required")
-        profile = str(profile_user_id or task.get("profile_user_id") or event.get("profile_user_id") or "").strip()
-        session = str(session_id or task.get("session_id") or event.get("session_id") or "").strip()
-        system = self._get_system_or_none(
-            operation=operation,
-            profile_user_id=profile,
-            session_id=session,
-            character_pack_id=str(character_pack_id or "").strip(),
-        )
-        source_id = f"task:{event_id}"
-        if system is None:
-            return self._status(operation, False, "unavailable", source_id=source_id, reason=self._reason)
-
-        event_type = str(event.get("event_type") or "updated").strip().lower()
-        if event_type.startswith("task_"):
-            event_type = event_type[5:]
-        event_suffix = self._kind_suffix(event_type, fallback="updated")
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        handoff = payload.get("handoff") if isinstance(payload.get("handoff"), dict) else {}
-        pending = task.get("pending_question") if isinstance(task.get("pending_question"), dict) else {}
-        raw_request = task.get("raw_request") if isinstance(task.get("raw_request"), dict) else {}
-        fields: dict[str, Any] = {
-            "task_id": task_id,
-            "status": self._safe_task_event_text(task.get("status"), limit=40),
-            "goal": self._safe_task_event_text(
-                task.get("normalized_goal") or raw_request.get("text"),
-                limit=320,
-            ),
-            "actor": self._safe_task_event_text(event.get("from_actor"), limit=80),
-            "message": self._safe_task_event_text(event.get("message"), limit=500),
-            "priority": self._safe_task_event_text(event.get("priority"), limit=24),
-        }
-        if bool(event.get("requires_user")):
-            fields["requires_user"] = "true"
-        question = self._safe_task_event_text(
-            payload.get("question")
-            or pending.get("text")
-            or pending.get("question")
-            or handoff.get("user_question"),
-            limit=320,
-        )
-        if question:
-            fields["question"] = question
-        handoff_summary = self._safe_task_event_text(handoff.get("summary"), limit=500)
-        if handoff_summary:
-            fields["handoff_summary"] = handoff_summary
-        artifact_handles = self._task_event_artifact_handles(task=task, payload=payload, handoff=handoff)
-        if artifact_handles:
-            fields["artifacts"] = ", ".join(artifact_handles)
-        fields = {key: value for key, value in fields.items() if str(value or "").strip()}
-
-        try:
-            stored = system.record_external_event(
-                event_type=f"task.{event_suffix}",
-                fields=fields,
-                source="task_workspace",
-                timestamp=int(event.get("created_at") or task.get("updated_at") or time.time()),
-                source_id=source_id,
-                topic_terms=["任务", event_suffix],
-            )
-            return self._status(
-                operation,
-                True,
-                "recorded",
-                source_id=str(stored.get("source_id") or source_id),
-                index_status=str(stored.get("index_status") or ""),
-            )
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
             logger.warning("memcore %s failed: %s", operation, reason)
@@ -3803,6 +3733,9 @@ class MemcoreManager:
             content = str(raw.get("content") or "")
             semantic_text = content
             payload = {"text": content}
+            message_id = str(raw.get("source_message_id") or raw.get("message_id") or "").strip()[:160]
+            if message_id:
+                payload["message_id"] = message_id
             forward_references = raw.get("forward_references")
             if not forward_references and isinstance(metadata, dict):
                 forward_references = metadata.get("forward_references")
@@ -3842,13 +3775,31 @@ class MemcoreManager:
                         attachment_count = 0
                     if attachment_count > 0:
                         payload["reply_reference"]["attachment_count"] = attachment_count
+                    reply_mentions: list[dict[str, object]] = []
+                    seen_reply_mentions: set[str] = set()
+                    for mention in list(reply_reference.get("mentions") or [])[:16]:
+                        if not isinstance(mention, dict):
+                            continue
+                        mention_id = str(mention.get("actor_id") or "").strip()[:160]
+                        if not mention_id or mention_id in seen_reply_mentions:
+                            continue
+                        seen_reply_mentions.add(mention_id)
+                        reply_mentions.append(
+                            {
+                                "actor_id": mention_id,
+                                "display_name": str(mention.get("display_name") or "").strip()[:160],
+                                "is_assistant": bool(mention.get("is_assistant")),
+                            }
+                        )
+                    if reply_mentions:
+                        payload["reply_reference"]["mentions"] = reply_mentions
                 additional_mentions: list[dict[str, str]] = []
                 seen_mentions: set[str] = set()
                 for mention in list(addressing.get("mentions") or [])[:16]:
                     if not isinstance(mention, dict):
                         continue
                     mention_id = str(mention.get("actor_id") or "").strip()[:160]
-                    if not mention_id or mention_id == target_actor_id or mention_id in seen_mentions:
+                    if not mention_id or mention_id in seen_mentions:
                         continue
                     seen_mentions.add(mention_id)
                     additional_mentions.append(
@@ -4055,38 +4006,6 @@ class MemcoreManager:
         )
         text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
         return re.sub(r"\s+", " ", text).strip()[: max(1, int(limit or 1))]
-
-    @classmethod
-    def _task_event_artifact_handles(
-        cls,
-        *,
-        task: dict[str, Any],
-        payload: dict[str, Any],
-        handoff: dict[str, Any],
-    ) -> list[str]:
-        raw_items = [
-            *list(task.get("artifacts") or []),
-            *list(payload.get("artifacts") or []),
-            *list(handoff.get("artifacts") or []),
-        ]
-        handles: list[str] = []
-        seen: set[str] = set()
-        for item in raw_items:
-            if isinstance(item, dict):
-                value = (
-                    item.get("id")
-                    or item.get("handle")
-                    or item.get("generated_handle")
-                    or item.get("attachment_handle")
-                )
-            else:
-                value = item
-            handle = cls._safe_task_event_text(value, limit=120)
-            if not handle or handle.lower() in seen:
-                continue
-            seen.add(handle.lower())
-            handles.append(handle)
-        return handles
 
     def _record_material_event(
         self,

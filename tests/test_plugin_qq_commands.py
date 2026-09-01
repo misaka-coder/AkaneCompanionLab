@@ -382,8 +382,10 @@ def _make_plugin_with_qq_command(
         NETWORK_READ_PERMISSION,
         PLUGIN_QQ_COMMAND_PERMISSION,
     ),
+    *,
+    include_capability: bool = True,
 ) -> Callable[[], Any]:
-    """Return a factory for a plugin that registers a QQ command and a capability adapter."""
+    """Return a factory for a QQ command plugin with an optional capability."""
 
     def factory() -> Any:
         class _Handler:
@@ -399,7 +401,8 @@ def _make_plugin_with_qq_command(
             )
 
             def register(self, registrar: Any) -> None:
-                registrar.add_capability_adapter(_FakeAdapter())
+                if include_capability:
+                    registrar.add_capability_adapter(_FakeAdapter())
                 registrar.add_qq_command(command, _Handler())
 
         return Plugin()
@@ -464,6 +467,85 @@ class PluginHostQQCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(unavailable.handled)
         self.assertEqual(unavailable.reason, "host_unavailable")
         self.assertEqual(unavailable.reply_text, COMMAND_FAILURE_REPLY)
+
+    async def test_command_only_plugin_activates_without_fake_capability(self) -> None:
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_entry_points(
+                _make_plugin_with_qq_command(
+                    permissions=(PLUGIN_QQ_COMMAND_PERMISSION,),
+                    include_capability=False,
+                )
+            ),
+        )
+
+        status = await host.start()
+        broker = host.build_qq_command_broker()
+
+        self.assertEqual(status["status"], "active")
+        self.assertEqual(status["capability_count"], 0)
+        self.assertEqual(broker.registered_commands, ("/balance",))
+        await host.stop()
+
+    async def test_existing_broker_uses_current_command_generation_after_host_restart(self) -> None:
+        generation = 0
+
+        def factory() -> Any:
+            nonlocal generation
+            generation += 1
+            reply = f"generation-{generation}"
+
+            class Handler:
+                async def handle(self, req: PluginQQCommandRequest) -> PluginQQCommandResult:
+                    return PluginQQCommandResult(handled=True, reply_text=reply)
+
+            class Plugin:
+                manifest = PluginManifest(
+                    plugin_id=PLUGIN_ID,
+                    plugin_version="0.1.0",
+                    plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                    permissions=(
+                        CAPABILITY_PROMPT_INVOKE_PERMISSION,
+                        NETWORK_READ_PERMISSION,
+                        PLUGIN_QQ_COMMAND_PERMISSION,
+                    ),
+                )
+
+                def register(self, registrar: Any) -> None:
+                    registrar.add_capability_adapter(_FakeAdapter())
+                    registrar.add_qq_command("/balance", Handler())
+
+            return Plugin()
+
+        host = PluginHost(
+            (PluginSelection(plugin_id=PLUGIN_ID, enabled=True),),
+            contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            entry_points_provider=_entry_points(factory),
+        )
+        await host.start()
+        broker = host.build_qq_command_broker()
+
+        first = await broker.dispatch(
+            command="/balance",
+            args="",
+            qq_number=100,
+            group_id=0,
+            is_group=False,
+        )
+        restarted = await host.restart()
+        second = await broker.dispatch(
+            command="/balance",
+            args="",
+            qq_number=100,
+            group_id=0,
+            is_group=False,
+        )
+        await host.stop()
+
+        self.assertEqual(first.reply_text, "generation-1")
+        self.assertEqual(restarted["generation"], 2)
+        self.assertEqual(second.reply_text, "generation-2")
 
     # 8. Plugin without qq.command.register tries add_qq_command() → activation fails
     async def test_plugin_without_permission_add_qq_command_fails_activation(self) -> None:
@@ -677,10 +759,10 @@ class TrustedStatefulPolicyQQCommandTests(unittest.TestCase):
         ))
         self.assertTrue(policy.validate_manifest(manifest).accepted)
 
-    def test_rejects_qq_command_without_base_permissions(self) -> None:
+    def test_accepts_qq_command_without_unrelated_capability_permissions(self) -> None:
         policy = self._policy()
         manifest = self._manifest((PLUGIN_QQ_COMMAND_PERMISSION,))
-        self.assertFalse(policy.validate_manifest(manifest).accepted)
+        self.assertTrue(policy.validate_manifest(manifest).accepted)
 
     def test_rejects_unknown_permission(self) -> None:
         policy = self._policy()

@@ -75,9 +75,8 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(native_names, {"retrieve_memory", "browse_memory", "read_memory_timeline"})
 
     def test_read_tier_suite_runs_native_and_legacy_through_real_handlers(self) -> None:
-        # N3-prep: list_reminders / check_inventory / inspect_media_info were added
-        # to the default native allowlist (6b) without eval coverage. The combined
-        # dry-run engine must route/normalize/validate/execute them in both channels.
+        # inspect_media_info is part of the default read tier. The combined
+        # dry-run engine must route/normalize/validate/execute it in both channels.
         engine = build_dry_run_eval_engine()
 
         results = run_tool_decision_eval(
@@ -94,17 +93,14 @@ class ToolDecisionEvalTests(unittest.TestCase):
         self.assertEqual(summary["modes"]["native"]["execution_success_rate"], 1.0)
         self.assertEqual(summary["modes"]["native"]["validation_success_rate"], 1.0)
         self.assertEqual(summary["comparison"]["native_vs_legacy_fallback_hit_delta"], 0)
-        # Three positive cases (one per tool) carry the native source tag.
-        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], 3)
+        self.assertEqual(summary["modes"]["native"]["native_source_call_count"], 1)
 
         native_names = {
             result.tool_name
             for result in results
             if result.mode == "native" and result.called_tool
         }
-        self.assertEqual(
-            native_names, {"list_reminders", "check_inventory", "inspect_media_info"}
-        )
+        self.assertEqual(native_names, {"inspect_media_info"})
 
     def test_bad_tool_arguments_are_counted_as_validation_failure(self) -> None:
         engine = build_dry_run_web_search_eval_engine()

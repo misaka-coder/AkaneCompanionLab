@@ -267,6 +267,46 @@ function Import-AkanePersonalSatelliteToken {
     throw "cloud_satellite_token_required: set the instance-specific user environment token first"
 }
 
+function Import-AkaneCloudAdminToken {
+    param([string]$Target)
+
+    foreach ($scope in @("Process", "User")) {
+        $stored = [Environment]::GetEnvironmentVariable("AKANE_ADMIN_TOKEN", $scope)
+        if (-not [string]::IsNullOrWhiteSpace([string]$stored)) {
+            $env:AKANE_ADMIN_TOKEN = ([string]$stored).Trim()
+            return "AKANE_ADMIN_TOKEN [$scope]"
+        }
+    }
+
+    $ssh = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        throw "ssh_not_found"
+    }
+    $remoteCommand = 'sudo -n bash -c ''. /etc/akane/host.env; printf %s "$AKANE_ADMIN_TOKEN"'''
+    try {
+        $response = & $ssh.Source `
+            "-T" `
+            "-o" "BatchMode=yes" `
+            "-o" "ConnectTimeout=6" `
+            $Target `
+            $remoteCommand 2>$null
+    } catch {
+        throw "cloud_admin_token_unavailable"
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "cloud_admin_token_unavailable"
+    }
+    $token = (($response -join "`n").Trim())
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "cloud_admin_token_unavailable"
+    }
+
+    # The credential remains process-local. It is consumed only by the
+    # trusted Tauri host proxy and never enters the webview or saved state.
+    $env:AKANE_ADMIN_TOKEN = $token
+    return "cloud host environment [Process]"
+}
+
 function Start-AkaneSshTunnel {
     param(
         [string]$Target,
@@ -514,6 +554,10 @@ if (-not $SkipGptSoVits) {
 }
 
 $tokenSource = Import-AkanePersonalSatelliteToken -ExpectedInstanceId $InstanceId
+$adminTokenSource = ""
+if (-not $SkipDesktop) {
+    $adminTokenSource = Import-AkaneCloudAdminToken -Target $SshHost
+}
 $backendUrl = "http://127.0.0.1:$LocalPort"
 $health = Get-AkaneCloudHealth -BaseUrl $backendUrl
 $tunnelProcess = $null
@@ -545,6 +589,9 @@ if (Test-AkaneCloudHealth -Health $health -ExpectedInstanceId $InstanceId) {
 
 Write-Host "[INFO] Cloud instance verified: $InstanceId"
 Write-Host "[INFO] Satellite credential source: $tokenSource"
+if ($adminTokenSource) {
+    Write-Host "[INFO] Desktop management credential source: $adminTokenSource"
+}
 if (-not $SkipGptSoVits) {
     $providerHealth = Invoke-AkaneCloudGptSoVitsHealthCheck -BaseUrl $backendUrl
     if ($null -eq $providerHealth) {

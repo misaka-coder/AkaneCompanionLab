@@ -112,10 +112,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         execution_provider = type("ExecutionProvider", (), {"workspace_root": None})()
         handlers = build_builtin_tool_handlers(
             store=object(),
-            npc_runtime=object(),
-            gift_service=object(),
-            artifact_service=object(),
-            persona_card_service=object(),
             sticker_assets=object(),
             capability_offer_source=object(),
             capability_config_base_dir=".",
@@ -123,17 +119,12 @@ class NativeToolSchemaTests(unittest.TestCase):
             context_libraries=object(),
             attachment_service=object(),
             image_material_resolver=object(),
-            task_workspace_service=object(),
             workspace_file_service=object(),
             attachment_ingest_service=object(),
             generated_file_service=object(),
             image_generation_service=object(),
             cover_song_service=object(),
-            task_worker_service=object(),
             retrieve_fn=lambda *_args, **_kwargs: None,
-            describe_scene=lambda *_args, **_kwargs: None,
-            build_npc_followup_context=lambda *_args, **_kwargs: None,
-            observe_gift_image_fn=lambda *_args, **_kwargs: None,
             skill_registry=object(),
             execution_provider=execution_provider,
             approval_store=object(),
@@ -145,8 +136,29 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 63)
+        self.assertEqual(len(handlers), 51)
         self.assertEqual(missing, [])
+
+    def test_retired_tools_are_absent_and_sticker_has_one_exact_contract(self) -> None:
+        from companion_v01.capability_registry import CapabilityRegistry, SEND_STICKER_TOOL_SPEC
+        from companion_v01.client_protocol import ClientMode
+
+        retired = {
+            "call_npc",
+            "check_inventory",
+            "manage_gift",
+            "manage_artifact",
+            "manage_persona",
+            "focus_workspace",
+            "sync_attachment_workspace",
+        }
+        registry = CapabilityRegistry()
+        for mode in ClientMode:
+            self.assertTrue(retired.isdisjoint(registry.tool_names_for_mode(mode)))
+
+        schema = SEND_STICKER_TOOL_SPEC.input_schema
+        self.assertEqual(schema["required"], ["sticker"])
+        self.assertEqual(set(schema["properties"]), {"sticker"})
 
     def test_build_openai_native_tool_specs_prefers_metadata_input_schema(self) -> None:
         class MemoryHandler:

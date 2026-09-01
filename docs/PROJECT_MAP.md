@@ -52,14 +52,14 @@ The backend is a FastAPI application. Entry: `app.py`. Configuration: `config.py
 
 | File | Responsibility |
 |------|---------------|
-| `companion_v01/app.py` | FastAPI app construction. Creates `AkaneMemoryEngine`, wires all routers (`core`, `think`, `voice`, `qq`, `gifts`, `reminders`, `sessions`, `system`, `desktop_pet`, `control_center`, `web_static`), starts tracemalloc, mounts CORS, defines `RuntimeMetrics` class. |
+| `companion_v01/app.py` | FastAPI app construction. Creates `AkaneMemoryEngine`, wires all routers (`core`, `think`, `voice`, `qq`, `gifts`, `sessions`, `system`, `desktop_pet`, `control_center`, `web_static`), starts tracemalloc, mounts CORS, defines `RuntimeMetrics` class. |
 | `config.py` | Pydantic `Settings` object. Defines ALL runtime knobs: `RUN_MODE`, embedding model/device/cache, memory compaction thresholds, prompt cache settings, summary/compact batch sizes, all LLM selection knobs, file limits. **One file to change for any behavioral flag.** |
 
 ### Core Orchestration
 
 | File | Responsibility |
 |------|---------------|
-| `companion_v01/engine.py` | `AkaneMemoryEngine` — the central orchestrator. Owns EVERY domain service: `LLMRuntime`, `PromptBuilder`, `RetrievalService`, `BackgroundTaskRunner`, `GiftSystemService`, `CapabilityRegistry`, `TaskWorkspaceService`, `TaskWorkerService`, `PersonaCardService`, `StickerAssetService`, `ResourceManifest`, `GeneratedFileService`, `VectorStore`, `MemoryCompactionService`, `DesktopMusicTimelineService`, `DesktopScreenVisionWorkspace`, mode profiles, tool orchestration, output adapters, etc. When you need to know "what owns what", read the `__init__` of this class. |
+| `companion_v01/engine.py` | `AkaneMemoryEngine` — the central orchestrator. Owns `LLMRuntime`, `PromptBuilder`, `RetrievalService`, shared background execution, gifts, capabilities, persona cards, attachments/generated files, memory compaction, desktop services, tool orchestration and output adapters. When you need to know "what owns what", read the `__init__` of this class. |
 | `companion_v01/client_protocol.py` | `ClientMode` and `ClientProtocolContext`. Defines capability boundaries per client (`desktop_pet`, `qq`, `web_static`). Data model for client capability declarations. |
 
 ### Routing Layer (`companion_v01/routes/`)
@@ -75,7 +75,6 @@ Each file builds a FastAPI `APIRouter` with a `build_*_router()` function.
 | `routes/gifts.py` | `/gifts/*` | Gift asset upload, listing, delivery |
 | `routes/qq.py` | `/qq/*` | QQ gateway (NapCat) integration |
 | `routes/sessions.py` | `/sessions/*` | Session management |
-| `routes/reminders.py` | `/reminders/*` | Reminder CRUD |
 | `routes/system.py` | `/metrics`, `/health`, `/system/*` | System health, prometheus metrics, admin |
 | `routes/control_center.py` | `GET /control-center/snapshot`, `GET/POST /control-center/actions` | **Control Center backend contract.** `build_control_center_snapshot_runtime_providers` aggregates 5 real providers (health, diagnostics, workspace, resourceManifest, metrics). Action endpoint is inert — always returns `not-implemented`. |
 | `routes/web_static.py` | Static file serving | Serves the static web frontend (old settings, character creator kit preview) |
@@ -135,7 +134,7 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 | `companion_v01/generated_files_io.py` | File I/O helpers for generated files. |
 | `companion_v01/generated_files_media.py` | Media-specific handling for generated files. |
 
-#### Gifts, Tasks & Tools
+#### Gifts & Tools
 
 | File | Responsibility |
 |------|---------------|
@@ -143,10 +142,6 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 | `companion_v01/gift_assets.py` | Gift asset storage: images, stickers, custom art. |
 | `companion_v01/gift_system.py` | `GiftSystemService`. Gift lifecycle management. |
 | `companion_v01/sticker_assets.py` | `StickerAssetService`. Sticker collection for gifts. |
-| `companion_v01/task_worker.py` | `TaskWorkerService`. Executes delegate tasks: file ops, media processing. |
-| `companion_v01/task_worker_tool.py` | `DelegateTaskToolHandler`. Tool-call handler for task delegation from LLM. |
-| `companion_v01/task_workspace.py` | `TaskWorkspaceService`. Manages per-task workspaces with files, outputs, logs. |
-| `companion_v01/task_workspace_engine.py` | Workspace creation/cleanup engine. |
 | `companion_v01/tool_orchestration_engine.py` | Tool orchestration: routing, capability selection, tool execution pipeline. |
 | `companion_v01/tool_runtime.py` | Individual tool execution runtime. |
 | `companion_v01/capability_registry.py` | `CapabilityRegistry`. Declares and resolves tool capabilities per client mode. |
@@ -167,12 +162,11 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 | `companion_v01/final_output_engine.py` | Final output formatting: handles the last step before delivering to client (speech segments, TTS markup, file delivery). |
 | `companion_v01/output_adapters.py` | `OutputAdapterRegistry`. Adapters that transform engine output to client-specific formats. |
 
-#### QQ & Reminders
+#### QQ
 
 | File | Responsibility |
 |------|---------------|
 | `companion_v01/qq_gateway.py` | `NapCatQQGateway`. QQ message send/receive via NapCat HTTP API. |
-| `companion_v01/reminder_engine.py` | `ReminderEngine`. Scheduled reminders: create, persist, fire, deliver. |
 
 #### Infrastructure
 
@@ -226,13 +220,9 @@ Built with Tauri v2 + Vite. Entry: `index.html` → `src/main.js`.
 | `src/control-center-lab.js` | Two-line compatibility adapter for stale imports; owns no behavior. |
 | `src/control-center-v2/` | Production component/store/bridge implementation. Seven destinations: Overview, Chat, Character & Appearance, Voice & Wake, Model Service, Abilities & Permissions, System & Diagnostics. Uses real backend/Tauri state, observed action confirmation, honest empty/failure states, presentation preferences, and Bot rebinding. |
 | `src/control-center-v2/styles.css` | Production control-center styles, themes, wide/narrow layouts, reduced motion, framing, and action states. |
-| `src/control-center/action-router.js` | `CONTROL_CENTER_ACTIONS` (77 action ID constants), `CONTROL_CENTER_BRIDGED_ACTION_IDS` (44 bridged), `createControlCenterActionRouter` — action dispatch: registered handler → dataSource → not-implemented. |
-| `src/control-center/action-surface-contract.js` | Machine-readable catalog: every action ID classified as `bridged` (44), `client-handled` (3), or `deferred` (31). Exports `getUncataloguedBridgedActionIds()`. |
-| `src/control-center/data-sources.js` | Data source factory: `createMockControlCenterSource`, `createTauriControlCenterSource`, `createBackendControlCenterSource`. Unified snapshot pipeline (`tryReadUnifiedSnapshot`), individual endpoint fallback. 8 `build*RuntimePatch` functions (health, overview, character, voice, perception, music, advanced, recentOutputs). Prometheus metrics parser. Action execution via `runTauriControlCenterAction`. Emotion card resolution from manifest via `normalizeEmotionCards`/`findManifestEntry`. |
-| `src/control-center/data-adapter.js` | `createControlCenterSnapshot(raw)` — normalizes raw source data into typed `ControlCenterSnapshot`. 7 `adapt*Page` functions, `patchRowsByLabel`, label-based patching for overview/advanced. |
-| `src/control-center/mock-data.js` | Legacy adapter/probe fixture only; production V2 never renders it as fallback. |
+| `src/control-center/action-router.js` | Stable production action IDs and dispatch: registered V2 handler → production data source → structured `not-implemented`. |
+| `src/control-center/data-sources.js` | Single production backend source. Reads the unified snapshot with individual-endpoint compatibility fallback, projects runtime domains for V2, and routes actions to Tauri/settings/window/dedicated backend boundaries. |
 | `src/control-center/action-helpers.js` | `createControlCenterActionPayloadFromDataset` — converts `data-*` attributes to structured action payloads. `secondsFromIntervalLabel`. |
-| `src/control-center/snapshot-schema.js` | `CONTROL_CENTER_SCHEMA_VERSION`, `CONTROL_CENTER_PAGE_IDS`, `isKnownControlCenterPage`. |
 
 ### Tauri Backend (Rust)
 
@@ -327,24 +317,23 @@ User-facing docs: navigation guide, vision novel framework draft, memory design 
 1. `desktop_pet_next/src/main.js` — add case to `handleSettingsCommand`, state field to `DEFAULT_STATE`/`normalizeState`/`buildSettingsSnapshot`
 2. `desktop_pet_next/src/control-center/data-sources.js` — add to `settingsCommandByActionId`
 3. `desktop_pet_next/src/control-center/action-router.js` — add to `CONTROL_CENTER_BRIDGED_ACTION_IDS`
-4. `desktop_pet_next/src/control-center/action-surface-contract.js` — change from `deferred` to `bridged`
-5. `desktop_pet_next/scripts/control-center-action-bridge-smoke.mjs` — add test case
-6. `docs/control-center-lab-contract.md` — update count/docs
+4. `desktop_pet_next/scripts/control-center-action-bridge-smoke.mjs` — add a real-boundary test case
+5. `docs/control-center-lab-contract.md` — document ownership and state confirmation
 
 ### "I want to understand how a page gets its data"
 
 1. Backend: `companion_v01/routes/control_center.py` → provider functions (`_build_snapshot_*`)
 2. Frontend: `desktop_pet_next/src/control-center/data-sources.js` → `build*RuntimePatch` functions
-3. Adapter: `desktop_pet_next/src/control-center/data-adapter.js` → `adapt*Page` functions
-4. Render: `desktop_pet_next/src/control-center-lab.js` → `render*Page` functions
+3. Store/view model: `desktop_pet_next/src/control-center-v2/store.js` and `view-model.js`
+4. Render: `desktop_pet_next/src/control-center-v2/components/*`
 
 ### "I want to add a new page to the control center"
 
-1. `desktop_pet_next/src/control-center/mock-data.js` — add mock page data
-2. `desktop_pet_next/src/control-center/data-sources.js` — add `build*RuntimePatch` for runtime data
-3. `desktop_pet_next/src/control-center/data-adapter.js` — add `adapt*Page`
-4. `desktop_pet_next/src/control-center/snapshot-schema.js` — register page ID
-5. `desktop_pet_next/src/control-center-lab.js` — add `render*Page`, navigation item, state
+1. `desktop_pet_next/src/control-center-v2/store.js` — define the page-owned state
+2. `desktop_pet_next/src/control-center-v2/view-model.js` — project runtime facts for the page
+3. `desktop_pet_next/src/control-center-v2/components/` — add the component and navigation entry
+4. `desktop_pet_next/src/control-center/data-sources.js` — add only the runtime fields with a real owner
+5. Add V2 smoke coverage; do not create mock-first page data
 
 ### "The backend crash on startup"
 
@@ -352,20 +341,20 @@ User-facing docs: navigation guide, vision novel framework draft, memory design 
 2. `companion_v01/app.py` — check which import fails
 3. `companion_v01/engine.py` — which service init fails
 
-### "The control center shows mock data but not real data"
+### "The control center does not show runtime data"
 
-1. Check `desktop_pet_next/src/control-center-lab.js` → `hydrateControlCenterSnapshot` — is TauriRuntime available?
-2. Check `desktop_pet_next/src/control-center/data-sources.js` → `createBackendControlCenterSource` → `readSnapshot` — which step returns null?
+1. Check `desktop_pet_next/src/control-center-v2/bridge.js` — did backend and Tauri snapshots arrive?
+2. Check `desktop_pet_next/src/control-center/data-sources.js` → `createBackendControlCenterSource` → `readSnapshot` — which field is unavailable?
 3. Check backend: `curl http://127.0.0.1:9999/control-center/snapshot?user_id=test&client=desktop_pet`
 4. Check `companion_v01/routes/control_center.py` → `build_control_center_snapshot_runtime_providers` — are all 5 providers returning real data?
 
 ### "A button looks clickable but does nothing"
 
-1. Find its `data-action-id` in `desktop_pet_next/src/control-center-lab.js`
-2. Check `desktop_pet_next/src/control-center/action-surface-contract.js` — is it `bridged`, `client-handled`, or `deferred`?
-3. If `bridged`: check `desktop_pet_next/src/control-center/data-sources.js` → `settingsCommandByActionId` / `tauriInvokeByActionId` → check `main.js` → `handleSettingsCommand` for the command handler
-4. If `deferred`: it's intentionally disabled. Read the `reason` string in the surface contract.
-5. Use `npm run smoke:control-center-actions` to verify all bridge mappings.
+1. Find its `data-action-id` in `desktop_pet_next/src/control-center-v2/components/`.
+2. Check whether it is local presentation state or a production action in `action-router.js`.
+3. For production actions, follow `data-sources.js` → settings command / Tauri invoke / window API / dedicated backend route.
+4. If there is no real execution boundary, remove the false affordance instead of returning fake success.
+5. Use `npm run smoke:control-center-actions` to verify production bridge mappings.
 
 ### "Tauri won't start / window won't open"
 

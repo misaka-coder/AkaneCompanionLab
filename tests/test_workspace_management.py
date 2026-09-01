@@ -10,7 +10,6 @@ from companion_v01.capability_registry import MANAGE_GENERATED_FILE_TOOL_SPEC
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.native_tool_schema import build_openai_native_tool_from_spec
 from companion_v01.store import MemoryStore
-from companion_v01.task_workspace import TaskWorkspaceService
 from companion_v01.tool_runtime import ManageGeneratedFileToolHandler
 from companion_v01.workspace_management import clear_workspace_files, list_workspace_files
 
@@ -21,11 +20,9 @@ class _WorkspaceEngine:
         *,
         attachment_service: AttachmentInboxService,
         generated_service: GeneratedFileService,
-        task_service: TaskWorkspaceService,
     ) -> None:
         self.attachment_service = attachment_service
         self.generated_service = generated_service
-        self.task_service = task_service
         self.generated_cleanup_events: list[dict] = []
 
     def _get_attachment_inbox_service(self):
@@ -33,9 +30,6 @@ class _WorkspaceEngine:
 
     def _get_generated_file_service(self):
         return self.generated_service
-
-    def _get_task_workspace_service(self):
-        return self.task_service
 
     def _record_generated_workspace_cleanup(self, **kwargs):
         self.generated_cleanup_events.append(dict(kwargs))
@@ -57,13 +51,11 @@ class WorkspaceManagementTests(unittest.TestCase):
             store=store,
             attachment_service=attachment_service,
         )
-        task_service = TaskWorkspaceService(store)
         engine = _WorkspaceEngine(
             attachment_service=attachment_service,
             generated_service=generated_service,
-            task_service=task_service,
         )
-        return store, attachment_service, generated_service, task_service, engine
+        return store, attachment_service, generated_service, engine
 
     def _add_files(self, root: Path, store: MemoryStore):
         attachment_path = root / "attachments" / "user" / "session" / "source.txt"
@@ -99,28 +91,11 @@ class WorkspaceManagementTests(unittest.TestCase):
         )
         return attachment, attachment_path, generated, generated_path
 
-    def test_soft_clear_unifies_attachments_generated_files_and_linked_tasks(self) -> None:
+    def test_soft_clear_unifies_attachments_and_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, _generated, task_service, engine = self._services(root)
+            store, _attachments, _generated, engine = self._services(root)
             attachment, attachment_path, generated, generated_path = self._add_files(root, store)
-            task = store.add_task_workspace(
-                profile_user_id="user",
-                session_id="session",
-                status="running",
-                normalized_goal="处理文件",
-                artifacts=[
-                    {
-                        "id": attachment["attachment_handle"],
-                        "attachment_id": attachment["attachment_id"],
-                    },
-                    {
-                        "id": generated["generated_handle"],
-                        "generated_id": generated["generated_id"],
-                    },
-                ],
-                timestamp=120,
-            )
 
             before = list_workspace_files(engine, profile_user_id="user", session_id="session")
             result = clear_workspace_files(
@@ -140,10 +115,8 @@ class WorkspaceManagementTests(unittest.TestCase):
             self.assertEqual(result["status"], "cleared")
             self.assertEqual(len(result["attachments"]["cleared"]), 1)
             self.assertEqual(len(result["generated_files"]["managed"]), 1)
-            self.assertEqual([item["task_id"] for item in result["cleaned_tasks"]], [task["task_id"]])
             self.assertTrue(attachment_path.exists())
             self.assertTrue(generated_path.exists())
-            self.assertEqual(task_service.get_task(task["task_id"])["status"], "cleaned")
             self.assertEqual(after["attachments"], [])
             self.assertEqual(after["generated_files"], [])
             self.assertEqual(len(engine.generated_cleanup_events), 1)
@@ -157,7 +130,7 @@ class WorkspaceManagementTests(unittest.TestCase):
     def test_purge_deletes_managed_bytes_for_both_shelves(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, _generated, _tasks, engine = self._services(root)
+            store, _attachments, _generated, engine = self._services(root)
             _attachment, attachment_path, generated, generated_path = self._add_files(root, store)
 
             result = clear_workspace_files(
@@ -185,7 +158,7 @@ class WorkspaceManagementTests(unittest.TestCase):
     def test_generated_delete_failure_keeps_record_visible_for_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, generated_service, _tasks, _engine = self._services(root)
+            store, _attachments, generated_service, _engine = self._services(root)
             _attachment, _attachment_path, generated, generated_path = self._add_files(root, store)
 
             with patch.object(
@@ -217,7 +190,7 @@ class WorkspaceManagementTests(unittest.TestCase):
     def test_direct_generated_delete_failure_is_recorded_once_for_model_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, generated_service, _tasks, engine = self._services(root)
+            store, _attachments, generated_service, engine = self._services(root)
             _attachment, _attachment_path, generated, generated_path = self._add_files(root, store)
 
             with patch.object(
@@ -249,7 +222,7 @@ class WorkspaceManagementTests(unittest.TestCase):
     def test_attachment_only_clear_does_not_emit_generated_cleanup_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, _generated, _tasks, engine = self._services(root)
+            store, _attachments, _generated, engine = self._services(root)
             attachment, _attachment_path, _generated_item, _generated_path = self._add_files(root, store)
 
             result = clear_workspace_files(
@@ -268,7 +241,7 @@ class WorkspaceManagementTests(unittest.TestCase):
     def test_external_attachment_purge_reports_retained_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, _generated, _tasks, engine = self._services(root)
+            store, _attachments, _generated, engine = self._services(root)
             store.add_attachment_inbox_item(
                 profile_user_id="user",
                 session_id="session",
@@ -325,63 +298,10 @@ class WorkspaceManagementTests(unittest.TestCase):
             },
         )
 
-    def test_native_generated_cleanup_closes_only_linked_active_tasks(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store, _attachments, generated_service, task_service, _engine = self._services(root)
-            _attachment, _attachment_path, generated, _generated_path = self._add_files(root, store)
-            linked = store.add_task_workspace(
-                profile_user_id="user",
-                session_id="session",
-                status="running",
-                normalized_goal="处理生成结果",
-                artifacts=[{"id": generated["generated_handle"]}],
-                timestamp=120,
-            )
-            unrelated = store.add_task_workspace(
-                profile_user_id="user",
-                session_id="session",
-                status="running",
-                normalized_goal="另一个任务",
-                artifacts=[{"id": "gen_999"}],
-                timestamp=121,
-            )
-            handler = ManageGeneratedFileToolHandler(
-                generated_file_service=generated_service,
-                task_workspace_service=task_service,
-            )
-            context = type(
-                "_Context",
-                (),
-                {
-                    "profile_user_id": "user",
-                    "session_id": "session",
-                    "now_ts": 130,
-                },
-            )()
-
-            result = handler.execute(
-                call={
-                    "type": "manage_generated_file",
-                    "action": "archive",
-                    "targets": [generated["generated_handle"]],
-                    "reason": "用户不再需要",
-                },
-                context=context,
-            )
-
-            self.assertEqual(store.get_task_workspace(linked["task_id"])["status"], "cleaned")
-            self.assertEqual(store.get_task_workspace(unrelated["task_id"])["status"], "running")
-            self.assertEqual(
-                [event["type"] for event in result.stream_events],
-                ["generated_files_managed", "task_workspaces_cleaned"],
-            )
-            self.assertIn("关闭了 1 个", result.followup_context)
-
     def test_native_generated_cleanup_failure_returns_model_visible_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            store, _attachments, generated_service, _task_service, _engine = self._services(root)
+            store, _attachments, generated_service, _engine = self._services(root)
             _attachment, _attachment_path, generated, generated_path = self._add_files(root, store)
             handler = ManageGeneratedFileToolHandler(generated_file_service=generated_service)
             context = type(

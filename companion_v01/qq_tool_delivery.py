@@ -43,6 +43,7 @@ class QQToolDeliveryPort:
         request_context: dict[str, Any],
         action: str,
         params: dict[str, Any],
+        message_selector: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context = self._context(request_context)
         if context is None:
@@ -57,6 +58,7 @@ class QQToolDeliveryPort:
                 context,
                 action=action,
                 params=dict(params or {}),
+                message_selector=dict(message_selector) if isinstance(message_selector, dict) else None,
             )
         )
 

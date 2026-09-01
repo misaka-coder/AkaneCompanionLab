@@ -48,7 +48,8 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const chat = normalizeChatSession(raw.chatSession, {
     sessionId: text(petState.sessionId),
     characterName: displayName,
-    characterAvatar: portrait
+    characterAvatar: portrait,
+    runtime: raw.chatRuntime
   });
   const bots = normalizeBotCatalog(raw.botCatalog, text(petState.boundBotId));
 
@@ -262,6 +263,8 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   const afterState = asObject(after.state);
   const beforeActive = asObject(before.active);
   const afterActive = asObject(after.active);
+  const commandOutcome = observedActionOutcome(actionId, payload, after);
+  if (commandOutcome && commandOutcome.ok === false) return true;
 
   if (actionId === "chat.new") {
     const beforeSession = text(beforeState.sessionId);
@@ -272,6 +275,7 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const commandResult = asObject(after.settingsCommandResult);
     return (
       text(commandResult.command) === "sendChatMessage" &&
+      (!text(payload.operationId) || text(commandResult.operationId) === text(payload.operationId)) &&
       text(commandResult.status) === "accepted" &&
       Boolean(afterActive.sending)
     );
@@ -280,11 +284,14 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     const wasActive = Boolean(beforeActive.sending || beforeActive.replyDisplayActive);
     return wasActive && !afterActive.sending && !afterActive.replyDisplayActive;
   }
-  if (actionId === "music.togglePlayback") {
+  if (["music.previous", "music.next", "music.togglePlayback", "music.stop"].includes(actionId)) {
+    if (text(payload.operationId)) {
+      return Boolean(observedActionOutcome(actionId, payload, after));
+    }
     return musicPlaybackSignature(before) !== musicPlaybackSignature(after);
   }
   if (actionId === "voice.test" || actionId === "voice.previewPlay") {
-    return !Boolean(beforeActive.speaking) && Boolean(afterActive.speaking);
+    return Boolean(commandOutcome?.ok) && Boolean(afterActive.speaking);
   }
   if (actionId === "voice.stop") {
     return Boolean(beforeActive.speaking) && !Boolean(afterActive.speaking);
@@ -330,9 +337,46 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   if (actionId === "character.previewEmotion") {
     const beforeExpression = text(asObject(before.currentExpression).id) || text(asObject(before.currentExpression).name) || text(beforeState.currentEmotion);
     const afterExpression = text(asObject(after.currentExpression).id) || text(asObject(after.currentExpression).name) || text(afterState.currentEmotion);
-    return Boolean(afterExpression && afterExpression !== beforeExpression && (!expected || afterExpression === expected));
+    return Boolean(
+      commandOutcome?.ok &&
+      afterExpression &&
+      (!expected || afterExpression === expected) &&
+      (afterExpression !== beforeExpression || text(asObject(after.settingsCommandResult).status) === "completed")
+    );
   }
   return true;
+}
+
+export function observedActionOutcome(actionId, payload = {}, snapshot = {}) {
+  const commandResult = asObject(asObject(snapshot).settingsCommandResult);
+  const expectedOperationId = text(payload.operationId);
+  const expectedCommand = {
+    "chat.send": "sendChatMessage",
+    "voice.test": "testTts",
+    "voice.previewPlay": "previewTts",
+    "character.previewEmotion": "previewEmotion",
+    "music.previous": "controlActiveMusic",
+    "music.next": "controlActiveMusic",
+    "music.togglePlayback": "controlActiveMusic",
+    "music.stop": "controlActiveMusic"
+  }[actionId];
+  if (!expectedCommand || text(commandResult.command) !== expectedCommand) return null;
+  if (expectedOperationId && text(commandResult.operationId) !== expectedOperationId) return null;
+  if (!text(commandResult.status)) return null;
+  const outcome = {
+    ok: Boolean(commandResult.ok),
+    status: text(commandResult.status),
+    reason: text(commandResult.reason)
+  };
+  if (["music.previous", "music.next", "music.togglePlayback", "music.stop"].includes(actionId)) {
+    return {
+      ...outcome,
+      target: text(commandResult.target),
+      targetId: text(commandResult.targetId),
+      mediaAction: text(commandResult.action)
+    };
+  }
+  return outcome;
 }
 
 function musicPlaybackSignature(snapshot) {
@@ -404,8 +448,7 @@ function normalizeSystemRuntime(raw, live, options = {}) {
     services,
     settings,
     issues: dedupedIssues,
-    details: normalizeSystemDetails(raw, live, metrics),
-    hasEventSource: false
+    details: normalizeSystemDetails(raw, live, metrics)
   };
 }
 
@@ -599,7 +642,9 @@ function finiteNumber(value, fallback = 0) {
 
 function normalizeChatSession(value, options = {}) {
   const source = asObject(value);
+  const runtime = asObject(options.runtime);
   const session = asObject(source.session);
+  const messagePage = asObject(source.message_page);
   const expectedSessionId = text(options.sessionId);
   const actualSessionId = text(session.session_id) || text(session.sessionId);
   const matchesCurrentSession = !expectedSessionId || !actualSessionId || expectedSessionId === actualSessionId;
@@ -614,10 +659,18 @@ function normalizeChatSession(value, options = {}) {
       ? text(session.display_title) || text(session.displayTitle) || "当前对话"
       : "正在切换会话",
     messages,
+    totalCount: Math.max(messages.length, finiteNumber(session.message_count, messages.length)),
+    history: {
+      pageKnown: Object.keys(messagePage).length > 0,
+      hasMore: Boolean(messagePage.has_more),
+      nextBeforeSeq: finiteNumber(messagePage.next_before_seq, 0)
+    },
     characterName: text(options.characterName) || "桌宠",
     characterAvatar: safeAssetUrl(text(options.characterAvatar)),
     hasHistory: messages.length > 0,
-    matchesCurrentSession
+    matchesCurrentSession,
+    loadStatus: text(runtime.status) || "idle",
+    loadError: text(runtime.reason)
   };
 }
 
@@ -630,6 +683,7 @@ function normalizeChatMessage(value) {
   const timestamp = Number(source.timestamp);
   return {
     id: text(source.source_id) || `${role}-${text(source.seq_no)}-${timestamp || 0}`,
+    seqNo: finiteNumber(source.seq_no, 0),
     role,
     content,
     timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0,

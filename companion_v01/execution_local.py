@@ -37,7 +37,6 @@ temporary workspace.
 
 from __future__ import annotations
 
-import base64
 import codecs
 import ctypes
 from ctypes import wintypes
@@ -105,6 +104,9 @@ _SENSITIVE_ENV_NAME_RE = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 _HOST_INTERNAL_ENV_PREFIXES = ("AKANE_",)
 _CREDENTIAL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CREDENTIAL_OUTPUT_MARKER = "[credential value hidden]"
+_LEADING_QUOTED_WINDOWS_EXECUTABLE_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<quote>[\"'])(?P<path>[^\"'\r\n]+)(?P=quote)(?=\s|$)",
+)
 
 
 class _SecretStreamRedactor:
@@ -146,7 +148,7 @@ def _unknown_status(run_id: str) -> ExecRunStatus:
 
 
 def _split_windows_command_line(command: str) -> list[str] | None:
-    """Parse a Windows command using CreateProcess-compatible quoting."""
+    """Parse an explicit Windows program invocation without a shell hop."""
 
     if os.name != "nt":
         return None
@@ -211,6 +213,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             raise ValueError(f"invalid_execution_credential_env_name:{invalid_credentials[0]}")
         self.credential_env_names = {name for name in credential_names if name}
         self.host_env = dict(host_env) if host_env is not None else dict(os.environ)
+        self.windows_shell_path = self._resolve_windows_shell_path() if os.name == "nt" else ""
         self.proxy_url = str(proxy_url or "").strip()
         self._proxy_probe = proxy_probe or self._probe_http_proxy
         self._proxy_probe_lock = threading.Lock()
@@ -286,12 +289,11 @@ class TrustedLocalExecutor(ExecutionProvider):
         """Return stable host facts without spawning version-probe processes."""
 
         if os.name == "nt":
-            path_value = str(self.host_env.get("PATH") or "")
-            has_pwsh = any((Path(part) / "pwsh.exe").is_file() for part in path_value.split(os.pathsep) if part)
+            shell_name = ntpath.basename(self.windows_shell_path).casefold()
             environment: dict[str, Any] = {
                 "platform": "windows",
-                "command_shell": "cmd.exe",
-                "preferred_script_shell": "pwsh" if has_pwsh else "powershell.exe",
+                "command_shell": "pwsh" if shell_name == "pwsh.exe" else "powershell.exe",
+                "preferred_script_shell": "pwsh" if shell_name == "pwsh.exe" else "powershell.exe",
             }
         else:
             environment = {
@@ -408,6 +410,26 @@ class TrustedLocalExecutor(ExecutionProvider):
                 value = host_values.get(name)
                 if value is not None:
                     env[name] = str(value)
+        if os.name == "nt":
+            # PowerShell can start with a deliberately small allowlist, but
+            # native children launched from it still require Windows' basic
+            # process environment (notably SystemRoot for DLL resolution).
+            # These are OS facts, not credentials or Akane-private state.
+            for name in ("SystemRoot", "WINDIR", "SystemDrive", "COMSPEC", "PATHEXT"):
+                if any(str(existing).casefold() == name.casefold() for existing in env):
+                    continue
+                value = self._host_env_value(name)
+                if value is None:
+                    value = next(
+                        (
+                            str(item)
+                            for key, item in os.environ.items()
+                            if str(key).casefold() == name.casefold() and str(item)
+                        ),
+                        None,
+                    )
+                if value is not None:
+                    env[name] = value
         if include_credentials:
             for name in sorted(self.credential_env_names):
                 value = self._host_env_value(name)
@@ -793,52 +815,99 @@ class TrustedLocalExecutor(ExecutionProvider):
             self._logs[run_id] = handle
         return f"runlog:{run_id}"
 
-    def _prepare_windows_command(self, command: str) -> str | list[str]:
-        """Run explicit PowerShell programs via ``-EncodedCommand``.
+    def _resolve_windows_shell_path(self) -> str:
+        """Choose one stable Windows command language for the executor process.
 
-        Passing a non-trivial ``powershell -Command`` program through
-        ``cmd.exe /c`` adds a second quoting language. Loops, dictionaries and
-        nested quotes can then hang or execute a different command. A direct
-        argv launch with PowerShell's UTF-16LE encoded-command contract
-        preserves the exact program without a temporary file or path leak.
+        PowerShell 7 is preferred because it is the Windows shell used by the
+        coding-agent path and supports modern pipeline operators.  Windows
+        PowerShell 5.1 remains a compatibility fallback.  The selected value
+        is fixed for this provider instance and is the same value disclosed to
+        the model; commands are never silently routed through ``cmd.exe``.
         """
 
-        argv = _split_windows_command_line(command)
-        if not argv:
-            return command
-        executable = ntpath.basename(argv[0]).casefold()
-        if executable not in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
-            return command
-        command_index = next(
-            (index for index, value in enumerate(argv[1:], start=1) if value.casefold() in {"-command", "-c"}),
-            -1,
+        path_value = str(self.host_env.get("PATH") or "")
+        pwsh = shutil.which("pwsh.exe", path=path_value) or shutil.which("pwsh", path=path_value)
+        if pwsh:
+            return str(Path(pwsh).resolve(strict=False))
+        program_files = str(self.host_env.get("ProgramFiles") or "").strip()
+        if program_files:
+            common_pwsh = Path(program_files) / "PowerShell" / "7" / "pwsh.exe"
+            if common_pwsh.is_file():
+                return str(common_pwsh.resolve(strict=False))
+        powershell = shutil.which("powershell.exe", path=path_value) or shutil.which(
+            "powershell", path=path_value
         )
-        if command_index < 0 or command_index + 2 != len(argv):
-            return command
-        script = argv[command_index + 1]
-        if not script or script == "-":
-            return command
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        return [*argv[:command_index], "-EncodedCommand", encoded]
+        if powershell:
+            return str(Path(powershell).resolve(strict=False))
+        system_root = str(self.host_env.get("SystemRoot") or r"C:\Windows").strip()
+        return str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+    def _prepare_windows_command(self, command: str) -> list[str]:
+        """Pass one exact script argument to the disclosed PowerShell host."""
+
+        # Compatibility for saved trajectories that already spell out a
+        # PowerShell executable. Launch that argv directly so an outer
+        # PowerShell never expands the inner script's `$variables` first.
+        explicit = _split_windows_command_line(command)
+        if explicit and ntpath.basename(explicit[0]).casefold() in {
+            "powershell",
+            "powershell.exe",
+            "pwsh",
+            "pwsh.exe",
+        }:
+            return explicit
+        # A quoted executable is valid in cmd.exe-style argv rendering, but
+        # PowerShell parses the same leading string as a value expression and
+        # rejects the following arguments (for example ``-c``). Add
+        # PowerShell's call operator only when the quoted token is an existing
+        # executable/script path; ordinary string-output expressions keep
+        # their exact meaning.
+        command = self._normalize_leading_windows_executable(command)
+        preamble = (
+            "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+            "$OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+        )
+        return [
+            self.windows_shell_path,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"{preamble}{command}",
+        ]
+
+    @staticmethod
+    def _normalize_leading_windows_executable(command: str) -> str:
+        raw = str(command or "")
+        matched = _LEADING_QUOTED_WINDOWS_EXECUTABLE_RE.match(raw)
+        if matched is None:
+            return raw
+        candidate = Path(matched.group("path")).expanduser()
+        if not candidate.is_file():
+            return raw
+        suffix = candidate.suffix.casefold()
+        if suffix not in {".exe", ".com", ".cmd", ".bat", ".ps1"}:
+            return raw
+        insert_at = len(matched.group("indent"))
+        return f"{raw[:insert_at]}& {raw[insert_at:]}"
 
     def _spawn(self, command: str | Sequence[str], workdir: Path, env: dict[str, str]) -> subprocess.Popen:
         if os.name == "nt":
-            # Passing the command string with shell=True routes it through
-            # COMSPEC verbatim; an argv-list `cmd /c` form re-quotes the string
-            # (list2cmdline) and cmd's quote-stripping mangles inner quotes.
             return subprocess.Popen(
                 command,
                 cwd=str(workdir),
                 env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=isinstance(command, str),
+                shell=False,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         return subprocess.Popen(
             ["/bin/sh", "-c", command],
             cwd=str(workdir),
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,

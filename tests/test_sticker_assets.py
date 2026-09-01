@@ -61,6 +61,16 @@ class StickerAssetTests(unittest.TestCase):
         self.assertEqual(event["sticker"]["display_name"], "装死")
         self.assertTrue(event["send_to_user"])
 
+    def test_send_sticker_requires_the_canonical_sticker_field(self) -> None:
+        handler = SendStickerToolHandler(sticker_service=StickerAssetService(assets_dir=ASSETS_DIR))
+
+        self.assertIsNone(handler.normalize_call({"type": "send_sticker", "emotion": "happy"}))
+        self.assertIsNone(handler.normalize_call({"type": "send_sticker", "sticker_id": "biexiao"}))
+        self.assertEqual(
+            handler.normalize_call({"type": "send_sticker", "sticker": "biexiao"}),
+            {"type": "send_sticker", "sticker": "biexiao"},
+        )
+
     def test_send_sticker_unknown_returns_followup_without_event(self) -> None:
         service = StickerAssetService(assets_dir=ASSETS_DIR)
         handler = SendStickerToolHandler(sticker_service=service)

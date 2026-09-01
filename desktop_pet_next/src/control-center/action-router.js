@@ -5,30 +5,18 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   chatStop: "chat.stop",
   workspaceOpen: "workspace.open",
   characterOpenWorkshop: "character.openWorkshop",
-  characterImportZip: "character.importZip",
   characterOpenPackFolder: "character.openPackFolder",
-  characterApply: "character.apply",
   characterRefresh: "character.refresh",
   characterPreviewEmotion: "character.previewEmotion",
-  characterRestoreDefaults: "character.restoreDefaults",
   characterSelectPack: "character.selectPack",
   characterSetOutfit: "character.setOutfit",
-  characterManageOutfits: "character.manageOutfits",
-  characterMoreExpressions: "character.moreExpressions",
-  characterResourceRepair: "character.resourceRepair",
   voiceTest: "voice.test",
   voiceStop: "voice.stop",
   voiceSetTtsEnabled: "voice.setTtsEnabled",
   voiceSetAsrEnabled: "voice.setAsrEnabled",
   voiceSetVolume: "voice.setVolume",
-  voiceSelectTtsVoice: "voice.selectTtsVoice",
   voiceSetSpeed: "voice.setSpeed",
-  voiceSelectAsrDevice: "voice.selectAsrDevice",
-  voiceSetAsrLanguage: "voice.setAsrLanguage",
-  voiceSetAsrSensitivity: "voice.setAsrSensitivity",
   voicePreviewPlay: "voice.previewPlay",
-  voiceRecordsClear: "voice.records.clear",
-  voiceQueueClear: "voice.queue.clear",
   voiceSetWakeWord: "voice.setWakeWord",
   voiceSetWakeSensitivity: "voice.setWakeSensitivity",
   musicPrevious: "music.previous",
@@ -38,13 +26,9 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   musicClear: "music.clear",
   musicSeek: "music.seek",
   musicSetPlayMode: "music.setPlayMode",
-  musicSetMood: "music.setMood",
-  musicRefreshRecommendations: "music.refreshRecommendations",
   musicSelectQueueItem: "music.selectQueueItem",
   musicSetVolumeNormalization: "music.setVolumeNormalization",
-  musicSelectOutputDevice: "music.selectOutputDevice",
   musicPlayWorkspaceRecommendation: "music.playWorkspaceRecommendation",
-  windowNotify: "window.notify",
   windowMinimize: "window.minimize",
   windowMaximize: "window.maximize",
   windowClose: "window.close",
@@ -56,17 +40,7 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   perceptionScreenVisionClear: "perception.screenVision.clear",
   perceptionProactiveWakeSetEnabled: "perception.proactiveWake.setEnabled",
   perceptionProactiveWakeSetIntervalSec: "perception.proactiveWake.setIntervalSec",
-  perceptionPrivacyHelp: "perception.privacyHelp",
-  perceptionManagePermissions: "perception.managePermissions",
-  perceptionActiveWindowDetails: "perception.activeWindow.details",
-  perceptionClipboardClear: "perception.clipboard.clear",
-  perceptionEventsViewAll: "perception.events.viewAll",
-  perceptionSuggestionRun: "perception.suggestion.run",
   perceptionRunDiagnostics: "perception.runDiagnostics",
-  abilitiesQuickAction: "abilities.quickAction",
-  abilitiesManageModules: "abilities.manageModules",
-  abilitiesMoreWorkflows: "abilities.moreWorkflows",
-  abilitiesProviderConfigOpen: "abilities.provider.config.open",
   abilitiesProviderConfigSave: "abilities.provider.config.save",
   abilitiesProviderHealthCheck: "abilities.provider.healthCheck",
   abilitiesProviderTtsTest: "abilities.provider.ttsTest",
@@ -74,7 +48,6 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesProviderVoiceProfileSave: "abilities.provider.voiceProfile.save",
   abilitiesProviderVoiceProfileAssignToCurrentCharacter: "abilities.provider.voiceProfile.assignToCurrentCharacter",
   abilitiesProviderVoiceProfileClearCurrentCharacter: "abilities.provider.voiceProfile.clearCurrentCharacter",
-  abilitiesMcpConfigOpen: "abilities.mcp.config.open",
   abilitiesMcpConfigSave: "abilities.mcp.config.save",
   abilitiesMcpDiscover: "abilities.mcp.discover",
   abilitiesMcpEnable: "abilities.mcp.enable",
@@ -84,25 +57,15 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesApprovalPolicySave: "abilities.approvalPolicy.save",
   abilitiesApprovalRequestDecide: "abilities.approvalRequest.decide",
   abilitiesSkillsOpenFolder: "abilities.skills.openFolder",
-  abilitiesWorkflowConfigOpen: "abilities.workflow.config.open",
   abilitiesWorkflowConfigSave: "abilities.workflow.config.save",
   abilitiesWorkflowFileImport: "abilities.workflow.file.import",
   abilitiesWorkflowValidate: "abilities.workflow.validate",
   abilitiesQqSelfCheck: "abilities.qq.selfCheck",
-  abilitiesLogsViewAll: "abilities.logs.viewAll",
-  abilitiesSafetyDetails: "abilities.safety.details",
-  abilitiesLive2dOpenSettings: "abilities.live2d.openSettings",
   advancedProbeClickThrough: "advanced.probeClickThrough",
   advancedResetWindow: "advanced.resetWindow",
   advancedToggleWebgl: "advanced.toggleWebgl",
   advancedSetHitTestEnabled: "advanced.setHitTestEnabled",
-  advancedSetHitboxOverlay: "advanced.setHitboxOverlay",
-  advancedLogsClear: "advanced.logs.clear",
-  advancedLogsMore: "advanced.logs.more",
-  advancedExitPet: "advanced.exitPet",
-  advancedExpertOption: "advanced.expertOption",
-  advancedLive2dOpenStatus: "advanced.live2d.openStatus",
-  advancedAbilityDetails: "advanced.ability.details"
+  advancedSetHitboxOverlay: "advanced.setHitboxOverlay"
 });
 
 export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
@@ -280,7 +243,6 @@ export function createNotImplementedActionResult(actionId) {
 function shouldRouteToDataSource(dataSource, actionId, options) {
   if (typeof dataSource?.runAction !== "function") return false;
   if (options.forwardUnknownActions) return true;
-  if (dataSource.kind === "mock") return true;
   if (typeof dataSource.handlesAction === "function") {
     return Boolean(dataSource.handlesAction(actionId));
   }
@@ -288,7 +250,7 @@ function shouldRouteToDataSource(dataSource, actionId, options) {
 }
 
 function shouldReturnNotImplemented(dataSource, actionId) {
-  return isControlCenterBridgedAction(actionId) || Boolean(dataSource && dataSource.kind !== "mock");
+  return isControlCenterBridgedAction(actionId) || Boolean(dataSource);
 }
 
 function normalizeActionResult(result, actionId, payload) {

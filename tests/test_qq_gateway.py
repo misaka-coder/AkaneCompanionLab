@@ -328,6 +328,13 @@ class QQGatewayTests(unittest.TestCase):
                 "actor_display_name": "千里朱音",
                 "message_id": "quoted-message-1",
                 "excerpt": "你试试直接推语音",
+                "mentions": [
+                    {
+                        "actor_id": f"qq:{QQ_THIRD_USER_FIXTURE_ID}",
+                        "display_name": "天为",
+                        "is_assistant": False,
+                    }
+                ],
             },
             mentions=(
                 MentionRef(target_id=str(QQ_BOT_FIXTURE_ID), is_bot=True),
@@ -339,6 +346,7 @@ class QQGatewayTests(unittest.TestCase):
         addressing = payload["message_addressing"]
 
         self.assertEqual(payload["message"], "【316.44 g/mol】你们说的都不对")
+        self.assertEqual(payload["memory_message"], "你们说的都不对")
         self.assertEqual(
             addressing["primary_target"],
             {"actor_id": "assistant", "display_name": ""},
@@ -350,6 +358,13 @@ class QQGatewayTests(unittest.TestCase):
                 "actor_display_name": "千里朱音",
                 "message_id": "quoted-message-1",
                 "excerpt": "你试试直接推语音",
+                "mentions": [
+                    {
+                        "actor_id": f"qq:{QQ_THIRD_USER_FIXTURE_ID}",
+                        "display_name": "天为",
+                        "is_assistant": False,
+                    }
+                ],
             },
         )
         self.assertEqual(
@@ -362,6 +377,35 @@ class QQGatewayTests(unittest.TestCase):
                     "is_assistant": False,
                 },
             ],
+        )
+
+    def test_turn_payload_preserves_inline_positions_for_multiple_mentions(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "multi-mention-1",
+                "sender": {"card": "misaka"},
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID), "name": "Akane"}},
+                    {"type": "text", "data": {"text": " 帮我问问 "}},
+                    {"type": "at", "data": {"qq": str(QQ_THIRD_USER_FIXTURE_ID), "name": "天为"}},
+                    {"type": "text", "data": {"text": " 明天去不去"}},
+                ],
+            }
+        )
+
+        payload = context.to_turn_payload()
+
+        self.assertEqual(payload["source_message_id"], "multi-mention-1")
+        self.assertEqual(payload["memory_message"], "@Akane 帮我问问 @天为 明天去不去")
+        self.assertEqual(
+            [item["actor_id"] for item in payload["message_addressing"]["mentions"]],
+            ["assistant", f"qq:{QQ_THIRD_USER_FIXTURE_ID}"],
         )
 
     def test_group_mention_only_is_recorded_as_a_typed_gesture(self) -> None:

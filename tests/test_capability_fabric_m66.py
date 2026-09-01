@@ -537,8 +537,15 @@ class CapabilityFabricM66Tests(unittest.TestCase):
         self.assertIn("tool.desktop_context_snapshot", source)
         self.assertIn("tool.system_media_snapshot", source)
         self.assertIn("tool.system_media_control", source)
-        self.assertNotIn("AKANE_ADMIN_TOKEN", source)
+        self.assertIn("Import-AkaneCloudAdminToken", source)
+        self.assertIn('$env:AKANE_ADMIN_TOKEN = $token', source)
+        self.assertIn("cloud_admin_token_unavailable", source)
+        self.assertNotIn(
+            "$env:AKANE_ADMIN_TOKEN = $env:AKANE_DESKTOP_SATELLITE_TOKEN",
+            source,
+        )
         self.assertNotRegex(source, r"AKANE_DESKTOP_SATELLITE_TOKEN\s*=\s*[\"'][^\"']{16,}")
+        self.assertNotRegex(source, r"AKANE_ADMIN_TOKEN\s*=\s*[\"'][^\"']{16,}")
         self.assertIn("start_akane_cloud_personal.ps1", batch)
 
     def test_local_media_launcher_accepts_ready_in_process_demucs(self) -> None:

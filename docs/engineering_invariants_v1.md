@@ -67,7 +67,6 @@
 | 概念 | 是什么 | 模块 | 状态/要点 |
 |------|--------|------|-----------|
 | 附件收件箱 attachment_inbox | **用户发来的**材料（图片/文件），异步观察成摘要 | `attachment_inbox.py` | `ready/pending_observation/failed/cleared`；`focus_rank>0` 才进提示词；`clear` 置 `cleared` |
-| 任务工作区 task_workspace | 多步任务**白板**（步骤/产物登记/后台交接） | `task_workspace.py`、`task_workspace_engine.py` | `running/waiting_user/queued` 才进提示词；cleanup 置 `cleaned`（不删） |
 | 生成文件 generated_files | 桌宠/工具**生成的产物**（compose 等，gen_001…），可交付 | `generated_files*.py` | 有交付状态 delivery |
 | 工作区文件 workspace_files | 工作目录里**真实磁盘文件**的读取/浏览层（仅 DESKTOP_PET） | `workspace_files.py` | 路径必须经安全校验 |
 

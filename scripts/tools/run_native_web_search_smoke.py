@@ -17,9 +17,7 @@ from companion_v01.capability_registry import CapabilitySelection  # noqa: E402
 from companion_v01.engine import AkaneMemoryEngine  # noqa: E402
 from companion_v01.tool_runtime import (  # noqa: E402
     BrowseMemoryToolHandler,
-    CheckInventoryToolHandler,
     InspectMediaInfoToolHandler,
-    ListRemindersToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
@@ -40,10 +38,7 @@ def toolset_allowlist(toolset: str) -> str:
     if normalized == "all":
         # Mirror the shipped default native allowlist (the full set that fires
         # under native-first), so `all` is a real full-toolset smoke.
-        return (
-            "web_search,retrieve_memory,browse_memory,read_memory_timeline,open_memory,"
-            "list_reminders,check_inventory,inspect_media_info"
-        )
+        return "web_search,retrieve_memory,browse_memory,read_memory_timeline,open_memory,inspect_media_info"
     return "web_search"
 
 
@@ -236,54 +231,6 @@ class SmokeOpenMemoryHandler(OpenMemoryToolHandler):
         )
 
 
-class SmokeListRemindersHandler(ListRemindersToolHandler):
-    """Deterministic list_reminders executor: canned reminders, no store."""
-
-    def __init__(self) -> None:
-        super().__init__(store=None)
-        self.executed_calls: list[dict[str, Any]] = []
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        self.executed_calls.append(
-            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
-        )
-        status = str(call.get("status") or "pending")
-        return ToolExecutionResult(
-            tool_type=self.tool_type,
-            stream_events=[{"type": "reminder_list", "status": status, "items": []}],
-            followup_context=(
-                "【smoke list_reminders 结果】\n"
-                f"状态：{status}\n"
-                "1. [今晚 20:00] 给妈妈打电话（smoke 固定提醒，用来验证 native 提醒工具轮能把结果交给最终回复）。"
-            ),
-            state_updates={"reminder_list_status": "ok", "reminder_list_smoke": True},
-        )
-
-
-class SmokeCheckInventoryHandler(CheckInventoryToolHandler):
-    """Deterministic check_inventory executor: canned inventory, no gift service."""
-
-    def __init__(self) -> None:
-        super().__init__(gift_service=None)
-        self.executed_calls: list[dict[str, Any]] = []
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        self.executed_calls.append(
-            {str(key): value for key, value in dict(call or {}).items() if not str(key).startswith("_tool_")}
-        )
-        scope = str(call.get("scope") or "pending_recent")
-        return ToolExecutionResult(
-            tool_type=self.tool_type,
-            stream_events=[{"type": "inventory_snapshot", "scope": scope, "items": [], "total_count": 1, "overflow_count": 0}],
-            followup_context=(
-                "【smoke check_inventory 结果】\n"
-                f"范围：{scope}\n"
-                "1. 一束向日葵（smoke 固定库存，用来验证 native 库存工具轮能把结果交给最终回复）。"
-            ),
-            state_updates={"inventory_status": "ok", "inventory_smoke": True},
-        )
-
-
 class SmokeInspectMediaInfoHandler(InspectMediaInfoToolHandler):
     """Deterministic inspect_media_info executor: canned specs, no disk."""
 
@@ -354,8 +301,6 @@ def _build_smoke_tools(
             "browse_memory": SmokeBrowseMemoryHandler(),
             "read_memory_timeline": SmokeReadMemoryTimelineHandler(),
             "open_memory": SmokeOpenMemoryHandler(),
-            "list_reminders": SmokeListRemindersHandler(),
-            "check_inventory": SmokeCheckInventoryHandler(),
             "inspect_media_info": SmokeInspectMediaInfoHandler(),
         }
         all_selection = CapabilitySelection(

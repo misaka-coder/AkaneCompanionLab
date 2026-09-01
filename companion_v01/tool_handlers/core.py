@@ -14,30 +14,20 @@ from ..capability_registry import (
     APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     BROWSER_PAGE_TOOL_SPEC,
     BROWSE_MEMORY_TOOL_SPEC,
-    CALL_NPC_TOOL_SPEC,
-    CANCEL_REMINDER_TOOL_SPEC,
-    CHECK_INVENTORY_TOOL_SPEC,
     CLEAN_VOICE_TRACK_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     COMPOSE_FILE_TOOL_SPEC,
     CONVERT_MEDIA_FILE_TOOL_SPEC,
     COVER_SONG_TOOL_SPEC,
-    DELEGATE_TASK_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
-    FOCUS_WORKSPACE_TOOL_SPEC,
     GENERATE_IMAGE_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
     INSPECT_MEDIA_INFO_TOOL_SPEC,
-    LIST_REMINDERS_TOOL_SPEC,
     LIST_WORKSPACE_TOOL_SPEC,
     LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
     LOAD_MATERIAL_TOOL_SPEC,
-    MANAGE_ARTIFACT_TOOL_SPEC,
     MANAGE_GENERATED_FILE_TOOL_SPEC,
-    MANAGE_GIFT_TOOL_SPEC,
-    MANAGE_PERSONA_TOOL_SPEC,
-    MANAGE_TASK_WORKSPACE_TOOL_SPEC,
     OPEN_BROWSER_TOOL_SPEC,
     OPEN_MEMORY_TOOL_SPEC,
     OPEN_MUSIC_SEARCH_TOOL_SPEC,
@@ -55,14 +45,13 @@ from ..capability_registry import (
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
     SEPARATE_AUDIO_STEMS_TOOL_SPEC,
-    SET_REMINDER_TOOL_SPEC,
-    SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
     TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
 from ..execution_specs import EXEC_CANCEL_TOOL_SPEC, EXEC_RUN_TOOL_SPEC, EXEC_STATUS_TOOL_SPEC
 from ..skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
 from ..mcp_specs import INVOKE_MCP_TOOL_SPEC, LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
+from ..extension_specs import MANAGE_EXTENSION_TOOL_SPEC
 from ..project_workspace_specs import (
     MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,
     PROJECT_INSPECT_TOOL_SPEC,
@@ -205,48 +194,6 @@ class ToolMetadata:
         return str(self.operation or "").strip().lower() == "read"
 
 
-LIST_REMINDERS_INPUT_SCHEMA: dict[str, Any] = {
-    "description": ("List the user's reminders. Use it when the user asks what reminders they currently have."),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "status": {
-            "type": "string",
-            "enum": ["pending", "done", "all"],
-            "description": "Which reminders to list. Default pending.",
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 10,
-            "description": "Maximum reminders to return. Default 5.",
-        },
-    },
-    "required": [],
-}
-
-
-CHECK_INVENTORY_INPUT_SCHEMA: dict[str, Any] = {
-    "description": ("Check gift inventory. Use it when the user asks about gifts on hand or in the gift box."),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "scope": {
-            "type": "string",
-            "enum": ["pending_recent", "pending_all", "kept", "internalized"],
-            "description": "Inventory scope. Prefer pending_recent for what's on hand.",
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 20,
-            "description": "Maximum items. Default 3 for pending_recent, else 5.",
-        },
-    },
-    "required": [],
-}
-
-
 INSPECT_MEDIA_INFO_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
         "Read media specs (duration, codec, sample rate, channels, bitrate, "
@@ -291,7 +238,7 @@ INSPECT_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
         "List the current attachment workspace, or open and inspect a single image or file "
         "(temporary context, not gifts/character resources/long-term memory). "
-        "To compare multiple materials, prefer sync_attachment_workspace."
+        "For several images, pass their exact handles to load_material."
     ),
     "type": "object",
     "additionalProperties": False,
@@ -425,36 +372,6 @@ READ_ATTACHMENT_SECTION_INPUT_SCHEMA: dict[str, Any] = {
         "cursor": {
             "type": "string",
             "description": "Opaque continuation cursor from a previous attachment-section page; pass only the cursor to continue it.",
-        },
-    },
-    "required": [],
-}
-
-
-SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Reorganize the attachment workspace in one shot: keep the final set of "
-        "materials to focus on (multiple images/files may be kept for comparison) and "
-        "collapse the rest. Submit the final list once; do not toggle items one by one."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "focus_targets": {
-            "type": "array",
-            "items": {"type": "string", "maxLength": 120},
-            "maxItems": 30,
-            "description": "Final workspace list after reorg: ids / '第2张图' / descriptive names.",
-        },
-        "kind": {
-            "type": "string",
-            "enum": ["any", "image", "file", "document", "audio"],
-            "description": "Optional kind filter. Default any.",
-        },
-        "reason": {
-            "type": "string",
-            "maxLength": 160,
-            "description": "Why these materials are needed.",
         },
     },
     "required": [],
@@ -636,32 +553,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=LOAD_CHARACTER_CONTEXT_INPUT_SCHEMA,
     ),
-    "set_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
-    "list_reminders": ToolMetadata(
-        family="reminder",
-        operation="read",
-        risk="low",
-        default_round_budget=3,
-        input_schema=LIST_REMINDERS_INPUT_SCHEMA,
-    ),
-    "cancel_reminder": ToolMetadata(family="reminder", operation="control", risk="low", default_round_budget=3),
-    "call_npc": ToolMetadata(family="web_scene", operation="mixed", risk="low", default_round_budget=3),
-    "check_inventory": ToolMetadata(
-        family="web_scene",
-        operation="read",
-        risk="low",
-        default_round_budget=3,
-        input_schema=CHECK_INVENTORY_INPUT_SCHEMA,
-    ),
-    "manage_gift": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
-    "manage_artifact": ToolMetadata(family="web_scene", operation="control", risk="low", default_round_budget=3),
-    "manage_persona": ToolMetadata(family="persona", operation="control", risk="medium", default_round_budget=3),
-    "manage_task_workspace": ToolMetadata(
-        family="task_workspace", operation="control", risk="medium", default_round_budget=3
-    ),
-    "delegate_task": ToolMetadata(
-        family="background_task", operation="background", risk="medium", default_round_budget=3, background=True
-    ),
     "web_search": ToolMetadata(family="web_research", operation="read", risk="low", default_round_budget=8),
     "browser_page": ToolMetadata(
         family="browser_control", operation="mixed", risk="medium", default_round_budget=10, requires_confirmation=True
@@ -671,13 +562,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     ),
     "fetch_media_from_url": ToolMetadata(
         family="media_fetch", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
-    ),
-    "sync_attachment_workspace": ToolMetadata(
-        family="file_workspace",
-        operation="read",
-        risk="low",
-        default_round_budget=3,
-        input_schema=SYNC_ATTACHMENT_WORKSPACE_INPUT_SCHEMA,
     ),
     "inspect_attachment": ToolMetadata(
         family="file_workspace",
@@ -726,7 +610,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=4,
         input_schema=READ_WORKSPACE_INPUT_SCHEMA,
     ),
-    "focus_workspace": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=4),
     "register_workspace_items": ToolMetadata(
         family="file_workspace", operation="control", risk="low", default_round_budget=4
     ),
@@ -845,6 +728,11 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         operation="control",
         default_round_budget=4,
     ),
+    "manage_extension": ToolMetadata(
+        family="extension",
+        operation="control",
+        default_round_budget=4,
+    ),
     "load_mcp": ToolMetadata(
         family="mcp",
         operation="read",
@@ -887,21 +775,10 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "browse_memory": BROWSE_MEMORY_TOOL_SPEC,
     "open_memory": OPEN_MEMORY_TOOL_SPEC,
     "load_character_context": LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
-    "set_reminder": SET_REMINDER_TOOL_SPEC,
-    "list_reminders": LIST_REMINDERS_TOOL_SPEC,
-    "cancel_reminder": CANCEL_REMINDER_TOOL_SPEC,
-    "call_npc": CALL_NPC_TOOL_SPEC,
-    "check_inventory": CHECK_INVENTORY_TOOL_SPEC,
-    "manage_gift": MANAGE_GIFT_TOOL_SPEC,
-    "manage_artifact": MANAGE_ARTIFACT_TOOL_SPEC,
-    "manage_persona": MANAGE_PERSONA_TOOL_SPEC,
-    "manage_task_workspace": MANAGE_TASK_WORKSPACE_TOOL_SPEC,
-    "delegate_task": DELEGATE_TASK_TOOL_SPEC,
     "web_search": WEB_SEARCH_TOOL_SPEC,
     "browser_page": BROWSER_PAGE_TOOL_SPEC,
     "open_music_search": OPEN_MUSIC_SEARCH_TOOL_SPEC,
     "fetch_media_from_url": FETCH_MEDIA_FROM_URL_TOOL_SPEC,
-    "sync_attachment_workspace": SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
     "inspect_attachment": INSPECT_ATTACHMENT_TOOL_SPEC,
     "load_material": LOAD_MATERIAL_TOOL_SPEC,
     "generate_image": GENERATE_IMAGE_TOOL_SPEC,
@@ -910,7 +787,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "read_attachment_section": READ_ATTACHMENT_SECTION_TOOL_SPEC,
     "list_workspace": LIST_WORKSPACE_TOOL_SPEC,
     "read_workspace": READ_WORKSPACE_TOOL_SPEC,
-    "focus_workspace": FOCUS_WORKSPACE_TOOL_SPEC,
     "register_workspace_items": REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
     "compose_file": COMPOSE_FILE_TOOL_SPEC,
     "revise_generated_file": REVISE_GENERATED_FILE_TOOL_SPEC,
@@ -935,6 +811,7 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "load_skill": LOAD_SKILL_TOOL_SPEC,
     "manage_skill": MANAGE_SKILL_TOOL_SPEC,
     "mcp_manage": MCP_MANAGE_TOOL_SPEC,
+    "manage_extension": MANAGE_EXTENSION_TOOL_SPEC,
     "load_mcp": LOAD_MCP_TOOL_SPEC,
     "invoke_mcp": INVOKE_MCP_TOOL_SPEC,
     "manage_project_workspace": MANAGE_PROJECT_WORKSPACE_TOOL_SPEC,

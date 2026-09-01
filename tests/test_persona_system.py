@@ -7,7 +7,6 @@ from pathlib import Path
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.persona_system import PersonaCardService
 from companion_v01.store import MemoryStore
-from companion_v01.tool_runtime import ManagePersonaToolHandler, ToolExecutionContext
 
 
 class PersonaCardServiceTests(unittest.TestCase):
@@ -173,39 +172,6 @@ class PersonaCardServiceTests(unittest.TestCase):
                 cat["card_id"],
             )
             self.assertIsNone(store.get_active_persona_card(profile_user_id="master", session_id="qq-private"))
-
-
-class ManagePersonaToolHandlerTests(unittest.TestCase):
-    def test_manage_persona_create_is_silent_state_update(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            service = PersonaCardService(store=store)
-            handler = ManagePersonaToolHandler(persona_service=service)
-
-            result = handler.execute(
-                call={
-                    "type": "manage_persona",
-                    "action": "create",
-                    "name": "猫娘",
-                    "summary": "更亲昵、更轻快。",
-                    "unsuitable_contexts": "严肃话题。",
-                },
-                context=ToolExecutionContext(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    now_ts=100,
-                    visual_payload={},
-                    current_user_source_id="msg-1",
-                ),
-            )
-            active = store.get_active_persona_card(profile_user_id="user-1", session_id="session-1")
-
-            self.assertEqual(result.tool_type, "manage_persona")
-            self.assertEqual(result.stream_events[0]["type"], "persona_state")
-            self.assertTrue(result.stream_events[0]["silent"])
-            self.assertTrue(result.state_updates["persona_state_changed"])
-            self.assertIsNotNone(active)
-            self.assertEqual(active["name"], "猫娘")
 
 
 class EnginePersonaStateTests(unittest.TestCase):

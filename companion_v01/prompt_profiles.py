@@ -24,8 +24,6 @@ class PromptModule(str, Enum):
     SCENE_OBSERVATION = "scene_observation"
     OUTFIT_OBSERVATION = "outfit_observation"
     RESOURCE_MANIFEST = "resource_manifest"
-    PENDING_GIFTS = "pending_gifts"
-    FOCUSED_GIFT_OBSERVATION = "focused_gift_observation"
     PERSONA = "persona"
     DOMAIN_PROFILE = "domain_profile"
     TOOLS = "tools"
@@ -37,8 +35,6 @@ SCENE_STATIC_PROMPT_MODULES = (
     PromptModule.SCENE_OBSERVATION.value,
     PromptModule.OUTFIT_OBSERVATION.value,
     PromptModule.RESOURCE_MANIFEST.value,
-    PromptModule.PENDING_GIFTS.value,
-    PromptModule.FOCUSED_GIFT_OBSERVATION.value,
     PromptModule.PERSONA.value,
     PromptModule.TOOLS.value,
 )
@@ -59,7 +55,7 @@ QQ_TEXT_MODE_PROMPT = """
 不需要文字时输出：
 {"speech":""}
 
-有真实作用时，可按对应字段说明追加 memory_metadata、persona 或本轮明确提供的其它扩展字段。
+有真实作用时，可按对应字段说明追加 memory_metadata 或本轮明确提供的其它扩展字段。
 """.strip()
 
 
@@ -112,8 +108,6 @@ class PromptProfileRegistry:
                     PromptModule.SCENE_OBSERVATION.value,
                     PromptModule.OUTFIT_OBSERVATION.value,
                     PromptModule.RESOURCE_MANIFEST.value,
-                    PromptModule.PENDING_GIFTS.value,
-                    PromptModule.FOCUSED_GIFT_OBSERVATION.value,
                     PromptModule.PERSONA.value,
                     PromptModule.TOOLS.value,
                 ),
@@ -128,8 +122,6 @@ class PromptProfileRegistry:
                     PromptModule.CURRENT_VISUAL_STATE.value,
                     PromptModule.RESOURCE_MANIFEST.value,
                     PromptModule.OUTFIT_OBSERVATION.value,
-                    PromptModule.PENDING_GIFTS.value,
-                    PromptModule.FOCUSED_GIFT_OBSERVATION.value,
                     PromptModule.PERSONA.value,
                     PromptModule.TOOLS.value,
                 ),
@@ -153,7 +145,6 @@ class PromptProfileRegistry:
                 mode=ClientMode.QQ_TEXT,
                 modules=(
                     PromptModule.EXTRA_CONTEXT.value,
-                    PromptModule.PENDING_GIFTS.value,
                     PromptModule.PERSONA.value,
                     PromptModule.DOMAIN_PROFILE.value,
                     PromptModule.TOOLS.value,

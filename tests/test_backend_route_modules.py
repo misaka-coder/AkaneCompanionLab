@@ -136,6 +136,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.sessions: dict[tuple[str, str], dict[str, Any]] = {}
         self.last_character_pack_id: str | None = None
+        self.messages: list[dict[str, Any]] = [{"seq_no": 1, "role": "assistant", "content": "hello"}]
 
     def ensure_session(
         self,
@@ -202,9 +203,14 @@ class FakeStore:
         session_id: str,
         character_pack_id: str | None = None,
         limit: int,
+        before_seq: int | None = None,
     ) -> list[dict[str, Any]]:
         self.last_character_pack_id = character_pack_id
-        return [{"role": "assistant", "content": "hello"}]
+        messages = [
+            item for item in self.messages
+            if before_seq is None or int(item.get("seq_no") or 0) < before_seq
+        ]
+        return messages[-limit:]
 
     def get_latest_eval_turn_for_session(
         self,
@@ -376,6 +382,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(payload["session"]["character_pack_id"], "kaju")
         self.assertEqual(payload["session"]["display_title"], "Desktop")
         self.assertEqual(payload["latest_final_json"], {"emotion": "normal"})
+        self.assertEqual(payload["message_page"], {"limit": 120, "has_more": False, "next_before_seq": None})
         self.assertEqual(engine.store.last_character_pack_id, "kaju")
         self.assertIn(("sessions_ensure", True), runtime.observed)
 
@@ -415,6 +422,41 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(payload["error"], "session_character_mismatch")
         self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
         self.assertIn(("sessions_ensure", False), runtime.observed)
+
+    def test_sessions_router_pages_older_messages_without_mutating_session(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        store = FakeStore()
+        store.ensure_session(profile_user_id="master", session_id="desktop", character_pack_id="reimu")
+        store.messages = [
+            {"seq_no": index, "role": "user" if index % 2 else "assistant", "content": f"message-{index}"}
+            for index in range(1, 151)
+        ]
+        engine = SimpleNamespace(store=store)
+        app = FastAPI()
+        app.include_router(
+            build_sessions_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        first = TestClient(app).get(
+            "/sessions/messages?user_id=desktop&real_user_id=master&character_pack_id=reimu&before_seq=91&limit=60"
+        )
+        second = TestClient(app).get(
+            "/sessions/messages?user_id=desktop&real_user_id=master&character_pack_id=reimu&before_seq=31&limit=60"
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([item["seq_no"] for item in first.json()["messages"]], list(range(31, 91)))
+        self.assertEqual(first.json()["message_page"], {"limit": 60, "has_more": True, "next_before_seq": 31})
+        self.assertEqual([item["seq_no"] for item in second.json()["messages"]], list(range(1, 31)))
+        self.assertEqual(second.json()["message_page"], {"limit": 60, "has_more": False, "next_before_seq": None})
+        self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
+        self.assertIn(("sessions_messages", True), runtime.observed)
 
     def test_desktop_pet_care_routes_preserve_identity_and_return_snapshots(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -2392,6 +2434,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                                 "nickname": "原图发送者",
                             },
                             "message": [
+                                {"type": "at", "data": {"qq": "40004", "name": "天为"}},
                                 {
                                     "type": "image",
                                     "data": {
@@ -2454,6 +2497,10 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(ingest_calls[0]["attachments"][0]["sender_label"], "原图发送者")
         self.assertEqual(len(process_calls), 1)
         self.assertEqual(process_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertEqual(
+            process_calls[0]["message_addressing"]["reply_reference"]["mentions"],
+            [{"actor_id": "qq:40004", "display_name": "天为", "is_assistant": False}],
+        )
         self.assertEqual(mocked_post.call_count, 3)
         quoted_logs = [payload for name, payload in log_calls if name == "qq_quoted_attachments_resolved"]
         self.assertEqual(

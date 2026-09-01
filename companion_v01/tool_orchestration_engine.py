@@ -82,25 +82,6 @@ def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _qq_media_delegation_is_blocked(
-    value: Mapping[str, Any],
-    *,
-    client_context: ClientProtocolContext | None,
-) -> bool:
-    if client_context is None or client_context.effective_mode != ClientMode.QQ_TEXT:
-        return False
-    if str(value.get("type") or "").strip() != "delegate_task":
-        return False
-    agent = str(value.get("agent") or "").strip().lower()
-    if agent == "media_agent":
-        return True
-    text = " ".join(
-        str(value.get(key) or "").strip().lower()
-        for key in ("brief", "goal", "raw_request")
-    )
-    return any(tool_name in text for tool_name in _DIRECT_MEDIA_TOOL_TYPES)
-
-
 def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 16) -> int:
     try:
         value = int(raw_value)
@@ -692,15 +673,6 @@ def validate_tool_invocation(
     if not tool_type:
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
     candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
-    if _qq_media_delegation_is_blocked(candidate_call, client_context=client_context):
-        return ValidationResult.fail(
-            "media_delegation_disallowed",
-            (
-                "QQ 媒体处理不能委派给后台工坊。请直接调用当前可用的媒体工具"
-                "（例如 separate_audio_stems、cover_song、transcribe_media 或 convert_media_file）；"
-                "工具返回 gen_ 成果句柄后，再调用 send_file 交付。不要声称后台正在运行。"
-            ),
-        )
 
     satellite_spec = desktop_satellite_spec(tool_type)
     if satellite_spec is not None:
@@ -1366,6 +1338,7 @@ def _satellite_permission_gate(
     profile_user_id: str,
     session_id: str,
     client_context: ClientProtocolContext | None,
+    request_context: dict[str, Any] | None = None,
 ) -> tuple[ToolExecutionResult, ToolResultEnvelope] | None:
     """Return an ask/blocked result for high-risk satellite specs, else None.
 
@@ -1377,7 +1350,7 @@ def _satellite_permission_gate(
     if str(getattr(spec, "risk", "") or "").strip().lower() != "high":
         return None
     from .capability_approval import build_approval_request_fingerprint
-    from .capcore_runtime import manual_permission_request, resolve_permission_for_profile
+    from .capcore_runtime import authorization_profile_user_id, manual_permission_request, resolve_permission_for_profile
 
     client_mode = ""
     if client_context is not None:
@@ -1388,6 +1361,7 @@ def _satellite_permission_gate(
         now_ts=0,
         visual_payload={},
         client_mode=client_mode,
+        request_context=dict(request_context or {}),
     )
     arguments = dict(invocation.arguments or {})
     request = manual_permission_request(
@@ -1402,7 +1376,11 @@ def _satellite_permission_gate(
         args_preview=arguments,
     )
     base_dir = getattr(engine, "capability_config_base_dir", None) or getattr(config, "DATA_DIR", "users_data")
-    decision = resolve_permission_for_profile(request, base_dir=base_dir, profile_user_id=profile_user_id)
+    decision = resolve_permission_for_profile(
+        request,
+        base_dir=base_dir,
+        profile_user_id=authorization_profile_user_id(context),
+    )
     if decision.allowed:
         return None
     if not decision.requires_user_decision:
@@ -1579,6 +1557,7 @@ def _execute_satellite_with_broker(
         profile_user_id=profile_user_id,
         session_id=session_id,
         client_context=client_context,
+        request_context=request_context,
     )
     if gated is not None:
         return gated

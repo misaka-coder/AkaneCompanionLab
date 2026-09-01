@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import unittest
 import tempfile
 import os
@@ -295,9 +297,16 @@ class ManagementWriteAuthorizationTests(unittest.TestCase):
 
     def test_plugin_admin_diagnostics_require_named_instance_token(self) -> None:
         plugin_host = Mock()
-        plugin_host.status_snapshot.return_value = {"ok": True, "status": "active"}
+        extension_management = Mock()
+        extension_management.snapshot.return_value = {"ok": True, "status": "active"}
         app = FastAPI()
-        app.include_router(build_plugins_router(plugin_host=plugin_host, admin_auth=self.auth))
+        app.include_router(
+            build_plugins_router(
+                plugin_host=plugin_host,
+                extension_management_service=extension_management,
+                admin_auth=self.auth,
+            )
+        )
         client = TestClient(app)
 
         denied = client.get("/admin/plugins/status")
@@ -308,7 +317,7 @@ class ManagementWriteAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(allowed.status_code, 200)
-        plugin_host.status_snapshot.assert_called_once()
+        extension_management.snapshot.assert_called_once()
 
     def test_memcore_admin_write_rejects_before_engine(self) -> None:
         engine = Mock()
@@ -395,6 +404,43 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ignored")
         gateway.build_message_context.assert_called_once()
+
+    def test_napcat_hmac_signature_reaches_gateway(self) -> None:
+        gateway = Mock()
+        gateway.build_message_context.return_value = QQMessageContext(
+            False,
+            "unsupported_message_type",
+        )
+        body = b'{"post_type":"message","self_id":"123456"}'
+        signature = hmac.new(b"hook-secret", body, hashlib.sha1).hexdigest()
+
+        response = self._client(gateway).post(
+            "/api/qq/napcat/event",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": f"sha1={signature}",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ignored")
+        gateway.build_message_context.assert_called_once()
+
+    def test_invalid_napcat_hmac_signature_is_rejected(self) -> None:
+        gateway = Mock()
+        response = self._client(gateway).post(
+            "/api/qq/napcat/event",
+            content=b'{"post_type":"message","self_id":"123456"}',
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": "sha1=0000000000000000000000000000000000000000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["reason"], "qq_webhook_auth_required")
+        gateway.build_message_context.assert_not_called()
 
     def test_onebot_requests_carry_bearer_token(self) -> None:
         class FakeResponse:

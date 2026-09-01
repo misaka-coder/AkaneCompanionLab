@@ -6,8 +6,9 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin
 
@@ -32,6 +33,8 @@ class BrowserPageResult:
     shown_chars: int = 0
     total_chars: int = 0
     page_revision: str = ""
+    retryable: bool = False
+    next_action: str = ""
 
 
 class ManagedBrowserPageRunner:
@@ -77,15 +80,69 @@ class ManagedBrowserPageRunner:
         self._snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._snapshot_lock = threading.Lock()
         self._page_revision = 0
+        self._capability_status_cache: dict[str, Any] | None = None
 
     def capability_status(self) -> dict[str, Any]:
+        cached = self._capability_status_cache
+        if cached is not None:
+            return dict(cached)
         if not self.is_available():
-            return {
+            status = {
                 "enabled": False,
                 "status": "missing_executor",
                 "reason": "playwright_not_installed",
             }
-        return {"enabled": True, "status": "ready", "reason": ""}
+            self._capability_status_cache = status
+            return dict(status)
+        # Importability alone is not a usable browser. A Playwright package can
+        # exist while its browser binary or Linux shared libraries are absent.
+        # Probe one invisible launch once per host process so the capability
+        # catalog never advertises a tool that will fail on its first action.
+        probe = ThreadPoolExecutor(max_workers=1, thread_name_prefix="akane-browser-probe")
+        try:
+            # Capability catalogs are built from async HTTP handlers. Running
+            # Playwright's sync API on that event-loop thread is rejected even
+            # though real browser actions (already worker-threaded) work. Probe
+            # in the same kind of dedicated thread used by normal actions.
+            status = probe.submit(self._probe_browser_runtime).result(timeout=20)
+        except Exception:
+            status = {
+                "enabled": False,
+                "status": "missing_executor",
+                "reason": "playwright_browser_unavailable",
+            }
+        finally:
+            probe.shutdown(wait=False, cancel_futures=True)
+        self._capability_status_cache = status
+        return dict(status)
+
+    def _probe_browser_runtime(self) -> dict[str, Any]:
+        browser = None
+        playwright = None
+        try:
+            from playwright.sync_api import sync_playwright
+
+            playwright = sync_playwright().start()
+            launch_kwargs: dict[str, Any] = {"headless": True}
+            if self.browser_channel:
+                try:
+                    browser = playwright.chromium.launch(channel=self.browser_channel, **launch_kwargs)
+                except Exception:
+                    browser = playwright.chromium.launch(**launch_kwargs)
+            else:
+                browser = playwright.chromium.launch(**launch_kwargs)
+            return {"enabled": True, "status": "ready", "reason": ""}
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+            if playwright is not None:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
 
     def is_available(self) -> bool:
         return importlib.util.find_spec("playwright") is not None
@@ -120,6 +177,7 @@ class ManagedBrowserPageRunner:
         text: str = "",
         key: str = "",
         candidate_index: int = 0,
+        screenshot_path: str = "",
     ) -> BrowserPageResult:
         normalized_action = str(action or "").strip() or "current"
         if not self.is_available():
@@ -141,6 +199,7 @@ class ManagedBrowserPageRunner:
                 text=text,
                 key=key,
                 candidate_index=candidate_index,
+                screenshot_path=screenshot_path,
             )
         )
 
@@ -223,6 +282,11 @@ class ManagedBrowserPageRunner:
             return
         try:
             executor.submit(self._close_objects).result(timeout=5)
+        except Exception:
+            # Browser shutdown is best-effort. A slow Edge/Chromium teardown
+            # must not turn an already successful browser task into a caller-
+            # visible failure or block host shutdown indefinitely.
+            pass
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
@@ -247,6 +311,60 @@ class ManagedBrowserPageRunner:
         text: str,
         key: str,
         candidate_index: int,
+        screenshot_path: str,
+    ) -> BrowserPageResult:
+        safe_to_retry = action in {"navigate", "read_text", "current", "snapshot", "screenshot", "elements"}
+        for attempt in range(2):
+            try:
+                return self._run_in_browser_once(
+                    action=action,
+                    url=url,
+                    max_chars=max_chars,
+                    scroll_delta=scroll_delta,
+                    element_limit=element_limit,
+                    selector=selector,
+                    ref=ref,
+                    text=text,
+                    key=key,
+                    candidate_index=candidate_index,
+                    screenshot_path=screenshot_path,
+                )
+            except Exception as exc:
+                status, reason, retryable, next_action = self._classify_browser_error(exc, action=action)
+                if attempt == 0 and safe_to_retry and status == "browser_closed":
+                    self._discard_browser_objects()
+                    continue
+                return BrowserPageResult(
+                    ok=False,
+                    status=status,
+                    action=action,
+                    reason=reason,
+                    retryable=retryable,
+                    next_action=next_action,
+                )
+        return BrowserPageResult(
+            ok=False,
+            status="unavailable",
+            action=action,
+            reason="browser_page_runner_failed",
+            retryable=True,
+            next_action="navigate",
+        )
+
+    def _run_in_browser_once(
+        self,
+        *,
+        action: str,
+        url: str,
+        max_chars: int,
+        scroll_delta: int,
+        element_limit: int,
+        selector: str,
+        ref: str,
+        text: str,
+        key: str,
+        candidate_index: int,
+        screenshot_path: str,
     ) -> BrowserPageResult:
         try:
             page = self._ensure_page()
@@ -260,7 +378,14 @@ class ManagedBrowserPageRunner:
 
             current_url = str(getattr(page, "url", "") or "")
             if not current_url or current_url == "about:blank":
-                return BrowserPageResult(ok=False, status="no_page", action=action, reason="browser_page_empty")
+                return BrowserPageResult(
+                    ok=False,
+                    status="no_page",
+                    action=action,
+                    reason="browser_page_empty",
+                    retryable=True,
+                    next_action="navigate",
+                )
             if action == "scroll":
                 page.mouse.wheel(0, self._safe_scroll_delta(scroll_delta))
                 self._brief_visual_pause(page)
@@ -277,8 +402,21 @@ class ManagedBrowserPageRunner:
                 )
                 if control_result is not None:
                     return control_result
+                if self._page is not None:
+                    page = self._page
                 self._advance_page_revision()
                 current_url = str(getattr(page, "url", "") or current_url)
+            elif action == "screenshot":
+                target = Path(str(screenshot_path or "")).resolve()
+                if not str(screenshot_path or "").strip():
+                    return BrowserPageResult(
+                        ok=False,
+                        status="invalid_request",
+                        action=action,
+                        reason="screenshot_path_required",
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(target), full_page=False)
 
             title = self._safe_title(page)
             snapshot_kind = "elements" if action == "elements" else "page"
@@ -298,7 +436,7 @@ class ManagedBrowserPageRunner:
             complete = next_offset >= total_chars
             return BrowserPageResult(
                 ok=True,
-                status="executed" if action in {"click", "fill", "press"} else "available",
+                status="executed" if action in {"click", "fill", "press", "screenshot"} else "available",
                 action=action,
                 url=current_url,
                 title=title,
@@ -312,28 +450,40 @@ class ManagedBrowserPageRunner:
                 total_chars=total_chars,
                 page_revision=str(record.get("revision") or ""),
             )
-        except Exception as exc:
-            return BrowserPageResult(
-                ok=False,
-                status="unavailable",
-                action=action,
-                reason=str(exc)[:160] or "browser_page_runner_failed",
-            )
+        except Exception:
+            raise
 
     def _ensure_page(self) -> Any:
         if self._page is not None:
             try:
                 if not self._page.is_closed():
                     return self._page
-            except AttributeError:
-                return self._page
+            except Exception:
+                pass
+        browser = self._browser
+        if browser is not None:
+            try:
+                if not browser.is_connected():
+                    self._discard_browser_objects()
+            except Exception:
+                self._discard_browser_objects()
         from playwright.sync_api import sync_playwright
 
         self._playwright = self._playwright or sync_playwright().start()
         if self._browser is None:
             self._browser = self._launch_browser()
-        self._context = self._context or self._browser.new_context()
-        self._page = self._context.new_page()
+        try:
+            self._context = self._context or self._browser.new_context()
+            self._page = self._context.new_page()
+        except Exception:
+            # A visible browser window can be closed by the user while the host
+            # still owns Python proxy objects. Drop the complete browser tree;
+            # reusing only the old context poisons every later request.
+            self._discard_browser_objects()
+            self._playwright = self._playwright or sync_playwright().start()
+            self._browser = self._launch_browser()
+            self._context = self._browser.new_context()
+            self._page = self._context.new_page()
         self._bring_to_front(self._page)
         return self._page
 
@@ -372,6 +522,34 @@ class ManagedBrowserPageRunner:
         self._page = None
         with self._snapshot_lock:
             self._snapshot_cache.clear()
+
+    def _discard_browser_objects(self) -> None:
+        """Forget a closed page/context/browser without stopping Playwright."""
+        for item in (self._page, self._context, self._browser):
+            if item is None:
+                continue
+            try:
+                item.close()
+            except Exception:
+                pass
+        self._page = None
+        self._context = None
+        self._browser = None
+
+    @staticmethod
+    def _classify_browser_error(exc: BaseException, *, action: str) -> tuple[str, str, bool, str]:
+        raw = str(exc or "").strip()
+        lowered = raw.lower()
+        reason = (raw.splitlines()[0] if raw else "browser_page_runner_failed")[:200]
+        if any(marker in lowered for marker in ("target page, context or browser has been closed", "browser has been closed", "target closed")):
+            return "browser_closed", reason, True, "navigate"
+        if "timeout" in lowered:
+            return "navigation_timeout" if action in {"navigate", "read_text"} else "action_timeout", reason, True, "snapshot"
+        if any(marker in lowered for marker in ("no node found", "resolved to 0 elements", "not attached", "detached")):
+            return "stale_target", reason, True, "snapshot"
+        if any(marker in lowered for marker in ("name_not_resolved", "connection refused", "connection reset", "net::err")):
+            return "site_unreachable", reason, True, "navigate"
+        return "unavailable", reason, True, "snapshot"
 
     def _safe_title(self, page: Any) -> str:
         try:
@@ -457,7 +635,8 @@ class ManagedBrowserPageRunner:
                     const anchors = Array.from(document.querySelectorAll("a[href]"));
                     const seen = new Set();
                     const rows = [];
-                    for (const anchor of anchors) {
+                    for (let sourceIndex = 0; sourceIndex < anchors.length; sourceIndex += 1) {
+                        const anchor = anchors[sourceIndex];
                         if (!visibleAnchor(anchor)) {
                             continue;
                         }
@@ -479,6 +658,7 @@ class ManagedBrowserPageRunner:
                             href,
                             isVideo,
                             isNav,
+                            sourceIndex,
                             score: (isVideo ? 100 : 0) + (!isNav ? 10 : 0) + Math.min(20, Math.round(title.length / 8))
                         });
                         seen.add(href);
@@ -509,6 +689,7 @@ class ManagedBrowserPageRunner:
                     "title": title,
                     "url": absolute_url,
                     "kind": "video" if item.get("isVideo") else "link",
+                    "source_index": self._safe_int(item.get("sourceIndex"), default=-1, minimum=-1, maximum=100_000),
                 }
             )
         return rows
@@ -525,14 +706,14 @@ class ManagedBrowserPageRunner:
             lines.append(f"{len(lines) + 1}. {kind}: {title} -> {url[:240]}")
         return "\n".join(lines)
 
-    def _safe_link_candidate_url_by_index(self, page: Any, *, candidate_index: int) -> str:
+    def _safe_link_candidate_by_index(self, page: Any, *, candidate_index: int) -> dict[str, Any] | None:
         index = self._safe_int(candidate_index, default=0, minimum=0, maximum=30)
         if index <= 0:
-            return ""
+            return None
         rows = self._safe_link_candidate_rows(page, max_items=max(12, index))
         if index > len(rows):
-            return ""
-        return str(rows[index - 1].get("url") or "").strip()
+            return None
+        return dict(rows[index - 1])
 
     def _safe_public_candidate_url(self, value: str, *, base_url: str) -> str:
         try:
@@ -706,30 +887,38 @@ class ManagedBrowserPageRunner:
         safe_candidate_index = self._safe_int(candidate_index, default=0, minimum=0, maximum=30)
         target_selector = f"aria-ref={safe_ref}" if safe_ref else safe_selector
         if action == "click" and safe_candidate_index > 0:
-            candidate_url = self._safe_link_candidate_url_by_index(page, candidate_index=safe_candidate_index)
-            if not candidate_url:
+            candidate = self._safe_link_candidate_by_index(page, candidate_index=safe_candidate_index)
+            if not candidate:
                 return BrowserPageResult(
                     ok=False,
-                    status="invalid_request",
+                    status="stale_target",
                     action=action,
                     reason="candidate_not_found",
+                    retryable=True,
+                    next_action="elements",
                 )
             try:
-                page.goto(candidate_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-                self._bring_to_front(page)
+                source_index = self._safe_int(candidate.get("source_index"), default=-1, minimum=-1, maximum=100_000)
+                if source_index < 0:
+                    raise RuntimeError("candidate_source_missing")
+                locator = page.locator("a[href]").nth(source_index)
+                self._click_locator_and_switch_to_popup_if_any(page, locator)
                 return None
             except Exception as exc:
+                status, reason, retryable, next_action = self._classify_browser_error(exc, action=action)
                 return BrowserPageResult(
                     ok=False,
-                    status="unavailable",
+                    status=status,
                     action=action,
-                    reason=str(exc)[:160] or "candidate_navigation_failed",
+                    reason=reason or "candidate_click_failed",
+                    retryable=retryable,
+                    next_action=next_action,
                 )
         if action in {"click", "fill"} and not target_selector:
             return BrowserPageResult(ok=False, status="invalid_request", action=action, reason="selector_required")
         try:
             if action == "click":
-                self._click_and_switch_to_popup_if_any(page, target_selector)
+                self._click_locator_and_switch_to_popup_if_any(page, page.locator(target_selector).first)
             elif action == "fill":
                 page.fill(target_selector, str(text or "")[:500], timeout=self.timeout_ms)
             elif action == "press":
@@ -745,33 +934,29 @@ class ManagedBrowserPageRunner:
                 pass
             return None
         except Exception as exc:
+            status, reason, retryable, next_action = self._classify_browser_error(exc, action=action)
             return BrowserPageResult(
                 ok=False,
-                status="unavailable",
+                status=status,
                 action=action,
-                reason=str(exc)[:160] or "browser_control_action_failed",
+                reason=reason or "browser_control_action_failed",
+                retryable=retryable,
+                next_action=next_action,
             )
 
-    def _click_and_switch_to_popup_if_any(self, page: Any, selector: str) -> None:
-        direct_url = self._safe_link_href_for_selector(page, selector)
-        if direct_url:
-            page.goto(direct_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            self._bring_to_front(page)
-            return
+    def _click_locator_and_switch_to_popup_if_any(self, page: Any, locator: Any) -> None:
         context = getattr(page, "context", None)
         if context is None:
-            page.click(selector, timeout=self.timeout_ms)
+            locator.click(timeout=self.timeout_ms)
             return
-        try:
-            with context.expect_page(timeout=2500) as page_info:
-                page.click(selector, timeout=self.timeout_ms)
-            new_page = page_info.value
-        except Exception as exc:
-            if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower():
-                return
-            raise
-            return
+        before = list(getattr(context, "pages", []) or [])
+        locator.click(timeout=self.timeout_ms)
+        self._brief_visual_pause(page)
+        after = list(getattr(context, "pages", []) or [])
+        new_pages = [candidate for candidate in after if candidate not in before]
+        new_page = new_pages[-1] if new_pages else None
         if new_page is None:
+            self._page = page
             return
         self._page = new_page
         try:
@@ -779,14 +964,6 @@ class ManagedBrowserPageRunner:
         except Exception:
             pass
         self._bring_to_front(new_page)
-
-    def _safe_link_href_for_selector(self, page: Any, selector: str) -> str:
-        try:
-            locator = page.locator(selector).first
-            href = str(locator.get_attribute("href", timeout=1500) or "").strip()
-        except Exception:
-            return ""
-        return self._safe_public_candidate_url(href, base_url=str(getattr(page, "url", "") or ""))
 
     def _bring_to_front(self, page: Any) -> None:
         try:
@@ -802,3 +979,87 @@ class ManagedBrowserPageRunner:
 
     def _default_browser_channel(self) -> str:
         return "msedge" if sys.platform == "win32" else ""
+
+
+class ManagedBrowserSessionManager:
+    """Bounded browser sessions keyed by Akane profile + conversation.
+
+    The manager is intentionally small: it owns lifecycle and isolation while
+    ``ManagedBrowserPageRunner`` remains the only page executor. This keeps the
+    public tool contract stable and prevents a group task from inheriting a
+    private chat's page, cookies, popup, or stale closed-window state.
+    """
+
+    def __init__(
+        self,
+        *,
+        runner_factory: Callable[[], ManagedBrowserPageRunner] | None = None,
+        max_sessions: int = 8,
+        idle_ttl_seconds: float = 30 * 60,
+        now: Any = None,
+    ) -> None:
+        self._runner_factory = runner_factory or ManagedBrowserPageRunner
+        self._max_sessions = max(1, int(max_sessions))
+        self._idle_ttl_seconds = max(30.0, float(idle_ttl_seconds))
+        self._now = now or time.time
+        self._lock = threading.Lock()
+        self._sessions: dict[str, tuple[float, ManagedBrowserPageRunner]] = {}
+        self._capability_status_cache: dict[str, Any] | None = None
+
+    def runner_for_session(self, profile_user_id: str, session_id: str) -> ManagedBrowserPageRunner:
+        key = self._session_key(profile_user_id, session_id)
+        evicted: list[ManagedBrowserPageRunner] = []
+        with self._lock:
+            now = float(self._now())
+            for stale_key, (last_used, runner) in list(self._sessions.items()):
+                if now - last_used > self._idle_ttl_seconds:
+                    evicted.append(runner)
+                    del self._sessions[stale_key]
+            cached = self._sessions.get(key)
+            if cached is None:
+                runner = self._runner_factory()
+                self._sessions[key] = (now, runner)
+            else:
+                runner = cached[1]
+                self._sessions[key] = (now, runner)
+            while len(self._sessions) > self._max_sessions:
+                oldest_key = min(self._sessions.items(), key=lambda item: item[1][0])[0]
+                if oldest_key == key and len(self._sessions) > 1:
+                    alternatives = [item for item in self._sessions.items() if item[0] != key]
+                    oldest_key = min(alternatives, key=lambda item: item[1][0])[0]
+                _last_used, old_runner = self._sessions.pop(oldest_key)
+                evicted.append(old_runner)
+        for old_runner in evicted:
+            old_runner.shutdown()
+        return runner
+
+    def capability_status(self) -> dict[str, Any]:
+        with self._lock:
+            cached = self._capability_status_cache
+        if cached is not None:
+            return dict(cached)
+        runner = self._runner_factory()
+        try:
+            status = runner.capability_status()
+        finally:
+            runner.shutdown()
+        with self._lock:
+            self._capability_status_cache = dict(status)
+        return dict(status)
+
+    def shutdown(self, *, timeout: float = 5.0) -> None:
+        with self._lock:
+            runners = [runner for _last_used, runner in self._sessions.values()]
+            self._sessions.clear()
+        if not runners:
+            return
+        closer = ThreadPoolExecutor(max_workers=min(4, len(runners)), thread_name_prefix="akane-browser-close")
+        futures = [closer.submit(runner.shutdown) for runner in runners]
+        wait(futures, timeout=max(0.1, float(timeout)))
+        closer.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _session_key(profile_user_id: str, session_id: str) -> str:
+        profile = str(profile_user_id or "").strip() or "anonymous"
+        session = str(session_id or "").strip() or profile
+        return f"{profile}\x1f{session}"

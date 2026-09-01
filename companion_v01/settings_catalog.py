@@ -52,6 +52,11 @@ EXCLUDED_KEYS: frozenset[str] = frozenset(
         "EXECUTION_ALLOWED_ENV_NAMES",
         "EXECUTION_CREDENTIAL_ENV_NAMES",
         "EXECUTION_PROXY_URL",
+        # Browser placement and network reach are host trust/deployment facts:
+        # a local visible desktop and a cloud headless worker intentionally use
+        # different values and cannot be switched safely as a live UI setting.
+        "BROWSER_PAGE_PRIVATE_NETWORK_ACCESS",
+        "BROWSER_PAGE_HEADLESS",
         # Accepted only to return an actionable deprecation error. Remote media
         # fetches must never import an entire browser cookie database.
         "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
@@ -83,7 +88,7 @@ _VIS = "视觉 / 图像理解"
 _TTS = "语音 (TTS)"
 _MUS = "系统音乐感知 / 在线歌词"
 _PUB = "公开访问保护 & 限流"
-_TOOL = "工具调用 & 后台任务"
+_TOOL = "工具调用"
 _QQ = "QQ / NapCat 桥接"
 _BG = "后台 Worker"
 _RM = "远程媒体 (yt-dlp)"
@@ -311,7 +316,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("DAILY_THINK_LIMIT", _PUB, SCOPE_RESTART_CLIENT, "每日 /think 请求上限"),
     _s("PUBLIC_BUSY_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "繁忙提示语（用户可见）"),
     _s("PUBLIC_DAILY_LIMIT_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "每日限额提示语（用户可见）"),
-    # 工具调用 & 后台任务
+    # 工具调用
     _s("TOOL_ROUND_HARD_LIMIT", _TOOL, SCOPE_RUNTIME, "可选的单回合工具批次硬上限；0=不限制"),
     _s("TOOL_ROUND_WARNING_REMAINING", _TOOL, SCOPE_RUNTIME, "有限工具轮接近上限时的一次性续作提醒阈值；0=关闭"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),

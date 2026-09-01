@@ -53,6 +53,18 @@ class PluginContributionPolicy(Protocol):
         descriptor: CapabilityDescriptor,
     ) -> ContributionPolicyDecision: ...
 
+    # Optional compatibility hook. PluginHost calls it when present after the
+    # registrar has produced a complete staged contribution snapshot.
+    def validate_registration(
+        self,
+        *,
+        manifest: PluginManifest,
+        capability_count: int,
+        qq_command_count: int,
+        has_background_job: bool,
+        prompt_block_count: int,
+    ) -> ContributionPolicyDecision: ...
+
 
 def _validate_trusted_read_capability(
     descriptor: CapabilityDescriptor,
@@ -98,6 +110,9 @@ class M65CDiagnosticContributionPolicy:
             return ContributionPolicyDecision.reject()
         return ContributionPolicyDecision.allow()
 
+    def validate_registration(self, **_kwargs: object) -> ContributionPolicyDecision:
+        return ContributionPolicyDecision.allow()
+
 
 @dataclass(frozen=True, slots=True)
 class TrustedReadNetworkContributionPolicy:
@@ -129,28 +144,39 @@ class TrustedReadNetworkContributionPolicy:
         del plugin_id
         return _validate_trusted_read_capability(descriptor)
 
+    def validate_registration(
+        self,
+        *,
+        capability_count: int,
+        **_kwargs: object,
+    ) -> ContributionPolicyDecision:
+        return (
+            ContributionPolicyDecision.allow()
+            if capability_count > 0
+            else ContributionPolicyDecision.reject()
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TrustedStatefulPluginContributionPolicy:
-    """Trusted network reads with explicitly declared optional host services.
+    """Trusted in-process plugins with explicitly declared host services.
 
-    Accepts any subset of the extended permission tuple where:
-    - capability.prompt.invoke is required (plugin contributes prompt-visible capabilities)
-    - network.read is required
-    - storage.write, job.run, notification.send, artifact.write,
-      qq.command.register, model.reasoning, and prompt.system.contribute are
-      optional individually
+    A plugin may contribute capabilities, QQ commands, a background job, or
+    stable prompt blocks without pretending to provide all four. Capability
+    plugins declare ``capability.prompt.invoke``; that permission requires
+    ``network.read`` under this policy. Other permissions are independent and
+    are enforced by the registrar that exposes the corresponding host port.
 
-    The capability-level rules are identical to TrustedReadNetworkContributionPolicy.
+    Capability-level rules remain identical to
+    :class:`TrustedReadNetworkContributionPolicy`.
     """
 
     policy_id: str = field(default="trusted.stateful-plugin.v1", init=False)
 
-    # Required base permissions
-    _BASE = frozenset({CAPABILITY_PROMPT_INVOKE_PERMISSION, NETWORK_READ_PERMISSION})
-    # Optional extended permissions
-    _OPTIONAL = frozenset(
+    _ALLOWED = frozenset(
         {
+            CAPABILITY_PROMPT_INVOKE_PERMISSION,
+            NETWORK_READ_PERMISSION,
             PLUGIN_STORAGE_WRITE_PERMISSION,
             BACKGROUND_JOB_PERMISSION,
             NOTIFICATION_SEND_PERMISSION,
@@ -160,12 +186,24 @@ class TrustedStatefulPluginContributionPolicy:
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
         }
     )
+    _CONTRIBUTION_PERMISSIONS = frozenset(
+        {
+            CAPABILITY_PROMPT_INVOKE_PERMISSION,
+            BACKGROUND_JOB_PERMISSION,
+            PLUGIN_QQ_COMMAND_PERMISSION,
+            SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
+        }
+    )
 
     def validate_manifest(self, manifest: PluginManifest) -> ContributionPolicyDecision:
         perms = frozenset(manifest.permissions)
-        if not self._BASE.issubset(perms):
+        if not perms or not perms.issubset(self._ALLOWED):
             return ContributionPolicyDecision.reject()
-        if not perms.issubset(self._BASE | self._OPTIONAL):
+        if not perms.intersection(self._CONTRIBUTION_PERMISSIONS):
+            return ContributionPolicyDecision.reject()
+        if CAPABILITY_PROMPT_INVOKE_PERMISSION in perms and NETWORK_READ_PERMISSION not in perms:
+            return ContributionPolicyDecision.reject()
+        if MANAGED_ARTIFACT_WRITE_PERMISSION in perms and CAPABILITY_PROMPT_INVOKE_PERMISSION not in perms:
             return ContributionPolicyDecision.reject()
         return ContributionPolicyDecision.allow()
 
@@ -177,6 +215,17 @@ class TrustedStatefulPluginContributionPolicy:
     ) -> ContributionPolicyDecision:
         del plugin_id
         return _validate_trusted_read_capability(descriptor)
+
+    def validate_registration(
+        self,
+        *,
+        manifest: PluginManifest,
+        capability_count: int,
+        **_kwargs: object,
+    ) -> ContributionPolicyDecision:
+        if capability_count and CAPABILITY_PROMPT_INVOKE_PERMISSION not in manifest.permissions:
+            return ContributionPolicyDecision.reject()
+        return ContributionPolicyDecision.allow()
 
 
 __all__ = [

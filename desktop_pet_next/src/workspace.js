@@ -13,7 +13,6 @@ const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const PROFILE_USER_ID = "master";
 const SUMMARY_LIMIT = 24;
-const TASK_AUTO_REFRESH_MS = 6500;
 
 const els = {
   summary: document.querySelector("#workspace-summary"),
@@ -28,7 +27,6 @@ const els = {
   projectDisplayName: document.querySelector("#project-display-name"),
   fileCount: document.querySelector("#file-count"),
   outputCount: document.querySelector("#output-count"),
-  taskCount: document.querySelector("#task-count"),
   music: document.querySelector("#workspace-music"),
   content: document.querySelector("#workspace-content"),
   session: document.querySelector("#workspace-session"),
@@ -112,10 +110,9 @@ function bindUi() {
     if (!button) return;
     const sourceId = String(button.closest("[data-source-id]")?.dataset.sourceId || "").trim();
     const action = button.dataset.musicAction;
-    if (action === "previous") sendCommand("previousMusic");
-    if (action === "next") sendCommand("nextMusic");
-    if (action === "toggle") sendCommand("toggleMusic");
-    if (action === "stop") sendCommand("stopMusic");
+    if (["previous", "next", "toggle", "stop"].includes(action)) {
+      sendCommand("controlActiveMusic", { action });
+    }
     if (action === "play" && sourceId) sendCommand("playMusicTrack", sourceId);
     if (action === "remove" && sourceId) sendCommand("removeMusicTrack", sourceId);
   });
@@ -452,26 +449,22 @@ function renderPayload(payload) {
   const sections = payload.sections && typeof payload.sections === "object" ? payload.sections : {};
   const files = normalizeItems(sections.files);
   const outputs = normalizeItems(sections.outputs);
-  const tasks = normalizeItems(sections.tasks);
-  scheduleTaskAutoRefresh(tasks);
 
   els.fileCount.textContent = String(files.length);
   els.outputCount.textContent = String(outputs.length);
-  els.taskCount.textContent = String(tasks.length);
-  els.summary.textContent = `${files.length} 文件 · ${outputs.length} 成果 · ${tasks.length} 任务`;
+  els.summary.textContent = `${files.length} 文件 · ${outputs.length} 成果`;
   updateWorkspaceActions({ files, outputs });
   setAlert("");
 
-  if (!files.length && !outputs.length && !tasks.length) {
-    renderEmpty("现在手边还很清爽，没有文件、成果或任务。");
+  if (!files.length && !outputs.length) {
+    renderEmpty("现在手边还很清爽，没有文件或成果。");
     return;
   }
 
   els.content.replaceChildren(
     ...[
       renderSection("手边文件", "刚递给当前角色的原始材料", files, "file"),
-      renderSection("做好的东西", "文档、音频和其他生成物", outputs, "output"),
-      renderSection("后台任务", "排队、进行、完成和等待确认", tasks, "task")
+      renderSection("做好的东西", "文档、音频和其他生成物", outputs, "output")
     ].filter(Boolean)
   );
 }
@@ -631,7 +624,7 @@ function renderItem(item, kind) {
 
   const mark = document.createElement("div");
   mark.className = "item-mark";
-  mark.textContent = kind === "task" ? taskMark(item) : kind === "output" ? "✦" : kindMark(item.kind || item.format);
+  mark.textContent = kind === "output" ? "✦" : kindMark(item.kind || item.format);
 
   const body = document.createElement("div");
   body.className = "item-body";
@@ -646,12 +639,9 @@ function renderItem(item, kind) {
   const meta = buildItemMetaParts(item, kind).filter(Boolean).join(" · ");
   const detail = buildText("p", meta || "放在当前角色手边");
 
-  const nextAction = kind === "task" && item.next_action ? buildText("p", `下一步：${item.next_action}`) : null;
-  if (nextAction) nextAction.className = "item-next-action";
-
   const actions = document.createElement("div");
   actions.className = "item-actions";
-  if (kind !== "task" && item.can_open) {
+  if (item.can_open) {
     actions.append(
       buildItemActionButton("open-file", "打开"),
       buildItemActionButton("reveal-file", "位置"),
@@ -659,7 +649,7 @@ function renderItem(item, kind) {
       buildItemActionButton("copy-path", "复制路径")
     );
   }
-  if (kind !== "task" && isPlayableAudioItem(item)) {
+  if (isPlayableAudioItem(item)) {
     const play = document.createElement("button");
     play.type = "button";
     play.dataset.action = "play-audio";
@@ -676,12 +666,11 @@ function renderItem(item, kind) {
     clear.type = "button";
     clear.dataset.action = "clear-item";
     clear.className = "danger-button";
-    clear.textContent = kind === "task" ? "清理" : "收起";
+    clear.textContent = "收起";
     actions.append(clear);
   }
 
   body.append(top, detail);
-  if (nextAction) body.append(nextAction);
   body.append(actions);
   article.append(mark, body);
   return article;
@@ -695,48 +684,13 @@ function buildItemActionButton(action, label) {
   return button;
 }
 
-function scheduleTaskAutoRefresh(tasks) {
-  if (Array.isArray(tasks) && tasks.some(isActiveTaskItem)) {
-    scheduleWorkspaceRefresh(TASK_AUTO_REFRESH_MS);
-  }
-}
-
-function isActiveTaskItem(item) {
-  const status = String(item?.status || "").trim().toLowerCase();
-  const group = String(item?.status_group || "").trim().toLowerCase();
-  return group === "active" || ["queued", "running"].includes(status);
-}
-
 function resolveItemStatusGroup(item, kind) {
-  if (kind !== "task") return String(item?.status || "").trim().toLowerCase() === "failed" ? "failed" : "idle";
-  const group = String(item?.status_group || "").trim().toLowerCase();
-  if (group) return group;
-  const status = String(item?.status || "").trim().toLowerCase();
-  if (["queued", "running"].includes(status)) return "active";
-  if (status === "completed") return "done";
-  if (status === "failed") return "failed";
-  if (["blocked", "waiting_user", "partial"].includes(status)) return "attention";
-  return "idle";
-}
-
-function taskMark(item) {
-  const status = String(item?.status || "").trim().toLowerCase();
-  if (status === "queued") return "队";
-  if (status === "running") return "做";
-  if (status === "completed") return "成";
-  if (status === "failed") return "错";
-  if (["blocked", "waiting_user", "partial"].includes(status)) return "问";
-  return "任";
+  void kind;
+  return String(item?.status || "").trim().toLowerCase() === "failed" ? "failed" : "idle";
 }
 
 function buildItemMetaParts(item, kind) {
-  if (kind === "task") {
-    return [
-      item.subtitle || "",
-      item.artifact_count ? `${Number(item.artifact_count)} 个产物` : "",
-      item.updated_at ? formatUpdatedAt(item.updated_at) : ""
-    ];
-  }
+  void kind;
   return [
     item.subtitle || "",
     item.size_bytes ? formatSize(item.size_bytes) : "",
@@ -975,7 +929,6 @@ function renderEmpty(message) {
   els.summary.textContent = "手边物品";
   els.fileCount.textContent = "0";
   els.outputCount.textContent = "0";
-  els.taskCount.textContent = "0";
   updateWorkspaceActions({ files: [], outputs: [] });
 }
 

@@ -45,8 +45,10 @@ from .client_protocol import QQ_TEXT_DEFAULT_CAPABILITIES
 from .deployment_security import QQChannelRuntimeConfig
 from .model_service_config import normalize_provider_model_id
 from .onebot_model_actions import (
+    MODEL_ONEBOT_MESSAGE_CREATING_ACTIONS,
     authorize_model_onebot_action,
     model_onebot_capabilities,
+    resolve_model_onebot_message_selector,
     resolve_model_onebot_params,
 )
 from .onebot_transport import OneBotActionTransport
@@ -340,6 +342,20 @@ class QQMessageContext:
 
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
+        mention_labels = {
+            str(mention.target_id or "").strip(): str(mention.display_name or "").strip()
+            for mention in self.mentions
+            if str(mention.target_id or "").strip()
+        }
+        memory_message = (
+            self.message_chain.render_text_with_mentions(
+                mention_labels=mention_labels,
+                bot_label="Akane",
+            )
+            if self.message_chain.parts
+            else self.clean_message
+        )
+        memory_message = memory_message or self.clean_message
         if self.is_group:
             label = self.sender_label or (f"QQ {self.user_id}" if self.user_id else "群成员")
             message = f"【{label}】{message}"
@@ -347,6 +363,8 @@ class QQMessageContext:
             "user_id": self.session_id,
             "real_user_id": self.profile_user_id,
             "message": message,
+            "memory_message": memory_message,
+            "source_message_id": str(self.source_message_id or "").strip(),
             "client_mode": "qq_text",
             "client_capabilities": list(QQ_TEXT_CAPABILITIES),
             "extra_context": self.extra_context,
@@ -400,7 +418,7 @@ class QQMessageContext:
                     "actor_id": str(mentions[0].get("actor_id") or ""),
                     "display_name": str(mentions[0].get("display_name") or ""),
                 }
-                if mentions
+                if len(mentions) == 1
                 else {}
             )
         )
@@ -429,6 +447,8 @@ class QQMessageContext:
             "sender_label": self.sender_label,
             "source_message_id": self.source_message_id,
         }
+        if self.reply_reference:
+            payload["reply_reference"] = dict(self.reply_reference)
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
             if self.actor_profile_user_id:
@@ -506,6 +526,8 @@ class NapCatQQGateway:
         self._emotion_image_lock = threading.RLock()
         self._delivery_notes: dict[str, list[str]] = {}
         self._delivery_notes_lock = threading.RLock()
+        self._recent_bot_message_ids: dict[str, list[str]] = {}
+        self._recent_bot_message_lock = threading.RLock()
         self._state_error = ""
         self._load_persisted_state()
 
@@ -1263,6 +1285,9 @@ class NapCatQQGateway:
             chat_model_override=_safe_chat_model_id(value.get("chat_model_override") or value.get("chatModelOverride")),
             attachments=[],
             source_message_id=str(value.get("source_message_id") or value.get("sourceMessageId") or "").strip(),
+            reply_reference=(
+                dict(value.get("reply_reference")) if isinstance(value.get("reply_reference"), dict) else None
+            ),
         )
 
     def resolve_character_pack_id(self, session_id: str) -> str:
@@ -2965,6 +2990,12 @@ class NapCatQQGateway:
             status = "resolved"
             actor_id = str(message.actor.id or "").strip()
             bot_account_id = str(inbound.bot_account_id or event.get("self_id") or self.bot_qq or "").strip()
+            resolved_mentions = self.resolve_mention_labels(
+                mentions=message.mentions,
+                group_id=self._safe_int(message.conversation.id)
+                if message.conversation.kind == "group"
+                else 0,
+            )
             quoted_message = {
                 "message_id": message.message_id,
                 "text": message.text,
@@ -2975,6 +3006,7 @@ class NapCatQQGateway:
                 "conversation_kind": message.conversation.kind,
                 "conversation_id": message.conversation.id,
                 "attachment_count": len(attachments),
+                "mentions": self._project_mention_evidence(resolved_mentions),
             }
         payload: dict[str, Any] = {
             "ok": result.ok,
@@ -3059,6 +3091,10 @@ class NapCatQQGateway:
                 for node in result.message.nodes:
                     node_attachments = self._legacy_attachments(node.attachments)
                     attachments.extend(node_attachments)
+                    resolved_mentions = self.resolve_mention_labels(
+                        mentions=tuple(getattr(node, "mentions", ()) or ()),
+                        group_id=int(context.group_id or 0) if context.is_group else 0,
+                    )
                     entry["nodes"].append(
                         {
                             "index": node.index,
@@ -3068,6 +3104,7 @@ class NapCatQQGateway:
                             "timestamp": node.timestamp,
                             "message_id": node.message_id,
                             "attachment_count": len(node_attachments),
+                            "mentions": self._project_mention_evidence(resolved_mentions),
                         }
                     )
                 entry["node_count"] = len(result.message.nodes)
@@ -3105,6 +3142,7 @@ class NapCatQQGateway:
         *,
         action: str,
         params: dict[str, Any],
+        message_selector: dict[str, Any] | None = None,
         timeout_seconds: float = 20.0,
     ) -> dict[str, Any]:
         """Execute one explicitly exposed model action against the bound Bot.
@@ -3118,9 +3156,40 @@ class NapCatQQGateway:
         if clean_action == "capabilities":
             return model_onebot_capabilities()
         is_master = bool(self.master_qq) and str(int(context.user_id or 0)) == self.master_qq
-        resolved_params, defaults_applied = resolve_model_onebot_params(
+        selector = dict(message_selector) if isinstance(message_selector, dict) else None
+        recent_message_id = ""
+        if selector and str(selector.get("kind") or "").strip() == "recent_bot_message":
+            try:
+                position = int(selector.get("position") or 1)
+            except (TypeError, ValueError):
+                position = 0
+            if position < 1 or position > 64:
+                return {
+                    "ok": False,
+                    "status": "invalid",
+                    "reason": "recent_bot_message_position_invalid",
+                    "action": clean_action or "unknown",
+                }
+            recent_message_id = self._recent_bot_message_id(context, position=position)
+        replied_message_id = str((context.reply_reference or {}).get("message_id") or "").strip()
+        selected_params, selector_applied, selector_error = resolve_model_onebot_message_selector(
             clean_action,
             params,
+            selector,
+            source_message_id=str(context.source_message_id or ""),
+            replied_message_id=replied_message_id,
+            recent_bot_message_id=recent_message_id,
+        )
+        if selector_error:
+            return {
+                "ok": False,
+                "status": "unavailable" if selector_error.endswith("_unavailable") else "invalid",
+                "reason": selector_error,
+                "action": clean_action or "unknown",
+            }
+        resolved_params, defaults_applied = resolve_model_onebot_params(
+            clean_action,
+            selected_params,
             is_group=bool(context.is_group),
             group_id=int(context.group_id or 0),
             user_id=int(context.user_id or 0),
@@ -3134,6 +3203,7 @@ class NapCatQQGateway:
             group_id=int(context.group_id or 0),
             user_id=int(context.user_id or 0),
             source_message_id=str(context.source_message_id or ""),
+            message_selector_applied=selector_applied,
         )
         if not allowed:
             return {
@@ -3143,11 +3213,73 @@ class NapCatQQGateway:
                 "action": clean_action or "unknown",
                 "scope": scope,
             }
-        result = self._onebot_transport.call(clean_action, resolved_params, timeout=timeout_seconds)
-        payload = result.as_dict()
+        payload = self._call_and_track_outbound(clean_action, resolved_params, timeout=timeout_seconds)
         payload["scope"] = scope
+        if selector_applied and selector_applied != "explicit_message_id":
+            payload["message_selector_applied"] = selector_applied
         if defaults_applied:
             payload["defaults_applied"] = list(defaults_applied)
+        return payload
+
+    @staticmethod
+    def _onebot_conversation_key(*, is_group: bool, target_id: Any) -> str:
+        try:
+            normalized = str(int(target_id or 0))
+        except (TypeError, ValueError):
+            normalized = str(target_id or "").strip()
+        return f"{'group' if is_group else 'private'}:{normalized}" if normalized else ""
+
+    def _recent_bot_message_id(self, context: QQMessageContext, *, position: int) -> str:
+        key = self._onebot_conversation_key(is_group=bool(context.is_group), target_id=context.target_id)
+        lock = getattr(self, "_recent_bot_message_lock", None)
+        if lock is None:
+            self._recent_bot_message_lock = threading.RLock()
+            self._recent_bot_message_ids = {}
+            lock = self._recent_bot_message_lock
+        with lock:
+            messages = list(getattr(self, "_recent_bot_message_ids", {}).get(key) or ())
+        return messages[position - 1] if key and 0 < position <= len(messages) else ""
+
+    def _remember_successful_outbound(self, action: str, params: dict[str, Any], payload: dict[str, Any]) -> None:
+        if not bool(payload.get("ok")):
+            return
+        if str(action or "").strip() not in MODEL_ONEBOT_MESSAGE_CREATING_ACTIONS:
+            return
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        message_id = str(data.get("message_id") or "").strip()
+        if not message_id:
+            return
+        group_id = params.get("group_id")
+        user_id = params.get("user_id")
+        key = self._onebot_conversation_key(
+            is_group=bool(group_id),
+            target_id=group_id if group_id else user_id,
+        )
+        if not key:
+            return
+        lock = getattr(self, "_recent_bot_message_lock", None)
+        if lock is None:
+            self._recent_bot_message_lock = threading.RLock()
+            self._recent_bot_message_ids = {}
+            lock = self._recent_bot_message_lock
+        with lock:
+            ledger = getattr(self, "_recent_bot_message_ids", {})
+            messages = list(ledger.get(key) or ())
+            if message_id in messages:
+                messages.remove(message_id)
+            messages.insert(0, message_id)
+            ledger[key] = messages[:64]
+            self._recent_bot_message_ids = ledger
+
+    def _call_and_track_outbound(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        payload = self._onebot_transport.call(action, dict(params), timeout=timeout).as_dict()
+        self._remember_successful_outbound(action, dict(params), payload)
         return payload
 
     @staticmethod
@@ -3269,6 +3401,20 @@ class NapCatQQGateway:
                 )
             )
         return tuple(resolved)
+
+    @staticmethod
+    def _project_mention_evidence(mentions: tuple[MentionRef, ...]) -> list[dict[str, Any]]:
+        """Project package mention facts without reconstructing OneBot segments."""
+
+        return [
+            {
+                "actor_id": "assistant" if mention.is_bot else f"qq:{mention.target_id}",
+                "display_name": "" if mention.is_bot else str(mention.display_name or "").strip(),
+                "is_assistant": bool(mention.is_bot),
+            }
+            for mention in mentions
+            if str(mention.target_id or "").strip()
+        ]
 
     def _sender_label_cache_key(self, *, group_id: int, user_id: int) -> str:
         if not user_id:
@@ -4569,6 +4715,7 @@ class NapCatQQGateway:
             last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=20)
             if last_result.ok:
                 result = last_result.as_dict()
+                self._remember_successful_outbound(plan.action, plan.params(), result)
                 result["transport"] = transport
                 return result
         result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
@@ -4615,6 +4762,7 @@ class NapCatQQGateway:
             last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
             if last_result.ok:
                 result = last_result.as_dict()
+                self._remember_successful_outbound(plan.action, plan.params(), result)
                 result["transport"] = transport
                 return result
 
@@ -4634,6 +4782,7 @@ class NapCatQQGateway:
             streamed_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
             if streamed_result.ok:
                 result = streamed_result.as_dict()
+                self._remember_successful_outbound(plan.action, plan.params(), result)
                 result["transport"] = "stream_upload"
                 return result
             last_result = streamed_result
@@ -4649,6 +4798,7 @@ class NapCatQQGateway:
                 inline_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
                 if inline_result.ok:
                     result = inline_result.as_dict()
+                    self._remember_successful_outbound(plan.action, plan.params(), result)
                     result["transport"] = "base64"
                     return result
                 last_result = inline_result
@@ -4776,7 +4926,7 @@ class NapCatQQGateway:
         )
 
     def _send_outbound_plan(self, plan: OutboundAction, *, timeout: float) -> dict[str, Any]:
-        return self._onebot_transport.call(plan.action, plan.params(), timeout=timeout).as_dict()
+        return self._call_and_track_outbound(plan.action, plan.params(), timeout=timeout)
 
     @staticmethod
     def _outbound_plan_failure(exc: ValueError) -> dict[str, Any]:

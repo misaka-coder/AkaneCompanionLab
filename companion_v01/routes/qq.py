@@ -169,6 +169,24 @@ def _qq_quoted_message_reference(payload: Any) -> dict[str, Any]:
         attachment_count = 0
     if attachment_count > 0:
         reference["attachment_count"] = attachment_count
+    mentions: list[dict[str, Any]] = []
+    seen_mentions: set[str] = set()
+    for raw_mention in list(quoted.get("mentions") or [])[:16]:
+        if not isinstance(raw_mention, dict):
+            continue
+        mention_id = str(raw_mention.get("actor_id") or "").strip()[:160]
+        if not mention_id or mention_id in seen_mentions:
+            continue
+        seen_mentions.add(mention_id)
+        mentions.append(
+            {
+                "actor_id": mention_id,
+                "display_name": str(raw_mention.get("display_name") or "").strip()[:160],
+                "is_assistant": bool(raw_mention.get("is_assistant")),
+            }
+        )
+    if mentions:
+        reference["mentions"] = mentions
     return reference
 
 
@@ -2866,7 +2884,7 @@ def build_qq_router(
         turn_timing: dict[str, float] = {}
 
         if channel_config is not None:
-            auth = channel_config.authorize_webhook(request)
+            auth = channel_config.authorize_webhook(request, body=await request.body())
             if not auth.ok:
                 runtime_metrics.observe_request(
                     "qq_napcat_event",

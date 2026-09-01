@@ -35,6 +35,7 @@ DESKTOP_PET_ENDPOINTS = {
     "health": "/desktop-pet/health",
     "resource_manifest": "/resource-manifest",
     "session_ensure": "/sessions/ensure",
+    "session_messages": "/sessions/messages",
     "think": "/think",
     "think_once": "/think_once",
     "tts": "/tts",
@@ -321,7 +322,7 @@ def _build_workspace_counts(engine: Any, *, profile_user_id: str, session_id: st
     """Workspace item counts via build_desktop_pet_workspace_panel (no content)."""
     builder = getattr(engine, "build_desktop_pet_workspace_panel", None)
     if not callable(builder):
-        return {"files": 0, "outputs": 0, "tasks": 0}
+        return {"files": 0, "outputs": 0}
     try:
         panel = builder(
             profile_user_id=profile_user_id,
@@ -332,10 +333,9 @@ def _build_workspace_counts(engine: Any, *, profile_user_id: str, session_id: st
         return {
             "files": int(counts.get("files", 0) if isinstance(counts, dict) else 0),
             "outputs": int(counts.get("outputs", 0) if isinstance(counts, dict) else 0),
-            "tasks": int(counts.get("tasks", 0) if isinstance(counts, dict) else 0),
         }
     except Exception:
-        return {"files": -1, "outputs": -1, "tasks": -1}
+        return {"files": -1, "outputs": -1}
 
 
 def _build_capability_object(engine: Any, *, profile_user_id: str, session_id: str) -> dict[str, Any]:

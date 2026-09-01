@@ -221,42 +221,6 @@ def build_desktop_pet_router(
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
-    @router.get("/task-workspace/status")
-    async def task_workspace_status(request: Request):
-        started_at = time.perf_counter()
-        session_id, profile_user_id = resolve_identity_from_query(request)
-        scope = str(request.query_params.get("scope") or "profile").strip().lower() or "profile"
-        limit = max(1, min(50, int(request.query_params.get("limit") or 20)))
-        query_session_id = session_id if scope == "session" else None
-
-        try:
-            service = getattr(engine, "task_workspace_service", None)
-            if service is None and hasattr(engine, "_get_task_workspace_service"):
-                service = engine._get_task_workspace_service()
-            items = (
-                service.list_status_summaries(
-                    profile_user_id=profile_user_id,
-                    session_id=query_session_id,
-                    limit=limit,
-                )
-                if service is not None
-                else []
-            )
-        except Exception as exc:
-            duration_ms = (time.perf_counter() - started_at) * 1000
-            runtime_metrics.observe_request("task_workspace_status", duration_ms=duration_ms, ok=False)
-            log_event(
-                "task_workspace_status_error",
-                session_id=session_id,
-                profile_user_id=profile_user_id,
-                message=str(exc),
-            )
-            raise
-
-        duration_ms = (time.perf_counter() - started_at) * 1000
-        runtime_metrics.observe_request("task_workspace_status", duration_ms=duration_ms, ok=True)
-        return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
-
     @router.get("/desktop-pet/workspace/summary")
     async def desktop_pet_workspace_summary(request: Request):
         started_at = time.perf_counter()

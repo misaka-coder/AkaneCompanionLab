@@ -9,6 +9,7 @@ from pathlib import Path
 from companion_v01.instance_profile import resolve_instance_context
 from companion_v01.local_capability_config import get_approval_policy_config, save_approval_policy_config
 from scripts.initialize_akane_local_test_policy import initialize_local_test_policy
+from scripts.seed_akane_local_capabilities import seed_local_capability_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ class LocalTestLauncherTests(unittest.TestCase):
             '$env:HOST = "127.0.0.1"',
             '$env:QQ_BRIDGE_ENABLED = "false"',
             '$env:EXECUTION_QQ_ENABLED = "false"',
+            '$env:BROWSER_PAGE_PRIVATE_NETWORK_ACCESS = "true"',
             "$env:AKANE_ADMIN_TOKEN = New-AkaneLocalTestSatelliteToken",
         )
         for fragment in overrides:
@@ -128,17 +130,82 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn("LocalApplicationData", source)
         self.assertIn("Provider secrets, QQ credentials, paths, logs and memory were not printed or copied", source)
 
-    def test_package_sync_is_revision_bound_and_contract_checked(self) -> None:
+    def test_package_sync_is_content_bound_and_contract_checked(self) -> None:
         source = (ROOT / "scripts" / "sync_akane_local_packages.ps1").read_text(encoding="utf-8")
         self.assertIn("requirements-packages.txt", source)
-        self.assertIn("git -C $packageRoot rev-parse HEAD", source)
-        self.assertIn("--untracked-files=no", source)
+        self.assertIn("Get-FileHash", source)
+        self.assertIn("GetRelativePath", source)
+        self.assertNotIn("local_package_source_dirty", source)
         self.assertIn("build_extracted_package_wheelhouse.py", source)
         self.assertIn("--internal-only", source)
         self.assertIn("--force-reinstall", source)
         self.assertGreaterEqual(source.count("| Out-Host"), 2)
         self.assertIn("browse_memory", source)
         self.assertIn("open_memory", source)
+        self.assertIn("render_text_with_mentions", source)
+        self.assertIn("QuotedMessage, 'mentions'", source)
+        self.assertIn("Test-AkaneLocalPackagesCurrent", source)
+
+    def test_skip_package_sync_still_validates_runtime_contracts(self) -> None:
+        for launcher_name in ("start_akane_local_test.ps1", "start_akane_local_qq_test.ps1"):
+            source = (ROOT / launcher_name).read_text(encoding="utf-8")
+            sync_end = source.index("\n}\n", source.index("if (-not $SkipPackageSync)"))
+            contract_check = source.index("Test-AkaneLocalPackageContracts", sync_end)
+            self.assertGreater(contract_check, sync_end, launcher_name)
+            self.assertIn("local_package_contract_validation_failed", source[contract_check:])
+            self.assertIn("local_package_content_mismatch", source[contract_check:])
+
+    def test_local_qq_launcher_attaches_desktop_by_default(self) -> None:
+        source = (ROOT / "start_akane_local_qq_test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[switch]$SkipDesktop", source)
+        self.assertIn("if ($SkipDesktop) { $launcherArgs.SkipDesktop = $true }", source)
+        self.assertIn("[switch]$ReuseBackend", source)
+        self.assertIn("if ($ReuseBackend) { $launcherArgs.ReuseBackend = $true }", source)
+        self.assertNotIn("-SkipDesktop `\n", source)
+
+    def test_local_qq_launcher_seeds_missing_shared_capabilities(self) -> None:
+        source = (ROOT / "start_akane_local_qq_test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("seed_akane_local_capabilities.py", source)
+        self.assertIn("--source-users-data-root", source)
+        self.assertIn("--destination-users-data-root", source)
+        self.assertLess(source.index("seed_akane_local_capabilities.py"), source.index("initialize_akane_local_test_policy.py"))
+
+    def test_capability_seed_adds_missing_entries_without_overwriting_instance_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "shared"
+            destination_root = root / "isolated"
+            source_path = source_root / "master" / "capabilities" / "capabilities.yaml"
+            destination_path = destination_root / "master" / "capabilities" / "capabilities.yaml"
+            source_path.parent.mkdir(parents=True)
+            destination_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                "schemaVersion: 2\nproviders:\n  tts:\n    endpoint: http://127.0.0.1:9880\nvoiceProfiles:\n  dania:\n    providerId: tts\n",
+                encoding="utf-8",
+            )
+            destination_path.write_text(
+                "schemaVersion: 1\napprovalPolicy:\n  defaultMode: trusted_auto_allow\nproviders:\n  local:\n    endpoint: http://127.0.0.1:9999\n",
+                encoding="utf-8",
+            )
+
+            status, count = seed_local_capability_profile(
+                source_users_data_root=source_root,
+                destination_users_data_root=destination_root,
+            )
+            self.assertEqual((status, count), ("seeded", 2))
+            payload = destination_path.read_text(encoding="utf-8")
+            self.assertIn("defaultMode: trusted_auto_allow", payload)
+            self.assertIn("local:", payload)
+            self.assertIn("dania:", payload)
+            self.assertIn("tts:", payload)
+
+            status, count = seed_local_capability_profile(
+                source_users_data_root=source_root,
+                destination_users_data_root=destination_root,
+            )
+            self.assertEqual((status, count), ("unchanged", 0))
 
     def test_new_local_profile_defaults_to_full_access_once(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -107,6 +107,7 @@ class DesktopPetBackendContractTests(unittest.TestCase):
         self.assertIn("desktop_context", payload["capabilities"])
         self.assertEqual(payload["endpoints"]["think"], "/think")
         self.assertEqual(payload["endpoints"]["session_ensure"], "/sessions/ensure")
+        self.assertEqual(payload["endpoints"]["session_messages"], "/sessions/messages")
         self.assertEqual(payload["tts"]["response_media_type"], "audio/mpeg")
         self.assertTrue(payload["features"]["care"]["enabled"])
 
@@ -247,10 +248,9 @@ class DesktopPetBackendContractTests(unittest.TestCase):
         # workspace shape
         self.assertIn("files", payload["workspace"])
         self.assertIn("outputs", payload["workspace"])
-        self.assertIn("tasks", payload["workspace"])
+        self.assertNotIn("tasks", payload["workspace"])
         self.assertEqual(payload["workspace"]["files"], 2)
         self.assertEqual(payload["workspace"]["outputs"], 1)
-        self.assertEqual(payload["workspace"]["tasks"], 0)
 
         # runtime shape
         self.assertIsInstance(payload["runtime"]["pid"], int)

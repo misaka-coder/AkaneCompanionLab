@@ -356,7 +356,7 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         projection = native_engine._append_tool_history_batch(
             tool_history_turns=history,
-            items=[(normalized, result, result.followup_context, "")],
+            items=[(normalized, result, result.followup_context)],
             trace_source_ids=["plugin-use", "plugin-result"],
             profile_user_id="user-42",
             session_id="session-7",

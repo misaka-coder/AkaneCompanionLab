@@ -1010,7 +1010,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(steer_message["payload"]["role"], "user")
         self.assertIn("改一下，先把测试补齐", str(steer_message["payload"]["content"]))
-        self.assertRegex(str(steer_message["payload"]["content"]), r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]")
+        self.assertRegex(
+            str(steer_message["payload"]["content"]),
+            r"time: \d{4}-\d{2}-\d{2} 周. \d{2}:\d{2}",
+        )
         self.assertEqual(steer_message["turn_id"], opened["turn_id"])
 
     def test_provider_protocol_maps_to_projection_profile_without_bot_specific_branching(self) -> None:
@@ -1846,7 +1849,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 followup_context="北京今天晴，25°C。",
                             ),
                             "北京今天晴，25°C。",
-                            "",
                         )
                     ],
                     trace_source_ids=trace_ids,
@@ -2161,7 +2163,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     {"type": "web_search", "query": "天气"},
                     ToolExecutionResult(tool_type="web_search", followup_context="晴，25°C。"),
                     "晴，25°C。",
-                    "",
                 )
             ],
             trace_source_ids=["legacy-anthropic-use", "legacy-anthropic-result"],
@@ -2232,7 +2233,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     {"type": "web_search", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
                     ToolExecutionResult(tool_type="web_search", followup_context="晴"),
                     "晴",
-                    "",
                 )
             ],
             trace_source_ids=["active-action", "active-result"],
@@ -2304,7 +2304,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                             {"type": "web_search", TOOL_SOURCE_FIELD: NATIVE_OPENAI},
                             ToolExecutionResult(tool_type="web_search", followup_context="检索完成。"),
                             "检索完成。",
-                            "",
                         )
                     ],
                     trace_source_ids=trace_ids,
@@ -2677,7 +2676,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 model_image_inputs=[image_input],
                             ),
                             "图片已加载到模型多模态通道。",
-                            "",
                         )
                     ],
                     trace_source_ids=trace_ids,
@@ -2849,7 +2847,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 followup_context="已生成 gen_vocals 和 gen_instrumental。",
                             ),
                             "已生成 gen_vocals 和 gen_instrumental。",
-                            "",
                         )
                     ],
                     trace_source_ids=first_trace_ids,
@@ -2929,7 +2926,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 followup_context="两个文件已发送。",
                             ),
                             "两个文件已发送。",
-                            "",
                         )
                     ],
                     trace_source_ids=second_trace_ids,
@@ -4230,6 +4226,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 observed = manager.append_standalone_message(
                     {
                         "source_id": "group-observed-1",
+                        "source_message_id": "qq-message-current",
                         "content": "【张三】这是群友之间的讨论",
                         "timestamp": _ts(2026, 7, 29, 11, 38),
                         "message_addressing": {
@@ -4244,6 +4241,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                                 "conversation_kind": "group",
                                 "conversation_id": "group-1",
                                 "attachment_count": 2,
+                                "mentions": [
+                                    {
+                                        "actor_id": "assistant",
+                                        "display_name": "",
+                                        "is_assistant": True,
+                                    }
+                                ],
                             },
                             "mentions": [
                                 {
@@ -4327,32 +4331,30 @@ class MemcoreIntegrationTests(unittest.TestCase):
         projected = [str(payload.get("content") or "") for payload in projection["payloads"]]
         self.assertTrue(
             any(
-                "message.user.observed" in text
+                'message_id: "qq-message-current"' in text
                 and "actor: 张三 (id=qq:1)" in text
-                and "target_actor: 天为 (id=qq:40004)" in text
+                and "target: 天为 (id=qq:40004)" in text
+                and "mentions:\n  - 天为 (id=qq:40004)" in text
                 and "【张三】这是群友之间的讨论" in text
-                and '"actor_display_name":"天为"' in text
-                and '"actor_id":"qq:40004"' in text
-                and '"attachment_count":2' in text
-                and '"conversation_id":"group-1"' in text
-                and '"conversation_kind":"group"' in text
-                and '"excerpt":"今晚八点开黑"' in text
-                and '"message_id":"qq-message-previous"' in text
-                and f'"timestamp":{_ts(2026, 7, 29, 11, 30)}' in text
-                and '"forward_references":[{' in text
+                and 'message_id: "qq-message-previous"' in text
+                and "quoted_text:\n    今晚八点开黑" in text
+                and "reply_to:\n  message_id:" in text
+                and "  mentions:\n    - assistant" in text
+                and "time: 2026-07-29 周三 11:30" in text
+                and "forwards: [{" in text
                 and '"source_part_id":"group-observed-1:2:forward"' in text
                 and '"text":"转发节点正文"' in text
+                and "mode: observed" in text
                 for text in projected
             ),
             projected,
         )
         self.assertTrue(
             any(
-                "message.user" in text
-                and "actor: 李四 (id=qq:2)" in text
-                and "target_actor: assistant" in text
-                and "【李四】你怎么看?" in text
-                and '"mentioned_actors":[{"actor_id":"qq:40004","display_name":"天为"}]' in text
+                "actor: 李四 (id=qq:2)" in text
+                and "target: assistant" in text
+                and "【李四】你怎么看？" in text
+                and "mentions:\n  - assistant\n  - 天为 (id=qq:40004)" in text
                 for text in projected
             ),
             projected,
@@ -4373,6 +4375,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "conversation_kind": "group",
                         "conversation_id": "group-1",
                         "attachment_count": 2,
+                        "mentions": [
+                            {
+                                "actor_id": "assistant",
+                                "display_name": "",
+                                "is_assistant": True,
+                            }
+                        ],
                     },
                 }
             },
@@ -4390,6 +4399,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "conversation_kind": "group",
                 "conversation_id": "group-1",
                 "attachment_count": 2,
+                "mentions": [
+                    {
+                        "actor_id": "assistant",
+                        "display_name": "",
+                        "is_assistant": True,
+                    }
+                ],
             },
         )
 
@@ -5922,71 +5938,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("observed_bytes: 27461517", projected_text)
         self.assertIn("limit_bytes: 20971520", projected_text)
 
-    def test_task_event_bridge_records_safe_explicit_timeline_event(self) -> None:
-        task = {
-            "task_id": "task::abc",
-            "profile_user_id": "master",
-            "session_id": "qq_group_1",
-            "status": "completed",
-            "normalized_goal": "整理 F:\\Private\\report.docx 并交付。",
-            "artifacts": [{"id": "gen_001", "storage_relpath": "private/output.docx"}],
-            "updated_at": 120,
-        }
-        event = {
-            "event_id": "task_event::done",
-            "event_type": "worker_completed",
-            "from_actor": "document_agent",
-            "priority": "high",
-            "requires_user": False,
-            "message": "任务完成，token=private-value，文件在 C:\\Private\\output.docx。",
-            "payload": {
-                "handoff": {
-                    "summary": "终稿已生成。",
-                    "artifacts": [{"id": "gen_001"}],
-                }
-            },
-            "created_at": 120,
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = MemcoreManager(
-                backend="memcore",
-                storage_path=Path(temp_dir) / "memcore_v01.db",
-                visible_scope="conversation",
-                enable_flavor=True,
-                shadow_compare=False,
-                llm=_FakeLLM(),
-                embedding_provider=_FakeEmbeddingProvider(),
-            )
-            try:
-                result = manager.record_task_event(task=task, event=event, character_pack_id="akane_v1")
-                stored = manager._store.get_record_by_source_id(result["source_id"])
-                projection = manager.build_context_projection(
-                    provider_profile="openai_chat",
-                    profile_user_id="master",
-                    session_id="qq_group_1",
-                    character_pack_id="akane_v1",
-                )
-            finally:
-                manager.close()
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(stored["kind"], "event.task.worker_completed")
-        self.assertEqual(stored["payload"]["source"], "task_workspace")
-        self.assertEqual(stored["payload"]["task_id"], "task::abc")
-        self.assertEqual(stored["payload"]["artifacts"], "gen_001")
-        self.assertEqual(stored["retrieval_policy"], "explicit")
-        self.assertEqual(stored["retrieval_visibility"], "explicit")
-        self.assertNotIn("private-value", str(stored))
-        self.assertNotIn("F:\\Private", str(stored))
-        self.assertNotIn("C:\\Private", str(stored))
-        self.assertNotIn("storage_relpath", str(stored))
-        projected_text = str(projection["payloads"][0]["content"])
-        self.assertEqual(projected_text.count("source: task_workspace"), 1)
-        self.assertEqual(projected_text.count("task_id: task::abc"), 1)
-        self.assertNotIn("content:", projected_text)
-        self.assertNotIn("data:", projected_text)
-
     def test_manager_does_not_expose_v1_prompt_context_facade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -7034,7 +6985,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         recording_engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         recording_engine._record_tool_result_artifacts_in_task_workspace = lambda **_kwargs: ([], "")
 
-        _, shaped, _ = recording_engine._record_tool_round_result(
+        _, shaped = recording_engine._record_tool_round_result(
             tool_call={"type": "retrieve_memory"},
             tool_result=tool_result,
             tool_results=[],
@@ -8179,7 +8130,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         enabled_modules = {
             PromptModule.EXTRA_CONTEXT,
             PromptModule.CURRENT_VISUAL_STATE,
-            PromptModule.PENDING_GIFTS,
             PromptModule.PERSONA,
         }
         care_values: list[bool] = []
@@ -8193,34 +8143,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine._get_prompt_profile_registry = lambda: SimpleNamespace(
             resolve=lambda _context, *, care_enabled: care_values.append(bool(care_enabled)) or profile
         )
-        task_index_reads: list[dict[str, object]] = []
         attachment_index_reads: list[dict[str, object]] = []
         generated_index_reads: list[bool] = []
         engine._get_generated_file_service = lambda: generated_index_reads.append(True)
-        engine._get_task_workspace_service = lambda: SimpleNamespace(
-            activity_prompt_context_lifecycle=lambda: "event_backed",
-            build_activity_prompt_context=lambda **kwargs: (
-                task_index_reads.append(dict(kwargs)) or "TASK WORKSPACE CONTEXT"
-            ),
-        )
         engine._get_attachment_inbox_service = lambda: SimpleNamespace(
             activity_prompt_context_lifecycle=lambda: "event_backed",
             build_activity_prompt_context=lambda **kwargs: (
                 attachment_index_reads.append(dict(kwargs)) or "ATTACHMENT FOCUS CONTEXT"
             ),
         )
-        engine.gift_service = SimpleNamespace(
-            build_pending_prompt_context=lambda **_kwargs: "PENDING GIFT CONTEXT",
-            resolve_focus_asset=lambda **_kwargs: None,
-        )
-        engine._get_persona_card_service = lambda: SimpleNamespace(
-            build_prompt_context=lambda **_kwargs: {
-                "system_context": "PERSONA SYSTEM",
-                "reference_context": "PERSONA REFERENCE",
-                "active_id": "persona-1",
-            }
-        )
-        engine._merge_prompt_persona_contexts = lambda _character, persona: dict(persona)
         engine._build_memory_relationship_context = lambda **_kwargs: "RELATIONSHIP CONTEXT"
         engine._build_current_visual_context = lambda **_kwargs: "CURRENT VISUAL CONTEXT"
         engine._build_extra_context_audit_sections = lambda candidates: [
@@ -8249,28 +8180,25 @@ class MemcoreIntegrationTests(unittest.TestCase):
         captured = engine.prompt_builder.kwargs
         self.assertEqual(care_values, [True])
         self.assertIn("RELATIONSHIP CONTEXT", captured["extra_context"])
-        self.assertNotIn("TASK WORKSPACE CONTEXT", captured["extra_context"])
         self.assertNotIn("ATTACHMENT FOCUS CONTEXT", captured["extra_context"])
         self.assertNotIn("PENDING GIFT CONTEXT", captured["extra_context"])
         self.assertNotIn("TURN CONTEXT", captured["extra_context"])
         self.assertEqual(
             captured["volatile_extra_context"],
-            "PENDING GIFT CONTEXT\n\nTURN CONTEXT",
+            "TURN CONTEXT",
         )
-        self.assertNotIn("TASK WORKSPACE CONTEXT", captured["volatile_extra_context"])
         self.assertNotIn("ATTACHMENT FOCUS CONTEXT", captured["volatile_extra_context"])
-        self.assertEqual(task_index_reads, [])
         self.assertEqual(attachment_index_reads, [])
         self.assertEqual(generated_index_reads, [])
         self.assertEqual(
             result["prompt_context_lifecycle"],
             {
                 "event_timeline_authoritative": True,
-                "skipped_event_backed": ["task_workspace", "attachment_focus"],
+                "skipped_event_backed": ["attachment_focus"],
             },
         )
-        self.assertEqual(captured["persona_system_context"], "PERSONA SYSTEM")
-        self.assertEqual(captured["persona_reference_context"], "PERSONA REFERENCE")
+        self.assertEqual(captured["persona_system_context"], "")
+        self.assertEqual(captured["persona_reference_context"], "")
         self.assertEqual(captured["current_visual_context"], "CURRENT VISUAL CONTEXT")
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
 
@@ -8847,7 +8775,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         },
                         tool_result,
                         evidence,
-                        "",
                     )
                 ],
                 profile_user_id="u1",
@@ -8898,7 +8825,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     {"type": "web_search", TOOL_INVOCATION_ID_FIELD: "call_search_1"},
                     result,
                     result.followup_context,
-                    "",
                 )
             ],
             profile_user_id="u1",
@@ -9084,7 +9010,7 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
     def _record(
         self,
         manager: Any,
-        items: list[tuple[dict[str, Any], ToolExecutionResult, str, str]],
+        items: list[tuple[dict[str, Any], ToolExecutionResult, str]],
         *,
         call_id: str = "call_exec_1",
     ) -> list[dict[str, object]]:
@@ -9108,7 +9034,7 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
         *,
         tool_call: dict[str, Any] | None = None,
         shaped: str = "",
-    ) -> tuple[dict[str, Any], ToolExecutionResult, str, str]:
+    ) -> tuple[dict[str, Any], ToolExecutionResult, str]:
         call = tool_call or {
             "type": "exec_run",
             "command": "echo hi",
@@ -9118,7 +9044,6 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
             call,
             tool_result,
             shaped or str(tool_result.followup_context or ""),
-            "",
         )
 
     def test_completed_exec_run_enters_batch_with_real_result(self) -> None:

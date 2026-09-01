@@ -90,7 +90,6 @@ const BASE_BGM_VOLUME = 0.34;
 const DUCKED_BGM_VOLUME = 0.12;
 const THINK_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 const MIN_TTS_SEGMENT_CHARS = 8;
-const REMINDER_POLL_INTERVAL_MS = 15_000;
 const SESSION_SYNC_INITIAL_DELAY_MS = 280;
 const SESSION_SYNC_RETRY_DELAY_MS = 420;
 const IDENTITY_STORAGE_KEY = "gal_shell.identity.v1";
@@ -163,9 +162,6 @@ const state = {
   voicePlaybackActive: false,
   voiceStreamComplete: false,
   voiceRequestControllers: [],
-  reminderPollInFlight: false,
-  pendingReminderNotifications: [],
-  flushingReminderNotifications: false,
   gifts: [],
   giftInventory: {
     items: [],
@@ -2488,30 +2484,6 @@ async function handleThinkStreamEvent(event, streamState = null) {
     return event?.payload || null;
   }
 
-  if (eventType === "reminder_set") {
-    const dueLabel = String(event?.due_label || "").trim();
-    const content = String(event?.content || "").trim();
-    if (dueLabel && content) {
-      debugOutputEl.textContent = `提醒已设置：${dueLabel} -> ${content}`;
-    }
-    return null;
-  }
-
-  if (eventType === "reminder_list") {
-    const items = Array.isArray(event?.items) ? event.items : [];
-    debugOutputEl.textContent = JSON.stringify({ type: "reminder_list", items }, null, 2);
-    return null;
-  }
-
-  if (eventType === "reminder_cancelled") {
-    const dueLabel = String(event?.due_label || "").trim();
-    const content = String(event?.content || "").trim();
-    if (content) {
-      debugOutputEl.textContent = `提醒已取消：${dueLabel ? `${dueLabel} -> ` : ""}${content}`;
-    }
-    return null;
-  }
-
   if (eventType === "inventory_snapshot") {
     const items = Array.isArray(event?.items) ? event.items : [];
     const scope = String(event?.scope || "").trim() || "pending_recent";
@@ -2619,83 +2591,6 @@ async function handleThinkStreamEvent(event, streamState = null) {
   }
 
   return null;
-}
-
-async function showReminderNotification(payload) {
-  if (!payload || typeof payload !== "object") {
-    return;
-  }
-
-  await fetchManifest();
-  setStatus("final");
-  debugOutputEl.textContent = JSON.stringify(
-    {
-      reminder_id: payload.reminder_id || "",
-      due_ts: payload.due_ts || 0,
-      source: payload.source || "reminder",
-    },
-    null,
-    2
-  );
-  await applyPayload(payload, { playVoice: true, skipTypewrite: false, recordHistory: true });
-}
-
-function enqueueReminderNotifications(notifications) {
-  if (!Array.isArray(notifications) || !notifications.length) {
-    return;
-  }
-  for (const item of notifications) {
-    if (item && typeof item === "object") {
-      state.pendingReminderNotifications.push(item);
-    }
-  }
-  void flushReminderNotifications();
-}
-
-async function flushReminderNotifications() {
-  if (state.flushingReminderNotifications || state.sending) {
-    return;
-  }
-
-  state.flushingReminderNotifications = true;
-  try {
-    while (!state.sending && state.pendingReminderNotifications.length) {
-      const payload = state.pendingReminderNotifications.shift();
-      await showReminderNotification(payload);
-      await wait(120);
-    }
-  } finally {
-    state.flushingReminderNotifications = false;
-  }
-}
-
-async function pollDueReminders() {
-  if (state.reminderPollInFlight) {
-    return;
-  }
-
-  state.reminderPollInFlight = true;
-  try {
-    const response = await fetch(
-      `/reminders/due?user_id=${encodeURIComponent(getCurrentSessionId())}&real_user_id=${encodeURIComponent(getCurrentProfileUserId())}&t=${Date.now()}`,
-      {
-        cache: "no-store",
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const payload = await response.json();
-    const notifications = Array.isArray(payload?.notifications) ? payload.notifications : [];
-    if (notifications.length) {
-      enqueueReminderNotifications(notifications);
-    }
-  } catch (error) {
-    console.warn("poll reminders failed", error);
-  } finally {
-    state.reminderPollInFlight = false;
-  }
 }
 
 function unlockAudio() {
@@ -2858,7 +2753,6 @@ async function sendMessage(message) {
       clearTimeout(timeoutId);
     }
     setSendingState(false);
-    void flushReminderNotifications();
   }
 }
 
@@ -2874,7 +2768,6 @@ async function resetScene() {
     state.currentBackgroundPath = "";
     state.currentSpritePath = "";
     state.currentTrackPath = "";
-    state.pendingReminderNotifications = [];
     bgmPlayerEl.pause();
     bgmPlayerEl.removeAttribute("src");
     clearPersistedShellState();
@@ -2922,7 +2815,6 @@ async function applySessionBundle(bundle) {
 
   resetStreamedDialogueText();
   setDialogueCodeSnippet("");
-  state.pendingReminderNotifications = [];
 
   const latestPayload =
     bundle?.latest_final_json && typeof bundle.latest_final_json === "object"
@@ -3260,9 +3152,5 @@ void (async () => {
       modelServiceSettingsEl?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
   }
-  setInterval(() => {
-    void pollDueReminders();
-  }, REMINDER_POLL_INTERVAL_MS);
   await initializeScene();
-  void pollDueReminders();
 })();

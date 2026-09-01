@@ -16,6 +16,7 @@ from capcore import (
     prepare_invocation as capcore_prepare_invocation,
 )
 from ..capcore_runtime import (
+    authorization_profile_user_id as capcore_authorization_profile_user_id,
     approval_policy_for_capability as capcore_approval_policy_for_capability,
     approval_required_event as capcore_approval_required_event,
     invocation_context_from_execution as capcore_invocation_context_from_execution,
@@ -245,7 +246,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             invocation_context,
             capcore_approval_policy_for_capability(
                 base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
-                profile_user_id=context.profile_user_id,
+                profile_user_id=capcore_authorization_profile_user_id(context),
                 capability_id=self.tool_type,
             ),
         )

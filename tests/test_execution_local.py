@@ -26,7 +26,9 @@ from companion_v01.execution_specs import (
 
 def _python_command(code: str) -> str:
     if os.name == "nt":
-        return subprocess.list2cmdline([sys.executable, "-c", code])
+        executable = str(sys.executable).replace("'", "''")
+        script = str(code).replace("'", "''")
+        return f"& '{executable}' -c '{script}'"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -36,12 +38,12 @@ def _sleep_command(seconds: int) -> str:
 
 def _echo_env(name: str) -> str:
     if os.name == "nt":
-        return f"echo %{name}%"
+        return f"Write-Output $env:{name}"
     return f"echo ${name}"
 
 
 def _current_dir_command() -> str:
-    return "cd" if os.name == "nt" else "pwd"
+    return "(Get-Location).Path" if os.name == "nt" else "pwd"
 
 
 class TrustedLocalExecutorTests(unittest.TestCase):
@@ -76,6 +78,64 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command="exit 2", initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_FAILED)
         self.assertEqual(start.exit_code, 2)
+
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[exit code: 2", mapped.model_feedback)
+        self.assertIn("reason=execution_failed", mapped.model_feedback)
+        self.assertNotIn("不等于整个任务失败", mapped.model_feedback)
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell default-shell regression")
+    def test_windows_default_shell_is_the_disclosed_powershell(self) -> None:
+        executor = self._executor()
+        expected = "pwsh" if Path(executor.windows_shell_path).name.casefold() == "pwsh.exe" else "powershell.exe"
+
+        environment = executor.prompt_environment()
+        start = executor.run(
+            owner=self.owner,
+            command=(
+                "$marker='powershell-default'; "
+                "Set-Content -LiteralPath .\\default-shell.txt -Value $marker -Encoding UTF8; "
+                "Write-Output $marker"
+            ),
+            timeout_seconds=10,
+            initial_wait_seconds=10,
+        )
+
+        self.assertEqual(environment["command_shell"], expected)
+        self.assertEqual(environment["preferred_script_shell"], expected)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertEqual(start.exit_code, 0)
+        self.assertIn("powershell-default", start.stdout)
+        self.assertEqual((self.workspace / "default-shell.txt").read_text(encoding="utf-8-sig").strip(), "powershell-default")
+
+    @unittest.skipUnless(os.name == "nt", "Windows explicit cmd compatibility")
+    def test_windows_cmd_remains_explicitly_available(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command='cmd.exe /d /c "echo cmd-explicit"', initial_wait_seconds=5)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("cmd-explicit", start.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows quoted executable regression")
+    def test_windows_quoted_executable_path_uses_powershell_call_operator(self) -> None:
+        executor = self._executor()
+        code = "from pathlib import Path; Path('quoted-executable.txt').write_text('ok', encoding='utf-8')"
+        command = subprocess.list2cmdline([sys.executable, "-c", code])
+
+        start = executor.run(owner=self.owner, command=command, timeout_seconds=10, initial_wait_seconds=10)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertEqual((self.workspace / "quoted-executable.txt").read_text(encoding="utf-8"), "ok")
+
+    @unittest.skipUnless(os.name == "nt", "Windows quoted string semantics regression")
+    def test_windows_leading_quoted_text_remains_a_value_expression(self) -> None:
+        executor = self._executor()
+
+        start = executor.run(owner=self.owner, command='"plain text"', initial_wait_seconds=5)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("plain text", start.stdout)
 
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell quoting regression")
     def test_powershell_inline_program_is_encoded_and_completes(self) -> None:
@@ -147,6 +207,11 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_RUNNING)
         self.assertTrue(start.next_cursor)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[running:", mapped.model_feedback)
+        self.assertIn("[next: exec_status", mapped.model_feedback)
         status = executor.status(owner=self.owner, run_id=start.run_id)
         self.assertEqual(status.status, EXEC_STATUS_RUNNING)
         executor.cancel(owner=self.owner, run_id=start.run_id)
@@ -171,6 +236,11 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         )
         self.assertEqual(start.status, EXEC_STATUS_TIMED_OUT)
         self.assertIn("execution_timeout", start.reason)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[timed out;", mapped.model_feedback)
+        self.assertIn("process_group=terminated", mapped.model_feedback)
 
     def test_cancel_after_terminal_is_already_ended(self) -> None:
         executor = self._executor()
@@ -507,7 +577,9 @@ class TrustedLocalExecutorTests(unittest.TestCase):
                 return super()._read_pipe(run_id, owner, pipe, stream)
 
         executor = DelayedReaderExecutor(workspace_root=self.workspace, run_log_dir=self.run_log_dir)
-        start = executor.run(owner=self.owner, command="echo drained", initial_wait_seconds=1)
+        # A cold PowerShell 7 process can spend close to one second loading on
+        # Windows; this regression is about reader settlement, not startup.
+        start = executor.run(owner=self.owner, command="echo drained", initial_wait_seconds=3)
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIn("drained", start.stdout)
         self.assertIn("drained", (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8"))

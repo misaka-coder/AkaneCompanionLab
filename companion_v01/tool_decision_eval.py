@@ -12,9 +12,7 @@ from .llm_runtime import LLMRuntime
 from .tool_runtime import (
     BaseToolHandler,
     BrowseMemoryToolHandler,
-    CheckInventoryToolHandler,
     InspectMediaInfoToolHandler,
-    ListRemindersToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
@@ -222,40 +220,8 @@ DEFAULT_MEMORY_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
 )
 
 
-# 6b put list_reminders / check_inventory / inspect_media_info into the default
-# native allowlist but never gave them eval coverage. These cases close that gap
-# so the `all` toolset validates the full set of tools that fire under native-first.
+# Read-tier cases validate the non-memory tools that fire under native-first.
 DEFAULT_READ_TIER_EVAL_CASES: tuple[ToolDecisionEvalCase, ...] = (
-    ToolDecisionEvalCase(
-        eval_id="list_pending_reminders",
-        user_prompt="看看我现在有哪些提醒？",
-        expect_tool=True,
-        expected_tool_name="list_reminders",
-        expected_arguments={"status": "pending"},
-        category="reminder_list",
-    ),
-    ToolDecisionEvalCase(
-        eval_id="casual_no_list_reminders",
-        user_prompt="今天天气真不错，心情也好。",
-        expect_tool=False,
-        expected_tool_name="list_reminders",
-        category="casual",
-    ),
-    ToolDecisionEvalCase(
-        eval_id="check_pending_gifts",
-        user_prompt="我手边还有哪些没拆的礼物？",
-        expect_tool=True,
-        expected_tool_name="check_inventory",
-        expected_arguments={"scope": "pending_recent"},
-        category="inventory_check",
-    ),
-    ToolDecisionEvalCase(
-        eval_id="thanks_no_check_inventory",
-        user_prompt="谢谢你一直陪着我。",
-        expect_tool=False,
-        expected_tool_name="check_inventory",
-        category="casual",
-    ),
     ToolDecisionEvalCase(
         eval_id="inspect_audio_specs",
         user_prompt="看看 audio_001 这段音频多长、码率多少。",
@@ -637,28 +603,6 @@ def build_dry_run_memory_eval_engine() -> Any:
     return _DryRunToolDecisionEngine(_build_dry_run_memory_handlers())
 
 
-class _StubReminderStore:
-    """Minimal reminder store for dry-run eval: canned list, no DB."""
-
-    def list_reminders(self, *, profile_user_id: str, session_id: str, status: str, limit: int) -> list[dict[str, Any]]:
-        reminders = [
-            {"reminder_id": "rem_dry_1", "content": "晚上八点给妈妈打电话", "due_ts": 0, "raw_time_text": "晚上八点"},
-        ]
-        return reminders[: max(1, int(limit or 5))]
-
-
-class _StubGiftInventoryService:
-    """Minimal gift service for dry-run eval: canned inventory, no store."""
-
-    def list_inventory(self, *, profile_user_id: str, session_id: str, scope: str, limit: int) -> dict[str, Any]:
-        return {
-            "scope": str(scope or "pending_recent"),
-            "items": [{"summary": "一束向日葵"}],
-            "total_count": 1,
-            "overflow_count": 0,
-        }
-
-
 class _StubMediaInfoService:
     """Minimal generated-file service for dry-run eval: canned specs, no disk."""
 
@@ -671,15 +615,13 @@ class _StubMediaInfoService:
 
 def _build_dry_run_read_tier_handlers() -> dict[str, Any]:
     return {
-        "list_reminders": ListRemindersToolHandler(store=_StubReminderStore()),
-        "check_inventory": CheckInventoryToolHandler(gift_service=_StubGiftInventoryService()),
         "inspect_media_info": InspectMediaInfoToolHandler(generated_file_service=_StubMediaInfoService()),
     }
 
 
 def build_dry_run_eval_engine() -> Any:
     """Combined dry-run engine: the full default native allowlist (web_search +
-    read-only memory tools + reminder/inventory/media read tools)."""
+    read-only memory tools + inventory/media read tools)."""
     handlers: dict[str, Any] = {"web_search": _DryRunWebSearchHandler()}
     handlers.update(_build_dry_run_memory_handlers())
     handlers.update(_build_dry_run_read_tier_handlers())
@@ -763,14 +705,6 @@ def _build_live_tool_policy_lines(tool_names: Sequence[str]) -> list[str]:
         )
     if {"retrieve_memory", "browse_memory", "read_memory_timeline", "open_memory"} & names:
         lines.append("当前上下文足以作答时直接回复；需要未显示的旧事实、原始时间线或记忆来源时使用相应记忆工具。")
-    if "list_reminders" in names:
-        lines.append(
-            "list_reminders 只用于用户想查看自己当前有哪些提醒；普通闲聊或设置新提醒时不要调用。"
-        )
-    if "check_inventory" in names:
-        lines.append(
-            "check_inventory 只用于用户问手边或礼物箱里有哪些礼物；与礼物无关的闲聊不要调用。"
-        )
     if "inspect_media_info" in names:
         lines.append(
             "inspect_media_info 只用于用户问某个已有音视频/文件的时长、编码、采样率、码率、分辨率、帧率等真实规格；泛泛的常识问题不要调用。"

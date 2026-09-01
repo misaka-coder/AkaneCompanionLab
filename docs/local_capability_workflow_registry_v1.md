@@ -371,11 +371,9 @@ Files:
     bytes, and imports the generated image through
     `import_generated_portrait_image` as a non-overwriting `<emotion>_cutout`
     portrait.
-- `desktop_pet_next/src/control-center/action-surface-contract.js`
-  - Classifies provider panel open as client-handled and save/health-check as
-    bridged backend-route actions.
-  - Classifies workflow panel open as client-handled and save/validate as
-    bridged backend-route actions.
+- `desktop_pet_next/src/control-center/action-router.js` and V2 components
+  - Keep panel expansion as local presentation state.
+  - Route provider and workflow mutations only through real backend actions.
 - `desktop_pet_next/scripts/control-center-runtime-probe.mjs`
   - Verifies optional catalog enrichment, catalog failure degradation, and
     no raw capability id leakage in module text, provider summaries, or
@@ -2972,7 +2970,7 @@ Candidate implementation:
 companion_v01/local_capability_catalog.py
 companion_v01/routes/capabilities.py
 tests/test_capability_catalog.py
-desktop_pet_next/src/control-center/data-adapter.js patch later
+desktop_pet_next/src/control-center/data-sources.js runtime projection
 ```
 
 Initial catalog can include:

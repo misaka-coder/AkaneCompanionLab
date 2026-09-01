@@ -28,6 +28,11 @@ from .model_service_config import (
 )
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_host import PluginHost
+from .extension_management import (
+    ExtensionManagementService,
+    PLUGIN_SELECTION_STATE_FILENAME,
+    PluginSelectionStore,
+)
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_reasoning import EnginePluginReasoningPort
@@ -83,6 +88,7 @@ class BotRuntime:
     settings_override_store: SettingsOverrideStore
     desktop_satellite_service: DesktopSatelliteService
     plugin_host: PluginHost
+    extension_management_service: ExtensionManagementService
     plugin_capability_source: PluginCapabilityToolBridge
     engine: AkaneMemoryEngine
     settings: BotSettingsView
@@ -265,150 +271,6 @@ class BotRuntime:
         }
         return dict(self._stop_status)
 
-    def install_qq_task_completion_notifications(self) -> None:
-        if self.qq_gateway is None:
-            return
-        task_worker = getattr(self.engine, "task_worker_service", None)
-        if task_worker is None:
-            return
-        task_worker.on_task_completed = self._handle_qq_task_completion
-
-    def _handle_qq_task_completion(
-        self,
-        *,
-        task_id: str,
-        profile_user_id: str,
-        session_id: str,
-        task: dict[str, Any],
-        handoff: dict[str, Any],
-    ) -> None:
-        if self.qq_gateway is None:
-            return
-        if not bool(getattr(self.config_module, "QQ_BACKGROUND_COMPLETION_NOTIFY_ENABLED", True)):
-            return
-        task_service = getattr(self.engine, "task_workspace_service", None)
-        current_task = task_service.get_task(task_id) if task_service is not None else task
-        metadata = dict((current_task or task).get("metadata") or {})
-        delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
-        if str(delivery.get("client") or "").strip() != "qq_text":
-            return
-        if delivery.get("completed_notified_at"):
-            return
-        context = self.qq_gateway.context_from_delivery_context(delivery)
-        if context is None:
-            return
-
-        delivery["completed_notified_at"] = int(time.time())
-        metadata["delivery"] = delivery
-        if task_service is not None:
-            task_service.update_task(task_id=task_id, metadata=metadata, timestamp=int(time.time()))
-
-        artifact_targets = self._qq_completion_artifact_targets(current_task or task, handoff)
-        should_send = str((handoff or {}).get("next_action") or "").strip().lower() == "send_to_user"
-        if should_send and artifact_targets:
-            sent_count = self._send_qq_completion_files(
-                context=context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                targets=artifact_targets,
-            )
-            if sent_count > 0:
-                self.qq_gateway.send_reply(context, "做好啦，我把结果发给你了。")
-                return
-
-        labels = self._qq_completion_artifact_labels(current_task or task, handoff)
-        if labels:
-            self.qq_gateway.send_reply(
-                context,
-                "做好啦。现在有这些结果可以发给你："
-                + "、".join(labels[:6])
-                + "。你要哪份就直接说“发给我”或告诉我编号。",
-            )
-        else:
-            self.qq_gateway.send_reply(context, "做好啦，后台任务已经处理完了。")
-
-    @staticmethod
-    def _qq_completion_artifact_targets(task: dict[str, Any], handoff: dict[str, Any]) -> list[str]:
-        targets: list[str] = []
-        raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
-        if not isinstance(raw_items, list) or not raw_items:
-            raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
-        for item in raw_items:
-            if not isinstance(item, dict):
-                continue
-            for key in ("generated_handle", "generated_id", "id", "handle"):
-                value = str(item.get(key) or "").strip()
-                if value and value not in targets:
-                    targets.append(value)
-                    break
-        return targets[:8]
-
-    @staticmethod
-    def _qq_completion_artifact_labels(task: dict[str, Any], handoff: dict[str, Any]) -> list[str]:
-        labels: list[str] = []
-        raw_items = (handoff or {}).get("artifacts") if isinstance(handoff, dict) else []
-        if not isinstance(raw_items, list) or not raw_items:
-            raw_items = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
-        for item in raw_items:
-            if isinstance(item, dict):
-                artifact_id = str(item.get("id") or item.get("generated_handle") or item.get("handle") or "").strip()
-                title = str(item.get("title") or "").strip()
-                kind = str(item.get("kind") or "").strip()
-                label = artifact_id or title
-                if title and artifact_id and title != artifact_id:
-                    label = f"{artifact_id}({title})"
-                if kind and label:
-                    label = f"{label}/{kind}"
-            else:
-                label = str(item or "").strip()
-            if label and label not in labels:
-                labels.append(label[:160])
-        return labels[:8]
-
-    def _send_qq_completion_files(
-        self,
-        *,
-        context: Any,
-        profile_user_id: str,
-        session_id: str,
-        targets: list[str],
-    ) -> int:
-        if self.qq_gateway is None:
-            return 0
-        generated_file_service = self.engine._get_generated_file_service()
-        if generated_file_service is None:
-            return 0
-        result = generated_file_service.send_file(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            targets=targets,
-            timestamp=int(time.time()),
-        )
-        if not bool(result.get("ok")):
-            return 0
-        sent_count = 0
-        for file_ref in list(result.get("files") or []):
-            if not isinstance(file_ref, dict):
-                continue
-            send_result = self.qq_gateway.send_file(
-                context,
-                file_path=str(file_ref.get("absolute_path") or ""),
-                name=str(file_ref.get("name") or file_ref.get("title") or ""),
-            )
-            generated_id = str(file_ref.get("generated_id") or "").strip()
-            if generated_id:
-                self.engine.mark_generated_file_delivery(
-                    profile_user_id=profile_user_id,
-                    session_id=session_id,
-                    generated_id=generated_id,
-                    delivery_status="sent" if send_result.get("ok") else "failed",
-                    timestamp=int(time.time()),
-                )
-            if send_result.get("ok"):
-                sent_count += 1
-        return sent_count
-
-
 class BotRuntimeFactory:
     """Construct one BotRuntime from the current process defaults."""
 
@@ -521,9 +383,18 @@ class BotRuntimeFactory:
                 bot_id=effective_bot_config.bot_id,
                 memory_space_id=effective_bot_config.memory_space_id,
             )
+            plugin_selection_store = PluginSelectionStore(
+                runtime_layout.config_dir / PLUGIN_SELECTION_STATE_FILENAME,
+                defaults=instance_context.plugins,
+                instance_id=instance_context.instance_id,
+            )
             plugin_host = PluginHost(
-                instance_context.plugins,
+                plugin_selection_store.load(),
                 contribution_policy=TrustedStatefulPluginContributionPolicy(),
+            )
+            extension_management_service = ExtensionManagementService(
+                plugin_host=plugin_host,
+                selection_store=plugin_selection_store,
             )
             plugin_capability_source = PluginCapabilityToolBridge(
                 plugin_host,
@@ -536,6 +407,7 @@ class BotRuntimeFactory:
                 instance_context=instance_context,
                 runtime_layout=runtime_layout,
                 plugin_capability_source=plugin_capability_source,
+                extension_management_service=extension_management_service,
                 stable_system_blocks_provider=plugin_host.stable_system_prompt_blocks,
                 qq_channel_config=deployment_security.qq,
                 capability_offer_source=satellite_offer_source,
@@ -583,6 +455,7 @@ class BotRuntimeFactory:
                 settings_override_store=settings_store,
                 desktop_satellite_service=satellite_service,
                 plugin_host=plugin_host,
+                extension_management_service=extension_management_service,
                 plugin_capability_source=plugin_capability_source,
                 engine=engine,
                 settings=settings,
@@ -645,7 +518,6 @@ class BotRuntimeFactory:
                 ),
                 runtime_metrics=runtime.runtime_metrics,
             )
-            runtime.install_qq_task_completion_notifications()
             return runtime
         except Exception:
             if engine is not None:

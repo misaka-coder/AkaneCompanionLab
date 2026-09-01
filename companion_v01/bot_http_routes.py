@@ -16,7 +16,6 @@ from .routes.gifts import build_gifts_router
 from .routes.model_services import build_model_services_router
 from .routes.petdesk import build_petdesk_router
 from .routes.plugins import build_plugins_router
-from .routes.reminders import build_reminders_router
 from .routes.sessions import build_sessions_router
 from .routes.system import build_system_router
 from .routes.think import build_think_router
@@ -151,13 +150,10 @@ def build_bot_runtime_routers(
             capability_config_base_dir=layout.users_data_dir,
             workflow_runner=ComfyUiWorkflowRunner(config_base_dir=layout.users_data_dir),
         ),
-        build_plugins_router(plugin_host=runtime.plugin_host, admin_auth=runtime.admin_write_auth),
-        build_reminders_router(
-            engine=engine,
-            runtime_metrics=runtime_metrics,
-            log_event=log_event,
-            resolve_identity_from_query=resolve_identity_from_query,
-            resolve_identity_from_payload=resolve_identity_from_payload,
+        build_plugins_router(
+            plugin_host=runtime.plugin_host,
+            extension_management_service=runtime.extension_management_service,
+            admin_auth=runtime.admin_write_auth,
         ),
     )
 

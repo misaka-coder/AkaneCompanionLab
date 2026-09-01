@@ -27,30 +27,20 @@ from .capability_registry import (
     APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     BROWSER_PAGE_TOOL_SPEC,
     BROWSE_MEMORY_TOOL_SPEC,
-    CALL_NPC_TOOL_SPEC,
-    CANCEL_REMINDER_TOOL_SPEC,
-    CHECK_INVENTORY_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     COMPOSE_FILE_TOOL_SPEC,
     CONVERT_MEDIA_FILE_TOOL_SPEC,
     COVER_SONG_TOOL_SPEC,
     CLEAN_VOICE_TRACK_TOOL_SPEC,
-    DELEGATE_TASK_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
-    FOCUS_WORKSPACE_TOOL_SPEC,
     GENERATE_IMAGE_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
     INSPECT_MEDIA_INFO_TOOL_SPEC,
-    LIST_REMINDERS_TOOL_SPEC,
     LIST_WORKSPACE_TOOL_SPEC,
     LOAD_CHARACTER_CONTEXT_TOOL_SPEC,
     LOAD_MATERIAL_TOOL_SPEC,
-    MANAGE_ARTIFACT_TOOL_SPEC,
     MANAGE_GENERATED_FILE_TOOL_SPEC,
-    MANAGE_GIFT_TOOL_SPEC,
-    MANAGE_PERSONA_TOOL_SPEC,
-    MANAGE_TASK_WORKSPACE_TOOL_SPEC,
     OPEN_BROWSER_TOOL_SPEC,
     OPEN_MUSIC_SEARCH_TOOL_SPEC,
     PREPARE_VOICE_DATASET_TOOL_SPEC,
@@ -67,8 +57,6 @@ from .capability_registry import (
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
     SEPARATE_AUDIO_STEMS_TOOL_SPEC,
-    SET_REMINDER_TOOL_SPEC,
-    SYNC_ATTACHMENT_WORKSPACE_TOOL_SPEC,
     TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
@@ -76,10 +64,8 @@ from .local_capability_config import get_mcp_server_runtime_config
 from .desktop_satellite_specs import desktop_satellite_spec
 from .mcp_stdio_discoverer import McpStdioDiscoveryError, McpToolCaller
 from .anysearch_rest_client import AnySearchRestClient, AnySearchRestError
-from .npc_runtime import GenericNPCRuntime
 from .store import MemoryStore
-from .task_workspace import TaskWorkspaceService
-from .text_utils import normalize_text, resolve_reminder_due_timestamp, timestamp_to_datetime_label
+from .text_utils import normalize_text
 from .workspace_files import WorkspaceFileService
 
 
@@ -106,17 +92,7 @@ from .tool_handlers.memory import (
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
 )
-from .tool_handlers.character_world import (
-    CallNPCToolHandler,
-    CancelReminderToolHandler,
-    CheckInventoryToolHandler,
-    ListRemindersToolHandler,
-    LoadCharacterContextToolHandler,
-    ManageArtifactToolHandler,
-    ManageGiftToolHandler,
-    ManagePersonaToolHandler,
-    SetReminderToolHandler,
-)
+from .tool_handlers.character_world import LoadCharacterContextToolHandler
 
 from .tool_handlers.attachments import (
     ClearAttachmentFocusToolHandler,
@@ -125,12 +101,9 @@ from .tool_handlers.attachments import (
     LoadMaterialToolHandler,
     ReadAttachmentSectionToolHandler,
     RetryAttachmentToolHandler,
-    SyncAttachmentWorkspaceToolHandler,
 )
 from .tool_handlers.workspace import (
-    FocusWorkspaceToolHandler,
     ListWorkspaceToolHandler,
-    ManageTaskWorkspaceToolHandler,
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
 )

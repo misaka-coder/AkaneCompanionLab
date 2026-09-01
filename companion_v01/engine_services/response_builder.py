@@ -322,16 +322,6 @@ def prepare_context(
     memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
     extra_context = str(extra_user_context or "").strip()
     attachment_service = engine._get_attachment_inbox_service()
-    task_workspace_service = engine._get_task_workspace_service()
-    pending_gift_context = (
-        engine.gift_service.build_pending_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=3,
-        )
-        if prompt_profile.includes(PromptModule.PENDING_GIFTS)
-        else ""
-    )
     current_visual_context_payload = engine._resolve_current_visual_payload(
         session_id=session_id,
         current_visual_payload=current_visual_payload,
@@ -367,35 +357,6 @@ def prepare_context(
         and not desktop_pet_character_only
         else ""
     )
-    focused_gift = (
-        engine.gift_service.resolve_focus_asset(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            asset_id="",
-        )
-        if prompt_profile.includes(PromptModule.FOCUSED_GIFT_OBSERVATION)
-        else None
-    )
-    gift_observation_context = (
-        engine.vision_service.build_gift_prompt_context(asset=focused_gift)
-        if engine.vision_service is not None and focused_gift is not None
-        else ""
-    )
-    persona_service = engine._get_persona_card_service()
-    profile_persona_enabled = not (character_pack_persona_enabled and bool(character_pack_id))
-    persona_context = (
-        persona_service.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            visible_limit=5,
-        )
-        if (
-            profile_persona_enabled
-            and persona_service is not None
-            and prompt_profile.includes(PromptModule.PERSONA)
-        )
-        else {"system_context": "", "reference_context": "", "active_id": ""}
-    )
     character_pack_persona_context = (
         engine._build_desktop_pet_character_pack_prompt_context(
             character_pack_id=character_pack_id,
@@ -427,10 +388,7 @@ def prepare_context(
             except Exception as exc:
                 logger.warning("automatic character context loading failed: %s", exc)
                 automatic_character_context = ""
-    persona_context = engine._merge_prompt_persona_contexts(
-        character_pack_persona_context,
-        persona_context,
-    )
+    persona_context = character_pack_persona_context
     visual_observation_sections = [
         text
         for text in [
@@ -451,15 +409,6 @@ def prepare_context(
                 now_ts=now_ts,
             ),
             lifecycle=PromptContextLifecycle.STABLE,
-        ),
-        PromptContextContribution(
-            name="task_workspace",
-            content=lambda: task_workspace_service.build_activity_prompt_context(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            ),
-            lifecycle=_declared_activity_context_lifecycle(task_workspace_service),
-            enabled=bool(task_workspace_service is not None and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)),
         ),
         PromptContextContribution(
             name="attachment_focus",
@@ -484,8 +433,6 @@ def prepare_context(
             content=str(persona_context.get("resource_context") or "").strip(),
             lifecycle=PromptContextLifecycle.STABLE,
         ),
-        PromptContextContribution(name="pending_gifts", content=pending_gift_context),
-        PromptContextContribution(name="gift_observation", content=gift_observation_context),
         PromptContextContribution(
             name="turn_extra_context",
             content=extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",

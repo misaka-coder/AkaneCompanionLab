@@ -18,16 +18,21 @@ import {
 import { bindInstanceStorage, getInstanceStorageItem } from "../instance-storage.js";
 import {
   createControlCenterViewModel,
-  isObservedActionConfirmation
+  isObservedActionConfirmation,
+  observedActionOutcome
 } from "./view-model.js";
 import { modelServiceOperation, runModelServiceBridgeAction } from "./model-service.js";
+import { chatSessionId, createTrailingAsyncRefresh, mergeChatSessions } from "./chat-history.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const OBSERVED_ACTION_IDS = new Set([
   "chat.new",
   "chat.send",
   "chat.stop",
+  "music.previous",
+  "music.next",
   "music.togglePlayback",
+  "music.stop",
   "voice.test",
   "voice.stop",
   "voice.previewPlay",
@@ -50,6 +55,13 @@ const ACTION_CONFIRM_TIMEOUT_MS = 1800;
 const MUSIC_PLAYBACK_CONFIRM_TIMEOUT_MS = 4000;
 const CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS = 4000;
 const VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS = 12000;
+const MEDIA_CONTROL_ACTION_IDS = new Set([
+  "music.previous",
+  "music.next",
+  "music.togglePlayback",
+  "music.stop"
+]);
+let actionOperationSequence = 0;
 
 export function createControlCenterBridge(options = {}) {
   const isTauri = options.isTauri ?? Boolean(window.__TAURI_INTERNALS__);
@@ -60,11 +72,41 @@ export function createControlCenterBridge(options = {}) {
   let runtimeSnapshot = null;
   let disposeRuntimeListener = null;
   let refreshPromise = null;
-  let chatRefreshPromise = null;
+  let chatHistoryLoadPromise = null;
   let chatRefreshTimer = 0;
   let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
   let liveSnapshotError = "";
+  const refreshChatSession = createTrailingAsyncRefresh(async () => {
+    const requestedSessionId = liveChatSessionId();
+    const chatSession = await readChatSessionForRuntime();
+    if (!rawSnapshot) return null;
+    if (!chatSession) {
+      rawSnapshot = {
+        ...rawSnapshot,
+        chatRuntime: {
+          status: "failed",
+          reason: source?.getChatSessionError?.() || "chat-session-unavailable"
+        }
+      };
+      publish();
+      return null;
+    }
+    const latestSessionId = liveChatSessionId();
+    if (requestedSessionId && latestSessionId && requestedSessionId !== latestSessionId) {
+      return null;
+    }
+    if (requestedSessionId && chatSessionId(chatSession) !== requestedSessionId) {
+      return null;
+    }
+    rawSnapshot = {
+      ...rawSnapshot,
+      chatSession: mergeChatSessions(rawSnapshot.chatSession, chatSession),
+      chatRuntime: { status: "available", reason: "" }
+    };
+    publish();
+    return chatSession;
+  });
 
   function publish() {
     if (!rawSnapshot) return;
@@ -90,7 +132,7 @@ export function createControlCenterBridge(options = {}) {
           publish();
           scheduleChatRefresh();
         });
-        await emitMainEvent({ command: "requestSnapshot" });
+        await emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
       } catch (error) {
         disposeRuntimeListener?.();
         disposeRuntimeListener = null;
@@ -121,14 +163,15 @@ export function createControlCenterBridge(options = {}) {
         const reason = source.getFallbackReason?.() || source.fallbackReason || "snapshot_unavailable";
         throw new Error(String(reason));
       }
-      const chatSession = await readChatSessionForRuntime();
       rawSnapshot = {
         ...createControlCenterRuntimeSnapshot(next),
         modelRuntime: modelRuntime || rawSnapshot?.modelRuntime || {},
         botCatalog: botCatalog || rawSnapshot?.botCatalog || {},
-        ...(chatSession ? { chatSession } : {})
+        ...(rawSnapshot?.chatSession ? { chatSession: rawSnapshot.chatSession } : {}),
+        ...(rawSnapshot?.chatRuntime ? { chatRuntime: rawSnapshot.chatRuntime } : {})
       };
       publish();
+      await refreshChatSession();
       return createControlCenterViewModel(withBridgeStatus(
         withLiveRuntime(rawSnapshot, runtimeSnapshot),
         liveSnapshotStatus,
@@ -147,13 +190,19 @@ export function createControlCenterBridge(options = {}) {
       return { ok: false, status: "not-available", actionId, reason: "control_center_bridge_not_started" };
     }
     const beforeRuntimeSnapshot = runtimeSnapshot;
+    const actionPayload = OBSERVED_ACTION_IDS.has(actionId)
+      ? { ...payload, operationId: createActionOperationId(actionId) }
+      : payload;
     let result = modelServiceOperation(actionId)
-      ? await runModelServiceBridgeAction(source, actionId, payload)
-      : await actionRouter.run(actionId, payload, { source: "control-center-v2" });
+      ? await runModelServiceBridgeAction(source, actionId, actionPayload)
+      : await actionRouter.run(actionId, actionPayload, { source: "control-center-v2" });
     if (result.ok && OBSERVED_ACTION_IDS.has(actionId)) {
-      const confirmed = await waitForRuntimeConfirmation(actionId, payload, beforeRuntimeSnapshot, () => runtimeSnapshot);
-      result = confirmed
-        ? { ...result, status: "completed", observed: true }
+      const observedSnapshot = await waitForRuntimeConfirmation(actionId, actionPayload, beforeRuntimeSnapshot, () => runtimeSnapshot);
+      const actionOutcome = observedSnapshot ? observedActionOutcome(actionId, actionPayload, observedSnapshot) : null;
+      result = observedSnapshot
+        ? actionOutcome
+          ? { ...result, ...actionOutcome, observed: true, refresh: actionId === "settings.selectBot" }
+          : { ...result, status: "completed", observed: true, refresh: actionId === "settings.selectBot" }
         : {
             ...result,
             ok: false,
@@ -171,7 +220,7 @@ export function createControlCenterBridge(options = {}) {
     if (result.refresh) {
       if (isTauri) {
         try {
-          await emitMainEvent({ command: "requestSnapshot" });
+          await emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
         } catch {
           // Backend refresh below still runs; event delivery is an optional live-state accelerator.
         }
@@ -199,7 +248,7 @@ export function createControlCenterBridge(options = {}) {
     listeners.clear();
   }
 
-  return { start, refresh, runAction, subscribe, stop };
+  return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages };
 
   function scheduleChatRefresh() {
     const state = runtimeSnapshot?.state && typeof runtimeSnapshot.state === "object" ? runtimeSnapshot.state : {};
@@ -225,22 +274,6 @@ export function createControlCenterBridge(options = {}) {
     }, active.sending ? 260 : 80);
   }
 
-  async function refreshChatSession() {
-    if (chatRefreshPromise) return chatRefreshPromise;
-    chatRefreshPromise = (async () => {
-      const chatSession = await readChatSessionForRuntime();
-      if (!chatSession || !rawSnapshot) return null;
-      rawSnapshot = { ...rawSnapshot, chatSession };
-      publish();
-      return chatSession;
-    })();
-    try {
-      return await chatRefreshPromise;
-    } finally {
-      chatRefreshPromise = null;
-    }
-  }
-
   async function readChatSessionForRuntime() {
     if (!source || typeof source.readChatSession !== "function") return null;
     const liveState = runtimeSnapshot?.state && typeof runtimeSnapshot.state === "object" ? runtimeSnapshot.state : {};
@@ -249,13 +282,68 @@ export function createControlCenterBridge(options = {}) {
       characterPackId: liveState.characterPackId
     });
   }
+
+  function liveChatSessionId() {
+    return String(runtimeSnapshot?.state?.sessionId || "").trim();
+  }
+
+  async function loadOlderChatMessages(options = {}) {
+    if (chatHistoryLoadPromise) return chatHistoryLoadPromise;
+    if (!source || typeof source.readChatHistoryPage !== "function" || !rawSnapshot?.chatSession) {
+      return { ok: false, status: "not-available", reason: "chat_history_paging_unavailable" };
+    }
+    const currentSession = rawSnapshot.chatSession;
+    const sessionId = chatSessionId(currentSession);
+    const characterPackId = String(
+      options.characterPackId || runtimeSnapshot?.state?.characterPackId || currentSession?.session?.character_pack_id || ""
+    ).trim();
+    const beforeSeq = Number(options.beforeSeq || currentSession?.message_page?.next_before_seq);
+    if (!sessionId || !Number.isFinite(beforeSeq) || beforeSeq <= 0) {
+      return { ok: false, status: "no-more-history", reason: "chat_history_cursor_unavailable" };
+    }
+
+    chatHistoryLoadPromise = (async () => {
+      const page = await source.readChatHistoryPage({
+        sessionId,
+        characterPackId,
+        beforeSeq,
+        limit: options.limit || 60
+      });
+      if (!page) return { ok: false, status: "failed", reason: "chat_history_request_failed" };
+      if (!rawSnapshot?.chatSession || chatSessionId(rawSnapshot.chatSession) !== sessionId) {
+        return { ok: false, status: "stale", reason: "chat_session_changed" };
+      }
+      const previousCount = Array.isArray(rawSnapshot.chatSession.messages) ? rawSnapshot.chatSession.messages.length : 0;
+      rawSnapshot = {
+        ...rawSnapshot,
+        chatSession: mergeChatSessions(rawSnapshot.chatSession, {
+          session: rawSnapshot.chatSession.session,
+          messages: page.messages,
+          message_page: page.message_page
+        }, { preferIncomingPage: true })
+      };
+      const nextCount = Array.isArray(rawSnapshot.chatSession.messages) ? rawSnapshot.chatSession.messages.length : 0;
+      publish();
+      return {
+        ok: true,
+        status: "loaded",
+        count: Math.max(0, nextCount - previousCount),
+        hasMore: Boolean(rawSnapshot.chatSession.message_page?.has_more)
+      };
+    })();
+    try {
+      return await chatHistoryLoadPromise;
+    } finally {
+      chatHistoryLoadPromise = null;
+    }
+  }
 }
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
   const timeoutMs = voicePlaybackAction(actionId)
     ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS
-    : actionId === "music.togglePlayback"
+    : MEDIA_CONTROL_ACTION_IDS.has(actionId)
       ? MUSIC_PLAYBACK_CONFIRM_TIMEOUT_MS
     : actionId === "character.selectPack"
       ? CHARACTER_SWITCH_CONFIRM_TIMEOUT_MS
@@ -263,11 +351,17 @@ async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, rea
   while (Date.now() - startedAt < timeoutMs) {
     const current = readCurrentSnapshot();
     if (current !== beforeSnapshot && isObservedActionConfirmation(actionId, beforeSnapshot, current, payload)) {
-      return true;
+      return current;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 60));
   }
-  return false;
+  return null;
+}
+
+function createActionOperationId(actionId) {
+  actionOperationSequence += 1;
+  const action = String(actionId || "action").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+  return `${action || "action"}-${Date.now().toString(36)}-${actionOperationSequence.toString(36)}`;
 }
 
 function voicePlaybackAction(actionId) {

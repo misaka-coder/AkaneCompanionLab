@@ -1,4 +1,4 @@
-"""Loopback-only diagnostics surface for the restart-only plugin host."""
+"""Loopback-only diagnostics and lifecycle surface for trusted plugins."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ MAX_PLUGIN_REQUEST_BYTES = 16 * 1024
 def build_plugins_router(
     *,
     plugin_host: PluginHost,
+    extension_management_service: Any,
     admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -34,7 +35,41 @@ def build_plugins_router(
                 {"ok": False, "status": "forbidden", "reason": authorization.reason},
                 status_code=authorization.status_code,
             )
-        return _response(plugin_host.status_snapshot())
+        return _response(extension_management_service.snapshot())
+
+    @router.post("/admin/plugins/restart")
+    async def restart_plugin_host(request: Request) -> JSONResponse:
+        """Recreate installed plugin instances using the persisted selection snapshot."""
+
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        result = await extension_management_service.restart()
+        status_code = 200 if result.get("status") == "active" else 503
+        return _response(result, status_code=status_code)
+
+    @router.patch("/admin/plugins/{plugin_id}/enabled")
+    async def set_plugin_enabled(plugin_id: str, request: Request) -> JSONResponse:
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        payload, error = await _read_bounded_json_object(request)
+        if error is not None:
+            return _response(error, status_code=400)
+        if not isinstance(payload.get("enabled"), bool):
+            return _response(_request_error("enabled_boolean_required"), status_code=400)
+        result = await extension_management_service.set_enabled(
+            plugin_id=plugin_id,
+            enabled=bool(payload["enabled"]),
+        )
+        status_code = 200 if result.get("ok") else (404 if result.get("status") == "not_found" else 409)
+        return _response(result, status_code=status_code)
 
     @router.post("/admin/plugins/capabilities/{capability_id:path}/invoke")
     async def invoke_plugin_capability(capability_id: str, request: Request) -> JSONResponse:

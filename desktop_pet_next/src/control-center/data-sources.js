@@ -1,4 +1,3 @@
-import * as mockData from "./mock-data.js";
 import { buildBotBackendBaseUrl, normalizeBotId } from "../bot-routing.js";
 import {
   CONTROL_CENTER_ACTIONS,
@@ -76,16 +75,22 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.advancedSetHitboxOverlay]: "setHitboxOverlay",
   [CONTROL_CENTER_ACTIONS.characterSelectPack]: "setCharacterPack",
   [CONTROL_CENTER_ACTIONS.characterSetOutfit]: "setOutfit",
-  [CONTROL_CENTER_ACTIONS.musicPrevious]: "previousMusic",
-  [CONTROL_CENTER_ACTIONS.musicNext]: "nextMusic",
-  [CONTROL_CENTER_ACTIONS.musicTogglePlayback]: "toggleActiveMusic",
-  [CONTROL_CENTER_ACTIONS.musicStop]: "stopMusic",
+  [CONTROL_CENTER_ACTIONS.musicPrevious]: "controlActiveMusic",
+  [CONTROL_CENTER_ACTIONS.musicNext]: "controlActiveMusic",
+  [CONTROL_CENTER_ACTIONS.musicTogglePlayback]: "controlActiveMusic",
+  [CONTROL_CENTER_ACTIONS.musicStop]: "controlActiveMusic",
   [CONTROL_CENTER_ACTIONS.musicClear]: "clearMusicQueue",
   [CONTROL_CENTER_ACTIONS.musicSetPlayMode]: "setMusicPlayMode",
   [CONTROL_CENTER_ACTIONS.musicSetVolumeNormalization]: "setMusicVolumeNormalization",
   [CONTROL_CENTER_ACTIONS.musicSeek]: "seekMusic",
   [CONTROL_CENTER_ACTIONS.musicSelectQueueItem]: "playMusicTrack",
   [CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation]: "playWorkspaceAudio"
+});
+const activeMediaActionByActionId = Object.freeze({
+  [CONTROL_CENTER_ACTIONS.musicPrevious]: "previous",
+  [CONTROL_CENTER_ACTIONS.musicNext]: "next",
+  [CONTROL_CENTER_ACTIONS.musicTogglePlayback]: "toggle",
+  [CONTROL_CENTER_ACTIONS.musicStop]: "stop"
 });
 const tauriInvokeByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "open_workspace_window",
@@ -114,20 +119,15 @@ const unifiedSnapshotRuntimeFields = Object.freeze([
 ]);
 
 export const CONTROL_CENTER_SOURCE_KIND = Object.freeze({
-  mock: "mock",
-  backend: "backend",
-  tauri: "tauri"
+  backend: "backend"
 });
 
 export function createControlCenterDataSource(options = {}) {
-  const kind = options.kind || CONTROL_CENTER_SOURCE_KIND.mock;
+  const kind = options.kind || CONTROL_CENTER_SOURCE_KIND.backend;
   if (kind === CONTROL_CENTER_SOURCE_KIND.backend) {
     return createBackendControlCenterSource(options);
   }
-  if (kind === CONTROL_CENTER_SOURCE_KIND.tauri) {
-    return createTauriControlCenterSource(options);
-  }
-  return createMockControlCenterSource(options.mockData || mockData);
+  throw new Error(`unsupported_control_center_source:${String(kind)}`);
 }
 
 export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
@@ -145,115 +145,6 @@ export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
     musicRuntime: raw.musicRuntime || {},
     abilitiesRuntime: raw.abilitiesRuntime || {},
     advancedRuntime: raw.advancedRuntime || {}
-  };
-}
-
-export function createMockControlCenterSource(data = mockData) {
-  const fallbackReason = "mock-source";
-  return {
-    kind: CONTROL_CENTER_SOURCE_KIND.mock,
-    backendUrl: null,
-    fallbackReason,
-    getFallbackReason() {
-      return fallbackReason;
-    },
-    readInitialState() {
-      return {
-        ...data,
-        sourceKind: CONTROL_CENTER_SOURCE_KIND.mock
-      };
-    },
-    subscribe() {
-      return () => {};
-    },
-    handlesAction() {
-      return true;
-    },
-    async runAction(actionId, payload = {}) {
-      const normalizedActionId = normalizeActionId(actionId);
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || approvalRequestBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId) || tauriInvokeOnlyActionIds.has(normalizedActionId)) {
-        return createNotImplementedActionResult(normalizedActionId);
-      }
-      return {
-        ok: true,
-        status: "mocked",
-        actionId,
-        payload,
-        refresh: true
-      };
-    },
-    async readModelService() {
-      return data.modelPage || null;
-    },
-    async readSettingsCatalog() {
-      return null;
-    },
-    async readBotCatalog() {
-      return null;
-    },
-    async updateSetting() {
-      return { ok: false, status: "not-available" };
-    },
-    async runModelServiceAction(actionId, payload = {}) {
-      return {
-        ok: true,
-        status: "mocked",
-        actionId,
-        payload,
-        models: actionId === "models" ? ["deepseek-chat", "deepseek-reasoner"] : undefined
-      };
-    }
-  };
-}
-
-export function createTauriControlCenterSource(options = {}) {
-  const fallbackReason = "tauri-source-awaiting-runtime-snapshot";
-  return {
-    kind: CONTROL_CENTER_SOURCE_KIND.tauri,
-    backendUrl: null,
-    fallbackReason,
-    getFallbackReason() {
-      return fallbackReason;
-    },
-    readInitialState() {
-      return {
-        ...mockData,
-        sourceKind: CONTROL_CENTER_SOURCE_KIND.mock,
-        fallbackReason: "tauri-source-awaiting-runtime-snapshot"
-      };
-    },
-    subscribe() {
-      return () => {};
-    },
-    handlesAction(actionId) {
-      return bridgedActionIds.has(normalizeActionId(actionId));
-    },
-    async runAction(actionId, payload = {}, context = {}) {
-      const normalizedActionId = normalizeActionId(actionId);
-      if (!bridgedActionIds.has(normalizedActionId)) {
-        return createNotImplementedActionResult(normalizedActionId);
-      }
-      const result = await runTauriControlCenterAction(normalizedActionId, payload, context, options);
-      if (result.status === "not-available") {
-        return createNotImplementedActionResult(normalizedActionId);
-      }
-      return result;
-    },
-    async readModelService() {
-      return null;
-    },
-    async readSettingsCatalog() {
-      return null;
-    },
-    async readBotCatalog() {
-      return null;
-    },
-    async updateSetting() {
-      return { ok: false, status: "not-available" };
-    },
-    async runModelServiceAction(actionId) {
-      return { ok: false, status: "not-available", actionId };
-    }
   };
 }
 
@@ -276,6 +167,7 @@ export function createBackendControlCenterSource(options = {}) {
   let verifiedHealth = null;
   let verifiedHealthAt = 0;
   let healthVerificationPromise = null;
+  let lastChatSessionError = "";
 
   function setFallbackReason(reason) {
     lastFallbackReason = reason;
@@ -323,6 +215,9 @@ export function createBackendControlCenterSource(options = {}) {
     },
     getFallbackReason() {
       return lastFallbackReason;
+    },
+    getChatSessionError() {
+      return lastChatSessionError;
     },
     async readSnapshot() {
       if (typeof fetchImpl !== "function") {
@@ -414,10 +309,6 @@ export function createBackendControlCenterSource(options = {}) {
           petState,
           capabilitiesCatalog: capabilitiesCatalog.data
         }),
-        perceptionRuntime: buildPerceptionRuntimePatch({
-          petState,
-          diagnostics: diagnostics.data
-        }),
         musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState }),
         abilitiesRuntime: buildAbilitiesRuntimePatch({
           diagnostics: diagnostics.data,
@@ -437,9 +328,15 @@ export function createBackendControlCenterSource(options = {}) {
       };
     },
     async readChatSession(overrides = {}) {
-      if (typeof fetchImpl !== "function") return null;
+      if (typeof fetchImpl !== "function") {
+        lastChatSessionError = "no-fetch-impl";
+        return null;
+      }
       const health = await ensureVerifiedBackend();
-      if (!health) return null;
+      if (!health) {
+        lastChatSessionError = "instance-health-unavailable";
+        return null;
+      }
       const requestedSessionId = String(overrides.sessionId || sessionId).trim() || sessionId;
       const requestedCharacterPackId = String(overrides.characterPackId ?? characterPackId).trim();
       try {
@@ -455,12 +352,45 @@ export function createBackendControlCenterSource(options = {}) {
             ...(requestedCharacterPackId ? { character_pack_id: requestedCharacterPackId } : {})
           })
         });
-        if (!response.ok) return null;
+        if (!response.ok) {
+          lastChatSessionError = `http-${response.status}`;
+          return null;
+        }
         const payload = await response.json();
-        return payload && typeof payload === "object" ? payload : null;
-      } catch {
+        if (!payload || typeof payload !== "object") {
+          lastChatSessionError = "invalid-response";
+          return null;
+        }
+        lastChatSessionError = "";
+        return payload;
+      } catch (error) {
+        lastChatSessionError = `request-failed:${formatDataSourceError(error)}`;
         return null;
       }
+    },
+    async readChatHistoryPage(overrides = {}) {
+      if (typeof fetchImpl !== "function") return null;
+      const health = await ensureVerifiedBackend();
+      if (!health) return null;
+      const requestedSessionId = String(overrides.sessionId || sessionId).trim() || sessionId;
+      const requestedCharacterPackId = String(overrides.characterPackId ?? characterPackId).trim();
+      const beforeSeq = Number(overrides.beforeSeq);
+      const limit = Math.max(1, Math.min(120, Number(overrides.limit) || 60));
+      if (!Number.isFinite(beforeSeq) || beforeSeq <= 0) return null;
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(botBaseUrl, "/sessions/messages", {
+          user_id: requestedSessionId,
+          session_id: requestedSessionId,
+          real_user_id: profileUserId,
+          client,
+          ...(requestedCharacterPackId ? { character_pack_id: requestedCharacterPackId } : {}),
+          before_seq: String(Math.trunc(beforeSeq)),
+          limit: String(Math.trunc(limit)),
+          t: String(Date.now())
+        })
+      );
+      return result.ok && result.data && typeof result.data === "object" ? result.data : null;
     },
     async readModelService() {
       if (typeof fetchImpl !== "function") return null;
@@ -539,11 +469,11 @@ export function createBackendControlCenterSource(options = {}) {
       }
     },
     readInitialState() {
-      return {
-        ...mockData,
-        sourceKind: CONTROL_CENTER_SOURCE_KIND.mock,
+      return createControlCenterRuntimeSnapshot({
+        sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,
+        backendUrl: baseUrl,
         fallbackReason: "backend-source-not-connected"
-      };
+      });
     },
     subscribe() {
       return () => {};
@@ -1007,6 +937,18 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
     }
 
     if (settingsCommand && typeof bridge.emit === "function") {
+      const activeMediaAction = activeMediaActionByActionId[actionId];
+      if (activeMediaAction) {
+        const value = { action: activeMediaAction };
+        await bridge.emit(SETTINGS_COMMAND_EVENT, {
+          ...payload,
+          command: settingsCommand,
+          action: activeMediaAction,
+          value,
+          source: context?.source || payload?.source || "control-center"
+        });
+        return { ok: true, status: "executed", actionId, payload: { ...payload, action: activeMediaAction }, refresh: true };
+      }
       if (actionId === CONTROL_CENTER_ACTIONS.musicPlayWorkspaceRecommendation) {
         const value = buildWorkspaceRecommendationValue(payload);
         if (!value) {
@@ -1294,8 +1236,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
   const counts = asObject(workspace?.counts);
   const effectiveWorkspaceCounts = {
     files: numberOrFallback(workspaceCounts.files, counts.files, 0),
-    outputs: numberOrFallback(workspaceCounts.outputs, counts.outputs, 0),
-    tasks: numberOrFallback(workspaceCounts.tasks, counts.tasks, 0)
+    outputs: numberOrFallback(workspaceCounts.outputs, counts.outputs, 0)
   };
   const serviceOk = connected || stringValue(health?.status) === "ok" || stringValue(diagnostics?.status) === "ok";
   const senseRuntime = buildOverviewSenseRuntimePatch(petState);
@@ -1317,7 +1258,7 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
     },
     connectionRows: {
       "服务状态": serviceOk ? "正常运行" : "未连接",
-      "响应延迟": inferLatencyLabel(runtimeMetrics),
+      "响应延迟": inferLatencyLabel(runtimeMetrics, ["control_center.snapshot", "desktop_pet_workspace_summary"]),
       "同步状态": workspace?.ok === false ? "待同步" : "稳定",
       "会话时长": diagnostics?.server_time ? "已同步" : "待同步"
     },
@@ -1424,7 +1365,6 @@ function buildCharacterRuntimePatch({
   });
   const outfitCount = rawOutfits.length;
   const emotionCount = rawOutfits.reduce((total, item) => total + asArray(item?.emotions).length, 0);
-  const backgroundCount = countManifestBackgrounds(manifest);
   const manifestOk = Boolean(manifest.schema_version && outfitCount > 0 && emotionCount > 0);
   const displayName = stringValue(identity.app_name || identity.name || pack?.id || packId || "Akane Default");
   const version = stringValue(profile.version || profile.schema_version || desktop.contract_version || manifest.schema_version);
@@ -1461,16 +1401,6 @@ function buildCharacterRuntimePatch({
           body: "当前保留本地预览资源",
           action: "重新检查"
         },
-    resources: [
-      {
-        label: "动作资源",
-        value: pack?.assetCount || pack?.asset_count ? `${pack.assetCount || pack.asset_count}` : "预留",
-        tone: "blue"
-      },
-      { label: "表情资源", value: `${emotionCount} / ${emotionCount}`, tone: "green" },
-      { label: "服装资源", value: `${outfitCount} / ${outfitCount}`, tone: "pink" },
-      { label: "背景资源", value: `${backgroundCount} / ${backgroundCount}`, tone: "green" }
-    ],
     tip: [
       packId ? `当前角色包 id：${packId}。` : "当前使用后端默认角色资源。",
       "服装与表情来自统一资源清单，桌宠和后端会按同一套资源理解当前形象。"
@@ -1501,29 +1431,39 @@ export function buildCharacterRuntimePatchFromSettingsSnapshot(runtimeSnapshot) 
   const schemaVersion = stringValue(character.schemaVersion || activePack?.schemaVersion);
   const defaultOutfit = stringValue(character.defaultOutfit || activePack?.defaultOutfit || resource.defaultOutfit);
   const defaultEmotion = stringValue(character.defaultEmotion || activePack?.defaultEmotion || resource.defaultEmotion);
-  const assetCount = positiveNumber(character.assetCount || activePack?.assetCount);
-  const resourceEmotionCount = positiveNumber(resource.emotionCount);
   const voice = normalizeCharacterVoicePreference(character.voice);
+  const activeEmotionId = stringValue(
+    currentExpression.id || currentExpression.name || petState.currentEmotion || defaultEmotion
+  );
+  const liveEmotionCards = asArray(resource.emotions)
+    .map((emotion) => {
+      const entry = asObject(emotion);
+      const id = stringValue(entry.id || entry.name);
+      const image = stringValue(entry.image || entry.url);
+      if (!id || !image) return null;
+      return {
+        id,
+        name: stringValue(entry.name || id) || id,
+        image,
+        current: id === activeEmotionId || stringValue(entry.name) === activeEmotionId
+      };
+    })
+    .filter(Boolean);
 
   const patch = {
     ...(displayName ? { selectedPack: displayName } : {}),
     ...(selectedPackId ? { selectedPackId } : {}),
     ...(availablePacks.length ? { availablePacks } : {}),
+    ...(liveEmotionCards.length ? { emotions: limitActiveCards(liveEmotionCards, activeEmotionId, 4) } : {}),
     voice
   };
 
-  if (displayName || schemaVersion || defaultOutfit || defaultEmotion || assetCount || resourceEmotionCount) {
+  if (displayName || schemaVersion || defaultOutfit || defaultEmotion) {
     patch.packInfo = [
       { label: "名称", value: displayName || selectedPackId || "当前角色包" },
       { label: "版本", value: schemaVersion || "-" },
       { label: "作者", value: "本地角色包" },
       { label: "描述", value: [defaultOutfit, defaultEmotion].filter(Boolean).join(" · ") || "等待资源同步" }
-    ];
-    patch.resources = [
-      { label: "动作资源", value: assetCount ? `${assetCount}` : "预留", tone: "blue" },
-      { label: "表情资源", value: resourceEmotionCount ? `${resourceEmotionCount}` : "等待同步", tone: "green" },
-      { label: "服装资源", value: Array.isArray(resource.outfits) ? `${resource.outfits.length}` : "等待同步", tone: "pink" },
-      { label: "背景资源", value: "预留", tone: "green" }
     ];
   }
 
@@ -1562,7 +1502,7 @@ function buildVoiceRuntimePatch({ health, diagnostics, petState, capabilitiesCat
   const asrTone = asrResolution?.statusTone || (asrAvailable ? "good" : "muted");
   const networkState = serviceOk ? "良好" : "离线";
   const networkTone = serviceOk ? "good" : "warning";
-  const latency = inferLatencyLabel(runtimeMetrics);
+  const latency = inferLatencyLabel(runtimeMetrics, ["tts", "asr"]);
 
   const petVoiceSpeed = String(petState?.voiceSpeed ?? "").trim();
   const petWakeWord = String(petState?.wakeWord ?? "").trim();
@@ -1651,80 +1591,6 @@ function coerceVolumePercent(value, fallback) {
   return Math.max(0, Math.min(100, Math.round(percent)));
 }
 
-function buildPerceptionRuntimePatch({ petState, diagnostics }) {
-  const diagnosticsData = asObject(diagnostics);
-  const serviceOk = stringValue(diagnosticsData?.status) === "ok";
-
-  const desktopContextEnabled = pickBoolean(petState?.desktopContextEnabled, true);
-  const clipboardContextEnabled = pickBoolean(petState?.clipboardContextEnabled, false);
-  const screenVisionEnabled = pickBoolean(petState?.screenVisionEnabled, false);
-  const screenVisionIntervalSec = positiveNumber(petState?.screenVisionIntervalSec);
-  const screenVisionFrameCount = positiveNumber(petState?.screenVisionFrameCount);
-  const proactiveWakeEnabled = pickBoolean(petState?.proactiveWakeEnabled, false);
-  const proactiveWakeIntervalSec = positiveNumber(petState?.proactiveWakeIntervalSec);
-  const screenVisionStatus = stringValue(diagnosticsData?.screen_vision?.status || diagnosticsData?.screenVision?.status);
-
-  const featureCards = [
-    {
-      id: "activeWindow",
-      enabled: desktopContextEnabled,
-      appName: desktopContextEnabled ? "等待前台窗口" : "前台窗口感知已关闭",
-      appDetail: desktopContextEnabled ? "发送消息时可附带窗口上下文" : "不会读取当前窗口",
-      version: serviceOk ? "本地感知" : "等待后端"
-    },
-    {
-      id: "clipboard",
-      enabled: clipboardContextEnabled,
-      code: clipboardContextEnabled
-        ? ["剪贴板内容不会在设置页预览", "仅在发送消息时按设置临时附带"]
-        : ["剪贴板感知已关闭"],
-      source: clipboardContextEnabled ? "仅显示能力状态 · 未读取内容" : "未读取剪贴板"
-    },
-    {
-      id: "screen",
-      enabled: screenVisionEnabled,
-      frequency: screenVisionIntervalSec > 0 ? `${screenVisionIntervalSec} 秒` : "",
-      frames: screenVisionFrameCount > 0 ? `${screenVisionFrameCount}` : ""
-    },
-    {
-      id: "proactive",
-      enabled: proactiveWakeEnabled,
-      activeOption: proactiveWakeIntervalSec > 0 ? formatDurationOption(proactiveWakeIntervalSec) : ""
-    }
-  ];
-
-  return {
-    featureCards,
-    diagnostics: [
-      {
-        label: "屏幕捕获帧率",
-        value: screenVisionEnabled ? "已开启" : "已关闭",
-        detail: screenVisionStatus || (screenVisionEnabled ? "等待采样" : "未运行"),
-        tone: screenVisionEnabled ? "good" : "info"
-      },
-      {
-        label: "OCR 识别状态",
-        value: screenVisionEnabled ? "待接入" : "未启用",
-        detail: "视觉识别状态暂未接入控制中心",
-        tone: "info"
-      },
-      {
-        label: "最后更新时间",
-        value: formatTimeOfDay(new Date()),
-        detail: serviceOk ? "已同步" : "等待后端",
-        tone: serviceOk ? "good" : "warning"
-      }
-    ]
-  };
-}
-
-function formatDurationOption(seconds) {
-  const value = Number(seconds);
-  if (!Number.isFinite(value) || value <= 0) return "";
-  if (value % 60 === 0) return `${Math.round(value / 60)} 分钟`;
-  return `${Math.round(value)} 秒`;
-}
-
 function formatTimeOfDay(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -1736,12 +1602,16 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   const track = musicSnapshot.track;
   const localDisplayName = stringValue(track?.displayName || musicSnapshot.displayName);
   const systemMedia = normalizeSystemMediaRuntime(musicSnapshot.systemMedia, musicSnapshot.systemLyrics);
-  const hasSystemTrack = systemMedia.ready
+  const control = musicSnapshot.control && typeof musicSnapshot.control === "object" ? musicSnapshot.control : {};
+  const controlTarget = stringValue(control.target).toLowerCase();
+  const hasExplicitControlTarget = controlTarget === "local" || controlTarget === "system" || controlTarget === "none";
+  const legacySystemTrack = systemMedia.ready
     && !Boolean(musicSnapshot.playing)
     && !Boolean(musicSnapshot.paused)
     && !Boolean(localDisplayName)
     && !Number(musicSnapshot.queueCount);
-  const hasTrack = Boolean(localDisplayName) && !hasSystemTrack;
+  const hasSystemTrack = hasExplicitControlTarget ? controlTarget === "system" && systemMedia.ready : legacySystemTrack;
+  const hasTrack = hasExplicitControlTarget ? controlTarget === "local" && Boolean(localDisplayName) : Boolean(localDisplayName) && !hasSystemTrack;
   const displayName = hasTrack ? localDisplayName : hasSystemTrack ? systemMedia.title : "";
   const queue = Array.isArray(musicSnapshot.queue) ? musicSnapshot.queue : [];
   const rawQueueIndex = Number(musicSnapshot.queueIndex);
@@ -1865,6 +1735,13 @@ export function buildMusicRuntimePatch({ musicSnapshot, petState }) {
   return {
     nowPlaying, playlist, lyrics, activeLyric, info, bottomStatus,
     systemMedia,
+    control: {
+      target: controlTarget || (hasSystemTrack ? "system" : hasTrack ? "local" : "none"),
+      targetId: stringValue(control.targetId || control.target_id),
+      playbackStatus: stringValue(control.playbackStatus || control.playback_status || (nowPlaying.playing ? "playing" : nowPlaying.paused ? "paused" : "stopped")),
+      isPlaying: Boolean(control.isPlaying ?? control.is_playing ?? nowPlaying.playing),
+      available: Boolean(control.available ?? (hasTrack || hasSystemTrack))
+    },
     ...(petPlayMode ? { currentPlayMode: petPlayMode } : {}),
     ...(typeof petVolumeNormalization === "boolean" ? { volumeNormalization: petVolumeNormalization } : {}),
     recommendations,
@@ -1887,7 +1764,7 @@ function normalizeSystemMediaRuntime(systemMediaSnapshot, systemLyricsSnapshot) 
   const lyricStatusLabel = lyricFound ? "Found" : lyricsStatusLabel(lyricStatus, lyricReason);
   const lyricReasonLabel = lyricsReasonLabel(lyricReason);
   return {
-    ready: Boolean(media.ok && media.fresh && (title || artist) && status === "ready"),
+    ready: Boolean(media.ok && (media.controllable || media.fresh) && (title || artist) && status === "ready"),
     status,
     statusLabel: systemMediaStatusLabel(status),
     title: title && artist ? `${title} - ${artist}` : title || artist || "系统正在播放的音乐",
@@ -1956,29 +1833,6 @@ function shortSystemMediaSource(value) {
   return parts.length ? parts[parts.length - 1].slice(0, 40) : text.slice(0, 40);
 }
 
-export function buildOverviewEmotionRuntimePatchFromSettingsSnapshot(runtimeSnapshot) {
-  const currentExpression = runtimeSnapshot?.currentExpression || null;
-  if (currentExpression && currentExpression.id) {
-    return {
-      emotion: {
-        name: currentExpression.name || currentExpression.id || "",
-        image: currentExpression.image || currentExpression.id || ""
-      }
-    };
-  }
-  const petState = runtimeSnapshot?.state || {};
-  const emotionId = String(petState.currentEmotion || "").trim();
-  if (emotionId) {
-    return {
-      emotion: {
-        name: emotionId,
-        image: emotionId
-      }
-    };
-  }
-  return null;
-}
-
 function formatSeconds(seconds) {
   const sec = Math.max(0, Math.round(Number(seconds) || 0));
   const m = Math.floor(sec / 60);
@@ -2036,7 +1890,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
     modules: moduleCards,
     providers: buildAbilityProviderCards(catalogEntries, capabilitiesCatalog, voiceProfilesCatalog),
     mcpServers: buildAbilityMcpServerCards(catalogEntries),
-    workflows: buildAbilityWorkflows(moduleCards, catalogEntries),
+    workflows: buildCatalogWorkflowCards(catalogEntries).slice(0, 3),
     skills: buildAbilitySkillCatalog(capabilitiesCatalog?.skills),
     calls: buildAbilityStatusRows({
       syncedAt,
@@ -2050,16 +1904,7 @@ function buildAbilitiesRuntimePatch({ diagnostics, workspace, capabilitiesCatalo
       approvalPolicy,
       runtimeMetrics
     }),
-    safety: buildAbilitySafetyPanel(safety, serviceOk, approvalRequests, approvalPolicy),
-    live2d: {
-      status: "预留",
-      items: [
-        { label: "模型", value: "静态立绘" },
-        { label: "动作", value: "表情切换" },
-        { label: "渲染器", value: "预留接口" },
-        { label: "物理", value: "待接入" }
-      ]
-    }
+    safety: buildAbilitySafetyPanel(safety, serviceOk, approvalRequests, approvalPolicy)
   };
 }
 
@@ -2278,20 +2123,20 @@ function summarizeCapabilityCatalogEntries(entries) {
 function buildCapabilityCatalogModuleCards({ entries, workspaceCounts, workspaceDataCounts, safety }) {
   const definitions = [
     {
-      title: "记忆与提醒",
-      description: "长期记忆 / 提醒事项 / 人设资料",
+      title: "记忆与人设",
+      description: "长期记忆 / 人设资料",
       permission: "个人记忆与资料",
       tone: "blue",
       icon: "sparkle",
-      match: (entry) => capabilityEntryText(entry).match(/memory|reminder|persona|retrieve/)
+      match: (entry) => capabilityEntryText(entry).match(/memory|persona|retrieve/)
     },
     {
       title: "文件与工作区",
-      description: "材料整理 / 任务管理 / 文件交付",
+      description: "材料整理 / 文件读写 / 文件交付",
       permission: "工作区文件访问",
       tone: "orange",
       icon: "folder",
-      match: (entry) => capabilityEntryText(entry).match(/workspace|attachment|generated_files|file_handoff|gift|artifact|task|inventory|send_file|inspect_attachment/)
+      match: (entry) => capabilityEntryText(entry).match(/workspace|attachment|generated_files|file_handoff|gift|artifact|inventory|send_file|inspect_attachment/)
     },
     {
       title: "文档处理",
@@ -2311,7 +2156,7 @@ function buildCapabilityCatalogModuleCards({ entries, workspaceCounts, workspace
     },
     {
       title: "本地模型与执行器",
-      description: "转码 / 抠图 / 模型工作流预留",
+      description: "转码 / 抠图 / 本地模型工具",
       permission: "本地运行环境",
       tone: "pink",
       icon: "cube",
@@ -2574,7 +2419,7 @@ function providerDisplayName(entry) {
 }
 
 function providerDescription(entry) {
-  if (entry.adapter === "comfyui") return "用于角色立绘处理、透明背景抠图和图像工作流预留";
+  if (entry.adapter === "comfyui") return "用于角色立绘处理、透明背景抠图和已绑定的图像工作流";
   if (entry.adapter === "gpt_sovits") return "外部 GPT-SoVITS 兼容服务；配置后用于角色语音合成与自定义声线";
   return entry.type === "tts_provider" ? "本地语音能力提供方" : "本地能力执行器";
 }
@@ -2650,14 +2495,10 @@ function mapCapabilityStatus(status) {
   return labels[normalized] || { label: "待确认", tone: "warning" };
 }
 
-function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText, petState }) {
+function buildAdvancedRuntimePatch({ health, diagnostics, metricsText, petState }) {
   const healthData = asObject(health);
   const diagnosticsData = asObject(diagnostics);
-  const capabilities = asObject(diagnosticsData.capabilities);
-  const runtime = asObject(diagnosticsData.runtime);
-  const runtimeMetrics = asObject(runtime.metrics);
   const metrics = parsePrometheusMetrics(metricsText);
-  const tools = normalizeStringList(capabilities.tool_names || capabilities.toolNames);
   const serviceOk = stringValue(healthData?.status) === "ok" || stringValue(diagnosticsData?.status) === "ok";
 
   // systemStrip — patch by label
@@ -2679,9 +2520,6 @@ function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText
     "内存占用": { value: memoryDisplay }
   };
 
-  // abilityOverview — derived from tool names
-  const abilityOverview = buildAdvancedAbilityOverview(tools);
-
   const coreSettings = [
     { id: "hitTest", enabled: Boolean(petState?.hitTestEnabled) },
     { id: "hitbox", enabled: Boolean(petState?.hitboxOverlay) }
@@ -2690,41 +2528,8 @@ function buildAdvancedRuntimePatch({ health, diagnostics, workspace, metricsText
   return {
     systemStrip,
     coreSettings,
-    diagnostics: { metrics: diagnosticsMetrics },
-    abilityOverview
+    diagnostics: { metrics: diagnosticsMetrics }
   };
-}
-
-function buildAdvancedAbilityOverview(tools) {
-  const available = [];
-  if (tools.some((name) => /file|attachment|compose|send|document|read/i.test(name))) {
-    available.push({ label: "文件处理", icon: "folder", tone: "blue" });
-  }
-  if (tools.some((name) => /send_file|compose_file|generated|handoff/i.test(name))) {
-    available.push({ label: "生成文件交付", icon: "file", tone: "green" });
-  }
-  if (tools.some((name) => /media|audio|voice|transcribe|stems|clean/i.test(name))) {
-    available.push({ label: "媒体工具", icon: "play", tone: "purple" });
-  }
-  if (tools.some((name) => /clipboard|shelf|workspace|task|gift/i.test(name))) {
-    available.push({ label: "手边物品", icon: "gift", tone: "pink" });
-  }
-  if (tools.some((name) => /guard|safe|security|approval|sandbox/i.test(name))) {
-    available.push({ label: "安全边界", icon: "shield", tone: "orange" });
-  }
-  if (tools.some((name) => /memory|retrieve/i.test(name))) {
-    available.push({ label: "记忆检索", icon: "sparkle", tone: "blue" });
-  }
-  if (!available.length) {
-    available.push(
-      { label: "文件处理", icon: "folder", tone: "blue" },
-      { label: "生成文件交付", icon: "file", tone: "green" },
-      { label: "手边物品", icon: "gift", tone: "pink" },
-      { label: "媒体工具", icon: "play", tone: "purple" },
-      { label: "安全边界", icon: "shield", tone: "orange" }
-    );
-  }
-  return available.slice(0, 5);
 }
 
 function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, safety }) {
@@ -2747,11 +2552,11 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     },
     {
       title: "手边物品",
-      description: "材料 / 成果 / 任务",
+      description: "材料 / 成果",
       permission: "工作区管理",
       tone: "orange",
       icon: "gift",
-      pattern: /workspace|task|gift|clipboard/i,
+      pattern: /workspace|gift|clipboard/i,
       extraCount: numberOrFallback(workspaceCounts.files, workspaceDataCounts.files, 0)
     },
     {
@@ -2808,58 +2613,6 @@ function buildAbilityModuleCards({ tools, workspaceCounts, workspaceDataCounts, 
     });
   }
   return cards.slice(0, 8);
-}
-
-function buildAbilityWorkflows(modules, catalogEntries = []) {
-  const catalogWorkflows = buildCatalogWorkflowCards(catalogEntries);
-  const names = new Set(modules.map((item) => item.title));
-  const hasFile = names.has("文件处理") || names.has("文件与工作区");
-  const hasDocument = names.has("生成文件交付") || names.has("文档处理");
-  const hasAudio = names.has("媒体工具") || names.has("音频与语音");
-  const workflows = [];
-  if (hasFile && hasDocument) {
-    workflows.push({
-      steps: ["资料", "文档", "交付"],
-      title: "收集资料 → 生成文档 → 放入工作区",
-      detail: "把材料读懂、整理成文件，再交付到工作区"
-    });
-  }
-  if (hasAudio) {
-    workflows.push({
-      steps: ["语音", "转写", "朗读"],
-      title: "语音输入 → 转写理解 → 回复朗读",
-      detail: "让 Akane 听得更准，也能把回复读出来"
-    });
-  }
-  if (names.has("手边物品") || names.has("文件与工作区")) {
-    workflows.push({
-      steps: ["手边物品", "整理", "归档"],
-      title: "手边材料 → 整理 → 归档",
-      detail: "把临时材料收进工作区，方便后续继续处理"
-    });
-  }
-  if (names.has("本地模型与执行器")) {
-    workflows.push({
-      steps: ["探活", "绑定", "处理"],
-      title: "发现本地环境 → 绑定工作流 → 处理角色素材",
-      detail: "为后续抠图、转码、语音模型等本地能力预留入口"
-    });
-  }
-  if (names.has("记忆与提醒")) {
-    workflows.push({
-      steps: ["记忆", "提醒", "跟进"],
-      title: "记住事项 → 到点提醒 → 继续跟进",
-      detail: "让常用偏好、提醒和任务上下文留在角色身边"
-    });
-  }
-  const fallbackWorkflows = workflows.length ? workflows : [
-    {
-      steps: ["诊断", "同步", "等待"],
-      title: "能力诊断 → 等待同步",
-      detail: "后端连接后会显示可用工作流"
-    }
-  ];
-  return catalogWorkflows.length ? catalogWorkflows.slice(0, 3) : fallbackWorkflows;
 }
 
 function buildCatalogWorkflowCards(entries) {
@@ -2944,7 +2697,7 @@ function buildAbilityStatusRows({ syncedAt, serviceOk, toolCount, moduleCount, c
             : `已同步 ${moduleCount} 个模块、${toolCount} 项能力`)
         : "等待后端同步能力注册表",
       status: serviceOk ? (catalogSummary?.needsAttention ? "需配置" : "成功") : "待连接",
-      duration: inferLatencyLabel(runtimeMetrics),
+      duration: inferLatencyLabel(runtimeMetrics, ["capabilities.catalog"]),
       method: hasCatalog ? "能力目录" : "后端诊断"
     }
   ];
@@ -3032,8 +2785,7 @@ function countPendingSafetyItems(safety) {
 function mergeWorkspaceCounts(...sources) {
   return {
     files: numberOrFallback(...sources.map((item) => asObject(item).files), 0),
-    outputs: numberOrFallback(...sources.map((item) => asObject(item).outputs), 0),
-    tasks: numberOrFallback(...sources.map((item) => asObject(item).tasks), 0)
+    outputs: numberOrFallback(...sources.map((item) => asObject(item).outputs), 0)
   };
 }
 
@@ -3107,14 +2859,6 @@ function findManifestEntry(items, target) {
     const candidates = [item.id, item.name, ...(Array.isArray(item.aliases) ? item.aliases : [])];
     return candidates.some((value) => stringValue(value) === normalized);
   }) || null;
-}
-
-function countManifestBackgrounds(manifest) {
-  const majors = asArray(asObject(manifest.scenes).majors);
-  return majors.reduce((total, major) => {
-    const minors = asArray(major?.minors);
-    return total + minors.reduce((minorTotal, minor) => minorTotal + asArray(minor?.backgrounds).length, 0);
-  }, 0);
 }
 
 function normalizeAvailableCharacterPacks(packs, selectedPackId) {
@@ -3198,7 +2942,7 @@ function buildAbilityLabels({ tools, workspaceCounts }) {
   if (tools.some((name) => /memory/i.test(name))) labels.push("记忆检索");
   if (workspaceCounts.files > 0) labels.push(`手边文件 ${workspaceCounts.files}`);
   if (workspaceCounts.outputs > 0) labels.push(`生成文件 ${workspaceCounts.outputs}`);
-  if (!labels.length) labels.push("文件处理", "文档交付", "媒体工具", "安全保护", "手边物品", "Live2D 预留状态");
+  if (!labels.length) labels.push("能力目录尚未同步");
   return labels.slice(0, 8);
 }
 
@@ -3231,13 +2975,30 @@ function countMetricErrors(metrics) {
   }, 0);
 }
 
-function inferLatencyLabel(metrics) {
-  const known = Object.entries(metrics || {}).find(([key]) => /duration|latency|request/i.test(key));
-  if (!known) return "已连接";
-  const number = Number(known[1]);
-  if (!Number.isFinite(number)) return "已连接";
-  if (number > 1000) return `${Math.round(number)} ms`;
-  return `${Math.round(number * 1000)} ms`;
+function inferLatencyLabel(metrics, preferredPrefixes = []) {
+  const source = metrics && typeof metrics === "object" ? metrics : {};
+  for (const prefix of preferredPrefixes) {
+    const duration = Number(source[`${prefix}_duration_ms_total`]);
+    const requests = Number(source[`${prefix}_requests_total`]);
+    if (Number.isFinite(duration) && duration >= 0 && Number.isFinite(requests) && requests > 0) {
+      return `${Math.round(duration / requests)} ms`;
+    }
+  }
+
+  const directMilliseconds = Object.entries(source).find(([key, value]) =>
+    /(?:duration|latency).*_ms(?:$|_)/i.test(key) &&
+    !/_total$/i.test(key) &&
+    Number.isFinite(Number(value))
+  );
+  if (directMilliseconds) return `${Math.round(Number(directMilliseconds[1]))} ms`;
+
+  const directSeconds = Object.entries(source).find(([key, value]) =>
+    /(?:duration|latency).*_seconds?(?:$|_)/i.test(key) &&
+    !/_total$/i.test(key) &&
+    Number.isFinite(Number(value))
+  );
+  if (directSeconds) return `${Math.round(Number(directSeconds[1]) * 1000)} ms`;
+  return "已连接";
 }
 
 function parsePrometheusMetrics(text) {
@@ -3386,21 +3147,12 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
     if (!hasSomeData) {
       return null;
     }
-    const capabilitiesCatalog = await readCapabilitiesCatalog(
-      fetchImpl,
-      baseUrl,
-      requestParams || { t: String(Date.now()) }
-    );
-    const voiceProfilesCatalog = await readVoiceProfilesCatalog(
-      fetchImpl,
-      baseUrl,
-      requestParams || { t: String(Date.now()) }
-    );
-    const approvalRequestsCatalog = await readApprovalRequestsCatalog(
-      fetchImpl,
-      baseUrl,
-      requestParams || { t: String(Date.now()) }
-    );
+    const catalogParams = requestParams || { t: String(Date.now()) };
+    const [capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([
+      readCapabilitiesCatalog(fetchImpl, baseUrl, catalogParams),
+      readVoiceProfilesCatalog(fetchImpl, baseUrl, catalogParams),
+      readApprovalRequestsCatalog(fetchImpl, baseUrl, catalogParams)
+    ]);
     const metricsText = typeof metrics.data === "string" ? metrics.data : "";
     return {
       sourceKind: CONTROL_CENTER_SOURCE_KIND.backend,
@@ -3442,10 +3194,6 @@ async function tryReadUnifiedSnapshot(fetchImpl, baseUrl, scope = {}) {
         diagnostics: diagnostics.data,
         petState,
         capabilitiesCatalog: capabilitiesCatalog.data
-      }),
-      perceptionRuntime: buildPerceptionRuntimePatch({
-        petState,
-        diagnostics: diagnostics.data
       }),
       musicRuntime: buildMusicRuntimePatch({ musicSnapshot, petState }),
       abilitiesRuntime: buildAbilitiesRuntimePatch({

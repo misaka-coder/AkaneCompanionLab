@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
+from unittest.mock import patch
 
-from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
+from companion_v01.browser_page_runtime import (
+    BrowserPageResult,
+    ManagedBrowserPageRunner,
+    ManagedBrowserSessionManager,
+)
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.web_browser import BrowserPageToolHandler
 
@@ -20,6 +27,52 @@ def _context(profile_user_id: str = "p1", session_id: str = "s1") -> ToolExecuti
 
 
 class SnapshotCacheTests(unittest.TestCase):
+    def test_default_handler_honors_explicit_headless_host_config(self) -> None:
+        with patch("companion_v01.tool_handlers.web_browser.config.BROWSER_PAGE_HEADLESS", True, create=True):
+            handler = BrowserPageToolHandler()
+
+        runner = handler.browser_runner.runner_for_session("p1", "s1")
+        self.assertTrue(runner.headless)
+        handler.browser_runner.shutdown()
+
+    def test_session_manager_caches_real_runner_capability_probe(self) -> None:
+        probes: list[int] = []
+
+        class ProbeRunner(ManagedBrowserPageRunner):
+            def capability_status(self):
+                probes.append(1)
+                return {"enabled": True, "status": "ready", "reason": ""}
+
+            def shutdown(self) -> None:
+                return None
+
+        manager = ManagedBrowserSessionManager(runner_factory=ProbeRunner)
+
+        self.assertEqual(manager.capability_status()["status"], "ready")
+        self.assertEqual(manager.capability_status()["status"], "ready")
+        self.assertEqual(len(probes), 1)
+
+    def test_runner_capability_probe_leaves_async_request_thread(self) -> None:
+        request_thread = threading.get_ident()
+        probe_threads: list[int] = []
+
+        class ThreadProbeRunner(ManagedBrowserPageRunner):
+            def is_available(self) -> bool:
+                return True
+
+            def _probe_browser_runtime(self):
+                probe_threads.append(threading.get_ident())
+                return {"enabled": True, "status": "ready", "reason": ""}
+
+        async def build_catalog_status() -> dict:
+            return ThreadProbeRunner().capability_status()
+
+        status = asyncio.run(build_catalog_status())
+
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(len(probe_threads), 1)
+        self.assertNotEqual(probe_threads[0], request_thread)
+
     def test_store_and_read_snapshot_is_immutable(self) -> None:
         runner = ManagedBrowserPageRunner()
         record = runner.store_snapshot(kind="page", text="A" * 100_000, url="https://example.com", title="t")
@@ -58,6 +111,85 @@ class SnapshotCacheTests(unittest.TestCase):
     def test_missing_snapshot_returns_none(self) -> None:
         runner = ManagedBrowserPageRunner()
         self.assertIsNone(runner.read_snapshot("snap_nonexistent"))
+
+    def test_safe_action_retries_once_after_closed_browser(self) -> None:
+        class RecoveringRunner(ManagedBrowserPageRunner):
+            def __init__(self) -> None:
+                super().__init__()
+                self.attempts = 0
+                self.discards = 0
+
+            def _run_in_browser_once(self, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError("Target page, context or browser has been closed")
+                return BrowserPageResult(ok=True, status="available", action=kwargs["action"], url="https://example.com")
+
+            def _discard_browser_objects(self) -> None:
+                self.discards += 1
+
+        runner = RecoveringRunner()
+        result = runner._run_in_browser(
+            action="navigate",
+            url="https://example.com",
+            max_chars=3000,
+            scroll_delta=800,
+            element_limit=20,
+            selector="",
+            ref="",
+            text="",
+            key="",
+            candidate_index=0,
+            screenshot_path="",
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(runner.attempts, 2)
+        self.assertEqual(runner.discards, 1)
+
+    def test_effectful_action_is_not_retried_after_closed_browser(self) -> None:
+        class ClosedRunner(ManagedBrowserPageRunner):
+            def __init__(self) -> None:
+                super().__init__()
+                self.attempts = 0
+
+            def _run_in_browser_once(self, **_kwargs):
+                self.attempts += 1
+                raise RuntimeError("Target page, context or browser has been closed")
+
+        runner = ClosedRunner()
+        result = runner._run_in_browser(
+            action="click",
+            url="",
+            max_chars=3000,
+            scroll_delta=800,
+            element_limit=20,
+            selector="#go",
+            ref="",
+            text="",
+            key="",
+            candidate_index=0,
+            screenshot_path="",
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "browser_closed")
+        self.assertEqual(runner.attempts, 1)
+
+    def test_session_manager_isolates_conversations(self) -> None:
+        created: list[FakePagedRunner] = []
+
+        def factory():
+            runner = FakePagedRunner("session page")
+            created.append(runner)
+            return runner
+
+        manager = ManagedBrowserSessionManager(runner_factory=factory)
+        handler = BrowserPageToolHandler(browser_runner=manager)
+        handler.execute(call={"type": "browser_page", "action": "current"}, context=_context(session_id="group"))
+        handler.execute(call={"type": "browser_page", "action": "current"}, context=_context(session_id="private"))
+        handler.execute(call={"type": "browser_page", "action": "current"}, context=_context(session_id="group"))
+        self.assertEqual(len(created), 2)
+        self.assertEqual(len(created[0].run_calls), 2)
+        self.assertEqual(len(created[1].run_calls), 1)
 
 
 class FakePagedRunner:

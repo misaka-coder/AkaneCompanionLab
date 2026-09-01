@@ -6303,6 +6303,9 @@ fn same_backend_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
 
 fn is_allowed_admin_path(path: &str) -> bool {
     if let Some((_bot_id, bot_path)) = scoped_admin_bot_path(path) {
+        if bot_path == "sessions/ensure" {
+            return true;
+        }
         return [
             "control-center/",
             "capabilities/",
@@ -6314,6 +6317,9 @@ fn is_allowed_admin_path(path: &str) -> bool {
         ]
         .iter()
         .any(|prefix| bot_path.starts_with(prefix));
+    }
+    if path == "/sessions/ensure" {
+        return true;
     }
     [
         "/control-center/",
@@ -6660,6 +6666,9 @@ mod tests {
         assert!(is_allowed_admin_path(
             "/api/bots/personal/control-center/model-service"
         ));
+        assert!(is_allowed_admin_path("/api/bots/personal/sessions/ensure"));
+        assert!(is_allowed_admin_path("/sessions/ensure"));
+        assert!(!is_allowed_admin_path("/api/bots/personal/sessions/reset"));
         assert!(!is_allowed_admin_path("/api/bots/personal/think"));
         assert!(is_allowed_admin_path("/api/qq/self-check"));
         assert!(!is_allowed_admin_path("/think"));
