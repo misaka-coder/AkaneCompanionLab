@@ -7,6 +7,9 @@ fixtures.
 - `akane_poke_streak`: observes QQ direct/group events and adds a request-local
   fact when the same actor pokes Akane repeatedly. It registers no model tool,
   writes no MemCore record, and sends no message by itself.
+- `akane_hacker_news_report`: reads a fixed public Hacker News feed through one
+  CapCore capability and returns structured facts plus a host-managed Markdown
+  report. It has no arbitrary URL, credential, or local-path input.
 
 Each example documents its permissions, runtime effect, and installation path
 in its own README.

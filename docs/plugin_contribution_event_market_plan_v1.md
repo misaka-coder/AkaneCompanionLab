@@ -344,7 +344,12 @@ prompt、工具 Schema 或 MemCore，因此不改变模型缓存前缀。Hook �
    从第二次起仅向当轮追加结构化连续次数事实；普通消息、首个戳、非 QQ 来源与重复
    `event_id` 均静默放行。样例没有 Capability、稳定提示块或 MemCore 写入，wheel 与
    正式插件使用同一 entry point 和审计链；
-2. 工具型：一个真实只读能力，经过 CapCore、Broker、MemCore 和产物链；
+2. 工具型：一个真实只读能力，经过 CapCore、Broker、MemCore 和产物链；已完成首个
+   可安装样例 `examples/plugins/akane_hacker_news_report`。它只读取 Hacker News 官方
+   固定公共 API，模型输入不含任意 URL、凭据或本地路径；结构化结果进入普通工具反馈，
+   完整调用与结果由 MemCore 保存并可召回，Markdown 字节经宿主托管产物链登记和投递。
+   单响应、请求时限、条目数和报告大小边界在样例常量、工具 Schema 与 README 中一致公开；
+   部分条目失败时保留已取得结果并明确遗漏，全部失败时不生成假产物；
 3. 混合型：后台观察、事件、Skill、工具、配置和主动推理组成的陪伴插件。
 
 验收覆盖群聊、私聊、切会话、慢请求、重复事件、取消、插件崩溃、禁用、卸载和重启。
