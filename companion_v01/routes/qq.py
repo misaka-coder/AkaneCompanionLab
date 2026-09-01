@@ -1919,6 +1919,14 @@ def build_qq_router(
             return async_task_supervisor.create_task(coroutine)
         return asyncio.create_task(coroutine)
 
+    async def _send_route_reply(context: Any, text: str) -> dict[str, Any]:
+        """Keep blocking OneBot delivery and synchronous Hook bridging off this loop."""
+
+        return await asyncio.to_thread(qq_gateway.send_reply, context, text)
+
+    async def _send_route_replies(context: Any, messages: list[str]) -> dict[str, Any]:
+        return await asyncio.to_thread(qq_gateway.send_replies, context, messages)
+
     async def _dispatch_plugin_channel_event(
         *,
         context: Any,
@@ -2893,7 +2901,8 @@ def build_qq_router(
                 if str(item or "").strip() and str(kinds_by_id.get(str(item or "").strip()) or "").lower() == "image"
             ]
             if pending_image_ids or failed_image_ids:
-                failure_send_result = qq_gateway.send_reply(
+                failure_send_result = await asyncio.to_thread(
+                    qq_gateway.send_reply,
                     context,
                     _qq_image_followup_failure_message(
                         wait_result=wait_result if isinstance(wait_result, dict) else {},
@@ -3312,7 +3321,11 @@ def build_qq_router(
             )
             if isinstance(group_vision_command_result, dict):
                 reply = str(group_vision_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
@@ -3351,7 +3364,7 @@ def build_qq_router(
             if isinstance(group_emotion_command_result, dict):
                 reply = str(group_emotion_command_result.get("reply") or "").strip()
                 send_result = (
-                    qq_gateway.send_reply(context, reply)
+                    await _send_route_reply(context, reply)
                     if reply
                     else {"ok": False, "reason": "empty_reply"}
                 )
@@ -3394,7 +3407,11 @@ def build_qq_router(
             )
             if isinstance(group_attention_command_result, dict):
                 reply = str(group_attention_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 command_ok = bool(group_attention_command_result.get("ok"))
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
@@ -3443,7 +3460,7 @@ def build_qq_router(
                 if isinstance(approval_result, dict):
                     reply = str(approval_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply)
+                        await _send_route_reply(context, reply)
                         if reply
                         else {"ok": False, "reason": "empty_reply"}
                     )
@@ -3525,7 +3542,7 @@ def build_qq_router(
                 if isinstance(shell_permission_result, dict):
                     reply = str(shell_permission_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply)
+                        await _send_route_reply(context, reply)
                         if reply
                         else {"ok": False, "reason": "empty_reply"}
                     )
@@ -3598,7 +3615,7 @@ def build_qq_router(
                 if isinstance(mcp_permission_result, dict):
                     reply = str(mcp_permission_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply)
+                        await _send_route_reply(context, reply)
                         if reply
                         else {"ok": False, "reason": "empty_reply"}
                     )
@@ -3636,7 +3653,11 @@ def build_qq_router(
             mface_config_result = qq_gateway.handle_mface_config_command(context, event)
             if isinstance(mface_config_result, dict):
                 reply = str(mface_config_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
@@ -3708,7 +3729,11 @@ def build_qq_router(
                     command_status = "unknown_action"
                     command_ok = False
                     reply = "这个工作台指令暂时不支持。发送“工作台帮助”查看可用指令。"
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
@@ -3744,7 +3769,11 @@ def build_qq_router(
             )
             if isinstance(character_command_result, dict):
                 reply = str(character_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
@@ -3799,7 +3828,9 @@ def build_qq_router(
                 else:
                     reply = str(outfit_command_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                        await _send_route_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
                     )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     runtime_metrics.observe_request(
@@ -3837,7 +3868,11 @@ def build_qq_router(
             reply_mode_command_result = qq_gateway.handle_reply_mode_command(context)
             if isinstance(reply_mode_command_result, dict):
                 reply = str(reply_mode_command_result.get("reply") or "").strip()
-                send_result = qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                send_result = (
+                    await _send_route_reply(context, reply)
+                    if reply
+                    else {"ok": False, "reason": "empty_reply"}
+                )
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 runtime_metrics.observe_request(
                     "qq_napcat_event",
@@ -3893,7 +3928,9 @@ def build_qq_router(
                 if isinstance(thinking_mode_command_result, dict):
                     reply = str(thinking_mode_command_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                        await _send_route_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
                     )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     command_ok = bool(thinking_mode_command_result.get("ok"))
@@ -3959,7 +3996,9 @@ def build_qq_router(
                 if isinstance(chat_model_command_result, dict):
                     reply = str(chat_model_command_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                        await _send_route_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
                     )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     runtime_metrics.observe_request(
@@ -4018,7 +4057,9 @@ def build_qq_router(
                 else:
                     reply = str(economy_command_result.get("reply") or "").strip()
                     send_result = (
-                        qq_gateway.send_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                        await _send_route_reply(context, reply)
+                        if reply
+                        else {"ok": False, "reason": "empty_reply"}
                     )
                     duration_ms = (time.perf_counter() - started_at) * 1000
                     runtime_metrics.observe_request(
@@ -4081,7 +4122,7 @@ def build_qq_router(
                     )
                     if _cmd_result.handled:
                         if _cmd_result.reply_text:
-                            send_result = qq_gateway.send_replies(context, [_cmd_result.reply_text])
+                            send_result = await _send_route_replies(context, [_cmd_result.reply_text])
                         else:
                             send_result = {
                                 "ok": True,

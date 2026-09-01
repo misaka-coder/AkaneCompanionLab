@@ -204,6 +204,9 @@ class BotRuntime:
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
             bind_hook_broker(self.plugin_hook_broker)
+        bind_gateway_hook_broker = getattr(self.qq_gateway, "bind_plugin_hook_broker", None)
+        if callable(bind_gateway_hook_broker):
+            bind_gateway_hook_broker(self.plugin_hook_broker)
         self._started = True
         status = "degraded" if plugin_status.get("status") == "degraded" else "active"
         return {
@@ -249,6 +252,12 @@ class BotRuntime:
 
         self.plugin_command_broker = None
         self.plugin_event_broker = None
+        unbind_gateway_hook_broker = getattr(self.qq_gateway, "bind_plugin_hook_broker", None)
+        if callable(unbind_gateway_hook_broker):
+            try:
+                unbind_gateway_hook_broker(None)
+            except Exception:
+                failures.append("qq_gateway_hook_unbind_failed")
         self.plugin_hook_broker = None
         if self.voice_runtime_service is not None:
             try:

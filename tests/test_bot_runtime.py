@@ -421,6 +421,21 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         registration = plugin_host.host_registrations[0]
         self.assertEqual(registration.handler._bot_label, "Akane Public")
 
+    async def test_shared_hook_broker_binds_engine_and_gateway_then_unbinds_gateway(self) -> None:
+        runtime, plugin_host, engine, _followups = _runtime()
+        broker = object()
+        engine_bindings: list[Any] = []
+        gateway_bindings: list[Any] = []
+        plugin_host.build_hook_broker = lambda: broker  # type: ignore[attr-defined]
+        engine.bind_plugin_hook_broker = engine_bindings.append  # type: ignore[attr-defined]
+        runtime.qq_gateway = SimpleNamespace(bind_plugin_hook_broker=gateway_bindings.append)
+
+        await runtime.start()
+        await runtime.stop()
+
+        self.assertEqual(engine_bindings, [broker])
+        self.assertEqual(gateway_bindings, [broker, None])
+
     async def test_stop_closes_voice_runtime_before_memory_engine(self) -> None:
         runtime, _plugin_host, engine, _followups = _runtime()
         close_order: list[str] = []

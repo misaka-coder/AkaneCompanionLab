@@ -33,6 +33,8 @@ DIRECT_CONVERSATION_EVENT = "conversation.direct.inbound"
 GROUP_CONVERSATION_EVENT = "conversation.group.inbound"
 BEFORE_TOOL_CALL_HOOK = "before_tool_call"
 AFTER_TOOL_CALL_HOOK = "after_tool_call"
+BEFORE_OUTBOUND_PLAN_HOOK = "before_outbound_plan"
+AFTER_DELIVERY_HOOK = "after_delivery"
 MAX_MANAGED_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_PLUGIN_ID_LENGTH = 64
 MAX_CAPABILITY_ID_LENGTH = 128
@@ -329,6 +331,49 @@ class PluginToolResultSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginOutboundPlanSnapshot:
+    """Immutable, locator-free view of one user-visible outbound action."""
+
+    delivery_id: str
+    channel: str
+    action: str
+    conversation_kind: str
+    target_id: str
+    segment_types: tuple[str, ...]
+    text: str = ""
+    reply_to_message_id: str = ""
+    text_decoratable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PluginDeliverySnapshot:
+    """Immutable public outcome of one user-visible delivery attempt."""
+
+    delivery_id: str
+    channel: str
+    action: str
+    conversation_kind: str
+    target_id: str
+    segment_types: tuple[str, ...]
+    status: str
+    duration_ms: float
+    reason: str = ""
+    message_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PluginOutboundDecoration:
+    """The intentionally small mutable surface of ``before_outbound_plan``.
+
+    It can add visible text around text that already exists. It cannot replace
+    message content, target, reply relationship, media locator or action.
+    """
+
+    text_prefix: str = ""
+    text_suffix: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class PluginHookEnvelope:
     """One immutable lifecycle observation delivered to a plugin Hook."""
 
@@ -336,20 +381,25 @@ class PluginHookEnvelope:
     hook_type: str
     occurred_at: int
     subject: str
-    payload: PluginToolCallSnapshot | PluginToolResultSnapshot
+    payload: (
+        PluginToolCallSnapshot
+        | PluginToolResultSnapshot
+        | PluginOutboundPlanSnapshot
+        | PluginDeliverySnapshot
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class PluginHookResult:
     """Typed Hook outcome.
 
-    Tool Hooks are observational in the first runtime slice. ``diagnostics``
-    contains stable machine-readable codes for host status and debugging; it
-    does not rewrite tool arguments, tool results, prompts, or model-visible
-    memory.
+    ``diagnostics`` contains stable machine-readable codes for host status and
+    debugging. Only ``before_outbound_plan`` accepts ``outbound_decoration``;
+    every other Hook remains observational.
     """
 
     diagnostics: tuple[str, ...] = ()
+    outbound_decoration: PluginOutboundDecoration | None = None
 
 
 class PluginHookHandler(Protocol):
@@ -553,9 +603,10 @@ class PluginRegistrar(Protocol):
     def add_hook_handler(self, hook_type: str, handler: "PluginHookHandler") -> None:
         """Register one exact execution lifecycle Hook.
 
-        The plugin must declare ``hook.subscribe``. The currently executable
-        Hook types are ``before_tool_call`` and ``after_tool_call``. Handlers
-        receive immutable snapshots and cannot mutate prompts or the tool call.
+        The plugin must declare ``hook.subscribe``. Executable Hook types are
+        ``before_tool_call``, ``after_tool_call``, ``before_outbound_plan`` and
+        ``after_delivery``. Only the outbound-plan Hook may return the narrow
+        text decoration contract.
         """
         ...
 
@@ -578,6 +629,8 @@ __all__ = [
     "GROUP_CONVERSATION_EVENT",
     "BEFORE_TOOL_CALL_HOOK",
     "AFTER_TOOL_CALL_HOOK",
+    "BEFORE_OUTBOUND_PLAN_HOOK",
+    "AFTER_DELIVERY_HOOK",
     "MANAGED_ARTIFACT_WRITE_PERMISSION",
     "MAX_MANAGED_ARTIFACT_BYTES",
     "MODEL_REASONING_PERMISSION",
@@ -600,6 +653,9 @@ __all__ = [
     "PluginHookEnvelope",
     "PluginHookHandler",
     "PluginHookResult",
+    "PluginOutboundDecoration",
+    "PluginOutboundPlanSnapshot",
+    "PluginDeliverySnapshot",
     "PluginJobController",
     "PluginManifest",
     "PluginQQCommandHandler",

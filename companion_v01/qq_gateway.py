@@ -47,11 +47,19 @@ from .model_service_config import normalize_provider_model_id
 from .onebot_model_actions import (
     MODEL_ONEBOT_MESSAGE_CREATING_ACTIONS,
     authorize_model_onebot_action,
+    model_onebot_action_is_user_visible,
     model_onebot_capabilities,
     resolve_model_onebot_message_selector,
     resolve_model_onebot_params,
 )
 from .onebot_transport import OneBotActionTransport
+from .plugin_api import (
+    AFTER_DELIVERY_HOOK,
+    BEFORE_OUTBOUND_PLAN_HOOK,
+    PluginDeliverySnapshot,
+    PluginHookEnvelope,
+    PluginOutboundPlanSnapshot,
+)
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 
 
@@ -528,8 +536,19 @@ class NapCatQQGateway:
         self._delivery_notes_lock = threading.RLock()
         self._recent_bot_message_ids: dict[str, list[str]] = {}
         self._recent_bot_message_lock = threading.RLock()
+        self._plugin_hook_broker: Any = None
         self._state_error = ""
         self._load_persisted_state()
+
+    def bind_plugin_hook_broker(self, broker: Any | None) -> None:
+        """Bind the shared PluginHost Hook broker to the QQ delivery boundary."""
+
+        if broker is not None and (
+            not callable(getattr(broker, "observes", None))
+            or not callable(getattr(broker, "dispatch_from_consumer", None))
+        ):
+            raise TypeError("invalid_plugin_hook_broker")
+        self._plugin_hook_broker = broker
 
     def _load_persisted_state(self) -> None:
         if self._state_path is None or not self._state_path.is_file():
@@ -3278,9 +3297,200 @@ class NapCatQQGateway:
         *,
         timeout: float,
     ) -> dict[str, Any]:
-        payload = self._onebot_transport.call(action, dict(params), timeout=timeout).as_dict()
-        self._remember_successful_outbound(action, dict(params), payload)
+        clean_action = str(action or "").strip().lstrip("/") or "unknown"
+        effective_params = dict(params)
+        observable = self._is_user_visible_outbound_action(clean_action)
+        observes_before = observable and self._plugin_hook_observes(BEFORE_OUTBOUND_PLAN_HOOK)
+        observes_after = observable and self._plugin_hook_observes(AFTER_DELIVERY_HOOK)
+        delivery_id = f"qq-delivery-{uuid.uuid4().hex}" if observes_before or observes_after else ""
+
+        if observes_before:
+            plan_snapshot = self._plugin_outbound_plan_snapshot(
+                delivery_id=delivery_id,
+                action=clean_action,
+                params=effective_params,
+            )
+            dispatch = self._dispatch_plugin_hook(
+                PluginHookEnvelope(
+                    hook_id=f"{delivery_id}:before",
+                    hook_type=BEFORE_OUTBOUND_PLAN_HOOK,
+                    occurred_at=int(time.time()),
+                    subject=self._plugin_outbound_subject(plan_snapshot),
+                    payload=plan_snapshot,
+                )
+            )
+            effective_params = self._apply_plugin_outbound_decorations(
+                effective_params,
+                dispatch,
+                enabled=plan_snapshot.text_decoratable,
+            )
+
+        transport_started_at = time.perf_counter()
+        payload = self._onebot_transport.call(clean_action, effective_params, timeout=timeout).as_dict()
+        duration_ms = max(0.0, (time.perf_counter() - transport_started_at) * 1000)
+        self._remember_successful_outbound(clean_action, effective_params, payload)
+
+        if observes_after:
+            plan_snapshot = self._plugin_outbound_plan_snapshot(
+                delivery_id=delivery_id,
+                action=clean_action,
+                params=effective_params,
+            )
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            reason = "" if bool(payload.get("ok")) else str(
+                payload.get("code") or payload.get("public_reason") or "delivery_failed"
+            ).strip()
+            self._dispatch_plugin_hook(
+                PluginHookEnvelope(
+                    hook_id=f"{delivery_id}:after",
+                    hook_type=AFTER_DELIVERY_HOOK,
+                    occurred_at=int(time.time()),
+                    subject=self._plugin_outbound_subject(plan_snapshot),
+                    payload=PluginDeliverySnapshot(
+                        delivery_id=delivery_id,
+                        channel="qq",
+                        action=clean_action,
+                        conversation_kind=plan_snapshot.conversation_kind,
+                        target_id=plan_snapshot.target_id,
+                        segment_types=plan_snapshot.segment_types,
+                        status="delivered" if bool(payload.get("ok")) else "failed",
+                        duration_ms=round(duration_ms, 3),
+                        reason=reason,
+                        message_id=str(data.get("message_id") or "").strip(),
+                    ),
+                )
+            )
         return payload
+
+    @staticmethod
+    def _is_user_visible_outbound_action(action: str) -> bool:
+        return (
+            action in MODEL_ONEBOT_MESSAGE_CREATING_ACTIONS
+            or model_onebot_action_is_user_visible(action)
+        )
+
+    def _plugin_hook_observes(self, hook_type: str) -> bool:
+        broker = getattr(self, "_plugin_hook_broker", None)
+        if broker is None:
+            return False
+        try:
+            return bool(broker.observes(hook_type))
+        except Exception:
+            return False
+
+    def _dispatch_plugin_hook(self, hook: PluginHookEnvelope) -> Any:
+        broker = getattr(self, "_plugin_hook_broker", None)
+        if broker is None:
+            return None
+        try:
+            return broker.dispatch_from_consumer(hook)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _plugin_outbound_plan_snapshot(
+        *,
+        delivery_id: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> PluginOutboundPlanSnapshot:
+        group_id = str(params.get("group_id") or "").strip()
+        user_id = str(params.get("user_id") or "").strip()
+        conversation_kind = "group" if group_id else "private" if user_id else ""
+        target_id = group_id or user_id
+        segment_types: list[str] = []
+        text_parts: list[str] = []
+        reply_to_message_id = ""
+        message = params.get("message")
+        if isinstance(message, str):
+            segment_types.append("text")
+            text_parts.append(message)
+        elif isinstance(message, (list, tuple)):
+            for segment in message:
+                if not isinstance(segment, dict):
+                    continue
+                segment_type = str(segment.get("type") or "").strip().lower()
+                if not segment_type:
+                    continue
+                segment_types.append(segment_type)
+                data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
+                if segment_type == "text":
+                    text_parts.append(str(data.get("text") or ""))
+                elif segment_type == "reply" and not reply_to_message_id:
+                    reply_to_message_id = str(data.get("id") or "").strip()
+        elif action in {"upload_group_file", "upload_private_file"}:
+            segment_types.append("file")
+        elif "forward" in action:
+            segment_types.append("forward")
+        elif action in {"group_poke", "friend_poke"}:
+            segment_types.append("poke")
+        elif action == "set_msg_emoji_like":
+            segment_types.append("reaction")
+        elif action == "delete_msg":
+            segment_types.append("recall")
+        elif action == "send_like":
+            segment_types.append("like")
+        visible_text = "".join(text_parts)
+        return PluginOutboundPlanSnapshot(
+            delivery_id=delivery_id,
+            channel="qq",
+            action=action,
+            conversation_kind=conversation_kind,
+            target_id=target_id,
+            segment_types=tuple(segment_types),
+            text=visible_text,
+            reply_to_message_id=reply_to_message_id,
+            text_decoratable=bool(visible_text) and action in {"send_group_msg", "send_private_msg"},
+        )
+
+    @staticmethod
+    def _plugin_outbound_subject(snapshot: PluginOutboundPlanSnapshot) -> str:
+        if snapshot.conversation_kind and snapshot.target_id:
+            return f"qq:{snapshot.conversation_kind}:{snapshot.target_id}"
+        return f"qq:action:{snapshot.action}"
+
+    @staticmethod
+    def _apply_plugin_outbound_decorations(
+        params: dict[str, Any],
+        dispatch: Any,
+        *,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        if not enabled:
+            return dict(params)
+        contributions = getattr(dispatch, "outbound_decorations", ()) if dispatch is not None else ()
+        prefix = "".join(item.text_prefix for _plugin_id, item in contributions)
+        suffix = "".join(item.text_suffix for _plugin_id, item in contributions)
+        if not prefix and not suffix:
+            return dict(params)
+
+        decorated = dict(params)
+        message = decorated.get("message")
+        if isinstance(message, str):
+            decorated["message"] = f"{prefix}{message}{suffix}"
+            return decorated
+        if not isinstance(message, (list, tuple)):
+            return decorated
+        segments = [dict(item) if isinstance(item, dict) else item for item in message]
+        text_indexes = [
+            index
+            for index, item in enumerate(segments)
+            if isinstance(item, dict) and str(item.get("type") or "").strip().lower() == "text"
+        ]
+        if not text_indexes:
+            return decorated
+        first_index = text_indexes[0]
+        last_index = text_indexes[-1]
+        for index in {first_index, last_index}:
+            item = dict(segments[index])
+            item["data"] = dict(item.get("data") or {})
+            segments[index] = item
+        first_data = segments[first_index]["data"]
+        first_data["text"] = prefix + str(first_data.get("text") or "")
+        last_data = segments[last_index]["data"]
+        last_data["text"] = str(last_data.get("text") or "") + suffix
+        decorated["message"] = segments
+        return decorated
 
     @staticmethod
     def _legacy_attachments(attachments: tuple[AttachmentRef, ...]) -> list[dict[str, Any]]:
@@ -4712,13 +4922,12 @@ class NapCatQQGateway:
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
-            last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=20)
-            if last_result.ok:
-                result = last_result.as_dict()
-                self._remember_successful_outbound(plan.action, plan.params(), result)
+            result = self._call_and_track_outbound(plan.action, plan.params(), timeout=20)
+            if result.get("ok"):
                 result["transport"] = transport
                 return result
-        result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
+            last_result = result
+        result = last_result or self._onebot_transport.call("unknown", {}).as_dict()
         result["inline_fallback_skipped"] = inline_fallback_skipped
         return result
 
@@ -4759,12 +4968,11 @@ class NapCatQQGateway:
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
-            last_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
-            if last_result.ok:
-                result = last_result.as_dict()
-                self._remember_successful_outbound(plan.action, plan.params(), result)
+            result = self._call_and_track_outbound(plan.action, plan.params(), timeout=30)
+            if result.get("ok"):
                 result["transport"] = transport
                 return result
+            last_result = result
 
         staged = self._onebot_transport.stage_file(
             path_obj,
@@ -4779,10 +4987,9 @@ class NapCatQQGateway:
                 )
             except ValueError as exc:
                 return self._outbound_plan_failure(exc)
-            streamed_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
-            if streamed_result.ok:
-                result = streamed_result.as_dict()
-                self._remember_successful_outbound(plan.action, plan.params(), result)
+            streamed_result = self._call_and_track_outbound(plan.action, plan.params(), timeout=30)
+            if streamed_result.get("ok"):
+                result = streamed_result
                 result["transport"] = "stream_upload"
                 return result
             last_result = streamed_result
@@ -4795,16 +5002,15 @@ class NapCatQQGateway:
                     [voice_segment(inline_ref, summary=name or path_obj.name)],
                     reply_to=reply_to,
                 )
-                inline_result = self._onebot_transport.call(plan.action, plan.params(), timeout=30)
-                if inline_result.ok:
-                    result = inline_result.as_dict()
-                    self._remember_successful_outbound(plan.action, plan.params(), result)
+                inline_result = self._call_and_track_outbound(plan.action, plan.params(), timeout=30)
+                if inline_result.get("ok"):
+                    result = inline_result
                     result["transport"] = "base64"
                     return result
                 last_result = inline_result
         except (OSError, ValueError):
             pass
-        result = (last_result or self._onebot_transport.call("unknown", {})).as_dict()
+        result = last_result or self._onebot_transport.call("unknown", {}).as_dict()
         if not staged.ok:
             result["staging_reason"] = staged.code
         return result

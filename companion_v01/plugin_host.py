@@ -50,7 +50,7 @@ from .plugin_jobs import _HostJobController, run_supervised_job
 from .plugin_hooks import (
     DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS,
     PluginHookBroker,
-    SUPPORTED_TOOL_HOOK_TYPES,
+    SUPPORTED_HOOK_TYPES,
     _PluginHookRegistration,
 )
 from .plugin_events import (
@@ -367,7 +367,7 @@ class _StagedRegistrar(PluginRegistrar):
         if not self._hook_permission:
             raise RuntimeError("hook_subscribe_permission_required")
         normalized = str(hook_type or "").strip().lower()
-        if normalized not in SUPPORTED_TOOL_HOOK_TYPES:
+        if normalized not in SUPPORTED_HOOK_TYPES:
             raise RuntimeError("unsupported_plugin_hook_type")
         if not callable(getattr(handler, "handle_hook", None)):
             raise RuntimeError("invalid_plugin_hook_handler")
@@ -636,6 +636,7 @@ class PluginHost:
             "jobs": background_service_statuses,
             "close_failure_count": self._close_failure_count,
             "contract": {
+                "supported_hook_types": sorted(SUPPORTED_HOOK_TYPES),
                 "registration_limits": {
                     "adapters_per_plugin": _MAX_ADAPTERS_PER_PLUGIN,
                     "capabilities_per_plugin": _MAX_CAPABILITIES_PER_PLUGIN,

@@ -146,13 +146,15 @@ material_handles: []
 
 ## 6. 第一版 Hook
 
-第一版只开放已有真实消费场景的 Hook：
+第一版只开放已有真实消费场景的四个生命周期 Hook：
 
-1. `channel_event_received`；
-2. `before_tool_call`；
-3. `after_tool_call`；
-4. `before_outbound_plan`；
-5. `after_delivery`。
+1. `before_tool_call`；
+2. `after_tool_call`；
+3. `before_outbound_plan`；
+4. `after_delivery`。
+
+入站消息不重复制造 `channel_event_received` Hook，而由 M67-B 已落地的
+`conversation.direct.inbound` / `conversation.group.inbound` 事件表达。
 
 Hook 接收不可变快照，返回类型化结果。它可以观察、追加诊断、贡献标准事件或修改
 明确允许的出站装饰字段；不能取得 Engine、MemCore、具体 QQ Gateway 或任意 Prompt
@@ -293,9 +295,10 @@ PluginHost 状态契约中。事件不进入稳定 system prompt，因此未注�
 
 ### M67-C：Hook 与多后台服务
 
-状态：多后台服务、工具调用前后 Hook 已完成第一版；出站前后 Hook 待下一切片。
+状态：多后台服务、工具调用前后 Hook、出站计划与交付 Hook 已完成第一版。
 
-工作：落地五个 Hook；后台任务改为按 ID 的服务集合；补齐取消、幂等、状态和失败隔离。
+工作：落地四个生命周期 Hook 和通用入站事件；后台任务改为按 ID 的服务集合；补齐取消、
+幂等、状态和失败隔离。
 
 多后台服务现由 `PluginRegistrar.add_background_service(service_id, service)` 注册。每个
 `(plugin_id, service_id)` 拥有独立控制器、任务和状态；同插件一个服务异常退出只将该服务
@@ -317,11 +320,19 @@ Schema 或 MemCore 投影，因此未安装相关插件时缓存前缀不变。
 结构化原因、耗时、模型可见工具反馈和事件类型。快照不会进入 prompt 或 MemCore，也不能由
 插件改写；没有 Hook 观察器时宿主跳过参数序列化与快照构造，普通工具调用路径没有新增等待。
 
-Hook 处理器在 PluginHost 生命周期事件循环并发执行，Engine 工作线程通过明确桥接等待这次
+Hook 处理器在 PluginHost 生命周期事件循环并发执行，Engine 与 QQ 发送工作线程通过明确桥接等待这次
 观察完成。单处理器时限公开在 `contract.timeouts.hook_handler_seconds`；超时、异常和非法结果
 只进入 `hook_runtime` 诊断计数，不改变工具成功/失败、不吞模型原有反馈，也不将插件异常文字
-发给用户。Hook 处理器数量没有另设魔法上限，注册类型只接受宿主当前真实可调用的 Hook，
-未实现的 `before_outbound_plan` / `after_delivery` 不做 future-only 占位。
+发给用户。QQ 文字、图片、语音、文件、转发及模型直接发起的用户可见 OneBot 动作统一经过
+同一个出站边界；旧图片/语音运输回退不再绕过 Hook。`before_outbound_plan` 快照只暴露目标、
+动作、有序段类型、可见文字和引用 ID，不暴露媒体 URL、本地路径或上传句柄。第一版唯一可变
+字段是已有文字的前后装饰；它不能替换正文、目标、引用、媒体或动作，媒体消息也不会被装饰
+强行变成图文消息。`after_delivery` 发布真实成功/失败、耗时和安全回执 message ID。插件异常、
+超时或非法装饰时原始发送计划照常执行。
+
+没有出站 Hook 观察器时不构造快照、不生成 delivery ID，也不等待 PluginHost；这些 Hook 不进入
+prompt、工具 Schema 或 MemCore，因此不改变模型缓存前缀。Hook 处理器数量没有另设魔法上限，
+注册类型只接受宿主当前真实可调用的 Hook。
 
 验收：同插件两个服务可独立运行和停止；长任务中的新事件不产生重复 Agent 回合；Hook
 错误得到结构化反馈且不吞主流程。

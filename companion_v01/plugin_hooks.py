@@ -1,8 +1,8 @@
-"""Host-owned execution Hook broker for trusted in-process plugins.
+"""Host-owned lifecycle Hook broker for trusted in-process plugins.
 
-Tool Hooks observe immutable snapshots on the PluginHost lifecycle loop. They
-cannot replace arguments, results, prompts, or delivery plans. A slow or broken
-handler is reported in broker diagnostics and never changes the tool outcome.
+Hooks observe immutable snapshots on the PluginHost lifecycle loop. Only the
+explicit outbound text-decoration contract can affect a plan; a slow or broken
+handler never changes the host outcome.
 """
 
 from __future__ import annotations
@@ -15,16 +15,21 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .plugin_api import (
+    AFTER_DELIVERY_HOOK,
     AFTER_TOOL_CALL_HOOK,
+    BEFORE_OUTBOUND_PLAN_HOOK,
     BEFORE_TOOL_CALL_HOOK,
     PluginHookEnvelope,
     PluginHookHandler,
     PluginHookResult,
+    PluginOutboundDecoration,
 )
 
 
 DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS = 1.0
 SUPPORTED_TOOL_HOOK_TYPES = frozenset({BEFORE_TOOL_CALL_HOOK, AFTER_TOOL_CALL_HOOK})
+SUPPORTED_OUTBOUND_HOOK_TYPES = frozenset({BEFORE_OUTBOUND_PLAN_HOOK, AFTER_DELIVERY_HOOK})
+SUPPORTED_HOOK_TYPES = SUPPORTED_TOOL_HOOK_TYPES | SUPPORTED_OUTBOUND_HOOK_TYPES
 _DIAGNOSTIC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
@@ -37,12 +42,19 @@ class _PluginHookRegistration:
 
 @dataclass(frozen=True, slots=True)
 class PluginHookDispatchResult:
-    """Aggregate result used for host diagnostics, never tool control flow."""
+    """Aggregate diagnostics plus validated outbound decorations."""
 
     ok: bool
     status: str
     diagnostics: tuple[tuple[str, str], ...] = ()
     failures: tuple[tuple[str, str], ...] = ()
+    outbound_decorations: tuple[tuple[str, PluginOutboundDecoration], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PluginHookHandlerOutcome:
+    diagnostics: tuple[str, ...]
+    outbound_decoration: PluginOutboundDecoration | None = None
 
 
 class PluginHookBroker:
@@ -101,17 +113,21 @@ class PluginHookBroker:
         )
         diagnostics: list[tuple[str, str]] = []
         failures: list[tuple[str, str]] = []
+        outbound_decorations: list[tuple[str, PluginOutboundDecoration]] = []
         for registration, outcome in zip(registrations, outcomes):
             if isinstance(outcome, str):
                 failures.append((registration.plugin_id, outcome))
                 continue
-            diagnostics.extend((registration.plugin_id, code) for code in outcome)
+            diagnostics.extend((registration.plugin_id, code) for code in outcome.diagnostics)
+            if outcome.outbound_decoration is not None:
+                outbound_decorations.append((registration.plugin_id, outcome.outbound_decoration))
         return self._record(
             PluginHookDispatchResult(
                 ok=not failures,
                 status="observed" if not failures else "partially_observed",
                 diagnostics=tuple(diagnostics),
                 failures=tuple(failures),
+                outbound_decorations=tuple(outbound_decorations),
             )
         )
 
@@ -180,7 +196,7 @@ class PluginHookBroker:
         self,
         registration: _PluginHookRegistration,
         hook: PluginHookEnvelope,
-    ) -> tuple[str, ...] | str:
+    ) -> _PluginHookHandlerOutcome | str:
         try:
             result = await asyncio.wait_for(
                 registration.handler.handle_hook(hook),
@@ -202,7 +218,15 @@ class PluginHookBroker:
             if _DIAGNOSTIC_PATTERN.fullmatch(normalized) is None:
                 return "invalid_diagnostics"
             diagnostics.append(normalized)
-        return tuple(diagnostics)
+        decoration = result.outbound_decoration
+        if decoration is not None:
+            if hook.hook_type != BEFORE_OUTBOUND_PLAN_HOOK:
+                return "unexpected_outbound_decoration"
+            if not isinstance(decoration, PluginOutboundDecoration):
+                return "invalid_outbound_decoration"
+            if not isinstance(decoration.text_prefix, str) or not isinstance(decoration.text_suffix, str):
+                return "invalid_outbound_decoration"
+        return _PluginHookHandlerOutcome(tuple(diagnostics), decoration)
 
     def _current_registrations(self) -> tuple[_PluginHookRegistration, ...]:
         if self._registrations_provider is not None:
@@ -233,13 +257,15 @@ class PluginHookBroker:
 
 def _normalize_hook_type(value: object) -> str:
     normalized = str(value or "").strip().lower()
-    return normalized if normalized in SUPPORTED_TOOL_HOOK_TYPES else ""
+    return normalized if normalized in SUPPORTED_HOOK_TYPES else ""
 
 
 __all__ = [
     "DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS",
     "PluginHookBroker",
     "PluginHookDispatchResult",
+    "SUPPORTED_HOOK_TYPES",
+    "SUPPORTED_OUTBOUND_HOOK_TYPES",
     "SUPPORTED_TOOL_HOOK_TYPES",
     "_PluginHookRegistration",
 ]
