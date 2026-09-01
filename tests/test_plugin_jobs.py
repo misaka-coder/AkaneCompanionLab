@@ -327,6 +327,14 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["capability_count"], 0)
         self.assertEqual(status["job_count"], 1)
+        self.assertEqual(
+            status["plugins"][0]["contribution_snapshot"]["background_services"],
+            ["default"],
+        )
+        self.assertEqual(
+            status["plugins"][0]["contribution_snapshot"]["types"],
+            ["background_services"],
+        )
         self.assertTrue(job.started)
         await host.stop()
 

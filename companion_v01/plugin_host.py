@@ -70,6 +70,7 @@ _MAX_PROMPT_BLOCK_CHARS = 16_000
 _MAX_PROMPT_BLOCK_TOTAL_CHARS = 32_000
 _MAX_PERMISSIONS_PER_PLUGIN = 32
 _PROMPT_BLOCK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_LEGACY_BACKGROUND_SERVICE_ID = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +103,50 @@ class PluginStatus:
         if self.qq_commands:
             payload["qq_commands"] = list(self.qq_commands)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class PluginContributionSnapshot:
+    """Immutable inventory of one active plugin's real host contributions.
+
+    M67-A intentionally lists only contribution kinds that PluginHost can
+    execute today.  Event handlers, hooks, skills, providers, and UI pages are
+    added only when their runtime contracts exist; empty future placeholders
+    must not be advertised as supported capabilities.
+    """
+
+    plugin_id: str
+    generation: int
+    capability_ids: tuple[str, ...] = ()
+    qq_commands: tuple[str, ...] = ()
+    background_service_ids: tuple[str, ...] = ()
+    prompt_block_ids: tuple[str, ...] = ()
+    prompt_character_count: int = 0
+
+    @property
+    def contribution_types(self) -> tuple[str, ...]:
+        kinds: list[str] = []
+        if self.capability_ids:
+            kinds.append("capabilities")
+        if self.qq_commands:
+            kinds.append("commands")
+        if self.background_service_ids:
+            kinds.append("background_services")
+        if self.prompt_block_ids:
+            kinds.append("prompt_blocks")
+        return tuple(kinds)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "plugin_id": self.plugin_id,
+            "generation": self.generation,
+            "types": list(self.contribution_types),
+            "capabilities": list(self.capability_ids),
+            "commands": list(self.qq_commands),
+            "background_services": list(self.background_service_ids),
+            "prompt_blocks": list(self.prompt_block_ids),
+            "prompt_character_count": self.prompt_character_count,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +381,7 @@ class PluginHost:
         )
         self._active_plugins: Mapping[str, _ActivePlugin] = MappingProxyType({})
         self._capabilities: Mapping[str, _CapabilityRegistration] = MappingProxyType({})
+        self._contribution_snapshots: tuple[PluginContributionSnapshot, ...] = ()
         self._activation_order: tuple[CapabilityAdapter, ...] = ()
         self._closed_adapters: list[CapabilityAdapter] = []
         self._close_failure_count = 0
@@ -385,6 +431,12 @@ class PluginHost:
             }
         )
 
+    @property
+    def contribution_snapshots(self) -> tuple[PluginContributionSnapshot, ...]:
+        """Return the immutable contribution inventory for this generation."""
+
+        return self._contribution_snapshots
+
     def stable_system_prompt_blocks(self) -> tuple[str, ...]:
         """Return the active restart-only prompt snapshot in stable key order."""
 
@@ -414,6 +466,16 @@ class PluginHost:
             }
             for plugin_id, item in self._job_statuses.items()
         ]
+        contribution_by_plugin = {
+            item.plugin_id: item for item in self._contribution_snapshots
+        }
+        plugin_statuses: list[dict[str, Any]] = []
+        for status in self._plugin_statuses:
+            payload = status.as_dict()
+            contribution = contribution_by_plugin.get(status.plugin_id)
+            if contribution is not None:
+                payload["contribution_snapshot"] = contribution.as_dict()
+            plugin_statuses.append(payload)
         return {
             "ok": self._state == "active",
             "status": self._state,
@@ -422,10 +484,11 @@ class PluginHost:
             "generation": self._generation,
             "configured_plugin_count": len(self._plugin_statuses),
             "plugin_count": len(self._active_plugins),
-            "capability_count": len(self._capabilities),
+            "capability_count": sum(
+                len(item.capability_ids) for item in self._contribution_snapshots
+            ),
             "prompt_block_count": sum(
-                len(active.prompt_block_registrations)
-                for active in self._active_plugins.values()
+                len(item.prompt_block_ids) for item in self._contribution_snapshots
             ),
             "job_count": len(self._job_tasks),
             "running_job_count": sum(
@@ -452,7 +515,7 @@ class PluginHost:
                     "background_job_stop_seconds": self._job_stop_timeout_seconds,
                 },
             },
-            "plugins": [status.as_dict() for status in self._plugin_statuses],
+            "plugins": plugin_statuses,
         }
 
     def bind_managed_artifact_sink(self, sink: ManagedArtifactSink) -> None:
@@ -603,6 +666,10 @@ class PluginHost:
             self._capabilities = MappingProxyType(dict(working_capabilities))
             self._activation_order = tuple(activation_order)
             self._generation += 1
+            self._contribution_snapshots = _build_contribution_snapshots(
+                working_plugins,
+                generation=self._generation,
+            )
             # Start supervised job tasks for every successfully activated plugin with a job
             job_tasks: dict[str, tuple[Any, _HostJobController, asyncio.Task]] = {}
             self._job_statuses = {}
@@ -690,6 +757,7 @@ class PluginHost:
             await self._close_adapters(reversed(self._activation_order))
             self._active_plugins = MappingProxyType({})
             self._capabilities = MappingProxyType({})
+            self._contribution_snapshots = ()
             self._activation_order = ()
             self._job_tasks = {}
             self._state = "stopped"
@@ -1486,9 +1554,38 @@ def _public_plugin_id(plugin_id: Any) -> str:
     return plugin_id if is_valid_plugin_id(plugin_id) else "invalid-plugin-id"
 
 
+def _build_contribution_snapshots(
+    active_plugins: Mapping[str, _ActivePlugin],
+    *,
+    generation: int,
+) -> tuple[PluginContributionSnapshot, ...]:
+    snapshots: list[PluginContributionSnapshot] = []
+    for plugin_id, active in active_plugins.items():
+        prompt_blocks = tuple(
+            sorted(active.prompt_block_registrations, key=lambda item: item.block_id)
+        )
+        snapshots.append(
+            PluginContributionSnapshot(
+                plugin_id=_public_plugin_id(plugin_id),
+                generation=generation,
+                capability_ids=tuple(sorted(active.capability_ids)),
+                qq_commands=tuple(
+                    sorted(item.command for item in active.qq_command_registrations)
+                ),
+                background_service_ids=(
+                    (_LEGACY_BACKGROUND_SERVICE_ID,) if active.job is not None else ()
+                ),
+                prompt_block_ids=tuple(item.block_id for item in prompt_blocks),
+                prompt_character_count=sum(len(item.text) for item in prompt_blocks),
+            )
+        )
+    snapshots.sort(key=lambda item: item.plugin_id)
+    return tuple(snapshots)
+
+
 def _current_task_is_cancelling() -> bool:
     task = asyncio.current_task()
     return bool(task is not None and task.cancelling())
 
 
-__all__ = ["PluginHost", "PluginStatus"]
+__all__ = ["PluginContributionSnapshot", "PluginHost", "PluginStatus"]

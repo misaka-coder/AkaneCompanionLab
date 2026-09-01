@@ -1,5 +1,9 @@
 # Akane 扩展生态与插件生命周期 V1
 
+插件贡献类型、事件投递、Hook、多后台服务、AI 自开发和市场的分阶段实施细节见
+`docs/plugin_contribution_event_market_plan_v1.md`。本文件继续作为扩展生态的总原则，
+实施计划不得另造 PluginHost、消息链、MemCore 或能力执行权威。
+
 ## 1. 目标体验
 
 用户只需要面对一个“扩展中心”，但系统必须保留三种扩展的真实语义：

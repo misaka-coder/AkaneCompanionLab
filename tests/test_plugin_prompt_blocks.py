@@ -246,6 +246,19 @@ class PluginPromptContributionHostTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["prompt_block_count"], 3)
+        snapshots = {
+            item["plugin_id"]: item["contribution_snapshot"]
+            for item in status["plugins"]
+        }
+        self.assertEqual(
+            snapshots["akane.test.alpha"]["prompt_blocks"],
+            ["a-research", "z-risk"],
+        )
+        self.assertEqual(
+            snapshots["akane.test.alpha"]["prompt_character_count"],
+            len("alpha research method") + len("alpha risk rules\nwith evidence"),
+        )
+        self.assertIn("prompt_blocks", snapshots["akane.test.alpha"]["types"])
         self.assertEqual(
             host.stable_system_prompt_blocks(),
             (

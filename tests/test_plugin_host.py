@@ -252,6 +252,8 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(started["status"], "active")
         self.assertEqual(started["plugins"][0]["status"], "disabled")
+        self.assertNotIn("contribution_snapshot", started["plugins"][0])
+        self.assertEqual(host.contribution_snapshots, ())
         self.assertEqual(provider_calls, 0)
         self.assertEqual(entry_point.load_count, 0)
 
@@ -280,6 +282,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         first = await host.start()
         second = await host.start()
         descriptor_snapshot = host.capability_descriptors
+        contribution_snapshot = host.contribution_snapshots
         descriptor.raw["plugin_mutation"] = True  # type: ignore[index]
         descriptor_snapshot[CAPABILITY_ID].raw["consumer_mutation"] = True  # type: ignore[index]
         current_descriptor = host.capability_descriptors[CAPABILITY_ID]
@@ -302,6 +305,19 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider_calls, 1)
         self.assertEqual(entry_point.load_count, 1)
         self.assertEqual(tuple(descriptor_snapshot), (CAPABILITY_ID,))
+        self.assertEqual(len(contribution_snapshot), 1)
+        self.assertEqual(contribution_snapshot[0].plugin_id, PLUGIN_ID)
+        self.assertEqual(contribution_snapshot[0].generation, first["generation"])
+        self.assertEqual(contribution_snapshot[0].capability_ids, (CAPABILITY_ID,))
+        self.assertEqual(contribution_snapshot[0].contribution_types, ("capabilities",))
+        self.assertEqual(
+            first["plugins"][0]["contribution_snapshot"],
+            contribution_snapshot[0].as_dict(),
+        )
+        with self.assertRaises(AttributeError):
+            contribution_snapshot[0].capability_ids = ()  # type: ignore[misc]
+        first["plugins"][0]["contribution_snapshot"]["capabilities"].clear()
+        self.assertEqual(contribution_snapshot[0].capability_ids, (CAPABILITY_ID,))
         self.assertIsNot(descriptor_snapshot[CAPABILITY_ID], descriptor)
         with self.assertRaises(TypeError):
             descriptor_snapshot["akane.test.forbidden"] = descriptor  # type: ignore[index]
@@ -317,6 +333,7 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.invocation_contexts, [context])
         self.assertEqual(tuple(descriptor_snapshot), (CAPABILITY_ID,))
         self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(host.contribution_snapshots, ())
         self.assertEqual(stopped_again, stopped)
         self.assertEqual(adapter.close_count, 1)
         self.assertEqual(after_stop.status, "host_unavailable")
@@ -700,7 +717,17 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             unknown = await client.post("/admin/plugins/capabilities/akane.test.unknown.ping/invoke", json={})
 
         self.assertEqual(status.status_code, 200)
-        self.assertEqual(status.json()["capability_count"], 1)
+        status_payload = status.json()
+        self.assertEqual(status_payload["capability_count"], 1)
+        self.assertEqual(status_payload["kind"], "plugin")
+        self.assertEqual(
+            status_payload["plugins"][0]["contribution_snapshot"]["capabilities"],
+            [CAPABILITY_ID],
+        )
+        self.assertEqual(
+            status_payload["plugins"][0]["contribution_snapshot"]["generation"],
+            status_payload["generation"],
+        )
         self.assertEqual(invoked.status_code, 200)
         self.assertEqual(invoked.json()["content"]["diagnostic"], "ready")
         self.assertEqual(

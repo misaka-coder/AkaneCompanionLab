@@ -486,6 +486,14 @@ class PluginHostQQCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["capability_count"], 0)
         self.assertEqual(broker.registered_commands, ("/balance",))
+        self.assertEqual(
+            status["plugins"][0]["contribution_snapshot"]["commands"],
+            ["/balance"],
+        )
+        self.assertEqual(
+            status["plugins"][0]["contribution_snapshot"]["types"],
+            ["commands"],
+        )
         await host.stop()
 
     async def test_existing_broker_uses_current_command_generation_after_host_restart(self) -> None:
