@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import re
 import unicodedata
@@ -37,6 +38,7 @@ from .plugin_api import (
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
+    SKILL_CONTRIBUTION_PERMISSION,
     SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
     ManagedArtifactPayload,
     PluginManifest,
@@ -72,6 +74,7 @@ from .plugin_result_experience import (
     has_reserved_plugin_result_key,
     project_plugin_result_payload,
 )
+from .skill_runtime import ContributedSkillRoot, SkillError, validate_contributed_skill_root
 
 
 _SAFE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
@@ -104,6 +107,7 @@ class PluginStatus:
     qq_commands: tuple[str, ...] = ()
     event_types: tuple[str, ...] = ()
     hook_types: tuple[str, ...] = ()
+    skill_names: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -126,6 +130,8 @@ class PluginStatus:
             payload["event_types"] = list(self.event_types)
         if self.hook_types:
             payload["hook_types"] = list(self.hook_types)
+        if self.skill_names:
+            payload["skill_names"] = list(self.skill_names)
         return payload
 
 
@@ -134,7 +140,7 @@ class PluginContributionSnapshot:
     """Immutable inventory of one active plugin's real host contributions.
 
     Only contribution kinds that PluginHost can execute today are listed.
-    Hooks, skills, providers, and UI pages are added only when their runtime
+    Providers and UI pages are added only when their runtime
     contracts exist; empty future placeholders are never advertised.
     """
 
@@ -146,6 +152,7 @@ class PluginContributionSnapshot:
     hook_types: tuple[str, ...] = ()
     background_service_ids: tuple[str, ...] = ()
     prompt_block_ids: tuple[str, ...] = ()
+    skill_names: tuple[str, ...] = ()
     prompt_character_count: int = 0
 
     @property
@@ -163,6 +170,8 @@ class PluginContributionSnapshot:
             kinds.append("background_services")
         if self.prompt_block_ids:
             kinds.append("prompt_blocks")
+        if self.skill_names:
+            kinds.append("skills")
         return tuple(kinds)
 
     def as_dict(self) -> dict[str, Any]:
@@ -176,6 +185,7 @@ class PluginContributionSnapshot:
             "hooks": list(self.hook_types),
             "background_services": list(self.background_service_ids),
             "prompt_blocks": list(self.prompt_block_ids),
+            "skills": list(self.skill_names),
             "prompt_character_count": self.prompt_character_count,
         }
 
@@ -195,6 +205,13 @@ class _PromptBlockRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class _SkillRegistration:
+    name: str
+    root: Path
+    mount_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class _BackgroundServiceRegistration:
     service_id: str
     service: Any  # PluginBackgroundJob
@@ -210,6 +227,7 @@ class _ActivePlugin:
     event_registrations: tuple[_PluginEventRegistration, ...] = ()
     hook_registrations: tuple[_PluginHookRegistration, ...] = ()
     prompt_block_registrations: tuple[_PromptBlockRegistration, ...] = ()
+    skill_registrations: tuple[_SkillRegistration, ...] = ()
 
 
 class _ActivationFailure(RuntimeError):
@@ -239,6 +257,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._hook_permission: bool = False
         self._prompt_blocks: list[_PromptBlockRegistration] = []
         self._prompt_permission: bool = False
+        self._skills: list[_SkillRegistration] = []
+        self._skill_permission: bool = False
 
     @property
     def adapters(self) -> tuple[CapabilityAdapter, ...]:
@@ -252,6 +272,23 @@ class _StagedRegistrar(PluginRegistrar):
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
         self._adapters.append(adapter)
+
+    def add_skill(self, skill_root: Path) -> None:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._skill_permission:
+            raise RuntimeError("skill_contribution_permission_required")
+        try:
+            entry = validate_contributed_skill_root(Path(skill_root))
+            root = entry.root
+        except (OSError, SkillError, TypeError, ValueError) as exc:
+            reason = exc.reason if isinstance(exc, SkillError) else "skill_package_invalid"
+            raise RuntimeError(reason) from None
+        if any(item.name == entry.name for item in self._skills):
+            raise RuntimeError("duplicate_plugin_skill")
+        self._skills.append(
+            _SkillRegistration(name=entry.name, root=root, mount_name="")
+        )
 
     def add_prompt_block(self, block_id: str, text: str) -> None:
         if self._sealed:
@@ -393,6 +430,10 @@ class _StagedRegistrar(PluginRegistrar):
     def prompt_blocks(self) -> tuple[_PromptBlockRegistration, ...]:
         return tuple(self._prompt_blocks)
 
+    @property
+    def skills(self) -> tuple[_SkillRegistration, ...]:
+        return tuple(self._skills)
+
     def _set_storage_dir(self, path: Path) -> None:
         """Called by PluginHost after manifest validation; not part of the plugin API."""
         self._storage_dir = path
@@ -419,6 +460,9 @@ class _StagedRegistrar(PluginRegistrar):
 
     def _set_prompt_permission(self, allowed: bool) -> None:
         self._prompt_permission = allowed
+
+    def _set_skill_permission(self, allowed: bool) -> None:
+        self._skill_permission = allowed
 
     def seal(self) -> None:
         self._sealed = True
@@ -553,6 +597,21 @@ class PluginHost:
         registrations.sort(key=lambda item: (item[0], item[1]))
         return tuple(text for _plugin_id, _block_id, text in registrations)
 
+    def skill_roots(self) -> tuple[ContributedSkillRoot, ...]:
+        """Return the active generation's immutable plugin Skill mounts."""
+
+        roots = [
+            ContributedSkillRoot(
+                source=f"plugin:{plugin_id}",
+                root=registration.root,
+                mount_name=registration.mount_name,
+            )
+            for plugin_id, active in self._active_plugins.items()
+            for registration in active.skill_registrations
+        ]
+        roots.sort(key=lambda item: (item.source, item.root.name.casefold()))
+        return tuple(roots)
+
     def status_snapshot(self) -> dict[str, Any]:
         reason = ""
         if self._state == "degraded":
@@ -604,6 +663,9 @@ class PluginHost:
             ),
             "hook_handler_count": sum(
                 len(item.hook_types) for item in self._contribution_snapshots
+            ),
+            "skill_count": sum(
+                len(item.skill_names) for item in self._contribution_snapshots
             ),
             "hook_runtime": (
                 self._hook_broker.status_snapshot()
@@ -789,6 +851,7 @@ class PluginHost:
             working_plugins: dict[str, _ActivePlugin] = {}
             working_capabilities: dict[str, _CapabilityRegistration] = {}
             working_qq_commands: set[str] = set()
+            working_skill_names: set[str] = set()
             activation_order: list[CapabilityAdapter] = []
             statuses: list[PluginStatus] = []
 
@@ -832,6 +895,7 @@ class PluginHost:
                     entry_points_by_name.get(selection.plugin_id, []),
                     reserved_capability_ids=frozenset(working_capabilities),
                     reserved_qq_commands=frozenset(working_qq_commands),
+                    reserved_skill_names=frozenset(working_skill_names),
                 )
                 statuses.append(status)
                 if active is None:
@@ -841,6 +905,9 @@ class PluginHost:
                     working_capabilities[registration.descriptor.id] = registration
                 working_qq_commands.update(
                     registration.command for registration in active.qq_command_registrations
+                )
+                working_skill_names.update(
+                    registration.name for registration in active.skill_registrations
                 )
                 activation_order.extend(active.adapters)
 
@@ -1192,6 +1259,7 @@ class PluginHost:
         *,
         reserved_capability_ids: frozenset[str],
         reserved_qq_commands: frozenset[str],
+        reserved_skill_names: frozenset[str],
     ) -> tuple[PluginStatus, _ActivePlugin | None, tuple[_CapabilityRegistration, ...]]:
         registrar = _StagedRegistrar()
         artifact_version = ""
@@ -1281,6 +1349,8 @@ class PluginHost:
                 registrar._set_hook_permission(True)
             if SYSTEM_PROMPT_CONTRIBUTION_PERMISSION in manifest.permissions:
                 registrar._set_prompt_permission(True)
+            if SKILL_CONTRIBUTION_PERMISSION in manifest.permissions:
+                registrar._set_skill_permission(True)
             register = getattr(plugin, "register", None)
             if not callable(register):
                 raise _ActivationFailure("invalid_plugin_contract")
@@ -1301,6 +1371,8 @@ class PluginHost:
                 raise _ActivationFailure("invalid_plugin_registration_result")
             if any(reg.command in reserved_qq_commands for reg in registrar.qq_commands):
                 raise _ActivationFailure("qq_command_conflict")
+            if any(reg.name in reserved_skill_names for reg in registrar.skills):
+                raise _ActivationFailure("skill_name_conflict")
             if len(registrar.adapters) > _MAX_ADAPTERS_PER_PLUGIN:
                 raise _ActivationFailure("too_many_plugin_adapters")
             if len({id(adapter) for adapter in registrar.adapters}) != len(registrar.adapters):
@@ -1364,6 +1436,7 @@ class PluginHost:
                         hook_handler_count=len(registrar.hook_registrations),
                         has_background_job=bool(registrar.background_services),
                         prompt_block_count=len(registrar.prompt_blocks),
+                        skill_count=len(registrar.skills),
                     ),
                     stage="registration_contributions",
                 )
@@ -1374,6 +1447,7 @@ class PluginHost:
                 or registrar.hook_registrations
                 or registrar.background_services
                 or registrar.prompt_blocks
+                or registrar.skills
             ):
                 raise _ActivationFailure("plugin_registered_no_contributions")
 
@@ -1407,6 +1481,13 @@ class PluginHost:
                     for reg in registrar.hook_registrations
                 ),
                 prompt_block_registrations=tuple(registrar.prompt_blocks),
+                skill_registrations=tuple(
+                    replace(
+                        registration,
+                        mount_name=_plugin_skill_mount_name(selection.plugin_id, registration.name),
+                    )
+                    for registration in registrar.skills
+                ),
             )
             return (
                 PluginStatus(
@@ -1419,6 +1500,7 @@ class PluginHost:
                     qq_commands=tuple(reg.command for reg in registrar.qq_commands),
                     event_types=tuple(reg.event_type for reg in registrar.event_registrations),
                     hook_types=tuple(reg.hook_type for reg in registrar.hook_registrations),
+                    skill_names=tuple(reg.name for reg in registrar.skills),
                 ),
                 active,
                 tuple(registrations),
@@ -1809,6 +1891,11 @@ def _public_plugin_id(plugin_id: Any) -> str:
     return plugin_id if is_valid_plugin_id(plugin_id) else "invalid-plugin-id"
 
 
+def _plugin_skill_mount_name(plugin_id: str, skill_name: str) -> str:
+    material = f"{plugin_id}\0{skill_name}".encode("utf-8")
+    return f"plugin_skill_{hashlib.sha256(material).hexdigest()[:16]}"
+
+
 def _build_contribution_snapshots(
     active_plugins: Mapping[str, _ActivePlugin],
     *,
@@ -1838,6 +1925,9 @@ def _build_contribution_snapshots(
                 ),
                 prompt_block_ids=tuple(item.block_id for item in prompt_blocks),
                 prompt_character_count=sum(len(item.text) for item in prompt_blocks),
+                skill_names=tuple(
+                    sorted(item.name for item in active.skill_registrations)
+                ),
             )
         )
     snapshots.sort(key=lambda item: item.plugin_id)

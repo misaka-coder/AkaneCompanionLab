@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import threading
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 import uuid
 
 import yaml
@@ -57,6 +57,8 @@ class SkillEntry:
     instruction_sha256: str
     files: tuple[str, ...]
     required_tools: tuple[str, ...] = ()
+    mount_name: str = ""
+    execution_prefix: str = ""
 
     @property
     def revision(self) -> str:
@@ -64,7 +66,22 @@ class SkillEntry:
 
     @property
     def execution_cwd(self) -> str:
+        if self.mount_name:
+            return f"alias:{self.mount_name}"
         return f"alias:{SKILL_MANAGED_MOUNT if self.source == 'managed' else SKILL_BUNDLED_MOUNT}"
+
+    def execution_path(self, resource: str) -> str:
+        relative = str(resource or "").strip().replace("\\", "/")
+        return f"{self.execution_prefix}/{relative}" if self.execution_prefix else relative
+
+
+@dataclass(frozen=True)
+class ContributedSkillRoot:
+    """One validated, generation-scoped Skill package supplied by PluginHost."""
+
+    source: str
+    root: Path
+    mount_name: str
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,7 @@ class SkillReadResult:
     status: str
     name: str = ""
     revision: str = ""
+    source: str = ""
     resource: str = ""
     content: str = ""
     execution_cwd: str = ""
@@ -208,7 +226,14 @@ def _iter_package_files(root: Path) -> Iterable[tuple[Path, str]]:
         yield path, path.relative_to(root).as_posix()
 
 
-def _entry_from_dir(root: Path, *, source: str, enforce_directory_name: bool = True) -> SkillEntry:
+def _entry_from_dir(
+    root: Path,
+    *,
+    source: str,
+    enforce_directory_name: bool = True,
+    mount_name: str = "",
+    execution_prefix: str | None = None,
+) -> SkillEntry:
     if root.is_symlink() or not root.is_dir():
         raise SkillError("skill_directory_invalid")
     skill_path = root / SKILL_FILE_NAME
@@ -231,7 +256,15 @@ def _entry_from_dir(root: Path, *, source: str, enforce_directory_name: bool = T
         instruction_sha256=hashlib.sha256(skill_path.read_bytes()).hexdigest(),
         files=files,
         required_tools=required_tools,
+        mount_name=mount_name,
+        execution_prefix=root.name if execution_prefix is None else execution_prefix,
     )
+
+
+def validate_contributed_skill_root(root: str | Path) -> SkillEntry:
+    """Validate one plugin-shipped Skill without publishing its physical path."""
+
+    return _entry_from_dir(Path(root), source="plugin")
 
 
 class SkillRegistry:
@@ -243,10 +276,12 @@ class SkillRegistry:
         bundled_root: str | Path,
         managed_root: str | Path,
         execution_workspace_root: str | Path,
+        contributed_roots_provider: Callable[[], Iterable[ContributedSkillRoot]] | None = None,
     ) -> None:
         self.bundled_root = Path(bundled_root).resolve(strict=False)
         self.managed_root = Path(managed_root).resolve(strict=False)
         self.execution_workspace_root = Path(execution_workspace_root).resolve(strict=False)
+        self._contributed_roots_provider = contributed_roots_provider
         self.managed_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._last_good: dict[tuple[str, str], SkillEntry] = {}
@@ -255,7 +290,24 @@ class SkillRegistry:
         paths = {SKILL_MANAGED_MOUNT: self.managed_root}
         if self.bundled_root.is_dir():
             paths[SKILL_BUNDLED_MOUNT] = self.bundled_root
+        for contribution in self._contributed_roots():
+            paths[contribution.mount_name] = contribution.root
         return paths
+
+    def _contributed_roots(self) -> tuple[ContributedSkillRoot, ...]:
+        if self._contributed_roots_provider is None:
+            return ()
+        try:
+            roots = tuple(self._contributed_roots_provider())
+        except Exception:
+            return ()
+        return tuple(
+            item
+            for item in roots
+            if isinstance(item, ContributedSkillRoot)
+            and item.source.startswith("plugin:")
+            and item.mount_name
+        )
 
     @staticmethod
     def _child_dirs(root: Path) -> list[Path]:
@@ -292,12 +344,40 @@ class SkillRegistry:
                         )
                         continue
                     discovered[key] = entry
+            for contribution in self._contributed_roots():
+                key = (contribution.source, contribution.root.name)
+                try:
+                    entry = _entry_from_dir(
+                        contribution.root,
+                        source=contribution.source,
+                        mount_name=contribution.mount_name,
+                        execution_prefix="",
+                    )
+                except SkillError as exc:
+                    previous = self._last_good.get(key)
+                    if previous is not None:
+                        discovered[key] = previous
+                    diagnostics.append(
+                        {
+                            "name": contribution.root.name,
+                            "source": contribution.source,
+                            "reason": exc.reason,
+                            "fallback": "last_good" if previous is not None else "ignored",
+                        }
+                    )
+                    continue
+                discovered[key] = entry
             self._last_good = discovered
             merged: dict[str, SkillEntry] = {}
-            for source in ("bundled", "managed"):
-                for key, entry in discovered.items():
-                    if key[0] == source:
-                        merged[entry.name] = entry
+            for key, entry in discovered.items():
+                if key[0] == "bundled":
+                    merged[entry.name] = entry
+            for key, entry in discovered.items():
+                if key[0].startswith("plugin:"):
+                    merged[entry.name] = entry
+            for key, entry in discovered.items():
+                if key[0] == "managed":
+                    merged[entry.name] = entry
             entries = tuple(sorted(merged.values(), key=lambda item: item.name.casefold()))
             catalog_material = json.dumps(
                 [
@@ -380,20 +460,22 @@ class SkillRegistry:
                 status="loaded",
                 name=entry.name,
                 revision=resource_revision,
+                source=entry.source,
                 resource=relative,
                 content=content,
                 execution_cwd=entry.execution_cwd,
-                execution_path=f"{entry.name}/{relative}",
+                execution_path=entry.execution_path(relative),
                 files=entry.files[:SKILL_MAX_LISTED_FILES],
             )
         return SkillReadResult(
             status="loaded",
             name=entry.name,
             revision=entry.revision,
+            source=entry.source,
             resource=SKILL_FILE_NAME,
             content=entry.instructions,
             execution_cwd=entry.execution_cwd,
-            execution_path=f"{entry.name}/{SKILL_FILE_NAME}",
+            execution_path=entry.execution_path(SKILL_FILE_NAME),
             files=entry.files[:SKILL_MAX_LISTED_FILES],
         )
 

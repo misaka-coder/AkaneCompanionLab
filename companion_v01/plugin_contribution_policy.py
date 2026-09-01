@@ -25,6 +25,7 @@ from .plugin_api import (
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
+    SKILL_CONTRIBUTION_PERMISSION,
     SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
     PluginManifest,
 )
@@ -67,6 +68,7 @@ class PluginContributionPolicy(Protocol):
         hook_handler_count: int,
         has_background_job: bool,
         prompt_block_count: int,
+        skill_count: int,
     ) -> ContributionPolicyDecision: ...
 
 
@@ -187,6 +189,7 @@ class TrustedStatefulPluginContributionPolicy:
             MANAGED_ARTIFACT_WRITE_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
             MODEL_REASONING_PERMISSION,
+            SKILL_CONTRIBUTION_PERMISSION,
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
             EVENT_SUBSCRIBE_PERMISSION,
             HOOK_SUBSCRIBE_PERMISSION,
@@ -197,6 +200,7 @@ class TrustedStatefulPluginContributionPolicy:
             CAPABILITY_PROMPT_INVOKE_PERMISSION,
             BACKGROUND_JOB_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
+            SKILL_CONTRIBUTION_PERMISSION,
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
             EVENT_SUBSCRIBE_PERMISSION,
             HOOK_SUBSCRIBE_PERMISSION,

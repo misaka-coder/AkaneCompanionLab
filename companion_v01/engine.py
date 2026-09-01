@@ -8753,6 +8753,7 @@ class AkaneMemoryEngine:
             bundled_root=bundled_root,
             managed_root=managed_root,
             execution_workspace_root=execution_workspace,
+            contributed_roots_provider=getattr(self, "plugin_skill_roots_provider", None),
         )
         try:
             setattr(self, "skill_registry", registry)

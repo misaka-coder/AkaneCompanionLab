@@ -39,7 +39,7 @@ def _format_loaded(result: SkillReadResult) -> str:
         "【资源定位】\n"
         f"- exec_run cwd：{result.execution_cwd}\n"
         f"- 当前文件相对该 cwd：{result.execution_path}\n"
-        "- alias:skills 表示可由主人管理的 managed Skill；alias:bundled_skills 表示随 release 提供的内置 Skill。\n"
+        f"- 来源：{result.source or 'unknown'}。alias:skills 表示可由主人管理的 managed Skill；alias:bundled_skills 表示随 release 提供的内置 Skill；plugin:* 来源由已启用插件只读提供。\n"
         "- SKILL.md 中的相对路径以该 Skill 目录为基准；只在说明明确需要时再读取 reference 或执行 script。\n"
         "- Skill 只是操作手册，不会绕过现有工具权限、审批或客户端边界。\n\n"
         "【Skill 文件（有界列表）】\n"

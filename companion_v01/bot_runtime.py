@@ -433,6 +433,7 @@ class BotRuntimeFactory:
                 settings=settings,
                 user_assets_public_prefix=f"{route_prefix}/user-assets",
             )
+            engine.plugin_skill_roots_provider = plugin_host.skill_roots
             plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
             generated_file_service = engine._get_generated_file_service()
             if generated_file_service is not None:

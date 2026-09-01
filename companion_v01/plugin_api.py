@@ -27,6 +27,7 @@ NOTIFICATION_SEND_PERMISSION = "notification.send"
 PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
 MODEL_REASONING_PERMISSION = "model.reasoning"
 SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
+SKILL_CONTRIBUTION_PERMISSION = "skill.contribute"
 EVENT_SUBSCRIBE_PERMISSION = "event.subscribe"
 HOOK_SUBSCRIBE_PERMISSION = "hook.subscribe"
 DIRECT_CONVERSATION_EVENT = "conversation.direct.inbound"
@@ -518,6 +519,18 @@ class PluginQQCommandHandler(Protocol):
 class PluginRegistrar(Protocol):
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None: ...
 
+    def add_skill(self, skill_root: Path) -> None:
+        """Register one read-only Skill package shipped by this plugin.
+
+        ``skill_root`` is the directory containing ``SKILL.md`` and any
+        referenced scripts/resources.  The plugin must declare
+        ``skill.contribute``.  The host validates the package during plugin
+        activation and publishes it through Akane's existing ``load_skill``
+        registry; this does not create a second Skill system or copy files into
+        the user's managed Skill directory.
+        """
+        ...
+
     def add_prompt_block(self, block_id: str, text: str) -> None:
         """Register one stable system-prompt contribution at startup.
 
@@ -638,6 +651,7 @@ __all__ = [
     "NOTIFICATION_SEND_PERMISSION",
     "PLUGIN_QQ_COMMAND_PERMISSION",
     "PLUGIN_STORAGE_WRITE_PERMISSION",
+    "SKILL_CONTRIBUTION_PERMISSION",
     "SYSTEM_PROMPT_CONTRIBUTION_PERMISSION",
     "AkanePlugin",
     "ManagedArtifactDraft",

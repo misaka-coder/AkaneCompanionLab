@@ -24,10 +24,12 @@ V1 不做动态 Python import、插件代码加载、Skill 自建工具 schema�
 | 来源 | 目录 | 语义 |
 | --- | --- | --- |
 | bundled | 仓库 `skills/<name>/SKILL.md` | 随 Akane release 发布的只读内置 Skill |
+| plugin | 已启用插件 wheel 内注册的 Skill 包 | 随插件代次启停的只读 Skill，不复制到 managed |
 | managed | `DATA_ROOT/skills/<name>/SKILL.md` | 主人发布、可热更新的持久 Skill |
 | draft | 执行工作区 `skill_drafts/<name>/` | Shell 编写/下载的待校验草稿，不进入模型目录 |
 
-同名时 managed 覆盖 bundled。Skill 名必须与目录名一致，并匹配：
+合并优先级为 managed > plugin > bundled；两个活动插件贡献同名 Skill 时，后激活插件会以
+`skill_name_conflict` 明确失败，不按加载顺序静默选择。Skill 名必须与目录名一致，并匹配：
 
 ```text
 ^[a-z0-9][a-z0-9._-]{0,63}$
@@ -84,6 +86,8 @@ Skill 是任务操作手册，不会增加权限或自动执行代码……
 - 返回完整、有界正文、内容 revision、文件列表，以及脚本可使用的相对执行定位；
 - managed 脚本使用 `cwd=alias:skills`，bundled 脚本使用 `cwd=alias:bundled_skills`；随后命令以
   `<skill-name>/scripts/...` 相对定位，不向 Prompt 泄漏宿主真实根目录；
+- plugin Skill 使用宿主返回的代次稳定只读 alias，路径直接相对该 Skill 根目录；插件物理安装
+  路径不会进入目录 Prompt 或工具反馈；
 - 读取失败返回 `not_found/error + reason`，不会生成假内容。
 
 ### 3.3 `manage_skill`
@@ -131,12 +135,18 @@ Akane 不需要长期文件监听线程。每个模型请求构建上下文时�
 5. `load_skill` 实际返回的正文进入普通工具轨迹，所以之后即使 Skill 又更新，MemCore 仍保存模型
    当时真正读到的版本，而不是用新文件改写历史。
 
+插件 Skill 由 `PluginRegistrar.add_skill(skill_root)` 在插件启动事务中注册。宿主先复用同一套
+Skill 包校验，再把本代活动根交给现有 `SkillRegistry`；插件禁用、重启或升级时，根随插件代次
+整体撤下/替换。它不创建第二个 SkillRegistry，也不把 wheel 内容复制进主人可编辑的 managed
+目录。名称与 description 才进入稳定目录；正文、reference 与脚本仍仅在 `load_skill` 后出现。
+
 这一语义借鉴 OpenClaw 的 snapshot version、OpenCode 的 staging/backup 切换，以及 AstrBot 的
 请求级工作区 Skill 发现，但没有引入它们各自的插件/沙盒系统。
 
 ## 5. 权限
 
 - 已安装 Skill 可被当前能力画像中的模型按需读取；Skill 自身不能授予权限。
+- 插件只有声明 `skill.contribute` 才能注册随包 Skill；注册路径只在宿主内部用于校验和执行挂载。
 - `manage_skill` 只随已启用的 execution 能力出现。
 - 桌宠可信本地请求可以发布；QQ 只有 `MASTER_QQ` 发出的私聊或群聊请求可以发布。
 - 普通群成员即使能使用已安装 Skill，也不能通过 `manage_skill` 改全局目录。
