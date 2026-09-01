@@ -36,6 +36,7 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_reasoning import EnginePluginReasoningPort
+from .plugin_installation import ManagedPluginArtifactStore
 from .plugin_storage import InstancePluginStorageService
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
@@ -188,6 +189,16 @@ class BotRuntime:
             return {"status": "active", "reason": "already_started", "bot_id": self.bot_id}
 
         plugin_status = await self.plugin_host.start()
+        reconcile_runtime = getattr(
+            self.extension_management_service,
+            "reconcile_runtime",
+            None,
+        )
+        artifact_status = (
+            reconcile_runtime(plugin_status)
+            if callable(reconcile_runtime)
+            else {"status": "not_configured", "restart_required": False}
+        )
         host_commands = build_host_command_registrations(
             engine=self.engine,
             qq_gateway=self.qq_gateway,
@@ -214,6 +225,7 @@ class BotRuntime:
             "reason": "plugin_host_degraded" if status == "degraded" else "",
             "bot_id": self.bot_id,
             "plugin_status": plugin_status,
+            "plugin_artifact_status": artifact_status,
         }
 
     async def stop(self) -> dict[str, Any]:
@@ -407,13 +419,19 @@ class BotRuntimeFactory:
                 defaults=instance_context.plugins,
                 instance_id=instance_context.instance_id,
             )
+            plugin_artifact_store = ManagedPluginArtifactStore(
+                runtime_layout.data_root / "extensions" / "plugins",
+                instance_id=instance_context.instance_id,
+            )
             plugin_host = PluginHost(
                 plugin_selection_store.load(),
                 contribution_policy=TrustedStatefulPluginContributionPolicy(),
+                entry_points_provider=plugin_artifact_store.entry_points,
             )
             extension_management_service = ExtensionManagementService(
                 plugin_host=plugin_host,
                 selection_store=plugin_selection_store,
+                artifact_store=plugin_artifact_store,
             )
             plugin_capability_source = PluginCapabilityToolBridge(
                 plugin_host,

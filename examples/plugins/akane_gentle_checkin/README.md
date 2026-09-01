@@ -58,4 +58,6 @@ enabled = true
 
 The current lifecycle is restart-only. Set `enabled = false` and restart the
 plugin host to withdraw the capability, events, command, service, and Skill
-together. Staged install/uninstall and last-good switching belong to M67-E.
+together. M67-E now provides staged wheel/source installation, exact permission
+approval, uninstall, and last-good switching. Code updates require one Bot
+process restart until isolated PluginHost generations land in M67-F.

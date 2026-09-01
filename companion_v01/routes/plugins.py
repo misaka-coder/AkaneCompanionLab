@@ -71,6 +71,99 @@ def build_plugins_router(
         status_code = 200 if result.get("ok") else (404 if result.get("status") == "not_found" else 409)
         return _response(result, status_code=status_code)
 
+    @router.post("/admin/plugins/stages")
+    async def stage_plugin_wheel(request: Request) -> JSONResponse:
+        """Install and probe a local wheel without changing the active artifact."""
+
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        payload, error = await _read_bounded_json_object(request)
+        if error is not None:
+            return _response(error, status_code=400)
+        wheel_path = str(payload.get("wheel_path") or "").strip()
+        if not wheel_path:
+            return _response(_request_error("plugin_wheel_path_required"), status_code=400)
+        result = await extension_management_service.stage_wheel(wheel_path=wheel_path)
+        return _response(result, status_code=_management_status_code(result, success=201))
+
+    @router.post("/admin/plugins/stages/source")
+    async def stage_plugin_source(request: Request) -> JSONResponse:
+        """Build a local plugin project, then run the ordinary wheel probe."""
+
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        payload, error = await _read_bounded_json_object(request)
+        if error is not None:
+            return _response(error, status_code=400)
+        source_path = str(payload.get("source_path") or "").strip()
+        if not source_path:
+            return _response(_request_error("plugin_source_path_required"), status_code=400)
+        result = await extension_management_service.stage_source(source_path=source_path)
+        return _response(result, status_code=_management_status_code(result, success=201))
+
+    @router.post("/admin/plugins/stages/{stage_id}/publish")
+    async def publish_plugin_stage(stage_id: str, request: Request) -> JSONResponse:
+        """Publish only after the caller echoes the exact reviewed permissions."""
+
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        payload, error = await _read_bounded_json_object(request)
+        if error is not None:
+            return _response(error, status_code=400)
+        permissions = payload.get("approved_permissions")
+        if not isinstance(permissions, list) or any(not isinstance(item, str) for item in permissions):
+            return _response(_request_error("approved_permissions_array_required"), status_code=400)
+        result = await extension_management_service.publish_stage(
+            stage_id=stage_id,
+            approved_permissions=tuple(permissions),
+        )
+        return _response(result, status_code=_management_status_code(result))
+
+    @router.delete("/admin/plugins/stages/{stage_id}")
+    async def discard_plugin_stage(stage_id: str, request: Request) -> JSONResponse:
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        result = await extension_management_service.discard_stage(stage_id=stage_id)
+        return _response(result, status_code=_management_status_code(result))
+
+    @router.post("/admin/plugins/{plugin_id}/rollback")
+    async def rollback_plugin(plugin_id: str, request: Request) -> JSONResponse:
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        result = await extension_management_service.rollback(plugin_id=plugin_id)
+        return _response(result, status_code=_management_status_code(result))
+
+    @router.delete("/admin/plugins/{plugin_id}")
+    async def uninstall_plugin(plugin_id: str, request: Request) -> JSONResponse:
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response(
+                {"ok": False, "status": "forbidden", "reason": authorization.reason},
+                status_code=authorization.status_code,
+            )
+        result = await extension_management_service.uninstall(plugin_id=plugin_id)
+        return _response(result, status_code=_management_status_code(result))
+
     @router.post("/admin/plugins/capabilities/{capability_id:path}/invoke")
     async def invoke_plugin_capability(capability_id: str, request: Request) -> JSONResponse:
         authorization = management_auth.authorize(request)
@@ -130,6 +223,21 @@ def _status_code_for_result(payload: Mapping[str, Any]) -> int:
     if status == "validation_error":
         return 400
     return 502
+
+
+def _management_status_code(payload: Mapping[str, Any], *, success: int = 200) -> int:
+    if payload.get("ok"):
+        return success
+    status = str(payload.get("status") or "")
+    if status == "not_found":
+        return 404
+    if status == "invalid_request":
+        return 400
+    if status in {"unavailable", "timeout"}:
+        return 503
+    if status in {"approval_required", "restart_required", "activation_failed", "deactivation_failed"}:
+        return 409
+    return 500
 
 
 def _request_error(reason: str) -> dict[str, Any]:

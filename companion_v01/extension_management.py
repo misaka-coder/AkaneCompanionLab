@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 from .instance_profile import PluginSelection
 from .plugin_api import is_valid_plugin_id
 from .plugin_host import PluginHost
+from .plugin_installation import ManagedPluginArtifactStore, PluginInstallationError
 
 
 PLUGIN_SELECTION_STATE_SCHEMA_VERSION = 1
@@ -113,10 +114,12 @@ class ExtensionManagementService:
         *,
         plugin_host: PluginHost,
         selection_store: PluginSelectionStore,
+        artifact_store: ManagedPluginArtifactStore | None = None,
         sync_timeout_seconds: float | None = None,
     ) -> None:
         self.plugin_host = plugin_host
         self.selection_store = selection_store
+        self.artifact_store = artifact_store
         self.sync_timeout_seconds = (
             None if sync_timeout_seconds is None else max(1.0, float(sync_timeout_seconds))
         )
@@ -125,11 +128,36 @@ class ExtensionManagementService:
     def snapshot(self) -> dict[str, Any]:
         payload = dict(self.plugin_host.status_snapshot())
         payload["kind"] = "plugin"
+        artifact_snapshot: dict[str, Any] = {"status": "not_configured", "plugins": [], "stages": []}
+        if self.artifact_store is not None:
+            try:
+                artifact_snapshot = self.artifact_store.snapshot()
+            except PluginInstallationError as exc:
+                artifact_snapshot = {"status": exc.status, "reason": exc.reason, "plugins": [], "stages": []}
+        payload["artifacts"] = artifact_snapshot
         payload["management"] = {
             "status": "ready",
             "persistence": "instance_overlay",
             "load_reason": self.selection_store.load_reason,
-            "supports": ["list", "enable", "disable", "restart"],
+            "supports": [
+                "list",
+                "enable",
+                "disable",
+                "restart",
+                *(
+                    [
+                        "stage_wheel",
+                        "stage_source",
+                        "publish",
+                        "discard_stage",
+                        "rollback",
+                        "uninstall",
+                    ]
+                    if self.artifact_store is not None
+                    else []
+                ),
+            ],
+            "code_reload": "process_restart_required",
         }
         return payload
 
@@ -137,6 +165,25 @@ class ExtensionManagementService:
         plugin_id = str(requested_plugin_id or "").strip()
         if plugin_id and plugin_id not in {item.plugin_id for item in self.plugin_host.selections}:
             return _failure("not_found", "plugin_not_configured", plugin_id=plugin_id)
+        if self.artifact_store is not None:
+            try:
+                pending_ids = self.artifact_store.pending_process_restart_plugin_ids()
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason, plugin_id=plugin_id)
+            except Exception:
+                return _failure(
+                    "unavailable",
+                    "plugin_artifact_catalog_unavailable",
+                    plugin_id=plugin_id,
+                )
+            if pending_ids:
+                return {
+                    "ok": False,
+                    "status": "restart_required",
+                    "reason": "bot_process_restart_required",
+                    "plugin_id": plugin_id,
+                    "pending_plugin_ids": list(pending_ids),
+                }
         async with self._operation_lock:
             result = dict(await self.plugin_host.restart())
         result.update(
@@ -152,6 +199,23 @@ class ExtensionManagementService:
         normalized_id = str(plugin_id or "").strip()
         if not is_valid_plugin_id(normalized_id):
             return _failure("invalid_request", "invalid_plugin_id", plugin_id=normalized_id)
+        if enabled and self.artifact_store is not None:
+            try:
+                restart_pending = self.artifact_store.has_pending_process_restart(normalized_id)
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason, plugin_id=normalized_id)
+            except Exception:
+                return _failure(
+                    "unavailable",
+                    "plugin_artifact_catalog_unavailable",
+                    plugin_id=normalized_id,
+                )
+            if restart_pending:
+                return _failure(
+                    "restart_required",
+                    "plugin_process_restart_required",
+                    plugin_id=normalized_id,
+                )
         async with self._operation_lock:
             previous = self.plugin_host.selections
             if normalized_id not in {item.plugin_id for item in previous}:
@@ -213,6 +277,214 @@ class ExtensionManagementService:
                 }
             )
             return payload
+
+    async def stage_wheel(self, *, wheel_path: str) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        normalized = str(wheel_path or "").strip()
+        if not normalized:
+            return _failure("invalid_request", "plugin_wheel_path_required")
+        async with self._operation_lock:
+            try:
+                return dict(
+                    await asyncio.to_thread(
+                        self.artifact_store.stage_wheel,
+                        Path(normalized),
+                    )
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_stage_failed")
+
+    async def stage_source(self, *, source_path: str) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        normalized = str(source_path or "").strip()
+        if not normalized:
+            return _failure("invalid_request", "plugin_source_path_required")
+        async with self._operation_lock:
+            try:
+                return dict(
+                    await asyncio.to_thread(
+                        self.artifact_store.stage_source,
+                        Path(normalized),
+                    )
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_source_stage_failed")
+
+    async def publish_stage(
+        self,
+        *,
+        stage_id: str,
+        approved_permissions: Iterable[str],
+    ) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        async with self._operation_lock:
+            try:
+                result = dict(
+                    await asyncio.to_thread(
+                        self.artifact_store.publish_stage,
+                        stage_id,
+                        approved_permissions=tuple(approved_permissions),
+                    )
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_publish_failed")
+            if not result.get("ok"):
+                return result
+            plugin_id = str(result.get("plugin_id") or "")
+            persisted = self.selection_store.load()
+            if plugin_id not in {item.plugin_id for item in persisted}:
+                try:
+                    self.selection_store.save((*persisted, PluginSelection(plugin_id, False)))
+                except Exception:
+                    result.update(
+                        {
+                            "ok": False,
+                            "status": "persist_failed",
+                            "reason": "plugin_selection_persist_failed",
+                        }
+                    )
+            return result
+
+    async def discard_stage(self, *, stage_id: str) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        async with self._operation_lock:
+            try:
+                return dict(await asyncio.to_thread(self.artifact_store.discard_stage, stage_id))
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_stage_discard_failed")
+
+    async def rollback(self, *, plugin_id: str) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable", plugin_id=plugin_id)
+        async with self._operation_lock:
+            try:
+                return dict(
+                    await asyncio.to_thread(self.artifact_store.rollback_to_last_good, plugin_id)
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason, plugin_id=plugin_id)
+            except Exception:
+                return _failure("error", "plugin_rollback_failed", plugin_id=plugin_id)
+
+    async def uninstall(self, *, plugin_id: str) -> dict[str, Any]:
+        normalized_id = str(plugin_id or "").strip()
+        if not is_valid_plugin_id(normalized_id):
+            return _failure("invalid_request", "invalid_plugin_id", plugin_id=normalized_id)
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable", plugin_id=normalized_id)
+        try:
+            artifact_snapshot = self.artifact_store.snapshot()
+        except PluginInstallationError as exc:
+            return _failure(exc.status, exc.reason, plugin_id=normalized_id)
+        except Exception:
+            return _failure(
+                "unavailable",
+                "plugin_artifact_catalog_unavailable",
+                plugin_id=normalized_id,
+            )
+        installed_ids = {
+            str(item.get("plugin_id") or "")
+            for item in artifact_snapshot.get("plugins", ())
+            if isinstance(item, Mapping)
+        }
+        if normalized_id not in installed_ids:
+            return _failure("not_found", "plugin_not_installed", plugin_id=normalized_id)
+        async with self._operation_lock:
+            current = self.plugin_host.selections
+            if normalized_id in {item.plugin_id for item in current}:
+                candidate = tuple(
+                    PluginSelection(item.plugin_id, False if item.plugin_id == normalized_id else item.enabled)
+                    for item in current
+                )
+                status = dict(await self.plugin_host.reconfigure(candidate))
+                target = _plugin_status(status, normalized_id)
+                if target.get("status") != "disabled":
+                    rollback = dict(await self.plugin_host.reconfigure(current))
+                    return {
+                        "ok": False,
+                        "status": "deactivation_failed",
+                        "reason": str(target.get("reason") or "plugin_disable_failed"),
+                        "plugin_id": normalized_id,
+                        "rollback_status": str(rollback.get("status") or "unknown"),
+                    }
+            persisted = self.selection_store.load()
+            defaults = {item.plugin_id for item in self.selection_store.defaults}
+            next_selections = tuple(
+                PluginSelection(item.plugin_id, False)
+                if item.plugin_id == normalized_id and normalized_id in defaults
+                else item
+                for item in persisted
+                if item.plugin_id != normalized_id or normalized_id in defaults
+            )
+            try:
+                self.selection_store.save(next_selections)
+            except Exception:
+                if current:
+                    await self.plugin_host.reconfigure(current)
+                return _failure(
+                    "persist_failed",
+                    "plugin_selection_persist_failed",
+                    plugin_id=normalized_id,
+                )
+            try:
+                result = dict(
+                    await asyncio.to_thread(self.artifact_store.remove_plugin, normalized_id)
+                )
+            except PluginInstallationError as exc:
+                try:
+                    self.selection_store.save(persisted)
+                    await self.plugin_host.reconfigure(current)
+                except Exception:
+                    return _failure(
+                        "rollback_failed",
+                        "plugin_uninstall_rollback_failed",
+                        plugin_id=normalized_id,
+                    )
+                return _failure(exc.status, exc.reason, plugin_id=normalized_id)
+            except Exception:
+                try:
+                    self.selection_store.save(persisted)
+                    await self.plugin_host.reconfigure(current)
+                except Exception:
+                    return _failure(
+                        "rollback_failed",
+                        "plugin_uninstall_rollback_failed",
+                        plugin_id=normalized_id,
+                    )
+                return _failure("error", "plugin_uninstall_failed", plugin_id=normalized_id)
+            runtime_status = dict(await self.plugin_host.reconfigure(next_selections))
+            if runtime_status.get("status") == "degraded":
+                result.update(
+                    {
+                        "ok": False,
+                        "status": "removed_runtime_degraded",
+                        "reason": "plugin_runtime_reconfigure_failed",
+                        "restart_required": True,
+                    }
+                )
+            return result
+
+    def reconcile_runtime(self, plugin_status: Mapping[str, Any]) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return {"status": "not_configured", "restart_required": False}
+        try:
+            return self.artifact_store.reconcile_runtime(plugin_status.get("plugins", ()))
+        except PluginInstallationError as exc:
+            return {"status": exc.status, "reason": exc.reason, "restart_required": False}
+        except Exception:
+            return {"status": "error", "reason": "plugin_artifact_reconcile_failed", "restart_required": False}
 
     def execute_sync(self, *, action: str, plugin_id: str = "") -> dict[str, Any]:
         normalized_action = str(action or "").strip().lower()

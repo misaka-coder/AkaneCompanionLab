@@ -43,4 +43,5 @@ enabled = true
 ```
 
 停用时将 `enabled` 改为 `false` 并重启插件宿主。当前阶段尚未把安装和卸载伪装成热重载；
-统一的 staging 安装与 last-good 切换属于 M67-E。
+M67-E 已提供统一的源码/wheel staging、权限确认、卸载与 last-good 切换；在 M67-F
+独立 PluginHost 代次完成前，代码更新后明确需要重启一次 Bot 进程。

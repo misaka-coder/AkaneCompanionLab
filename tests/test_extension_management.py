@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
@@ -57,6 +57,69 @@ class PluginSelectionStoreTests(unittest.TestCase):
         )
 
         self.assertIsNone(service.sync_timeout_seconds)
+
+
+class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_code_update_requires_process_restart(self) -> None:
+        plugin_host = SimpleNamespace(
+            selections=(PluginSelection(PLUGIN_ID, True),),
+            restart=AsyncMock(),
+        )
+        artifact_store = Mock()
+        artifact_store.pending_process_restart_plugin_ids.return_value = (PLUGIN_ID,)
+        service = ExtensionManagementService(
+            plugin_host=plugin_host,
+            selection_store=Mock(),
+            artifact_store=artifact_store,
+        )
+
+        result = await service.restart(requested_plugin_id=PLUGIN_ID)
+
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(result["reason"], "bot_process_restart_required")
+        plugin_host.restart.assert_not_awaited()
+
+    async def test_uninstall_removes_dynamic_selection_from_live_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            selection_store = PluginSelectionStore(
+                Path(temp_dir) / "plugin-selections.json",
+                defaults=(),
+                instance_id="bot-a",
+            )
+            selection_store.save((PluginSelection(PLUGIN_ID, True),))
+            plugin_host = SimpleNamespace(
+                selections=(PluginSelection(PLUGIN_ID, True),),
+                reconfigure=AsyncMock(
+                    side_effect=(
+                        {
+                            "status": "active",
+                            "plugins": [{"plugin_id": PLUGIN_ID, "status": "disabled"}],
+                        },
+                        {"status": "active", "plugins": []},
+                    )
+                ),
+            )
+            artifact_store = Mock()
+            artifact_store.snapshot.return_value = {
+                "plugins": [{"plugin_id": PLUGIN_ID}],
+            }
+            artifact_store.remove_plugin.return_value = {
+                "ok": True,
+                "status": "removed",
+                "plugin_id": PLUGIN_ID,
+                "restart_required": True,
+            }
+            service = ExtensionManagementService(
+                plugin_host=plugin_host,
+                selection_store=selection_store,
+                artifact_store=artifact_store,
+            )
+
+            result = await service.uninstall(plugin_id=PLUGIN_ID)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(selection_store.load(), ())
+            self.assertEqual(plugin_host.reconfigure.await_count, 2)
 
 
 class ManageExtensionToolTests(unittest.TestCase):
