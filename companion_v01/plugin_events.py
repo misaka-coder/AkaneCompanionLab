@@ -9,6 +9,7 @@ existing authoritative paths.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -203,6 +204,59 @@ def render_current_turn_events(events: tuple[PluginExternalEvent, ...]) -> str:
     return "【plugin.current_turn｜仅本轮】\n" + "\n".join(rendered)
 
 
+async def record_timeline_events(
+    *,
+    recorder: object,
+    envelope: PluginEventEnvelope,
+    events: tuple[PluginExternalEvent, ...],
+    user_id: str,
+    real_user_id: str,
+    character_pack_id: str = "",
+) -> tuple[str, ...]:
+    """Persist plugin timeline facts through the host's public MemCore port."""
+
+    if not events:
+        return ()
+    if not callable(recorder):
+        return ("timeline_recorder_unavailable",)
+    failures: list[str] = []
+    for emitted in events:
+        event_payload = {
+            "event_type": emitted.event_type,
+            "source": emitted.source,
+            "fields": dict(emitted.fields),
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                event_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8", errors="strict")
+        ).hexdigest()[:20]
+        try:
+            result = await asyncio.to_thread(
+                recorder,
+                {
+                    "source_id": f"plugin:{envelope.event_id}:{digest}",
+                    "event": event_payload,
+                    "timestamp": envelope.occurred_at,
+                    "user_id": str(user_id or ""),
+                    "real_user_id": str(real_user_id or ""),
+                    "character_pack_id": str(character_pack_id or ""),
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failures.append("record_exception")
+            continue
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            reason = result.get("reason") if isinstance(result, dict) else ""
+            failures.append(str(reason or "record_failed"))
+    return tuple(failures)
+
+
 def _normalize_event_type(value: object) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if _EVENT_TYPE_PATTERN.fullmatch(normalized) is not None else ""
@@ -264,5 +318,6 @@ __all__ = [
     "PluginEventBroker",
     "PluginEventDispatchResult",
     "_PluginEventRegistration",
+    "record_timeline_events",
     "render_current_turn_events",
 ]

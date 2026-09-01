@@ -35,8 +35,8 @@ from ..tts_provider_runtime import (
 from ..runtime_settings import runtime_setting
 from ..turn_coordination import SessionWorkItem, SessionWorkQueue, TurnCoordinator
 from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
-from ..plugin_api import PluginEventEnvelope
-from ..plugin_events import render_current_turn_events
+from ..plugin_api import DIRECT_CONVERSATION_EVENT, GROUP_CONVERSATION_EVENT, PluginEventEnvelope
+from ..plugin_events import record_timeline_events, render_current_turn_events
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -1930,13 +1930,15 @@ def build_qq_router(
         inbound = getattr(context, "inbound_message", None)
         if inbound is None:
             return "", False
+        conversation_kind = str(getattr(inbound.conversation, "kind", "") or "").strip().lower()
+        event_type = GROUP_CONVERSATION_EVENT if conversation_kind == "group" else DIRECT_CONVERSATION_EVENT
         try:
             broker = (
                 plugin_event_broker_provider()
                 if plugin_event_broker_provider is not None
                 else getattr(request.app.state, "akane_plugin_event_broker", None)
             )
-            if broker is None or not broker.observes("channel.qq.inbound"):
+            if broker is None or not broker.observes(event_type):
                 return "", False
         except asyncio.CancelledError:
             raise
@@ -1952,14 +1954,14 @@ def build_qq_router(
             return "", False
         envelope = PluginEventEnvelope(
             event_id=str(getattr(inbound, "event_id", "") or "").strip(),
-            event_type="channel.qq.inbound",
+            event_type=event_type,
             source="channelcore-onebot",
             occurred_at=int(getattr(inbound, "timestamp", 0) or event.get("time") or time.time()),
             subject=str(getattr(context, "session_id", "") or "").strip(),
             fields=(
                 ("event_kind", str(getattr(inbound, "event_kind", "message") or "message")),
                 ("trigger_reason", str(getattr(inbound, "trigger_reason", "") or "")),
-                ("conversation_kind", str(getattr(inbound.conversation, "kind", "") or "")),
+                ("conversation_kind", conversation_kind or "direct"),
                 ("conversation_id", str(getattr(inbound.conversation, "id", "") or "")),
                 ("actor_id", str(getattr(inbound.actor, "id", "") or "")),
             ),
@@ -1980,38 +1982,14 @@ def build_qq_router(
                 timeline_failure_count=0,
             )
             return "", False
-        recorder = getattr(engine, "record_plugin_timeline_event", None)
-        timeline_failures: list[str] = []
-        if callable(recorder):
-            for emitted in dispatch.timeline_events:
-                event_payload = {
-                    "event_type": emitted.event_type,
-                    "source": emitted.source,
-                    "fields": dict(emitted.fields),
-                }
-                digest = hashlib.sha256(
-                    json.dumps(
-                        event_payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8", errors="strict")
-                ).hexdigest()[:20]
-                record_result = await asyncio.to_thread(
-                    recorder,
-                    {
-                        "source_id": f"plugin:{envelope.event_id}:{digest}",
-                        "event": event_payload,
-                        "timestamp": envelope.occurred_at,
-                        "user_id": str(getattr(context, "session_id", "") or ""),
-                        "real_user_id": str(getattr(context, "profile_user_id", "") or ""),
-                        "character_pack_id": str(getattr(context, "character_pack_id", "") or ""),
-                    },
-                )
-                if not isinstance(record_result, dict) or not bool(record_result.get("ok")):
-                    timeline_failures.append(str((record_result or {}).get("reason") or "record_failed"))
-        elif dispatch.timeline_events:
-            timeline_failures.append("timeline_recorder_unavailable")
+        timeline_failures = await record_timeline_events(
+            recorder=getattr(engine, "record_plugin_timeline_event", None),
+            envelope=envelope,
+            events=dispatch.timeline_events,
+            user_id=str(getattr(context, "session_id", "") or ""),
+            real_user_id=str(getattr(context, "profile_user_id", "") or ""),
+            character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
+        )
 
         if dispatch.failures or timeline_failures:
             log_event(

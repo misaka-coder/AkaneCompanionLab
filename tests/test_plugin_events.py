@@ -14,7 +14,9 @@ from companion_v01.instance_profile import PluginSelection
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.plugin_api import (
     AKANE_PLUGIN_API_VERSION,
+    DIRECT_CONVERSATION_EVENT,
     EVENT_SUBSCRIBE_PERMISSION,
+    GROUP_CONVERSATION_EVENT,
     PluginEventEnvelope,
     PluginEventResult,
     PluginExternalEvent,
@@ -25,6 +27,7 @@ from companion_v01.plugin_events import PluginEventBroker, _PluginEventRegistrat
 from companion_v01.plugin_host import PluginHost
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
+from companion_v01.routes.think import build_think_router
 
 
 PLUGIN_ID = "akane.test.events"
@@ -63,7 +66,7 @@ def _envelope() -> PluginEventEnvelope:
     assert inbound is not None
     return PluginEventEnvelope(
         event_id=inbound.event_id,
-        event_type="channel.qq.inbound",
+        event_type=GROUP_CONVERSATION_EVENT,
         source="channelcore-onebot",
         occurred_at=int(inbound.timestamp),
         subject="qq-group:200",
@@ -75,12 +78,12 @@ class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_platform_payload_passes_through_without_onebot_shape(self) -> None:
         handler = _Handler(PluginEventResult())
         broker = PluginEventBroker(
-            (_PluginEventRegistration(PLUGIN_ID, "companion.desktop.input", handler),)
+            (_PluginEventRegistration(PLUGIN_ID, DIRECT_CONVERSATION_EVENT, handler),)
         )
         payload = ("desktop", "hello")
         envelope = PluginEventEnvelope(
             event_id="desktop-event-1",
-            event_type="companion.desktop.input",
+            event_type=DIRECT_CONVERSATION_EVENT,
             source="desktop-pet-next",
             occurred_at=int(time.time()),
             subject="desktop:default",
@@ -95,7 +98,7 @@ class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_internal_observer_keeps_full_channelcore_chain_and_emits_nothing(self) -> None:
         handler = _Handler(PluginEventResult())
         broker = PluginEventBroker(
-            (_PluginEventRegistration(PLUGIN_ID, "channel.qq.inbound", handler),)
+            (_PluginEventRegistration(PLUGIN_ID, GROUP_CONVERSATION_EVENT, handler),)
         )
 
         result = await broker.dispatch(_envelope())
@@ -136,8 +139,8 @@ class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         broker = PluginEventBroker(
             (
-                _PluginEventRegistration("plugin.current", "channel.qq.inbound", current),
-                _PluginEventRegistration("plugin.timeline", "channel.qq.inbound", timeline),
+                _PluginEventRegistration("plugin.current", GROUP_CONVERSATION_EVENT, current),
+                _PluginEventRegistration("plugin.timeline", GROUP_CONVERSATION_EVENT, timeline),
             )
         )
 
@@ -162,8 +165,8 @@ class PluginEventBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         broker = PluginEventBroker(
             (
-                _PluginEventRegistration("broken", "channel.qq.inbound", Broken()),
-                _PluginEventRegistration("working", "channel.qq.inbound", working),
+                _PluginEventRegistration("broken", GROUP_CONVERSATION_EVENT, Broken()),
+                _PluginEventRegistration("working", GROUP_CONVERSATION_EVENT, working),
             )
         )
 
@@ -206,7 +209,7 @@ class PluginEventHostTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 def register(self, registrar: Any) -> None:
-                    registrar.add_event_handler("channel.qq.inbound", _Handler(PluginEventResult()))
+                    registrar.add_event_handler(GROUP_CONVERSATION_EVENT, _Handler(PluginEventResult()))
 
             return Plugin()
 
@@ -221,14 +224,14 @@ class PluginEventHostTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["capability_count"], 0)
-        self.assertEqual(broker.registered_event_types, ("channel.qq.inbound",))
+        self.assertEqual(broker.registered_event_types, (GROUP_CONVERSATION_EVENT,))
         self.assertEqual(
             status["plugins"][0]["contribution_snapshot"]["types"],
             ["event_handlers"],
         )
         self.assertEqual(
             status["plugins"][0]["contribution_snapshot"]["event_handlers"],
-            ["channel.qq.inbound"],
+            [GROUP_CONVERSATION_EVENT],
         )
         await host.stop()
 
@@ -236,6 +239,20 @@ class PluginEventHostTests(unittest.IsolatedAsyncioTestCase):
 class _Metrics:
     def observe_request(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+    def incr(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+class _Guard:
+    def __init__(self) -> None:
+        self.released = 0
+
+    def try_acquire(self) -> Any:
+        return SimpleNamespace(allowed=True, acquired=True, reason="", message="")
+
+    def release(self) -> None:
+        self.released += 1
 
 
 class _Response:
@@ -272,11 +289,64 @@ class _RouteEngine:
             },
         }
 
+    def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.turns.append(dict(payload))
+        return {"status": "ok", "emotion": "normal", "speech": "收到事件", "_debug": {}}
+
     def mark_generated_file_delivery(self, **_kwargs: Any) -> dict[str, Any]:
         return {"ok": True}
 
 
 class PluginEventQQBridgeTests(unittest.TestCase):
+    def test_private_message_uses_direct_event_and_keeps_channelcore_payload(self) -> None:
+        handler = _Handler(PluginEventResult())
+        broker = PluginEventBroker(
+            (_PluginEventRegistration("private", DIRECT_CONVERSATION_EVENT, handler),)
+        )
+        engine = _RouteEngine()
+        channel = QQChannelRuntimeConfig(
+            enabled=True,
+            profile_ref="qq.test",
+            bot_id="100",
+            onebot_http_url="http://127.0.0.1:3001",
+            webhook_secret="",
+            onebot_access_token="",
+            require_webhook_auth=False,
+            require_self_id=True,
+        )
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=engine,
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_STREAM_REPLIES_ENABLED=False),
+                qq_gateway=NapCatQQGateway(channel_config=channel),
+                runtime_metrics=_Metrics(),
+                channel_config=channel,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+                plugin_event_broker_provider=lambda: broker,
+            )
+        )
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": "100",
+            "user_id": "300",
+            "message_id": "private-event-1",
+            "sender": {"nickname": "Olivia"},
+            "raw_message": "晚上好",
+            "time": int(time.time()),
+        }
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+            response = TestClient(app).post("/api/qq/napcat/event", json=event)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(handler.received[0].event_type, DIRECT_CONVERSATION_EVENT)
+        inbound = handler.received[0].payload
+        self.assertIsNotNone(inbound)
+        self.assertEqual(getattr(getattr(inbound, "conversation", None), "kind", ""), "private")
+
     def test_current_turn_wakes_passive_message_and_timeline_uses_memcore_port(self) -> None:
         current = _Handler(
             PluginEventResult(
@@ -300,8 +370,8 @@ class PluginEventQQBridgeTests(unittest.TestCase):
         )
         broker = PluginEventBroker(
             (
-                _PluginEventRegistration("current", "channel.qq.inbound", current),
-                _PluginEventRegistration("timeline", "channel.qq.inbound", timeline),
+                _PluginEventRegistration("current", GROUP_CONVERSATION_EVENT, current),
+                _PluginEventRegistration("timeline", GROUP_CONVERSATION_EVENT, timeline),
             )
         )
         engine = _RouteEngine()
@@ -355,6 +425,77 @@ class PluginEventQQBridgeTests(unittest.TestCase):
         self.assertEqual(len(engine.timeline), 1)
         self.assertEqual(engine.timeline[0]["event"]["event_type"], "companion.shared_moment")
         self.assertNotIn("plugin_current_turn_events", engine.turns[0])
+
+
+class PluginEventDesktopBridgeTests(unittest.TestCase):
+    def test_direct_turn_observes_event_and_applies_only_typed_plugin_outputs(self) -> None:
+        current = _Handler(
+            PluginEventResult(
+                delivery="current_turn",
+                event=PluginExternalEvent(
+                    event_type="companion.scene",
+                    fields=(("weather", "rain"),),
+                    source="plugin.scene",
+                ),
+            )
+        )
+        timeline = _Handler(
+            PluginEventResult(
+                delivery="timeline",
+                event=PluginExternalEvent(
+                    event_type="companion.shared_moment",
+                    fields=(("summary", "一起听雨"),),
+                    source="plugin.scene",
+                ),
+            )
+        )
+        broker = PluginEventBroker(
+            (
+                _PluginEventRegistration("current", DIRECT_CONVERSATION_EVENT, current),
+                _PluginEventRegistration("timeline", DIRECT_CONVERSATION_EVENT, timeline),
+            )
+        )
+        engine = _RouteEngine()
+        guard = _Guard()
+        app = FastAPI()
+        app.include_router(
+            build_think_router(
+                engine=engine,
+                public_guard=guard,
+                runtime_metrics=_Metrics(),
+                log_event=lambda *_args, **_kwargs: None,
+                plugin_event_broker_provider=lambda: broker,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/think_once",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "actor_stable_id": "desktop:master",
+                "actor_display_name": "伙伴",
+                "character_pack_id": "reimu",
+                "client_mode": "desktop_pet",
+                "message": "外面下雨了",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(guard.released, 1)
+        self.assertEqual(current.received[0].event_type, DIRECT_CONVERSATION_EVENT)
+        fields = dict(current.received[0].fields)
+        self.assertEqual(fields["conversation_kind"], "direct")
+        self.assertEqual(fields["conversation_id"], "desktop")
+        self.assertEqual(fields["actor_id"], "desktop:master")
+        self.assertEqual(fields["text"], "外面下雨了")
+        self.assertEqual(engine.turns[0]["message"], "外面下雨了")
+        self.assertIn("plugin.current_turn", engine.turns[0]["extra_context"])
+        self.assertIn("companion.scene", engine.turns[0]["extra_context"])
+        self.assertEqual(engine.timeline[0]["user_id"], "desktop")
+        self.assertEqual(engine.timeline[0]["real_user_id"], "master")
+        self.assertEqual(engine.timeline[0]["character_pack_id"], "reimu")
+        self.assertEqual(engine.timeline[0]["event"]["event_type"], "companion.shared_moment")
 
 
 if __name__ == "__main__":

@@ -272,10 +272,13 @@ Page 尚未具备对应运行契约，因此没有进入空占位字段。该变
 工作：增加通用事件信封、channelcore 消息事件适配、事件处理结果和 internal/
 current_turn/timeline 三种投递。
 
-当前实现以 `channel.qq.inbound` 暴露 QQ 入站观察点。通用事件信封的 `payload` 保留来源
+当前实现按会话语义暴露 `conversation.direct.inbound` 和
+`conversation.group.inbound`，不按平台复制插件协议。QQ 私聊与桌宠 `/think` 走 direct，
+QQ群走 group；后续微信私聊等一对一入口可复用 direct。通用事件信封的 `payload` 保留来源
 适配器拥有的不可变事件对象，不依赖具体平台类型；QQ 适配器在其中直接携带
 channelcore-onebot `InboundMessage`，引用、@、有序段、附件和转发引用不再被插件层重复
-解析。桌宠或后续平台可携带自己的事件快照，无需引入 OneBot 依赖。PluginHost 并发隔离
+解析。桌宠的普通文本事实放在信封字段中，不改变原请求、会话 ID 或 MemCore 消息投影。
+`/pet/turn` 仍是 M32 过渡桥，本阶段不在新旧桌宠入口各维护一份事件实现。PluginHost 并发隔离
 事件观察器并发布真实 `event_handlers` 贡献快照：默认
 `internal` 不改变主链；`current_turn` 只追加当轮尾部结构化事件并进入既有 Agent 仲裁；
 `timeline` 通过 MemCore `append_standalone_event` 写入原生事件记录。事件处理器异常、超时

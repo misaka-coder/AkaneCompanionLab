@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,6 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
+from ..plugin_api import DIRECT_CONVERSATION_EVENT, PluginEventEnvelope
+from ..plugin_events import record_timeline_events, render_current_turn_events
 from ..turn_coordination import TurnCoordinator
 
 logger = logging.getLogger("akane.think")
@@ -26,6 +29,7 @@ def build_think_router(
     runtime_metrics: Any,
     log_event: LogEvent,
     turn_coordinator: Any = None,
+    plugin_event_broker_provider: Callable[[], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     turn_coordinator = turn_coordinator or TurnCoordinator()
@@ -35,6 +39,109 @@ def build_think_router(
         profile_user_id = str(payload.get("real_user_id") or session_id)
         actor_id = str(payload.get("actor_stable_id") or f"desktop:{profile_user_id}").strip()
         return profile_user_id, session_id, actor_id
+
+    async def _dispatch_plugin_direct_event(request: Request, payload: dict[str, Any]) -> str:
+        """Observe one desktop direct message without changing its memory record."""
+
+        profile_user_id, session_id, actor_id = _turn_identity(payload)
+        try:
+            broker = (
+                plugin_event_broker_provider()
+                if plugin_event_broker_provider is not None
+                else getattr(request.app.state, "akane_plugin_event_broker", None)
+            )
+            if broker is None or not broker.observes(DIRECT_CONVERSATION_EVENT):
+                return ""
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log_event(
+                "desktop_plugin_event_degraded",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                broker_status="broker_unavailable",
+                handler_failure_count=1,
+                timeline_failure_count=0,
+            )
+            return ""
+
+        occurred_at = _positive_int(payload.get("timestamp"), default=int(time.time()))
+        event_id = str(
+            payload.get("source_message_id")
+            or payload.get("turn_id")
+            or payload.get("turnId")
+            or f"desktop:{occurred_at}:{uuid.uuid4().hex}"
+        ).strip()
+        envelope = PluginEventEnvelope(
+            event_id=event_id,
+            event_type=DIRECT_CONVERSATION_EVENT,
+            source="desktop_pet",
+            occurred_at=occurred_at,
+            subject=session_id,
+            fields=tuple(
+                (key, value)
+                for key, value in (
+                    ("conversation_kind", "direct"),
+                    ("conversation_id", session_id),
+                    ("actor_id", actor_id),
+                    ("actor_display_name", str(payload.get("actor_display_name") or "").strip()),
+                    ("character_pack_id", str(payload.get("character_pack_id") or "").strip()),
+                    ("client_mode", str(payload.get("client_mode") or "desktop_pet").strip()),
+                    ("text", str(payload.get("message") or "")),
+                )
+                if value
+            ),
+        )
+        try:
+            dispatch = await broker.dispatch(envelope)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log_event(
+                "desktop_plugin_event_degraded",
+                session_id=session_id,
+                profile_user_id=profile_user_id,
+                event_id=envelope.event_id,
+                broker_status="dispatch_failed",
+                handler_failure_count=1,
+                timeline_failure_count=0,
+            )
+            return ""
+
+        timeline_failures = await record_timeline_events(
+            recorder=getattr(engine, "record_plugin_timeline_event", None),
+            envelope=envelope,
+            events=dispatch.timeline_events,
+            user_id=session_id,
+            real_user_id=profile_user_id,
+            character_pack_id=str(payload.get("character_pack_id") or ""),
+        )
+        log_event(
+            "desktop_plugin_event_degraded" if dispatch.failures or timeline_failures else "desktop_plugin_event_observed",
+            session_id=session_id,
+            profile_user_id=profile_user_id,
+            event_id=envelope.event_id,
+            broker_status=dispatch.status,
+            handler_failure_count=len(dispatch.failures),
+            timeline_failure_count=len(timeline_failures),
+            current_turn_count=len(dispatch.current_turn_events),
+            timeline_count=len(dispatch.timeline_events),
+            request_agent_turn=bool(dispatch.request_agent_turn),
+        )
+        return render_current_turn_events(dispatch.current_turn_events)
+
+    def _positive_int(value: Any, *, default: int) -> int:
+        try:
+            resolved = int(value or 0)
+        except (TypeError, ValueError):
+            resolved = 0
+        return resolved if resolved > 0 else int(default)
+
+    def _append_current_turn_context(payload: dict[str, Any], note: str) -> None:
+        if not note:
+            return
+        current = str(payload.get("extra_context") or "").strip()
+        payload["extra_context"] = "\n\n".join(part for part in (current, note) if part)
 
     async def _control_payload(request: Request) -> dict[str, Any] | JSONResponse:
         try:
@@ -129,6 +236,13 @@ def build_think_router(
                 session_id=str(payload.get("user_id") or ""),
             )
             raise HTTPException(status_code=429, detail=guard_decision.message)
+
+        try:
+            _append_current_turn_context(payload, await _dispatch_plugin_direct_event(request, payload))
+        except asyncio.CancelledError:
+            if guard_decision.acquired:
+                public_guard.release()
+            raise
 
         def _advance_stream(stream: Any) -> tuple[bool, Any]:
             try:
@@ -286,6 +400,12 @@ def build_think_router(
                 session_id=str(payload.get("user_id") or ""),
             )
             raise HTTPException(status_code=429, detail=guard_decision.message)
+        try:
+            _append_current_turn_context(payload, await _dispatch_plugin_direct_event(request, payload))
+        except asyncio.CancelledError:
+            if guard_decision.acquired:
+                public_guard.release()
+            raise
         profile_user_id, session_id, actor_id = _turn_identity(payload)
         try:
             async with turn_coordinator.hold(

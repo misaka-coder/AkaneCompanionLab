@@ -59,6 +59,7 @@ def build_bot_runtime_routers(
             runtime_metrics=runtime_metrics,
             log_event=log_event,
             turn_coordinator=runtime.turn_coordinator,
+            plugin_event_broker_provider=lambda runtime=runtime: runtime.plugin_event_broker,
         ),
         build_desktop_pet_router(
             engine=engine,
