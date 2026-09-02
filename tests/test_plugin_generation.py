@@ -771,6 +771,55 @@ def _write_qq_command_plugin_site(root: Path) -> Path:
     return site
 
 
+def _write_prompt_plugin_site(root: Path) -> Path:
+    site = root / "site"
+    package = site / "generation_prompt_fixture"
+    dist_info = site / "generation_prompt_fixture-0.1.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        """
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
+            PluginManifest,
+        )
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.prompt",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,),
+            )
+
+            def register(self, registrar):
+                registrar.add_prompt_block(
+                    "z-evidence",
+                    "Keep evidence next to the claim.\\r\\nPreserve source meaning.",
+                )
+                registrar.add_prompt_block(
+                    "a-method",
+                    "Use the shortest sufficient method.",
+                )
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: generation-prompt-fixture\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.prompt = generation_prompt_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site
+
+
 def _descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id="test.generation.echo.v1",
@@ -1040,6 +1089,42 @@ class PluginGenerationProcessTests(unittest.TestCase):
             self.assertEqual(stopped["status"], "stopped")
             self.assertFalse(generation.running)
             self.assertEqual(generation.stop()["reason"], "already_stopped")
+
+    def test_generation_publishes_stable_prompt_blocks_once_at_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=_write_prompt_plugin_site(root),
+                plugin_id="test.generation.prompt",
+                work_dir=root / "work",
+            )
+
+            ready = generation.start()
+            try:
+                self.assertTrue(ready["ok"])
+                self.assertEqual(
+                    ready["contribution_snapshot"]["prompt_blocks"],
+                    ["a-method", "z-evidence"],
+                )
+                self.assertEqual(
+                    generation.stable_system_prompt_blocks(),
+                    (
+                        "Use the shortest sufficient method.",
+                        "Keep evidence next to the claim.\nPreserve source meaning.",
+                    ),
+                )
+                health = generation.health()
+                self.assertTrue(health["ok"])
+                self.assertEqual(
+                    generation.stable_system_prompt_blocks(),
+                    (
+                        "Use the shortest sufficient method.",
+                        "Keep evidence next to the claim.\nPreserve source meaning.",
+                    ),
+                )
+            finally:
+                generation.stop()
 
     def test_generation_dispatches_lossless_channel_event_and_generic_payload(self) -> None:
         async def scenario() -> None:

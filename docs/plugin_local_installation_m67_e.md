@@ -102,10 +102,12 @@ callback ID 无损关联，取消与旧代排空保持闭环；父进程仅调�
 internal/current_turn/timeline 与普通 Agent 仲裁意图。通用结构化 payload 可逆传输，QQ 的
 channelcore-onebot 消息权威通过明确类型编码保留引用、@、有序段、附件和转发，不压成摘要；
 未知对象结构化失败，不静默删数据。事件调用支持并发、取消与排空，不新增次数、大小或总时长
-限制，也不直接写 MemCore 或修改 prompt。Hook、QQ 指令和后台服务生命周期仍未全部切换到该
-进程，所以当前 Bot 不会把半套跨进程端口伪装成已经完成的热切换。插件普通
-stdout/stderr 与协议通道隔离；下一步继续其余公开端口，最后才做代次快照原子切换。
-进程实现已拆为协议帧、父/子回调、worker 与父进程客户端四个职责文件；仍只有同一个
+限制，也不直接写 MemCore 或修改 prompt。插件普通 stdout/stderr 与协议通道隔离。
+第七至第九步又依次接通生命周期 Hook、后台服务就绪与排空、QQ 插件指令；第十步把已经由
+PluginHost 校验和稳定排序的提示块正文作为 ready 时的一次性不可变快照交给父进程。它不经
+health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插件代次切换时变化。运行切换前
+审计还发现 Skill 挂载、管理视图和 active-generation 门面尚未完成，因此当前 Bot 仍不做半套
+切换。进程实现已拆为协议帧、父/子回调、worker 与父进程客户端四个职责文件；仍只有同一个
 `akane.plugin-generation.v1` 协议和同一个公开 `PluginGenerationProcess`，不形成兼容双轨。
 
 ## 6. AI 自修改的边界

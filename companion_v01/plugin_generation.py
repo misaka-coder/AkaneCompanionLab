@@ -159,6 +159,7 @@ class PluginGenerationProcess:
         self._hook_types: tuple[str, ...] = ()
         self._qq_commands: tuple[str, ...] = ()
         self._background_service_ids: tuple[str, ...] = ()
+        self._stable_prompt_blocks: tuple[str, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -202,6 +203,11 @@ class PluginGenerationProcess:
         """Return the exact QQ command tokens published at ready."""
 
         return self._qq_commands
+
+    def stable_system_prompt_blocks(self) -> tuple[str, ...]:
+        """Return the generation's immutable restart-only prompt snapshot."""
+
+        return self._stable_prompt_blocks
 
     def handles_qq_command(self, command: str) -> bool:
         return str(command or "").strip().lower() in self._qq_commands
@@ -299,6 +305,9 @@ class PluginGenerationProcess:
             )
             self._background_service_ids = _decode_background_service_ids(
                 ready.get("contribution_snapshot")
+            )
+            self._stable_prompt_blocks = _decode_stable_prompt_blocks(
+                ready.get("stable_system_prompt_blocks")
             )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
             return ready
@@ -978,6 +987,14 @@ def _decode_qq_commands(value: object) -> tuple[str, ...]:
     ):
         raise PluginGenerationError("plugin_generation_protocol_invalid")
     return tuple(sorted(set(raw_commands)))
+
+
+def _decode_stable_prompt_blocks(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    return tuple(value)
 
 
 def _generation_event_failure(status: str, reason: object) -> PluginEventDispatchResult:

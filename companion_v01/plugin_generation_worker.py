@@ -344,6 +344,9 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                         host.capability_descriptors.items()
                     )
                 ],
+                "stable_system_prompt_blocks": list(
+                    host.stable_system_prompt_blocks()
+                ),
             },
         )
         ready_sent = True
