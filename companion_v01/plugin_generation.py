@@ -24,7 +24,11 @@ from typing import Any, Mapping, TextIO
 
 from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 
-from .plugin_api import PluginEventEnvelope, PluginHookEnvelope
+from .plugin_api import (
+    PluginEventEnvelope,
+    PluginHookEnvelope,
+    PluginQQCommandResult,
+)
 from .plugin_events import PluginEventDispatchResult
 from .plugin_hooks import PluginHookDispatchResult
 from .plugin_generation_artifacts import (
@@ -42,6 +46,8 @@ from .plugin_generation_codec import (
     plugin_event_envelope_to_wire,
     plugin_hook_dispatch_result_from_wire,
     plugin_hook_envelope_to_wire,
+    plugin_qq_command_result_from_wire,
+    qq_command_dispatch_to_wire,
 )
 from .plugin_generation_protocol import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -53,6 +59,7 @@ from .plugin_managed_artifacts import (
     ManagedArtifactSink,
     normalize_managed_artifact_reference,
 )
+from .plugin_qq_commands import COMMAND_FAILURE_REPLY, PluginQQCommandBroker
 
 
 class PluginGenerationError(RuntimeError):
@@ -61,6 +68,49 @@ class PluginGenerationError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = str(reason or "plugin_generation_failed")
         super().__init__(self.reason)
+
+
+class PluginGenerationQQCommandBroker:
+    """Compose host commands with one isolated plugin generation."""
+
+    def __init__(
+        self,
+        generation: "PluginGenerationProcess",
+        *,
+        host_registrations: tuple = (),
+    ) -> None:
+        self._generation = generation
+        self._host_broker = PluginQQCommandBroker(
+            (),
+            host_registrations=tuple(host_registrations or ()),
+        )
+
+    @property
+    def registered_commands(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    *self._host_broker.registered_commands,
+                    *self._generation.registered_qq_commands,
+                )
+            )
+        )
+
+    def handles(self, command: str) -> bool:
+        return self._host_broker.handles(command) or self._generation.handles_qq_command(
+            command
+        )
+
+    async def dispatch(self, **command_args: Any) -> PluginQQCommandResult:
+        command = str(command_args.get("command") or "")
+        if self._host_broker.handles(command):
+            return await self._host_broker.dispatch(**command_args)
+        if not self._generation.handles_qq_command(command):
+            return PluginQQCommandResult(
+                handled=False,
+                reason="no_matching_command",
+            )
+        return await self._generation.dispatch_qq_command(**command_args)
 
 
 class PluginGenerationProcess:
@@ -107,6 +157,7 @@ class PluginGenerationProcess:
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
         self._event_types: tuple[str, ...] = ()
         self._hook_types: tuple[str, ...] = ()
+        self._qq_commands: tuple[str, ...] = ()
         self._background_service_ids: tuple[str, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
@@ -145,6 +196,24 @@ class PluginGenerationProcess:
         """Return the exact supervised services published at ready."""
 
         return self._background_service_ids
+
+    @property
+    def registered_qq_commands(self) -> tuple[str, ...]:
+        """Return the exact QQ command tokens published at ready."""
+
+        return self._qq_commands
+
+    def handles_qq_command(self, command: str) -> bool:
+        return str(command or "").strip().lower() in self._qq_commands
+
+    def build_qq_command_broker(
+        self,
+        host_registrations: tuple = (),
+    ) -> PluginGenerationQQCommandBroker:
+        return PluginGenerationQQCommandBroker(
+            self,
+            host_registrations=host_registrations,
+        )
 
     def observes(self, event_type: str) -> bool:
         normalized = str(event_type or "").strip().lower()
@@ -223,6 +292,9 @@ class PluginGenerationProcess:
                 ready.get("contribution_snapshot")
             )
             self._hook_types = _decode_hook_types(
+                ready.get("contribution_snapshot")
+            )
+            self._qq_commands = _decode_qq_commands(
                 ready.get("contribution_snapshot")
             )
             self._background_service_ids = _decode_background_service_ids(
@@ -390,6 +462,75 @@ class PluginGenerationProcess:
                 )
         except PluginGenerationError as exc:
             return _generation_hook_failure("host_unavailable", exc.reason)
+        finally:
+            self._finish_invocation()
+
+    async def dispatch_qq_command(
+        self,
+        *,
+        command: str,
+        args: str,
+        qq_number: int,
+        group_id: int,
+        is_group: bool,
+        idempotency_key: str = "",
+        sender_role: str = "",
+        profile_user_id: str = "",
+        session_id: str = "",
+        character_pack_id: str = "",
+    ) -> PluginQQCommandResult:
+        try:
+            wire_args = qq_command_dispatch_to_wire(
+                command=command,
+                args=args,
+                qq_number=qq_number,
+                group_id=group_id,
+                is_group=is_group,
+                idempotency_key=idempotency_key,
+                sender_role=sender_role,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+        except PluginGenerationCodecError:
+            return _generation_qq_command_failure("invalid_command_context")
+        try:
+            request_id, response_queue = self._send_request(
+                "qq_command.dispatch",
+                {"command_args": wire_args},
+            )
+        except PluginGenerationError as exc:
+            return _generation_qq_command_failure(exc.reason)
+        try:
+            try:
+                response = await asyncio.to_thread(
+                    self._next_response,
+                    response_queue,
+                    None,
+                )
+            except asyncio.CancelledError:
+                self._discard_pending(request_id, response_queue)
+                try:
+                    response_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                self._send_cancel(request_id)
+                raise
+            finally:
+                self._discard_pending(request_id, response_queue)
+            self._validate_response(response, expected_type="response")
+            if response.get("request_id") != request_id or not response.get("ok"):
+                return _generation_qq_command_failure(
+                    str(response.get("reason") or "plugin_generation_protocol_invalid")
+                )
+            try:
+                return plugin_qq_command_result_from_wire(response.get("result"))
+            except PluginGenerationCodecError:
+                return _generation_qq_command_failure(
+                    "plugin_generation_protocol_invalid"
+                )
+        except PluginGenerationError as exc:
+            return _generation_qq_command_failure(exc.reason)
         finally:
             self._finish_invocation()
 
@@ -600,7 +741,12 @@ class PluginGenerationProcess:
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
                 )
                 process.stdin.flush()
-                if command in {"invoke", "event.dispatch", "hook.dispatch"}:
+                if command in {
+                    "invoke",
+                    "event.dispatch",
+                    "hook.dispatch",
+                    "qq_command.dispatch",
+                }:
                     with self._active_invocation_condition:
                         self._active_invocations += 1
             except (BrokenPipeError, OSError) as exc:
@@ -823,6 +969,17 @@ def _decode_background_service_ids(value: object) -> tuple[str, ...]:
     return tuple(sorted(set(raw_service_ids)))
 
 
+def _decode_qq_commands(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    raw_commands = value.get("commands", [])
+    if not isinstance(raw_commands, list) or any(
+        not isinstance(item, str) for item in raw_commands
+    ):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    return tuple(sorted(set(raw_commands)))
+
+
 def _generation_event_failure(status: str, reason: object) -> PluginEventDispatchResult:
     safe_reason = str(reason or "plugin_event_dispatch_failed")
     return PluginEventDispatchResult(
@@ -838,6 +995,14 @@ def _generation_hook_failure(status: str, reason: object) -> PluginHookDispatchR
         ok=False,
         status=str(status or "host_unavailable"),
         failures=(("host", safe_reason),),
+    )
+
+
+def _generation_qq_command_failure(reason: object) -> PluginQQCommandResult:
+    return PluginQQCommandResult(
+        handled=True,
+        reply_text=COMMAND_FAILURE_REPLY,
+        reason=str(reason or "plugin_generation_unavailable"),
     )
 
 
@@ -886,4 +1051,5 @@ __all__ = [
     "PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS",
     "PluginGenerationError",
     "PluginGenerationProcess",
+    "PluginGenerationQQCommandBroker",
 ]

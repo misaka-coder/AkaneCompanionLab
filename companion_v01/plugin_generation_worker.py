@@ -28,6 +28,8 @@ from .plugin_generation_codec import (
     plugin_event_envelope_from_wire,
     plugin_hook_dispatch_result_to_wire,
     plugin_hook_envelope_from_wire,
+    plugin_qq_command_result_to_wire,
+    qq_command_dispatch_from_wire,
 )
 from .plugin_generation_protocol import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -54,6 +56,7 @@ async def _handle_request(
     host: PluginHost,
     event_broker: Any,
     hook_broker: Any,
+    qq_command_broker: Any,
     request: Mapping[str, Any],
     *,
     generation_id: str,
@@ -104,6 +107,20 @@ async def _handle_request(
                 },
             )
             return
+        if command == "qq_command.dispatch":
+            command_args = qq_command_dispatch_from_wire(request.get("command_args"))
+            result = await qq_command_broker.dispatch(**command_args)
+            emit_protocol_message(
+                protocol_stream,
+                {
+                    **base,
+                    "ok": True,
+                    "status": "handled" if result.handled else "unhandled",
+                    "reason": str(result.reason or ""),
+                    "result": plugin_qq_command_result_to_wire(result),
+                },
+            )
+            return
         if command == "invoke":
             raw_args = request.get("args")
             if not isinstance(raw_args, Mapping) or any(
@@ -137,18 +154,18 @@ async def _handle_request(
             },
         )
     except asyncio.CancelledError:
-        if command in {"event.dispatch", "hook.dispatch"}:
+        if command in {"event.dispatch", "hook.dispatch", "qq_command.dispatch"}:
             emit_protocol_message(
                 protocol_stream,
                 {
                     **base,
                     "ok": True,
                     "status": "cancelled",
-                    "reason": (
-                        "plugin_event_dispatch_cancelled"
-                        if command == "event.dispatch"
-                        else "plugin_hook_dispatch_cancelled"
-                    ),
+                    "reason": {
+                        "event.dispatch": "plugin_event_dispatch_cancelled",
+                        "hook.dispatch": "plugin_hook_dispatch_cancelled",
+                        "qq_command.dispatch": "plugin_qq_command_dispatch_cancelled",
+                    }[command],
                 },
             )
             raise
@@ -182,7 +199,11 @@ async def _handle_request(
                     else (
                         "hook_protocol_invalid"
                         if command == "hook.dispatch"
-                        else "invocation_protocol_invalid"
+                        else (
+                            "qq_command_protocol_invalid"
+                            if command == "qq_command.dispatch"
+                            else "invocation_protocol_invalid"
+                        )
                     )
                 ),
             },
@@ -201,6 +222,7 @@ async def _handle_request(
 
 async def _handle_stop(
     host: PluginHost,
+    active_requests: tuple[asyncio.Task[None], ...],
     *,
     generation_id: str,
     request_id: str,
@@ -208,6 +230,8 @@ async def _handle_stop(
 ) -> None:
     await asyncio.sleep(0)
     try:
+        if active_requests:
+            await asyncio.gather(*active_requests, return_exceptions=True)
         snapshot = await host.stop()
     except asyncio.CancelledError:
         raise
@@ -328,6 +352,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             return 1
         event_broker = host.build_event_broker()
         hook_broker = host.build_hook_broker()
+        qq_command_broker = host.build_qq_command_broker()
         active_requests: dict[str, asyncio.Task[None]] = {}
         stop_task: asyncio.Task[None] | None = None
         while True:
@@ -413,6 +438,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                 stop_task = asyncio.create_task(
                     _handle_stop(
                         host,
+                        tuple(active_requests.values()),
                         generation_id=generation_id,
                         request_id=request_id,
                         protocol_stream=protocol_stream,
@@ -447,6 +473,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                     host,
                     event_broker,
                     hook_broker,
+                    qq_command_broker,
                     request,
                     generation_id=generation_id,
                     protocol_stream=protocol_stream,

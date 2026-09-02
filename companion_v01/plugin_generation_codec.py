@@ -27,6 +27,7 @@ from .plugin_api import (
     PluginHookEnvelope,
     PluginOutboundDecoration,
     PluginOutboundPlanSnapshot,
+    PluginQQCommandResult,
     PluginReasoningRequest,
     PluginReasoningResult,
     PluginToolCallSnapshot,
@@ -665,6 +666,76 @@ def plugin_hook_dispatch_result_from_wire(value: object) -> PluginHookDispatchRe
     )
 
 
+def qq_command_dispatch_to_wire(
+    *,
+    command: object,
+    args: object,
+    qq_number: object,
+    group_id: object,
+    is_group: object,
+    idempotency_key: object = "",
+    sender_role: object = "",
+    profile_user_id: object = "",
+    session_id: object = "",
+    character_pack_id: object = "",
+) -> dict[str, Any]:
+    reason = "plugin_qq_command_request_invalid"
+    return _json_snapshot(
+        {
+            "command": _string(command, reason),
+            "args": _string(args, reason),
+            "qq_number": _integer(qq_number, reason),
+            "group_id": _integer(group_id, reason),
+            "is_group": _boolean_value(is_group, reason),
+            "idempotency_key": _string(idempotency_key, reason),
+            "sender_role": _string(sender_role, reason),
+            "profile_user_id": _string(profile_user_id, reason),
+            "session_id": _string(session_id, reason),
+            "character_pack_id": _string(character_pack_id, reason),
+        }
+    )
+
+
+def qq_command_dispatch_from_wire(value: object) -> dict[str, Any]:
+    reason = "plugin_qq_command_request_invalid"
+    record = _mapping(value, reason)
+    return {
+        "command": _string(record.get("command"), reason),
+        "args": _string(record.get("args"), reason),
+        "qq_number": _integer(record.get("qq_number"), reason),
+        "group_id": _integer(record.get("group_id"), reason),
+        "is_group": _boolean_value(record.get("is_group"), reason),
+        "idempotency_key": _string(record.get("idempotency_key"), reason),
+        "sender_role": _string(record.get("sender_role"), reason),
+        "profile_user_id": _string(record.get("profile_user_id"), reason),
+        "session_id": _string(record.get("session_id"), reason),
+        "character_pack_id": _string(record.get("character_pack_id"), reason),
+    }
+
+
+def plugin_qq_command_result_to_wire(result: PluginQQCommandResult) -> dict[str, Any]:
+    reason = "plugin_qq_command_result_invalid"
+    if not isinstance(result, PluginQQCommandResult):
+        raise PluginGenerationCodecError(reason)
+    return _json_snapshot(
+        {
+            "handled": _boolean_value(result.handled, reason),
+            "reply_text": _string(result.reply_text, reason),
+            "reason": _string(result.reason, reason),
+        }
+    )
+
+
+def plugin_qq_command_result_from_wire(value: object) -> PluginQQCommandResult:
+    reason = "plugin_qq_command_result_invalid"
+    record = _mapping(value, reason)
+    return PluginQQCommandResult(
+        handled=_boolean_value(record.get("handled"), reason),
+        reply_text=_string(record.get("reply_text"), reason),
+        reason=_string(record.get("reason"), reason),
+    )
+
+
 def json_snapshot(value: Any) -> Any:
     """Return an independent JSON value without imposing a size policy."""
 
@@ -776,6 +847,12 @@ def _number(value: object, reason: str) -> float:
     return number
 
 
+def _integer(value: object, reason: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise PluginGenerationCodecError(reason)
+    return value
+
+
 def _boolean_value(value: object, reason: str) -> bool:
     if not isinstance(value, bool):
         raise PluginGenerationCodecError(reason)
@@ -875,6 +952,10 @@ __all__ = [
     "plugin_hook_dispatch_result_to_wire",
     "plugin_hook_envelope_from_wire",
     "plugin_hook_envelope_to_wire",
+    "plugin_qq_command_result_from_wire",
+    "plugin_qq_command_result_to_wire",
+    "qq_command_dispatch_from_wire",
+    "qq_command_dispatch_to_wire",
     "reasoning_request_from_wire",
     "reasoning_request_to_wire",
     "reasoning_result_from_wire",

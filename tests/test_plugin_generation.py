@@ -26,6 +26,8 @@ from companion_v01.plugin_api import (
     PluginHookEnvelope,
     PluginOutboundDecoration,
     PluginOutboundPlanSnapshot,
+    PluginQQCommandRequest,
+    PluginQQCommandResult,
     PluginReasoningRequest,
     PluginReasoningResult,
     PluginToolCallSnapshot,
@@ -57,6 +59,10 @@ from companion_v01.plugin_generation_codec import (
     plugin_hook_dispatch_result_to_wire,
     plugin_hook_envelope_from_wire,
     plugin_hook_envelope_to_wire,
+    plugin_qq_command_result_from_wire,
+    plugin_qq_command_result_to_wire,
+    qq_command_dispatch_from_wire,
+    qq_command_dispatch_to_wire,
     reasoning_request_from_wire,
     reasoning_request_to_wire,
     reasoning_result_from_wire,
@@ -65,6 +71,7 @@ from companion_v01.plugin_generation_codec import (
 from companion_v01.plugin_events import PluginEventDispatchResult
 from companion_v01.plugin_hooks import PluginHookDispatchResult
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
+from companion_v01.plugin_qq_commands import _PluginCommandRegistration
 from companion_v01.store import MemoryStore
 
 
@@ -684,6 +691,86 @@ def _write_hook_plugin_site(root: Path) -> Path:
     return site
 
 
+def _write_qq_command_plugin_site(root: Path) -> Path:
+    site = root / "site"
+    package = site / "generation_qq_command_fixture"
+    dist_info = site / "generation_qq_command_fixture-0.1.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        """
+        import asyncio
+
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            PLUGIN_QQ_COMMAND_PERMISSION,
+            PluginManifest,
+            PluginQQCommandResult,
+        )
+
+        class Handler:
+            async def handle(self, request):
+                if request.args.startswith("delay:"):
+                    await asyncio.sleep(int(request.args.split(":", 1)[1]) / 1000)
+                if request.args == "raise":
+                    raise RuntimeError("private-command-failure")
+                if request.args == "long":
+                    return PluginQQCommandResult(handled=True, reply_text="x" * 2500)
+                return PluginQQCommandResult(
+                    handled=True,
+                    reply_text="|".join(
+                        (
+                            request.command,
+                            request.args,
+                            str(request.qq_number),
+                            str(request.group_id),
+                            str(request.is_group).lower(),
+                            request.sender_role,
+                            request.profile_user_id,
+                            request.session_id,
+                            request.character_pack_id,
+                            request.idempotency_key,
+                        )
+                    ),
+                )
+
+        class SilentHandler:
+            async def handle(self, request):
+                del request
+                return PluginQQCommandResult(handled=True)
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.qq-command",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(PLUGIN_QQ_COMMAND_PERMISSION,),
+            )
+
+            def register(self, registrar):
+                registrar.add_qq_command("/echo", Handler())
+                registrar.add_qq_command("/silent", SilentHandler())
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\n"
+        "Name: generation-qq-command-fixture\n"
+        "Version: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.qq-command = "
+        "generation_qq_command_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site
+
+
 def _descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id="test.generation.echo.v1",
@@ -815,6 +902,23 @@ class PluginGenerationCodecTests(unittest.TestCase):
                 ),
             ),
         )
+        qq_command_args = {
+            "command": "/echo",
+            "args": "你好",
+            "qq_number": 123456,
+            "group_id": 654321,
+            "is_group": True,
+            "idempotency_key": "message-1",
+            "sender_role": "admin",
+            "profile_user_id": "profile:123456",
+            "session_id": "qq:group:654321",
+            "character_pack_id": "reimu",
+        }
+        qq_command_result = PluginQQCommandResult(
+            handled=True,
+            reply_text="完成",
+            reason="",
+        )
 
         self.assertEqual(
             capability_descriptor_from_wire(capability_descriptor_to_wire(descriptor)),
@@ -869,6 +973,18 @@ class PluginGenerationCodecTests(unittest.TestCase):
                 plugin_hook_dispatch_result_to_wire(hook_dispatch_result)
             ),
             hook_dispatch_result,
+        )
+        self.assertEqual(
+            qq_command_dispatch_from_wire(
+                qq_command_dispatch_to_wire(**qq_command_args)
+            ),
+            qq_command_args,
+        )
+        self.assertEqual(
+            plugin_qq_command_result_from_wire(
+                plugin_qq_command_result_to_wire(qq_command_result)
+            ),
+            qq_command_result,
         )
 
     def test_non_json_values_are_rejected_without_a_size_policy(self) -> None:
@@ -1580,6 +1696,202 @@ class PluginGenerationProcessTests(unittest.TestCase):
                         for item in stopped["snapshot"]["background_services"]
                     }
                     self.assertEqual(stopped_services["worker"]["status"], "stopped")
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_qq_command_broker_preserves_context_and_host_precedence(self) -> None:
+        async def scenario() -> None:
+            class HostHandler:
+                async def handle(
+                    self,
+                    request: PluginQQCommandRequest,
+                ) -> PluginQQCommandResult:
+                    return PluginQQCommandResult(
+                        handled=True,
+                        reply_text=f"host:{request.args}",
+                    )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_qq_command_plugin_site(root),
+                    plugin_id="test.generation.qq-command",
+                    work_dir=root / "work",
+                )
+                ready = generation.start()
+                try:
+                    self.assertTrue(ready["ok"])
+                    self.assertEqual(
+                        generation.registered_qq_commands,
+                        ("/echo", "/silent"),
+                    )
+                    broker = generation.build_qq_command_broker()
+                    self.assertTrue(broker.handles("/ECHO"))
+                    self.assertFalse(broker.handles("/unknown"))
+
+                    result = await broker.dispatch(
+                        command="/ECHO",
+                        args="hello",
+                        qq_number=123456,
+                        group_id=654321,
+                        is_group=True,
+                        idempotency_key="message-1",
+                        sender_role="ADMIN",
+                        profile_user_id="profile:123456",
+                        session_id="qq:group:654321",
+                        character_pack_id="reimu",
+                    )
+                    fields = result.reply_text.split("|")
+                    self.assertTrue(result.handled)
+                    self.assertEqual(
+                        fields[:9],
+                        [
+                            "/ECHO",
+                            "hello",
+                            "123456",
+                            "654321",
+                            "true",
+                            "admin",
+                            "profile:123456",
+                            "qq:group:654321",
+                            "reimu",
+                        ],
+                    )
+                    self.assertEqual(len(fields[9]), 32)
+                    self.assertNotEqual(fields[9], "message-1")
+
+                    silent = await broker.dispatch(
+                        command="/silent",
+                        args="",
+                        qq_number=123456,
+                        group_id=0,
+                        is_group=False,
+                    )
+                    self.assertTrue(silent.handled)
+                    self.assertEqual(silent.reply_text, "")
+
+                    failed = await broker.dispatch(
+                        command="/echo",
+                        args="raise",
+                        qq_number=123456,
+                        group_id=0,
+                        is_group=False,
+                    )
+                    self.assertTrue(failed.handled)
+                    self.assertEqual(failed.reason, "handler_exception")
+                    self.assertNotIn("private-command-failure", repr(failed))
+
+                    long_reply = await broker.dispatch(
+                        command="/echo",
+                        args="long",
+                        qq_number=123456,
+                        group_id=0,
+                        is_group=False,
+                    )
+                    self.assertEqual(len(long_reply.reply_text), 2000)
+
+                    slow_task = asyncio.create_task(
+                        broker.dispatch(
+                            command="/echo",
+                            args="delay:80",
+                            qq_number=1,
+                            group_id=0,
+                            is_group=False,
+                        )
+                    )
+                    fast_task = asyncio.create_task(
+                        broker.dispatch(
+                            command="/echo",
+                            args="delay:10",
+                            qq_number=2,
+                            group_id=0,
+                            is_group=False,
+                        )
+                    )
+                    slow, fast = await asyncio.gather(slow_task, fast_task)
+                    self.assertIn("delay:80|1", slow.reply_text)
+                    self.assertIn("delay:10|2", fast.reply_text)
+
+                    host_broker = generation.build_qq_command_broker(
+                        host_registrations=(
+                            _PluginCommandRegistration(
+                                plugin_id="host",
+                                command="/echo",
+                                handler=HostHandler(),
+                            ),
+                        )
+                    )
+                    host_result = await host_broker.dispatch(
+                        command="/echo",
+                        args="wins",
+                        qq_number=123456,
+                        group_id=0,
+                        is_group=False,
+                    )
+                    self.assertEqual(host_result.reply_text, "host:wins")
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_qq_command_cancellation_and_stop_drain(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_qq_command_plugin_site(root),
+                    plugin_id="test.generation.qq-command",
+                    work_dir=root / "work",
+                )
+                generation.start()
+                broker = generation.build_qq_command_broker()
+                try:
+                    pending = asyncio.create_task(
+                        broker.dispatch(
+                            command="/echo",
+                            args="delay:1000",
+                            qq_number=1,
+                            group_id=0,
+                            is_group=False,
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    pending.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await pending
+
+                    healthy = await broker.dispatch(
+                        command="/echo",
+                        args="healthy",
+                        qq_number=1,
+                        group_id=0,
+                        is_group=False,
+                    )
+                    self.assertTrue(healthy.handled)
+                    self.assertIn("healthy", healthy.reply_text)
+
+                    draining = asyncio.create_task(
+                        broker.dispatch(
+                            command="/echo",
+                            args="delay:250",
+                            qq_number=1,
+                            group_id=0,
+                            is_group=False,
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(stop_task.done())
+                    delivered = await draining
+                    stopped = await stop_task
+                    self.assertTrue(delivered.handled)
+                    self.assertIn("delay:250", delivered.reply_text)
+                    self.assertTrue(stopped["ok"])
                 finally:
                     generation.stop()
 
