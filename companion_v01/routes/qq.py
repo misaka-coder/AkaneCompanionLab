@@ -17,9 +17,9 @@ from ..deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
 from ..media_bridge_engine import redact_remote_media_urls_for_prompt
 from ..local_capability_config import (
     approval_mode_for_capability,
-    approval_mode_override_for_capability,
     get_approval_policy_config,
     save_capability_approval_mode,
+    save_capability_approval_modes,
 )
 from ..model_service_config import (
     effective_settings_from_config,
@@ -2863,6 +2863,79 @@ def build_qq_router(
                 result["timing"] = timing
             return result
 
+    async def _resume_qq_after_capability_decision(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        decision: str,
+        capability_id: str,
+        action_id: str,
+        authorization_profile_user_id: str,
+    ) -> None:
+        """Resume through the normal turn path without inventing a user message."""
+
+        decision_label = "批准" if decision == "approved" else "拒绝"
+        target = action_id or capability_id or "该动作"
+        original_actor_profile = str(authorization_profile_user_id or "").strip()
+        original_user_id = int(getattr(context, "user_id", 0) or 0)
+        if original_actor_profile.startswith("qq_") and original_actor_profile[3:].isdigit():
+            original_user_id = int(original_actor_profile[3:])
+        elif original_actor_profile == "master":
+            original_user_id = int(getattr(qq_gateway, "master_qq", 0) or original_user_id)
+        resume_context = replace(
+            context,
+            source_message_id="",
+            clean_message="",
+            raw_message="",
+            user_id=original_user_id,
+            sender_label=(
+                str(getattr(context, "sender_label", "") or "")
+                if original_user_id == int(getattr(context, "user_id", 0) or 0)
+                else f"QQ {original_user_id}"
+            ),
+            actor_profile_user_id=original_actor_profile,
+        )
+        turn_payload = resume_context.to_turn_payload()
+        turn_payload.update(
+            {
+                "message": f"【宿主能力审批结果】用户已{decision_label} {target}。请从刚才暂停的位置继续；若被拒绝，改用不需要该权限的方案或如实说明。",
+                "memory_message": "",
+                "source_message_id": "",
+                "timestamp": int(time.time()),
+                "turn_kind": "capability_approval_resume",
+                "transient_user_message": True,
+                "message_addressing": {
+                    "mode": "host_event",
+                    "trigger": "capability_approval_resume",
+                    "addressed_to_assistant": True,
+                    "explicit_assistant_mention": False,
+                    "primary_target": {"actor_id": "assistant", "display_name": "Akane"},
+                    "mentions": [],
+                },
+            }
+        )
+        try:
+            await _run_qq_turn_delivery(
+                context=resume_context,
+                event={**event, "time": int(time.time()), "message_id": ""},
+                turn_payload=turn_payload,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error_logger = getattr(logger, "error", None)
+            if callable(error_logger):
+                error_logger("qq approval auto-resume failed: %s", exc.__class__.__name__)
+            log_event(
+                "qq_capability_approval_resume_failed",
+                session_id=str(getattr(context, "session_id", "") or ""),
+                profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+                capability_id=capability_id,
+                action_id=action_id,
+                decision=decision,
+                reason=exc.__class__.__name__,
+            )
+
     async def _run_qq_image_vision_followup(
         *,
         context: Any,
@@ -3444,6 +3517,75 @@ def build_qq_router(
                     }
                 )
 
+            access_permission_command = qq_gateway.parse_access_permission_command(context.clean_message)
+            if isinstance(access_permission_command, dict):
+                capability_config_base_dir = getattr(
+                    engine,
+                    "capability_config_base_dir",
+                    getattr(config_module, "DATA_DIR", None),
+                )
+                policy_profile_user_id = str(
+                    getattr(context, "actor_profile_user_id", "") or context.profile_user_id
+                )
+                policy_payload = get_approval_policy_config(
+                    base_dir=capability_config_base_dir,
+                    profile_user_id=policy_profile_user_id,
+                )
+                current_modes = {
+                    family_id: approval_mode_for_capability(
+                        policy_payload.get("approvalPolicy"),
+                        "",
+                        family_id=family_id,
+                    )
+                    for family_id in ("ops", "extensions")
+                }
+
+                def _save_access_modes(modes: dict[str, str]) -> dict[str, str]:
+                    saved = save_capability_approval_modes(
+                        base_dir=capability_config_base_dir,
+                        profile_user_id=policy_profile_user_id,
+                        modes=modes,
+                    )
+                    if not saved.get("ok"):
+                        raise RuntimeError(str(saved.get("reason") or "access_permission_save_failed"))
+                    return dict(saved.get("approvalModes") or {})
+
+                access_result = qq_gateway.handle_access_permission_command(
+                    context,
+                    command=access_permission_command,
+                    current_modes=current_modes,
+                    apply_modes=_save_access_modes,
+                )
+                if isinstance(access_result, dict):
+                    reply = str(access_result.get("reply") or "").strip()
+                    send_result = await _send_route_reply(context, reply) if reply else {"ok": False, "reason": "empty_reply"}
+                    command_ok = bool(access_result.get("ok"))
+                    duration_ms = (time.perf_counter() - started_at) * 1000
+                    runtime_metrics.observe_request("qq_napcat_event", duration_ms=duration_ms, ok=bool(send_result.get("ok")) and command_ok)
+                    log_event(
+                        "qq_access_permission_command",
+                        session_id=context.session_id,
+                        profile_user_id=context.profile_user_id,
+                        policy_profile_user_id=policy_profile_user_id,
+                        command_status=str(access_result.get("status") or ""),
+                        command_ok=command_ok,
+                        scope=str(access_permission_command.get("scope") or ""),
+                        sent=bool(send_result.get("ok")),
+                        duration_ms=round(duration_ms, 1),
+                    )
+                    return JSONResponse(
+                        {
+                            "status": "ok" if send_result.get("ok") else "send_failed",
+                            "reason": "qq_access_permission_command",
+                            "command_status": str(access_result.get("status") or ""),
+                            "command_ok": command_ok,
+                            "modes": dict(access_result.get("modes") or {}),
+                            "session_id": context.session_id,
+                            "profile_user_id": context.profile_user_id,
+                            "send_result": send_result,
+                        }
+                    )
+
             capability_approval_command = qq_gateway.parse_capability_approval_command(context.clean_message)
             if isinstance(capability_approval_command, dict):
                 approval_store_getter = getattr(engine, "_get_approval_store", None)
@@ -3482,6 +3624,20 @@ def build_qq_router(
                         sent=bool(send_result.get("ok")),
                         duration_ms=round(duration_ms, 1),
                     )
+                    decision = str(approval_result.get("status") or "")
+                    if command_ok and send_result.get("ok") and decision in {"approved", "denied"}:
+                        schedule_followup(
+                            _resume_qq_after_capability_decision(
+                                context=context,
+                                event=event,
+                                decision=decision,
+                                capability_id=str(approval_result.get("capability_id") or ""),
+                                action_id=str(approval_result.get("action_id") or ""),
+                                authorization_profile_user_id=str(
+                                    approval_result.get("authorization_profile_user_id") or ""
+                                ),
+                            )
+                        )
                     return JSONResponse(
                         {
                             "status": "ok" if send_result.get("ok") else "send_failed",
@@ -3501,14 +3657,18 @@ def build_qq_router(
                     "capability_config_base_dir",
                     getattr(config_module, "DATA_DIR", None),
                 )
+                legacy_policy_profile_user_id = str(
+                    getattr(context, "actor_profile_user_id", "") or context.profile_user_id
+                )
                 policy_payload = get_approval_policy_config(
                     base_dir=capability_config_base_dir,
-                    profile_user_id=context.profile_user_id,
+                    profile_user_id=legacy_policy_profile_user_id,
                 )
-                current_shell_mode = approval_mode_override_for_capability(
+                current_shell_mode = approval_mode_for_capability(
                     policy_payload.get("approvalPolicy"),
                     "exec_run",
-                ) or "disabled"
+                    family_id="ops",
+                )
                 execution_handler = (getattr(engine, "tool_handlers", {}) or {}).get("exec_run")
                 execution_supported = bool(
                     getattr(config_module, "EXECUTION_QQ_ENABLED", False)
@@ -3524,7 +3684,7 @@ def build_qq_router(
                 def _save_shell_mode(mode: str) -> str:
                     saved = save_capability_approval_mode(
                         base_dir=capability_config_base_dir,
-                        profile_user_id=context.profile_user_id,
+                        profile_user_id=legacy_policy_profile_user_id,
                         capability_id="exec_run",
                         mode=mode,
                     )
@@ -3586,9 +3746,12 @@ def build_qq_router(
                     "capability_config_base_dir",
                     getattr(config_module, "DATA_DIR", None),
                 )
+                legacy_policy_profile_user_id = str(
+                    getattr(context, "actor_profile_user_id", "") or context.profile_user_id
+                )
                 policy_payload = get_approval_policy_config(
                     base_dir=capability_config_base_dir,
-                    profile_user_id=context.profile_user_id,
+                    profile_user_id=legacy_policy_profile_user_id,
                 )
                 current_mcp_mode = approval_mode_for_capability(
                     policy_payload.get("approvalPolicy"),
@@ -3598,7 +3761,7 @@ def build_qq_router(
                 def _save_mcp_mode(mode: str) -> str:
                     saved = save_capability_approval_mode(
                         base_dir=capability_config_base_dir,
-                        profile_user_id=context.profile_user_id,
+                        profile_user_id=legacy_policy_profile_user_id,
                         capability_id="mcp",
                         mode=mode,
                     )

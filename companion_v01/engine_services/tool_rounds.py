@@ -174,6 +174,7 @@ def resolve_capability_selection(
     session_id: str = "",
     domain_profile_id: str = "",
     intent_text: str = "",
+    authorization_profile_user_id: str = "",
     mcp_activations: Mapping[str, Any] | None = None,
 ) -> CapabilitySelection:
     from ..capability_registry import CapabilityRegistry
@@ -258,6 +259,7 @@ def resolve_capability_selection(
         client_context=client_context,
         profile_user_id=profile_user_id,
         session_id=session_id,
+        authorization_profile_user_id=authorization_profile_user_id,
     )
     registry = getattr(engine, "capability_registry", None) or CapabilityRegistry()
     server_offer_index = getattr(registry, "server_offer_index", None)
@@ -412,6 +414,7 @@ def build_capability_snapshot(
     client_context: ClientProtocolContext,
     profile_user_id: str,
     session_id: str,
+    authorization_profile_user_id: str = "",
 ) -> CapabilitySnapshot:
     store = engine.store
     attachments = store.list_attachment_inbox_items(
@@ -447,14 +450,24 @@ def build_capability_snapshot(
     execution_provider_present = bool(getattr(engine, "execution_provider", None))
     execution_approval_override = ""
     if client_context.effective_mode == ClientMode.QQ_TEXT:
+        policy_profile_user_id = str(authorization_profile_user_id or "").strip()
         execution_profile_config = load_capability_config(
             base_dir=getattr(engine, "capability_config_base_dir", None),
-            profile_user_id=profile_user_id,
+            profile_user_id=policy_profile_user_id or profile_user_id,
         )
-        execution_approval_override = approval_mode_override_for_capability(
-            execution_profile_config.get("approvalPolicy"),
-            "exec_run",
-        )
+        if policy_profile_user_id:
+            execution_approval_override = approval_mode_for_capability(
+                execution_profile_config.get("approvalPolicy"),
+                "exec_run",
+                family_id="ops",
+            )
+        else:
+            # Hidden/system QQ turns have no actor principal and therefore do
+            # not inherit a person's broad access family.
+            execution_approval_override = approval_mode_override_for_capability(
+                execution_profile_config.get("approvalPolicy"),
+                "exec_run",
+            )
     execution_qq_enabled = (
         execution_provider_present
         and bool(getattr(_host_config, "EXECUTION_QQ_ENABLED", False))

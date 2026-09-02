@@ -28,6 +28,8 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 APPROVAL_MODE_TRUSTED_AUTO_ALLOW = "trusted_auto_allow"
 APPROVAL_MODE_ASK_EACH_TIME = "ask_each_time"
 APPROVAL_MODE_DISABLED = "disabled"
+APPROVAL_FAMILY_OPERATIONS = "ops"
+APPROVAL_FAMILY_EXTENSIONS = "extensions"
 APPROVAL_POLICY_DEFAULT_MODE = APPROVAL_MODE_ASK_EACH_TIME
 APPROVAL_POLICY_MODES = {
     APPROVAL_MODE_ASK_EACH_TIME,
@@ -285,22 +287,43 @@ def approval_mode_override_for_capability(
 def approval_mode_for_capability(
     approval_policy: Mapping[str, Any] | None,
     capability_id: str,
+    *,
+    family_id: str = "",
 ) -> str:
     normalized = normalize_approval_policy_config(approval_policy)
     exact_mode = approval_mode_override_for_capability(normalized, capability_id)
     if exact_mode:
         return exact_mode
     safe_id = _safe_capability_approval_id(capability_id)
+    # Family membership is supplied by the call site after it has classified
+    # the concrete action.  Inferring it from a capability-name prefix would
+    # incorrectly put read-only MCP/plugin actions behind the ops switch.
     if safe_id.startswith("mcp."):
-        family_mode = approval_mode_override_for_capability(normalized, "mcp")
+        # A legacy /mcp command is an explicit, narrower override. Saving the
+        # new ops family removes this compatibility value, so the latest
+        # user-facing command remains the one source of truth.
+        legacy_family_mode = approval_mode_override_for_capability(normalized, "mcp")
+        if legacy_family_mode:
+            return legacy_family_mode
+    safe_family_id = _safe_capability_approval_id(family_id)
+    if safe_family_id:
+        family_mode = approval_mode_override_for_capability(normalized, safe_family_id)
         if family_mode:
             return family_mode
     return str(normalized["defaultMode"])
 
-
 def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, Any]:
     normalized = normalize_approval_policy_config(policy)
     default_mode = normalized["defaultMode"]
+    family_modes = (
+        (APPROVAL_FAMILY_OPERATIONS, "本机与外部操作", "Shell、浏览器交互和会产生外部影响的 MCP/插件工具。"),
+        (APPROVAL_FAMILY_EXTENSIONS, "扩展管理", "安装、发布、启停、更新和移除 Skill、MCP 与插件。"),
+    )
+    family_options = [
+        {"id": APPROVAL_MODE_TRUSTED_AUTO_ALLOW, "label": "直接允许", "summary": "无需逐次确认。"},
+        {"id": APPROVAL_MODE_ASK_EACH_TIME, "label": "每次询问", "summary": "创建审批请求后再执行。"},
+        {"id": APPROVAL_MODE_DISABLED, "label": "关闭", "summary": "不允许执行这类动作。"},
+    ]
     return {
         "defaultMode": default_mode,
         "label": "完全访问" if default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW else "请求批准",
@@ -312,6 +335,16 @@ def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, A
         "requiresConfirmationByDefault": default_mode == APPROVAL_MODE_ASK_EACH_TIME,
         "trustedAutoAllowHighRisk": default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
         "capabilityModes": dict(normalized["capabilityModes"]),
+        "families": [
+            {
+                "id": family_id,
+                "label": label,
+                "summary": summary,
+                "mode": approval_mode_for_capability(normalized, "", family_id=family_id),
+                "availableModes": [dict(item) for item in family_options],
+            }
+            for family_id, label, summary in family_modes
+        ],
         "availableModes": [
             {
                 "id": APPROVAL_MODE_ASK_EACH_TIME,
@@ -553,6 +586,12 @@ def save_capability_approval_mode(
         }
     approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
     capability_modes = dict(approval_policy["capabilityModes"])
+    if safe_capability_id == APPROVAL_FAMILY_OPERATIONS:
+        # The old QQ controls wrote these narrower keys. An explicit save of
+        # the new family is a migration point, otherwise an invisible legacy
+        # value could contradict the control-center selection.
+        capability_modes.pop("exec_run", None)
+        capability_modes.pop("mcp", None)
     capability_modes[safe_capability_id] = normalized_mode
     approval_policy = {
         "defaultMode": approval_policy["defaultMode"],
@@ -576,6 +615,64 @@ def save_capability_approval_mode(
         "status": "saved",
         "capabilityId": safe_capability_id,
         "approvalMode": normalized_mode,
+        "configScope": _public_config_scope(profile_user_id),
+        "approvalPolicy": build_approval_policy_entry(approval_policy),
+        "refresh": True,
+    }
+
+
+def save_capability_approval_modes(
+    *,
+    base_dir: Path | str | None,
+    profile_user_id: str,
+    modes: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Persist several exact/family overrides in one config write."""
+
+    raw_modes = dict(modes or {})
+    normalized_updates = _normalize_capability_approval_modes(raw_modes)
+    if not normalized_updates or len(normalized_updates) != len(raw_modes):
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": "capability_approval_modes_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    if config.get("configStatus") == "invalid_config":
+        return {
+            "ok": False,
+            "status": "invalid_config",
+            "reason": config.get("reason") or "provider_config_file_invalid",
+            "configScope": _public_config_scope(profile_user_id),
+        }
+    approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
+    capability_modes = dict(approval_policy["capabilityModes"])
+    if APPROVAL_FAMILY_OPERATIONS in normalized_updates:
+        capability_modes.pop("exec_run", None)
+        capability_modes.pop("mcp", None)
+    capability_modes.update(normalized_updates)
+    approval_policy = {
+        "defaultMode": approval_policy["defaultMode"],
+        "capabilityModes": capability_modes,
+        "updatedAt": _now_iso(),
+    }
+    write_capability_config(
+        base_dir=base_dir,
+        profile_user_id=profile_user_id,
+        config={
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "approvalPolicy": approval_policy,
+            "providers": config.get("providers", {}),
+            "workflows": config.get("workflows", {}),
+            "voiceProfiles": config.get("voiceProfiles", {}),
+            "mcpServers": config.get("mcpServers", {}),
+        },
+    )
+    return {
+        "ok": True,
+        "status": "saved",
+        "approvalModes": normalized_updates,
         "configScope": _public_config_scope(profile_user_id),
         "approvalPolicy": build_approval_policy_entry(approval_policy),
         "refresh": True,

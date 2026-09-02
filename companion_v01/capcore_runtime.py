@@ -62,6 +62,7 @@ def approval_policy_for_capability(
     base_dir: Path | str | None,
     profile_user_id: str,
     capability_id: str,
+    family_id: str = "",
 ) -> ApprovalPolicy:
     """Resolve Akane's effective host policy before entering CapCore's gate."""
 
@@ -76,6 +77,7 @@ def approval_policy_for_capability(
     mode = approval_mode_for_capability(
         policy,
         str(capability_id or ""),
+        family_id=str(family_id or ""),
     )
     if mode not in APPROVAL_POLICY_MODES:
         mode = "ask_each_time"
@@ -87,6 +89,7 @@ def resolve_permission_for_profile(
     *,
     base_dir: Path | str | None,
     profile_user_id: str,
+    family_id: str = "",
 ) -> PermissionDecision:
     return capcore_resolve_permission(
         request,
@@ -94,6 +97,7 @@ def resolve_permission_for_profile(
             base_dir=base_dir,
             profile_user_id=profile_user_id,
             capability_id=str(getattr(request, "capability_id", "") or ""),
+            family_id=str(family_id or ""),
         ),
     )
 

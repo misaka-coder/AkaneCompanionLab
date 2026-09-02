@@ -9,6 +9,7 @@ import config
 
 from ..mcp_specs import INVOKE_MCP_TOOL_SPEC, LOAD_MCP_TOOL_SPEC, MCP_MANAGE_TOOL_SPEC
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
+from .management_permissions import gate_extension_mutation
 
 
 def _can_manage(context: ToolExecutionContext) -> bool:
@@ -150,8 +151,10 @@ class InvokeMcpToolHandler(BaseToolHandler):
 class McpManageToolHandler(BaseToolHandler):
     tool_type = "mcp_manage"
 
-    def __init__(self, *, service: Any) -> None:
+    def __init__(self, *, service: Any, approval_store: Any = None, config_base_dir: Any = None) -> None:
         self.service = service
+        self.approval_store = approval_store
+        self.config_base_dir = config_base_dir
 
     def tool_spec(self):
         return MCP_MANAGE_TOOL_SPEC
@@ -207,6 +210,19 @@ class McpManageToolHandler(BaseToolHandler):
         server_id = str(call.get("server_id") or "")
         if action == "list":
             return _result(self.service.list(profile_user_id=profile_user_id))
+        if action != "discover":
+            gated = gate_extension_mutation(
+                tool_type=self.tool_type,
+                action=action,
+                display_name="MCP 能力管理",
+                effects=("mcp_config_mutation",),
+                call=call,
+                context=context,
+                approval_store=self.approval_store,
+                config_base_dir=self.config_base_dir,
+            )
+            if gated is not None:
+                return gated
         if action == "configure":
             payload = {
                 "displayName": call.get("display_name") or server_id,

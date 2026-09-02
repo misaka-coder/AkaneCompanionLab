@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from channelcore_onebot import (
     AttachmentRef,
@@ -241,6 +241,10 @@ QQ_MCP_PERMISSION_COMMAND_RE = re.compile(
     r"^[/／]mcp(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
     re.IGNORECASE,
 )
+QQ_ACCESS_PERMISSION_COMMAND_RE = re.compile(
+    r"^[/／]access(?:\s+(status|ops|extensions|all))?(?:\s+(on|ask|off))?$",
+    re.IGNORECASE,
+)
 QQ_CAPABILITY_APPROVAL_COMMAND_RE = re.compile(
     r"^[/／](approvals?|approve|deny|审批|批准|拒绝)(?:\s+([A-Za-z0-9_-]+))?$",
     re.IGNORECASE,
@@ -382,10 +386,10 @@ class QQMessageContext:
             payload["message_addressing"] = self._message_addressing()
         if self.forward_references:
             payload["forward_references"] = [dict(item) for item in self.forward_references]
+        if self.actor_profile_user_id:
+            payload["actor_profile_user_id"] = self.actor_profile_user_id
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
-            if self.actor_profile_user_id:
-                payload["actor_profile_user_id"] = self.actor_profile_user_id
             payload["actor_display_name"] = self.sender_label
             payload["actor_platform"] = "qq"
         character_pack_id = _safe_character_pack_id(self.character_pack_id)
@@ -1123,13 +1127,16 @@ class NapCatQQGateway:
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
 
+        access_permission_command = self.parse_access_permission_command(clean_message)
         shell_permission_command = self.parse_shell_permission_command(clean_message)
         mcp_permission_command = self.parse_mcp_permission_command(clean_message)
         capability_approval_command = self.parse_capability_approval_command(clean_message)
         group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_attention_command = self.parse_group_attention_command(clean_message)
         group_reason = ""
-        if is_group and capability_approval_command is not None:
+        if is_group and access_permission_command is not None:
+            group_reason = "qq_access_permission_command"
+        elif is_group and capability_approval_command is not None:
             group_reason = "qq_capability_approval_command"
         elif is_group and shell_permission_command is not None:
             # Explicit control-plane commands must reach the authorization
@@ -1723,6 +1730,84 @@ class NapCatQQGateway:
         }.get(argument)
         return {"action": action} if action else None
 
+    def parse_access_permission_command(self, message: str) -> dict[str, str] | None:
+        text = re.sub(r"\s+", " ", str(message or "").strip())
+        match = QQ_ACCESS_PERMISSION_COMMAND_RE.fullmatch(text)
+        if match is None:
+            return None
+        scope = str(match.group(1) or "status").strip().lower()
+        action = str(match.group(2) or "").strip().lower()
+        if scope == "status" and not action:
+            return {"action": "status", "scope": "all"}
+        if scope in {"ops", "extensions"} and not action:
+            return {"action": "status", "scope": scope}
+        if scope in {"ops", "extensions", "all"} and action in {"on", "ask", "off"}:
+            return {"action": action, "scope": scope}
+        return None
+
+    def handle_access_permission_command(
+        self,
+        context: QQMessageContext,
+        *,
+        command: dict[str, str] | None = None,
+        current_modes: Mapping[str, str] | None = None,
+        apply_modes: Callable[[dict[str, str]], Mapping[str, str]] | None = None,
+    ) -> dict[str, Any] | None:
+        command = command or self.parse_access_permission_command(context.clean_message)
+        if command is None:
+            return None
+        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
+        if master_qq <= 0 or int(context.user_id or 0) != master_qq:
+            return {
+                "handled": True,
+                "ok": False,
+                "status": "forbidden",
+                "reply": "只有 Akane 主人账号可以查看或修改访问权限。",
+            }
+        modes = dict(current_modes or {})
+        for family_id in ("ops", "extensions"):
+            if modes.get(family_id) not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
+                modes[family_id] = "ask_each_time"
+        scope = str(command.get("scope") or "all")
+        action = str(command.get("action") or "status")
+        labels = {
+            "trusted_auto_allow": "直接允许",
+            "ask_each_time": "每次询问",
+            "disabled": "关闭",
+        }
+        if action == "status":
+            lines = ["Akane 访问权限："]
+            if scope in {"all", "ops"}:
+                lines.append(f"ops 本机与外部操作：{labels[modes['ops']]}")
+            if scope in {"all", "extensions"}:
+                lines.append(f"extensions 扩展管理：{labels[modes['extensions']]}")
+            lines.append("设置：/access ops|extensions|all on|ask|off")
+            lines.append("审批：/approvals · /approve [编号] · /deny [编号]")
+            return {"handled": True, "ok": True, "status": "current", "reply": "\n".join(lines), "modes": modes}
+        target_mode = {"on": "trusted_auto_allow", "ask": "ask_each_time", "off": "disabled"}.get(action)
+        if not target_mode or scope not in {"ops", "extensions", "all"}:
+            return {"handled": True, "ok": False, "status": "invalid_action", "reply": "用法：/access ops|extensions|all on|ask|off"}
+        updates = {
+            family_id: target_mode
+            for family_id in (("ops", "extensions") if scope == "all" else (scope,))
+        }
+        if apply_modes is None:
+            return {"handled": True, "ok": False, "status": "runtime_update_unavailable", "reply": "当前运行环境不能保存访问权限。"}
+        try:
+            applied = dict(apply_modes(updates) or {})
+        except Exception:
+            return {"handled": True, "ok": False, "status": "runtime_update_failed", "reply": "访问权限保存失败，原配置保持不变。"}
+        if any(applied.get(key) != value for key, value in updates.items()):
+            return {"handled": True, "ok": False, "status": "runtime_update_mismatch", "reply": "访问权限没有完整保存，原配置保持不变。"}
+        scope_label = {"ops": "本机与外部操作", "extensions": "扩展管理", "all": "全部两组权限"}[scope]
+        return {
+            "handled": True,
+            "ok": True,
+            "status": "saved",
+            "reply": f"{scope_label}已设为：{labels[target_mode]}。",
+            "modes": {**modes, **updates},
+        }
+
     def parse_mcp_permission_command(self, message: str) -> dict[str, str] | None:
         text = re.sub(r"\s+", " ", str(message or "").strip())
         match = QQ_MCP_PERMISSION_COMMAND_RE.fullmatch(text)
@@ -1843,11 +1928,19 @@ class NapCatQQGateway:
                 "status": str(result.get("status") or "failed"),
                 "reply": "这项能力审批没有处理成功，可能已经过期或被处理。",
             }
-        capability_id = str(selected[0].get("capabilityId") or selected[0].get("actionId") or "该能力")
+        resume_binding_getter = getattr(approval_store, "get_resume_binding", None)
+        resume_binding = (
+            dict(resume_binding_getter(profile_user_id=context.profile_user_id, request_id=request_id) or {})
+            if callable(resume_binding_getter)
+            else {}
+        )
+        capability_id = str(selected[0].get("capabilityId") or "")
+        action_id = str(selected[0].get("actionId") or "")
+        capability_label = capability_id or action_id or "该能力"
         reply = (
-            f"已批准 {capability_id}。本次授权只匹配原调用且会短时有效；现在发送“继续”即可让 Akane 重试。"
+            f"已批准 {capability_label}。本次授权只匹配原调用且会短时有效，Akane 正在自动续接。"
             if decision == "approved"
-            else f"已拒绝 {capability_id}，原动作不会执行。"
+            else f"已拒绝 {capability_label}，原动作不会执行；Akane 会自动收到结果。"
         )
         return {
             "handled": True,
@@ -1855,6 +1948,11 @@ class NapCatQQGateway:
             "status": decision,
             "reply": reply,
             "request_id": request_id,
+            "capability_id": capability_id,
+            "action_id": action_id,
+            "authorization_profile_user_id": str(
+                resume_binding.get("authorizationProfileUserId") or ""
+            ),
         }
 
     def handle_shell_permission_command(
@@ -1873,7 +1971,7 @@ class NapCatQQGateway:
         normalized_current = str(current_mode or "").strip().lower()
         if normalized_current not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
             normalized_current = "disabled"
-        scope_label = "本群" if context.is_group else "当前私聊"
+        scope_label = "当前 QQ 账号"
         action = str(command.get("action") or "")
         if action == "status":
             mode_label = {
@@ -1959,11 +2057,7 @@ class NapCatQQGateway:
             }
 
         if target_mode == "trusted_auto_allow":
-            reply = (
-                "本群 Shell 已开启：群成员提出的任务可由模型在 Bot 所在机器直接执行，不再逐条审批。"
-                if context.is_group
-                else "当前私聊 Shell 已开启：模型可在 Bot 所在机器直接执行，不再逐条审批。"
-            )
+            reply = "当前 QQ 账号的 Shell 已开启：模型可在 Bot 所在机器直接执行，不再逐条审批。"
             status = "enabled"
         elif target_mode == "ask_each_time":
             reply = f"{scope_label} Shell 已改为每次审批；命令获批前不会执行。"
@@ -1996,7 +2090,7 @@ class NapCatQQGateway:
         normalized_current = str(current_mode or "").strip().lower()
         if normalized_current not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
             normalized_current = "ask_each_time"
-        scope_label = "本群" if context.is_group else "当前私聊"
+        scope_label = "当前 QQ 账号"
         action = str(command.get("action") or "")
         if action == "status":
             mode_label = {

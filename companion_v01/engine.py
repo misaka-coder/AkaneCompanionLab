@@ -4322,6 +4322,9 @@ class AkaneMemoryEngine:
             # never freeze the transient event into provider history.
             "record_request_projection": prompt_scope != "qq_attention",
         }
+        authorization_profile_user_id = str(payload.get("actor_profile_user_id") or "").strip()
+        if authorization_profile_user_id:
+            request_projection_state["authorization_profile_user_id"] = authorization_profile_user_id
         from .engine_services.turn_context import resolve_qq_actor_relation
 
         current_actor_relation = resolve_qq_actor_relation(
@@ -5427,6 +5430,9 @@ class AkaneMemoryEngine:
             current_actor_relation=str(
                 (request_projection_state or {}).get("current_actor_relation") or ""
             ).strip(),
+            authorization_profile_user_id=str(
+                (request_projection_state or {}).get("authorization_profile_user_id") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6346,6 +6352,9 @@ class AkaneMemoryEngine:
             current_actor_relation=str(
                 (request_projection_state or {}).get("current_actor_relation") or ""
             ).strip(),
+            authorization_profile_user_id=str(
+                (request_projection_state or {}).get("authorization_profile_user_id") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6841,6 +6850,7 @@ class AkaneMemoryEngine:
         prompt_scope: str = "",
         current_user_source_id: str = "",
         current_actor_relation: str = "",
+        authorization_profile_user_id: str = "",
         mcp_activations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
@@ -6872,6 +6882,7 @@ class AkaneMemoryEngine:
             prompt_scope=prompt_scope,
             current_user_source_id=current_user_source_id,
             current_actor_relation=current_actor_relation,
+            authorization_profile_user_id=authorization_profile_user_id,
             mcp_activations=mcp_activations,
         )
 
@@ -8980,6 +8991,7 @@ class AkaneMemoryEngine:
         session_id: str = "",
         domain_profile_id: str = "",
         intent_text: str = "",
+        authorization_profile_user_id: str = "",
         mcp_activations: Mapping[str, Any] | None = None,
     ) -> CapabilitySelection:
         from .engine_services.tool_rounds import resolve_capability_selection as _fn
@@ -8991,6 +9003,7 @@ class AkaneMemoryEngine:
             session_id=session_id,
             domain_profile_id=domain_profile_id,
             intent_text=intent_text,
+            authorization_profile_user_id=authorization_profile_user_id,
             mcp_activations=mcp_activations,
         )
 

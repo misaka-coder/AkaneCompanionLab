@@ -752,6 +752,42 @@ function normalizeAbilitiesRuntime(value, connected) {
       { id: "trusted_auto_allow", label: "完全访问", summary: "自动允许高风险能力，但保留路径、密钥和边界校验。" }
     );
   }
+  const families = (Array.isArray(policy.families) ? policy.families : [])
+    .map((item) => {
+      const entry = asObject(item);
+      const id = text(entry.id);
+      if (!["ops", "extensions"].includes(id)) return null;
+      const mode = ["trusted_auto_allow", "ask_each_time", "disabled"].includes(text(entry.mode))
+        ? text(entry.mode)
+        : "ask_each_time";
+      const modes = (Array.isArray(entry.availableModes) ? entry.availableModes : [])
+        .map((modeItem) => {
+          const option = asObject(modeItem);
+          const optionId = text(option.id);
+          if (!["trusted_auto_allow", "ask_each_time", "disabled"].includes(optionId)) return null;
+          return { id: optionId, label: text(option.label), summary: text(option.summary) };
+        })
+        .filter(Boolean);
+      return {
+        id,
+        label: text(entry.label) || (id === "ops" ? "本机与外部操作" : "扩展管理"),
+        summary: text(entry.summary),
+        mode,
+        availableModes: modes
+      };
+    })
+    .filter(Boolean);
+  if (!families.length && connected) {
+    const familyModes = [
+      { id: "trusted_auto_allow", label: "直接允许", summary: "无需逐次确认。" },
+      { id: "ask_each_time", label: "每次询问", summary: "确认后再执行。" },
+      { id: "disabled", label: "关闭", summary: "不允许执行这类动作。" }
+    ];
+    families.push(
+      { id: "ops", label: "本机与外部操作", summary: "Shell、浏览器交互和有外部影响的工具。", mode: defaultMode, availableModes: familyModes },
+      { id: "extensions", label: "扩展管理", summary: "安装、发布、启停与移除 Skill、MCP 和插件。", mode: defaultMode, availableModes: familyModes }
+    );
+  }
   return {
     available: connected && Object.keys(source).length > 0,
     availability: finitePercent(overview.availability),
@@ -773,7 +809,8 @@ function normalizeAbilitiesRuntime(value, connected) {
       defaultMode,
       label: text(policy.label) || (defaultMode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
       summary: text(policy.summary),
-      availableModes
+      availableModes,
+      families
     },
     safetyStatus: text(safety.status) || (connected ? "已生效" : "待连接"),
     safetyItems: normalizeLabelValueRows(safety.items, 8),

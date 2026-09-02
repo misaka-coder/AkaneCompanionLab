@@ -34,6 +34,7 @@ from ..local_capability_config import (
     save_provider_config,
     save_mcp_server_config,
     save_mcp_server_discovery,
+    save_capability_approval_mode,
     save_approval_policy_config,
     save_voice_profile_config,
     validate_workflow_config,
@@ -186,11 +187,21 @@ def build_capabilities_router(
         started_at = time.perf_counter()
         _session_id, profile_user_id = _resolve_identity(request, resolve_identity_from_query)
         payload = await _read_json_object(request)
-        result = save_approval_policy_config(
-            base_dir=provider_config_base_dir,
-            profile_user_id=profile_user_id,
-            payload=payload,
-        )
+        family_id = str(payload.get("familyId") or payload.get("family_id") or "").strip()
+        family_mode = str(payload.get("mode") or "").strip()
+        if family_id in {"ops", "extensions"} and family_mode:
+            result = save_capability_approval_mode(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+                capability_id=family_id,
+                mode=family_mode,
+            )
+        else:
+            result = save_approval_policy_config(
+                base_dir=provider_config_base_dir,
+                profile_user_id=profile_user_id,
+                payload=payload,
+            )
         ok = bool(result.get("ok"))
         _observe_request(runtime_metrics, "capabilities.approval_policy_save", started_at, ok)
         _log_best_effort(

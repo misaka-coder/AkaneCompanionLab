@@ -195,6 +195,7 @@ def prepare_context(
     prompt_scope: str = "",
     current_user_source_id: str = "",
     current_actor_relation: str = "",
+    authorization_profile_user_id: str = "",
     mcp_activations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_prompt_scope = str(prompt_scope or "").strip().lower()
@@ -587,6 +588,7 @@ def prepare_context(
             session_id=session_id,
             domain_profile_id=domain_profile.id,
             intent_text=user_message,
+            authorization_profile_user_id=authorization_profile_user_id,
             mcp_activations=mcp_activations,
         )
         if tool_capability_available

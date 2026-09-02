@@ -607,6 +607,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 resource=resource,
                 device=device,
                 fingerprint=fingerprint,
+                authorization_profile_user_id=authorization_profile_user_id(context),
             )
             if grant is not None:
                 return self._execute_command(self.execution_provider, call, context)
@@ -652,6 +653,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 "requestFingerprint": fingerprint,
                 "resource": resource,
                 "deviceId": device,
+                "authorizationProfileUserId": authorization_profile_user_id(context),
             },
         )
         if not result.get("ok"):
@@ -674,6 +676,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             request,
             base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
             profile_user_id=authorization_profile_user_id(context),
+            family_id="ops",
         )
 
 

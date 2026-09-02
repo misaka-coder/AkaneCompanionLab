@@ -66,6 +66,12 @@ class ExecCapabilityModuleTests(unittest.TestCase):
             )
             save_capability_approval_mode(
                 base_dir=Path(tmp),
+                profile_user_id="qq_123",
+                capability_id="ops",
+                mode="disabled",
+            )
+            save_capability_approval_mode(
+                base_dir=Path(tmp),
                 profile_user_id="qq_group_shared_456",
                 capability_id="exec_run",
                 mode="ask_each_time",
@@ -82,6 +88,7 @@ class ExecCapabilityModuleTests(unittest.TestCase):
                     client_context=context,
                     profile_user_id="qq_pri_123",
                     session_id="ordinary-session",
+                    authorization_profile_user_id="qq_123",
                 )
                 group = build_capability_snapshot(
                     engine,
@@ -89,9 +96,25 @@ class ExecCapabilityModuleTests(unittest.TestCase):
                     profile_user_id="qq_group_shared_456",
                     session_id="group-session",
                 )
+                group_as_master = build_capability_snapshot(
+                    engine,
+                    client_context=context,
+                    profile_user_id="qq_group_shared_456",
+                    session_id="group-session",
+                    authorization_profile_user_id="master",
+                )
+                group_as_ordinary = build_capability_snapshot(
+                    engine,
+                    client_context=context,
+                    profile_user_id="qq_group_shared_456",
+                    session_id="group-session",
+                    authorization_profile_user_id="qq_123",
+                )
             self.assertTrue(master.execution_qq_enabled)
             self.assertFalse(ordinary.execution_qq_enabled)
             self.assertTrue(group.execution_qq_enabled)
+            self.assertTrue(group_as_master.execution_qq_enabled)
+            self.assertFalse(group_as_ordinary.execution_qq_enabled)
 
     def test_exec_tools_selected_when_enabled_in_desktop_mode(self) -> None:
         selection = CapabilityRegistry().select(_desktop_snapshot(execution_enabled=True))

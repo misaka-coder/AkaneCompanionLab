@@ -428,6 +428,15 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .policy-status { padding: 5px 8px; border-radius: 999px; color: #9ce4c3; background: rgb(45 145 97 / 0.13); font-size: 7px; }
 .policy-summary { margin: 13px 0 0; color: var(--text-soft); font-size: 8px; line-height: 1.65; }
 .policy-options { display: grid; gap: 8px; margin-top: 14px; }
+.permission-families { display: grid; gap: 14px; margin-top: 14px; }
+.permission-family { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.permission-family:first-child { padding-top: 0; border-top: 0; }
+.permission-family > div:first-child strong, .permission-family > div:first-child small { display: block; }
+.permission-family > div:first-child strong { color: var(--text); font-size: 10px; }
+.permission-family > div:first-child small { margin-top: 4px; color: var(--text-faint); font-size: 7px; line-height: 1.5; }
+.permission-family .policy-options { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 6px; }
+.permission-family .policy-option { display: block; min-height: 58px; text-align: center; }
+.permission-family .policy-option > i { display: block; margin-top: 5px; }
 .policy-option { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; min-height: 64px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 14px; color: var(--text-soft); background: var(--surface-soft); text-align: left; transition: transform 90ms ease, border-color 140ms ease, background 140ms ease; }
 .policy-option:hover:not(:disabled) { border-color: rgb(var(--accent-rgb) / 0.36); background: rgb(var(--accent-rgb) / 0.08); }
 .policy-option:active:not(:disabled) { transform: scale(0.98); }

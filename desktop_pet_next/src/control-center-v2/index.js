@@ -105,7 +105,10 @@ root.addEventListener("click", (event) => {
   }
   const approvalButton = event.target.closest("button[data-approval-mode]");
   if (approvalButton && !approvalButton.disabled) {
-    void runAction("abilities.approvalPolicy.save", { defaultMode: approvalButton.dataset.approvalMode });
+    void runAction("abilities.approvalPolicy.save", {
+      familyId: approvalButton.dataset.approvalFamily,
+      mode: approvalButton.dataset.approvalMode
+    });
     return;
   }
   const modelToggle = event.target.closest("button[data-model-toggle]");

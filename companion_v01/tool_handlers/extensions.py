@@ -9,6 +9,7 @@ import config
 
 from ..extension_specs import MANAGE_EXTENSION_TOOL_SPEC
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
+from .management_permissions import gate_extension_mutation
 
 
 def _can_manage(context: ToolExecutionContext) -> bool:
@@ -41,8 +42,10 @@ def _result(payload: dict[str, Any]) -> ToolExecutionResult:
 class ManageExtensionToolHandler(BaseToolHandler):
     tool_type = "manage_extension"
 
-    def __init__(self, *, service: Any) -> None:
+    def __init__(self, *, service: Any, approval_store: Any = None, config_base_dir: Any = None) -> None:
         self.service = service
+        self.approval_store = approval_store
+        self.config_base_dir = config_base_dir
 
     def tool_spec(self):
         return MANAGE_EXTENSION_TOOL_SPEC
@@ -79,10 +82,24 @@ class ManageExtensionToolHandler(BaseToolHandler):
                     "reason": "extension_management_requires_owner",
                 }
             )
+        action = str(call.get("action") or "")
+        if action != "list":
+            gated = gate_extension_mutation(
+                tool_type=self.tool_type,
+                action=action,
+                display_name="插件管理",
+                effects=("plugin_state_mutation",),
+                call=call,
+                context=context,
+                approval_store=self.approval_store,
+                config_base_dir=self.config_base_dir,
+            )
+            if gated is not None:
+                return gated
         return _result(
             dict(
                 self.service.execute_sync(
-                    action=str(call.get("action") or ""),
+                    action=action,
                     plugin_id=str(call.get("plugin_id") or ""),
                 )
             )

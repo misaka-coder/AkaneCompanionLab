@@ -68,6 +68,10 @@ class CapabilityApprovalStore:
             return normalized
         now = self._now()
         ttl_seconds = int(normalized.get("expiresInSec") or 300)
+        authorization_profile_user_id = _safe_binding(
+            payload.get("authorizationProfileUserId")
+            or payload.get("authorization_profile_user_id")
+        )
         with self._lock:
             self._expire_pending_locked(now)
             for existing in self._requests.values():
@@ -80,6 +84,8 @@ class CapabilityApprovalStore:
                     and str(existing.get("_fingerprint") or "") == str(normalized.get("requestFingerprint") or "")
                     and str(existing.get("_resource") or "") == str(normalized.get("resource") or "")
                     and str(existing.get("_device") or "") == str(normalized.get("deviceId") or "")
+                    and str(existing.get("_authorizationProfileUserId") or "")
+                    == authorization_profile_user_id
                 ):
                     return {
                         "ok": True,
@@ -93,6 +99,7 @@ class CapabilityApprovalStore:
             entry = {
                 "_profileUserId": str(profile_user_id or ""),
                 "_sessionId": str(session_id or ""),
+                "_authorizationProfileUserId": authorization_profile_user_id,
                 "_fingerprint": str(normalized.get("requestFingerprint") or ""),
                 "_resource": str(normalized.get("resource") or ""),
                 "_device": str(normalized.get("deviceId") or ""),
@@ -174,6 +181,20 @@ class CapabilityApprovalStore:
                 return {"ok": False, "status": "not_found", "reason": "approval_request_not_found"}
             return {"ok": True, "status": entry.get("status") or "pending", "request": _public_request(entry)}
 
+    def get_resume_binding(self, *, profile_user_id: str, request_id: str) -> dict[str, str]:
+        """Return host-only identity data needed to resume the requesting turn."""
+
+        safe_request_id = _safe_request_id(request_id)
+        if not safe_request_id:
+            return {}
+        with self._lock:
+            entry = self._requests.get(safe_request_id)
+            if not entry or str(entry.get("_profileUserId") or "") != str(profile_user_id or ""):
+                return {}
+            return {
+                "authorizationProfileUserId": str(entry.get("_authorizationProfileUserId") or ""),
+            }
+
     def decide_request(
         self,
         *,
@@ -243,6 +264,7 @@ class CapabilityApprovalStore:
         resource: str = "",
         device: str = "",
         fingerprint: str = "",
+        authorization_profile_user_id: str = "",
     ) -> dict[str, Any] | None:
         """Validate a previously approved grant against the current execution.
 
@@ -267,6 +289,11 @@ class CapabilityApprovalStore:
                 if str(entry.get("_profileUserId") or "") != str(profile_user_id or ""):
                     continue
                 if str(entry.get("_sessionId") or "") != str(session_id or ""):
+                    continue
+                stored_authorization_profile = str(entry.get("_authorizationProfileUserId") or "")
+                if authorization_profile_user_id and stored_authorization_profile != str(
+                    authorization_profile_user_id or ""
+                ):
                     continue
                 if str(entry.get("capabilityId") or "") != str(capability_id or ""):
                     continue

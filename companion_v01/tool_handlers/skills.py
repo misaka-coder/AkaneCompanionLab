@@ -9,6 +9,7 @@ import config
 from ..skill_runtime import SkillPublishResult, SkillReadResult, SkillRegistry
 from ..skill_specs import LOAD_SKILL_TOOL_SPEC, MANAGE_SKILL_TOOL_SPEC
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
+from .management_permissions import gate_extension_mutation
 
 
 def _skill_event(tool_type: str, *, status: str, name: str = "", reason: str = "") -> dict[str, Any]:
@@ -136,8 +137,10 @@ def _format_publish(result: SkillPublishResult, *, action: str) -> str:
 class ManageSkillToolHandler(BaseToolHandler):
     tool_type = "manage_skill"
 
-    def __init__(self, *, registry: SkillRegistry) -> None:
+    def __init__(self, *, registry: SkillRegistry, approval_store: Any = None, config_base_dir: Any = None) -> None:
         self.registry = registry
+        self.approval_store = approval_store
+        self.config_base_dir = config_base_dir
 
     def tool_spec(self):
         return MANAGE_SKILL_TOOL_SPEC
@@ -186,6 +189,18 @@ class ManageSkillToolHandler(BaseToolHandler):
         if action == "validate":
             operation = self.registry.validate_draft(draft_path)
         else:
+            gated = gate_extension_mutation(
+                tool_type=self.tool_type,
+                action=action,
+                display_name="Skill 发布",
+                effects=("skill_install",),
+                call=call,
+                context=context,
+                approval_store=self.approval_store,
+                config_base_dir=self.config_base_dir,
+            )
+            if gated is not None:
+                return gated
             operation = self.registry.publish(draft_path, replace=bool(call.get("replace", False)))
         ok = operation.status in {"valid", "published"}
         return _result(

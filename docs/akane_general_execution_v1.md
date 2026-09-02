@@ -201,22 +201,17 @@ exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
 | `ask_each_time` | 每次创建审批请求，模型返回 `approval_required`，等用户决定 |
 | `trusted_auto_allow` | 直接执行，但高风险绑定仍按能力策略校验 |
 
-### 8.1 QQ 会话级 Shell 开关
+### 8.1 QQ 发起人级操作权限
 
-QQ Shell 还受 `EXECUTION_QQ_ENABLED` 宿主总闸和当前会话自己的 `exec_run`
-策略约束。会话权限默认关闭，`MASTER_QQ` 对应的主人账号可以发送：
+QQ Shell 还受 `EXECUTION_QQ_ENABLED` 宿主总闸和本轮真实发起人的 `ops`
+策略约束。`MASTER_QQ` 对应的主人账号可以发送：
 
-- `/shell on`：只把当前私聊或当前群的 `exec_run` 设为
-  `trusted_auto_allow`，后续命令直接执行。
-- `/shell ask`：只把当前会话设为 `ask_each_time`。
-- `/shell off`：关闭当前会话的 Shell，下一轮不再向模型暴露三个执行工具。
-- `/shell status`（或 `/shell`）：查看当前会话状态；该只读命令群成员也可使用。
+- `/access ops on|ask|off`：设置 Shell、浏览器交互和有外部副作用工具的默认策略。
+- `/access`：查看 `ops` 与 `extensions` 两组权限。
+- `/shell on|ask|off`：兼容入口，只设置主人 profile 的 `exec_run` 精确 override。
 
-群聊按 `qq_group_shared_<group_id>` 独立保存；在一个群开启不会影响其他群或主人私聊。
-群主、管理员和普通成员都不能修改该开关，除非其 QQ 号同时是 `MASTER_QQ`。主人在群里
-发出的显式 `/shell` 控制命令无需 @ Bot；该命令由路由控制面处理，不进入模型，也不依赖
-提示词。开启群 Shell 意味着群成员提出的任务可能由模型在 **Bot 所在机器**执行，部署者应
-只在可信群开启。
+群聊记忆仍按 `qq_group_shared_<group_id>` 共享，但授权身份不共享：主人、普通成员和系统主动
+回合不会互相借用权限。控制命令无需 @ Bot，由路由控制面处理，不进入模型，也不依赖提示词。
 
 ### 8.2 高风险动作的精确绑定与一次性 grant
 
@@ -285,7 +280,7 @@ QQ Shell 还受 `EXECUTION_QQ_ENABLED` 宿主总闸和当前会话自己的 `exe
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `EXECUTION_ENABLED` | `false` | 宿主冻结的启用开关；不在 control-center 暴露 |
-| `EXECUTION_QQ_ENABLED` | `false` | QQ Shell 宿主总闸；打开后仍需主人按私聊/群聊用 `/shell` 显式授权 |
+| `EXECUTION_QQ_ENABLED` | `false` | QQ Shell 宿主总闸；打开后由真实发起人的 `ops` 策略决定执行、询问或关闭 |
 | `EXECUTION_WORKSPACE_ROOT` | `""` | 空 = `DATA_ROOT/execution_workspace`（自动创建） |
 | `EXECUTION_RUN_LOG_DIR` | `""` | 空 = `STATE_DIR/execution_runlogs`（自动创建） |
 | `EXECUTION_ALLOWED_ENV_NAMES` | `""` | 空 = 继承非敏感宿主环境；非空 = 逗号分隔的严格白名单 |
@@ -302,7 +297,7 @@ control-center 设置或 live runtime override 暴露。
 `exec_run` 支持 `input_resources`（按材料索引实际显示的 `file_*` / `img_*` / `audio_*` /
 `gen_*` 精确句柄暂存到运行工作区）与 `output_globs`（命令完成后把明确声明的输出登记为
 `gen_*`，再经 `send_file` 交付）；QQ 侧需同时开启 `EXECUTION_QQ_ENABLED` 总闸，并由
-主人在目标私聊或群聊用 `/shell on` 授权。详见 `docs/akane_execution_resource_loop_v1.md`。
+主人用 `/access ops on|ask|off` 设置发起人权限。详见 `docs/akane_execution_resource_loop_v1.md`。
 
 ## 14. 相关代码入口
 

@@ -762,7 +762,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertNotIn("transient_user_message", payload)
         self.assertEqual(payload["client_mode"], "qq_text")
         self.assertNotIn("actor_stable_id", payload)
-        self.assertNotIn("actor_profile_user_id", payload)
+        self.assertEqual(payload["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertNotIn("actor_display_name", payload)
         self.assertIn("我就是本轮戳一戳的发送者", payload["extra_context"])
         self.assertIn("戳了戳你", payload["extra_context"])
@@ -1778,7 +1778,7 @@ class QQGatewayTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["approval_mode"], "trusted_auto_allow")
-        self.assertIn("本群 Shell 已开启", result["reply"])
+        self.assertIn("当前 QQ 账号的 Shell 已开启", result["reply"])
         self.assertEqual(applied, ["trusted_auto_allow"])
 
         ordinary_group = QQMessageContext(
@@ -1829,7 +1829,7 @@ class QQGatewayTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["approval_mode"], "trusted_auto_allow")
-        self.assertIn("本群 MCP 已开启", result["reply"])
+        self.assertIn("当前 QQ 账号 MCP 已开启", result["reply"])
         self.assertEqual(applied, ["trusted_auto_allow"])
 
         ordinary_group = replace(master_group, user_id=QQ_USER_FIXTURE_ID, clean_message="/mcp off")
@@ -1915,7 +1915,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(listed["ok"], listed)
         self.assertIn(created["requestId"][-8:], listed["reply"])
         self.assertEqual(approved["status"], "approved")
-        self.assertIn("发送“继续”", approved["reply"])
+        self.assertIn("自动续接", approved["reply"])
 
     def test_group_capability_approval_command_bypasses_wake_word(self) -> None:
         gateway = NapCatQQGateway()

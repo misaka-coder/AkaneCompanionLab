@@ -108,6 +108,54 @@ class ApprovalGrantRedemptionTests(unittest.TestCase):
         )
         self.assertIsNone(grant)
 
+    def test_grant_is_bound_to_original_authorization_profile(self) -> None:
+        store = CapabilityApprovalStore()
+        created = store.create_request(
+            profile_user_id="group-87",
+            session_id="s1",
+            payload=self._payload(authorizationProfileUserId="qq_actor_a"),
+        )
+        store.decide_request(
+            profile_user_id="group-87",
+            request_id=created["requestId"],
+            payload={"decision": "approved"},
+        )
+        arguments = {
+            "profile_user_id": "group-87",
+            "session_id": "s1",
+            "capability_id": "exec_run",
+            "action_id": "exec_run",
+            "resource": "subdir",
+            "device": "local",
+            "fingerprint": build_approval_request_fingerprint({"command": "echo hi"}),
+        }
+        self.assertIsNone(
+            store.resolve_grant(
+                **arguments,
+                authorization_profile_user_id="qq_actor_b",
+            )
+        )
+        self.assertIsNotNone(
+            store.resolve_grant(
+                **arguments,
+                authorization_profile_user_id="qq_actor_a",
+            )
+        )
+
+    def test_pending_requests_from_different_actors_are_not_deduplicated(self) -> None:
+        store = CapabilityApprovalStore()
+        first = store.create_request(
+            profile_user_id="group-87",
+            session_id="s1",
+            payload=self._payload(authorizationProfileUserId="qq_actor_a"),
+        )
+        second = store.create_request(
+            profile_user_id="group-87",
+            session_id="s1",
+            payload=self._payload(authorizationProfileUserId="qq_actor_b"),
+        )
+        self.assertNotEqual(first["requestId"], second["requestId"])
+
     def test_grant_requires_resource_and_device_match(self) -> None:
         store = CapabilityApprovalStore()
         self._approve(store)
@@ -233,8 +281,8 @@ class ExecRedemptionHandlerTests(unittest.TestCase):
         second = self.handler.execute(call=self.call, context=_context())
         self.assertEqual(second.stream_events[0]["type"], "capability_execution_result")
         self.assertEqual(second.stream_events[0]["status"], "completed")
-        self.assertIn("完成", second.followup_context)
-        self.assertIn("stdout", second.followup_context)
+        self.assertIn("hi", second.followup_context)
+        self.assertIn("[exit code: 0", second.followup_context)
         third = self.handler.execute(call=self.call, context=_context())
         self.assertEqual(third.stream_events[0]["type"], "capability_approval_required")
 

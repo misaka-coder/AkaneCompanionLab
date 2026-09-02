@@ -212,9 +212,17 @@ def build_builtin_tool_handlers(
     if mcp_management_service is not None:
         handlers["load_mcp"] = LoadMcpToolHandler(service=mcp_management_service)
         handlers["invoke_mcp"] = InvokeMcpToolHandler()
-        handlers["mcp_manage"] = McpManageToolHandler(service=mcp_management_service)
+        handlers["mcp_manage"] = McpManageToolHandler(
+            service=mcp_management_service,
+            approval_store=approval_store,
+            config_base_dir=capability_config_base_dir,
+        )
     if extension_management_service is not None:
-        handlers["manage_extension"] = ManageExtensionToolHandler(service=extension_management_service)
+        handlers["manage_extension"] = ManageExtensionToolHandler(
+            service=extension_management_service,
+            approval_store=approval_store,
+            config_base_dir=capability_config_base_dir,
+        )
     if execution_provider is not None:
         resource_bridge = None
         workspace_root = getattr(execution_provider, "workspace_root", None)
@@ -245,7 +253,11 @@ def build_builtin_tool_handlers(
             resource_bridge=resource_bridge,
         )
         if skill_registry is not None:
-            handlers["manage_skill"] = ManageSkillToolHandler(registry=skill_registry)
+            handlers["manage_skill"] = ManageSkillToolHandler(
+                registry=skill_registry,
+                approval_store=approval_store,
+                config_base_dir=capability_config_base_dir,
+            )
         if project_workspace_service is not None:
             handlers["manage_project_workspace"] = ManageProjectWorkspaceToolHandler(
                 service=project_workspace_service

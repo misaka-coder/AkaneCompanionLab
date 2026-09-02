@@ -3942,6 +3942,19 @@ class BackendRouteModuleTests(unittest.TestCase):
             workflow_by_id = {item["id"]: item for item in workflows["workflows"]}
             self.assertEqual(workflow_by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
 
+            family_saved = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"familyId": "ops", "mode": "ask_each_time"},
+            )
+            self.assertEqual(family_saved.status_code, 200)
+            self.assertTrue(family_saved.json()["ok"])
+            family_policy = family_saved.json()["approvalPolicy"]
+            self.assertEqual(family_policy["capabilityModes"]["ops"], "ask_each_time")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in family_policy["families"]}["ops"],
+                "ask_each_time",
+            )
+
             invalid = client.post(
                 "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
                 json={"defaultMode": "always_yes"},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 
 from companion_v01.local_capability_config import (
@@ -10,6 +11,7 @@ from companion_v01.local_capability_config import (
     CONFIGURABLE_WORKFLOW_BY_ID,
     apply_approval_policy_to_entry,
     approval_mode_for_capability,
+    build_approval_policy_entry,
     build_mcp_server_config_entry,
     build_mcp_tool_config_entry,
     build_provider_config_entry,
@@ -18,11 +20,62 @@ from companion_v01.local_capability_config import (
     normalize_mcp_server_config_payload,
     normalize_mcp_tool_discovery_payload,
     project_capcore_catalog_fields,
+    save_capability_approval_mode,
+    save_capability_approval_modes,
     with_capability_approval_metadata,
 )
 
 
 class LocalCapabilityApprovalTests(unittest.TestCase):
+    def test_permission_families_override_default_without_hiding_exact_overrides(self) -> None:
+        policy = {
+            "defaultMode": APPROVAL_MODE_ASK_EACH_TIME,
+            "capabilityModes": {
+                "ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+                "extensions": APPROVAL_MODE_DISABLED,
+                "exec_run": APPROVAL_MODE_ASK_EACH_TIME,
+            },
+        }
+
+        self.assertEqual(
+            approval_mode_for_capability(policy, "browser_page", family_id="ops"),
+            APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        )
+        self.assertEqual(
+            approval_mode_for_capability(policy, "manage_skill", family_id="extensions"),
+            APPROVAL_MODE_DISABLED,
+        )
+        self.assertEqual(
+            approval_mode_for_capability(policy, "exec_run", family_id="ops"),
+            APPROVAL_MODE_ASK_EACH_TIME,
+        )
+        entry = build_approval_policy_entry(policy)
+        self.assertEqual([item["id"] for item in entry["families"]], ["ops", "extensions"])
+        self.assertEqual(entry["families"][0]["mode"], APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
+        self.assertEqual(entry["families"][1]["mode"], APPROVAL_MODE_DISABLED)
+
+    def test_saving_ops_migrates_old_shell_and_mcp_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for capability_id in ("exec_run", "mcp"):
+                result = save_capability_approval_mode(
+                    base_dir=temp_dir,
+                    profile_user_id="master",
+                    capability_id=capability_id,
+                    mode=APPROVAL_MODE_DISABLED,
+                )
+                self.assertTrue(result["ok"])
+            saved = save_capability_approval_modes(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                modes={"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+            )
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(
+            saved["approvalPolicy"]["capabilityModes"],
+            {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+        )
+
     def test_mcp_execution_location_is_derived_from_transport(self) -> None:
         stdio = build_mcp_server_config_entry(
             "browser",

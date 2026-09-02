@@ -1404,6 +1404,7 @@ def _satellite_permission_gate(
             resource="",
             device=device_id,
             fingerprint=fingerprint,
+            authorization_profile_user_id=profile_user_id,
         )
         if grant is not None:
             return None
@@ -1445,6 +1446,7 @@ def _create_satellite_approval_request(
             "payloadPreview": preview,
             "requestFingerprint": fingerprint,
             "deviceId": device_id,
+            "authorizationProfileUserId": profile_user_id,
         },
     )
     if not result.get("ok"):

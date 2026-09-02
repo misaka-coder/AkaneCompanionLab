@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 import config
 from capcore import (
+    build_permission_request as capcore_build_permission_request,
     build_tool_spec as capcore_build_tool_spec,
     prepare_invocation as capcore_prepare_invocation,
 )
@@ -240,6 +241,11 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         raw_args = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {}
         invocation_context = capcore_invocation_context_from_execution(context)
+        permission_request = capcore_build_permission_request(
+            self.descriptor,
+            raw_args,
+            invocation_context,
+        )
         prepared = capcore_prepare_invocation(
             self.descriptor,
             raw_args,
@@ -248,6 +254,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 base_dir=self.config_base_dir or getattr(config, "DATA_DIR", "users_data"),
                 profile_user_id=capcore_authorization_profile_user_id(context),
                 capability_id=self.tool_type,
+                family_id="ops" if permission_request.required else "",
             ),
         )
         if not prepared.validation.ok:
@@ -345,6 +352,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 resource=resource,
                 device=device,
                 fingerprint=fingerprint,
+                authorization_profile_user_id=capcore_authorization_profile_user_id(context),
             )
             if grant is not None:
                 return self._invoke(normalized_args=normalized_args, context=context)
@@ -396,6 +404,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 "requestFingerprint": fingerprint,
                 "resource": resource,
                 "deviceId": device,
+                "authorizationProfileUserId": capcore_authorization_profile_user_id(context),
             },
         )
         return str(result.get("requestId") or "") if result.get("ok") else ""

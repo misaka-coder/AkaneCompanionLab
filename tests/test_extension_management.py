@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from capcore import CapabilityResult, InvocationContext
 
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore
@@ -252,6 +253,37 @@ class ManageExtensionToolTests(unittest.TestCase):
         self.assertIn("manage_extension", desktop.tool_names)
         self.assertIn("manage_extension", qq.tool_names)
         self.assertNotIn("manage_extension", web.tool_names)
+
+    def test_mutation_uses_extension_family_and_exact_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = Mock()
+            service.execute_sync.return_value = {"ok": True, "status": "disabled"}
+            approval_store = CapabilityApprovalStore()
+            handler = ManageExtensionToolHandler(
+                service=service,
+                approval_store=approval_store,
+                config_base_dir=Path(temp_dir),
+            )
+            context = self._context(client_mode="desktop_pet")
+            call = {"type": "manage_extension", "action": "disable", "plugin_id": PLUGIN_ID}
+
+            pending = handler.execute(call=call, context=context)
+            self.assertIn("需要主人批准", pending.followup_context)
+            service.execute_sync.assert_not_called()
+            requests = approval_store.list_requests(
+                profile_user_id="master",
+                include_resolved=False,
+            )["approvalRequests"]
+            self.assertEqual(len(requests), 1)
+            approval_store.decide_request(
+                profile_user_id="master",
+                request_id=requests[0]["requestId"],
+                payload={"decision": "approved"},
+            )
+
+            completed = handler.execute(call=call, context=context)
+            self.assertIn('"ok":true', completed.followup_context)
+            service.execute_sync.assert_called_once_with(action="disable", plugin_id=PLUGIN_ID)
 
 
 if __name__ == "__main__":

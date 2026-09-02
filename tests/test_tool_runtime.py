@@ -596,6 +596,47 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(len(adapter.calls), 1)
         self.assertEqual(result.stream_events[0]["status"], "ok")
 
+    def test_ops_off_keeps_read_only_adapter_available_but_blocks_effectful_adapter(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, object], ctx: object) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args), "ctx": ctx})
+                return CapabilityResult(is_error=False, content={"content": []}, status="ok")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            saved = save_approval_policy_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                payload={
+                    "defaultMode": "ask_each_time",
+                    "capabilityModes": {"ops": "disabled"},
+                },
+            )
+            self.assertTrue(saved["ok"])
+            adapter = FakeAdapter()
+            read_handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=adapter,
+                descriptor=self._descriptor(risk="low", confirm="never"),
+                config_base_dir=temp_dir,
+            )
+            effect_handler = AdapterCapabilityToolHandler(
+                capability_id="mcp.demo.echo",
+                adapter=adapter,
+                descriptor=self._descriptor(risk="high", confirm="always"),
+                config_base_dir=temp_dir,
+            )
+            call = {"type": "mcp.demo.echo", "arguments": {"text": "hello"}}
+
+            read_result = read_handler.execute(call=call, context=self._context())
+            effect_result = effect_handler.execute(call=call, context=self._context())
+
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(read_result.stream_events[0]["status"], "ok")
+        self.assertEqual(effect_result.stream_events[0]["status"], "blocked")
+
     def test_adapter_capability_enters_capcore_prepare_gate_once(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:

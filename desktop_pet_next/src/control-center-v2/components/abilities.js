@@ -44,9 +44,9 @@ export function renderAbilities(state) {
         <aside class="permissions-inspector">
           <section class="permissions-card glass-panel">
             <div class="abilities-panel-head"><div><p class="eyebrow">APPROVAL POLICY</p><h3>权限模式</h3></div><span class="policy-status">${escapeHtml(abilities.safetyStatus)}</span></div>
-            <p class="policy-summary">${escapeHtml(abilities.policy.summary || "选择高风险能力在执行前是否需要逐次确认。")}</p>
-            <div class="policy-options" role="group" aria-label="能力审批策略">
-              ${abilities.policy.availableModes.map((mode) => renderPolicyOption(mode, abilities.policy.defaultMode, pending, canChangePolicy)).join("")}
+            <p class="policy-summary">两组开关覆盖真实会产生影响的动作；搜索、读取公开页面、查看记忆和加载能力说明不需要审批。</p>
+            <div class="permission-families">
+              ${abilities.policy.families.map((family) => renderPolicyFamily(family, pending, canChangePolicy)).join("")}
             </div>
             <div class="hard-boundary-note"><i>✓</i><span><strong>硬安全边界始终保留</strong><small>完全访问不会跳过路径、密钥、URL 和本地边界校验。</small></span></div>
           </section>
@@ -60,9 +60,13 @@ export function renderAbilities(state) {
     </section>`;
 }
 
-function renderPolicyOption(mode, currentMode, pending, available) {
+function renderPolicyFamily(family, pending, available) {
+  return `<section class="permission-family"><div><strong>${escapeHtml(family.label)}</strong><small>${escapeHtml(family.summary)}</small></div><div class="policy-options" role="group" aria-label="${escapeHtml(family.label)}审批策略">${family.availableModes.map((mode) => renderPolicyOption(mode, family.mode, pending, available, family.id)).join("")}</div></section>`;
+}
+
+function renderPolicyOption(mode, currentMode, pending, available, familyId = "") {
   const selected = mode.id === currentMode;
-  return `<button class="policy-option${selected ? " is-selected" : ""}" type="button" data-approval-mode="${escapeHtml(mode.id)}" aria-pressed="${selected ? "true" : "false"}"${selected || pending || !available ? " disabled" : ""}><span><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.summary)}</small></span><i>${selected ? "当前" : pending ? "保存中" : "选择"}</i></button>`;
+  return `<button class="policy-option${selected ? " is-selected" : ""}" type="button" data-approval-mode="${escapeHtml(mode.id)}" data-approval-family="${escapeHtml(familyId)}" aria-pressed="${selected ? "true" : "false"}"${selected || pending || !available ? " disabled" : ""}><span><strong>${escapeHtml(mode.label)}</strong><small>${escapeHtml(mode.summary)}</small></span><i>${selected ? "当前" : pending ? "保存中" : "选择"}</i></button>`;
 }
 
 function renderModule(item) {

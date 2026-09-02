@@ -1110,6 +1110,7 @@ class BrowserPageToolHandler(BaseToolHandler):
             request,
             base_dir=self.config_base_dir,
             profile_user_id=capcore_authorization_profile_user_id(context),
+            family_id="ops",
         )
         if decision.allowed:
             return {"ok": True, "mode": decision.mode, "reason": decision.reason}
