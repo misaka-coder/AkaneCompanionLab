@@ -130,6 +130,11 @@ class PluginGenerationProcess:
             raise RuntimeError("plugin_generation_already_started")
         self._callback_router.bind_notification_port(port)
 
+    def bind_reasoning_port(self, port: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        self._callback_router.bind_reasoning_port(port)
+
     def start(self) -> dict[str, Any]:
         if self._process is not None:
             raise PluginGenerationError("plugin_generation_already_started")

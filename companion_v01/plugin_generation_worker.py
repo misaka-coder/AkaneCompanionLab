@@ -12,13 +12,13 @@ from typing import Any, Mapping, TextIO
 from capcore import CapabilityResult
 
 from .instance_profile import PluginSelection
-from .plugin_api import (
-    AKANE_PLUGIN_ENTRYPOINT_GROUP,
-    PluginReasoningResult,
-)
+from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_generation_artifacts import GenerationArtifactOutboxSink
-from .plugin_generation_callbacks import GenerationNotificationPort
+from .plugin_generation_callbacks import (
+    GenerationNotificationPort,
+    GenerationReasoningPort,
+)
 from .plugin_generation_codec import (
     PluginGenerationCodecError,
     capability_descriptor_to_wire,
@@ -32,15 +32,6 @@ from .plugin_generation_protocol import (
 )
 from .plugin_host import PluginHost
 from .plugin_storage import InstancePluginStorageService
-
-
-class _GenerationReasoningPort:
-    async def analyze(self, _request: Any) -> PluginReasoningResult:
-        return PluginReasoningResult(
-            ok=False,
-            status="unavailable",
-            reason="generation_probe",
-        )
 
 
 def _entry_points(site_dir: Path, plugin_id: str) -> tuple[Any, ...]:
@@ -222,7 +213,13 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                 pending=callback_responses,
             )
         )
-        host.bind_reasoning_port(_GenerationReasoningPort())
+        host.bind_reasoning_port(
+            GenerationReasoningPort(
+                generation_id=generation_id,
+                emit=lambda payload: emit_protocol_message(protocol_stream, payload),
+                pending=callback_responses,
+            )
+        )
         host.bind_managed_artifact_sink(
             GenerationArtifactOutboxSink(work_dir / "outbox" / generation_id)
         )

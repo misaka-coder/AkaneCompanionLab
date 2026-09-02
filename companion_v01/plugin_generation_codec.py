@@ -17,7 +17,13 @@ from capcore import (
     TriggerConfig,
 )
 
-from .plugin_api import NotificationIntent, NotificationResult
+from .plugin_api import (
+    NotificationIntent,
+    NotificationResult,
+    PluginExternalEvent,
+    PluginReasoningRequest,
+    PluginReasoningResult,
+)
 
 
 class PluginGenerationCodecError(ValueError):
@@ -159,6 +165,167 @@ def notification_result_from_wire(value: object) -> NotificationResult:
     )
 
 
+def reasoning_request_to_wire(request: PluginReasoningRequest) -> dict[str, Any]:
+    if not isinstance(request, PluginReasoningRequest):
+        raise PluginGenerationCodecError("reasoning_request_required")
+    if not isinstance(request.timestamp, int) or isinstance(request.timestamp, bool):
+        raise PluginGenerationCodecError("reasoning_request_invalid")
+    external_event = request.external_event
+    if external_event is not None and not isinstance(external_event, PluginExternalEvent):
+        raise PluginGenerationCodecError("reasoning_request_invalid")
+    external_event_wire = None
+    if external_event is not None:
+        if not isinstance(external_event.fields, tuple):
+            raise PluginGenerationCodecError("reasoning_request_invalid")
+        fields: list[list[str]] = []
+        for item in external_event.fields:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise PluginGenerationCodecError("reasoning_request_invalid")
+            fields.append(
+                [
+                    _string(item[0], "reasoning_request_invalid"),
+                    _string(item[1], "reasoning_request_invalid"),
+                ]
+            )
+        external_event_wire = {
+            "event_type": _string(
+                external_event.event_type,
+                "reasoning_request_invalid",
+            ),
+            "source": _string(
+                external_event.source,
+                "reasoning_request_invalid",
+            ),
+            "fields": fields,
+        }
+    return _json_snapshot(
+        {
+            "trace_id": _string(request.trace_id, "reasoning_request_invalid"),
+            "profile_user_id": _string(
+                request.profile_user_id,
+                "reasoning_request_invalid",
+            ),
+            "session_id": _string(request.session_id, "reasoning_request_invalid"),
+            "message": _string(request.message, "reasoning_request_invalid"),
+            "extra_context": _string(
+                request.extra_context,
+                "reasoning_request_invalid",
+            ),
+            "character_pack_id": _string(
+                request.character_pack_id,
+                "reasoning_request_invalid",
+            ),
+            "timestamp": request.timestamp,
+            "stable_system_context": _string(
+                request.stable_system_context,
+                "reasoning_request_invalid",
+            ),
+            "memory_idempotency_key": _string(
+                request.memory_idempotency_key,
+                "reasoning_request_invalid",
+            ),
+            "external_event": external_event_wire,
+        }
+    )
+
+
+def reasoning_request_from_wire(value: object) -> PluginReasoningRequest:
+    record = _mapping(value, "reasoning_request_invalid")
+    timestamp = record.get("timestamp")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+        raise PluginGenerationCodecError("reasoning_request_invalid")
+    external_event_record = record.get("external_event")
+    external_event = None
+    if external_event_record is not None:
+        event = _mapping(external_event_record, "reasoning_request_invalid")
+        raw_fields = event.get("fields")
+        if not isinstance(raw_fields, list):
+            raise PluginGenerationCodecError("reasoning_request_invalid")
+        fields: list[tuple[str, str]] = []
+        for item in raw_fields:
+            if not isinstance(item, list) or len(item) != 2:
+                raise PluginGenerationCodecError("reasoning_request_invalid")
+            fields.append(
+                (
+                    _string(item[0], "reasoning_request_invalid"),
+                    _string(item[1], "reasoning_request_invalid"),
+                )
+            )
+        external_event = PluginExternalEvent(
+            event_type=_string(event.get("event_type"), "reasoning_request_invalid"),
+            source=_string(event.get("source"), "reasoning_request_invalid"),
+            fields=tuple(fields),
+        )
+    return PluginReasoningRequest(
+        trace_id=_string(record.get("trace_id"), "reasoning_request_invalid"),
+        profile_user_id=_string(
+            record.get("profile_user_id"),
+            "reasoning_request_invalid",
+        ),
+        session_id=_string(record.get("session_id"), "reasoning_request_invalid"),
+        message=_string(record.get("message"), "reasoning_request_invalid"),
+        extra_context=_string(
+            record.get("extra_context"),
+            "reasoning_request_invalid",
+        ),
+        character_pack_id=_string(
+            record.get("character_pack_id"),
+            "reasoning_request_invalid",
+        ),
+        timestamp=timestamp,
+        stable_system_context=_string(
+            record.get("stable_system_context"),
+            "reasoning_request_invalid",
+        ),
+        memory_idempotency_key=_string(
+            record.get("memory_idempotency_key"),
+            "reasoning_request_invalid",
+        ),
+        external_event=external_event,
+    )
+
+
+def reasoning_result_to_wire(result: PluginReasoningResult) -> dict[str, Any]:
+    if not isinstance(result, PluginReasoningResult):
+        raise PluginGenerationCodecError("reasoning_result_required")
+    if not isinstance(result.ok, bool):
+        raise PluginGenerationCodecError("reasoning_result_invalid")
+    evidence_events = _json_snapshot(result.evidence_events)
+    if not isinstance(evidence_events, list) or any(
+        not isinstance(item, dict) for item in evidence_events
+    ):
+        raise PluginGenerationCodecError("reasoning_result_invalid")
+    return {
+        "ok": result.ok,
+        "status": _string(result.status, "reasoning_result_invalid"),
+        "text": _string(result.text, "reasoning_result_invalid"),
+        "reason": _string(result.reason, "reasoning_result_invalid"),
+        "evidence_events": evidence_events,
+    }
+
+
+def reasoning_result_from_wire(value: object) -> PluginReasoningResult:
+    record = _mapping(value, "reasoning_result_invalid")
+    ok = record.get("ok")
+    if not isinstance(ok, bool):
+        raise PluginGenerationCodecError("reasoning_result_invalid")
+    evidence_value = record.get("evidence_events")
+    if not isinstance(evidence_value, list) or any(
+        not isinstance(item, Mapping)
+        or any(not isinstance(key, str) for key in item)
+        for item in evidence_value
+    ):
+        raise PluginGenerationCodecError("reasoning_result_invalid")
+    evidence_events = _json_snapshot(evidence_value)
+    return PluginReasoningResult(
+        ok=ok,
+        status=_string(record.get("status"), "reasoning_result_invalid"),
+        text=_string(record.get("text"), "reasoning_result_invalid"),
+        reason=_string(record.get("reason"), "reasoning_result_invalid"),
+        evidence_events=tuple(dict(item) for item in evidence_events),
+    )
+
+
 def json_snapshot(value: Any) -> Any:
     """Return an independent JSON value without imposing a size policy."""
 
@@ -293,4 +460,8 @@ __all__ = [
     "notification_intent_to_wire",
     "notification_result_from_wire",
     "notification_result_to_wire",
+    "reasoning_request_from_wire",
+    "reasoning_request_to_wire",
+    "reasoning_result_from_wire",
+    "reasoning_result_to_wire",
 ]
