@@ -107,6 +107,7 @@ class PluginGenerationProcess:
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
         self._event_types: tuple[str, ...] = ()
         self._hook_types: tuple[str, ...] = ()
+        self._background_service_ids: tuple[str, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -138,6 +139,12 @@ class PluginGenerationProcess:
         """Return the exact lifecycle Hook subscriptions published at ready."""
 
         return self._hook_types
+
+    @property
+    def registered_background_service_ids(self) -> tuple[str, ...]:
+        """Return the exact supervised services published at ready."""
+
+        return self._background_service_ids
 
     def observes(self, event_type: str) -> bool:
         normalized = str(event_type or "").strip().lower()
@@ -216,6 +223,9 @@ class PluginGenerationProcess:
                 ready.get("contribution_snapshot")
             )
             self._hook_types = _decode_hook_types(
+                ready.get("contribution_snapshot")
+            )
+            self._background_service_ids = _decode_background_service_ids(
                 ready.get("contribution_snapshot")
             )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
@@ -800,6 +810,17 @@ def _decode_hook_types(value: object) -> tuple[str, ...]:
     ):
         raise PluginGenerationError("plugin_generation_protocol_invalid")
     return tuple(sorted(set(raw_hook_types)))
+
+
+def _decode_background_service_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    raw_service_ids = value.get("background_services", [])
+    if not isinstance(raw_service_ids, list) or any(
+        not isinstance(item, str) for item in raw_service_ids
+    ):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    return tuple(sorted(set(raw_service_ids)))
 
 
 def _generation_event_failure(status: str, reason: object) -> PluginEventDispatchResult:

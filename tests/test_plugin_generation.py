@@ -500,7 +500,6 @@ def _write_notification_job_plugin_site(root: Path) -> Path:
                 self._notification_port = notification_port
 
             async def start(self, controller):
-                del controller
                 await self._notification_port.send(
                     NotificationIntent(
                         channel="qq_text",
@@ -509,6 +508,7 @@ def _write_notification_job_plugin_site(root: Path) -> Path:
                         idempotency_key="background-ready-1",
                     )
                 )
+                await controller.wait_for_shutdown()
 
             async def stop(self):
                 return None
@@ -545,6 +545,76 @@ def _write_notification_job_plugin_site(root: Path) -> Path:
         "[akane.plugins.v1]\n"
         "test.generation.notification-job = "
         "generation_notification_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site
+
+
+def _write_background_lifecycle_plugin_site(
+    root: Path,
+    *,
+    immediate_failure: bool = False,
+) -> Path:
+    site = root / "site"
+    package = site / "generation_background_fixture"
+    dist_info = site / "generation_background_fixture-0.1.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        f"""
+        import asyncio
+
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            BACKGROUND_JOB_PERMISSION,
+            PluginManifest,
+        )
+
+        class FailingService:
+            async def start(self, controller):
+                del controller
+                if {immediate_failure!r}:
+                    raise RuntimeError("private-service-failure")
+                await asyncio.sleep(0.15)
+                raise RuntimeError("private-service-failure")
+
+            async def stop(self):
+                return None
+
+        class CooperativeService:
+            async def start(self, controller):
+                await controller.wait_for_shutdown()
+
+            async def stop(self):
+                return None
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.background",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(BACKGROUND_JOB_PERMISSION,),
+            )
+
+            def register(self, registrar):
+                registrar.add_background_service("crash", FailingService())
+                registrar.add_background_service("worker", CooperativeService())
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\n"
+        "Name: generation-background-fixture\n"
+        "Version: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.background = "
+        "generation_background_fixture:create_plugin\n",
         encoding="utf-8",
     )
     return site
@@ -1416,8 +1486,100 @@ class PluginGenerationProcessTests(unittest.TestCase):
                     await asyncio.wait_for(port.delivered.wait(), timeout=2.0)
                     self.assertTrue(ready["ok"])
                     self.assertEqual(ready["capabilities"], [])
+                    self.assertEqual(
+                        generation.registered_background_service_ids,
+                        ("startup-notification",),
+                    )
                     self.assertIsNotNone(port.intent)
                     self.assertEqual(port.intent.text, "background-ready")
+                    health = generation.health()
+                    self.assertEqual(health["status"], "active")
+                    self.assertEqual(
+                        health["snapshot"]["background_services"],
+                        [
+                            {
+                                "plugin_id": "test.generation.notification-job",
+                                "service_id": "startup-notification",
+                                "status": "running",
+                                "reason": "",
+                            }
+                        ],
+                    )
+
+                    stopped = generation.stop()
+                    self.assertTrue(stopped["ok"])
+                    self.assertEqual(
+                        stopped["snapshot"]["background_services"][0]["status"],
+                        "stopped",
+                    )
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_rejects_candidate_with_immediately_failed_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=_write_background_lifecycle_plugin_site(
+                    root,
+                    immediate_failure=True,
+                ),
+                plugin_id="test.generation.background",
+                work_dir=root / "work",
+            )
+
+            with self.assertRaises(PluginGenerationError) as rejected:
+                generation.start()
+
+            self.assertEqual(rejected.exception.reason, "plugin_runtime_failed")
+            self.assertFalse(generation.running)
+
+    def test_background_service_failure_isolated_and_visible_across_generation(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_background_lifecycle_plugin_site(root),
+                    plugin_id="test.generation.background",
+                    work_dir=root / "work",
+                )
+                ready = generation.start()
+                try:
+                    self.assertTrue(ready["ok"])
+                    self.assertEqual(
+                        generation.registered_background_service_ids,
+                        ("crash", "worker"),
+                    )
+
+                    deadline = asyncio.get_running_loop().time() + 2.0
+                    health = generation.health()
+                    while health["status"] != "degraded":
+                        if asyncio.get_running_loop().time() >= deadline:
+                            self.fail("background service failure was not projected")
+                        await asyncio.sleep(0.02)
+                        health = generation.health()
+
+                    services = {
+                        item["service_id"]: item
+                        for item in health["snapshot"]["background_services"]
+                    }
+                    self.assertTrue(health["ok"])
+                    self.assertEqual(health["reason"], "plugin_runtime_failed")
+                    self.assertEqual(services["crash"]["status"], "failed")
+                    self.assertEqual(services["crash"]["reason"], "job_failed")
+                    self.assertEqual(services["worker"]["status"], "running")
+                    self.assertNotIn("private-service-failure", repr(health))
+
+                    stopped = generation.stop()
+                    self.assertTrue(stopped["ok"])
+                    stopped_services = {
+                        item["service_id"]: item
+                        for item in stopped["snapshot"]["background_services"]
+                    }
+                    self.assertEqual(stopped_services["worker"]["status"], "stopped")
                 finally:
                     generation.stop()
 

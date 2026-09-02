@@ -289,7 +289,10 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             ),
             {},
         )
-        ok = plugin_status.get("status") == "active"
+        ok = (
+            plugin_status.get("status") == "active"
+            and status.get("status") == "active"
+        )
         emit_protocol_message(
             protocol_stream,
             {
@@ -300,7 +303,11 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                 "status": "active" if ok else "failed",
                 "reason": ""
                 if ok
-                else str(plugin_status.get("reason") or "plugin_probe_failed"),
+                else str(
+                    status.get("reason")
+                    or plugin_status.get("reason")
+                    or "plugin_probe_failed"
+                ),
                 "plugin_id": plugin_id,
                 "plugin_version": str(plugin_status.get("plugin_version") or ""),
                 "permissions": list(plugin_status.get("permissions") or ()),
