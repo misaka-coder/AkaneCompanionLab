@@ -76,6 +76,19 @@ class StagedPluginArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginGenerationSource:
+    """Trusted internal locator for one selected plugin release.
+
+    The physical site directory is consumed only by the process launcher.  It
+    is intentionally absent from artifact snapshots and management responses.
+    """
+
+    plugin_id: str
+    site_dir: Path
+    digest: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class _ManagedEntryPoint:
     """Importlib-compatible entry point whose site becomes visible on load."""
 
@@ -396,6 +409,59 @@ class ManagedPluginArtifactStore:
             return tuple(managed) + tuple(
                 item for item in process_entries if str(getattr(item, "name", "") or "") not in managed_names
             )
+
+    def resolve_generation_source(self, plugin_id: str) -> PluginGenerationSource:
+        """Resolve the exact selected artifact without importing it.
+
+        A managed catalog pointer is authoritative when present.  Corrupt or
+        missing managed content is never hidden by falling back to an older
+        process-installed distribution with the same plugin id.
+        """
+
+        normalized = str(plugin_id or "").strip()
+        if not is_valid_plugin_id(normalized):
+            raise PluginInstallationError("invalid_plugin_id", status="invalid_request")
+        with self._lock:
+            catalog = self._read_catalog_locked()
+            pointer = catalog["plugins"].get(normalized)
+            if pointer is not None:
+                if not isinstance(pointer, Mapping):
+                    raise PluginInstallationError("plugin_catalog_invalid")
+                digest = str(pointer.get("current") or "")
+                artifact = catalog["artifacts"].get(digest)
+                if (
+                    not digest
+                    or not isinstance(artifact, Mapping)
+                    or str(artifact.get("plugin_id") or "") != normalized
+                ):
+                    raise PluginInstallationError("plugin_catalog_invalid")
+                site_dir = self._artifact_release_dir(artifact) / "site"
+                if not site_dir.is_dir():
+                    raise PluginInstallationError("plugin_artifact_unavailable")
+                if not _site_has_plugin_entry_point(site_dir, normalized):
+                    raise PluginInstallationError("plugin_artifact_invalid")
+                return PluginGenerationSource(normalized, site_dir.resolve(), digest)
+
+        matches = tuple(
+            item
+            for item in _process_plugin_entry_points()
+            if str(getattr(item, "name", "") or "").strip() == normalized
+        )
+        if not matches:
+            raise PluginInstallationError("plugin_not_installed", status="not_found")
+        if len(matches) != 1:
+            raise PluginInstallationError("duplicate_plugin_entry_point")
+        distribution = getattr(matches[0], "dist", None)
+        locate_file = getattr(distribution, "locate_file", None)
+        if not callable(locate_file):
+            raise PluginInstallationError("plugin_distribution_invalid")
+        try:
+            site_dir = Path(locate_file("")).resolve()
+        except (OSError, TypeError, ValueError):
+            raise PluginInstallationError("plugin_distribution_invalid") from None
+        if not site_dir.is_dir():
+            raise PluginInstallationError("plugin_distribution_unavailable")
+        return PluginGenerationSource(normalized, site_dir)
 
     def _load_managed_entry_point(self, site_dir: str, entry_point: Any) -> Any:
         with self._lock:
@@ -766,6 +832,18 @@ def _process_plugin_entry_points() -> tuple[Any, ...]:
     return tuple(discovered.get(AKANE_PLUGIN_ENTRYPOINT_GROUP, ()))
 
 
+def _site_has_plugin_entry_point(site_dir: Path, plugin_id: str) -> bool:
+    matches = 0
+    for distribution in importlib_metadata.distributions(path=[str(site_dir)]):
+        matches += sum(
+            1
+            for entry_point in distribution.entry_points
+            if entry_point.group == AKANE_PLUGIN_ENTRYPOINT_GROUP
+            and entry_point.name == plugin_id
+        )
+    return matches == 1
+
+
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
@@ -790,6 +868,7 @@ __all__ = [
     "PLUGIN_PROBE_TIMEOUT_SECONDS",
     "PLUGIN_SOURCE_BUILD_TIMEOUT_SECONDS",
     "ManagedPluginArtifactStore",
+    "PluginGenerationSource",
     "PluginInstallationError",
     "StagedPluginArtifact",
 ]

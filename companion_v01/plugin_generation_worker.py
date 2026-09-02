@@ -286,11 +286,16 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             entry_points_provider=lambda: entries,
             managed_artifact_timeout_seconds=float(args.managed_artifact_timeout),
         )
+        storage_data_root = (
+            Path(args.storage_data_root).resolve()
+            if str(args.storage_data_root or "").strip()
+            else work_dir / "storage"
+        )
+        storage_instance_id = str(args.storage_instance_id or "").strip() or (
+            f"generation-{generation_id}"
+        )
         host.bind_plugin_storage_service(
-            InstancePluginStorageService(
-                work_dir / "storage",
-                f"generation-{generation_id}",
-            )
+            InstancePluginStorageService(storage_data_root, storage_instance_id)
         )
         host.bind_notification_port(
             GenerationNotificationPort(

@@ -13,6 +13,16 @@ from companion_v01.plugin_active_generation import (
     PluginActiveGenerationError,
     PluginGenerationSnapshot,
 )
+from companion_v01.plugin_api import (
+    PluginEventEnvelope,
+    PluginExternalEvent,
+    PluginHookEnvelope,
+    PluginOutboundDecoration,
+    PluginQQCommandResult,
+    PluginToolCallSnapshot,
+)
+from companion_v01.plugin_events import PluginEventDispatchResult
+from companion_v01.plugin_hooks import PluginHookDispatchResult
 
 
 def _descriptor(capability_id: str) -> CapabilityDescriptor:
@@ -44,6 +54,9 @@ class FakeGeneration:
         started: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
         stop_result: Mapping[str, Any] | None = None,
+        event_result: PluginEventDispatchResult | None = None,
+        hook_result: PluginHookDispatchResult | None = None,
+        command_result: PluginQQCommandResult | None = None,
     ) -> None:
         self.plugin_id = plugin_id
         self.generation_id = f"generation-{value}"
@@ -60,6 +73,12 @@ class FakeGeneration:
         self.release = release
         self.stop_result = dict(stop_result or {"ok": True, "status": "stopped"})
         self.stop_count = 0
+        self.event_result = event_result or PluginEventDispatchResult(True, "observed")
+        self.hook_result = hook_result or PluginHookDispatchResult(True, "observed")
+        self.command_result = command_result or PluginQQCommandResult(
+            handled=True,
+            reply_text=value,
+        )
 
     def stable_system_prompt_blocks(self) -> tuple[str, ...]:
         return (f"prompt:{self.plugin_id}:{self.value}",)
@@ -97,6 +116,20 @@ class FakeGeneration:
             status="ok",
             content={"generation": self.value},
         )
+
+    async def dispatch(
+        self,
+        event: PluginEventEnvelope | PluginHookEnvelope,
+    ) -> PluginEventDispatchResult | PluginHookDispatchResult:
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            await self.release.wait()
+        return self.hook_result if isinstance(event, PluginHookEnvelope) else self.event_result
+
+    async def dispatch_qq_command(self, **command_args: Any) -> PluginQQCommandResult:
+        del command_args
+        return self.command_result
 
     def stop(self) -> dict[str, Any]:
         self.stop_count += 1
@@ -165,6 +198,122 @@ class PluginGenerationSnapshotTests(unittest.TestCase):
 
 
 class ActivePluginGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_snapshot_composes_events_hooks_and_qq_commands(self) -> None:
+        event_a = PluginExternalEvent("test.a", (("value", "a"),), source="first")
+        event_b = PluginExternalEvent("test.b", (("value", "b"),), source="second")
+        decoration = PluginOutboundDecoration(text_prefix="[second]")
+        first = FakeGeneration(
+            "akane.test.first",
+            "akane.test.first.read.v1",
+            "first",
+            event_result=PluginEventDispatchResult(
+                True,
+                "observed",
+                current_turn_events=(event_a,),
+            ),
+            hook_result=PluginHookDispatchResult(
+                True,
+                "observed",
+                diagnostics=(("akane.test.first", "seen"),),
+            ),
+        )
+        second = FakeGeneration(
+            "akane.test.second",
+            "akane.test.second.read.v1",
+            "second",
+            command="/second",
+            event_result=PluginEventDispatchResult(
+                True,
+                "observed",
+                timeline_events=(event_b,),
+                request_agent_turn=True,
+            ),
+            hook_result=PluginHookDispatchResult(
+                True,
+                "observed",
+                outbound_decorations=(("akane.test.second", decoration),),
+            ),
+        )
+        runtime = ActivePluginGeneration()
+        await runtime.publish(
+            PluginGenerationSnapshot(
+                (
+                    PluginSelection(first.plugin_id, True),
+                    PluginSelection(second.plugin_id, True),
+                ),
+                (second, first),
+            )
+        )
+
+        event_broker = runtime.build_event_broker()
+        event_result = await event_broker.dispatch(
+            PluginEventEnvelope("event-1", "message.received", "test", 1)
+        )
+        hook_broker = runtime.build_hook_broker()
+        hook_result = await hook_broker.dispatch(
+            PluginHookEnvelope(
+                "hook-1",
+                "before_tool_call",
+                1,
+                "tool",
+                PluginToolCallSnapshot("call-1", "read", "test", "u", "s", "c", "{}"),
+            )
+        )
+        command_broker = runtime.build_qq_command_broker()
+        command_result = await command_broker.dispatch(
+            command="/SECOND",
+            args="",
+            qq_number=1,
+            group_id=2,
+            is_group=True,
+        )
+
+        self.assertEqual(event_result.current_turn_events, (event_a,))
+        self.assertEqual(event_result.timeline_events, (event_b,))
+        self.assertTrue(event_result.request_agent_turn)
+        self.assertEqual(hook_result.diagnostics, (("akane.test.first", "seen"),))
+        self.assertEqual(
+            hook_result.outbound_decorations,
+            (("akane.test.second", decoration),),
+        )
+        self.assertEqual(command_result.reply_text, "second")
+
+    async def test_event_lease_keeps_old_process_alive_during_generation_switch(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        old = FakeGeneration(
+            "akane.test.event",
+            "akane.test.event.read.v1",
+            "old",
+            started=started,
+            release=release,
+        )
+        new = FakeGeneration(
+            "akane.test.event",
+            "akane.test.event.read.v1",
+            "new",
+        )
+        selections = (PluginSelection(old.plugin_id, True),)
+        runtime = ActivePluginGeneration()
+        await runtime.publish(PluginGenerationSnapshot(selections, (old,)))
+        dispatch = asyncio.create_task(
+            runtime.dispatch_event(
+                PluginEventEnvelope("event-1", "message.received", "test", 1)
+            )
+        )
+        await started.wait()
+        switching = asyncio.create_task(
+            runtime.publish(PluginGenerationSnapshot(selections, (new,)))
+        )
+        await asyncio.sleep(0)
+
+        self.assertFalse(switching.done())
+        self.assertEqual(old.stop_count, 0)
+        release.set()
+        await dispatch
+        await switching
+        self.assertEqual(old.stop_count, 1)
+
     async def test_publish_routes_new_work_immediately_and_drains_old_work(self) -> None:
         capability_id = "akane.test.switch.read.v1"
         old_started = asyncio.Event()

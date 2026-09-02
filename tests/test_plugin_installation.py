@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ from companion_v01.plugin_installation import (
     ManagedPluginArtifactStore,
     PluginInstallationError,
 )
+from companion_v01.plugin_generation_candidate import PluginGenerationCandidateBuilder
+from companion_v01.instance_profile import PluginSelection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +141,12 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertEqual(self.store.pending_process_restart_plugin_ids(), (PLUGIN_ID,))
         self.assertFalse(tuple((self.root / "artifacts" / "staging").iterdir()))
 
+        source = self.store.resolve_generation_source(PLUGIN_ID)
+        self.assertEqual(source.plugin_id, PLUGIN_ID)
+        self.assertEqual(source.digest, published["digest"])
+        self.assertTrue(source.site_dir.is_dir())
+        self.assertNotIn(str(source.site_dir), json.dumps(self.store.snapshot()))
+
     def test_successful_new_process_marks_current_release_last_good(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
         published = self.store.publish_stage(
@@ -154,6 +163,42 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertFalse(item["pending_process_restart"])
         self.assertEqual(item["last_good_digest"], published["digest"])
         self.assertEqual(self.store.pending_process_restart_plugin_ids(), ())
+
+    def test_selected_release_builds_a_real_isolated_candidate(self) -> None:
+        staged = self.store.stage_wheel(self.wheel_v1)
+        self.store.publish_stage(
+            staged["stage_id"],
+            approved_permissions=staged["permissions"],
+        )
+        builder = PluginGenerationCandidateBuilder(
+            source_resolver=self.store,
+            project_root=PROJECT_ROOT,
+            work_root=self.root / "generation-work",
+            plugin_storage_data_root=self.root / "instance-data",
+            plugin_storage_instance_id="test-instance",
+        )
+
+        async def exercise() -> None:
+            snapshot = await builder.build((PluginSelection(PLUGIN_ID, True),))
+            try:
+                self.assertTrue(snapshot.ready)
+                self.assertEqual(tuple(item.plugin_id for item in snapshot.processes), (PLUGIN_ID,))
+                self.assertTrue(
+                    (
+                        self.root
+                        / "instance-data"
+                        / "instances"
+                        / "test-instance"
+                        / "plugins"
+                        / PLUGIN_ID
+                    ).is_dir()
+                )
+            finally:
+                await asyncio.gather(
+                    *(asyncio.to_thread(process.stop) for process in snapshot.processes)
+                )
+
+        asyncio.run(exercise())
 
     def test_failed_update_points_catalog_back_to_last_good(self) -> None:
         first = self.store.stage_wheel(self.wheel_v1)

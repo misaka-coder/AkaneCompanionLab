@@ -28,6 +28,7 @@ from .plugin_api import (
     PluginEventEnvelope,
     PluginHookEnvelope,
     PluginQQCommandResult,
+    is_valid_plugin_id,
 )
 from .plugin_events import PluginEventDispatchResult
 from .plugin_hooks import PluginHookDispatchResult
@@ -133,6 +134,8 @@ class PluginGenerationProcess:
         start_timeout_seconds: float = PLUGIN_GENERATION_START_TIMEOUT_SECONDS,
         stop_timeout_seconds: float | None = PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
         managed_artifact_timeout_seconds: float = 5.0,
+        plugin_storage_data_root: Path | None = None,
+        plugin_storage_instance_id: str = "",
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.site_dir = Path(site_dir).resolve()
@@ -149,6 +152,17 @@ class PluginGenerationProcess:
             0.1,
             float(managed_artifact_timeout_seconds),
         )
+        storage_instance_id = str(plugin_storage_instance_id or "").strip()
+        if (plugin_storage_data_root is None) != (not storage_instance_id):
+            raise ValueError("plugin_generation_storage_scope_incomplete")
+        if storage_instance_id and not is_valid_plugin_id(storage_instance_id):
+            raise ValueError("plugin_generation_storage_scope_invalid")
+        self.plugin_storage_data_root = (
+            Path(plugin_storage_data_root).resolve()
+            if plugin_storage_data_root is not None
+            else None
+        )
+        self.plugin_storage_instance_id = storage_instance_id
         self.generation_id = uuid.uuid4().hex
         self._artifact_outbox_dir = self.work_dir / "outbox" / self.generation_id
         self._skill_export_dir = generation_skill_export_dir(
@@ -280,24 +294,34 @@ class PluginGenerationProcess:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         started_at = time.perf_counter()
         try:
+            command = [
+                self.python_executable,
+                "-u",
+                "-m",
+                "companion_v01.plugin_generation",
+                "--worker",
+                "--site",
+                str(self.site_dir),
+                "--plugin-id",
+                self.plugin_id,
+                "--work-dir",
+                str(self.work_dir),
+                "--generation-id",
+                self.generation_id,
+                "--managed-artifact-timeout",
+                str(self.managed_artifact_timeout_seconds),
+            ]
+            if self.plugin_storage_data_root is not None:
+                command.extend(
+                    [
+                        "--storage-data-root",
+                        str(self.plugin_storage_data_root),
+                        "--storage-instance-id",
+                        self.plugin_storage_instance_id,
+                    ]
+                )
             self._process = subprocess.Popen(
-                [
-                    self.python_executable,
-                    "-u",
-                    "-m",
-                    "companion_v01.plugin_generation",
-                    "--worker",
-                    "--site",
-                    str(self.site_dir),
-                    "--plugin-id",
-                    self.plugin_id,
-                    "--work-dir",
-                    str(self.work_dir),
-                    "--generation-id",
-                    self.generation_id,
-                    "--managed-artifact-timeout",
-                    str(self.managed_artifact_timeout_seconds),
-                ],
+                command,
                 cwd=str(self.project_root),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -1102,6 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir")
     parser.add_argument("--generation-id")
     parser.add_argument("--managed-artifact-timeout")
+    parser.add_argument("--storage-data-root")
+    parser.add_argument("--storage-instance-id")
     args = parser.parse_args(argv)
     if not args.worker or not all(
         (

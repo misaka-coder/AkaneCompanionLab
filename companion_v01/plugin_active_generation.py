@@ -17,7 +17,15 @@ from typing import Any, Mapping, Protocol
 from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 
 from .instance_profile import PluginSelection
-from .plugin_api import is_valid_plugin_id
+from .plugin_api import (
+    PluginEventEnvelope,
+    PluginHookEnvelope,
+    PluginQQCommandResult,
+    is_valid_plugin_id,
+)
+from .plugin_events import PluginEventDispatchResult
+from .plugin_hooks import PluginHookDispatchResult
+from .plugin_qq_commands import COMMAND_FAILURE_REPLY, PluginQQCommandBroker
 from .skill_runtime import ContributedSkillRoot
 
 
@@ -66,6 +74,13 @@ class PluginGenerationEndpoint(Protocol):
         *,
         context: InvocationContext,
     ) -> CapabilityResult: ...
+
+    async def dispatch(
+        self,
+        event: PluginEventEnvelope | PluginHookEnvelope,
+    ) -> PluginEventDispatchResult | PluginHookDispatchResult: ...
+
+    async def dispatch_qq_command(self, **command_args: Any) -> PluginQQCommandResult: ...
 
     def stop(self) -> dict[str, Any]: ...
 
@@ -267,6 +282,21 @@ class ActivePluginGeneration:
         snapshot = self._current_snapshot()
         return snapshot.skill_roots() if snapshot is not None else ()
 
+    def build_event_broker(self) -> "ActiveGenerationEventBroker":
+        return ActiveGenerationEventBroker(self)
+
+    def build_hook_broker(self) -> "ActiveGenerationHookBroker":
+        return ActiveGenerationHookBroker(self)
+
+    def build_qq_command_broker(
+        self,
+        host_registrations: tuple = (),
+    ) -> "ActiveGenerationQQCommandBroker":
+        return ActiveGenerationQQCommandBroker(
+            self,
+            host_registrations=host_registrations,
+        )
+
     async def publish(self, candidate: PluginGenerationSnapshot) -> dict[str, Any]:
         """Publish a ready candidate, then drain and stop the previous set."""
 
@@ -333,6 +363,144 @@ class ActivePluginGeneration:
         context: InvocationContext,
     ) -> CapabilityResult:
         return await self.invoke(capability_id, args, context=context)
+
+    async def dispatch_event(
+        self,
+        event: PluginEventEnvelope,
+    ) -> PluginEventDispatchResult:
+        if not isinstance(event, PluginEventEnvelope):
+            return PluginEventDispatchResult(
+                False,
+                "invalid_event",
+                failures=(("host", "invalid_event"),),
+            )
+        leased = self._lease_snapshot()
+        if leased is None:
+            return PluginEventDispatchResult(False, "host_unavailable")
+        record, snapshot = leased
+        try:
+            processes = snapshot.processes_for_event(event.event_type)
+            if not processes:
+                return PluginEventDispatchResult(True, "unobserved")
+            results = await asyncio.gather(
+                *(process.dispatch(event) for process in processes),
+                return_exceptions=True,
+            )
+            current_turn = []
+            timeline = []
+            failures: list[tuple[str, str]] = []
+            request_agent_turn = False
+            for process, result in zip(processes, results):
+                if isinstance(result, BaseException):
+                    failures.append((process.plugin_id, "event_dispatch_failed"))
+                    continue
+                if not isinstance(result, PluginEventDispatchResult):
+                    failures.append((process.plugin_id, "invalid_handler_result"))
+                    continue
+                current_turn.extend(result.current_turn_events)
+                timeline.extend(result.timeline_events)
+                request_agent_turn = request_agent_turn or result.request_agent_turn
+                failures.extend(
+                    (process.plugin_id if owner == "host" else owner, reason)
+                    for owner, reason in result.failures
+                )
+                if not result.ok and not result.failures:
+                    failures.append((process.plugin_id, result.status or "event_dispatch_failed"))
+            return PluginEventDispatchResult(
+                ok=not failures,
+                status="observed" if not failures else "partially_observed",
+                current_turn_events=tuple(current_turn),
+                timeline_events=tuple(timeline),
+                request_agent_turn=request_agent_turn,
+                failures=tuple(failures),
+            )
+        finally:
+            self._release(record)
+
+    async def dispatch_hook(
+        self,
+        hook: PluginHookEnvelope,
+    ) -> PluginHookDispatchResult:
+        if not isinstance(hook, PluginHookEnvelope):
+            return PluginHookDispatchResult(
+                False,
+                "invalid_hook",
+                failures=(("host", "invalid_hook"),),
+            )
+        leased = self._lease_snapshot()
+        if leased is None:
+            return PluginHookDispatchResult(False, "host_unavailable")
+        record, snapshot = leased
+        try:
+            processes = snapshot.processes_for_hook(hook.hook_type)
+            if not processes:
+                return PluginHookDispatchResult(True, "unobserved")
+            results = await asyncio.gather(
+                *(process.dispatch(hook) for process in processes),
+                return_exceptions=True,
+            )
+            diagnostics: list[tuple[str, str]] = []
+            failures: list[tuple[str, str]] = []
+            decorations = []
+            for process, result in zip(processes, results):
+                if isinstance(result, BaseException):
+                    failures.append((process.plugin_id, "hook_dispatch_failed"))
+                    continue
+                if not isinstance(result, PluginHookDispatchResult):
+                    failures.append((process.plugin_id, "invalid_handler_result"))
+                    continue
+                diagnostics.extend(result.diagnostics)
+                decorations.extend(result.outbound_decorations)
+                failures.extend(
+                    (process.plugin_id if owner == "host" else owner, reason)
+                    for owner, reason in result.failures
+                )
+                if not result.ok and not result.failures:
+                    failures.append((process.plugin_id, result.status or "hook_dispatch_failed"))
+            return PluginHookDispatchResult(
+                ok=not failures,
+                status="observed" if not failures else "partially_observed",
+                diagnostics=tuple(diagnostics),
+                failures=tuple(failures),
+                outbound_decorations=tuple(decorations),
+            )
+        finally:
+            self._release(record)
+
+    async def dispatch_qq_command(self, **command_args: Any) -> PluginQQCommandResult:
+        command = str(command_args.get("command") or "")
+        leased = self._lease_qq_command(command)
+        if leased is None:
+            with self._condition:
+                available = self._active is not None and self._state == "active"
+            if available:
+                return PluginQQCommandResult(handled=False, reason="no_matching_command")
+            return PluginQQCommandResult(
+                handled=True,
+                reply_text=COMMAND_FAILURE_REPLY,
+                reason="host_unavailable",
+            )
+        record, process = leased
+        try:
+            try:
+                result = await process.dispatch_qq_command(**command_args)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return PluginQQCommandResult(
+                    handled=True,
+                    reply_text=COMMAND_FAILURE_REPLY,
+                    reason="plugin_command_dispatch_failed",
+                )
+            if not isinstance(result, PluginQQCommandResult):
+                return PluginQQCommandResult(
+                    handled=True,
+                    reply_text=COMMAND_FAILURE_REPLY,
+                    reason="invalid_handler_result",
+                )
+            return result
+        finally:
+            self._release(record)
 
     async def stop(self) -> dict[str, Any]:
         async with self._publication_lock:
@@ -437,6 +605,30 @@ class ActivePluginGeneration:
             record.inflight += 1
             return record, process
 
+    def _lease_snapshot(
+        self,
+    ) -> tuple[_PublishedGeneration, PluginGenerationSnapshot] | None:
+        with self._condition:
+            record = self._active
+            if record is None or not record.accepting or self._state != "active":
+                return None
+            record.inflight += 1
+            return record, record.snapshot
+
+    def _lease_qq_command(
+        self,
+        command: str,
+    ) -> tuple[_PublishedGeneration, PluginGenerationEndpoint] | None:
+        with self._condition:
+            record = self._active
+            if record is None or not record.accepting or self._state != "active":
+                return None
+            process = record.snapshot.process_for_qq_command(command)
+            if process is None:
+                return None
+            record.inflight += 1
+            return record, process
+
     def _release(self, record: _PublishedGeneration) -> None:
         with self._condition:
             record.inflight = max(0, record.inflight - 1)
@@ -496,7 +688,102 @@ class ActivePluginGeneration:
             self._condition.wait_for(lambda: record.inflight == 0)
 
 
+class ActiveGenerationEventBroker:
+    """Stable Bot-facing event broker backed by the current atomic snapshot."""
+
+    def __init__(self, runtime: ActivePluginGeneration) -> None:
+        self._runtime = runtime
+
+    @property
+    def registered_event_types(self) -> tuple[str, ...]:
+        snapshot = self._runtime._current_snapshot()
+        return snapshot.registered_event_types if snapshot is not None else ()
+
+    def observes(self, event_type: str) -> bool:
+        return str(event_type or "").strip().lower() in self.registered_event_types
+
+    async def dispatch(self, event: PluginEventEnvelope) -> PluginEventDispatchResult:
+        return await self._runtime.dispatch_event(event)
+
+
+class ActiveGenerationHookBroker:
+    """Stable synchronous/async Hook boundary across atomic generation swaps."""
+
+    def __init__(self, runtime: ActivePluginGeneration) -> None:
+        self._runtime = runtime
+
+    @property
+    def registered_hook_types(self) -> tuple[str, ...]:
+        snapshot = self._runtime._current_snapshot()
+        return snapshot.registered_hook_types if snapshot is not None else ()
+
+    def observes(self, hook_type: str) -> bool:
+        return str(hook_type or "").strip().lower() in self.registered_hook_types
+
+    async def dispatch(self, hook: PluginHookEnvelope) -> PluginHookDispatchResult:
+        return await self._runtime.dispatch_hook(hook)
+
+    def dispatch_from_consumer(self, hook: PluginHookEnvelope) -> PluginHookDispatchResult:
+        loop = self._runtime.runtime_loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            return PluginHookDispatchResult(False, "host_unavailable")
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            return PluginHookDispatchResult(
+                False,
+                "wrong_execution_context",
+                failures=(("host", "hook_requires_worker_thread"),),
+            )
+        try:
+            future = asyncio.run_coroutine_threadsafe(self.dispatch(hook), loop)
+            return future.result()
+        except Exception:
+            return PluginHookDispatchResult(
+                False,
+                "dispatch_failed",
+                failures=(("host", "dispatch_failed"),),
+            )
+
+
+class ActiveGenerationQQCommandBroker:
+    """Compose host commands with the current full plugin generation."""
+
+    def __init__(
+        self,
+        runtime: ActivePluginGeneration,
+        *,
+        host_registrations: tuple = (),
+    ) -> None:
+        self._runtime = runtime
+        self._host_broker = PluginQQCommandBroker(
+            (),
+            host_registrations=tuple(host_registrations or ()),
+        )
+
+    @property
+    def registered_commands(self) -> tuple[str, ...]:
+        snapshot = self._runtime._current_snapshot()
+        plugin_commands = snapshot.registered_qq_commands if snapshot is not None else ()
+        return tuple(dict.fromkeys((*self._host_broker.registered_commands, *plugin_commands)))
+
+    def handles(self, command: str) -> bool:
+        normalized = str(command or "").strip().lower()
+        return self._host_broker.handles(normalized) or normalized in self.registered_commands
+
+    async def dispatch(self, **command_args: Any) -> PluginQQCommandResult:
+        command = str(command_args.get("command") or "")
+        if self._host_broker.handles(command):
+            return await self._host_broker.dispatch(**command_args)
+        return await self._runtime.dispatch_qq_command(**command_args)
+
+
 __all__ = [
+    "ActiveGenerationEventBroker",
+    "ActiveGenerationHookBroker",
+    "ActiveGenerationQQCommandBroker",
     "ActivePluginGeneration",
     "PluginActiveGenerationError",
     "PluginGenerationEndpoint",
