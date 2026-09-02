@@ -26,8 +26,6 @@ from .model_service_config import (
     ModelServiceConfigStore,
     ModelServiceSettings,
 )
-from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
-from .plugin_host import PluginHost
 from .extension_management import (
     ExtensionManagementService,
     PLUGIN_SELECTION_STATE_FILENAME,
@@ -36,8 +34,9 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_reasoning import EnginePluginReasoningPort
+from .plugin_generation_candidate import PluginGenerationCandidateBuilder
+from .plugin_generation_runtime import PluginGenerationRuntime
 from .plugin_installation import ManagedPluginArtifactStore
-from .plugin_storage import InstancePluginStorageService
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
 from .qq_channel_profiles import QQChannelDeploymentProfile
@@ -88,7 +87,7 @@ class BotRuntime:
     model_service_config_store: ModelServiceConfigStore
     settings_override_store: SettingsOverrideStore
     desktop_satellite_service: DesktopSatelliteService
-    plugin_host: PluginHost
+    plugin_runtime: PluginGenerationRuntime
     extension_management_service: ExtensionManagementService
     plugin_capability_source: PluginCapabilityToolBridge
     engine: AkaneMemoryEngine
@@ -131,6 +130,12 @@ class BotRuntime:
     @property
     def admin_write_auth(self) -> Any:
         return self.deployment_security.admin
+
+    @property
+    def plugin_host(self) -> PluginGenerationRuntime:
+        """Compatibility alias for callers migrating to ``plugin_runtime``."""
+
+        return self.plugin_runtime
 
     @property
     def user_assets_dir(self) -> Path:
@@ -180,7 +185,10 @@ class BotRuntime:
         app.state.akane_instance_runtime = self.instance_runtime
         app.state.akane_deployment_security = self.deployment_security
         app.state.akane_desktop_satellite = self.desktop_satellite_service
-        app.state.akane_plugin_host = self.plugin_host
+        app.state.akane_plugin_runtime = self.plugin_runtime
+        # Compatibility name during the M67-F migration. It is the same facade,
+        # not a second in-process PluginHost or lifecycle path.
+        app.state.akane_plugin_host = self.plugin_runtime
 
     async def start(self) -> dict[str, Any]:
         if self._stop_status is not None:
@@ -188,7 +196,7 @@ class BotRuntime:
         if self._started:
             return {"status": "active", "reason": "already_started", "bot_id": self.bot_id}
 
-        plugin_status = await self.plugin_host.start()
+        plugin_status = await self.plugin_runtime.start()
         reconcile_runtime = getattr(
             self.extension_management_service,
             "reconcile_runtime",
@@ -199,6 +207,24 @@ class BotRuntime:
             if callable(reconcile_runtime)
             else {"status": "not_configured", "restart_required": False}
         )
+        if (
+            artifact_status.get("restart_required")
+            and bool(getattr(self.plugin_runtime, "supports_artifact_reload", False))
+        ):
+            first_artifact_status = dict(artifact_status)
+            fallback_status = await self.plugin_runtime.restart()
+            fallback_artifact_status = (
+                reconcile_runtime(fallback_status)
+                if callable(reconcile_runtime)
+                else {"status": "not_configured", "restart_required": False}
+            )
+            artifact_status = {
+                **dict(fallback_artifact_status),
+                "fallback_attempted": True,
+                "initial_status": str(first_artifact_status.get("status") or ""),
+            }
+            if fallback_status.get("published") is True:
+                plugin_status = fallback_status
         host_commands = build_host_command_registrations(
             engine=self.engine,
             qq_gateway=self.qq_gateway,
@@ -206,11 +232,11 @@ class BotRuntime:
             satellite_service=self.desktop_satellite_service,
             bot_label=str(getattr(self, "display_name", "") or ""),
         )
-        self.plugin_command_broker = self.plugin_host.build_qq_command_broker(
+        self.plugin_command_broker = self.plugin_runtime.build_qq_command_broker(
             host_registrations=host_commands
         )
-        self.plugin_event_broker = self.plugin_host.build_event_broker()
-        build_hook_broker = getattr(self.plugin_host, "build_hook_broker", None)
+        self.plugin_event_broker = self.plugin_runtime.build_event_broker()
+        build_hook_broker = getattr(self.plugin_runtime, "build_hook_broker", None)
         self.plugin_hook_broker = build_hook_broker() if callable(build_hook_broker) else None
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
@@ -255,8 +281,10 @@ class BotRuntime:
                 followup_status = {"status": "error", "reason": "qq_followup_shutdown_failed"}
 
         try:
-            plugin_status = await self.plugin_host.stop()
-            if int(plugin_status.get("close_failure_count") or 0) > 0:
+            plugin_status = await self.plugin_runtime.stop()
+            if int(plugin_status.get("close_failure_count") or 0) > 0 or plugin_status.get(
+                "cleanup_failures"
+            ):
                 failures.append("plugin_host_close_incomplete")
         except Exception:
             failures.append("plugin_host_shutdown_failed")
@@ -423,18 +451,24 @@ class BotRuntimeFactory:
                 runtime_layout.data_root / "extensions" / "plugins",
                 instance_id=instance_context.instance_id,
             )
-            plugin_host = PluginHost(
+            plugin_candidate_builder = PluginGenerationCandidateBuilder(
+                source_resolver=plugin_artifact_store,
+                project_root=Path(__file__).resolve().parents[1],
+                work_root=runtime_layout.run_dir / "plugin-generations",
+                plugin_storage_data_root=runtime_layout.data_root,
+                plugin_storage_instance_id=instance_context.instance_id,
+            )
+            plugin_runtime = PluginGenerationRuntime(
                 plugin_selection_store.load(),
-                contribution_policy=TrustedStatefulPluginContributionPolicy(),
-                entry_points_provider=plugin_artifact_store.entry_points,
+                candidate_builder=plugin_candidate_builder,
             )
             extension_management_service = ExtensionManagementService(
-                plugin_runtime=plugin_host,
+                plugin_runtime=plugin_runtime,
                 selection_store=plugin_selection_store,
                 artifact_store=plugin_artifact_store,
             )
             plugin_capability_source = PluginCapabilityToolBridge(
-                plugin_host,
+                plugin_runtime,
                 config_base_dir=runtime_layout.users_data_dir,
             )
             engine = AkaneMemoryEngine(
@@ -445,23 +479,19 @@ class BotRuntimeFactory:
                 runtime_layout=runtime_layout,
                 plugin_capability_source=plugin_capability_source,
                 extension_management_service=extension_management_service,
-                stable_system_blocks_provider=plugin_host.stable_system_prompt_blocks,
+                stable_system_blocks_provider=plugin_runtime.stable_system_prompt_blocks,
                 qq_channel_config=deployment_security.qq,
                 capability_offer_source=satellite_offer_source,
                 settings=settings,
                 user_assets_public_prefix=f"{route_prefix}/user-assets",
             )
-            engine.plugin_skill_roots_provider = plugin_host.skill_roots
-            plugin_host.bind_reasoning_port(EnginePluginReasoningPort(engine))
+            engine.plugin_skill_roots_provider = plugin_runtime.skill_roots
+            plugin_runtime.bind_reasoning_port(EnginePluginReasoningPort(engine))
             generated_file_service = engine._get_generated_file_service()
             if generated_file_service is not None:
-                plugin_host.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(generated_file_service))
-            plugin_host.bind_plugin_storage_service(
-                InstancePluginStorageService(
-                    data_root=runtime_layout.data_root,
-                    instance_id=instance_context.instance_id,
+                plugin_runtime.bind_managed_artifact_sink(
+                    GeneratedFileManagedArtifactSink(generated_file_service)
                 )
-            )
 
             qq_gateway: NapCatQQGateway | None
             qq_followup_tasks: AsyncTaskSupervisor | None
@@ -474,11 +504,11 @@ class BotRuntimeFactory:
                 )
                 engine.bind_qq_delivery_port(QQToolDeliveryPort(qq_gateway))
                 qq_followup_tasks = AsyncTaskSupervisor(name=f"qq-followups:{instance_context.instance_id}")
-                plugin_host.bind_notification_port(QQTextNotificationPort(qq_gateway))
+                plugin_runtime.bind_notification_port(QQTextNotificationPort(qq_gateway))
             else:
                 qq_gateway = None
                 qq_followup_tasks = None
-                plugin_host.bind_notification_port(NullNotificationPort())
+                plugin_runtime.bind_notification_port(NullNotificationPort())
 
             turn_coordinator = TurnCoordinator()
             engine.turn_coordinator = turn_coordinator
@@ -492,7 +522,7 @@ class BotRuntimeFactory:
                 model_service_config_store=model_store,
                 settings_override_store=settings_store,
                 desktop_satellite_service=satellite_service,
-                plugin_host=plugin_host,
+                plugin_runtime=plugin_runtime,
                 extension_management_service=extension_management_service,
                 plugin_capability_source=plugin_capability_source,
                 engine=engine,

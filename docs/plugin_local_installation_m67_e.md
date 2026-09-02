@@ -1,6 +1,6 @@
 # M67-E：插件本地安装与开发迭代
 
-状态：后端制品生命周期已实现；控制中心安装页面留待 M67-G；真正无中断代码热切换留待 M67-F。
+状态：后端制品生命周期与 M67-F 无中断代码热切换已实现；控制中心安装页面留待 M67-G。
 
 ## 1. 用户最终会感受到什么
 
@@ -10,8 +10,8 @@
 2. 独立短进程使用真实 `PluginHost` 完整启动、健康查询并排空一次插件；
 3. 界面展示插件 ID、版本、贡献类型和它实际声明的权限；
 4. 用户原样确认这组权限后，候选版本才成为当前版本；
-5. 重启当前 Bot 进程后，新代码进入运行时；
-6. 启动成功后该版本成为 last-good；启动失败时指针自动回到 last-good，并明确要求再次重启；
+5. 请求插件重载后，完整候选代次就绪才原子接替旧代；
+6. 启动成功后该版本成为 last-good；启动失败时指针自动回到 last-good，旧代继续服务；
 7. 卸载会先排空并停止插件贡献，再撤下实例选择和托管制品，不留下可见的幽灵插件。
 
 安装、更新和卸载失败都返回 `status/reason`，不返回 pip 输出、异常堆栈、宿主路径或制品物理位置，也不伪装成功。
@@ -27,12 +27,12 @@
                                               │
                                       原子 catalog 指针
                                               │
-                                      下个 Bot 进程代次
+                                      候选插件代次
                                               │
-                                  PluginHost 发现并注册全部贡献
+                             PluginGenerationRuntime 原子发布
 ```
 
-`ManagedPluginArtifactStore` 只负责托管制品和版本指针；`PluginSelectionStore` 只负责实例启停选择；`PluginHost` 仍是工具、事件、Hook、后台服务、命令、Skill 和稳定提示贡献的唯一运行时权威。源码目录永远不会加入宿主 `sys.path`，因此开发模式没有形成第二条加载链。
+`ManagedPluginArtifactStore` 只负责托管制品和版本指针；`PluginSelectionStore` 只负责实例启停选择；`PluginGenerationRuntime` 是工具、事件、Hook、后台服务、命令、Skill 和稳定提示贡献的唯一 Bot 运行时权威。每个 worker 内仍复用原有 `PluginHost` 执行一个插件，但它不参与 Bot 侧路由选择。源码目录永远不会加入宿主 `sys.path`，因此开发模式没有形成第二条加载链。
 
 每个实例的托管根位于它自己的 data root 下。公开 snapshot 只包含安全元数据和 SHA-256 摘要，不包含 URL、源码路径、wheel 路径、site-packages 路径或运行目录。
 
@@ -59,11 +59,11 @@
 
 catalog 的一个插件指针只记录：
 
-- `current`：下一进程代次应加载的制品摘要；
-- `last_good`：最近一次由真实 Bot 进程成功启动的制品摘要；
-- `pending_process_restart`：当前进程尚未验证 `current`。
+- `current`：下一候选代次应加载的制品摘要；
+- `last_good`：最近一次由真实插件代次成功启动的制品摘要；
+- `pending_process_restart`：兼容字段名，表示当前 active generation 尚未验证 `current`。
 
-发布只原子切换 catalog，不改正在执行的 PluginHost。新进程启动后：
+发布只原子切换 catalog，不改正在执行的 active generation。请求 reload 后：
 
 - 插件为 `active` 或按实例选择为 `disabled`：确认 `current` 为 last-good；
 - 插件激活失败且存在旧 last-good：指针切回旧版本，返回 `rollback_scheduled`；
@@ -71,17 +71,19 @@ catalog 的一个插件指针只记录：
 
 未被 `current/last_good` 引用的托管版本会在对账后清理。删除只作用于已经验证属于该实例、该插件的精确目录。
 
-## 5. 为什么现在明确要求重启 Bot 进程
+## 5. 为什么现在不再要求重启 Bot 进程
 
-现有 Python PluginHost 与宿主同进程。`PluginHost.restart()` 能排空调用、停止服务并重建实例，但 Python 已导入模块仍可能留在 `sys.modules`。因此它适合重启同版本实例，不足以证明新代码已经加载。
+生产 Bot 通过独立 worker 代次运行 Python PluginHost。`PluginGenerationRuntime.restart()` 会先
+构造完整候选，成功后原子切换全部消费者，再排空旧进程；worker 内的 `PluginHost` 只负责单个
+隔离代次，不是第二个宿主权威。
 
-只要 catalog 存在 `pending_process_restart`：
+只要 catalog 存在旧命名的 `pending_process_restart`（catalog schema 的兼容字段）：
 
-- 启用新制品会返回 `plugin_process_restart_required`；
-- 同进程“重启插件宿主”会返回 `bot_process_restart_required`；
-- 系统不会把旧模块重新实例化包装成热更新成功。
+- generation reload 会直接解析该不可变制品并启动候选；
+- 候选成功后清除 pending 并记录 last-good；
+- 候选失败时不切换，catalog 回退到 last-good，当前旧代继续服务。
 
-M67-F 将把 PluginHost 放入独立代次：候选代次健康检查通过后原子切换，新请求进入新代，旧代排空退出。届时复用本文件的 staging、权限和 catalog，不另造安装器。
+M67-F 已复用本文件的 staging、权限和 catalog 完成该切换，没有另造安装器。
 
 M67-F 的第一步已经把原先一次性结果文件探针收敛成
 `akane.plugin-generation.v1` 版本化进程协议。安装候选与未来运行代次复用同一个
@@ -112,7 +114,8 @@ health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插�
 面向同一个运行时契约，管理路由不再旁路直调 `PluginHost`。完整插件集合的原子槽位现已完成：
 候选不完整或冲突时不切换，新请求切到新代后旧代只排空
 已有租约，停止失败也会明确报告。制品解析和事件/Hook/QQ 组合已经接通同一份代次租约，
-实例插件存储也能跨代保持；Bot 最终组合根尚未替换，因此当前 Bot 仍不做半套切换。进程实现已拆为
+实例插件存储也能跨代保持；Bot 最终组合根已经替换，Engine、管理、事件、Hook、QQ、稳定提示
+和 Skill 通过同一个 generation facade 读取当前快照。进程实现已拆为
 协议帧、父/子回调、worker 与父进程客户端四个职责文件；仍只有同一个
 `akane.plugin-generation.v1` 协议和同一个公开 `PluginGenerationProcess`，不形成兼容双轨。
 
@@ -138,9 +141,9 @@ health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插�
 - 候选在发布前不会被运行时发现；
 - 权限未精确确认时不发布；
 - 发布使用 SHA-256 制品指针且不泄露路径；
-- 新进程成功后写入 last-good；
+- 新 generation 成功后写入 last-good；
 - 坏更新自动安排回退；
 - 卸载撤下 catalog 和托管 entry point；
 - 非 wheel 与坏 wheel 不留下 staging 残骸。
 
-扩展管理测试另覆盖：待更新状态不会伪装成同进程热重载，动态插件卸载后会从持久选择和当前 PluginHost snapshot 一同消失。
+扩展管理测试另覆盖：待更新状态通过完整候选代次切换，动态插件卸载后会从持久选择和当前 generation snapshot 一同消失。

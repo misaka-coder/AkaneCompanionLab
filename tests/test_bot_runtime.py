@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
@@ -17,6 +18,7 @@ from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory
 from companion_v01.host_bot_bootstrap import build_host_bot_registry
 from companion_v01.instance_profile import instance_context_from_bot_config
 from companion_v01.instance_runtime import bind_instance_runtime
+from companion_v01.plugin_generation_runtime import PluginGenerationRuntime
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.settings_overrides import RuntimeConfigView, SettingsOverrideStore
 from companion_v01.turn_coordination import TurnCoordinator
@@ -95,7 +97,7 @@ def _runtime(bot_id: str = "bot-a") -> tuple[BotRuntime, _FakePluginHost, _FakeE
         model_service_config_store=SimpleNamespace(),
         settings_override_store=SimpleNamespace(),
         desktop_satellite_service=SimpleNamespace(),
-        plugin_host=plugin_host,
+        plugin_runtime=plugin_host,
         extension_management_service=SimpleNamespace(),
         plugin_capability_source=SimpleNamespace(),
         engine=engine,
@@ -141,7 +143,7 @@ def _leased_runtime(root: Path, bot_id: str) -> tuple[BotRuntime, _FakePluginHos
         model_service_config_store=SimpleNamespace(),
         settings_override_store=SimpleNamespace(),
         desktop_satellite_service=SimpleNamespace(),
-        plugin_host=plugin_host,
+        plugin_runtime=plugin_host,
         extension_management_service=SimpleNamespace(),
         plugin_capability_source=SimpleNamespace(),
         engine=engine,
@@ -412,6 +414,44 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(followups.close_count, 1)
         self.assertEqual(runtime.plugin_command_broker, None)
 
+    async def test_start_retries_last_good_once_after_candidate_rollback(self) -> None:
+        runtime, plugin_runtime, _engine, _followups = _runtime()
+        plugin_runtime.supports_artifact_reload = True
+
+        async def failed_start() -> dict[str, Any]:
+            return {
+                "status": "degraded",
+                "published": False,
+                "plugins": [{"plugin_id": "akane.test", "status": "unavailable"}],
+            }
+
+        async def fallback_restart() -> dict[str, Any]:
+            return {
+                "status": "active",
+                "published": True,
+                "plugins": [{"plugin_id": "akane.test", "status": "active"}],
+            }
+
+        plugin_runtime.start = failed_start  # type: ignore[method-assign]
+        plugin_runtime.restart = fallback_restart  # type: ignore[attr-defined]
+        runtime.extension_management_service = SimpleNamespace(
+            reconcile_runtime=Mock(
+                side_effect=(
+                    {"status": "rollback_scheduled", "restart_required": True},
+                    {"status": "ready", "restart_required": False},
+                )
+            )
+        )
+
+        result = await runtime.start()
+
+        self.assertEqual(result["status"], "active")
+        self.assertTrue(result["plugin_artifact_status"]["fallback_attempted"])
+        self.assertEqual(
+            result["plugin_artifact_status"]["initial_status"],
+            "rollback_scheduled",
+        )
+
     async def test_start_labels_host_commands_with_public_display_name(self) -> None:
         runtime, plugin_host, _engine, _followups = _runtime("internal-bot-id")
         runtime.bot_config = replace(runtime.bot_config, display_name="Akane Public")
@@ -597,7 +637,13 @@ care_enabled = true
                 )
                 self.assertTrue(
                     all(
-                        runtime.engine.stable_system_blocks_provider.__self__ is runtime.plugin_host
+                        runtime.engine.stable_system_blocks_provider.__self__ is runtime.plugin_runtime
+                        for runtime in runtimes
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        isinstance(runtime.plugin_runtime, PluginGenerationRuntime)
                         for runtime in runtimes
                     )
                 )

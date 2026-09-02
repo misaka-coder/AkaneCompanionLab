@@ -1,4 +1,4 @@
-"""Thin Engine bridge for policy-accepted PluginHost capabilities."""
+"""Thin Engine bridge for policy-accepted plugin runtime capabilities."""
 
 from __future__ import annotations
 
@@ -6,10 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-from capcore import CapabilityResult, InvocationContext, filter_capabilities
+from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext, filter_capabilities
 
 from .client_protocol import ClientMode, ClientProtocolContext
-from .plugin_host import PluginHost
 from .plugin_result_experience import PLUGIN_RESULT_DATA_KEY, PLUGIN_RESULT_EXPERIENCE_KEY
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
@@ -27,12 +26,31 @@ class PluginCapabilitySource(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
-class _PluginHostInvocationProxy:
+class PluginCapabilityRuntime(Protocol):
+    @property
+    def state(self) -> str: ...
+
+    @property
+    def capability_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def capability_descriptors(self) -> Mapping[str, CapabilityDescriptor]: ...
+
+    async def invoke_from_consumer(
+        self,
+        capability_id: str,
+        args: Mapping[str, Any],
+        *,
+        context: InvocationContext,
+    ) -> CapabilityResult: ...
+
+
+class _PluginRuntimeInvocationProxy:
     """Expose invocation only; never reveal a plugin's raw in-process adapter."""
 
     type = "plugin"
 
-    def __init__(self, host: PluginHost) -> None:
+    def __init__(self, host: PluginCapabilityRuntime) -> None:
         self._host = host
 
     def is_live(self, capability_id: str = "") -> bool:
@@ -228,10 +246,15 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
 class PluginCapabilityToolBridge:
     """Project the host's immutable descriptor snapshot into Engine handlers."""
 
-    def __init__(self, host: PluginHost, *, config_base_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        host: PluginCapabilityRuntime,
+        *,
+        config_base_dir: Path | str | None = None,
+    ) -> None:
         self._host = host
         self._config_base_dir = config_base_dir
-        self._proxy = _PluginHostInvocationProxy(host)
+        self._proxy = _PluginRuntimeInvocationProxy(host)
 
     def build_tool_handlers(
         self,
@@ -268,6 +291,7 @@ def _surface_for_client(client_context: ClientProtocolContext | None) -> str:
 
 __all__ = [
     "PluginCapabilitySource",
+    "PluginCapabilityRuntime",
     "PluginCapabilityToolBridge",
     "PluginCapabilityToolHandler",
 ]

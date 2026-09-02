@@ -103,6 +103,70 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "bot_process_restart_required")
         plugin_host.restart.assert_not_awaited()
 
+    async def test_generation_runtime_reloads_pending_code_without_bot_restart(self) -> None:
+        plugin_runtime = SimpleNamespace(
+            supports_artifact_reload=True,
+            code_reload_mode="atomic_generation_switch",
+            selections=(PluginSelection(PLUGIN_ID, True),),
+            restart=AsyncMock(
+                return_value={
+                    "ok": True,
+                    "status": "active",
+                    "published": True,
+                    "plugins": [{"plugin_id": PLUGIN_ID, "status": "active"}],
+                }
+            ),
+        )
+        artifact_store = Mock()
+        artifact_store.reconcile_runtime.return_value = {
+            "status": "ready",
+            "restart_required": False,
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=Mock(),
+            artifact_store=artifact_store,
+        )
+
+        result = await service.restart(requested_plugin_id=PLUGIN_ID)
+
+        self.assertTrue(result["published"])
+        self.assertEqual(result["artifact_status"]["status"], "ready")
+        artifact_store.pending_process_restart_plugin_ids.assert_not_called()
+        plugin_runtime.restart.assert_awaited_once()
+
+    async def test_rejected_generation_candidate_does_not_trigger_redundant_rollback(self) -> None:
+        previous = (PluginSelection(PLUGIN_ID, False),)
+        plugin_runtime = SimpleNamespace(
+            selections=previous,
+            reconfigure=AsyncMock(
+                return_value={
+                    "ok": False,
+                    "status": "candidate_rejected",
+                    "reason": "plugin_probe_failed",
+                    "published": False,
+                    "plugins": [
+                        {
+                            "plugin_id": PLUGIN_ID,
+                            "status": "unavailable",
+                            "reason": "plugin_probe_failed",
+                        }
+                    ],
+                }
+            ),
+        )
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=Mock(),
+        )
+
+        result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
+
+        self.assertEqual(result["status"], "activation_failed")
+        self.assertEqual(result["reason"], "plugin_probe_failed")
+        self.assertEqual(result["rollback_status"], "not_required")
+        plugin_runtime.reconfigure.assert_awaited_once()
+
     async def test_uninstall_removes_dynamic_selection_from_live_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             selection_store = PluginSelectionStore(

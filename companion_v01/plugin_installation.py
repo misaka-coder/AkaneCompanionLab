@@ -1,15 +1,15 @@
 """Instance-owned staging and publication for trusted plugin wheels.
 
-This module owns plugin *artifacts*, while :mod:`plugin_host` remains the only
+This module owns plugin *artifacts*, while the generation runtime remains the only
 runtime contribution authority.  A wheel is installed into an isolated
 staging directory, audited without importing it in the host process, and then
 activated once in a short-lived probe process.  Publication is one atomic
 catalog pointer update after the caller confirms the exact permission set.
 
-M67-E deliberately does not claim in-process Python code hot reload.  A newly
-published artifact becomes the selected artifact for the next process
-generation.  M67-F may replace this restart boundary with an isolated runtime;
-it must reuse this catalog rather than create another installer.
+M67-E deliberately does not claim in-process Python code hot reload. A newly
+published artifact becomes the selected artifact for the next isolated process
+generation. M67-F reuses this catalog through an atomic generation switch;
+there is no second installer.
 """
 
 from __future__ import annotations
@@ -563,9 +563,9 @@ class ManagedPluginArtifactStore:
         """Record successful activation or schedule last-good rollback.
 
         This runs after one fresh process generation has attempted activation.
-        Failed candidate imports are never replaced in-process; the catalog is
-        pointed back to last-good and the returned status says another process
-        restart is required.
+        Failed candidates never replace the active generation; the catalog is
+        pointed back to last-good. Generation-aware hosts can settle that
+        rollback without restarting the Bot process.
         """
 
         statuses = {

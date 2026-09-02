@@ -29,9 +29,9 @@ PLUGIN_SELECTION_STATE_FILENAME = "plugin-selections.json"
 class PluginManagementRuntime(Protocol):
     """The live plugin surface consumed by management and diagnostics.
 
-    ``PluginHost`` satisfies this contract today. Keeping the contract here
-    lets a generation-backed runtime replace it without teaching HTTP routes or
-    model tools about a second lifecycle authority.
+    Both the isolated generation facade and the single-plugin worker runtime
+    satisfy this contract. HTTP routes and model tools never choose between
+    lifecycle implementations.
     """
 
     @property
@@ -190,7 +190,9 @@ class ExtensionManagementService:
                     else []
                 ),
             ],
-            "code_reload": "process_restart_required",
+            "code_reload": str(
+                getattr(self.plugin_runtime, "code_reload_mode", "process_restart_required")
+            ),
         }
         return payload
 
@@ -198,7 +200,7 @@ class ExtensionManagementService:
         plugin_id = str(requested_plugin_id or "").strip()
         if plugin_id and plugin_id not in {item.plugin_id for item in self.plugin_runtime.selections}:
             return _failure("not_found", "plugin_not_configured", plugin_id=plugin_id)
-        if self.artifact_store is not None:
+        if self.artifact_store is not None and not self._supports_artifact_reload():
             try:
                 pending_ids = self.artifact_store.pending_process_restart_plugin_ids()
             except PluginInstallationError as exc:
@@ -219,11 +221,13 @@ class ExtensionManagementService:
                 }
         async with self._operation_lock:
             result = dict(await self.plugin_runtime.restart())
+            artifact_status = self.reconcile_runtime(result)
         result.update(
             {
                 "action": "restart",
                 "scope": "host",
                 "requested_plugin_id": plugin_id,
+                "artifact_status": artifact_status,
             }
         )
         return result
@@ -232,7 +236,11 @@ class ExtensionManagementService:
         normalized_id = str(plugin_id or "").strip()
         if not is_valid_plugin_id(normalized_id):
             return _failure("invalid_request", "invalid_plugin_id", plugin_id=normalized_id)
-        if enabled and self.artifact_store is not None:
+        if (
+            enabled
+            and self.artifact_store is not None
+            and not self._supports_artifact_reload()
+        ):
             try:
                 restart_pending = self.artifact_store.has_pending_process_restart(normalized_id)
             except PluginInstallationError as exc:
@@ -275,16 +283,25 @@ class ExtensionManagementService:
             candidate_status = dict(await self.plugin_runtime.reconfigure(candidate))
             target = _plugin_status(candidate_status, normalized_id)
             expected_status = "active" if enabled else "disabled"
-            if target.get("status") != expected_status:
-                rollback = dict(await self.plugin_runtime.reconfigure(previous))
+            if candidate_status.get("published") is False or target.get("status") != expected_status:
+                rollback_status = "not_required"
+                if candidate_status.get("published") is not False:
+                    rollback = dict(await self.plugin_runtime.reconfigure(previous))
+                    rollback_status = str(rollback.get("status") or "unknown")
+                artifact_status = self.reconcile_runtime(candidate_status)
                 return {
                     "ok": False,
                     "status": "activation_failed",
-                    "reason": str(target.get("reason") or "plugin_state_change_failed"),
+                    "reason": str(
+                        candidate_status.get("reason")
+                        or target.get("reason")
+                        or "plugin_state_change_failed"
+                    ),
                     "action": "enable" if enabled else "disable",
                     "plugin_id": normalized_id,
                     "candidate": target,
-                    "rollback_status": str(rollback.get("status") or "unknown"),
+                    "rollback_status": rollback_status,
+                    "artifact_status": artifact_status,
                 }
             try:
                 self.selection_store.save(candidate)
@@ -298,7 +315,9 @@ class ExtensionManagementService:
                     "plugin_id": normalized_id,
                     "rollback_status": str(rollback.get("status") or "unknown"),
                 }
+            artifact_status = self.reconcile_runtime(candidate_status)
             payload = self.snapshot()
+            payload["artifact_status"] = artifact_status
             payload["host_status"] = str(payload.get("status") or "unknown")
             payload.update(
                 {
@@ -385,6 +404,11 @@ class ExtensionManagementService:
                             "reason": "plugin_selection_persist_failed",
                         }
                     )
+                    return result
+            if self._supports_artifact_reload():
+                result["restart_required"] = False
+                result["reload_required"] = True
+                result["reload_scope"] = "plugin_generation"
             return result
 
     async def discard_stage(self, *, stage_id: str) -> dict[str, Any]:
@@ -403,9 +427,14 @@ class ExtensionManagementService:
             return _failure("unavailable", "plugin_artifact_store_unavailable", plugin_id=plugin_id)
         async with self._operation_lock:
             try:
-                return dict(
+                result = dict(
                     await asyncio.to_thread(self.artifact_store.rollback_to_last_good, plugin_id)
                 )
+                if result.get("ok") and self._supports_artifact_reload():
+                    result["restart_required"] = False
+                    result["reload_required"] = True
+                    result["reload_scope"] = "plugin_generation"
+                return result
             except PluginInstallationError as exc:
                 return _failure(exc.status, exc.reason, plugin_id=plugin_id)
             except Exception:
@@ -443,14 +472,17 @@ class ExtensionManagementService:
                 )
                 status = dict(await self.plugin_runtime.reconfigure(candidate))
                 target = _plugin_status(status, normalized_id)
-                if target.get("status") != "disabled":
-                    rollback = dict(await self.plugin_runtime.reconfigure(current))
+                if status.get("published") is False or target.get("status") != "disabled":
+                    rollback_status = "not_required"
+                    if status.get("published") is not False:
+                        rollback = dict(await self.plugin_runtime.reconfigure(current))
+                        rollback_status = str(rollback.get("status") or "unknown")
                     return {
                         "ok": False,
                         "status": "deactivation_failed",
                         "reason": str(target.get("reason") or "plugin_disable_failed"),
                         "plugin_id": normalized_id,
-                        "rollback_status": str(rollback.get("status") or "unknown"),
+                        "rollback_status": rollback_status,
                     }
             persisted = self.selection_store.load()
             defaults = {item.plugin_id for item in self.selection_store.defaults}
@@ -498,7 +530,7 @@ class ExtensionManagementService:
                     )
                 return _failure("error", "plugin_uninstall_failed", plugin_id=normalized_id)
             runtime_status = dict(await self.plugin_runtime.reconfigure(next_selections))
-            if runtime_status.get("status") == "degraded":
+            if runtime_status.get("published") is False or runtime_status.get("status") == "degraded":
                 result.update(
                     {
                         "ok": False,
@@ -507,13 +539,40 @@ class ExtensionManagementService:
                         "restart_required": True,
                     }
                 )
+            elif self._supports_artifact_reload():
+                result["restart_required"] = False
+                result["reload_required"] = False
+                result["reload_scope"] = "plugin_generation"
             return result
+
+    def _supports_artifact_reload(self) -> bool:
+        return bool(getattr(self.plugin_runtime, "supports_artifact_reload", False))
 
     def reconcile_runtime(self, plugin_status: Mapping[str, Any]) -> dict[str, Any]:
         if self.artifact_store is None:
             return {"status": "not_configured", "restart_required": False}
         try:
-            return self.artifact_store.reconcile_runtime(plugin_status.get("plugins", ()))
+            result = dict(
+                self.artifact_store.reconcile_runtime(plugin_status.get("plugins", ()))
+            )
+            if (
+                result.get("restart_required")
+                and self._supports_artifact_reload()
+                and plugin_status.get("published") is False
+                and str(plugin_status.get("active_status") or "") == "active"
+            ):
+                # The failed candidate never replaced the old process set. The
+                # catalog now points back to that last-good artifact, so the
+                # still-active snapshot is already the correct runtime proof.
+                settled = dict(
+                    self.artifact_store.reconcile_runtime(
+                        self.plugin_runtime.status_snapshot().get("plugins", ())
+                    )
+                )
+                result["active_generation_preserved"] = True
+                result["restart_required"] = bool(settled.get("restart_required"))
+                result["settled_status"] = str(settled.get("status") or "")
+            return result
         except PluginInstallationError as exc:
             return {"status": exc.status, "reason": exc.reason, "restart_required": False}
         except Exception:
