@@ -20,9 +20,16 @@ from capcore import (
 from .plugin_api import (
     NotificationIntent,
     NotificationResult,
+    PluginEventEnvelope,
     PluginExternalEvent,
     PluginReasoningRequest,
     PluginReasoningResult,
+)
+from .plugin_events import PluginEventDispatchResult
+from .plugin_generation_event_payload import (
+    PluginGenerationEventPayloadError,
+    event_payload_from_wire,
+    event_payload_to_wire,
 )
 
 
@@ -326,6 +333,123 @@ def reasoning_result_from_wire(value: object) -> PluginReasoningResult:
     )
 
 
+def plugin_event_envelope_to_wire(event: PluginEventEnvelope) -> dict[str, Any]:
+    if not isinstance(event, PluginEventEnvelope):
+        raise PluginGenerationCodecError("plugin_event_envelope_required")
+    if not isinstance(event.occurred_at, int) or isinstance(event.occurred_at, bool):
+        raise PluginGenerationCodecError("plugin_event_envelope_invalid")
+    try:
+        payload = event_payload_to_wire(event.payload)
+    except PluginGenerationEventPayloadError as exc:
+        raise PluginGenerationCodecError(str(exc)) from exc
+    return _json_snapshot(
+        {
+            "event_id": _string(event.event_id, "plugin_event_envelope_invalid"),
+            "event_type": _string(event.event_type, "plugin_event_envelope_invalid"),
+            "source": _string(event.source, "plugin_event_envelope_invalid"),
+            "occurred_at": event.occurred_at,
+            "subject": _string(event.subject, "plugin_event_envelope_invalid"),
+            "fields": _string_pairs_to_wire(
+                event.fields,
+                "plugin_event_envelope_invalid",
+            ),
+            "material_handles": list(
+                _string_tuple_value(
+                    event.material_handles,
+                    "plugin_event_envelope_invalid",
+                )
+            ),
+            "payload": payload,
+        }
+    )
+
+
+def plugin_event_envelope_from_wire(value: object) -> PluginEventEnvelope:
+    record = _mapping(value, "plugin_event_envelope_invalid")
+    occurred_at = record.get("occurred_at")
+    if not isinstance(occurred_at, int) or isinstance(occurred_at, bool):
+        raise PluginGenerationCodecError("plugin_event_envelope_invalid")
+    try:
+        payload = event_payload_from_wire(record.get("payload"))
+    except PluginGenerationEventPayloadError as exc:
+        raise PluginGenerationCodecError(str(exc)) from exc
+    return PluginEventEnvelope(
+        event_id=_string(record.get("event_id"), "plugin_event_envelope_invalid"),
+        event_type=_string(record.get("event_type"), "plugin_event_envelope_invalid"),
+        source=_string(record.get("source"), "plugin_event_envelope_invalid"),
+        occurred_at=occurred_at,
+        subject=_string(record.get("subject"), "plugin_event_envelope_invalid"),
+        fields=_string_pairs_from_wire(
+            record.get("fields"),
+            "plugin_event_envelope_invalid",
+        ),
+        material_handles=_string_tuple_from_wire(
+            record.get("material_handles"),
+            "plugin_event_envelope_invalid",
+        ),
+        payload=payload,
+    )
+
+
+def plugin_event_dispatch_result_to_wire(
+    result: PluginEventDispatchResult,
+) -> dict[str, Any]:
+    if not isinstance(result, PluginEventDispatchResult):
+        raise PluginGenerationCodecError("plugin_event_result_required")
+    if not isinstance(result.ok, bool) or not isinstance(result.request_agent_turn, bool):
+        raise PluginGenerationCodecError("plugin_event_result_invalid")
+    return _json_snapshot(
+        {
+            "ok": result.ok,
+            "status": _string(result.status, "plugin_event_result_invalid"),
+            "current_turn_events": [
+                _external_event_to_wire(item, "plugin_event_result_invalid")
+                for item in result.current_turn_events
+            ],
+            "timeline_events": [
+                _external_event_to_wire(item, "plugin_event_result_invalid")
+                for item in result.timeline_events
+            ],
+            "request_agent_turn": result.request_agent_turn,
+            "failures": _string_pairs_to_wire(
+                result.failures,
+                "plugin_event_result_invalid",
+            ),
+        }
+    )
+
+
+def plugin_event_dispatch_result_from_wire(
+    value: object,
+) -> PluginEventDispatchResult:
+    record = _mapping(value, "plugin_event_result_invalid")
+    ok = record.get("ok")
+    request_agent_turn = record.get("request_agent_turn")
+    if not isinstance(ok, bool) or not isinstance(request_agent_turn, bool):
+        raise PluginGenerationCodecError("plugin_event_result_invalid")
+    current_turn = record.get("current_turn_events")
+    timeline = record.get("timeline_events")
+    if not isinstance(current_turn, list) or not isinstance(timeline, list):
+        raise PluginGenerationCodecError("plugin_event_result_invalid")
+    return PluginEventDispatchResult(
+        ok=ok,
+        status=_string(record.get("status"), "plugin_event_result_invalid"),
+        current_turn_events=tuple(
+            _external_event_from_wire(item, "plugin_event_result_invalid")
+            for item in current_turn
+        ),
+        timeline_events=tuple(
+            _external_event_from_wire(item, "plugin_event_result_invalid")
+            for item in timeline
+        ),
+        request_agent_turn=request_agent_turn,
+        failures=_string_pairs_from_wire(
+            record.get("failures"),
+            "plugin_event_result_invalid",
+        ),
+    )
+
+
 def json_snapshot(value: Any) -> Any:
     """Return an independent JSON value without imposing a size policy."""
 
@@ -441,6 +565,59 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _string_tuple_value(value: object, reason: str) -> tuple[str, ...]:
+    if not isinstance(value, tuple) or any(not isinstance(item, str) for item in value):
+        raise PluginGenerationCodecError(reason)
+    return value
+
+
+def _string_tuple_from_wire(value: object, reason: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise PluginGenerationCodecError(reason)
+    return tuple(value)
+
+
+def _string_pairs_to_wire(value: object, reason: str) -> list[list[str]]:
+    if not isinstance(value, tuple):
+        raise PluginGenerationCodecError(reason)
+    pairs: list[list[str]] = []
+    for item in value:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise PluginGenerationCodecError(reason)
+        pairs.append([_string(item[0], reason), _string(item[1], reason)])
+    return pairs
+
+
+def _string_pairs_from_wire(value: object, reason: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, list):
+        raise PluginGenerationCodecError(reason)
+    pairs: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            raise PluginGenerationCodecError(reason)
+        pairs.append((_string(item[0], reason), _string(item[1], reason)))
+    return tuple(pairs)
+
+
+def _external_event_to_wire(value: PluginExternalEvent, reason: str) -> dict[str, Any]:
+    if not isinstance(value, PluginExternalEvent):
+        raise PluginGenerationCodecError(reason)
+    return {
+        "event_type": _string(value.event_type, reason),
+        "source": _string(value.source, reason),
+        "fields": _string_pairs_to_wire(value.fields, reason),
+    }
+
+
+def _external_event_from_wire(value: object, reason: str) -> PluginExternalEvent:
+    record = _mapping(value, reason)
+    return PluginExternalEvent(
+        event_type=_string(record.get("event_type"), reason),
+        source=_string(record.get("source"), reason),
+        fields=_string_pairs_from_wire(record.get("fields"), reason),
+    )
+
+
 def _boolean(value: object) -> bool:
     if not isinstance(value, bool):
         raise PluginGenerationCodecError("capability_descriptor_invalid")
@@ -460,6 +637,10 @@ __all__ = [
     "notification_intent_to_wire",
     "notification_result_from_wire",
     "notification_result_to_wire",
+    "plugin_event_dispatch_result_from_wire",
+    "plugin_event_dispatch_result_to_wire",
+    "plugin_event_envelope_from_wire",
+    "plugin_event_envelope_to_wire",
     "reasoning_request_from_wire",
     "reasoning_request_to_wire",
     "reasoning_result_from_wire",

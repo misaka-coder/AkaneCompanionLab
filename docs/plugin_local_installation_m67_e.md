@@ -97,8 +97,13 @@ idempotency ledger，父进程通过同一控制通道调用唯一真实通知�
 超时。第五步复用同一反向回调通道接通现有 `PluginReasoningPort`：完整公开请求和安全结果按
 callback ID 无损关联，取消与旧代排空保持闭环；父进程仅调用绑定的唯一真实推理端口。进程层
 不新增 prompt、模型轮数、长度或统一超时，既有推理端口继续负责校验、幂等、超时与 MemCore
-语义；未绑定时返回结构化 `not_configured`。事件、Hook、QQ 指令和后台服务生命周期仍未全部
-切换到该进程，所以当前 Bot 不会把半套跨进程端口伪装成已经完成的热切换。插件普通
+语义；未绑定时返回结构化 `not_configured`。第六步接通入站事件：ready 快照发布真实事件订阅，
+父进程可直接作为事件 broker 使用；worker 继续运行现有 `PluginEventBroker`，完整返回
+internal/current_turn/timeline 与普通 Agent 仲裁意图。通用结构化 payload 可逆传输，QQ 的
+channelcore-onebot 消息权威通过明确类型编码保留引用、@、有序段、附件和转发，不压成摘要；
+未知对象结构化失败，不静默删数据。事件调用支持并发、取消与排空，不新增次数、大小或总时长
+限制，也不直接写 MemCore 或修改 prompt。Hook、QQ 指令和后台服务生命周期仍未全部切换到该
+进程，所以当前 Bot 不会把半套跨进程端口伪装成已经完成的热切换。插件普通
 stdout/stderr 与协议通道隔离；下一步继续其余公开端口，最后才做代次快照原子切换。
 进程实现已拆为协议帧、父/子回调、worker 与父进程客户端四个职责文件；仍只有同一个
 `akane.plugin-generation.v1` 协议和同一个公开 `PluginGenerationProcess`，不形成兼容双轨。

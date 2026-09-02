@@ -24,6 +24,8 @@ from .plugin_generation_codec import (
     capability_descriptor_to_wire,
     capability_result_to_wire,
     invocation_context_from_wire,
+    plugin_event_dispatch_result_to_wire,
+    plugin_event_envelope_from_wire,
 )
 from .plugin_generation_protocol import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -48,6 +50,7 @@ def _entry_points(site_dir: Path, plugin_id: str) -> tuple[Any, ...]:
 
 async def _handle_request(
     host: PluginHost,
+    event_broker: Any,
     request: Mapping[str, Any],
     *,
     generation_id: str,
@@ -67,6 +70,20 @@ async def _handle_request(
                     "status": str(snapshot.get("status") or "unknown"),
                     "reason": str(snapshot.get("reason") or ""),
                     "snapshot": snapshot,
+                },
+            )
+            return
+        if command == "event.dispatch":
+            event = plugin_event_envelope_from_wire(request.get("event"))
+            result = await event_broker.dispatch(event)
+            emit_protocol_message(
+                protocol_stream,
+                {
+                    **base,
+                    "ok": True,
+                    "status": str(result.status or ""),
+                    "reason": "",
+                    "result": plugin_event_dispatch_result_to_wire(result),
                 },
             )
             return
@@ -103,6 +120,17 @@ async def _handle_request(
             },
         )
     except asyncio.CancelledError:
+        if command == "event.dispatch":
+            emit_protocol_message(
+                protocol_stream,
+                {
+                    **base,
+                    "ok": True,
+                    "status": "cancelled",
+                    "reason": "plugin_event_dispatch_cancelled",
+                },
+            )
+            raise
         emit_protocol_message(
             protocol_stream,
             {
@@ -127,7 +155,11 @@ async def _handle_request(
                 **base,
                 "ok": False,
                 "status": "failed",
-                "reason": "invocation_protocol_invalid",
+                "reason": (
+                    "event_protocol_invalid"
+                    if command == "event.dispatch"
+                    else "invocation_protocol_invalid"
+                ),
             },
         )
     except Exception:
@@ -262,6 +294,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
         if not ok:
             await host.stop()
             return 1
+        event_broker = host.build_event_broker()
         active_requests: dict[str, asyncio.Task[None]] = {}
         stop_task: asyncio.Task[None] | None = None
         while True:
@@ -379,6 +412,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             task = asyncio.create_task(
                 _handle_request(
                     host,
+                    event_broker,
                     request,
                     generation_id=generation_id,
                     protocol_stream=protocol_stream,

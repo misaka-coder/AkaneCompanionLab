@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, InvocationContext
+from channelcore_onebot import normalize_inbound_event
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.plugin_api import (
     NotificationIntent,
     NotificationResult,
+    DIRECT_CONVERSATION_EVENT,
+    PluginEventEnvelope,
     PluginExternalEvent,
     PluginReasoningRequest,
     PluginReasoningResult,
@@ -36,16 +41,68 @@ from companion_v01.plugin_generation_codec import (
     notification_intent_to_wire,
     notification_result_from_wire,
     notification_result_to_wire,
+    plugin_event_dispatch_result_from_wire,
+    plugin_event_dispatch_result_to_wire,
+    plugin_event_envelope_from_wire,
+    plugin_event_envelope_to_wire,
     reasoning_request_from_wire,
     reasoning_request_to_wire,
     reasoning_result_from_wire,
     reasoning_result_to_wire,
 )
+from companion_v01.plugin_events import PluginEventDispatchResult
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from companion_v01.store import MemoryStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _generation_event_envelope(
+    *,
+    delivery: str = "current_turn",
+    request_agent_turn: bool = True,
+    delay_ms: int = 0,
+) -> PluginEventEnvelope:
+    parsed = normalize_inbound_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": "100",
+            "user_id": "300",
+            "message_id": "generation-event-1",
+            "sender": {"nickname": "Olivia"},
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-1"}},
+                {"type": "at", "data": {"qq": "100"}},
+                {"type": "text", "data": {"text": "看这个"}},
+                {
+                    "type": "image",
+                    "data": {
+                        "file": "image.jpg",
+                        "url": "https://example.invalid/private-locator",
+                    },
+                },
+            ],
+            "time": int(time.time()),
+        },
+        bot_account_id="100",
+    )
+    assert parsed.message is not None
+    return PluginEventEnvelope(
+        event_id=parsed.message.event_id,
+        event_type=DIRECT_CONVERSATION_EVENT,
+        source="channelcore-onebot",
+        occurred_at=int(parsed.message.timestamp),
+        subject="qq-private:300",
+        fields=(
+            ("delivery", delivery),
+            ("request_agent_turn", str(request_agent_turn).lower()),
+            ("delay_ms", str(delay_ms)),
+        ),
+        material_handles=("material::image-1",),
+        payload=parsed.message,
+    )
 
 
 def _write_plugin_site(root: Path, *, broken: bool = False) -> Path:
@@ -59,17 +116,46 @@ def _write_plugin_site(root: Path, *, broken: bool = False) -> Path:
     else:
         source = textwrap.dedent(
             """
+            import asyncio
+
             from companion_v01.plugin_api import (
                 AKANE_PLUGIN_API_VERSION,
                 DIRECT_CONVERSATION_EVENT,
                 EVENT_SUBSCRIBE_PERMISSION,
                 PluginEventResult,
+                PluginExternalEvent,
                 PluginManifest,
             )
 
             class Handler:
                 async def handle_event(self, event):
-                    return PluginEventResult()
+                    fields = dict(event.fields)
+                    await asyncio.sleep(max(0, int(fields.get("delay_ms", "0"))) / 1000)
+                    delivery = fields.get("delivery", "internal")
+                    if delivery == "internal":
+                        return PluginEventResult()
+                    payload = event.payload
+                    chain = getattr(payload, "chain", None)
+                    parts = getattr(chain, "parts", ())
+                    reply = getattr(payload, "reply_to", None)
+                    attachments = getattr(payload, "attachments", ())
+                    locator = getattr(attachments[0], "locator", None) if attachments else None
+                    return PluginEventResult(
+                        delivery=delivery,
+                        event=PluginExternalEvent(
+                            event_type="fixture.observed",
+                            source="test.generation",
+                            fields=(
+                                ("payload_type", type(payload).__name__),
+                                ("ordered_parts", ",".join(part.kind for part in parts)),
+                                ("reply_message_id", getattr(reply, "message_id", "")),
+                                ("mentioned_bot", str(bool(getattr(payload, "mentioned_bot", False))).lower()),
+                                ("locator_present", str(bool(getattr(locator, "url", ""))).lower()),
+                                ("material_handles", ",".join(event.material_handles)),
+                            ),
+                        ),
+                        request_agent_turn=fields.get("request_agent_turn") == "true",
+                    )
 
             class Plugin:
                 manifest = PluginManifest(
@@ -478,6 +564,27 @@ class PluginGenerationCodecTests(unittest.TestCase):
             text="核验完成",
             evidence_events=({"type": "tool", "status": "ok"},),
         )
+        plugin_event = _generation_event_envelope()
+        event_dispatch_result = PluginEventDispatchResult(
+            ok=False,
+            status="partially_observed",
+            current_turn_events=(
+                PluginExternalEvent(
+                    event_type="fixture.current",
+                    source="fixture",
+                    fields=(("value", "1"),),
+                ),
+            ),
+            timeline_events=(
+                PluginExternalEvent(
+                    event_type="fixture.timeline",
+                    source="fixture",
+                    fields=(("value", "2"),),
+                ),
+            ),
+            request_agent_turn=True,
+            failures=(("test.plugin", "handler_exception"),),
+        )
 
         self.assertEqual(
             capability_descriptor_from_wire(capability_descriptor_to_wire(descriptor)),
@@ -509,6 +616,18 @@ class PluginGenerationCodecTests(unittest.TestCase):
             reasoning_result_from_wire(reasoning_result_to_wire(reasoning_result)),
             reasoning_result,
         )
+        self.assertEqual(
+            plugin_event_envelope_from_wire(
+                plugin_event_envelope_to_wire(plugin_event)
+            ),
+            plugin_event,
+        )
+        self.assertEqual(
+            plugin_event_dispatch_result_from_wire(
+                plugin_event_dispatch_result_to_wire(event_dispatch_result)
+            ),
+            event_dispatch_result,
+        )
 
     def test_non_json_values_are_rejected_without_a_size_policy(self) -> None:
         with self.assertRaises(PluginGenerationCodecError):
@@ -522,6 +641,14 @@ class PluginGenerationCodecTests(unittest.TestCase):
                     "prompt_exposed": "true",
                 }
             )
+        event_wire = plugin_event_envelope_to_wire(_generation_event_envelope())
+        event_wire["payload"] = {
+            "kind": "authority",
+            "type": "builtins.object",
+            "fields": {},
+        }
+        with self.assertRaises(PluginGenerationCodecError):
+            plugin_event_envelope_from_wire(event_wire)
 
         payload = {"text": "字" * 100_000}
         self.assertEqual(json_snapshot(payload), payload)
@@ -555,6 +682,112 @@ class PluginGenerationProcessTests(unittest.TestCase):
             self.assertEqual(stopped["status"], "stopped")
             self.assertFalse(generation.running)
             self.assertEqual(generation.stop()["reason"], "already_stopped")
+
+    def test_generation_dispatches_lossless_channel_event_and_generic_payload(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                ready = generation.start()
+                try:
+                    self.assertTrue(ready["ok"])
+                    self.assertEqual(
+                        generation.registered_event_types,
+                        (DIRECT_CONVERSATION_EVENT,),
+                    )
+                    self.assertTrue(generation.observes(DIRECT_CONVERSATION_EVENT))
+                    self.assertFalse(generation.observes("timer.tick"))
+
+                    result = await generation.dispatch(_generation_event_envelope())
+                    self.assertTrue(result.ok, result.failures)
+                    self.assertEqual(result.status, "observed")
+                    self.assertTrue(result.request_agent_turn)
+                    self.assertEqual(len(result.current_turn_events), 1)
+                    fields = dict(result.current_turn_events[0].fields)
+                    self.assertEqual(fields["payload_type"], "InboundMessage")
+                    self.assertEqual(
+                        fields["ordered_parts"],
+                        "reply,mention,text,attachment",
+                    )
+                    self.assertEqual(fields["reply_message_id"], "quoted-1")
+                    self.assertEqual(fields["mentioned_bot"], "true")
+                    self.assertEqual(fields["locator_present"], "true")
+                    self.assertEqual(fields["material_handles"], "material::image-1")
+
+                    unobserved = await generation.dispatch(
+                        PluginEventEnvelope(
+                            event_id="timer-1",
+                            event_type="timer.tick",
+                            source="test",
+                            occurred_at=int(time.time()),
+                            payload=("timer", {"count": 1}),
+                        )
+                    )
+                    self.assertTrue(unobserved.ok)
+                    self.assertEqual(unobserved.status, "unobserved")
+
+                    unsupported = await generation.dispatch(
+                        replace(_generation_event_envelope(), payload=object())
+                    )
+                    self.assertFalse(unsupported.ok)
+                    self.assertEqual(unsupported.status, "invalid_event")
+                    self.assertEqual(
+                        unsupported.failures,
+                        (("host", "event_payload_unsupported"),),
+                    )
+                    self.assertTrue(generation.health()["ok"])
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_event_dispatch_cancels_and_stop_drains(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                generation.start()
+                try:
+                    pending = asyncio.create_task(
+                        generation.dispatch(
+                            _generation_event_envelope(delay_ms=1_000)
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    pending.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await pending
+
+                    healthy = await generation.dispatch(_generation_event_envelope())
+                    self.assertTrue(healthy.ok, healthy.failures)
+
+                    draining = asyncio.create_task(
+                        generation.dispatch(
+                            _generation_event_envelope(delay_ms=250)
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(stop_task.done())
+                    delivered = await draining
+                    stopped = await stop_task
+                    self.assertTrue(delivered.ok, delivered.failures)
+                    self.assertTrue(stopped["ok"])
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
 
     def test_failed_candidate_does_not_remain_running(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

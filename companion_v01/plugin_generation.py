@@ -24,6 +24,8 @@ from typing import Any, Mapping, TextIO
 
 from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 
+from .plugin_api import PluginEventEnvelope
+from .plugin_events import PluginEventDispatchResult
 from .plugin_generation_artifacts import (
     consume_generation_artifact,
     is_generation_artifact_reference,
@@ -35,6 +37,8 @@ from .plugin_generation_codec import (
     capability_result_from_wire,
     invocation_context_to_wire,
     json_snapshot,
+    plugin_event_dispatch_result_from_wire,
+    plugin_event_envelope_to_wire,
 )
 from .plugin_generation_protocol import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -98,6 +102,7 @@ class PluginGenerationProcess:
         self._write_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
+        self._event_types: tuple[str, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -117,6 +122,15 @@ class PluginGenerationProcess:
         """Return the immutable public Capability snapshot published at ready."""
 
         return self._capability_descriptors
+
+    @property
+    def registered_event_types(self) -> tuple[str, ...]:
+        """Return the exact event subscriptions published by this generation."""
+
+        return self._event_types
+
+    def observes(self, event_type: str) -> bool:
+        return str(event_type or "").strip().lower() in self._event_types
 
     def bind_managed_artifact_sink(self, sink: ManagedArtifactSink) -> None:
         if self._process is not None:
@@ -187,6 +201,9 @@ class PluginGenerationProcess:
             self._capability_descriptors = _decode_capability_snapshot(
                 ready.get("capabilities")
             )
+            self._event_types = _decode_event_types(
+                ready.get("contribution_snapshot")
+            )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
             return ready
         except Exception:
@@ -195,6 +212,63 @@ class PluginGenerationProcess:
 
     def health(self) -> dict[str, Any]:
         return self._request("health", timeout_seconds=self.start_timeout_seconds)
+
+    async def dispatch(self, event: PluginEventEnvelope) -> PluginEventDispatchResult:
+        """Dispatch one event without letting plugin failure block its source path."""
+
+        try:
+            wire_event = plugin_event_envelope_to_wire(event)
+        except PluginGenerationCodecError as exc:
+            return _generation_event_failure("invalid_event", exc.args[0])
+        try:
+            request_id, response_queue = self._send_request(
+                "event.dispatch",
+                {"event": wire_event},
+            )
+        except PluginGenerationError as exc:
+            return _generation_event_failure("host_unavailable", exc.reason)
+        try:
+            try:
+                response = await asyncio.to_thread(
+                    self._next_response,
+                    response_queue,
+                    None,
+                )
+            except asyncio.CancelledError:
+                self._discard_pending(request_id, response_queue)
+                try:
+                    response_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                self._send_cancel(request_id)
+                raise
+            finally:
+                self._discard_pending(request_id, response_queue)
+            try:
+                self._validate_response(response, expected_type="response")
+            except PluginGenerationError as exc:
+                return _generation_event_failure("host_unavailable", exc.reason)
+            if response.get("request_id") != request_id:
+                return _generation_event_failure(
+                    "host_unavailable",
+                    "plugin_generation_protocol_invalid",
+                )
+            if not response.get("ok"):
+                return _generation_event_failure(
+                    "host_unavailable",
+                    str(response.get("reason") or "plugin_event_dispatch_failed"),
+                )
+            try:
+                return plugin_event_dispatch_result_from_wire(response.get("result"))
+            except PluginGenerationCodecError:
+                return _generation_event_failure(
+                    "host_unavailable",
+                    "plugin_generation_protocol_invalid",
+                )
+        except PluginGenerationError as exc:
+            return _generation_event_failure("host_unavailable", exc.reason)
+        finally:
+            self._finish_invocation()
 
     async def invoke(
         self,
@@ -403,7 +477,7 @@ class PluginGenerationProcess:
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
                 )
                 process.stdin.flush()
-                if command == "invoke":
+                if command in {"invoke", "event.dispatch"}:
                     with self._active_invocation_condition:
                         self._active_invocations += 1
             except (BrokenPipeError, OSError) as exc:
@@ -591,6 +665,26 @@ def _decode_capability_snapshot(value: object) -> Mapping[str, CapabilityDescrip
     except PluginGenerationCodecError as exc:
         raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
     return MappingProxyType(descriptors)
+
+
+def _decode_event_types(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    raw_event_types = value.get("event_handlers", [])
+    if not isinstance(raw_event_types, list) or any(
+        not isinstance(item, str) for item in raw_event_types
+    ):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    return tuple(sorted(set(raw_event_types)))
+
+
+def _generation_event_failure(status: str, reason: object) -> PluginEventDispatchResult:
+    safe_reason = str(reason or "plugin_event_dispatch_failed")
+    return PluginEventDispatchResult(
+        ok=False,
+        status=str(status or "host_unavailable"),
+        failures=(("host", safe_reason),),
+    )
 
 
 def _generation_artifact_failure(reason: str) -> CapabilityResult:
