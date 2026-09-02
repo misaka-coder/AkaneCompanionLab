@@ -61,7 +61,7 @@ catalog 的一个插件指针只记录：
 
 - `current`：下一候选代次应加载的制品摘要；
 - `last_good`：最近一次由真实插件代次成功启动的制品摘要；
-- `pending_process_restart`：兼容字段名，表示当前 active generation 尚未验证 `current`。
+- `pending_activation`：当前 active generation 尚未验证 `current`。
 
 发布只原子切换 catalog，不改正在执行的 active generation。请求 reload 后：
 
@@ -77,7 +77,7 @@ catalog 的一个插件指针只记录：
 构造完整候选，成功后原子切换全部消费者，再排空旧进程；worker 内的 `PluginHost` 只负责单个
 隔离代次，不是第二个宿主权威。
 
-只要 catalog 存在旧命名的 `pending_process_restart`（catalog schema 的兼容字段）：
+只要 catalog 标记 `pending_activation`：
 
 - generation reload 会直接解析该不可变制品并启动候选；
 - 候选成功后清除 pending 并记录 last-good；
@@ -143,7 +143,7 @@ health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插�
 - 发布使用 SHA-256 制品指针且不泄露路径；
 - 新 generation 成功后写入 last-good；
 - 坏更新自动安排回退；
-- 卸载撤下 catalog 和托管 entry point；
+- 卸载撤下 catalog 和托管制品；
 - 非 wheel 与坏 wheel 不留下 staging 残骸。
 
 扩展管理测试另覆盖：待更新状态通过完整候选代次切换，动态插件卸载后会从持久选择和当前 generation snapshot 一同消失。

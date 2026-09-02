@@ -416,8 +416,6 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_retries_last_good_once_after_candidate_rollback(self) -> None:
         runtime, plugin_runtime, _engine, _followups = _runtime()
-        plugin_runtime.supports_artifact_reload = True
-
         async def failed_start() -> dict[str, Any]:
             return {
                 "status": "degraded",
@@ -437,8 +435,8 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         runtime.extension_management_service = SimpleNamespace(
             reconcile_runtime=Mock(
                 side_effect=(
-                    {"status": "rollback_scheduled", "restart_required": True},
-                    {"status": "ready", "restart_required": False},
+                    {"status": "rollback_scheduled", "reload_required": True},
+                    {"status": "ready", "reload_required": False},
                 )
             )
         )
@@ -511,7 +509,7 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         result = await runtime.stop()
 
         self.assertEqual(result["status"], "degraded")
-        self.assertEqual(result["reason"], "plugin_host_shutdown_failed")
+        self.assertEqual(result["reason"], "plugin_runtime_shutdown_failed")
         self.assertEqual(engine.close_count, 1)
         self.assertEqual(followups.close_count, 1)
 

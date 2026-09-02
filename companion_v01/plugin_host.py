@@ -93,7 +93,6 @@ _MAX_PROMPT_BLOCK_CHARS = 16_000
 _MAX_PROMPT_BLOCK_TOTAL_CHARS = 32_000
 _MAX_PERMISSIONS_PER_PLUGIN = 32
 _PROMPT_BLOCK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_LEGACY_BACKGROUND_SERVICE_ID = "default"
 _MAX_BACKGROUND_SERVICE_ID_CHARS = 64
 _BACKGROUND_SERVICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -323,11 +322,6 @@ class _StagedRegistrar(PluginRegistrar):
         self._prompt_blocks.append(
             _PromptBlockRegistration(block_id=block_id, text=normalized_text)
         )
-
-    def add_background_job(self, job: Any) -> None:
-        """Compatibility adapter for the original one-job registration API."""
-
-        self.add_background_service(_LEGACY_BACKGROUND_SERVICE_ID, job)
 
     def add_background_service(self, service_id: str, service: Any) -> None:
         if self._sealed:
@@ -690,16 +684,6 @@ class PluginHost:
             ),
             "background_service_stop_failure_count": self._background_service_stop_failure_count,
             "background_services": background_service_statuses,
-            # Compatibility aliases for control-center consumers from M65-D6.
-            # They are views of the same service state, not a second runtime.
-            "job_count": len(self._background_service_tasks),
-            "running_job_count": sum(
-                1
-                for item in self._background_service_statuses.values()
-                if item.get("status") == "running"
-            ),
-            "job_stop_failure_count": self._background_service_stop_failure_count,
-            "jobs": background_service_statuses,
             "close_failure_count": self._close_failure_count,
             "contract": {
                 "supported_hook_types": sorted(SUPPORTED_HOOK_TYPES),
@@ -722,7 +706,6 @@ class PluginHost:
                     "managed_artifact_seconds": self._managed_artifact_timeout_seconds,
                     "adapter_close_seconds": self._close_timeout_seconds,
                     "background_service_stop_seconds": self._background_service_stop_timeout_seconds,
-                    "background_job_stop_seconds": self._background_service_stop_timeout_seconds,
                     "event_handler_seconds": self._event_handler_timeout_seconds,
                     "hook_handler_seconds": self._hook_handler_timeout_seconds,
                 },

@@ -101,7 +101,6 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["plugin_count"], 0)
         self.assertEqual(snapshot["staged_count"], 1)
         self.assertNotIn(str(self.root), json.dumps(snapshot))
-        self.assertEqual(self.store.entry_points(), ())
 
     def test_local_source_is_built_then_enters_the_same_wheel_probe(self) -> None:
         source = self.root / "source"
@@ -131,14 +130,11 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
             approved_permissions=staged["permissions"],
         )
         self.assertEqual(published["status"], "installed")
-        self.assertTrue(published["restart_required"])
-        entries = self.store.entry_points()
-        self.assertEqual([entry.name for entry in entries], [PLUGIN_ID])
+        self.assertTrue(published["activation_pending"])
         self.assertEqual(tuple(sys.path), before_sys_path)
         snapshot = self.store.snapshot()
         self.assertEqual(snapshot["plugin_count"], 1)
-        self.assertTrue(snapshot["plugins"][0]["pending_process_restart"])
-        self.assertEqual(self.store.pending_process_restart_plugin_ids(), (PLUGIN_ID,))
+        self.assertTrue(snapshot["plugins"][0]["pending_activation"])
         self.assertFalse(tuple((self.root / "artifacts" / "staging").iterdir()))
 
         source = self.store.resolve_generation_source(PLUGIN_ID)
@@ -146,6 +142,13 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertEqual(source.digest, published["digest"])
         self.assertTrue(source.site_dir.is_dir())
         self.assertNotIn(str(source.site_dir), json.dumps(self.store.snapshot()))
+
+        republished = self.store.publish_stage(
+            self.store.stage_wheel(self.wheel_v1)["stage_id"],
+            approved_permissions=staged["permissions"],
+        )
+        self.assertTrue(republished["unchanged"])
+        self.assertTrue(republished["activation_pending"])
 
     def test_successful_new_process_marks_current_release_last_good(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
@@ -160,9 +163,8 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ready")
         item = self.store.snapshot()["plugins"][0]
-        self.assertFalse(item["pending_process_restart"])
+        self.assertFalse(item["pending_activation"])
         self.assertEqual(item["last_good_digest"], published["digest"])
-        self.assertEqual(self.store.pending_process_restart_plugin_ids(), ())
 
     def test_selected_release_builds_a_real_isolated_candidate(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
@@ -220,10 +222,10 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(rollback["status"], "rollback_scheduled")
-        self.assertTrue(rollback["restart_required"])
+        self.assertTrue(rollback["reload_required"])
         item = self.store.snapshot()["plugins"][0]
         self.assertEqual(item["digest"], published_v1["digest"])
-        self.assertTrue(item["pending_process_restart"])
+        self.assertTrue(item["pending_activation"])
 
     def test_failed_first_activation_remains_visible_without_fake_rollback(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
@@ -238,10 +240,10 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "activation_failed")
         self.assertEqual(result["failed_plugin_ids"], [PLUGIN_ID])
-        self.assertFalse(result["restart_required"])
-        self.assertTrue(self.store.snapshot()["plugins"][0]["pending_process_restart"])
+        self.assertFalse(result["reload_required"])
+        self.assertTrue(self.store.snapshot()["plugins"][0]["pending_activation"])
 
-    def test_remove_withdraws_catalog_and_managed_entry_point(self) -> None:
+    def test_remove_withdraws_catalog_and_managed_release(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
         self.store.publish_stage(
             staged["stage_id"],
@@ -253,7 +255,36 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertTrue(removed["ok"])
         self.assertEqual(removed["status"], "removed")
         self.assertEqual(self.store.snapshot()["plugin_count"], 0)
-        self.assertEqual(self.store.entry_points(), ())
+
+    def test_v1_catalog_is_atomically_migrated_to_activation_state(self) -> None:
+        artifact_root = self.root / "artifacts"
+        artifact_root.mkdir(parents=True)
+        catalog_path = artifact_root / "plugin-artifacts.json"
+        catalog_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "instance_id": "test-instance",
+                    "plugins": {
+                        PLUGIN_ID: {
+                            "current": "a" * 64,
+                            "last_good": "",
+                            "pending_process_restart": True,
+                        }
+                    },
+                    "artifacts": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        snapshot = self.store.snapshot()
+
+        self.assertTrue(snapshot["plugins"][0]["pending_activation"])
+        migrated = json.loads(catalog_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertTrue(migrated["plugins"][PLUGIN_ID]["pending_activation"])
+        self.assertNotIn("pending_process_restart", migrated["plugins"][PLUGIN_ID])
 
     def test_invalid_wheel_leaves_no_staged_candidate(self) -> None:
         invalid = self.root / "broken.whl"

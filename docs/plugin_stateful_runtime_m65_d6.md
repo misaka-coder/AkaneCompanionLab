@@ -32,9 +32,7 @@ activation order.
 
 M67-C generalized this foundation to multiple stable service ids through
 `add_background_service(service_id, service)`. Each service is supervised and
-reported independently. The original `add_background_job(job)` remains only as
-an adapter for the `default` service id; it does not retain a second lifecycle
-implementation.
+reported independently through the same lifecycle implementation.
 
 ## Storage Ownership
 

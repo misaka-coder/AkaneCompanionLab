@@ -132,12 +132,6 @@ class BotRuntime:
         return self.deployment_security.admin
 
     @property
-    def plugin_host(self) -> PluginGenerationRuntime:
-        """Compatibility alias for callers migrating to ``plugin_runtime``."""
-
-        return self.plugin_runtime
-
-    @property
     def user_assets_dir(self) -> Path:
         return self.engine.gift_assets.base_dir
 
@@ -186,9 +180,6 @@ class BotRuntime:
         app.state.akane_deployment_security = self.deployment_security
         app.state.akane_desktop_satellite = self.desktop_satellite_service
         app.state.akane_plugin_runtime = self.plugin_runtime
-        # Compatibility name during the M67-F migration. It is the same facade,
-        # not a second in-process PluginHost or lifecycle path.
-        app.state.akane_plugin_host = self.plugin_runtime
 
     async def start(self) -> dict[str, Any]:
         if self._stop_status is not None:
@@ -205,18 +196,15 @@ class BotRuntime:
         artifact_status = (
             reconcile_runtime(plugin_status)
             if callable(reconcile_runtime)
-            else {"status": "not_configured", "restart_required": False}
+            else {"status": "not_configured", "reload_required": False}
         )
-        if (
-            artifact_status.get("restart_required")
-            and bool(getattr(self.plugin_runtime, "supports_artifact_reload", False))
-        ):
+        if artifact_status.get("reload_required"):
             first_artifact_status = dict(artifact_status)
             fallback_status = await self.plugin_runtime.restart()
             fallback_artifact_status = (
                 reconcile_runtime(fallback_status)
                 if callable(reconcile_runtime)
-                else {"status": "not_configured", "restart_required": False}
+                else {"status": "not_configured", "reload_required": False}
             )
             artifact_status = {
                 **dict(fallback_artifact_status),
@@ -248,7 +236,7 @@ class BotRuntime:
         status = "degraded" if plugin_status.get("status") == "degraded" else "active"
         return {
             "status": status,
-            "reason": "plugin_host_degraded" if status == "degraded" else "",
+            "reason": "plugin_runtime_degraded" if status == "degraded" else "",
             "bot_id": self.bot_id,
             "plugin_status": plugin_status,
             "plugin_artifact_status": artifact_status,
@@ -285,10 +273,10 @@ class BotRuntime:
             if int(plugin_status.get("close_failure_count") or 0) > 0 or plugin_status.get(
                 "cleanup_failures"
             ):
-                failures.append("plugin_host_close_incomplete")
+                failures.append("plugin_runtime_close_incomplete")
         except Exception:
-            failures.append("plugin_host_shutdown_failed")
-            plugin_status = {"status": "error", "reason": "plugin_host_shutdown_failed"}
+            failures.append("plugin_runtime_shutdown_failed")
+            plugin_status = {"status": "error", "reason": "plugin_runtime_shutdown_failed"}
 
         self.plugin_command_broker = None
         self.plugin_event_broker = None

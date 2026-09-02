@@ -146,9 +146,7 @@ class PluginBackgroundJob(Protocol):
     """A supervised, restart-only background service contributed by a plugin.
 
     Plugins register one or more named services with
-    ``registrar.add_background_service(service_id, service)``.  The legacy
-    ``add_background_job(job)`` entry point registers the same contract under
-    the stable service id ``default``.
+    ``registrar.add_background_service(service_id, service)``.
     The host wraps ``start(controller)`` in an asyncio task on the lifecycle
     loop after the plugin's staged contributions are published. A plugin may
     contribute this job without registering a capability adapter. The job runs until
@@ -547,18 +545,6 @@ class PluginRegistrar(Protocol):
         The directory is guaranteed to exist when returned.  The plugin must
         declare ``storage.write`` permission in its manifest; calling this
         method without that permission raises RuntimeError at activation time.
-        """
-        ...
-
-    def add_background_job(self, job: "PluginBackgroundJob") -> None:
-        """Register the legacy ``default`` supervised background service.
-
-        The host starts the job (as an asyncio task on the lifecycle loop) after
-        all capabilities are activated, and stops it before closing adapters.
-        The plugin must declare ``job.run`` permission; calling this method
-        without that permission raises RuntimeError at activation time.
-        This is exactly equivalent to
-        ``add_background_service("default", job)``.
         """
         ...
 

@@ -1,8 +1,7 @@
 """One authoritative lifecycle service for installed Akane extensions.
 
-V1 manages trusted Python plugins already present on the Host.  The persisted
-selection overlay is deliberately independent from marketplace distribution so
-the later installer can reuse this lifecycle without becoming a second runtime.
+The persisted selection overlay and managed artifact catalog feed the same
+isolated generation runtime; management never imports plugin code itself.
 """
 
 from __future__ import annotations
@@ -29,9 +28,8 @@ PLUGIN_SELECTION_STATE_FILENAME = "plugin-selections.json"
 class PluginManagementRuntime(Protocol):
     """The live plugin surface consumed by management and diagnostics.
 
-    Both the isolated generation facade and the single-plugin worker runtime
-    satisfy this contract. HTTP routes and model tools never choose between
-    lifecycle implementations.
+    The Bot-owned isolated generation facade satisfies this contract. HTTP
+    routes and model tools never choose between lifecycle implementations.
     """
 
     @property
@@ -39,6 +37,9 @@ class PluginManagementRuntime(Protocol):
 
     @property
     def runtime_loop(self) -> asyncio.AbstractEventLoop | None: ...
+
+    @property
+    def code_reload_mode(self) -> str: ...
 
     def status_snapshot(self) -> dict[str, Any]: ...
 
@@ -190,9 +191,7 @@ class ExtensionManagementService:
                     else []
                 ),
             ],
-            "code_reload": str(
-                getattr(self.plugin_runtime, "code_reload_mode", "process_restart_required")
-            ),
+            "code_reload": self.plugin_runtime.code_reload_mode,
         }
         return payload
 
@@ -200,32 +199,13 @@ class ExtensionManagementService:
         plugin_id = str(requested_plugin_id or "").strip()
         if plugin_id and plugin_id not in {item.plugin_id for item in self.plugin_runtime.selections}:
             return _failure("not_found", "plugin_not_configured", plugin_id=plugin_id)
-        if self.artifact_store is not None and not self._supports_artifact_reload():
-            try:
-                pending_ids = self.artifact_store.pending_process_restart_plugin_ids()
-            except PluginInstallationError as exc:
-                return _failure(exc.status, exc.reason, plugin_id=plugin_id)
-            except Exception:
-                return _failure(
-                    "unavailable",
-                    "plugin_artifact_catalog_unavailable",
-                    plugin_id=plugin_id,
-                )
-            if pending_ids:
-                return {
-                    "ok": False,
-                    "status": "restart_required",
-                    "reason": "bot_process_restart_required",
-                    "plugin_id": plugin_id,
-                    "pending_plugin_ids": list(pending_ids),
-                }
         async with self._operation_lock:
             result = dict(await self.plugin_runtime.restart())
             artifact_status = self.reconcile_runtime(result)
         result.update(
             {
                 "action": "restart",
-                "scope": "host",
+                "scope": "plugin_runtime",
                 "requested_plugin_id": plugin_id,
                 "artifact_status": artifact_status,
             }
@@ -236,27 +216,6 @@ class ExtensionManagementService:
         normalized_id = str(plugin_id or "").strip()
         if not is_valid_plugin_id(normalized_id):
             return _failure("invalid_request", "invalid_plugin_id", plugin_id=normalized_id)
-        if (
-            enabled
-            and self.artifact_store is not None
-            and not self._supports_artifact_reload()
-        ):
-            try:
-                restart_pending = self.artifact_store.has_pending_process_restart(normalized_id)
-            except PluginInstallationError as exc:
-                return _failure(exc.status, exc.reason, plugin_id=normalized_id)
-            except Exception:
-                return _failure(
-                    "unavailable",
-                    "plugin_artifact_catalog_unavailable",
-                    plugin_id=normalized_id,
-                )
-            if restart_pending:
-                return _failure(
-                    "restart_required",
-                    "plugin_process_restart_required",
-                    plugin_id=normalized_id,
-                )
         async with self._operation_lock:
             previous = self.plugin_runtime.selections
             if normalized_id not in {item.plugin_id for item in previous}:
@@ -264,7 +223,7 @@ class ExtensionManagementService:
             previous_enabled = next(item.enabled for item in previous if item.plugin_id == normalized_id)
             if previous_enabled == bool(enabled):
                 payload = self.snapshot()
-                payload["host_status"] = str(payload.get("status") or "unknown")
+                payload["runtime_status"] = str(payload.get("status") or "unknown")
                 payload.update(
                     {
                         "ok": True,
@@ -318,7 +277,7 @@ class ExtensionManagementService:
             artifact_status = self.reconcile_runtime(candidate_status)
             payload = self.snapshot()
             payload["artifact_status"] = artifact_status
-            payload["host_status"] = str(payload.get("status") or "unknown")
+            payload["runtime_status"] = str(payload.get("status") or "unknown")
             payload.update(
                 {
                     "ok": True,
@@ -405,10 +364,8 @@ class ExtensionManagementService:
                         }
                     )
                     return result
-            if self._supports_artifact_reload():
-                result["restart_required"] = False
-                result["reload_required"] = True
-                result["reload_scope"] = "plugin_generation"
+            result["reload_required"] = bool(result.pop("activation_pending", False))
+            result["reload_scope"] = "plugin_generation"
             return result
 
     async def discard_stage(self, *, stage_id: str) -> dict[str, Any]:
@@ -430,9 +387,8 @@ class ExtensionManagementService:
                 result = dict(
                     await asyncio.to_thread(self.artifact_store.rollback_to_last_good, plugin_id)
                 )
-                if result.get("ok") and self._supports_artifact_reload():
-                    result["restart_required"] = False
-                    result["reload_required"] = True
+                if result.get("ok"):
+                    result["reload_required"] = bool(result.pop("activation_pending", False))
                     result["reload_scope"] = "plugin_generation"
                 return result
             except PluginInstallationError as exc:
@@ -536,28 +492,24 @@ class ExtensionManagementService:
                         "ok": False,
                         "status": "removed_runtime_degraded",
                         "reason": "plugin_runtime_reconfigure_failed",
-                        "restart_required": True,
+                        "reload_required": True,
+                        "reload_scope": "plugin_generation",
                     }
                 )
-            elif self._supports_artifact_reload():
-                result["restart_required"] = False
+            else:
                 result["reload_required"] = False
                 result["reload_scope"] = "plugin_generation"
             return result
 
-    def _supports_artifact_reload(self) -> bool:
-        return bool(getattr(self.plugin_runtime, "supports_artifact_reload", False))
-
     def reconcile_runtime(self, plugin_status: Mapping[str, Any]) -> dict[str, Any]:
         if self.artifact_store is None:
-            return {"status": "not_configured", "restart_required": False}
+            return {"status": "not_configured", "reload_required": False}
         try:
             result = dict(
                 self.artifact_store.reconcile_runtime(plugin_status.get("plugins", ()))
             )
             if (
-                result.get("restart_required")
-                and self._supports_artifact_reload()
+                result.get("reload_required")
                 and plugin_status.get("published") is False
                 and str(plugin_status.get("active_status") or "") == "active"
             ):
@@ -570,13 +522,13 @@ class ExtensionManagementService:
                     )
                 )
                 result["active_generation_preserved"] = True
-                result["restart_required"] = bool(settled.get("restart_required"))
+                result["reload_required"] = bool(settled.get("reload_required"))
                 result["settled_status"] = str(settled.get("status") or "")
             return result
         except PluginInstallationError as exc:
-            return {"status": exc.status, "reason": exc.reason, "restart_required": False}
+            return {"status": exc.status, "reason": exc.reason, "reload_required": False}
         except Exception:
-            return {"status": "error", "reason": "plugin_artifact_reconcile_failed", "restart_required": False}
+            return {"status": "error", "reason": "plugin_artifact_reconcile_failed", "reload_required": False}
 
     async def invoke_capability(
         self,
@@ -610,7 +562,7 @@ class ExtensionManagementService:
         runtime_loop = self.plugin_runtime.runtime_loop
         if runtime_loop is None or not runtime_loop.is_running():
             coroutine.close()
-            return _failure("unavailable", "plugin_host_loop_unavailable", plugin_id=plugin_id)
+            return _failure("unavailable", "plugin_runtime_loop_unavailable", plugin_id=plugin_id)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:

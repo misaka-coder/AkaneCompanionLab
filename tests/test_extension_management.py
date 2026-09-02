@@ -85,28 +85,8 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
             context=context,
         )
 
-    async def test_pending_code_update_requires_process_restart(self) -> None:
-        plugin_host = SimpleNamespace(
-            selections=(PluginSelection(PLUGIN_ID, True),),
-            restart=AsyncMock(),
-        )
-        artifact_store = Mock()
-        artifact_store.pending_process_restart_plugin_ids.return_value = (PLUGIN_ID,)
-        service = ExtensionManagementService(
-            plugin_runtime=plugin_host,
-            selection_store=Mock(),
-            artifact_store=artifact_store,
-        )
-
-        result = await service.restart(requested_plugin_id=PLUGIN_ID)
-
-        self.assertEqual(result["status"], "restart_required")
-        self.assertEqual(result["reason"], "bot_process_restart_required")
-        plugin_host.restart.assert_not_awaited()
-
-    async def test_generation_runtime_reloads_pending_code_without_bot_restart(self) -> None:
+    async def test_generation_runtime_reloads_pending_code(self) -> None:
         plugin_runtime = SimpleNamespace(
-            supports_artifact_reload=True,
             code_reload_mode="atomic_generation_switch",
             selections=(PluginSelection(PLUGIN_ID, True),),
             restart=AsyncMock(
@@ -121,7 +101,7 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         artifact_store = Mock()
         artifact_store.reconcile_runtime.return_value = {
             "status": "ready",
-            "restart_required": False,
+            "reload_required": False,
         }
         service = ExtensionManagementService(
             plugin_runtime=plugin_runtime,
@@ -133,7 +113,6 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["published"])
         self.assertEqual(result["artifact_status"]["status"], "ready")
-        artifact_store.pending_process_restart_plugin_ids.assert_not_called()
         plugin_runtime.restart.assert_awaited_once()
 
     async def test_rejected_generation_candidate_does_not_trigger_redundant_rollback(self) -> None:
@@ -196,7 +175,6 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "ok": True,
                 "status": "removed",
                 "plugin_id": PLUGIN_ID,
-                "restart_required": True,
             }
             service = ExtensionManagementService(
                 plugin_runtime=plugin_host,

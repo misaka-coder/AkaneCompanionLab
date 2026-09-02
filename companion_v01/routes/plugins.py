@@ -234,7 +234,7 @@ def _management_status_code(payload: Mapping[str, Any], *, success: int = 200) -
         return 400
     if status in {"unavailable", "timeout"}:
         return 503
-    if status in {"approval_required", "restart_required", "activation_failed", "deactivation_failed"}:
+    if status in {"approval_required", "activation_failed", "deactivation_failed"}:
         return 409
     return 500
 

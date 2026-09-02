@@ -15,7 +15,6 @@ there is no second installer.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import shutil
@@ -34,7 +33,7 @@ from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP, is_valid_permission_id, i
 from .plugin_generation import PluginGenerationError, PluginGenerationProcess
 
 
-PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION = 1
+PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION = 2
 PLUGIN_ARTIFACT_CATALOG_FILENAME = "plugin-artifacts.json"
 PLUGIN_STAGE_METADATA_FILENAME = "stage.json"
 PLUGIN_INSTALL_TIMEOUT_SECONDS = 600.0
@@ -88,20 +87,6 @@ class PluginGenerationSource:
     digest: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class _ManagedEntryPoint:
-    """Importlib-compatible entry point whose site becomes visible on load."""
-
-    name: str
-    dist: Any
-    _entry_point: Any
-    _site_dir: str
-    _store: "ManagedPluginArtifactStore"
-
-    def load(self) -> Any:
-        return self._store._load_managed_entry_point(self._site_dir, self._entry_point)
-
-
 class ManagedPluginArtifactStore:
     """One instance's authoritative staged/selected plugin artifact catalog."""
 
@@ -128,7 +113,6 @@ class ManagedPluginArtifactStore:
         self.python_executable = str(python_executable or sys.executable)
         self.project_root = Path(project_root or Path(__file__).resolve().parents[1]).resolve()
         self._lock = threading.RLock()
-        self._published_sys_paths: set[str] = set()
 
     def snapshot(self) -> dict[str, Any]:
         """Return a path-free artifact inventory suitable for status/UI."""
@@ -151,7 +135,7 @@ class ManagedPluginArtifactStore:
                         "digest": current,
                         "permissions": list(artifact.get("permissions") or ()),
                         "last_good_digest": str(pointer.get("last_good") or ""),
-                        "pending_process_restart": bool(pointer.get("pending_process_restart")),
+                        "pending_activation": bool(pointer.get("pending_activation")),
                     }
                 )
             stages: list[dict[str, Any]] = []
@@ -335,6 +319,9 @@ class ManagedPluginArtifactStore:
             catalog = self._read_catalog_locked()
             previous = catalog["plugins"].get(staged.plugin_id, {})
             previous_current = str(previous.get("current") or "") if isinstance(previous, Mapping) else ""
+            activation_pending = previous_current != staged.digest or bool(
+                isinstance(previous, Mapping) and previous.get("pending_activation")
+            )
             catalog["artifacts"][staged.digest] = {
                 "plugin_id": staged.plugin_id,
                 "distribution_name": staged.distribution_name,
@@ -351,7 +338,7 @@ class ManagedPluginArtifactStore:
                     if isinstance(previous, Mapping)
                     else ""
                 ),
-                "pending_process_restart": previous_current != staged.digest,
+                "pending_activation": activation_pending,
             }
             self._write_catalog_locked(catalog)
             return {
@@ -361,7 +348,7 @@ class ManagedPluginArtifactStore:
                 "version": staged.version,
                 "digest": staged.digest,
                 "permissions": list(staged.permissions),
-                "restart_required": previous_current != staged.digest,
+                "activation_pending": activation_pending,
                 "unchanged": previous_current == staged.digest,
             }
 
@@ -372,43 +359,6 @@ class ManagedPluginArtifactStore:
                 return {"ok": False, "status": "not_found", "reason": "plugin_stage_not_found"}
             shutil.rmtree(stage_dir)
             return {"ok": True, "status": "discarded", "stage_id": stage_id}
-
-    def entry_points(self) -> tuple[Any, ...]:
-        """Discover process and selected managed artifacts as one provider."""
-
-        with self._lock:
-            catalog = self._read_catalog_locked()
-            managed: list[Any] = []
-            managed_names: set[str] = set()
-            for plugin_id, pointer in sorted(catalog["plugins"].items()):
-                if not isinstance(pointer, Mapping):
-                    continue
-                digest = str(pointer.get("current") or "")
-                artifact = catalog["artifacts"].get(digest)
-                if not isinstance(artifact, Mapping):
-                    continue
-                release = self._artifact_release_dir(artifact)
-                site_dir = release / "site"
-                if not site_dir.is_dir():
-                    continue
-                site_text = str(site_dir)
-                for distribution in importlib_metadata.distributions(path=[site_text]):
-                    for entry_point in distribution.entry_points:
-                        if entry_point.group == AKANE_PLUGIN_ENTRYPOINT_GROUP and entry_point.name == plugin_id:
-                            managed.append(
-                                _ManagedEntryPoint(
-                                    name=plugin_id,
-                                    dist=distribution,
-                                    _entry_point=entry_point,
-                                    _site_dir=site_text,
-                                    _store=self,
-                                )
-                            )
-                            managed_names.add(plugin_id)
-            process_entries = _process_plugin_entry_points()
-            return tuple(managed) + tuple(
-                item for item in process_entries if str(getattr(item, "name", "") or "") not in managed_names
-            )
 
     def resolve_generation_source(self, plugin_id: str) -> PluginGenerationSource:
         """Resolve the exact selected artifact without importing it.
@@ -463,28 +413,6 @@ class ManagedPluginArtifactStore:
             raise PluginInstallationError("plugin_distribution_unavailable")
         return PluginGenerationSource(normalized, site_dir)
 
-    def _load_managed_entry_point(self, site_dir: str, entry_point: Any) -> Any:
-        with self._lock:
-            if site_dir not in self._published_sys_paths:
-                sys.path.insert(0, site_dir)
-                self._published_sys_paths.add(site_dir)
-            importlib.invalidate_caches()
-            return entry_point.load()
-
-    def has_pending_process_restart(self, plugin_id: str) -> bool:
-        with self._lock:
-            pointer = self._read_catalog_locked()["plugins"].get(str(plugin_id or ""), {})
-            return bool(isinstance(pointer, Mapping) and pointer.get("pending_process_restart"))
-
-    def pending_process_restart_plugin_ids(self) -> tuple[str, ...]:
-        with self._lock:
-            catalog = self._read_catalog_locked()
-            return tuple(
-                plugin_id
-                for plugin_id, pointer in sorted(catalog["plugins"].items())
-                if isinstance(pointer, Mapping) and pointer.get("pending_process_restart")
-            )
-
     def rollback_to_last_good(self, plugin_id: str) -> dict[str, Any]:
         normalized = str(plugin_id or "").strip()
         if not is_valid_plugin_id(normalized):
@@ -503,16 +431,16 @@ class ManagedPluginArtifactStore:
                     "ok": True,
                     "status": "unchanged",
                     "plugin_id": normalized,
-                    "restart_required": False,
+                    "activation_pending": False,
                 }
             pointer["current"] = last_good
-            pointer["pending_process_restart"] = True
+            pointer["pending_activation"] = True
             self._write_catalog_locked(catalog)
             return {
                 "ok": True,
                 "status": "rollback_scheduled",
                 "plugin_id": normalized,
-                "restart_required": True,
+                "activation_pending": True,
             }
 
     def remove_plugin(self, plugin_id: str) -> dict[str, Any]:
@@ -556,7 +484,6 @@ class ManagedPluginArtifactStore:
                 "status": "removed" if not cleanup_failed else "removed_cleanup_pending",
                 "reason": "" if not cleanup_failed else "plugin_artifact_cleanup_failed",
                 "plugin_id": normalized,
-                "restart_required": True,
             }
 
     def reconcile_runtime(self, plugin_statuses: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -579,20 +506,20 @@ class ManagedPluginArtifactStore:
             rollbacks: list[str] = []
             failed: list[str] = []
             for plugin_id, pointer in catalog["plugins"].items():
-                if not isinstance(pointer, dict) or not pointer.get("pending_process_restart"):
+                if not isinstance(pointer, dict) or not pointer.get("pending_activation"):
                     continue
                 status = statuses.get(plugin_id, {})
                 state = str(status.get("status") or "")
                 if state in {"active", "disabled"}:
                     pointer["last_good"] = str(pointer.get("current") or "")
-                    pointer["pending_process_restart"] = False
+                    pointer["pending_activation"] = False
                     changed = True
                     continue
                 last_good = str(pointer.get("last_good") or "")
                 current = str(pointer.get("current") or "")
                 if last_good and last_good != current and last_good in catalog["artifacts"]:
                     pointer["current"] = last_good
-                    pointer["pending_process_restart"] = True
+                    pointer["pending_activation"] = True
                     rollbacks.append(plugin_id)
                     changed = True
                 else:
@@ -614,7 +541,7 @@ class ManagedPluginArtifactStore:
                 ),
                 "rollback_plugin_ids": rollbacks,
                 "failed_plugin_ids": failed,
-                "restart_required": bool(rollbacks),
+                "reload_required": bool(rollbacks),
             }
 
     def _drop_unreferenced_artifacts_locked(self, catalog: dict[str, Any]) -> tuple[Path, ...]:
@@ -767,11 +694,20 @@ class ManagedPluginArtifactStore:
             raise PluginInstallationError("plugin_catalog_invalid") from exc
         if (
             not isinstance(payload, dict)
-            or payload.get("schema_version") != PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION
             or payload.get("instance_id") != self.instance_id
             or not isinstance(payload.get("plugins"), dict)
             or not isinstance(payload.get("artifacts"), dict)
         ):
+            raise PluginInstallationError("plugin_catalog_invalid")
+        schema_version = payload.get("schema_version")
+        if schema_version == 1:
+            for pointer in payload["plugins"].values():
+                if not isinstance(pointer, dict):
+                    raise PluginInstallationError("plugin_catalog_invalid")
+                pointer["pending_activation"] = bool(pointer.pop("pending_process_restart", False))
+            payload["schema_version"] = PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION
+            self._write_catalog_locked(payload)
+        elif schema_version != PLUGIN_ARTIFACT_CATALOG_SCHEMA_VERSION:
             raise PluginInstallationError("plugin_catalog_invalid")
         return payload
 

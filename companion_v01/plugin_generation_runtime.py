@@ -25,7 +25,6 @@ from .skill_runtime import ContributedSkillRoot
 class PluginGenerationRuntime:
     """Build, validate and atomically publish complete plugin generations."""
 
-    supports_artifact_reload = True
     code_reload_mode = "atomic_generation_switch"
 
     def __init__(

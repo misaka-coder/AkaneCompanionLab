@@ -170,7 +170,7 @@ def _make_job_plugin(
     *,
     include_capability: bool = True,
 ) -> Callable:
-    """Return a zero-parameter factory for a plugin that registers one background job."""
+    """Return a zero-parameter factory for a plugin that registers one background service."""
     def factory():
         class Plugin:
             manifest = PluginManifest(
@@ -181,7 +181,7 @@ def _make_job_plugin(
             )
 
             def register(self, registrar: Any) -> None:
-                registrar.add_background_job(job)
+                registrar.add_background_service("default", job)
                 if include_capability:
                     registrar.add_capability_adapter(FakeAdapter())
 
@@ -191,7 +191,7 @@ def _make_job_plugin(
 
 
 def _make_double_job_plugin(job: Any) -> Callable:
-    """Return a factory for a plugin that calls add_background_job() twice (duplicate)."""
+    """Return a factory that registers the same background service twice."""
     def factory():
         class Plugin:
             manifest = PluginManifest(
@@ -206,8 +206,8 @@ def _make_double_job_plugin(job: Any) -> Callable:
             )
 
             def register(self, registrar: Any) -> None:
-                registrar.add_background_job(job)
-                registrar.add_background_job(job)  # second call -> RuntimeError duplicate_plugin_job
+                registrar.add_background_service("default", job)
+                registrar.add_background_service("default", job)
                 registrar.add_capability_adapter(FakeAdapter())
 
         return Plugin()
@@ -324,8 +324,8 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["background_service_count"], 1)
         self.assertEqual(status["running_background_service_count"], 1)
         self.assertEqual(status["background_services"][0]["service_id"], "default")
-        self.assertEqual(status["job_count"], 1)
-        self.assertEqual(status["running_job_count"], 1)
+        self.assertNotIn("jobs", status)
+        self.assertNotIn("job_count", status)
 
         # Yield so the job task can actually begin executing start().
         await asyncio.sleep(0)
@@ -354,7 +354,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["capability_count"], 0)
-        self.assertEqual(status["job_count"], 1)
+        self.assertEqual(status["background_service_count"], 1)
         self.assertEqual(
             status["plugins"][0]["contribution_snapshot"]["background_services"],
             ["default"],
@@ -377,9 +377,9 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["status"], "degraded")
         self.assertEqual(status["reason"], "plugin_runtime_failed")
-        self.assertEqual(status["running_job_count"], 0)
-        self.assertEqual(status["jobs"][0]["status"], "failed")
-        self.assertEqual(status["jobs"][0]["reason"], "job_failed")
+        self.assertEqual(status["running_background_service_count"], 0)
+        self.assertEqual(status["background_services"][0]["status"], "failed")
+        self.assertEqual(status["background_services"][0]["reason"], "job_failed")
         self.assertNotIn("private plugin details", repr(status))
         await host.stop()
 
@@ -393,11 +393,11 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         status = await host.start()
 
         self.assertEqual(status["status"], "degraded")
-        self.assertEqual(status["jobs"][0]["reason"], "job_exited")
+        self.assertEqual(status["background_services"][0]["reason"], "job_exited")
         await host.stop()
 
-    async def test_plugin_without_job_run_add_background_job_fails_activation(self) -> None:
-        """Plugin without job.run that calls add_background_job() fails with plugin_registration_failed."""
+    async def test_plugin_without_job_run_add_background_service_fails_activation(self) -> None:
+        """Plugin without job.run cannot register a background service."""
         job = _CooperativeJob()
         # Permissions deliberately omit BACKGROUND_JOB_PERMISSION
         factory = _make_job_plugin(
@@ -528,8 +528,8 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["plugins"][0]["status"], "failed")
         self.assertEqual(status["plugins"][0]["reason"], "plugin_registration_failed")
 
-    async def test_legacy_default_and_named_service_share_one_runtime(self) -> None:
-        legacy = _CooperativeJob()
+    async def test_default_and_named_service_share_one_runtime(self) -> None:
+        default = _CooperativeJob()
         named = _CooperativeJob()
 
         def factory():
@@ -542,7 +542,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 def register(self, registrar: Any) -> None:
-                    registrar.add_background_job(legacy)
+                    registrar.add_background_service("default", default)
                     registrar.add_background_service("named", named)
 
             return Plugin()
@@ -560,7 +560,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
             [item["service_id"] for item in status["background_services"]],
             ["default", "named"],
         )
-        self.assertTrue(legacy.started)
+        self.assertTrue(default.started)
         self.assertTrue(named.started)
         await host.stop()
 
@@ -611,7 +611,7 @@ class PluginHostJobIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(elapsed, 0.25)
         self.assertEqual(stopped["status"], "stopped")
-        self.assertGreaterEqual(stopped["job_stop_failure_count"], 1)
+        self.assertGreaterEqual(stopped["background_service_stop_failure_count"], 1)
         await asyncio.sleep(0.32)
 
     async def test_bind_notification_port_after_start_raises(self) -> None:

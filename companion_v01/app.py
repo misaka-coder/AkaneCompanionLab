@@ -87,8 +87,6 @@ qq_channel_config = bot_runtime.qq_channel_config
 admin_write_auth = bot_runtime.admin_write_auth
 desktop_satellite_service = bot_runtime.desktop_satellite_service
 plugin_runtime = bot_runtime.plugin_runtime
-# Compatibility alias: both names reference the one generation facade.
-plugin_host = plugin_runtime
 plugin_capability_source = bot_runtime.plugin_capability_source
 engine = bot_runtime.engine
 USER_ASSETS_DIR = bot_runtime.user_assets_dir
