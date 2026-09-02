@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import json
 import tempfile
 import textwrap
 import threading
@@ -72,6 +73,8 @@ from companion_v01.plugin_events import PluginEventDispatchResult
 from companion_v01.plugin_hooks import PluginHookDispatchResult
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from companion_v01.plugin_qq_commands import _PluginCommandRegistration
+from companion_v01.execution_local import TrustedLocalExecutor
+from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.store import MemoryStore
 
 
@@ -820,6 +823,67 @@ def _write_prompt_plugin_site(root: Path) -> Path:
     return site
 
 
+def _write_skill_plugin_site(root: Path) -> tuple[Path, Path]:
+    site = root / "site"
+    package = site / "generation_skill_fixture"
+    skill_root = package / "sample-generation-skill"
+    dist_info = site / "generation_skill_fixture-0.1.0.dist-info"
+    skill_root.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        """
+        from pathlib import Path
+
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            SKILL_CONTRIBUTION_PERMISSION,
+            PluginManifest,
+        )
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.skill",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(SKILL_CONTRIBUTION_PERMISSION,),
+            )
+
+            def register(self, registrar):
+                registrar.add_skill(
+                    Path(__file__).parent / "sample-generation-skill"
+                )
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (skill_root / "SKILL.md").write_text(
+        "---\n"
+        "name: sample-generation-skill\n"
+        "description: A frozen workflow supplied by one plugin generation.\n"
+        "metadata:\n"
+        "  required_tools: [exec_run]\n"
+        "---\n"
+        "Follow the generation-specific workflow.\n",
+        encoding="utf-8",
+    )
+    (skill_root / "reference.txt").write_text(
+        "original generation reference\n",
+        encoding="utf-8",
+    )
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: generation-skill-fixture\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.skill = generation_skill_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site, skill_root
+
+
 def _descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id="test.generation.echo.v1",
@@ -1125,6 +1189,152 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 )
             finally:
                 generation.stop()
+
+    def test_generation_freezes_skills_behind_path_free_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            site, source_skill = _write_skill_plugin_site(root)
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=site,
+                plugin_id="test.generation.skill",
+                work_dir=root / "work",
+            )
+
+            ready = generation.start()
+            exported_root: Path | None = None
+            try:
+                self.assertTrue(ready["ok"])
+                self.assertEqual(
+                    ready["contribution_snapshot"]["skills"],
+                    ["sample-generation-skill"],
+                )
+                ready_json = json.dumps(ready, ensure_ascii=False)
+                self.assertNotIn(str(site), ready_json)
+                self.assertNotIn(str(root / "work"), ready_json)
+
+                contributed = generation.skill_roots()
+                self.assertEqual(len(contributed), 1)
+                exported_root = contributed[0].root
+                self.assertNotEqual(exported_root, source_skill.resolve())
+                self.assertTrue(exported_root.is_relative_to(root / "work"))
+
+                registry = SkillRegistry(
+                    bundled_root=root / "bundled",
+                    managed_root=root / "managed",
+                    execution_workspace_root=root / "execution",
+                    contributed_roots_provider=generation.skill_roots,
+                )
+                catalog = registry.prompt_catalog(
+                    available_tool_names={"exec_run", "load_skill"}
+                )
+                self.assertIn("sample-generation-skill", catalog)
+                self.assertNotIn("Follow the generation-specific workflow", catalog)
+                loaded = registry.load("sample-generation-skill")
+                self.assertEqual(loaded.status, "loaded")
+                self.assertEqual(
+                    loaded.content,
+                    "Follow the generation-specific workflow.",
+                )
+                self.assertEqual(loaded.source, "plugin:test.generation.skill")
+                self.assertTrue(loaded.execution_cwd.startswith("alias:plugin_skill_"))
+
+                workspace = root / "execution"
+                workspace.mkdir(parents=True, exist_ok=True)
+                executor = TrustedLocalExecutor(
+                    workspace_root=workspace,
+                    run_log_dir=root / "runlogs",
+                    mounts=registry.mount_paths(),
+                )
+                self.assertEqual(
+                    executor.resolve_workdir(loaded.execution_cwd),
+                    exported_root,
+                )
+
+                (source_skill / "reference.txt").write_text(
+                    "mutated source reference\n",
+                    encoding="utf-8",
+                )
+                reference = registry.load(
+                    "sample-generation-skill",
+                    resource="reference.txt",
+                )
+                self.assertEqual(reference.content, "original generation reference\n")
+            finally:
+                generation.stop()
+
+            self.assertEqual(generation.skill_roots(), ())
+            self.assertIsNotNone(exported_root)
+            self.assertFalse(exported_root.exists())
+
+    def test_live_generations_keep_distinct_skill_versions_and_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            site, source_skill = _write_skill_plugin_site(root)
+            work_dir = root / "work"
+            first = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=site,
+                plugin_id="test.generation.skill",
+                work_dir=work_dir,
+            )
+            second = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=site,
+                plugin_id="test.generation.skill",
+                work_dir=work_dir,
+            )
+
+            first.start()
+            try:
+                (source_skill / "reference.txt").write_text(
+                    "next generation reference\n",
+                    encoding="utf-8",
+                )
+                second.start()
+                try:
+                    first_root = first.skill_roots()[0]
+                    second_root = second.skill_roots()[0]
+                    self.assertNotEqual(first_root.mount_name, second_root.mount_name)
+                    self.assertNotEqual(first_root.root, second_root.root)
+
+                    first_registry = SkillRegistry(
+                        bundled_root=root / "bundled-first",
+                        managed_root=root / "managed-first",
+                        execution_workspace_root=root / "execution-first",
+                        contributed_roots_provider=first.skill_roots,
+                    )
+                    second_registry = SkillRegistry(
+                        bundled_root=root / "bundled-second",
+                        managed_root=root / "managed-second",
+                        execution_workspace_root=root / "execution-second",
+                        contributed_roots_provider=second.skill_roots,
+                    )
+                    self.assertEqual(
+                        first_registry.load(
+                            "sample-generation-skill",
+                            resource="reference.txt",
+                        ).content,
+                        "original generation reference\n",
+                    )
+                    self.assertEqual(
+                        second_registry.load(
+                            "sample-generation-skill",
+                            resource="reference.txt",
+                        ).content,
+                        "next generation reference\n",
+                    )
+
+                    first_export = first_root.root
+                    second_export = second_root.root
+                    first.stop()
+                    self.assertFalse(first_export.exists())
+                    self.assertTrue(second_export.exists())
+                    self.assertEqual(len(second.skill_roots()), 1)
+                finally:
+                    second.stop()
+            finally:
+                first.stop()
 
     def test_generation_dispatches_lossless_channel_event_and_generic_payload(self) -> None:
         async def scenario() -> None:

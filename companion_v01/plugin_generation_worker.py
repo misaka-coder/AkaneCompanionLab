@@ -36,6 +36,11 @@ from .plugin_generation_protocol import (
     emit_protocol_message,
     response_base,
 )
+from .plugin_generation_skills import (
+    PluginGenerationSkillError,
+    export_generation_skills,
+    generation_skill_export_dir,
+)
 from .plugin_host import PluginHost
 from .plugin_storage import InstancePluginStorageService
 
@@ -317,6 +322,17 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             plugin_status.get("status") == "active"
             and status.get("status") == "active"
         )
+        skill_mounts: list[dict[str, str]] = []
+        if ok:
+            try:
+                skill_mounts = export_generation_skills(
+                    host.skill_roots(),
+                    export_dir=generation_skill_export_dir(work_dir, generation_id),
+                    generation_id=generation_id,
+                )
+            except PluginGenerationSkillError:
+                ok = False
+                status = {**status, "reason": "plugin_skill_projection_failed"}
         emit_protocol_message(
             protocol_stream,
             {
@@ -347,6 +363,7 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                 "stable_system_prompt_blocks": list(
                     host.stable_system_prompt_blocks()
                 ),
+                "skill_mounts": skill_mounts,
             },
         )
         ready_sent = True

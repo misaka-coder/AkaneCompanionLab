@@ -54,12 +54,18 @@ from .plugin_generation_protocol import (
     PLUGIN_GENERATION_START_TIMEOUT_SECONDS,
     PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
 )
+from .plugin_generation_skills import (
+    PluginGenerationSkillError,
+    decode_generation_skill_roots,
+    generation_skill_export_dir,
+)
 from .plugin_managed_artifacts import (
     ManagedArtifactError,
     ManagedArtifactSink,
     normalize_managed_artifact_reference,
 )
 from .plugin_qq_commands import COMMAND_FAILURE_REPLY, PluginQQCommandBroker
+from .skill_runtime import ContributedSkillRoot
 
 
 class PluginGenerationError(RuntimeError):
@@ -145,6 +151,10 @@ class PluginGenerationProcess:
         )
         self.generation_id = uuid.uuid4().hex
         self._artifact_outbox_dir = self.work_dir / "outbox" / self.generation_id
+        self._skill_export_dir = generation_skill_export_dir(
+            self.work_dir,
+            self.generation_id,
+        )
         self._process: subprocess.Popen[str] | None = None
         self._ready: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._pending: dict[str, queue.Queue[dict[str, Any] | None]] = {}
@@ -160,6 +170,7 @@ class PluginGenerationProcess:
         self._qq_commands: tuple[str, ...] = ()
         self._background_service_ids: tuple[str, ...] = ()
         self._stable_prompt_blocks: tuple[str, ...] = ()
+        self._skill_roots: tuple[ContributedSkillRoot, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -208,6 +219,11 @@ class PluginGenerationProcess:
         """Return the generation's immutable restart-only prompt snapshot."""
 
         return self._stable_prompt_blocks
+
+    def skill_roots(self) -> tuple[ContributedSkillRoot, ...]:
+        """Return verified Skill mounts while this generation is available."""
+
+        return self._skill_roots if self.running else ()
 
     def handles_qq_command(self, command: str) -> bool:
         return str(command or "").strip().lower() in self._qq_commands
@@ -309,8 +325,22 @@ class PluginGenerationProcess:
             self._stable_prompt_blocks = _decode_stable_prompt_blocks(
                 ready.get("stable_system_prompt_blocks")
             )
+            contribution_snapshot = ready.get("contribution_snapshot")
+            self._skill_roots = decode_generation_skill_roots(
+                ready.get("skill_mounts"),
+                export_dir=self._skill_export_dir,
+                plugin_id=self.plugin_id,
+                declared_names=(
+                    contribution_snapshot.get("skills", ())
+                    if isinstance(contribution_snapshot, Mapping)
+                    else ()
+                ),
+            )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
             return ready
+        except PluginGenerationSkillError as exc:
+            self._terminate()
+            raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
         except Exception:
             self._terminate()
             raise
@@ -909,6 +939,7 @@ class PluginGenerationProcess:
         self._fail_pending(None)
         self._callback_router.close()
         shutil.rmtree(self._artifact_outbox_dir, ignore_errors=True)
+        shutil.rmtree(self._skill_export_dir, ignore_errors=True)
 
     def _write_callback_response(self, payload: Mapping[str, Any]) -> None:
         with self._write_lock:
