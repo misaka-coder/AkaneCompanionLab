@@ -714,9 +714,32 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["qq_delivery_context"]["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
         self.assertIn("qq.reply_delivery: auto", payload["extra_context"])
-        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
+        self.assertIn("qq.conversation_kind: group", payload["extra_context"])
+        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
+        self.assertIn("qq.current_actor_role: participant", payload["extra_context"])
         self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
         self.assertNotIn(str(QQ_GROUP_FIXTURE_ID), payload["extra_context"])
+
+    def test_group_master_turn_projects_host_verified_master_role(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "group-master-role-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " 在吗"}},
+                ],
+            }
+        )
+
+        self.assertIn("qq.conversation_kind: group", context.extra_context)
+        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", context.extra_context)
+        self.assertIn("qq.current_actor_role: master", context.extra_context)
 
     def test_private_poke_notice_to_bot_becomes_normal_turn_payload(self) -> None:
         gateway = NapCatQQGateway()
@@ -1658,7 +1681,9 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
         self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
         self.assertIn("qq.reply_delivery: voice", next_context.extra_context)
-        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", next_context.extra_context)
+        self.assertIn("qq.conversation_kind: private", next_context.extra_context)
+        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", next_context.extra_context)
+        self.assertIn("qq.current_actor_role: participant", next_context.extra_context)
 
     def test_chat_model_command_switches_current_qq_session_for_master(self) -> None:
         gateway = NapCatQQGateway()
