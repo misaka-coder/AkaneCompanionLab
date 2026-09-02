@@ -68,7 +68,7 @@ class GeneratedFileManagedArtifactSink:
         context: InvocationContext,
         capability_id: str,
     ) -> Mapping[str, Any]:
-        data, title, output_format, mime_type, summary = _validate_draft(draft)
+        data, title, output_format, mime_type, summary = validate_managed_artifact_draft(draft)
         if not isinstance(context, InvocationContext):
             raise ManagedArtifactError("managed_artifact_context_required")
         profile_user_id = str(context.profile_user_id or "").strip()
@@ -141,7 +141,55 @@ class GeneratedFileManagedArtifactSink:
         }
 
 
-def _validate_draft(draft: ManagedArtifactDraft) -> tuple[bytes, str, str, str, str]:
+def normalize_managed_artifact_reference(
+    value: Any,
+    *,
+    draft: ManagedArtifactDraft,
+    capability_id: str,
+) -> dict[str, Any] | None:
+    """Validate the one public, path-free reference returned by a host sink."""
+
+    if not isinstance(value, Mapping):
+        return None
+    generated_id = str(value.get("generated_id") or "").strip()
+    generated_handle = str(value.get("generated_handle") or "").strip()
+    output_title = str(value.get("output_title") or "").strip()
+    output_format = str(value.get("output_format") or "").strip().lower().lstrip(".")
+    mime_type = str(value.get("mime_type") or "").strip().lower()
+    created_by_tool = str(value.get("created_by_tool") or "").strip()
+    file_size = value.get("file_size")
+    send_to_user = value.get("send_to_user")
+    if (
+        not generated_id.startswith("generated::")
+        or len(generated_id) > 128
+        or not generated_handle
+        or len(generated_handle) > 64
+        or output_title != str(draft.title or "").strip()
+        or output_format != str(draft.output_format or "").strip().lower().lstrip(".")
+        or mime_type != str(draft.mime_type or "").strip().lower()
+        or created_by_tool != capability_id
+        or isinstance(file_size, bool)
+        or not isinstance(file_size, int)
+        or file_size != len(draft.data)
+        or not isinstance(send_to_user, bool)
+        or send_to_user is not draft.send_to_user
+    ):
+        return None
+    return {
+        "generated_id": generated_id,
+        "generated_handle": generated_handle,
+        "output_title": output_title,
+        "output_format": output_format,
+        "mime_type": mime_type,
+        "file_size": file_size,
+        "created_by_tool": created_by_tool,
+        "send_to_user": send_to_user,
+    }
+
+
+def validate_managed_artifact_draft(
+    draft: ManagedArtifactDraft,
+) -> tuple[bytes, str, str, str, str]:
     if not isinstance(draft, ManagedArtifactDraft):
         raise ManagedArtifactError("managed_artifact_draft_required")
     if not isinstance(draft.data, bytes) or not draft.data:
@@ -179,4 +227,6 @@ __all__ = [
     "GeneratedFileManagedArtifactSink",
     "ManagedArtifactError",
     "ManagedArtifactSink",
+    "normalize_managed_artifact_reference",
+    "validate_managed_artifact_draft",
 ]

@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -31,7 +32,11 @@ from .plugin_api import (
     PluginReasoningResult,
 )
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
-from .plugin_host import PluginHost
+from .plugin_generation_artifacts import (
+    GenerationArtifactOutboxSink,
+    consume_generation_artifact,
+    is_generation_artifact_reference,
+)
 from .plugin_generation_codec import (
     PluginGenerationCodecError,
     capability_descriptor_from_wire,
@@ -41,6 +46,12 @@ from .plugin_generation_codec import (
     invocation_context_from_wire,
     invocation_context_to_wire,
     json_snapshot,
+)
+from .plugin_host import PluginHost
+from .plugin_managed_artifacts import (
+    ManagedArtifactError,
+    ManagedArtifactSink,
+    normalize_managed_artifact_reference,
 )
 from .plugin_storage import InstancePluginStorageService
 
@@ -71,6 +82,7 @@ class PluginGenerationProcess:
         python_executable: str = sys.executable,
         start_timeout_seconds: float = PLUGIN_GENERATION_START_TIMEOUT_SECONDS,
         stop_timeout_seconds: float | None = PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
+        managed_artifact_timeout_seconds: float = 5.0,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.site_dir = Path(site_dir).resolve()
@@ -83,15 +95,23 @@ class PluginGenerationProcess:
             if stop_timeout_seconds is None
             else max(0.1, float(stop_timeout_seconds))
         )
+        self.managed_artifact_timeout_seconds = max(
+            0.1,
+            float(managed_artifact_timeout_seconds),
+        )
         self.generation_id = uuid.uuid4().hex
+        self._artifact_outbox_dir = self.work_dir / "outbox" / self.generation_id
         self._process: subprocess.Popen[str] | None = None
         self._ready: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._pending: dict[str, queue.Queue[dict[str, Any] | None]] = {}
         self._pending_lock = threading.Lock()
+        self._active_invocation_condition = threading.Condition()
+        self._active_invocations = 0
         self._reader: threading.Thread | None = None
         self._write_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
+        self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._stopping = False
         self._closed = False
 
@@ -105,6 +125,13 @@ class PluginGenerationProcess:
         """Return the immutable public Capability snapshot published at ready."""
 
         return self._capability_descriptors
+
+    def bind_managed_artifact_sink(self, sink: ManagedArtifactSink) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        if not callable(getattr(sink, "materialize", None)):
+            raise TypeError("invalid_managed_artifact_sink")
+        self._managed_artifact_sink = sink
 
     def start(self) -> dict[str, Any]:
         if self._process is not None:
@@ -127,6 +154,8 @@ class PluginGenerationProcess:
                     str(self.work_dir),
                     "--generation-id",
                     self.generation_id,
+                    "--managed-artifact-timeout",
+                    str(self.managed_artifact_timeout_seconds),
                 ],
                 cwd=str(self.project_root),
                 stdin=subprocess.PIPE,
@@ -188,32 +217,105 @@ class PluginGenerationProcess:
             },
         )
         try:
-            response = await asyncio.to_thread(
-                self._next_response,
-                response_queue,
-                None,
-            )
-        except asyncio.CancelledError:
-            self._discard_pending(request_id, response_queue)
             try:
-                response_queue.put_nowait(None)
-            except queue.Full:
-                pass
-            self._send_cancel(request_id)
-            raise
-        finally:
-            self._discard_pending(request_id, response_queue)
-        self._validate_response(response, expected_type="response")
-        if response.get("request_id") != request_id:
-            raise PluginGenerationError("plugin_generation_protocol_invalid")
-        if not response.get("ok"):
-            raise PluginGenerationError(
-                str(response.get("reason") or "plugin_generation_invoke_failed")
+                response = await asyncio.to_thread(
+                    self._next_response,
+                    response_queue,
+                    None,
+                )
+            except asyncio.CancelledError:
+                self._discard_pending(request_id, response_queue)
+                try:
+                    response_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                self._send_cancel(request_id)
+                raise
+            finally:
+                self._discard_pending(request_id, response_queue)
+            self._validate_response(response, expected_type="response")
+            if response.get("request_id") != request_id:
+                raise PluginGenerationError("plugin_generation_protocol_invalid")
+            if not response.get("ok"):
+                raise PluginGenerationError(
+                    str(response.get("reason") or "plugin_generation_invoke_failed")
+                )
+            try:
+                result = capability_result_from_wire(response.get("result"))
+            except PluginGenerationCodecError as exc:
+                raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
+            return await self._materialize_generation_artifact(
+                result,
+                capability_id=str(capability_id or ""),
+                context=context,
             )
+        finally:
+            self._finish_invocation()
+
+    async def _materialize_generation_artifact(
+        self,
+        result: CapabilityResult,
+        *,
+        capability_id: str,
+        context: InvocationContext,
+    ) -> CapabilityResult:
+        content = result.content
+        if not isinstance(content, Mapping) or "managed_artifacts" not in content:
+            return result
+        references = content.get("managed_artifacts")
+        if (
+            not isinstance(references, list)
+            or len(references) != 1
+            or not is_generation_artifact_reference(references[0])
+        ):
+            return _generation_artifact_failure("managed_artifact_handoff_invalid")
+        reference = references[0]
         try:
-            return capability_result_from_wire(response.get("result"))
-        except PluginGenerationCodecError as exc:
-            raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
+            staged = await asyncio.to_thread(
+                consume_generation_artifact,
+                self._artifact_outbox_dir,
+                reference,
+                capability_id=capability_id,
+            )
+        except ManagedArtifactError as exc:
+            return _generation_artifact_failure(exc.reason)
+        try:
+            if self._managed_artifact_sink is None:
+                return _generation_artifact_failure("managed_artifact_sink_unavailable")
+            try:
+                materialized = await asyncio.wait_for(
+                    self._managed_artifact_sink.materialize(
+                        staged.draft,
+                        context=context,
+                        capability_id=capability_id,
+                    ),
+                    timeout=self.managed_artifact_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                return _generation_artifact_failure("managed_artifact_write_timeout")
+            except ManagedArtifactError as exc:
+                return _generation_artifact_failure(exc.reason)
+            except Exception:
+                return _generation_artifact_failure("managed_artifact_write_failed")
+            normalized = normalize_managed_artifact_reference(
+                materialized,
+                draft=staged.draft,
+                capability_id=capability_id,
+            )
+            if normalized is None or is_generation_artifact_reference(normalized):
+                return _generation_artifact_failure("managed_artifact_invalid_reference")
+            projected_content = dict(content)
+            projected_content["managed_artifacts"] = [normalized]
+            return CapabilityResult(
+                is_error=result.is_error,
+                status=result.status,
+                reason=result.reason,
+                content=projected_content,
+            )
+        finally:
+            await asyncio.to_thread(staged.cleanup)
 
     def stop(self) -> dict[str, Any]:
         with self._stop_lock:
@@ -223,9 +325,20 @@ class PluginGenerationProcess:
             if process is None:
                 self._closed = True
                 return {"ok": True, "status": "stopped", "reason": "not_started"}
+            deadline = (
+                None
+                if self.stop_timeout_seconds is None
+                else time.monotonic() + self.stop_timeout_seconds
+            )
             try:
                 if process.poll() is None:
                     response = self._request("stop", timeout_seconds=self.stop_timeout_seconds)
+                    if response.get("ok") and not self._wait_for_invocations(deadline):
+                        response = {
+                            "ok": False,
+                            "status": "failed",
+                            "reason": "plugin_generation_timeout",
+                        }
                 else:
                     response = {
                         "ok": False,
@@ -288,10 +401,30 @@ class PluginGenerationProcess:
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
                 )
                 process.stdin.flush()
+                if command == "invoke":
+                    with self._active_invocation_condition:
+                        self._active_invocations += 1
             except (BrokenPipeError, OSError) as exc:
                 self._discard_pending(request_id, response_queue)
                 raise PluginGenerationError("plugin_generation_unavailable") from exc
         return request_id, response_queue
+
+    def _finish_invocation(self) -> None:
+        with self._active_invocation_condition:
+            self._active_invocations -= 1
+            self._active_invocation_condition.notify_all()
+
+    def _wait_for_invocations(self, deadline: float | None) -> bool:
+        with self._active_invocation_condition:
+            while self._active_invocations:
+                if deadline is None:
+                    self._active_invocation_condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._active_invocation_condition.wait(timeout=remaining)
+            return True
 
     def _next_response(
         self,
@@ -414,6 +547,7 @@ class PluginGenerationProcess:
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=1.0)
         self._fail_pending(None)
+        shutil.rmtree(self._artifact_outbox_dir, ignore_errors=True)
 
 
 class _GenerationNotificationPort:
@@ -432,18 +566,6 @@ class _GenerationReasoningPort:
             status="unavailable",
             reason="generation_probe",
         )
-
-
-class _GenerationArtifactSink:
-    async def materialize(
-        self,
-        _draft: Any,
-        *,
-        context: Any,
-        capability_id: str,
-    ) -> Mapping[str, Any]:
-        del context, capability_id
-        return {}
 
 
 def _entry_points(site_dir: Path, plugin_id: str) -> tuple[Any, ...]:
@@ -476,6 +598,14 @@ def _decode_capability_snapshot(value: object) -> Mapping[str, CapabilityDescrip
     except PluginGenerationCodecError as exc:
         raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
     return MappingProxyType(descriptors)
+
+
+def _generation_artifact_failure(reason: str) -> CapabilityResult:
+    return CapabilityResult(
+        is_error=True,
+        status="error",
+        reason=str(reason or "managed_artifact_write_failed"),
+    )
 
 
 def _response_base(*, generation_id: str, request_id: str) -> dict[str, Any]:
@@ -597,6 +727,7 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
             (PluginSelection(plugin_id, True),),
             contribution_policy=TrustedStatefulPluginContributionPolicy(),
             entry_points_provider=lambda: entries,
+            managed_artifact_timeout_seconds=float(args.managed_artifact_timeout),
         )
         host.bind_plugin_storage_service(
             InstancePluginStorageService(
@@ -606,7 +737,9 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
         )
         host.bind_notification_port(_GenerationNotificationPort())
         host.bind_reasoning_port(_GenerationReasoningPort())
-        host.bind_managed_artifact_sink(_GenerationArtifactSink())
+        host.bind_managed_artifact_sink(
+            GenerationArtifactOutboxSink(work_dir / "outbox" / generation_id)
+        )
         status = await host.start()
         plugin_status = next(
             (
@@ -771,9 +904,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plugin-id")
     parser.add_argument("--work-dir")
     parser.add_argument("--generation-id")
+    parser.add_argument("--managed-artifact-timeout")
     args = parser.parse_args(argv)
     if not args.worker or not all(
-        (args.site, args.plugin_id, args.work_dir, args.generation_id)
+        (
+            args.site,
+            args.plugin_id,
+            args.work_dir,
+            args.generation_id,
+            args.managed_artifact_timeout,
+        )
     ):
         return 2
     protocol_stream = sys.stdout

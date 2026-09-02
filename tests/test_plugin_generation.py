@@ -8,6 +8,8 @@ from pathlib import Path
 
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, InvocationContext
 
+from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.generated_files import GeneratedFileService
 from companion_v01.plugin_generation import (
     PLUGIN_GENERATION_PROTOCOL,
     PluginGenerationError,
@@ -23,6 +25,8 @@ from companion_v01.plugin_generation_codec import (
     invocation_context_to_wire,
     json_snapshot,
 )
+from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
+from companion_v01.store import MemoryStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -98,10 +102,14 @@ def _write_capability_plugin_site(root: Path) -> Path:
         from companion_v01.plugin_api import (
             AKANE_PLUGIN_API_VERSION,
             CAPABILITY_PROMPT_INVOKE_PERMISSION,
+            MANAGED_ARTIFACT_WRITE_PERMISSION,
+            ManagedArtifactDraft,
+            ManagedArtifactPayload,
             PluginManifest,
         )
 
         CAPABILITY_ID = "test.generation.echo.v1"
+        ARTIFACT_CAPABILITY_ID = "test.generation.artifact.v1"
 
         class Adapter:
             provider_id = "provider.test.generation"
@@ -128,9 +136,50 @@ def _write_capability_plugin_site(root: Path) -> Path:
                         outputs=(),
                         raw={"contract": "generation-echo.v1"},
                     ),
+                    CapabilityDescriptor(
+                        id=ARTIFACT_CAPABILITY_ID,
+                        display_name="Generation artifact",
+                        short_hint="Create one host-managed Markdown artifact.",
+                        visible_in=("diagnostics",),
+                        prompt_exposed=True,
+                        risk="low",
+                        confirm="never",
+                        effects=("filesystem",),
+                        trigger=None,
+                        inputs=(
+                            CapabilityIOSlot(name="size", kind="integer", required=False),
+                        ),
+                        outputs=(
+                            CapabilityIOSlot(
+                                name="report",
+                                kind="file",
+                                required=True,
+                                max_bytes=2 * 1024 * 1024,
+                                delivery="generated_file",
+                            ),
+                        ),
+                        raw={"contract": "generation-artifact.v1"},
+                    ),
                 )
 
             async def invoke(self, capability_id, args, context):
+                if capability_id == ARTIFACT_CAPABILITY_ID:
+                    size = max(1, int(args.get("size", 24)))
+                    return CapabilityResult(
+                        is_error=False,
+                        status="ok",
+                        content=ManagedArtifactPayload(
+                            content={"report": "ready"},
+                            artifact=ManagedArtifactDraft(
+                                data=b"generation-report\\n".ljust(size, b"x"),
+                                title="generation-report",
+                                output_format="md",
+                                mime_type="text/markdown",
+                                summary="A generation handoff test report.",
+                                send_to_user=True,
+                            ),
+                        ),
+                    )
                 await asyncio.sleep(max(0, args.get("delay_ms", 0)) / 1000)
                 return CapabilityResult(
                     is_error=False,
@@ -152,7 +201,10 @@ def _write_capability_plugin_site(root: Path) -> Path:
                 plugin_id="test.generation",
                 plugin_version="0.1.0",
                 plugin_api_version=AKANE_PLUGIN_API_VERSION,
-                permissions=(CAPABILITY_PROMPT_INVOKE_PERMISSION,),
+                permissions=(
+                    CAPABILITY_PROMPT_INVOKE_PERMISSION,
+                    MANAGED_ARTIFACT_WRITE_PERMISSION,
+                ),
             )
 
             def register(self, registrar):
@@ -290,10 +342,13 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 )
                 ready = generation.start()
                 try:
-                    self.assertEqual(len(ready["capabilities"]), 1)
+                    self.assertEqual(len(ready["capabilities"]), 2)
                     self.assertEqual(
                         tuple(generation.capability_descriptors),
-                        ("test.generation.echo.v1",),
+                        (
+                            "test.generation.artifact.v1",
+                            "test.generation.echo.v1",
+                        ),
                     )
                     result = await generation.invoke(
                         "test.generation.echo.v1",
@@ -317,6 +372,170 @@ class PluginGenerationProcessTests(unittest.TestCase):
                     self.assertEqual(missing.reason, "unknown_capability")
                 finally:
                     generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_materializes_artifact_through_host_owned_sink(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                work_dir = root / "work"
+                store = MemoryStore(root / "store")
+                service = GeneratedFileService(
+                    base_dir=root / "outputs",
+                    store=store,
+                    attachment_service=AttachmentInboxService(
+                        store=store,
+                        base_dir=root / "attachments",
+                    ),
+                )
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=work_dir,
+                )
+                generation.bind_managed_artifact_sink(
+                    GeneratedFileManagedArtifactSink(service)
+                )
+                generation.start()
+                try:
+                    result = await generation.invoke(
+                        "test.generation.artifact.v1",
+                        {"size": 1024 * 1024},
+                        context=InvocationContext(
+                            profile_user_id="owner",
+                            session_id="artifact-session",
+                            client_mode="qq_text",
+                        ),
+                    )
+                    self.assertFalse(result.is_error, result.reason)
+                    artifact = result.content["managed_artifacts"][0]
+                    resolved = service.resolve_generated_artifact(
+                        profile_user_id="owner",
+                        session_id="artifact-session",
+                        target=artifact["generated_id"],
+                    )
+
+                    self.assertEqual(result.content["report"], "ready")
+                    self.assertTrue(artifact["generated_id"].startswith("generated::"))
+                    self.assertNotIn("generation-artifact", artifact["generated_id"])
+                    self.assertNotIn("absolute_path", artifact)
+                    self.assertNotIn("storage_relpath", artifact)
+                    self.assertEqual(artifact["file_size"], 1024 * 1024)
+                    self.assertIsNotNone(resolved)
+                    self.assertEqual(
+                        Path(resolved["absolute_path"]).stat().st_size,
+                        1024 * 1024,
+                    )
+                    self.assertEqual(
+                        list((work_dir / "outbox").rglob("*.bin")),
+                        [],
+                    )
+                    self.assertEqual(
+                        list((work_dir / "outbox").rglob("*.json")),
+                        [],
+                    )
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_artifact_requires_bound_host_sink_and_cleans_handoff(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                work_dir = root / "work"
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=work_dir,
+                )
+                generation.start()
+                try:
+                    result = await generation.invoke(
+                        "test.generation.artifact.v1",
+                        {},
+                        context=InvocationContext("owner", "artifact-session", "web"),
+                    )
+                    self.assertTrue(result.is_error)
+                    self.assertEqual(result.reason, "managed_artifact_sink_unavailable")
+                    self.assertEqual(list((work_dir / "outbox").rglob("*.*")), [])
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "plugin_generation_already_started",
+                    ):
+                        generation.bind_managed_artifact_sink(
+                            GeneratedFileManagedArtifactSink(
+                                GeneratedFileService(
+                                    base_dir=root / "outputs",
+                                    store=MemoryStore(root / "late-store"),
+                                    attachment_service=AttachmentInboxService(
+                                        store=MemoryStore(root / "late-attachments-store"),
+                                        base_dir=root / "late-attachments",
+                                    ),
+                                )
+                            )
+                        )
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_stop_drains_parent_artifact_materialization(self) -> None:
+        async def scenario() -> None:
+            class BlockingSink:
+                def __init__(self, delegate: GeneratedFileManagedArtifactSink) -> None:
+                    self.delegate = delegate
+                    self.started = asyncio.Event()
+                    self.release = asyncio.Event()
+
+                async def materialize(self, draft, *, context, capability_id):
+                    self.started.set()
+                    await self.release.wait()
+                    return await self.delegate.materialize(
+                        draft,
+                        context=context,
+                        capability_id=capability_id,
+                    )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                store = MemoryStore(root / "store")
+                service = GeneratedFileService(
+                    base_dir=root / "outputs",
+                    store=store,
+                    attachment_service=AttachmentInboxService(store=store),
+                )
+                sink = BlockingSink(GeneratedFileManagedArtifactSink(service))
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                generation.bind_managed_artifact_sink(sink)
+                generation.start()
+                invocation = asyncio.create_task(
+                    generation.invoke(
+                        "test.generation.artifact.v1",
+                        {},
+                        context=InvocationContext("owner", "drain-artifact", "web"),
+                    )
+                )
+                await sink.started.wait()
+                stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
+                await asyncio.sleep(0.05)
+                self.assertFalse(stop_task.done())
+
+                sink.release.set()
+                result = await invocation
+                stopped = await stop_task
+
+                self.assertFalse(result.is_error, result.reason)
+                self.assertTrue(stopped["ok"])
+                self.assertFalse(generation.running)
 
         asyncio.run(scenario())
 

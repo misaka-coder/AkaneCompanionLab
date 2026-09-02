@@ -63,7 +63,11 @@ from .plugin_events import (
     PluginEventBroker,
     _PluginEventRegistration,
 )
-from .plugin_managed_artifacts import ManagedArtifactError, ManagedArtifactSink
+from .plugin_managed_artifacts import (
+    ManagedArtifactError,
+    ManagedArtifactSink,
+    normalize_managed_artifact_reference,
+)
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
 from .plugin_reasoning import PluginScopedReasoningPort
@@ -1230,9 +1234,9 @@ class PluginHost:
             return _managed_artifact_failure(exc.reason)
         except Exception:
             return _managed_artifact_failure("managed_artifact_write_failed")
-        normalized_artifact_ref = _normalize_managed_artifact_reference(
+        normalized_artifact_ref = normalize_managed_artifact_reference(
             artifact_ref,
-            payload=payload,
+            draft=payload.artifact,
             capability_id=registration.descriptor.id,
         )
         if normalized_artifact_ref is None:
@@ -1777,51 +1781,6 @@ def _project_public_plugin_result(
             content=projected_content,
         )
     )
-
-
-def _normalize_managed_artifact_reference(
-    value: Any,
-    *,
-    payload: ManagedArtifactPayload,
-    capability_id: str,
-) -> dict[str, Any] | None:
-    if not isinstance(value, Mapping):
-        return None
-    generated_id = str(value.get("generated_id") or "").strip()
-    generated_handle = str(value.get("generated_handle") or "").strip()
-    output_title = str(value.get("output_title") or "").strip()
-    output_format = str(value.get("output_format") or "").strip().lower().lstrip(".")
-    mime_type = str(value.get("mime_type") or "").strip().lower()
-    created_by_tool = str(value.get("created_by_tool") or "").strip()
-    file_size = value.get("file_size")
-    send_to_user = value.get("send_to_user")
-    draft = payload.artifact
-    if (
-        not generated_id.startswith("generated::")
-        or len(generated_id) > 128
-        or not generated_handle
-        or len(generated_handle) > 64
-        or output_title != str(draft.title or "").strip()
-        or output_format != str(draft.output_format or "").strip().lower().lstrip(".")
-        or mime_type != str(draft.mime_type or "").strip().lower()
-        or created_by_tool != capability_id
-        or isinstance(file_size, bool)
-        or not isinstance(file_size, int)
-        or file_size != len(draft.data)
-        or not isinstance(send_to_user, bool)
-        or send_to_user is not draft.send_to_user
-    ):
-        return None
-    return {
-        "generated_id": generated_id,
-        "generated_handle": generated_handle,
-        "output_title": output_title,
-        "output_format": output_format,
-        "mime_type": mime_type,
-        "file_size": file_size,
-        "created_by_tool": created_by_tool,
-        "send_to_user": send_to_user,
-    }
 
 
 def _copy_descriptor_snapshot(descriptor: CapabilityDescriptor) -> CapabilityDescriptor:
