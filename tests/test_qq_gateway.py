@@ -714,15 +714,11 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["qq_delivery_context"]["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
         self.assertIn("qq.reply_delivery: auto", payload["extra_context"])
-        self.assertIn("qq.conversation_kind: group", payload["extra_context"])
-        self.assertIn(f"qq.current_actor_id: qq:{QQ_USER_FIXTURE_ID}", payload["extra_context"])
-        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
-        self.assertIn("qq.current_actor_is_master: false", payload["extra_context"])
-        self.assertIn("当前发言者不是主人", payload["extra_context"])
-        self.assertIn("不得假定其与主人是同一人", payload["extra_context"])
+        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
+        self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
         self.assertNotIn(str(QQ_GROUP_FIXTURE_ID), payload["extra_context"])
 
-    def test_group_master_turn_projects_host_verified_master_role(self) -> None:
+    def test_group_master_turn_keeps_original_master_qq_projection(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -739,11 +735,8 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("qq.conversation_kind: group", context.extra_context)
-        self.assertIn(f"qq.current_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", context.extra_context)
-        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", context.extra_context)
-        self.assertIn("qq.current_actor_is_master: true", context.extra_context)
-        self.assertIn("当前发言者就是唯一主人", context.extra_context)
+        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", context.extra_context)
+        self.assertNotIn("qq.current_actor_", context.extra_context)
 
     def test_private_poke_notice_to_bot_becomes_normal_turn_payload(self) -> None:
         gateway = NapCatQQGateway()
@@ -1685,10 +1678,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(next_context.to_turn_payload()["qq_reply_mode"], "voice")
         self.assertEqual(next_context.to_delivery_context()["reply_mode"], "voice")
         self.assertIn("qq.reply_delivery: voice", next_context.extra_context)
-        self.assertIn("qq.conversation_kind: private", next_context.extra_context)
-        self.assertIn(f"qq.current_actor_id: qq:{QQ_USER_FIXTURE_ID}", next_context.extra_context)
-        self.assertIn(f"qq.master_actor_id: qq:{QQ_MASTER_FIXTURE_ID}", next_context.extra_context)
-        self.assertIn("qq.current_actor_is_master: false", next_context.extra_context)
+        self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", next_context.extra_context)
 
     def test_chat_model_command_switches_current_qq_session_for_master(self) -> None:
         gateway = NapCatQQGateway()

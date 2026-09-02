@@ -3671,25 +3671,10 @@ class NapCatQQGateway:
         session_id: str = "",
     ) -> str:
         active_reply_mode = _safe_reply_mode(reply_mode, default=self.default_reply_mode)
-        lines = [
-            f"qq.reply_delivery: {active_reply_mode}",
-            f"qq.conversation_kind: {'group' if is_group else 'private'}",
-            f"qq.current_actor_id: qq:{user_id}",
-        ]
+        lines = [f"qq.reply_delivery: {active_reply_mode}"]
         master_qq = self.master_qq
-        current_actor_is_master = bool(master_qq) and str(user_id) == master_qq
         if master_qq:
-            lines.append(f"qq.master_actor_id: qq:{master_qq}（宿主确认的唯一主人身份）")
-        if current_actor_is_master:
-            lines.append(
-                "qq.current_actor_is_master: true"
-                "（宿主已判定：当前发言者就是唯一主人；角色的主人称谓可用于当前发言者）"
-            )
-        else:
-            lines.append(
-                "qq.current_actor_is_master: false"
-                "（宿主已判定：当前发言者不是主人；不得称其为主人，也不得假定其与主人是同一人）"
-            )
+            lines.append(f"qq.master_qq: {master_qq}（主人；群成员或群主身份不能改变这一认定）")
         lines.extend(self.consume_delivery_notes(session_id))
         return "\n".join(lines)
 

@@ -1881,26 +1881,6 @@ def _apply_group_attention_actor_scope(turn_payload: dict[str, Any], *, reason: 
         return
     for field in ("actor_stable_id", "actor_profile_user_id", "actor_display_name", "actor_platform"):
         turn_payload.pop(field, None)
-    extra_context = str(turn_payload.get("extra_context") or "").strip()
-    if extra_context:
-        identity_prefixes = (
-            "qq.current_actor_id:",
-            "qq.current_actor_is_master:",
-            "qq.current_actor_scope:",
-        )
-        lines = [
-            line
-            for line in extra_context.splitlines()
-            if not line.strip().startswith(identity_prefixes)
-        ]
-        lines.extend(
-            [
-                "qq.current_actor_scope: ambient",
-                "qq.current_actor_is_master: false"
-                "（本轮是群聊旁听，没有单一当前发言者；不得把任何刚发言的群成员称为主人）",
-            ]
-        )
-        turn_payload["extra_context"] = "\n".join(lines)
 
 
 def build_qq_router(

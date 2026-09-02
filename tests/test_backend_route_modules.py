@@ -2040,9 +2040,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(process_calls), 1)
         self.assertEqual(process_calls[0]["message"], "现在工作台还有东西吗")
         self.assertIn("qq.reply_delivery: auto", process_calls[0]["extra_context"])
-        self.assertIn("qq.conversation_kind: private", process_calls[0]["extra_context"])
-        self.assertIn("qq.master_actor_id:", process_calls[0]["extra_context"])
-        self.assertIn("qq.current_actor_is_master: false", process_calls[0]["extra_context"])
+        self.assertIn("qq.master_qq:", process_calls[0]["extra_context"])
         self.assertNotIn("工作台真实状态", process_calls[0]["extra_context"])
         mocked_post.assert_called_once()
 
