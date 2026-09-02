@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import config
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
@@ -318,6 +320,21 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertIn("trace_id", sync_result)
         self.assertIn("_debug", stream_final)
         self.assertIn("_debug", sync_result)
+
+    def test_qq_actor_relation_is_frozen_into_each_current_request(self) -> None:
+        cases = (
+            ("qq:1906243651", "owner"),
+            ("qq:2660153472", "participant"),
+        )
+        for actor_stable_id, expected_relation in cases:
+            with self.subTest(actor_stable_id=actor_stable_id):
+                harness = _Harness([_speech_output("收到。")], client_mode=ClientMode.QQ_TEXT)
+                harness.engine._resolve_turn_actor = lambda _payload, actor=actor_stable_id: (actor, "群成员")
+                with patch.object(config, "MASTER_QQ", "1906243651"):
+                    harness.run_sync(harness.payload(message="戳一戳"))
+
+                projection_state = harness.script.generation_kwargs[0]["request_projection_state"]
+                self.assertEqual(projection_state["current_actor_relation"], expected_relation)
 
     def test_user_steer_is_persisted_and_regenerates_before_stale_final_delivery(self) -> None:
         harness = _Harness([

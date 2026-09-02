@@ -7197,6 +7197,65 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertRegex(str(first["prompt_cache_scope_hash"]), r"^[0-9a-f]{64}$")
         self.assertNotEqual(first["prompt_cache_scope_hash"], second["prompt_cache_scope_hash"])
 
+    def test_qq_actor_relation_decorates_only_the_current_request_tail(self) -> None:
+        current_text = (
+            "time: 2026-09-02 周三 13:04\n"
+            "actor: Cvelomy9. (id=qq:2660153472)\n"
+            "target: assistant\n"
+            "text:\n"
+            "  刚才发生的互动：Cvelomy9.在 QQ 里戳了戳你的头像。"
+        )
+        projection_messages = [
+            {
+                "turn_id": "turn-current",
+                "payload": {"role": "user", "content": current_text},
+                "source_ids": ["current"],
+            }
+        ]
+        manager = _PromptContextMemcoreManager(
+            {},
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": projection_messages,
+                "stable_prefix_hash": "a" * 64,
+                "projection_version": 1,
+                "projection_generation": 1,
+            },
+        )
+        engine = _PromptContextEngine(memcore_manager=manager)
+        qq_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            response_builder.prepare_context(
+                engine,
+                session_id="qq_group:427674145",
+                profile_user_id="qq:1906243651",
+                user_message="刚才发生的互动：Cvelomy9.在 QQ 里戳了戳你的头像。",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1788325497,
+                character_pack_id="reimu",
+                client_context=qq_context,
+                current_user_source_id="current",
+                current_actor_relation="participant",
+            )
+
+        rendered = engine.prompt_builder.calls[0]["current_message_text"]
+        self.assertIn(
+            "actor: Cvelomy9. (id=qq:2660153472)\nactor_relation: participant",
+            rendered,
+        )
+        self.assertIn("戳了戳你的头像", rendered)
+        self.assertNotIn("actor_relation", repr(engine.prompt_builder.calls[0]["history_turns"]))
+        self.assertNotIn("actor_relation", projection_messages[0]["payload"]["content"])
+
     def test_capability_snapshot_is_refreshed_into_the_current_provider_turn(self) -> None:
         class _SnapshotManager(_PromptContextMemcoreManager):
             def __init__(self) -> None:

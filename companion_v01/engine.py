@@ -4322,6 +4322,15 @@ class AkaneMemoryEngine:
             # never freeze the transient event into provider history.
             "record_request_projection": prompt_scope != "qq_attention",
         }
+        from .engine_services.turn_context import resolve_qq_actor_relation
+
+        current_actor_relation = resolve_qq_actor_relation(
+            client_mode=client_context.effective_mode,
+            actor_stable_id=actor_stable_id,
+            master_qq=getattr(config, "MASTER_QQ", ""),
+        )
+        if current_actor_relation:
+            request_projection_state["current_actor_relation"] = current_actor_relation
         final_output = yield from self._generate_round(
             mode=mode,
             session_id=session_id,
@@ -5415,6 +5424,9 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            current_actor_relation=str(
+                (request_projection_state or {}).get("current_actor_relation") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6331,6 +6343,9 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            current_actor_relation=str(
+                (request_projection_state or {}).get("current_actor_relation") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6825,6 +6840,7 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
         prompt_scope: str = "",
         current_user_source_id: str = "",
+        current_actor_relation: str = "",
         mcp_activations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
@@ -6855,6 +6871,7 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
             current_user_source_id=current_user_source_id,
+            current_actor_relation=current_actor_relation,
             mcp_activations=mcp_activations,
         )
 

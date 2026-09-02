@@ -37,6 +37,23 @@ def resolve_turn_actor(payload):
     return stable_id[:160], display_name[:160]
 
 
+def resolve_qq_actor_relation(*, client_mode, actor_stable_id, master_qq):
+    """Derive the current QQ sender's verified relation to the assistant.
+
+    This is a request-local host fact.  It is intentionally separate from the
+    durable message record so MemCore keeps platform identity as its source of
+    truth without accumulating a relation label on every historical message.
+    """
+
+    if str(getattr(client_mode, "value", client_mode) or "").strip().lower() != "qq_text":
+        return ""
+    actor_id = str(actor_stable_id or "").strip()
+    owner_qq = str(master_qq or "").strip()
+    if owner_qq in {"", "0"} or not actor_id.startswith("qq:"):
+        return ""
+    return "owner" if actor_id == f"qq:{owner_qq}" else "participant"
+
+
 def coerce_bool(value):
     if isinstance(value, bool):
         return value

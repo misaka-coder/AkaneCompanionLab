@@ -149,6 +149,24 @@ def with_compact_readback_hint(
     return "\n\n".join(part for part in (base, hint) if part.strip())
 
 
+def with_current_actor_relation(current_message_text: str, *, relation: str) -> str:
+    """Add a verified relation only to the request-local current user tail."""
+
+    text = str(current_message_text or "").strip()
+    normalized_relation = str(relation or "").strip().lower()
+    if normalized_relation not in {"owner", "participant"} or not text:
+        return text
+    lines = text.splitlines()
+    if any(line.strip().startswith("actor_relation:") for line in lines):
+        return text
+    for index, line in enumerate(lines):
+        if line.strip().startswith("actor:"):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines.insert(index + 1, f"{indent}actor_relation: {normalized_relation}")
+            return "\n".join(lines)
+    return f"{text}\nactor_relation: {normalized_relation}"
+
+
 def prepare_context(
     engine: Any,
     *,
@@ -176,6 +194,7 @@ def prepare_context(
     domain_profile_id: str = "",
     prompt_scope: str = "",
     current_user_source_id: str = "",
+    current_actor_relation: str = "",
     mcp_activations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_prompt_scope = str(prompt_scope or "").strip().lower()
@@ -804,7 +823,10 @@ def prepare_context(
             now_ts=now_ts,
             raw_text="" if projection_authoritative else raw_text,
             history_turns=history_turns,
-            current_message_text=current_message_text,
+            current_message_text=with_current_actor_relation(
+                current_message_text,
+                relation=current_actor_relation,
+            ),
             episodic_summary_text="" if projection_authoritative else episodic_summary_text,
             semantic_summary_text="" if projection_authoritative else semantic_summary_text,
             memory_text=memory_text,
