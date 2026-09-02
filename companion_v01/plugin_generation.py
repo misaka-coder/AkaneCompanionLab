@@ -1,9 +1,9 @@
 """Versioned process boundary for one managed PluginHost generation.
 
-This first M67-F slice stays intentionally small: start one candidate, inspect
-its public contribution snapshot, query health, and drain it. Runtime calls
-remain on the in-process PluginHost until each public port has an explicit JSON
-projection. No host objects are pickled across this boundary.
+The protocol exposes lifecycle control and public CapCore invocation values.
+Runtime calls remain on the in-process PluginHost until every port used by a
+plugin has an explicit projection. No host objects are pickled across this
+boundary.
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ import time
 import uuid
 from importlib import metadata as importlib_metadata
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping, TextIO
+
+from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 
 from .instance_profile import PluginSelection
 from .plugin_api import (
@@ -29,12 +32,22 @@ from .plugin_api import (
 )
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_host import PluginHost
+from .plugin_generation_codec import (
+    PluginGenerationCodecError,
+    capability_descriptor_from_wire,
+    capability_descriptor_to_wire,
+    capability_result_from_wire,
+    capability_result_to_wire,
+    invocation_context_from_wire,
+    invocation_context_to_wire,
+    json_snapshot,
+)
 from .plugin_storage import InstancePluginStorageService
 
 
 PLUGIN_GENERATION_PROTOCOL = "akane.plugin-generation.v1"
 PLUGIN_GENERATION_START_TIMEOUT_SECONDS = 45.0
-PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS = 15.0
+PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS: float | None = None
 
 
 class PluginGenerationError(RuntimeError):
@@ -57,7 +70,7 @@ class PluginGenerationProcess:
         work_dir: Path,
         python_executable: str = sys.executable,
         start_timeout_seconds: float = PLUGIN_GENERATION_START_TIMEOUT_SECONDS,
-        stop_timeout_seconds: float = PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
+        stop_timeout_seconds: float | None = PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.site_dir = Path(site_dir).resolve()
@@ -65,18 +78,33 @@ class PluginGenerationProcess:
         self.work_dir = Path(work_dir).resolve()
         self.python_executable = str(python_executable or sys.executable)
         self.start_timeout_seconds = max(0.1, float(start_timeout_seconds))
-        self.stop_timeout_seconds = max(0.1, float(stop_timeout_seconds))
+        self.stop_timeout_seconds = (
+            None
+            if stop_timeout_seconds is None
+            else max(0.1, float(stop_timeout_seconds))
+        )
         self.generation_id = uuid.uuid4().hex
         self._process: subprocess.Popen[str] | None = None
-        self._responses: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._ready: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._pending: dict[str, queue.Queue[dict[str, Any] | None]] = {}
+        self._pending_lock = threading.Lock()
         self._reader: threading.Thread | None = None
-        self._request_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._stop_lock = threading.Lock()
+        self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
+        self._stopping = False
         self._closed = False
 
     @property
     def running(self) -> bool:
         process = self._process
         return bool(process is not None and process.poll() is None and not self._closed)
+
+    @property
+    def capability_descriptors(self) -> Mapping[str, CapabilityDescriptor]:
+        """Return the immutable public Capability snapshot published at ready."""
+
+        return self._capability_descriptors
 
     def start(self) -> dict[str, Any]:
         if self._process is not None:
@@ -119,12 +147,15 @@ class PluginGenerationProcess:
         )
         self._reader.start()
         try:
-            ready = self._next_response(self.start_timeout_seconds)
+            ready = self._next_response(self._ready, self.start_timeout_seconds)
             self._validate_response(ready, expected_type="ready")
             if not ready.get("ok"):
                 raise PluginGenerationError(
                     str(ready.get("reason") or "plugin_generation_start_failed")
                 )
+            self._capability_descriptors = _decode_capability_snapshot(
+                ready.get("capabilities")
+            )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
             return ready
         except Exception:
@@ -134,56 +165,144 @@ class PluginGenerationProcess:
     def health(self) -> dict[str, Any]:
         return self._request("health", timeout_seconds=self.start_timeout_seconds)
 
-    def stop(self) -> dict[str, Any]:
-        if self._closed:
-            return {"ok": True, "status": "stopped", "reason": "already_stopped"}
-        process = self._process
-        if process is None:
-            self._closed = True
-            return {"ok": True, "status": "stopped", "reason": "not_started"}
+    async def invoke(
+        self,
+        capability_id: str,
+        args: Mapping[str, Any],
+        *,
+        context: InvocationContext,
+    ) -> CapabilityResult:
+        """Invoke one public Capability without imposing a generation timeout."""
+
         try:
-            if process.poll() is None:
-                response = self._request("stop", timeout_seconds=self.stop_timeout_seconds)
-            else:
-                response = {
-                    "ok": False,
-                    "status": "failed",
-                    "reason": "plugin_generation_exited",
-                }
-        except PluginGenerationError as exc:
-            response = {"ok": False, "status": "failed", "reason": exc.reason}
+            wire_args = json_snapshot(dict(args))
+            wire_context = invocation_context_to_wire(context)
+        except (TypeError, ValueError, PluginGenerationCodecError) as exc:
+            raise PluginGenerationError("plugin_generation_invocation_invalid") from exc
+        request_id, response_queue = self._send_request(
+            "invoke",
+            {
+                "capability_id": str(capability_id or ""),
+                "args": wire_args,
+                "context": wire_context,
+            },
+        )
+        try:
+            response = await asyncio.to_thread(
+                self._next_response,
+                response_queue,
+                None,
+            )
+        except asyncio.CancelledError:
+            self._discard_pending(request_id, response_queue)
+            try:
+                response_queue.put_nowait(None)
+            except queue.Full:
+                pass
+            self._send_cancel(request_id)
+            raise
         finally:
-            self._terminate()
+            self._discard_pending(request_id, response_queue)
+        self._validate_response(response, expected_type="response")
+        if response.get("request_id") != request_id:
+            raise PluginGenerationError("plugin_generation_protocol_invalid")
+        if not response.get("ok"):
+            raise PluginGenerationError(
+                str(response.get("reason") or "plugin_generation_invoke_failed")
+            )
+        try:
+            return capability_result_from_wire(response.get("result"))
+        except PluginGenerationCodecError as exc:
+            raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
+
+    def stop(self) -> dict[str, Any]:
+        with self._stop_lock:
+            if self._closed:
+                return {"ok": True, "status": "stopped", "reason": "already_stopped"}
+            process = self._process
+            if process is None:
+                self._closed = True
+                return {"ok": True, "status": "stopped", "reason": "not_started"}
+            try:
+                if process.poll() is None:
+                    response = self._request("stop", timeout_seconds=self.stop_timeout_seconds)
+                else:
+                    response = {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "plugin_generation_exited",
+                    }
+            except PluginGenerationError as exc:
+                response = {"ok": False, "status": "failed", "reason": exc.reason}
+            finally:
+                self._terminate()
+            return response
+
+    def _request(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
+        request_id, response_queue = self._send_request(command)
+        try:
+            response = self._next_response(response_queue, timeout_seconds)
+        finally:
+            self._discard_pending(request_id, response_queue)
+        self._validate_response(response, expected_type="response")
+        if response.get("request_id") != request_id:
+            raise PluginGenerationError("plugin_generation_protocol_invalid")
         return response
 
-    def _request(self, command: str, *, timeout_seconds: float) -> dict[str, Any]:
-        with self._request_lock:
+    def _send_request(
+        self,
+        command: str,
+        extra: Mapping[str, Any] | None = None,
+    ) -> tuple[str, queue.Queue[dict[str, Any] | None]]:
+        response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=1)
+        request_id = uuid.uuid4().hex
+        with self._write_lock:
             process = self._process
-            if self._closed or process is None or process.poll() is not None:
+            if (
+                self._closed
+                or (self._stopping and command != "cancel")
+                or process is None
+                or process.poll() is not None
+            ):
                 raise PluginGenerationError("plugin_generation_unavailable")
             if process.stdin is None:
                 raise PluginGenerationError("plugin_generation_unavailable")
-            request_id = uuid.uuid4().hex
+            if command == "stop":
+                self._stopping = True
             payload = {
                 "protocol": PLUGIN_GENERATION_PROTOCOL,
                 "type": "request",
                 "request_id": request_id,
                 "command": command,
+                **dict(extra or {}),
             }
+            with self._pending_lock:
+                self._pending[request_id] = response_queue
             try:
-                process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                process.stdin.write(
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
                 process.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
+                self._discard_pending(request_id, response_queue)
                 raise PluginGenerationError("plugin_generation_unavailable") from exc
-            response = self._next_response(timeout_seconds)
-            self._validate_response(response, expected_type="response")
-            if response.get("request_id") != request_id:
-                raise PluginGenerationError("plugin_generation_protocol_invalid")
-            return response
+        return request_id, response_queue
 
-    def _next_response(self, timeout_seconds: float) -> dict[str, Any]:
+    def _next_response(
+        self,
+        response_queue: queue.Queue[dict[str, Any] | None],
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
         try:
-            response = self._responses.get(timeout=max(0.1, float(timeout_seconds)))
+            if timeout_seconds is None:
+                response = response_queue.get()
+            else:
+                response = response_queue.get(timeout=max(0.1, float(timeout_seconds)))
         except queue.Empty as exc:
             raise PluginGenerationError("plugin_generation_timeout") from exc
         if response is None:
@@ -196,11 +315,54 @@ class PluginGenerationProcess:
                 try:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
-                    self._responses.put({"protocol": "", "type": "invalid"})
+                    self._fail_pending({"protocol": "", "type": "invalid"})
                     continue
-                self._responses.put(dict(payload) if isinstance(payload, Mapping) else {})
+                if not isinstance(payload, Mapping):
+                    self._fail_pending({"protocol": "", "type": "invalid"})
+                    continue
+                response = dict(payload)
+                if response.get("type") == "ready":
+                    self._ready.put(response)
+                    continue
+                request_id = str(response.get("request_id") or "")
+                with self._pending_lock:
+                    response_queue = self._pending.get(request_id)
+                if response_queue is not None:
+                    try:
+                        response_queue.put_nowait(response)
+                    except queue.Full:
+                        pass
         finally:
-            self._responses.put(None)
+            self._ready.put(None)
+            self._fail_pending(None)
+
+    def _discard_pending(
+        self,
+        request_id: str,
+        response_queue: queue.Queue[dict[str, Any] | None],
+    ) -> None:
+        with self._pending_lock:
+            if self._pending.get(request_id) is response_queue:
+                self._pending.pop(request_id, None)
+
+    def _fail_pending(self, response: dict[str, Any] | None) -> None:
+        with self._pending_lock:
+            pending = tuple(self._pending.values())
+        for response_queue in pending:
+            try:
+                response_queue.put_nowait(response)
+            except queue.Full:
+                pass
+
+    def _send_cancel(self, target_request_id: str) -> None:
+        try:
+            cancel_id, cancel_queue = self._send_request(
+                "cancel",
+                {"target_request_id": target_request_id},
+            )
+        except PluginGenerationError:
+            return
+        self._discard_pending(cancel_id, cancel_queue)
 
     def _validate_response(
         self,
@@ -216,17 +378,18 @@ class PluginGenerationProcess:
             raise PluginGenerationError("plugin_generation_protocol_invalid")
 
     def _terminate(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        process = self._process
-        if process is None:
-            return
-        try:
-            if process.stdin is not None:
-                process.stdin.close()
-        except OSError:
-            pass
+        with self._write_lock:
+            if self._closed:
+                return
+            self._closed = True
+            process = self._process
+            if process is None:
+                return
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except OSError:
+                pass
         if process.poll() is None:
             try:
                 process.terminate()
@@ -250,6 +413,7 @@ class PluginGenerationProcess:
         reader = self._reader
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=1.0)
+        self._fail_pending(None)
 
 
 class _GenerationNotificationPort:
@@ -297,6 +461,126 @@ def _entry_points(site_dir: Path, plugin_id: str) -> tuple[Any, ...]:
 def _emit(stream: TextIO, payload: Mapping[str, Any]) -> None:
     stream.write(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n")
     stream.flush()
+
+
+def _decode_capability_snapshot(value: object) -> Mapping[str, CapabilityDescriptor]:
+    if not isinstance(value, list):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    descriptors: dict[str, CapabilityDescriptor] = {}
+    try:
+        for item in value:
+            descriptor = capability_descriptor_from_wire(item)
+            if descriptor.id in descriptors:
+                raise PluginGenerationCodecError("duplicate_capability")
+            descriptors[descriptor.id] = descriptor
+    except PluginGenerationCodecError as exc:
+        raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
+    return MappingProxyType(descriptors)
+
+
+def _response_base(*, generation_id: str, request_id: str) -> dict[str, Any]:
+    return {
+        "protocol": PLUGIN_GENERATION_PROTOCOL,
+        "type": "response",
+        "generation_id": generation_id,
+        "request_id": request_id,
+    }
+
+
+async def _handle_worker_request(
+    host: PluginHost,
+    request: Mapping[str, Any],
+    *,
+    generation_id: str,
+    protocol_stream: TextIO,
+) -> None:
+    request_id = str(request.get("request_id") or "")
+    base = _response_base(generation_id=generation_id, request_id=request_id)
+    command = str(request.get("command") or "")
+    try:
+        if command == "health":
+            snapshot = host.status_snapshot()
+            _emit(
+                protocol_stream,
+                {
+                    **base,
+                    "ok": snapshot.get("status") in {"active", "degraded"},
+                    "status": str(snapshot.get("status") or "unknown"),
+                    "reason": str(snapshot.get("reason") or ""),
+                    "snapshot": snapshot,
+                },
+            )
+            return
+        if command == "invoke":
+            raw_args = request.get("args")
+            if not isinstance(raw_args, Mapping) or any(
+                not isinstance(key, str) for key in raw_args
+            ):
+                raise PluginGenerationCodecError("invocation_args_invalid")
+            context = invocation_context_from_wire(request.get("context"))
+            result = await host.invoke(
+                str(request.get("capability_id") or ""),
+                dict(raw_args),
+                context=context,
+            )
+            _emit(
+                protocol_stream,
+                {
+                    **base,
+                    "ok": True,
+                    "status": str(result.status or ""),
+                    "reason": str(result.reason or ""),
+                    "result": capability_result_to_wire(result),
+                },
+            )
+            return
+        _emit(
+            protocol_stream,
+            {
+                **base,
+                "ok": False,
+                "status": "failed",
+                "reason": "command_invalid",
+            },
+        )
+    except asyncio.CancelledError:
+        _emit(
+            protocol_stream,
+            {
+                **base,
+                "ok": True,
+                "status": "cancelled",
+                "reason": "plugin_invoke_cancelled",
+                "result": capability_result_to_wire(
+                    CapabilityResult(
+                        is_error=True,
+                        status="cancelled",
+                        reason="plugin_invoke_cancelled",
+                    )
+                ),
+            },
+        )
+        raise
+    except PluginGenerationCodecError:
+        _emit(
+            protocol_stream,
+            {
+                **base,
+                "ok": False,
+                "status": "failed",
+                "reason": "invocation_protocol_invalid",
+            },
+        )
+    except Exception:
+        _emit(
+            protocol_stream,
+            {
+                **base,
+                "ok": False,
+                "status": "failed",
+                "reason": "plugin_generation_exception",
+            },
+        )
 
 
 async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
@@ -350,16 +634,25 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
                 "contribution_snapshot": dict(
                     plugin_status.get("contribution_snapshot") or {}
                 ),
+                "capabilities": [
+                    capability_descriptor_to_wire(descriptor)
+                    for _capability_id, descriptor in sorted(
+                        host.capability_descriptors.items()
+                    )
+                ],
             },
         )
         ready_sent = True
         if not ok:
             await host.stop()
             return 1
+        active_requests: dict[str, asyncio.Task[None]] = {}
         while True:
             line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
                 await host.stop()
+                if active_requests:
+                    await asyncio.gather(*active_requests.values(), return_exceptions=True)
                 return 0
             try:
                 request = json.loads(line)
@@ -368,13 +661,12 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
             if not isinstance(request, Mapping):
                 continue
             request_id = str(request.get("request_id") or "")
-            base = {
-                "protocol": PLUGIN_GENERATION_PROTOCOL,
-                "type": "response",
-                "generation_id": generation_id,
-                "request_id": request_id,
-            }
-            if request.get("protocol") != PLUGIN_GENERATION_PROTOCOL:
+            base = _response_base(generation_id=generation_id, request_id=request_id)
+            if (
+                request.get("protocol") != PLUGIN_GENERATION_PROTOCOL
+                or request.get("type") != "request"
+                or not request_id
+            ):
                 _emit(
                     protocol_stream,
                     {
@@ -386,20 +678,28 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
                 )
                 continue
             command = str(request.get("command") or "")
-            if command == "health":
-                snapshot = host.status_snapshot()
+            if command == "cancel":
+                target_request_id = str(request.get("target_request_id") or "")
+                target = active_requests.get(target_request_id)
+                if target is not None and not target.done():
+                    target.cancel()
+                    cancel_status = "cancel_requested"
+                else:
+                    cancel_status = "not_inflight"
                 _emit(
                     protocol_stream,
                     {
                         **base,
-                        "ok": snapshot.get("status") in {"active", "degraded"},
-                        "status": str(snapshot.get("status") or "unknown"),
-                        "reason": str(snapshot.get("reason") or ""),
-                        "snapshot": snapshot,
+                        "ok": True,
+                        "status": cancel_status,
+                        "reason": "",
                     },
                 )
                 continue
             if command == "stop":
+                # Tasks accepted before stop get one scheduling opportunity to
+                # enter PluginHost's inflight accounting before the host drains.
+                await asyncio.sleep(0)
                 snapshot = await host.stop()
                 _emit(
                     protocol_stream,
@@ -411,15 +711,32 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
                         "snapshot": snapshot,
                     },
                 )
+                if active_requests:
+                    await asyncio.gather(*active_requests.values(), return_exceptions=True)
                 return 0
-            _emit(
-                protocol_stream,
-                {
-                    **base,
-                    "ok": False,
-                    "status": "failed",
-                    "reason": "command_invalid",
-                },
+            if request_id in active_requests:
+                _emit(
+                    protocol_stream,
+                    {
+                        **base,
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "duplicate_request_id",
+                    },
+                )
+                continue
+            task = asyncio.create_task(
+                _handle_worker_request(
+                    host,
+                    request,
+                    generation_id=generation_id,
+                    protocol_stream=protocol_stream,
+                ),
+                name=f"plugin-generation-request:{request_id[:8]}",
+            )
+            active_requests[request_id] = task
+            task.add_done_callback(
+                lambda done, rid=request_id: active_requests.pop(rid, None)
             )
     except Exception:
         if not ready_sent:

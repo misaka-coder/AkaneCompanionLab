@@ -85,8 +85,10 @@ M67-F 将把 PluginHost 放入独立代次：候选代次健康检查通过后�
 
 M67-F 的第一步已经把原先一次性结果文件探针收敛成
 `akane.plugin-generation.v1` 版本化进程协议。安装候选与未来运行代次复用同一个
-`PluginGenerationProcess` 启停边界；当前协议只开放 `health/stop`，不会提前把半套工具、
-事件或 Hook 跨进程后伪装成已经完成的热切换。插件普通 stdout/stderr 与协议通道隔离。
+`PluginGenerationProcess` 启停边界。第二步已经开放公开 Capability 描述和调用，支持并发
+请求关联、健康查询、取消传播与已接收调用排空；调用和排空默认没有统一总时长上限。
+事件、Hook、QQ 指令及宿主通知/推理/产物回调仍未切换到该进程，所以当前 Bot 不会把半套
+跨进程端口伪装成已经完成的热切换。插件普通 stdout/stderr 与协议通道隔离。
 
 ## 6. AI 自修改的边界
 
