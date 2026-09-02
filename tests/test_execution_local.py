@@ -86,6 +86,19 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertIn("reason=execution_failed", mapped.model_feedback)
         self.assertNotIn("不等于整个任务失败", mapped.model_feedback)
 
+    @unittest.skipUnless(os.name == "nt", "Windows native exit-code regression")
+    def test_windows_preserves_final_native_program_exit_code(self) -> None:
+        executor = self._executor()
+
+        start = executor.run(
+            owner=self.owner,
+            command=_python_command("import sys; sys.exit(7)"),
+            initial_wait_seconds=5,
+        )
+
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.exit_code, 7)
+
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell default-shell regression")
     def test_windows_default_shell_is_the_disclosed_powershell(self) -> None:
         executor = self._executor()

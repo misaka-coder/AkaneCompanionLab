@@ -866,6 +866,14 @@ class TrustedLocalExecutor(ExecutionProvider):
         preamble = (
             "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
             "$OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+            "$global:LASTEXITCODE=$null; "
+        )
+        epilogue = (
+            "\n$__akaneCommandSucceeded=$?; "
+            "$__akaneNativeExitCode=$global:LASTEXITCODE; "
+            "if (-not $__akaneCommandSucceeded) { "
+            "if ($null -ne $__akaneNativeExitCode) { exit [int]$__akaneNativeExitCode }; "
+            "exit 1 }; exit 0"
         )
         return [
             self.windows_shell_path,
@@ -873,7 +881,7 @@ class TrustedLocalExecutor(ExecutionProvider):
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            f"{preamble}{command}",
+            f"{preamble}{command}{epilogue}",
         ]
 
     @staticmethod

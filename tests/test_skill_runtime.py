@@ -239,7 +239,11 @@ class SkillRuntimeTests(unittest.TestCase):
             mounts=self.registry.mount_paths(),
         )
         owner = ExecutionRunOwner(profile_user_id="master", session_id="session", provider_id="local")
-        command = "rmdir /s /q demo" if os.name == "nt" else "rm -rf -- demo"
+        command = (
+            "Remove-Item -LiteralPath demo -Recurse -Force"
+            if os.name == "nt"
+            else "rm -rf -- demo"
+        )
 
         result = executor.run(
             owner=owner,
