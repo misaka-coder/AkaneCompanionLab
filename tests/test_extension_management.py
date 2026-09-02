@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from capcore import CapabilityResult, InvocationContext
+
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore
@@ -52,7 +54,7 @@ class PluginSelectionStoreTests(unittest.TestCase):
 
     def test_management_has_no_default_total_duration_limit(self) -> None:
         service = ExtensionManagementService(
-            plugin_host=Mock(),
+            plugin_runtime=Mock(),
             selection_store=Mock(),
         )
 
@@ -60,6 +62,28 @@ class PluginSelectionStoreTests(unittest.TestCase):
 
 
 class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_diagnostics_invoke_uses_the_same_runtime_facade(self) -> None:
+        expected = CapabilityResult(is_error=False, content={"value": "ready"})
+        plugin_runtime = SimpleNamespace(invoke=AsyncMock(return_value=expected))
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=Mock(),
+        )
+        context = InvocationContext(client_mode="plugin_admin")
+
+        result = await service.invoke_capability(
+            "akane.test.extension.inspect.v1",
+            {"scope": "active"},
+            context=context,
+        )
+
+        self.assertIs(result, expected)
+        plugin_runtime.invoke.assert_awaited_once_with(
+            "akane.test.extension.inspect.v1",
+            {"scope": "active"},
+            context=context,
+        )
+
     async def test_pending_code_update_requires_process_restart(self) -> None:
         plugin_host = SimpleNamespace(
             selections=(PluginSelection(PLUGIN_ID, True),),
@@ -68,7 +92,7 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         artifact_store = Mock()
         artifact_store.pending_process_restart_plugin_ids.return_value = (PLUGIN_ID,)
         service = ExtensionManagementService(
-            plugin_host=plugin_host,
+            plugin_runtime=plugin_host,
             selection_store=Mock(),
             artifact_store=artifact_store,
         )
@@ -110,7 +134,7 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "restart_required": True,
             }
             service = ExtensionManagementService(
-                plugin_host=plugin_host,
+                plugin_runtime=plugin_host,
                 selection_store=selection_store,
                 artifact_store=artifact_store,
             )

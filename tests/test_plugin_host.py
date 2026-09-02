@@ -689,14 +689,13 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             instance_id="test-instance",
         )
         self.extension_management = ExtensionManagementService(
-            plugin_host=self.host,
+            plugin_runtime=self.host,
             selection_store=self.selection_store,
         )
         self.adapter = self.adapters[0]
         app = FastAPI()
         app.include_router(
             build_plugins_router(
-                plugin_host=self.host,
                 extension_management_service=self.extension_management,
             )
         )
@@ -803,7 +802,7 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             defaults=(PluginSelection(PLUGIN_ID, False),),
             instance_id="test-instance",
         )
-        service = ExtensionManagementService(plugin_host=missing_host, selection_store=store)
+        service = ExtensionManagementService(plugin_runtime=missing_host, selection_store=store)
 
         result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
 

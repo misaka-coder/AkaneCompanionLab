@@ -429,7 +429,7 @@ class BotRuntimeFactory:
                 entry_points_provider=plugin_artifact_store.entry_points,
             )
             extension_management_service = ExtensionManagementService(
-                plugin_host=plugin_host,
+                plugin_runtime=plugin_host,
                 selection_store=plugin_selection_store,
                 artifact_store=plugin_artifact_store,
             )

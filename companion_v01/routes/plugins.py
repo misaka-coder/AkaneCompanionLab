@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..deployment_security import AdminWriteAuth
-from ..plugin_host import PluginHost
+from ..extension_management import ExtensionManagementService
 from ..plugin_result_projection import MAX_PLUGIN_RESPONSE_BYTES, project_capability_result
 
 
@@ -20,8 +20,7 @@ MAX_PLUGIN_REQUEST_BYTES = 16 * 1024
 
 def build_plugins_router(
     *,
-    plugin_host: PluginHost,
-    extension_management_service: Any,
+    extension_management_service: ExtensionManagementService,
     admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -38,7 +37,7 @@ def build_plugins_router(
         return _response(extension_management_service.snapshot())
 
     @router.post("/admin/plugins/restart")
-    async def restart_plugin_host(request: Request) -> JSONResponse:
+    async def restart_plugin_runtime(request: Request) -> JSONResponse:
         """Recreate installed plugin instances using the persisted selection snapshot."""
 
         authorization = management_auth.authorize(request)
@@ -176,7 +175,7 @@ def build_plugins_router(
         if error is not None:
             return _response(error, status_code=400)
 
-        result = await plugin_host.invoke(
+        result = await extension_management_service.invoke_capability(
             capability_id,
             payload,
             context=InvocationContext(client_mode="plugin_admin"),

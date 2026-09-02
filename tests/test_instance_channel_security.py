@@ -296,13 +296,11 @@ class ManagementWriteAuthorizationTests(unittest.TestCase):
         engine.reload_model_services.assert_not_called()
 
     def test_plugin_admin_diagnostics_require_named_instance_token(self) -> None:
-        plugin_host = Mock()
         extension_management = Mock()
         extension_management.snapshot.return_value = {"ok": True, "status": "active"}
         app = FastAPI()
         app.include_router(
             build_plugins_router(
-                plugin_host=plugin_host,
                 extension_management_service=extension_management,
                 admin_auth=self.auth,
             )

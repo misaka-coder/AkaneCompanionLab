@@ -152,7 +152,6 @@ def build_bot_runtime_routers(
             workflow_runner=ComfyUiWorkflowRunner(config_base_dir=layout.users_data_dir),
         ),
         build_plugins_router(
-            plugin_host=runtime.plugin_host,
             extension_management_service=runtime.extension_management_service,
             admin_auth=runtime.admin_write_auth,
         ),
