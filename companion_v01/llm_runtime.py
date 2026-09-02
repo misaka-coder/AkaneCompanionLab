@@ -43,12 +43,11 @@ from .tool_invocation import TOOL_SOURCE_FIELD
 
 logger = logging.getLogger("akane.llm_runtime")
 
-MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-luna"
+DEFAULT_MEMCORE_SUMMARY_MODEL_NAME = "gpt-5.6-luna"
 
-# MemCore summaries are infrastructure work, not user-facing chat.  They use
-# the per-Bot chat credentials (which are known to be live) while keeping a
-# stable, cost-conscious model instead of inheriting a stale AUX/DeepSeek
-# setting.  This is infrastructure summarization, not user-facing chat.
+# MemCore summaries are infrastructure work, not user-facing chat. A complete
+# host-level MEMCORE_SUMMARY_* route takes precedence; the legacy PinAI lookup
+# remains only for deployments that have not configured the dedicated route.
 
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -769,14 +768,34 @@ class LLMRuntime:
         return ModelBundle(client=client, model=settings.chat_model_name)
 
     def _build_memcore_summary_bundle(self) -> ModelBundle:
-        """Build the dedicated PinAI Luna route used by MemCore compaction.
+        """Build the dedicated route used by MemCore compaction.
 
-        A saved model-service profile may move chat to another gateway while
-        retaining an explicit PinAI image key.  That key is still a PinAI
-        credential and is the only implicit fallback we accept for Luna.  We
-        never send ``gpt-5.6-luna`` to an unrelated chat/AUX gateway.
+        Explicit host settings isolate summary credentials from per-Bot model
+        switches. Legacy deployments may still use a PinAI chat/image key for
+        Luna; we never send that model to an unrelated implicit gateway.
         """
         settings = self._settings_view()
+        config_module = getattr(self, "_config_module", config)
+        dedicated_key = str(getattr(config_module, "MEMCORE_SUMMARY_API_KEY", "") or "").strip()
+        dedicated_base = str(getattr(config_module, "MEMCORE_SUMMARY_BASE_URL", "") or "").strip()
+        dedicated_model = str(
+            getattr(config_module, "MEMCORE_SUMMARY_MODEL_NAME", DEFAULT_MEMCORE_SUMMARY_MODEL_NAME)
+            or DEFAULT_MEMCORE_SUMMARY_MODEL_NAME
+        ).strip()
+        dedicated_protocol = str(
+            getattr(config_module, "MEMCORE_SUMMARY_API_PROTOCOL", "auto") or "auto"
+        ).strip()
+        if dedicated_key and dedicated_base and dedicated_model:
+            client = build_llm_client(
+                api_key=dedicated_key,
+                base_url=dedicated_base,
+                protocol=dedicated_protocol,
+                timeout=90.0,
+                max_retries=0,
+            )
+            setattr(client, "_akane_bundle_role", "memcore_summary")
+            return ModelBundle(client=client, model=dedicated_model)
+
         candidates = (
             (settings.chat_api_key, settings.chat_base_url, settings.chat_api_protocol),
             (settings.image_generation_api_key, settings.image_generation_base_url, "openai"),
@@ -792,10 +811,10 @@ class LLMRuntime:
                 max_retries=0,
             )
             setattr(client, "_akane_bundle_role", "memcore_summary")
-            return ModelBundle(client=client, model=MEMCORE_SUMMARY_MODEL_NAME)
+            return ModelBundle(client=client, model=DEFAULT_MEMCORE_SUMMARY_MODEL_NAME)
         # Keep the object shape stable for diagnostics; calls will return the
         # configured fallback rather than silently changing provider.
-        return ModelBundle(client=None, model=MEMCORE_SUMMARY_MODEL_NAME)
+        return ModelBundle(client=None, model=DEFAULT_MEMCORE_SUMMARY_MODEL_NAME)
 
     def _build_vision_bundle(self, *, chat_bundle: ModelBundle | None = None) -> ModelBundle | None:
         settings = self._settings_view()

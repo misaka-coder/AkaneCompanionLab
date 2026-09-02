@@ -326,6 +326,45 @@ class BotSettingsViewTests(unittest.TestCase):
 
 
 class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
+    def test_memcore_summary_prefers_complete_host_dedicated_route(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            chat_api_key="chat-key",
+            chat_base_url="https://api.pinaic.com/v1",
+            chat_api_protocol="responses",
+            image_generation_api_key="image-key",
+            image_generation_base_url="https://api.pinaic.com/v1",
+        )
+        runtime._config_module = SimpleNamespace(
+            MEMCORE_SUMMARY_API_KEY="summary-key",
+            MEMCORE_SUMMARY_BASE_URL="https://tokenrhythm.studio/v1",
+            MEMCORE_SUMMARY_MODEL_NAME="deepseek-v4-pro",
+            MEMCORE_SUMMARY_API_PROTOCOL="openai",
+        )
+        calls: list[dict[str, object]] = []
+
+        def fake_build_llm_client(**kwargs: object) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace()
+
+        with patch("companion_v01.llm_runtime.build_llm_client", side_effect=fake_build_llm_client):
+            bundle = runtime._build_memcore_summary_bundle()
+
+        self.assertEqual(bundle.model, "deepseek-v4-pro")
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "api_key": "summary-key",
+                    "base_url": "https://tokenrhythm.studio/v1",
+                    "protocol": "openai",
+                    "timeout": 90.0,
+                    "max_retries": 0,
+                }
+            ],
+        )
+        self.assertEqual(bundle.client._akane_bundle_role, "memcore_summary")
+
     def test_memcore_json_uses_atomic_aux_bundle(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._bundle_lock = __import__("threading").RLock()

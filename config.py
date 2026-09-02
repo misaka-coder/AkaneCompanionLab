@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     MEMCORE_LLM_TIMEOUT_SECONDS: float = 55.0
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
+    # 可选的宿主级专用摘要路由。完整配置后，所有 Bot 的 MemCore 压缩
+    # 都使用这一独立凭据，不受各 Bot 聊天/生图模型切换影响。
+    MEMCORE_SUMMARY_API_KEY: str = ""
+    MEMCORE_SUMMARY_BASE_URL: str = ""
+    MEMCORE_SUMMARY_MODEL_NAME: str = "gpt-5.6-luna"
+    MEMCORE_SUMMARY_API_PROTOCOL: str = "auto"
     # 工具结果终局紧凑投影策略（部署级开关，不属角色人格能力）：
     #   full_until_raw_compaction = 完整结果直到 raw compaction（默认，零行为差异）
     #   compact_after_terminal    = 终局后长工具结果改为可回读紧凑回执
@@ -682,6 +688,8 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_COMPACTION_WORKERS, \
         MEMCORE_LLM_TIMEOUT_SECONDS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
+    global MEMCORE_SUMMARY_API_KEY, MEMCORE_SUMMARY_BASE_URL
+    global MEMCORE_SUMMARY_MODEL_NAME, MEMCORE_SUMMARY_API_PROTOCOL
     global MEMCORE_OPERATION_PROJECTION_POLICY
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
@@ -984,6 +992,14 @@ def _apply_settings(s: Settings) -> None:
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS = max(
         0.0,
         min(3600.0, float(s.MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS or 0.0)),
+    )
+    MEMCORE_SUMMARY_API_KEY = str(s.MEMCORE_SUMMARY_API_KEY or "").strip()
+    MEMCORE_SUMMARY_BASE_URL = str(s.MEMCORE_SUMMARY_BASE_URL or "").strip()
+    MEMCORE_SUMMARY_MODEL_NAME = (
+        str(s.MEMCORE_SUMMARY_MODEL_NAME or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
+    )
+    MEMCORE_SUMMARY_API_PROTOCOL = (
+        str(s.MEMCORE_SUMMARY_API_PROTOCOL or "auto").strip().lower() or "auto"
     )
     raw_operation_projection_policy = str(
         s.MEMCORE_OPERATION_PROJECTION_POLICY or "full_until_raw_compaction"
