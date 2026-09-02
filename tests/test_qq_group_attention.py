@@ -44,9 +44,26 @@ class QQGroupAttentionStateTests(unittest.TestCase):
         _apply_group_attention_actor_scope(engaged, reason="engaged_followup")
         self.assertEqual(engaged, fields)
 
-        idle = dict(fields)
+        idle = {
+            **fields,
+            "extra_context": (
+                "qq.reply_delivery: auto\n"
+                "qq.conversation_kind: group\n"
+                "qq.current_actor_id: qq:20002\n"
+                "qq.master_actor_id: qq:10001\n"
+                "qq.current_actor_is_master: false（当前发言者不是主人）"
+            ),
+        }
         _apply_group_attention_actor_scope(idle, reason="idle_observation")
-        self.assertEqual(idle, {})
+        self.assertNotIn("actor_stable_id", idle)
+        self.assertNotIn("actor_profile_user_id", idle)
+        self.assertNotIn("actor_display_name", idle)
+        self.assertNotIn("actor_platform", idle)
+        self.assertNotIn("qq.current_actor_id:", idle["extra_context"])
+        self.assertIn("qq.master_actor_id: qq:10001", idle["extra_context"])
+        self.assertIn("qq.current_actor_scope: ambient", idle["extra_context"])
+        self.assertIn("qq.current_actor_is_master: false", idle["extra_context"])
+        self.assertIn("不得把任何刚发言的群成员称为主人", idle["extra_context"])
 
     def test_pending_ticket_has_fixed_deadline(self) -> None:
         now = [100.0]

@@ -2042,7 +2042,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("qq.reply_delivery: auto", process_calls[0]["extra_context"])
         self.assertIn("qq.conversation_kind: private", process_calls[0]["extra_context"])
         self.assertIn("qq.master_actor_id:", process_calls[0]["extra_context"])
-        self.assertIn("qq.current_actor_role: participant", process_calls[0]["extra_context"])
+        self.assertIn("qq.current_actor_is_master: false", process_calls[0]["extra_context"])
         self.assertNotIn("工作台真实状态", process_calls[0]["extra_context"])
         mocked_post.assert_called_once()
 
