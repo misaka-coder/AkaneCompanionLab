@@ -171,6 +171,9 @@ class PluginGenerationProcess:
         self._background_service_ids: tuple[str, ...] = ()
         self._stable_prompt_blocks: tuple[str, ...] = ()
         self._skill_roots: tuple[ContributedSkillRoot, ...] = ()
+        self._plugin_version = ""
+        self._permissions: tuple[str, ...] = ()
+        self._contribution_snapshot: Mapping[str, Any] = MappingProxyType({})
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -214,6 +217,19 @@ class PluginGenerationProcess:
         """Return the exact QQ command tokens published at ready."""
 
         return self._qq_commands
+
+    def public_status_snapshot(self) -> dict[str, Any]:
+        """Return path-free ready metadata without a health request."""
+
+        return {
+            "plugin_id": self.plugin_id,
+            "enabled": True,
+            "status": "active" if self.running else "unavailable",
+            "reason": "" if self.running else "plugin_generation_unavailable",
+            **({"plugin_version": self._plugin_version} if self._plugin_version else {}),
+            **({"permissions": list(self._permissions)} if self._permissions else {}),
+            "contribution_snapshot": json_snapshot(dict(self._contribution_snapshot)),
+        }
 
     def stable_system_prompt_blocks(self) -> tuple[str, ...]:
         """Return the generation's immutable restart-only prompt snapshot."""
@@ -307,6 +323,21 @@ class PluginGenerationProcess:
                 raise PluginGenerationError(
                     str(ready.get("reason") or "plugin_generation_start_failed")
                 )
+            if str(ready.get("plugin_id") or "") != self.plugin_id:
+                raise PluginGenerationError("plugin_generation_protocol_invalid")
+            raw_permissions = ready.get("permissions")
+            contribution_snapshot = ready.get("contribution_snapshot")
+            if (
+                not isinstance(raw_permissions, list)
+                or any(not isinstance(item, str) for item in raw_permissions)
+                or not isinstance(contribution_snapshot, Mapping)
+            ):
+                raise PluginGenerationError("plugin_generation_protocol_invalid")
+            self._plugin_version = str(ready.get("plugin_version") or "")
+            self._permissions = tuple(raw_permissions)
+            self._contribution_snapshot = MappingProxyType(
+                dict(json_snapshot(contribution_snapshot))
+            )
             self._capability_descriptors = _decode_capability_snapshot(
                 ready.get("capabilities")
             )
@@ -325,7 +356,6 @@ class PluginGenerationProcess:
             self._stable_prompt_blocks = _decode_stable_prompt_blocks(
                 ready.get("stable_system_prompt_blocks")
             )
-            contribution_snapshot = ready.get("contribution_snapshot")
             self._skill_roots = decode_generation_skill_roots(
                 ready.get("skill_mounts"),
                 export_dir=self._skill_export_dir,

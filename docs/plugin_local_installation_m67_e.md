@@ -109,8 +109,10 @@ health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插�
 已验证插件 Skill 冻结到代际私有挂载树，协议只发布名称和 opaque alias；父进程通过已知私有根
 二次校验并复用原 `SkillRegistry`，不暴露安装路径，也不改变渐进披露。运行切换前审计发现的
 管理视图已经收敛：状态、选择、启停、重配与诊断调用统一通过 `ExtensionManagementService`
-面向同一个运行时契约，管理路由不再旁路直调 `PluginHost`。active-generation 门面尚未完成，
-因此当前 Bot 仍不做半套切换。进程实现已拆为
+面向同一个运行时契约，管理路由不再旁路直调 `PluginHost`。完整插件集合的原子槽位现已完成：
+候选不完整或冲突时不切换，新请求切到新代后旧代只排空
+已有租约，停止失败也会明确报告。制品解析和事件/Hook/QQ/Bot 组合尚未接回，因此当前 Bot
+仍不做半套切换。进程实现已拆为
 协议帧、父/子回调、worker 与父进程客户端四个职责文件；仍只有同一个
 `akane.plugin-generation.v1` 协议和同一个公开 `PluginGenerationProcess`，不形成兼容双轨。
 

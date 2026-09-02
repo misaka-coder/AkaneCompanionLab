@@ -1142,6 +1142,13 @@ class PluginGenerationProcessTests(unittest.TestCase):
             self.assertEqual(ready["plugin_id"], "test.generation")
             self.assertGreater(ready["startup_ms"], 0)
             self.assertTrue(generation.running)
+            public_status = generation.public_status_snapshot()
+            self.assertEqual(public_status["plugin_id"], "test.generation")
+            self.assertEqual(public_status["status"], "active")
+            self.assertEqual(
+                public_status["contribution_snapshot"],
+                ready["contribution_snapshot"],
+            )
 
             health = generation.health()
             self.assertTrue(health["ok"])
