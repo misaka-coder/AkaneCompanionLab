@@ -15,13 +15,21 @@ from channelcore_onebot import normalize_inbound_event
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.plugin_api import (
+    BEFORE_OUTBOUND_PLAN_HOOK,
+    BEFORE_TOOL_CALL_HOOK,
     NotificationIntent,
     NotificationResult,
     DIRECT_CONVERSATION_EVENT,
+    PluginDeliverySnapshot,
     PluginEventEnvelope,
     PluginExternalEvent,
+    PluginHookEnvelope,
+    PluginOutboundDecoration,
+    PluginOutboundPlanSnapshot,
     PluginReasoningRequest,
     PluginReasoningResult,
+    PluginToolCallSnapshot,
+    PluginToolResultSnapshot,
 )
 from companion_v01.plugin_generation import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -45,12 +53,17 @@ from companion_v01.plugin_generation_codec import (
     plugin_event_dispatch_result_to_wire,
     plugin_event_envelope_from_wire,
     plugin_event_envelope_to_wire,
+    plugin_hook_dispatch_result_from_wire,
+    plugin_hook_dispatch_result_to_wire,
+    plugin_hook_envelope_from_wire,
+    plugin_hook_envelope_to_wire,
     reasoning_request_from_wire,
     reasoning_request_to_wire,
     reasoning_result_from_wire,
     reasoning_result_to_wire,
 )
 from companion_v01.plugin_events import PluginEventDispatchResult
+from companion_v01.plugin_hooks import PluginHookDispatchResult
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from companion_v01.store import MemoryStore
 
@@ -102,6 +115,42 @@ def _generation_event_envelope(
         ),
         material_handles=("material::image-1",),
         payload=parsed.message,
+    )
+
+
+def _generation_hook_envelope(
+    *,
+    hook_type: str = BEFORE_OUTBOUND_PLAN_HOOK,
+    delay_ms: int = 0,
+) -> PluginHookEnvelope:
+    if hook_type == BEFORE_TOOL_CALL_HOOK:
+        payload = PluginToolCallSnapshot(
+            invocation_id="invoke-1",
+            tool_name="web_search",
+            source="native",
+            profile_user_id="user-1",
+            session_id="session-1",
+            character_pack_id="reimu",
+            arguments_json='{"query":"Akane"}',
+        )
+    else:
+        payload = PluginOutboundPlanSnapshot(
+            delivery_id="delivery-1",
+            channel="qq_text",
+            action="send_message",
+            conversation_kind="group",
+            target_id="427674145",
+            segment_types=("text",),
+            text="你好",
+            reply_to_message_id="message-1",
+            text_decoratable=True,
+        )
+    return PluginHookEnvelope(
+        hook_id="hook-1",
+        hook_type=hook_type,
+        occurred_at=int(time.time()),
+        subject=f"delay:{delay_ms}",
+        payload=payload,
     )
 
 
@@ -501,6 +550,70 @@ def _write_notification_job_plugin_site(root: Path) -> Path:
     return site
 
 
+def _write_hook_plugin_site(root: Path) -> Path:
+    site = root / "site"
+    package = site / "generation_hook_fixture"
+    dist_info = site / "generation_hook_fixture-0.1.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        """
+        import asyncio
+
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            BEFORE_OUTBOUND_PLAN_HOOK,
+            BEFORE_TOOL_CALL_HOOK,
+            HOOK_SUBSCRIBE_PERMISSION,
+            PluginHookResult,
+            PluginManifest,
+            PluginOutboundDecoration,
+        )
+
+        class Handler:
+            async def handle_hook(self, hook):
+                if hook.subject.startswith("delay:"):
+                    await asyncio.sleep(int(hook.subject.split(":", 1)[1]) / 1000)
+                decoration = None
+                if hook.hook_type == BEFORE_OUTBOUND_PLAN_HOOK:
+                    decoration = PluginOutboundDecoration(
+                        text_prefix="[fixture] ",
+                        text_suffix=" /ok",
+                    )
+                return PluginHookResult(
+                    diagnostics=("generation-hook-observed",),
+                    outbound_decoration=decoration,
+                )
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.hook",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(HOOK_SUBSCRIBE_PERMISSION,),
+            )
+
+            def register(self, registrar):
+                registrar.add_hook_handler(BEFORE_TOOL_CALL_HOOK, Handler())
+                registrar.add_hook_handler(BEFORE_OUTBOUND_PLAN_HOOK, Handler())
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: generation-hook-fixture\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.hook = generation_hook_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site
+
+
 def _descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id="test.generation.echo.v1",
@@ -585,6 +698,53 @@ class PluginGenerationCodecTests(unittest.TestCase):
             request_agent_turn=True,
             failures=(("test.plugin", "handler_exception"),),
         )
+        hook_payloads = (
+            _generation_hook_envelope(hook_type=BEFORE_TOOL_CALL_HOOK),
+            PluginHookEnvelope(
+                hook_id="hook-result",
+                hook_type="after_tool_call",
+                occurred_at=1_788_278_400,
+                subject="tool:web_search",
+                payload=PluginToolResultSnapshot(
+                    invocation_id="invoke-1",
+                    tool_name="web_search",
+                    status="ok",
+                    duration_ms=12.5,
+                    reason="",
+                    model_feedback="找到 3 条结果",
+                    event_types=("tool.completed",),
+                ),
+            ),
+            _generation_hook_envelope(),
+            PluginHookEnvelope(
+                hook_id="hook-delivery",
+                hook_type="after_delivery",
+                occurred_at=1_788_278_401,
+                subject="delivery:delivery-1",
+                payload=PluginDeliverySnapshot(
+                    delivery_id="delivery-1",
+                    channel="qq_text",
+                    action="send_message",
+                    conversation_kind="group",
+                    target_id="427674145",
+                    segment_types=("text",),
+                    status="delivered",
+                    duration_ms=8.25,
+                    message_id="message-2",
+                ),
+            ),
+        )
+        hook_dispatch_result = PluginHookDispatchResult(
+            ok=True,
+            status="observed",
+            diagnostics=(("test.plugin", "observed"),),
+            outbound_decorations=(
+                (
+                    "test.plugin",
+                    PluginOutboundDecoration(text_prefix="[前]", text_suffix="[后]"),
+                ),
+            ),
+        )
 
         self.assertEqual(
             capability_descriptor_from_wire(capability_descriptor_to_wire(descriptor)),
@@ -627,6 +787,18 @@ class PluginGenerationCodecTests(unittest.TestCase):
                 plugin_event_dispatch_result_to_wire(event_dispatch_result)
             ),
             event_dispatch_result,
+        )
+        for hook in hook_payloads:
+            with self.subTest(hook_type=hook.hook_type):
+                self.assertEqual(
+                    plugin_hook_envelope_from_wire(plugin_hook_envelope_to_wire(hook)),
+                    hook,
+                )
+        self.assertEqual(
+            plugin_hook_dispatch_result_from_wire(
+                plugin_hook_dispatch_result_to_wire(hook_dispatch_result)
+            ),
+            hook_dispatch_result,
         )
 
     def test_non_json_values_are_rejected_without_a_size_policy(self) -> None:
@@ -775,6 +947,95 @@ class PluginGenerationProcessTests(unittest.TestCase):
                         generation.dispatch(
                             _generation_event_envelope(delay_ms=250)
                         )
+                    )
+                    await asyncio.sleep(0.05)
+                    stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(stop_task.done())
+                    delivered = await draining
+                    stopped = await stop_task
+                    self.assertTrue(delivered.ok, delivered.failures)
+                    self.assertTrue(stopped["ok"])
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_dispatches_hooks_with_diagnostics_and_text_decoration(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_hook_plugin_site(root),
+                    plugin_id="test.generation.hook",
+                    work_dir=root / "work",
+                )
+                ready = generation.start()
+                try:
+                    self.assertTrue(ready["ok"])
+                    self.assertEqual(
+                        generation.registered_hook_types,
+                        (BEFORE_OUTBOUND_PLAN_HOOK, BEFORE_TOOL_CALL_HOOK),
+                    )
+                    self.assertTrue(generation.observes(BEFORE_OUTBOUND_PLAN_HOOK))
+
+                    result = await generation.dispatch(_generation_hook_envelope())
+                    self.assertTrue(result.ok, result.failures)
+                    self.assertEqual(
+                        result.diagnostics,
+                        (("test.generation.hook", "generation-hook-observed"),),
+                    )
+                    self.assertEqual(
+                        result.outbound_decorations,
+                        (
+                            (
+                                "test.generation.hook",
+                                PluginOutboundDecoration(
+                                    text_prefix="[fixture] ",
+                                    text_suffix=" /ok",
+                                ),
+                            ),
+                        ),
+                    )
+
+                    sync_result = await asyncio.to_thread(
+                        generation.dispatch_from_consumer,
+                        _generation_hook_envelope(hook_type=BEFORE_TOOL_CALL_HOOK),
+                    )
+                    self.assertTrue(sync_result.ok, sync_result.failures)
+                    self.assertEqual(sync_result.outbound_decorations, ())
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_generation_hook_dispatch_cancels_without_poisoning_the_generation(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_hook_plugin_site(root),
+                    plugin_id="test.generation.hook",
+                    work_dir=root / "work",
+                )
+                generation.start()
+                try:
+                    pending = asyncio.create_task(
+                        generation.dispatch(_generation_hook_envelope(delay_ms=1_000))
+                    )
+                    await asyncio.sleep(0.05)
+                    pending.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await pending
+
+                    healthy = await generation.dispatch(_generation_hook_envelope())
+                    self.assertTrue(healthy.ok, healthy.failures)
+                    self.assertTrue(generation.health()["ok"])
+
+                    draining = asyncio.create_task(
+                        generation.dispatch(_generation_hook_envelope(delay_ms=250))
                     )
                     await asyncio.sleep(0.05)
                     stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))

@@ -7,6 +7,7 @@ not pickle adapters, plugin objects, paths, or host internals.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Mapping
 
 from capcore import (
@@ -22,10 +23,17 @@ from .plugin_api import (
     NotificationResult,
     PluginEventEnvelope,
     PluginExternalEvent,
+    PluginDeliverySnapshot,
+    PluginHookEnvelope,
+    PluginOutboundDecoration,
+    PluginOutboundPlanSnapshot,
     PluginReasoningRequest,
     PluginReasoningResult,
+    PluginToolCallSnapshot,
+    PluginToolResultSnapshot,
 )
 from .plugin_events import PluginEventDispatchResult
+from .plugin_hooks import PluginHookDispatchResult
 from .plugin_generation_event_payload import (
     PluginGenerationEventPayloadError,
     event_payload_from_wire,
@@ -450,6 +458,213 @@ def plugin_event_dispatch_result_from_wire(
     )
 
 
+def plugin_hook_envelope_to_wire(hook: PluginHookEnvelope) -> dict[str, Any]:
+    if not isinstance(hook, PluginHookEnvelope):
+        raise PluginGenerationCodecError("plugin_hook_envelope_required")
+    if not isinstance(hook.occurred_at, int) or isinstance(hook.occurred_at, bool):
+        raise PluginGenerationCodecError("plugin_hook_envelope_invalid")
+    payload = hook.payload
+    if isinstance(payload, PluginToolCallSnapshot):
+        payload_type = "tool_call"
+        payload_wire = {
+            "invocation_id": _string(payload.invocation_id, "plugin_hook_payload_invalid"),
+            "tool_name": _string(payload.tool_name, "plugin_hook_payload_invalid"),
+            "source": _string(payload.source, "plugin_hook_payload_invalid"),
+            "profile_user_id": _string(payload.profile_user_id, "plugin_hook_payload_invalid"),
+            "session_id": _string(payload.session_id, "plugin_hook_payload_invalid"),
+            "character_pack_id": _string(payload.character_pack_id, "plugin_hook_payload_invalid"),
+            "arguments_json": _string(payload.arguments_json, "plugin_hook_payload_invalid"),
+        }
+    elif isinstance(payload, PluginToolResultSnapshot):
+        payload_type = "tool_result"
+        payload_wire = {
+            "invocation_id": _string(payload.invocation_id, "plugin_hook_payload_invalid"),
+            "tool_name": _string(payload.tool_name, "plugin_hook_payload_invalid"),
+            "status": _string(payload.status, "plugin_hook_payload_invalid"),
+            "duration_ms": _number(payload.duration_ms, "plugin_hook_payload_invalid"),
+            "reason": _string(payload.reason, "plugin_hook_payload_invalid"),
+            "model_feedback": _string(payload.model_feedback, "plugin_hook_payload_invalid"),
+            "event_types": list(
+                _string_tuple_value(payload.event_types, "plugin_hook_payload_invalid")
+            ),
+        }
+    elif isinstance(payload, PluginOutboundPlanSnapshot):
+        payload_type = "outbound_plan"
+        payload_wire = {
+            "delivery_id": _string(payload.delivery_id, "plugin_hook_payload_invalid"),
+            "channel": _string(payload.channel, "plugin_hook_payload_invalid"),
+            "action": _string(payload.action, "plugin_hook_payload_invalid"),
+            "conversation_kind": _string(payload.conversation_kind, "plugin_hook_payload_invalid"),
+            "target_id": _string(payload.target_id, "plugin_hook_payload_invalid"),
+            "segment_types": list(
+                _string_tuple_value(payload.segment_types, "plugin_hook_payload_invalid")
+            ),
+            "text": _string(payload.text, "plugin_hook_payload_invalid"),
+            "reply_to_message_id": _string(
+                payload.reply_to_message_id,
+                "plugin_hook_payload_invalid",
+            ),
+            "text_decoratable": _boolean_value(
+                payload.text_decoratable,
+                "plugin_hook_payload_invalid",
+            ),
+        }
+    elif isinstance(payload, PluginDeliverySnapshot):
+        payload_type = "delivery"
+        payload_wire = {
+            "delivery_id": _string(payload.delivery_id, "plugin_hook_payload_invalid"),
+            "channel": _string(payload.channel, "plugin_hook_payload_invalid"),
+            "action": _string(payload.action, "plugin_hook_payload_invalid"),
+            "conversation_kind": _string(payload.conversation_kind, "plugin_hook_payload_invalid"),
+            "target_id": _string(payload.target_id, "plugin_hook_payload_invalid"),
+            "segment_types": list(
+                _string_tuple_value(payload.segment_types, "plugin_hook_payload_invalid")
+            ),
+            "status": _string(payload.status, "plugin_hook_payload_invalid"),
+            "duration_ms": _number(payload.duration_ms, "plugin_hook_payload_invalid"),
+            "reason": _string(payload.reason, "plugin_hook_payload_invalid"),
+            "message_id": _string(payload.message_id, "plugin_hook_payload_invalid"),
+        }
+    else:
+        raise PluginGenerationCodecError("plugin_hook_payload_invalid")
+    return _json_snapshot(
+        {
+            "hook_id": _string(hook.hook_id, "plugin_hook_envelope_invalid"),
+            "hook_type": _string(hook.hook_type, "plugin_hook_envelope_invalid"),
+            "occurred_at": hook.occurred_at,
+            "subject": _string(hook.subject, "plugin_hook_envelope_invalid"),
+            "payload_type": payload_type,
+            "payload": payload_wire,
+        }
+    )
+
+
+def plugin_hook_envelope_from_wire(value: object) -> PluginHookEnvelope:
+    record = _mapping(value, "plugin_hook_envelope_invalid")
+    occurred_at = record.get("occurred_at")
+    if not isinstance(occurred_at, int) or isinstance(occurred_at, bool):
+        raise PluginGenerationCodecError("plugin_hook_envelope_invalid")
+    payload_type = _string(record.get("payload_type"), "plugin_hook_envelope_invalid")
+    payload_record = _mapping(record.get("payload"), "plugin_hook_payload_invalid")
+    if payload_type == "tool_call":
+        payload = PluginToolCallSnapshot(
+            invocation_id=_string(payload_record.get("invocation_id"), "plugin_hook_payload_invalid"),
+            tool_name=_string(payload_record.get("tool_name"), "plugin_hook_payload_invalid"),
+            source=_string(payload_record.get("source"), "plugin_hook_payload_invalid"),
+            profile_user_id=_string(payload_record.get("profile_user_id"), "plugin_hook_payload_invalid"),
+            session_id=_string(payload_record.get("session_id"), "plugin_hook_payload_invalid"),
+            character_pack_id=_string(payload_record.get("character_pack_id"), "plugin_hook_payload_invalid"),
+            arguments_json=_string(payload_record.get("arguments_json"), "plugin_hook_payload_invalid"),
+        )
+    elif payload_type == "tool_result":
+        payload = PluginToolResultSnapshot(
+            invocation_id=_string(payload_record.get("invocation_id"), "plugin_hook_payload_invalid"),
+            tool_name=_string(payload_record.get("tool_name"), "plugin_hook_payload_invalid"),
+            status=_string(payload_record.get("status"), "plugin_hook_payload_invalid"),
+            duration_ms=_number(payload_record.get("duration_ms"), "plugin_hook_payload_invalid"),
+            reason=_string(payload_record.get("reason"), "plugin_hook_payload_invalid"),
+            model_feedback=_string(payload_record.get("model_feedback"), "plugin_hook_payload_invalid"),
+            event_types=_string_tuple_from_wire(payload_record.get("event_types"), "plugin_hook_payload_invalid"),
+        )
+    elif payload_type == "outbound_plan":
+        text_decoratable = payload_record.get("text_decoratable")
+        if not isinstance(text_decoratable, bool):
+            raise PluginGenerationCodecError("plugin_hook_payload_invalid")
+        payload = PluginOutboundPlanSnapshot(
+            delivery_id=_string(payload_record.get("delivery_id"), "plugin_hook_payload_invalid"),
+            channel=_string(payload_record.get("channel"), "plugin_hook_payload_invalid"),
+            action=_string(payload_record.get("action"), "plugin_hook_payload_invalid"),
+            conversation_kind=_string(payload_record.get("conversation_kind"), "plugin_hook_payload_invalid"),
+            target_id=_string(payload_record.get("target_id"), "plugin_hook_payload_invalid"),
+            segment_types=_string_tuple_from_wire(payload_record.get("segment_types"), "plugin_hook_payload_invalid"),
+            text=_string(payload_record.get("text"), "plugin_hook_payload_invalid"),
+            reply_to_message_id=_string(payload_record.get("reply_to_message_id"), "plugin_hook_payload_invalid"),
+            text_decoratable=text_decoratable,
+        )
+    elif payload_type == "delivery":
+        payload = PluginDeliverySnapshot(
+            delivery_id=_string(payload_record.get("delivery_id"), "plugin_hook_payload_invalid"),
+            channel=_string(payload_record.get("channel"), "plugin_hook_payload_invalid"),
+            action=_string(payload_record.get("action"), "plugin_hook_payload_invalid"),
+            conversation_kind=_string(payload_record.get("conversation_kind"), "plugin_hook_payload_invalid"),
+            target_id=_string(payload_record.get("target_id"), "plugin_hook_payload_invalid"),
+            segment_types=_string_tuple_from_wire(payload_record.get("segment_types"), "plugin_hook_payload_invalid"),
+            status=_string(payload_record.get("status"), "plugin_hook_payload_invalid"),
+            duration_ms=_number(payload_record.get("duration_ms"), "plugin_hook_payload_invalid"),
+            reason=_string(payload_record.get("reason"), "plugin_hook_payload_invalid"),
+            message_id=_string(payload_record.get("message_id"), "plugin_hook_payload_invalid"),
+        )
+    else:
+        raise PluginGenerationCodecError("plugin_hook_payload_invalid")
+    return PluginHookEnvelope(
+        hook_id=_string(record.get("hook_id"), "plugin_hook_envelope_invalid"),
+        hook_type=_string(record.get("hook_type"), "plugin_hook_envelope_invalid"),
+        occurred_at=occurred_at,
+        subject=_string(record.get("subject"), "plugin_hook_envelope_invalid"),
+        payload=payload,
+    )
+
+
+def plugin_hook_dispatch_result_to_wire(result: PluginHookDispatchResult) -> dict[str, Any]:
+    if not isinstance(result, PluginHookDispatchResult) or not isinstance(result.ok, bool):
+        raise PluginGenerationCodecError("plugin_hook_result_invalid")
+    if not isinstance(result.outbound_decorations, tuple):
+        raise PluginGenerationCodecError("plugin_hook_result_invalid")
+    decorations: list[list[Any]] = []
+    for plugin_id, decoration in result.outbound_decorations:
+        if not isinstance(decoration, PluginOutboundDecoration):
+            raise PluginGenerationCodecError("plugin_hook_result_invalid")
+        decorations.append(
+            [
+                _string(plugin_id, "plugin_hook_result_invalid"),
+                {
+                    "text_prefix": _string(decoration.text_prefix, "plugin_hook_result_invalid"),
+                    "text_suffix": _string(decoration.text_suffix, "plugin_hook_result_invalid"),
+                },
+            ]
+        )
+    return _json_snapshot(
+        {
+            "ok": result.ok,
+            "status": _string(result.status, "plugin_hook_result_invalid"),
+            "diagnostics": _string_pairs_to_wire(result.diagnostics, "plugin_hook_result_invalid"),
+            "failures": _string_pairs_to_wire(result.failures, "plugin_hook_result_invalid"),
+            "outbound_decorations": decorations,
+        }
+    )
+
+
+def plugin_hook_dispatch_result_from_wire(value: object) -> PluginHookDispatchResult:
+    record = _mapping(value, "plugin_hook_result_invalid")
+    ok = record.get("ok")
+    if not isinstance(ok, bool):
+        raise PluginGenerationCodecError("plugin_hook_result_invalid")
+    raw_decorations = record.get("outbound_decorations")
+    if not isinstance(raw_decorations, list):
+        raise PluginGenerationCodecError("plugin_hook_result_invalid")
+    decorations: list[tuple[str, PluginOutboundDecoration]] = []
+    for item in raw_decorations:
+        if not isinstance(item, list) or len(item) != 2:
+            raise PluginGenerationCodecError("plugin_hook_result_invalid")
+        decoration = _mapping(item[1], "plugin_hook_result_invalid")
+        decorations.append(
+            (
+                _string(item[0], "plugin_hook_result_invalid"),
+                PluginOutboundDecoration(
+                    text_prefix=_string(decoration.get("text_prefix"), "plugin_hook_result_invalid"),
+                    text_suffix=_string(decoration.get("text_suffix"), "plugin_hook_result_invalid"),
+                ),
+            )
+        )
+    return PluginHookDispatchResult(
+        ok=ok,
+        status=_string(record.get("status"), "plugin_hook_result_invalid"),
+        diagnostics=_string_pairs_from_wire(record.get("diagnostics"), "plugin_hook_result_invalid"),
+        failures=_string_pairs_from_wire(record.get("failures"), "plugin_hook_result_invalid"),
+        outbound_decorations=tuple(decorations),
+    )
+
+
 def json_snapshot(value: Any) -> Any:
     """Return an independent JSON value without imposing a size policy."""
 
@@ -552,6 +767,21 @@ def _string(value: object, reason: str) -> str:
     return value
 
 
+def _number(value: object, reason: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise PluginGenerationCodecError(reason)
+    number = float(value)
+    if not math.isfinite(number):
+        raise PluginGenerationCodecError(reason)
+    return number
+
+
+def _boolean_value(value: object, reason: str) -> bool:
+    if not isinstance(value, bool):
+        raise PluginGenerationCodecError(reason)
+    return value
+
+
 def _required_string(value: object, reason: str) -> str:
     text = _string(value, reason).strip()
     if not text:
@@ -641,6 +871,10 @@ __all__ = [
     "plugin_event_dispatch_result_to_wire",
     "plugin_event_envelope_from_wire",
     "plugin_event_envelope_to_wire",
+    "plugin_hook_dispatch_result_from_wire",
+    "plugin_hook_dispatch_result_to_wire",
+    "plugin_hook_envelope_from_wire",
+    "plugin_hook_envelope_to_wire",
     "reasoning_request_from_wire",
     "reasoning_request_to_wire",
     "reasoning_result_from_wire",

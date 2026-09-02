@@ -24,8 +24,9 @@ from typing import Any, Mapping, TextIO
 
 from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 
-from .plugin_api import PluginEventEnvelope
+from .plugin_api import PluginEventEnvelope, PluginHookEnvelope
 from .plugin_events import PluginEventDispatchResult
+from .plugin_hooks import PluginHookDispatchResult
 from .plugin_generation_artifacts import (
     consume_generation_artifact,
     is_generation_artifact_reference,
@@ -39,6 +40,8 @@ from .plugin_generation_codec import (
     json_snapshot,
     plugin_event_dispatch_result_from_wire,
     plugin_event_envelope_to_wire,
+    plugin_hook_dispatch_result_from_wire,
+    plugin_hook_envelope_to_wire,
 )
 from .plugin_generation_protocol import (
     PLUGIN_GENERATION_PROTOCOL,
@@ -103,6 +106,7 @@ class PluginGenerationProcess:
         self._stop_lock = threading.Lock()
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
         self._event_types: tuple[str, ...] = ()
+        self._hook_types: tuple[str, ...] = ()
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
             generation_id=self.generation_id,
@@ -129,8 +133,15 @@ class PluginGenerationProcess:
 
         return self._event_types
 
+    @property
+    def registered_hook_types(self) -> tuple[str, ...]:
+        """Return the exact lifecycle Hook subscriptions published at ready."""
+
+        return self._hook_types
+
     def observes(self, event_type: str) -> bool:
-        return str(event_type or "").strip().lower() in self._event_types
+        normalized = str(event_type or "").strip().lower()
+        return normalized in self._event_types or normalized in self._hook_types
 
     def bind_managed_artifact_sink(self, sink: ManagedArtifactSink) -> None:
         if self._process is not None:
@@ -204,6 +215,9 @@ class PluginGenerationProcess:
             self._event_types = _decode_event_types(
                 ready.get("contribution_snapshot")
             )
+            self._hook_types = _decode_hook_types(
+                ready.get("contribution_snapshot")
+            )
             ready["startup_ms"] = round((time.perf_counter() - started_at) * 1000.0, 3)
             return ready
         except Exception:
@@ -213,8 +227,14 @@ class PluginGenerationProcess:
     def health(self) -> dict[str, Any]:
         return self._request("health", timeout_seconds=self.start_timeout_seconds)
 
-    async def dispatch(self, event: PluginEventEnvelope) -> PluginEventDispatchResult:
-        """Dispatch one event without letting plugin failure block its source path."""
+    async def dispatch(
+        self,
+        event: PluginEventEnvelope | PluginHookEnvelope,
+    ) -> PluginEventDispatchResult | PluginHookDispatchResult:
+        """Dispatch one public event or Hook through the active generation."""
+
+        if isinstance(event, PluginHookEnvelope):
+            return await self._dispatch_hook(event)
 
         try:
             wire_event = plugin_event_envelope_to_wire(event)
@@ -267,6 +287,99 @@ class PluginGenerationProcess:
                 )
         except PluginGenerationError as exc:
             return _generation_event_failure("host_unavailable", exc.reason)
+        finally:
+            self._finish_invocation()
+
+    async def _dispatch_hook(self, hook: PluginHookEnvelope) -> PluginHookDispatchResult:
+        try:
+            wire_hook = plugin_hook_envelope_to_wire(hook)
+        except PluginGenerationCodecError as exc:
+            return _generation_hook_failure("invalid_hook", exc.args[0])
+        try:
+            request_id, response_queue = self._send_request(
+                "hook.dispatch",
+                {"hook": wire_hook},
+            )
+        except PluginGenerationError as exc:
+            return _generation_hook_failure("host_unavailable", exc.reason)
+        try:
+            try:
+                response = await asyncio.to_thread(
+                    self._next_response,
+                    response_queue,
+                    None,
+                )
+            except asyncio.CancelledError:
+                self._discard_pending(request_id, response_queue)
+                try:
+                    response_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                self._send_cancel(request_id)
+                raise
+            finally:
+                self._discard_pending(request_id, response_queue)
+            try:
+                self._validate_response(response, expected_type="response")
+            except PluginGenerationError as exc:
+                return _generation_hook_failure("host_unavailable", exc.reason)
+            if response.get("request_id") != request_id:
+                return _generation_hook_failure(
+                    "host_unavailable",
+                    "plugin_generation_protocol_invalid",
+                )
+            if not response.get("ok"):
+                return _generation_hook_failure(
+                    "host_unavailable",
+                    str(response.get("reason") or "plugin_hook_dispatch_failed"),
+                )
+            try:
+                return plugin_hook_dispatch_result_from_wire(response.get("result"))
+            except PluginGenerationCodecError:
+                return _generation_hook_failure(
+                    "host_unavailable",
+                    "plugin_generation_protocol_invalid",
+                )
+        except PluginGenerationError as exc:
+            return _generation_hook_failure("host_unavailable", exc.reason)
+        finally:
+            self._finish_invocation()
+
+    def dispatch_from_consumer(self, hook: PluginHookEnvelope) -> PluginHookDispatchResult:
+        """Synchronous Hook boundary used by Engine and outbound workers."""
+
+        if not isinstance(hook, PluginHookEnvelope):
+            return _generation_hook_failure("invalid_hook", "invalid_hook")
+        try:
+            wire_hook = plugin_hook_envelope_to_wire(hook)
+            request_id, response_queue = self._send_request(
+                "hook.dispatch",
+                {"hook": wire_hook},
+            )
+        except PluginGenerationCodecError as exc:
+            return _generation_hook_failure("invalid_hook", exc.args[0])
+        except PluginGenerationError as exc:
+            return _generation_hook_failure("host_unavailable", exc.reason)
+        try:
+            try:
+                response = self._next_response(response_queue, None)
+            finally:
+                self._discard_pending(request_id, response_queue)
+            self._validate_response(response, expected_type="response")
+            if response.get("request_id") != request_id or not response.get("ok"):
+                return _generation_hook_failure(
+                    "host_unavailable",
+                    str(response.get("reason") or "plugin_generation_protocol_invalid"),
+                )
+            try:
+                return plugin_hook_dispatch_result_from_wire(response.get("result"))
+            except PluginGenerationCodecError:
+                return _generation_hook_failure(
+                    "host_unavailable",
+                    "plugin_generation_protocol_invalid",
+                )
+        except PluginGenerationError as exc:
+            return _generation_hook_failure("host_unavailable", exc.reason)
         finally:
             self._finish_invocation()
 
@@ -477,7 +590,7 @@ class PluginGenerationProcess:
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
                 )
                 process.stdin.flush()
-                if command in {"invoke", "event.dispatch"}:
+                if command in {"invoke", "event.dispatch", "hook.dispatch"}:
                     with self._active_invocation_condition:
                         self._active_invocations += 1
             except (BrokenPipeError, OSError) as exc:
@@ -678,9 +791,29 @@ def _decode_event_types(value: object) -> tuple[str, ...]:
     return tuple(sorted(set(raw_event_types)))
 
 
+def _decode_hook_types(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    raw_hook_types = value.get("hooks", [])
+    if not isinstance(raw_hook_types, list) or any(
+        not isinstance(item, str) for item in raw_hook_types
+    ):
+        raise PluginGenerationError("plugin_generation_protocol_invalid")
+    return tuple(sorted(set(raw_hook_types)))
+
+
 def _generation_event_failure(status: str, reason: object) -> PluginEventDispatchResult:
     safe_reason = str(reason or "plugin_event_dispatch_failed")
     return PluginEventDispatchResult(
+        ok=False,
+        status=str(status or "host_unavailable"),
+        failures=(("host", safe_reason),),
+    )
+
+
+def _generation_hook_failure(status: str, reason: object) -> PluginHookDispatchResult:
+    safe_reason = str(reason or "plugin_hook_dispatch_failed")
+    return PluginHookDispatchResult(
         ok=False,
         status=str(status or "host_unavailable"),
         failures=(("host", safe_reason),),
