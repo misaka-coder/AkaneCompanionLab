@@ -28,6 +28,7 @@ from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext
 from .instance_profile import PluginSelection
 from .plugin_api import (
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
+    NotificationIntent,
     NotificationResult,
     PluginReasoningResult,
 )
@@ -46,6 +47,10 @@ from .plugin_generation_codec import (
     invocation_context_from_wire,
     invocation_context_to_wire,
     json_snapshot,
+    notification_intent_from_wire,
+    notification_intent_to_wire,
+    notification_result_from_wire,
+    notification_result_to_wire,
 )
 from .plugin_host import PluginHost
 from .plugin_managed_artifacts import (
@@ -112,6 +117,13 @@ class PluginGenerationProcess:
         self._stop_lock = threading.Lock()
         self._capability_descriptors: Mapping[str, CapabilityDescriptor] = MappingProxyType({})
         self._managed_artifact_sink: ManagedArtifactSink | None = None
+        self._notification_port: Any = None
+        self._notification_loop: asyncio.AbstractEventLoop | None = None
+        self._callback_loop: asyncio.AbstractEventLoop | None = None
+        self._callback_thread: threading.Thread | None = None
+        self._callback_loop_ready = threading.Event()
+        self._callback_lock = threading.Lock()
+        self._callback_futures: dict[str, Any] = {}
         self._stopping = False
         self._closed = False
 
@@ -132,6 +144,17 @@ class PluginGenerationProcess:
         if not callable(getattr(sink, "materialize", None)):
             raise TypeError("invalid_managed_artifact_sink")
         self._managed_artifact_sink = sink
+
+    def bind_notification_port(self, port: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        if not callable(getattr(port, "send", None)):
+            raise TypeError("invalid_notification_port")
+        self._notification_port = port
+        try:
+            self._notification_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._notification_loop = None
 
     def start(self) -> dict[str, Any]:
         if self._process is not None:
@@ -454,6 +477,12 @@ class PluginGenerationProcess:
                     self._fail_pending({"protocol": "", "type": "invalid"})
                     continue
                 response = dict(payload)
+                if response.get("type") == "callback_request":
+                    self._dispatch_host_callback(response)
+                    continue
+                if response.get("type") == "callback_cancel":
+                    self._cancel_host_callback(response)
+                    continue
                 if response.get("type") == "ready":
                     self._ready.put(response)
                     continue
@@ -547,16 +576,273 @@ class PluginGenerationProcess:
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=1.0)
         self._fail_pending(None)
+        self._shutdown_callback_loop()
         shutil.rmtree(self._artifact_outbox_dir, ignore_errors=True)
+
+    def _dispatch_host_callback(self, request: Mapping[str, Any]) -> None:
+        callback_id = str(request.get("callback_id") or "")
+        if (
+            request.get("protocol") != PLUGIN_GENERATION_PROTOCOL
+            or request.get("generation_id") != self.generation_id
+            or len(callback_id) != 32
+            or any(char not in "0123456789abcdef" for char in callback_id)
+            or request.get("callback") != "notification.send"
+        ):
+            self._send_callback_failure(callback_id, "callback_protocol_invalid")
+            return
+        try:
+            intent = notification_intent_from_wire(request.get("intent"))
+        except PluginGenerationCodecError:
+            self._send_callback_failure(callback_id, "notification_protocol_invalid")
+            return
+        if self._notification_port is None:
+            self._send_callback_result(
+                callback_id,
+                NotificationResult(
+                    ok=False,
+                    status="not_configured",
+                    reason="no_notification_port_bound",
+                ),
+            )
+            return
+        loop = self._notification_loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            loop = self._ensure_callback_loop()
+        if loop is None:
+            self._send_callback_failure(callback_id, "notification_host_unavailable")
+            return
+        with self._callback_lock:
+            if callback_id in self._callback_futures:
+                self._send_callback_failure(callback_id, "duplicate_callback_id")
+                return
+        coroutine = self._deliver_notification(callback_id, intent)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except RuntimeError:
+            coroutine.close()
+            self._send_callback_failure(callback_id, "notification_host_unavailable")
+            return
+        with self._callback_lock:
+            self._callback_futures[callback_id] = future
+        future.add_done_callback(
+            lambda done, cid=callback_id: self._discard_callback(cid, done)
+        )
+
+    async def _deliver_notification(
+        self,
+        callback_id: str,
+        intent: NotificationIntent,
+    ) -> None:
+        try:
+            result = await self._notification_port.send(intent)
+            if not isinstance(result, NotificationResult):
+                result = NotificationResult(
+                    ok=False,
+                    status="error",
+                    reason="invalid_notification_result",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            result = NotificationResult(
+                ok=False,
+                status="error",
+                reason="delivery_exception",
+            )
+        self._send_callback_result(callback_id, result)
+
+    def _send_callback_result(
+        self,
+        callback_id: str,
+        result: NotificationResult,
+    ) -> None:
+        try:
+            wire_result = notification_result_to_wire(result)
+        except PluginGenerationCodecError:
+            wire_result = notification_result_to_wire(
+                NotificationResult(
+                    ok=False,
+                    status="error",
+                    reason="invalid_notification_result",
+                )
+            )
+        self._write_callback_response(
+            {
+                "protocol": PLUGIN_GENERATION_PROTOCOL,
+                "type": "callback_response",
+                "generation_id": self.generation_id,
+                "callback_id": callback_id,
+                "ok": True,
+                "result": wire_result,
+            }
+        )
+
+    def _send_callback_failure(self, callback_id: str, reason: str) -> None:
+        if not callback_id:
+            return
+        self._write_callback_response(
+            {
+                "protocol": PLUGIN_GENERATION_PROTOCOL,
+                "type": "callback_response",
+                "generation_id": self.generation_id,
+                "callback_id": callback_id,
+                "ok": False,
+                "reason": str(reason or "notification_callback_failed"),
+            }
+        )
+
+    def _write_callback_response(self, payload: Mapping[str, Any]) -> None:
+        with self._write_lock:
+            process = self._process
+            if (
+                self._closed
+                or process is None
+                or process.poll() is not None
+                or process.stdin is None
+            ):
+                return
+            try:
+                process.stdin.write(
+                    json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":"))
+                    + "\n"
+                )
+                process.stdin.flush()
+            except (BrokenPipeError, OSError):
+                return
+
+    def _cancel_host_callback(self, request: Mapping[str, Any]) -> None:
+        if (
+            request.get("protocol") != PLUGIN_GENERATION_PROTOCOL
+            or request.get("generation_id") != self.generation_id
+        ):
+            return
+        callback_id = str(request.get("callback_id") or "")
+        with self._callback_lock:
+            future = self._callback_futures.get(callback_id)
+        if future is not None:
+            future.cancel()
+
+    def _discard_callback(self, callback_id: str, future: Any) -> None:
+        with self._callback_lock:
+            if self._callback_futures.get(callback_id) is future:
+                self._callback_futures.pop(callback_id, None)
+
+    def _ensure_callback_loop(self) -> asyncio.AbstractEventLoop | None:
+        with self._callback_lock:
+            loop = self._callback_loop
+            thread = self._callback_thread
+            if loop is not None and thread is not None and thread.is_alive():
+                return loop
+            self._callback_loop_ready.clear()
+            thread = threading.Thread(
+                target=self._run_callback_loop,
+                name=f"plugin-generation-callback:{self.generation_id[:8]}",
+                daemon=True,
+            )
+            self._callback_thread = thread
+            thread.start()
+        if not self._callback_loop_ready.wait(timeout=self.start_timeout_seconds):
+            return None
+        with self._callback_lock:
+            return self._callback_loop
+
+    def _run_callback_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        with self._callback_lock:
+            self._callback_loop = loop
+        self._callback_loop_ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+    def _shutdown_callback_loop(self) -> None:
+        with self._callback_lock:
+            futures = tuple(self._callback_futures.values())
+            loop = self._callback_loop
+            thread = self._callback_thread
+        for future in futures:
+            future.cancel()
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        with self._callback_lock:
+            self._callback_futures.clear()
+            self._callback_loop = None
+            self._callback_thread = None
 
 
 class _GenerationNotificationPort:
-    async def send(self, _intent: Any) -> NotificationResult:
-        return NotificationResult(
-            ok=False,
-            status="not_configured",
-            reason="generation_probe",
+    def __init__(
+        self,
+        *,
+        generation_id: str,
+        protocol_stream: TextIO,
+        pending: dict[str, asyncio.Future[Mapping[str, Any]]],
+    ) -> None:
+        self._generation_id = generation_id
+        self._protocol_stream = protocol_stream
+        self._pending = pending
+
+    async def send(self, intent: NotificationIntent) -> NotificationResult:
+        try:
+            wire_intent = notification_intent_to_wire(intent)
+        except PluginGenerationCodecError:
+            return NotificationResult(
+                ok=False,
+                status="rejected",
+                reason="invalid_notification_intent",
+            )
+        callback_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending[callback_id] = future
+        _emit(
+            self._protocol_stream,
+            {
+                "protocol": PLUGIN_GENERATION_PROTOCOL,
+                "type": "callback_request",
+                "generation_id": self._generation_id,
+                "callback_id": callback_id,
+                "callback": "notification.send",
+                "intent": wire_intent,
+            },
         )
+        try:
+            response = await future
+        except asyncio.CancelledError:
+            _emit(
+                self._protocol_stream,
+                {
+                    "protocol": PLUGIN_GENERATION_PROTOCOL,
+                    "type": "callback_cancel",
+                    "generation_id": self._generation_id,
+                    "callback_id": callback_id,
+                },
+            )
+            raise
+        finally:
+            self._pending.pop(callback_id, None)
+        if not response.get("ok"):
+            return NotificationResult(
+                ok=False,
+                status="error",
+                reason=str(response.get("reason") or "notification_callback_failed"),
+            )
+        try:
+            return notification_result_from_wire(response.get("result"))
+        except PluginGenerationCodecError:
+            return NotificationResult(
+                ok=False,
+                status="error",
+                reason="invalid_notification_result",
+            )
 
 
 class _GenerationReasoningPort:
@@ -713,6 +999,47 @@ async def _handle_worker_request(
         )
 
 
+async def _handle_worker_stop(
+    host: PluginHost,
+    *,
+    generation_id: str,
+    request_id: str,
+    protocol_stream: TextIO,
+) -> None:
+    await asyncio.sleep(0)
+    try:
+        snapshot = await host.stop()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _emit(
+            protocol_stream,
+            {
+                **_response_base(
+                    generation_id=generation_id,
+                    request_id=request_id,
+                ),
+                "ok": False,
+                "status": "failed",
+                "reason": "plugin_generation_exception",
+            },
+        )
+        return
+    _emit(
+        protocol_stream,
+        {
+            **_response_base(
+                generation_id=generation_id,
+                request_id=request_id,
+            ),
+            "ok": snapshot.get("status") == "stopped",
+            "status": str(snapshot.get("status") or "unknown"),
+            "reason": str(snapshot.get("reason") or ""),
+            "snapshot": snapshot,
+        },
+    )
+
+
 async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
     site_dir = Path(args.site).resolve()
     work_dir = Path(args.work_dir).resolve()
@@ -721,6 +1048,7 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
     sys.path.insert(0, str(site_dir))
     host: PluginHost | None = None
     ready_sent = False
+    callback_responses: dict[str, asyncio.Future[Mapping[str, Any]]] = {}
     try:
         entries = _entry_points(site_dir, plugin_id)
         host = PluginHost(
@@ -735,7 +1063,13 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
                 f"generation-{generation_id}",
             )
         )
-        host.bind_notification_port(_GenerationNotificationPort())
+        host.bind_notification_port(
+            _GenerationNotificationPort(
+                generation_id=generation_id,
+                protocol_stream=protocol_stream,
+                pending=callback_responses,
+            )
+        )
         host.bind_reasoning_port(_GenerationReasoningPort())
         host.bind_managed_artifact_sink(
             GenerationArtifactOutboxSink(work_dir / "outbox" / generation_id)
@@ -780,10 +1114,14 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
             await host.stop()
             return 1
         active_requests: dict[str, asyncio.Task[None]] = {}
+        stop_task: asyncio.Task[None] | None = None
         while True:
             line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
-                await host.stop()
+                if stop_task is None:
+                    await host.stop()
+                else:
+                    await stop_task
                 if active_requests:
                     await asyncio.gather(*active_requests.values(), return_exceptions=True)
                 return 0
@@ -792,6 +1130,16 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
             except json.JSONDecodeError:
                 continue
             if not isinstance(request, Mapping):
+                continue
+            if (
+                request.get("protocol") == PLUGIN_GENERATION_PROTOCOL
+                and request.get("type") == "callback_response"
+                and request.get("generation_id") == generation_id
+            ):
+                callback_id = str(request.get("callback_id") or "")
+                callback_future = callback_responses.get(callback_id)
+                if callback_future is not None and not callback_future.done():
+                    callback_future.set_result(dict(request))
                 continue
             request_id = str(request.get("request_id") or "")
             base = _response_base(generation_id=generation_id, request_id=request_id)
@@ -830,23 +1178,40 @@ async def _run_worker(args: argparse.Namespace, protocol_stream: TextIO) -> int:
                 )
                 continue
             if command == "stop":
-                # Tasks accepted before stop get one scheduling opportunity to
-                # enter PluginHost's inflight accounting before the host drains.
-                await asyncio.sleep(0)
-                snapshot = await host.stop()
+                if stop_task is not None:
+                    _emit(
+                        protocol_stream,
+                        {
+                            **base,
+                            "ok": False,
+                            "status": "failed",
+                            "reason": "plugin_generation_stopping",
+                        },
+                    )
+                    continue
+                # Keep the stdin lane alive while PluginHost drains so reverse
+                # callback responses can complete accepted work.
+                stop_task = asyncio.create_task(
+                    _handle_worker_stop(
+                        host,
+                        generation_id=generation_id,
+                        request_id=request_id,
+                        protocol_stream=protocol_stream,
+                    ),
+                    name=f"plugin-generation-stop:{generation_id[:8]}",
+                )
+                continue
+            if stop_task is not None:
                 _emit(
                     protocol_stream,
                     {
                         **base,
-                        "ok": snapshot.get("status") == "stopped",
-                        "status": str(snapshot.get("status") or "unknown"),
-                        "reason": str(snapshot.get("reason") or ""),
-                        "snapshot": snapshot,
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "plugin_generation_stopping",
                     },
                 )
-                if active_requests:
-                    await asyncio.gather(*active_requests.values(), return_exceptions=True)
-                return 0
+                continue
             if request_id in active_requests:
                 _emit(
                     protocol_stream,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import textwrap
+import threading
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, In
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.generated_files import GeneratedFileService
+from companion_v01.plugin_api import NotificationIntent, NotificationResult
 from companion_v01.plugin_generation import (
     PLUGIN_GENERATION_PROTOCOL,
     PluginGenerationError,
@@ -24,6 +26,10 @@ from companion_v01.plugin_generation_codec import (
     invocation_context_from_wire,
     invocation_context_to_wire,
     json_snapshot,
+    notification_intent_from_wire,
+    notification_intent_to_wire,
+    notification_result_from_wire,
+    notification_result_to_wire,
 )
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from companion_v01.store import MemoryStore
@@ -103,16 +109,22 @@ def _write_capability_plugin_site(root: Path) -> Path:
             AKANE_PLUGIN_API_VERSION,
             CAPABILITY_PROMPT_INVOKE_PERMISSION,
             MANAGED_ARTIFACT_WRITE_PERMISSION,
+            NOTIFICATION_SEND_PERMISSION,
             ManagedArtifactDraft,
             ManagedArtifactPayload,
+            NotificationIntent,
             PluginManifest,
         )
 
         CAPABILITY_ID = "test.generation.echo.v1"
         ARTIFACT_CAPABILITY_ID = "test.generation.artifact.v1"
+        NOTIFICATION_CAPABILITY_ID = "test.generation.notification.v1"
 
         class Adapter:
             provider_id = "provider.test.generation"
+
+            def __init__(self, notification_port):
+                self._notification_port = notification_port
 
             async def health(self):
                 return HealthStatus(ok=True, status="ready")
@@ -160,6 +172,24 @@ def _write_capability_plugin_site(root: Path) -> Path:
                         ),
                         raw={"contract": "generation-artifact.v1"},
                     ),
+                    CapabilityDescriptor(
+                        id=NOTIFICATION_CAPABILITY_ID,
+                        display_name="Generation notification",
+                        short_hint="Send one host-owned test notification.",
+                        visible_in=("diagnostics",),
+                        prompt_exposed=True,
+                        risk="low",
+                        confirm="never",
+                        effects=(),
+                        trigger=None,
+                        inputs=(
+                            CapabilityIOSlot(name="recipient_id", kind="string", required=True),
+                            CapabilityIOSlot(name="text", kind="string", required=True),
+                            CapabilityIOSlot(name="idempotency_key", kind="string", required=True),
+                        ),
+                        outputs=(),
+                        raw={"contract": "generation-notification.v1"},
+                    ),
                 )
 
             async def invoke(self, capability_id, args, context):
@@ -179,6 +209,24 @@ def _write_capability_plugin_site(root: Path) -> Path:
                                 send_to_user=True,
                             ),
                         ),
+                    )
+                if capability_id == NOTIFICATION_CAPABILITY_ID:
+                    delivery = await self._notification_port.send(
+                        NotificationIntent(
+                            channel="qq_text",
+                            recipient_id=args["recipient_id"],
+                            text=args["text"],
+                            idempotency_key=args["idempotency_key"],
+                        )
+                    )
+                    return CapabilityResult(
+                        is_error=False,
+                        status="ok",
+                        content={
+                            "delivery_ok": delivery.ok,
+                            "delivery_status": delivery.status,
+                            "delivery_reason": delivery.reason,
+                        },
                     )
                 await asyncio.sleep(max(0, args.get("delay_ms", 0)) / 1000)
                 return CapabilityResult(
@@ -204,11 +252,14 @@ def _write_capability_plugin_site(root: Path) -> Path:
                 permissions=(
                     CAPABILITY_PROMPT_INVOKE_PERMISSION,
                     MANAGED_ARTIFACT_WRITE_PERMISSION,
+                    NOTIFICATION_SEND_PERMISSION,
                 ),
             )
 
             def register(self, registrar):
-                registrar.add_capability_adapter(Adapter())
+                registrar.add_capability_adapter(
+                    Adapter(registrar.get_notification_port())
+                )
 
         def create_plugin():
             return Plugin()
@@ -221,6 +272,77 @@ def _write_capability_plugin_site(root: Path) -> Path:
     )
     (dist_info / "entry_points.txt").write_text(
         "[akane.plugins.v1]\ntest.generation = generation_fixture:create_plugin\n",
+        encoding="utf-8",
+    )
+    return site
+
+
+def _write_notification_job_plugin_site(root: Path) -> Path:
+    site = root / "site"
+    package = site / "generation_notification_fixture"
+    dist_info = site / "generation_notification_fixture-0.1.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    source = textwrap.dedent(
+        """
+        from companion_v01.plugin_api import (
+            AKANE_PLUGIN_API_VERSION,
+            BACKGROUND_JOB_PERMISSION,
+            NOTIFICATION_SEND_PERMISSION,
+            NotificationIntent,
+            PluginManifest,
+        )
+
+        class StartupNotificationJob:
+            def __init__(self, notification_port):
+                self._notification_port = notification_port
+
+            async def start(self, controller):
+                del controller
+                await self._notification_port.send(
+                    NotificationIntent(
+                        channel="qq_text",
+                        recipient_id="user:123456",
+                        text="background-ready",
+                        idempotency_key="background-ready-1",
+                    )
+                )
+
+            async def stop(self):
+                return None
+
+        class Plugin:
+            manifest = PluginManifest(
+                plugin_id="test.generation.notification-job",
+                plugin_version="0.1.0",
+                plugin_api_version=AKANE_PLUGIN_API_VERSION,
+                permissions=(
+                    BACKGROUND_JOB_PERMISSION,
+                    NOTIFICATION_SEND_PERMISSION,
+                ),
+            )
+
+            def register(self, registrar):
+                registrar.add_background_service(
+                    "startup-notification",
+                    StartupNotificationJob(registrar.get_notification_port()),
+                )
+
+        def create_plugin():
+            return Plugin()
+        """
+    )
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\n"
+        "Name: generation-notification-fixture\n"
+        "Version: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[akane.plugins.v1]\n"
+        "test.generation.notification-job = "
+        "generation_notification_fixture:create_plugin\n",
         encoding="utf-8",
     )
     return site
@@ -256,6 +378,17 @@ class PluginGenerationCodecTests(unittest.TestCase):
             status="ok",
             content={"text": "完成", "items": [1, True, None]},
         )
+        intent = NotificationIntent(
+            channel="qq_text",
+            recipient_id="user:123",
+            text="提醒",
+            idempotency_key="notice-1",
+        )
+        notification_result = NotificationResult(
+            ok=True,
+            status="delivered",
+            reason="",
+        )
 
         self.assertEqual(
             capability_descriptor_from_wire(capability_descriptor_to_wire(descriptor)),
@@ -268,6 +401,16 @@ class PluginGenerationCodecTests(unittest.TestCase):
         self.assertEqual(
             capability_result_from_wire(capability_result_to_wire(result)),
             result,
+        )
+        self.assertEqual(
+            notification_intent_from_wire(notification_intent_to_wire(intent)),
+            intent,
+        )
+        self.assertEqual(
+            notification_result_from_wire(
+                notification_result_to_wire(notification_result)
+            ),
+            notification_result,
         )
 
     def test_non_json_values_are_rejected_without_a_size_policy(self) -> None:
@@ -342,12 +485,13 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 )
                 ready = generation.start()
                 try:
-                    self.assertEqual(len(ready["capabilities"]), 2)
+                    self.assertEqual(len(ready["capabilities"]), 3)
                     self.assertEqual(
                         tuple(generation.capability_descriptors),
                         (
                             "test.generation.artifact.v1",
                             "test.generation.echo.v1",
+                            "test.generation.notification.v1",
                         ),
                     )
                     result = await generation.invoke(
@@ -536,6 +680,284 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 self.assertFalse(result.is_error, result.reason)
                 self.assertTrue(stopped["ok"])
                 self.assertFalse(generation.running)
+
+        asyncio.run(scenario())
+
+    def test_generation_notification_uses_host_port_and_deduplicates(self) -> None:
+        class RecordingPort:
+            def __init__(self) -> None:
+                self.intents: list[NotificationIntent] = []
+
+            async def send(self, intent: NotificationIntent) -> NotificationResult:
+                self.intents.append(intent)
+                if intent.idempotency_key == "invalid-result":
+                    return NotificationResult(  # type: ignore[arg-type]
+                        ok=True,
+                        status=object(),
+                    )
+                return NotificationResult(ok=True, status="delivered")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            port = RecordingPort()
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=_write_capability_plugin_site(root),
+                plugin_id="test.generation",
+                work_dir=root / "work",
+            )
+            generation.bind_notification_port(port)
+            generation.start()
+            try:
+                async def invoke_notifications() -> tuple[
+                    CapabilityResult,
+                    CapabilityResult,
+                    CapabilityResult,
+                ]:
+                    arguments = {
+                        "recipient_id": "user:123456",
+                        "text": "该休息一下了",
+                        "idempotency_key": "generation-notice-1",
+                    }
+                    context = InvocationContext("owner", "notification", "qq_text")
+                    first = await generation.invoke(
+                        "test.generation.notification.v1",
+                        arguments,
+                        context=context,
+                    )
+                    duplicate = await generation.invoke(
+                        "test.generation.notification.v1",
+                        arguments,
+                        context=context,
+                    )
+                    invalid = await generation.invoke(
+                        "test.generation.notification.v1",
+                        {**arguments, "idempotency_key": "invalid-result"},
+                        context=context,
+                    )
+                    return first, duplicate, invalid
+
+                first, duplicate, invalid = asyncio.run(invoke_notifications())
+                self.assertEqual(first.content["delivery_status"], "delivered")
+                self.assertEqual(
+                    duplicate.content["delivery_status"],
+                    "already_delivered",
+                )
+                self.assertEqual(invalid.content["delivery_status"], "error")
+                self.assertEqual(
+                    invalid.content["delivery_reason"],
+                    "invalid_notification_result",
+                )
+                self.assertEqual(len(port.intents), 2)
+                self.assertEqual(port.intents[0].text, "该休息一下了")
+            finally:
+                generation.stop()
+            self.assertFalse(
+                any(
+                    thread.name.startswith(
+                        f"plugin-generation-callback:{generation.generation_id[:8]}"
+                    )
+                    for thread in threading.enumerate()
+                )
+            )
+
+    def test_generation_notification_without_host_port_is_structured(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                generation.start()
+                try:
+                    result = await generation.invoke(
+                        "test.generation.notification.v1",
+                        {
+                            "recipient_id": "group:123456",
+                            "text": "hello",
+                            "idempotency_key": "missing-port",
+                        },
+                        context=InvocationContext("owner", "notification", "web"),
+                    )
+                    self.assertFalse(result.is_error)
+                    self.assertFalse(result.content["delivery_ok"])
+                    self.assertEqual(
+                        result.content["delivery_status"],
+                        "not_configured",
+                    )
+                    self.assertEqual(
+                        result.content["delivery_reason"],
+                        "no_notification_port_bound",
+                    )
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_background_job_notification_reaches_host_after_ready(self) -> None:
+        async def scenario() -> None:
+            class ObservedPort:
+                def __init__(self) -> None:
+                    self.intent: NotificationIntent | None = None
+                    self.delivered = asyncio.Event()
+
+                async def send(self, intent: NotificationIntent) -> NotificationResult:
+                    self.intent = intent
+                    self.delivered.set()
+                    return NotificationResult(ok=True, status="delivered")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                port = ObservedPort()
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_notification_job_plugin_site(root),
+                    plugin_id="test.generation.notification-job",
+                    work_dir=root / "work",
+                )
+                generation.bind_notification_port(port)
+                ready = generation.start()
+                try:
+                    await asyncio.wait_for(port.delivered.wait(), timeout=2.0)
+                    self.assertTrue(ready["ok"])
+                    self.assertEqual(ready["capabilities"], [])
+                    self.assertIsNotNone(port.intent)
+                    self.assertEqual(port.intent.text, "background-ready")
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_concurrent_notification_callbacks_are_correlated(self) -> None:
+        async def scenario() -> None:
+            class DelayedPort:
+                async def send(self, intent: NotificationIntent) -> NotificationResult:
+                    await asyncio.sleep(0.05 if intent.text == "slow" else 0.01)
+                    return NotificationResult(
+                        ok=True,
+                        status="delivered",
+                        reason=intent.text,
+                    )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                generation.bind_notification_port(DelayedPort())
+                generation.start()
+                try:
+                    async def invoke(text: str) -> CapabilityResult:
+                        return await generation.invoke(
+                            "test.generation.notification.v1",
+                            {
+                                "recipient_id": "user:123456",
+                                "text": text,
+                                "idempotency_key": f"correlated-{text}",
+                            },
+                            context=InvocationContext("owner", "concurrent", "web"),
+                        )
+
+                    slow_task = asyncio.create_task(invoke("slow"))
+                    fast_task = asyncio.create_task(invoke("fast"))
+                    slow, fast = await asyncio.gather(slow_task, fast_task)
+                    self.assertEqual(slow.content["delivery_reason"], "slow")
+                    self.assertEqual(fast.content["delivery_reason"], "fast")
+                finally:
+                    generation.stop()
+
+        asyncio.run(scenario())
+
+    def test_notification_callback_cancellation_and_stop_drain(self) -> None:
+        async def scenario() -> None:
+            class BlockingPort:
+                def __init__(self) -> None:
+                    self.calls = 0
+                    self.started = asyncio.Event()
+                    self.cancelled = asyncio.Event()
+                    self.second_started = asyncio.Event()
+                    self.release = asyncio.Event()
+
+                async def send(self, intent: NotificationIntent) -> NotificationResult:
+                    del intent
+                    self.calls += 1
+                    if self.calls == 1:
+                        self.started.set()
+                        try:
+                            await asyncio.Future()
+                        except asyncio.CancelledError:
+                            self.cancelled.set()
+                            raise
+                    self.second_started.set()
+                    await self.release.wait()
+                    return NotificationResult(ok=True, status="delivered")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                port = BlockingPort()
+                generation = PluginGenerationProcess(
+                    project_root=PROJECT_ROOT,
+                    site_dir=_write_capability_plugin_site(root),
+                    plugin_id="test.generation",
+                    work_dir=root / "work",
+                )
+                generation.bind_notification_port(port)
+                generation.start()
+                try:
+                    pending = asyncio.create_task(
+                        generation.invoke(
+                            "test.generation.notification.v1",
+                            {
+                                "recipient_id": "user:123456",
+                                "text": "cancel me",
+                                "idempotency_key": "cancel-notification",
+                            },
+                            context=InvocationContext("owner", "cancel", "web"),
+                        )
+                    )
+                    await port.started.wait()
+                    pending.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await pending
+                    await asyncio.wait_for(port.cancelled.wait(), timeout=2.0)
+                    healthy = await generation.invoke(
+                        "test.generation.echo.v1",
+                        {"value": "after-notification-cancel"},
+                        context=InvocationContext(session_id="cancel"),
+                    )
+                    self.assertEqual(
+                        healthy.content["value"],
+                        "after-notification-cancel",
+                    )
+                    draining = asyncio.create_task(
+                        generation.invoke(
+                            "test.generation.notification.v1",
+                            {
+                                "recipient_id": "user:123456",
+                                "text": "drain me",
+                                "idempotency_key": "drain-notification",
+                            },
+                            context=InvocationContext("owner", "drain", "web"),
+                        )
+                    )
+                    await port.second_started.wait()
+                    stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(stop_task.done())
+
+                    port.release.set()
+                    delivered = await draining
+                    stopped = await stop_task
+                    self.assertEqual(delivered.content["delivery_status"], "delivered")
+                    self.assertTrue(stopped["ok"])
+                finally:
+                    generation.stop()
 
         asyncio.run(scenario())
 

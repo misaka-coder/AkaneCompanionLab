@@ -17,6 +17,8 @@ from capcore import (
     TriggerConfig,
 )
 
+from .plugin_api import NotificationIntent, NotificationResult
+
 
 class PluginGenerationCodecError(ValueError):
     """The public value cannot be represented by the JSON protocol."""
@@ -103,6 +105,57 @@ def capability_result_from_wire(value: object) -> CapabilityResult:
         content=record.get("content"),
         status=_string(record.get("status"), "capability_result_invalid"),
         reason=_string(record.get("reason"), "capability_result_invalid"),
+    )
+
+
+def notification_intent_to_wire(intent: NotificationIntent) -> dict[str, str]:
+    if not isinstance(intent, NotificationIntent):
+        raise PluginGenerationCodecError("notification_intent_required")
+    return {
+        "channel": _string(intent.channel, "notification_intent_invalid"),
+        "recipient_id": _string(intent.recipient_id, "notification_intent_invalid"),
+        "text": _string(intent.text, "notification_intent_invalid"),
+        "idempotency_key": _string(
+            intent.idempotency_key,
+            "notification_intent_invalid",
+        ),
+    }
+
+
+def notification_intent_from_wire(value: object) -> NotificationIntent:
+    record = _mapping(value, "notification_intent_invalid")
+    return NotificationIntent(
+        channel=_string(record.get("channel"), "notification_intent_invalid"),
+        recipient_id=_string(record.get("recipient_id"), "notification_intent_invalid"),
+        text=_string(record.get("text"), "notification_intent_invalid"),
+        idempotency_key=_string(
+            record.get("idempotency_key"),
+            "notification_intent_invalid",
+        ),
+    )
+
+
+def notification_result_to_wire(result: NotificationResult) -> dict[str, Any]:
+    if not isinstance(result, NotificationResult):
+        raise PluginGenerationCodecError("notification_result_required")
+    if not isinstance(result.ok, bool):
+        raise PluginGenerationCodecError("notification_result_invalid")
+    return {
+        "ok": result.ok,
+        "status": _string(result.status, "notification_result_invalid"),
+        "reason": _string(result.reason, "notification_result_invalid"),
+    }
+
+
+def notification_result_from_wire(value: object) -> NotificationResult:
+    record = _mapping(value, "notification_result_invalid")
+    ok = record.get("ok")
+    if not isinstance(ok, bool):
+        raise PluginGenerationCodecError("notification_result_invalid")
+    return NotificationResult(
+        ok=ok,
+        status=_string(record.get("status"), "notification_result_invalid"),
+        reason=_string(record.get("reason"), "notification_result_invalid"),
     )
 
 
@@ -236,4 +289,8 @@ __all__ = [
     "invocation_context_from_wire",
     "invocation_context_to_wire",
     "json_snapshot",
+    "notification_intent_from_wire",
+    "notification_intent_to_wire",
+    "notification_result_from_wire",
+    "notification_result_to_wire",
 ]
