@@ -545,18 +545,41 @@ class ExtensionManagementService:
             context=context,
         )
 
-    def execute_sync(self, *, action: str, plugin_id: str = "") -> dict[str, Any]:
+    def execute_sync(
+        self,
+        *,
+        action: str,
+        plugin_id: str = "",
+        path: str = "",
+        stage_id: str = "",
+        approved_permissions: Iterable[str] = (),
+    ) -> dict[str, Any]:
         normalized_action = str(action or "").strip().lower()
         if normalized_action == "list":
             payload = self.snapshot()
             payload["action"] = "list"
             return payload
-        if normalized_action == "enable":
+        if normalized_action == "stage_source":
+            coroutine = self.stage_source(source_path=path)
+        elif normalized_action == "stage_wheel":
+            coroutine = self.stage_wheel(wheel_path=path)
+        elif normalized_action == "publish":
+            coroutine = self.publish_stage(
+                stage_id=stage_id,
+                approved_permissions=tuple(approved_permissions),
+            )
+        elif normalized_action == "discard_stage":
+            coroutine = self.discard_stage(stage_id=stage_id)
+        elif normalized_action == "enable":
             coroutine = self.set_enabled(plugin_id=plugin_id, enabled=True)
         elif normalized_action == "disable":
             coroutine = self.set_enabled(plugin_id=plugin_id, enabled=False)
         elif normalized_action == "restart":
             coroutine = self.restart(requested_plugin_id=plugin_id)
+        elif normalized_action == "rollback":
+            coroutine = self.rollback(plugin_id=plugin_id)
+        elif normalized_action == "uninstall":
+            coroutine = self.uninstall(plugin_id=plugin_id)
         else:
             return _failure("invalid_request", "extension_action_invalid", plugin_id=plugin_id)
         runtime_loop = self.plugin_runtime.runtime_loop

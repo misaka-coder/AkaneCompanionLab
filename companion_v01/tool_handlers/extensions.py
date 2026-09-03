@@ -55,22 +55,48 @@ class ManageExtensionToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_extension：主人可查看、持久启停或重启当前 Host 已安装的插件。"
-            "它不会搜索市场或下载缺失插件；V1 的 restart 是插件宿主级重启。"
+            "- manage_extension：查看和管理本机插件；可从本地源码目录或 wheel 暂存并探测，"
+            "按暂存结果的权限清单发布，再启用或重载。它不搜索市场或下载代码。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
             return None
         action = str(value.get("action") or "").strip().lower()
-        if action not in {"list", "enable", "disable", "restart"}:
+        if action not in {
+            "list",
+            "stage_source",
+            "stage_wheel",
+            "publish",
+            "discard_stage",
+            "enable",
+            "disable",
+            "restart",
+            "rollback",
+            "uninstall",
+        }:
             return None
         plugin_id = str(value.get("plugin_id") or "").strip()
-        if action in {"enable", "disable"} and not plugin_id:
+        if action in {"enable", "disable", "rollback", "uninstall"} and not plugin_id:
             return None
         normalized = {"type": self.tool_type, "action": action}
         if plugin_id:
             normalized["plugin_id"] = plugin_id
+        if action in {"stage_source", "stage_wheel"}:
+            path = str(value.get("path") or "").strip()
+            if not path:
+                return None
+            normalized["path"] = path
+        if action in {"publish", "discard_stage"}:
+            stage_id = str(value.get("stage_id") or "").strip()
+            if not stage_id:
+                return None
+            normalized["stage_id"] = stage_id
+        if action == "publish":
+            permissions = value.get("approved_permissions")
+            if not isinstance(permissions, list) or any(not isinstance(item, str) for item in permissions):
+                return None
+            normalized["approved_permissions"] = [str(item).strip() for item in permissions]
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -101,6 +127,9 @@ class ManageExtensionToolHandler(BaseToolHandler):
                 self.service.execute_sync(
                     action=action,
                     plugin_id=str(call.get("plugin_id") or ""),
+                    path=str(call.get("path") or ""),
+                    stage_id=str(call.get("stage_id") or ""),
+                    approved_permissions=tuple(call.get("approved_permissions") or ()),
                 )
             )
         )

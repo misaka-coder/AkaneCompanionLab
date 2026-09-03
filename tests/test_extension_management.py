@@ -220,7 +220,13 @@ class ManageExtensionToolTests(unittest.TestCase):
 
         self.assertIn('"ok":true', desktop.followup_context)
         self.assertIn("extension_management_requires_owner", denied.followup_context)
-        service.execute_sync.assert_called_once_with(action="list", plugin_id="")
+        service.execute_sync.assert_called_once_with(
+            action="list",
+            plugin_id="",
+            path="",
+            stage_id="",
+            approved_permissions=(),
+        )
 
     def test_management_tool_is_visible_to_desktop_and_qq_without_shell_gate(self) -> None:
         registry = CapabilityRegistry()
@@ -261,7 +267,38 @@ class ManageExtensionToolTests(unittest.TestCase):
 
             completed = handler.execute(call=call, context=context)
             self.assertIn('"ok":true', completed.followup_context)
-            service.execute_sync.assert_called_once_with(action="disable", plugin_id=PLUGIN_ID)
+            service.execute_sync.assert_called_once_with(
+                action="disable",
+                plugin_id=PLUGIN_ID,
+                path="",
+                stage_id="",
+                approved_permissions=(),
+            )
+
+    def test_source_stage_and_publish_are_one_progressive_tool_contract(self) -> None:
+        service = Mock()
+        service.execute_sync.return_value = {"ok": True, "status": "staged"}
+        handler = ManageExtensionToolHandler(service=service)
+        source = handler.normalize_call(
+            {"type": "manage_extension", "action": "stage_source", "path": "C:/work/plugin"}
+        )
+        publish = handler.normalize_call(
+            {
+                "type": "manage_extension",
+                "action": "publish",
+                "stage_id": "stage-1",
+                "approved_permissions": ["storage.write", "job.run"],
+            }
+        )
+
+        self.assertEqual(source["path"], "C:/work/plugin")
+        self.assertEqual(publish["stage_id"], "stage-1")
+        self.assertEqual(publish["approved_permissions"], ["storage.write", "job.run"])
+        self.assertIsNone(
+            handler.normalize_call(
+                {"type": "manage_extension", "action": "publish", "stage_id": "stage-1"}
+            )
+        )
 
 
 if __name__ == "__main__":

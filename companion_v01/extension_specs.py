@@ -9,11 +9,10 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_extension",
     display_name="Manage installed extensions",
     description=(
-        "List installed Akane plugins, persistently enable or disable one plugin, or restart the current "
-        "plugin host. This manages only plugins already declared or installed on this Host; it does not "
-        "search a marketplace, download code, or pretend to install missing artifacts. Enabling is committed "
-        "only after the candidate plugin becomes active; a failed candidate is rolled back. Only the trusted "
-        "desktop or configured owner QQ account may use this tool."
+        "Inspect and manage local Akane plugins. It can build and probe a plugin project, probe a wheel, "
+        "publish an approved stage, enable or disable a plugin, reload the isolated plugin generation, "
+        "roll back, or uninstall. Staging never activates code; publish requires the exact permission list "
+        "returned by staging. Only the trusted desktop or configured owner QQ account may use this tool."
     ),
     input_schema={
         "type": "object",
@@ -21,13 +20,42 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "enable", "disable", "restart"],
+                "enum": [
+                    "list",
+                    "stage_source",
+                    "stage_wheel",
+                    "publish",
+                    "discard_stage",
+                    "enable",
+                    "disable",
+                    "restart",
+                    "rollback",
+                    "uninstall",
+                ],
             },
             "plugin_id": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 128,
-                "description": "Required for enable/disable. Optional for restart; restart is host-wide in V1.",
+                "maxLength": 64,
+                "description": "Plugin id for enable, disable, rollback, or uninstall; optional for restart.",
+            },
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "description": "Absolute project directory for stage_source, or absolute .whl path for stage_wheel.",
+            },
+            "stage_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Stage id returned by stage_source/stage_wheel; required for publish or discard_stage.",
+            },
+            "approved_permissions": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                "maxItems": 32,
+                "description": "For publish, copy the exact permissions array returned by staging.",
             },
         },
         "required": ["action"],
