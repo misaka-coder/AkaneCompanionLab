@@ -9,12 +9,12 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_project_workspace",
     display_name="Manage coding project workspace",
     description=(
-        "Optionally list, create, open, select, or archive a durable coding project directory when work needs "
-        "cross-conversation discovery or a stable alias. Basic inspect/write/patch does not require registration. The catalog follows the "
+        "List, create, open, select, close, or archive a durable coding project directory. Basic inspect/write/patch does not require registration. The catalog follows the "
         "same user across QQ private and group conversations while the current selection stays conversation-local. "
         "Create makes a host-managed project and requires display_name. Open registers a real existing host directory "
         "and requires path; use open, not create, when the user specifies Desktop or another host location. A selected "
-        "project is exposed to exec_run as alias:project."
+        "project becomes the conversation's default cwd for all coding tools and is also exposed as alias:project. "
+        "An explicit cwd overrides one call only; close returns the conversation to the execution root without changing permissions or files."
     ),
     input_schema={
         "type": "object",
@@ -22,7 +22,7 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "create", "open", "select", "archive", "current"],
+                "enum": ["list", "create", "open", "select", "archive", "current", "close"],
                 "description": "Operation selector; each action uses only its declared action-specific fields.",
             },
             "workspace_id": {"type": "string", "pattern": "^proj_[a-f0-9]{32}$"},
@@ -50,6 +50,7 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
             "workspace_id": {"type": "string"},
             "selected_workspace_id": {"type": "string"},
             "alias": {"type": "string"},
+            "working_directory": {"type": "string"},
             "workspaces": {"type": "array", "items": {"type": "object"}},
         },
         "required": ["status"],
@@ -59,8 +60,8 @@ MANAGE_PROJECT_WORKSPACE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_workspace_state",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
+    spec_version="1.2.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=32 * 1024,
@@ -71,7 +72,7 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
     capability_id="project_inspect",
     display_name="Inspect project source",
     description=(
-        "Inspect source through one read-only authority. Omitted cwd uses the same trusted execution root as exec_run; "
+        "Inspect source through one read-only authority. Omitted cwd uses the selected project, or the trusted execution root when none is selected; "
         "paths may also use cwd, an absolute host path, or an explicitly addressed persistent project. Use list to discover relative "
         "paths, search to locate text with line numbers, and read to load an exact UTF-8 line range with SHA-256. "
         "Long results return an opaque continuation cursor bound to the current session and source fingerprint."
@@ -142,7 +143,7 @@ PROJECT_INSPECT_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
+    spec_version="1.2.0",
     schema_version=2,
     execution_class="sync",
     idempotency="read_only",
@@ -154,7 +155,7 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_write",
     display_name="Write a project file atomically",
     description=(
-        "Create or replace one UTF-8 source file. Omitted cwd uses the same trusted execution root as exec_run; "
+        "Create or replace one UTF-8 source file. Omitted cwd uses the selected project, or the trusted execution root when none is selected; "
         "cwd, an absolute host path, or an explicitly addressed persistent project may override it. Writes are atomic "
         "and may be guarded by the prior SHA-256; project registration is optional."
     ),
@@ -200,7 +201,7 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
+    spec_version="1.2.0",
     schema_version=2,
     execution_class="sync",
     idempotency="effectful",
@@ -217,7 +218,7 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
         "sections, then *** End Patch. Update sections contain @@ (or @@ followed by one unique existing anchor "
         "line), with unchanged lines prefixed by one space, removed lines by -, and added lines by +. A rename "
         "uses *** Update File: old followed by *** Move to: new. Prefix every Add File content line with +; a "
-        "Delete File section has no body. Omitted cwd uses the same trusted execution root as exec_run; cwd or an "
+        "Delete File section has no body. Omitted cwd uses the selected project, or the trusted execution root when none is selected; cwd or an "
         "explicitly addressed persistent project may override it. Project registration is optional. Supports update, create, delete, and rename "
         "operations for UTF-8 files. All paths, hashes, and hunks are validated before commit; any failure leaves "
         "every target unchanged."
@@ -289,7 +290,7 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("project_file_write",),
     visible_in=("desktop", "qq"),
-    spec_version="2.0.0",
+    spec_version="2.1.0",
     schema_version=4,
     execution_class="sync",
     idempotency="effectful",

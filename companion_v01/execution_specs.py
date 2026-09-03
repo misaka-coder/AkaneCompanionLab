@@ -181,7 +181,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     display_name="Run a command in the trusted execution workspace",
     description=(
         "使用当前宿主用户权限运行 Shell 命令或脚本；它不是 Shell 沙箱。cwd 可为工作区相对路径、"
-        "已配置别名或真实宿主绝对目录，省略时使用受信任执行根；先从真实命令输出发现路径。"
+        "已配置别名或真实宿主绝对目录；省略时使用当前项目，没有当前项目时使用执行根。先从真实命令输出发现路径。"
         "命令语言以执行宿主事实中的 command_shell 为准；Windows 使用 PowerShell，需用 cmd 时显式调用 cmd.exe /c。"
         "短命令直接返回终态，仍在运行时返回 run_id，之后用 exec_status 或 exec_cancel。"
         "input_resources 用于暂存现有材料，output_globs 用于登记生成资源；精确路径约束见对应参数。"
@@ -206,7 +206,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                     "启动目录（可选）：工作区相对路径、挂载别名或真实宿主绝对目录；已注册项目可使用 alias:project。"
                     "使用 input_resources 时必须省略 cwd；output_globs 可与 alias:project 同用。"
                     "宿主绝对 cwd 不直接支持 output_globs；先将目录注册为项目再登记产物。"
-                    "既无资源参数又省略时使用受信任执行工作区根；省略但声明 output_globs 时使用本次临时目录。"
+                    "既无资源参数又省略时使用当前项目，没有当前项目时使用执行根；"
+                    "省略但仅声明 output_globs 时，当前项目存在则在其中执行并登记，否则使用本次临时目录。"
                 ),
             },
             "timeout_seconds": {
@@ -318,7 +319,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
     confirm="always",
     effects=("command_exec",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
+    spec_version="1.2.0",
     schema_version=2,
     execution_class="long_task",
     idempotency="effectful",

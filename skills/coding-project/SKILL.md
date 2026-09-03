@@ -33,12 +33,17 @@ permissions; use only the tools visible in the current request.
 ## Work in the real project
 
 - Use the real task directory supplied by the host, or discover it from tool output; never
-  guess. Source tools and Shell share the same cwd semantics. A discovered host path is
-  usable when the host grants access.
-- A Project Workspace is an optional persistent identity, not a file-editing licence.
-  Use `cwd="alias:project"` or a workspace id when cross-conversation discovery or a
-  stable project identity is useful; do not add that round trip merely to edit a directory
-  already discovered in the current task.
+  guess. For a new multi-file project, call `manage_project_workspace(create)` with a clear
+  display name. For an existing host directory, confirm the exact absolute directory from
+  tool output and call `manage_project_workspace(open)`. Use `select` for an already
+  registered project.
+- Create, open, and select set the conversation's current working directory. Afterwards,
+  `project_inspect`, `workspace_write`, `workspace_patch`, and `exec_run` all use it when
+  `cwd`/`workspace_id` is omitted. An explicit cwd overrides one call only. Use `close`
+  when the user wants to leave the project; closing does not delete files or change
+  permissions.
+- A Project Workspace is a persistent directory identity, not a file-access permission.
+  Tool and operating-system permissions are still evaluated for every operation.
 - `workspace:/` is a material-reading namespace, not the coding directory, and
   task-workspace records are not a filesystem.
 

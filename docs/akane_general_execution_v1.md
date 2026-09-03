@@ -5,6 +5,10 @@ Date: 2026-08-09
 Baseline: `b31f54f add guarded desktop system capabilities`
 Scope: Phase 5 最终收口 —— 真实调用链验收、首次启用体验、MemCore/缓存闭环与接入说明。
 
+> 2026-09-03 更新：当前会话工作目录的权威契约见
+> `docs/current_working_directory_contract_v1.md`。项目 create/open/select 后，四个代码工具
+> 省略 cwd 会共同使用当前项目；本文早期“始终默认执行根”的描述已同步修正。
+
 ## 0. 文档定位
 
 本文档说明 Akane 的**通用系统执行能力**（general execution capability）：
@@ -49,7 +53,7 @@ Scope: Phase 5 最终收口 —— 真实调用链验收、首次启用体验、
 `exec_run` 参数：
 
 - `command`：要执行的命令或脚本（必填）。系统不设置私有字符数硬上限；长源码仍优先用原子文件工具，避免 Shell 引号与编码问题。
-- `cwd`：工作区内相对路径、挂载别名或真实存在的宿主绝对目录（可选），默认工作区根。
+- `cwd`：工作区内相对路径、挂载别名或真实存在的宿主绝对目录（可选）；省略时使用当前项目，没有当前项目时使用执行根。
 - `timeout_seconds`：命令自身超时（1–600，默认 120）。
 - `initial_wait_seconds`：本轮最多等待秒数（1–10，默认 8）；窗口内未结束的命令
   转为 `running` 并返回 run_id。
@@ -118,7 +122,8 @@ exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
 
 ## 4. 默认工作区与显式工作区
 
-`TrustedLocalExecutor` 的 `cwd` 根目录只来自宿主配置，模型永远不能选择目录。
+`TrustedLocalExecutor` 的执行根只来自宿主配置。模型不能改写执行根，但可以通过
+`manage_project_workspace` 明确 create/open/select 当前项目；宿主不会从自然语言中的路径猜测并切换目录。
 
 ### 4.1 EXECUTION_ENABLED=false
 
@@ -147,11 +152,11 @@ exec_status(run_id="execrun_...", cursor="c1....", wait_seconds=30)
 
 ## 5. alias 挂载
 
-- `cwd` 只支持工作区相对路径或挂载别名。
+- `cwd` 支持工作区相对路径、已配置挂载别名和宿主允许访问的真实绝对目录。
 - 别名格式：`alias:<name>`，`name` 必须是宿主显式配置的挂载。
 - 未配置的别名返回结构化失败（`unknown_mount_alias`）。
-- `..`、绝对 cwd、symlink 逃逸均被拒绝（`path_traversal_not_allowed` /
-  `absolute_path_not_allowed` / `path_escapes_workspace`）。
+- `..` 与 symlink 逃逸均被拒绝（`path_traversal_not_allowed` / `path_escapes_workspace`）；
+  真实绝对 cwd 按宿主用户权限执行，不会因此变成项目选择。
 - 相对 cwd 解析后必须仍落在工作区根内，否则拒绝。
 
 ## 6. 环境变量与凭据引用

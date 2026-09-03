@@ -315,6 +315,35 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertIn("真实值由执行器注入并从输出中遮蔽", context)
         self.assertNotIn("secret-value", context)
 
+    def test_execution_host_context_appends_prompt_safe_current_working_directory(self) -> None:
+        handler = SimpleNamespace(
+            execution_provider=SimpleNamespace(
+                prompt_environment=lambda: {
+                    "platform": "linux",
+                    "command_shell": "/bin/sh",
+                    "preferred_script_shell": "/bin/bash",
+                    "host_access": {"filesystem": "host_user_permissions"},
+                }
+            ),
+            working_directory_context=lambda **_kwargs: {
+                "working_directory": "alias:project",
+                "project": "Compiler Lab",
+                "workspace_id": "proj_" + "a" * 32,
+            },
+        )
+
+        context = AkaneMemoryEngine._build_execution_host_context(
+            handler,
+            profile_user_id="alice",
+            session_id="session-a",
+            client_mode="qq_text",
+        )
+
+        self.assertIn("current_cwd=alias:project", context)
+        self.assertIn('project="Compiler Lab"', context)
+        self.assertIn("workspace_id=proj_", context)
+        self.assertNotIn("/var/lib", context)
+
     def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:
         saved = save_capability_approval_mode(
             base_dir=self.base_dir,

@@ -4322,6 +4322,11 @@ class AkaneMemoryEngine:
             # never freeze the transient event into provider history.
             "record_request_projection": prompt_scope != "qq_attention",
         }
+        if actor_stable_id:
+            request_projection_state["actor_stable_id"] = actor_stable_id
+        actor_profile_user_id = str(payload.get("actor_profile_user_id") or "").strip()
+        if actor_profile_user_id:
+            request_projection_state["actor_profile_user_id"] = actor_profile_user_id
         authorization_profile_user_id = str(payload.get("actor_profile_user_id") or "").strip()
         if authorization_profile_user_id:
             request_projection_state["authorization_profile_user_id"] = authorization_profile_user_id
@@ -5433,6 +5438,12 @@ class AkaneMemoryEngine:
             authorization_profile_user_id=str(
                 (request_projection_state or {}).get("authorization_profile_user_id") or ""
             ).strip(),
+            actor_stable_id=str(
+                (request_projection_state or {}).get("actor_stable_id") or ""
+            ).strip(),
+            actor_profile_user_id=str(
+                (request_projection_state or {}).get("actor_profile_user_id") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6355,6 +6366,12 @@ class AkaneMemoryEngine:
             authorization_profile_user_id=str(
                 (request_projection_state or {}).get("authorization_profile_user_id") or ""
             ).strip(),
+            actor_stable_id=str(
+                (request_projection_state or {}).get("actor_stable_id") or ""
+            ).strip(),
+            actor_profile_user_id=str(
+                (request_projection_state or {}).get("actor_profile_user_id") or ""
+            ).strip(),
             mcp_activations=(request_projection_state or {}).get("mcp_activations"),
         )
         projection_failure = generation_context.get("memcore_projection_failure")
@@ -6851,6 +6868,8 @@ class AkaneMemoryEngine:
         current_user_source_id: str = "",
         current_actor_relation: str = "",
         authorization_profile_user_id: str = "",
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
         mcp_activations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .engine_services.response_builder import prepare_context as _fn
@@ -6883,6 +6902,8 @@ class AkaneMemoryEngine:
             current_user_source_id=current_user_source_id,
             current_actor_relation=current_actor_relation,
             authorization_profile_user_id=authorization_profile_user_id,
+            actor_stable_id=actor_stable_id,
+            actor_profile_user_id=actor_profile_user_id,
             mcp_activations=mcp_activations,
         )
 
@@ -9064,7 +9085,15 @@ class AkaneMemoryEngine:
         )
 
     @staticmethod
-    def _build_execution_host_context(handler: Any) -> str:
+    def _build_execution_host_context(
+        handler: Any,
+        *,
+        profile_user_id: str = "",
+        session_id: str = "",
+        client_mode: str = "",
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
+    ) -> str:
         """Render one compact host fact block shared by native and legacy tools."""
 
         provider = getattr(handler, "execution_provider", None) if handler is not None else None
@@ -9104,11 +9133,38 @@ class AkaneMemoryEngine:
                 f" credential_env_refs: {credential_refs}. "
                 "命令可按当前 Shell 语法使用 configured 引用；真实值由执行器注入并从输出中遮蔽。"
             )
+        cwd_context = ""
+        describe_cwd = getattr(handler, "working_directory_context", None)
+        if callable(describe_cwd) and profile_user_id and session_id:
+            try:
+                cwd_state = dict(
+                    describe_cwd(
+                        profile_user_id=profile_user_id,
+                        session_id=session_id,
+                        client_mode=client_mode,
+                        actor_stable_id=actor_stable_id,
+                        actor_profile_user_id=actor_profile_user_id,
+                    )
+                    or {}
+                )
+            except Exception:
+                cwd_state = {}
+            working_directory = str(cwd_state.get("working_directory") or "").strip()
+            if working_directory:
+                cwd_context = f" current_cwd={working_directory}"
+                project = str(cwd_state.get("project") or "").strip()
+                workspace_id = str(cwd_state.get("workspace_id") or "").strip()
+                if project:
+                    cwd_context += f"; project={json.dumps(project, ensure_ascii=False)}"
+                if workspace_id:
+                    cwd_context += f"; workspace_id={workspace_id}"
+                cwd_context += "."
         return (
             "【执行宿主】"
             f"platform={platform}; command_shell={command_shell}; script_shell={script_shell}; "
             f"filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}. "
             "普通环境与 PATH 按宿主继承，凭据类和 Akane 内部变量除外；依赖缓存共享，项目依赖遵循清单与锁文件。"
+            f"{cwd_context}"
             f"{credential_context}"
         )
 
@@ -9123,6 +9179,8 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
         capability_selection: CapabilitySelection | None = None,
         include_capability_status: bool = True,
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
     ) -> str:
         if not allow_tool_call:
             return "本轮不要调用任何工具；按当前模式的最终回复协议作答。"
@@ -9152,7 +9210,14 @@ class AkaneMemoryEngine:
         excluded = {str(item).strip() for item in (exclude_tool_types or set()) if str(item).strip()}
         if excluded:
             handlers = {tool_type: handler for tool_type, handler in handlers.items() if str(tool_type) not in excluded}
-        execution_host_context = self._build_execution_host_context(execution_handler)
+        execution_host_context = self._build_execution_host_context(
+            execution_handler,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            client_mode=(client_context.effective_mode.value if client_context else ""),
+            actor_stable_id=actor_stable_id,
+            actor_profile_user_id=actor_profile_user_id,
+        )
         skill_catalog = ""
         if "load_skill" in ready_tool_names:
             try:

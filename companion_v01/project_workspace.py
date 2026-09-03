@@ -260,6 +260,26 @@ class ProjectWorkspaceService:
         )
         return self._public_record(record, selected=True)
 
+    def close(self, *, scope: ProjectWorkspaceScope) -> dict[str, Any]:
+        """Stop using the selected project as this conversation's default cwd.
+
+        Closing changes only the conversation selection.  It does not archive
+        the project, delete files, or change any filesystem permission.
+        """
+
+        self._prepare_scope(scope)
+        workspace_id = self.store.get_project_workspace_selection(selection_key=scope.selection_key)
+        if workspace_id:
+            self.store.clear_project_workspace_selection(
+                selection_key=scope.selection_key,
+                workspace_id=workspace_id,
+            )
+        return {
+            "closed": bool(workspace_id),
+            "previous_workspace_id": str(workspace_id or ""),
+            "working_directory": "execution_root",
+        }
+
     def archive(self, *, scope: ProjectWorkspaceScope, workspace_id: str) -> dict[str, Any]:
         self._prepare_scope(scope)
         record = self._owned_record(scope=scope, workspace_id=workspace_id, require_active=False)
@@ -1076,6 +1096,11 @@ class ProjectWorkspaceService:
             "available": available,
             "selected": bool(selected and available),
             "alias": "alias:project" if selected and available and str(record.get("state") or "") == "active" else "",
+            "working_directory": (
+                "alias:project"
+                if selected and available and str(record.get("state") or "") == "active"
+                else ""
+            ),
             "created_at": int(record.get("created_at") or 0),
             "updated_at": int(record.get("updated_at") or 0),
         }

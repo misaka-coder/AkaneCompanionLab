@@ -196,6 +196,8 @@ def prepare_context(
     current_user_source_id: str = "",
     current_actor_relation: str = "",
     authorization_profile_user_id: str = "",
+    actor_stable_id: str = "",
+    actor_profile_user_id: str = "",
     mcp_activations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_prompt_scope = str(prompt_scope or "").strip().lower()
@@ -663,6 +665,8 @@ def prepare_context(
         domain_profile_id=domain_profile.id,
         capability_selection=capability_selection,
         include_capability_status=not bool(native_tools),
+        actor_stable_id=actor_stable_id,
+        actor_profile_user_id=actor_profile_user_id,
     )
     if native_tools:
         tool_prompt_context = "\n\n".join(

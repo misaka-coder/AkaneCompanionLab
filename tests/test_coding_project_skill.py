@@ -105,8 +105,8 @@ class CodingProjectSkillTests(unittest.TestCase):
             "Verify and deliver",
         ):
             self.assertIn(marker, content)
-        self.assertIn("optional persistent identity", content)
-        self.assertIn('cwd="alias:project"', content)
+        self.assertIn("conversation's current working directory", content)
+        self.assertIn("explicit cwd overrides one call only", content)
         self.assertIn("workspace_write", content)
         self.assertIn("project_inspect", content)
         self.assertIn("workspace_patch", content)

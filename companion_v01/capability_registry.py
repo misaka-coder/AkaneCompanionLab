@@ -2497,7 +2497,8 @@ class CapabilityRegistry:
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
                     "桌宠本机执行：project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
-                    "可在已发现的真实目录读取、修改、构建和测试；manage_project_workspace 只为跨会话发现和 alias:project。"
+                    "可在已发现的真实目录读取、修改、构建和测试；manage_project_workspace 的 create/open/select 设置当前项目，"
+                    "之后四个工具省略 cwd 时会继续在该项目工作。"
                     "exec_status 查询长命令进度，exec_cancel 停止命令。"
                 ),
                 trigger=_execution_enabled,
@@ -2511,7 +2512,8 @@ class CapabilityRegistry:
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
                     "当前 QQ 会话已由主人开放 Shell；project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
-                    "可在 QQ Bot 后端所在机器的已发现真实目录中读取、修改、构建和测试；manage_project_workspace 只为跨会话发现和 alias:project。"
+                    "可在 QQ Bot 后端所在机器的已发现真实目录中读取、修改、构建和测试；manage_project_workspace 的 create/open/select 设置当前项目，"
+                    "之后四个工具省略 cwd 时会继续在该项目工作。"
                     "exec_status 查询长命令进度，exec_cancel 停止命令；/access ops 查看当前操作权限。"
                 ),
                 trigger=_execution_qq_enabled,

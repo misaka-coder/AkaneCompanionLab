@@ -105,6 +105,19 @@ class _ExecToolHandlerBase(BaseToolHandler):
             provider_id=str(getattr(provider, "provider_id", "local") or "local"),
         )
 
+    def _project_scope(self, context: ToolExecutionContext):
+        service = self.project_workspace_service
+        if service is None:
+            raise ProjectWorkspaceError("project_workspace_unconfigured")
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        return service.scope_for(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            client_mode=context.client_mode,
+            actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+            actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
+        )
+
     @staticmethod
     def _resource_scope(context: ToolExecutionContext) -> ExecutionResourceScope:
         """Keep artifacts in the conversation namespace, not run-control scope."""
@@ -126,6 +139,43 @@ class _ExecToolHandlerBase(BaseToolHandler):
         if not availability.enabled:
             return {"enabled": False, "status": "unavailable", "reason": str(availability.reason or "execution_unavailable")}
         return {"enabled": True, "status": str(availability.status or "ready") or "ready", "reason": ""}
+
+    def working_directory_context(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        client_mode: str,
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
+    ) -> dict[str, str]:
+        """Return a prompt-safe description of the conversation cwd.
+
+        Physical managed roots and host-bound paths stay inside the executor;
+        coding tools only need the stable alias and project identity.
+        """
+
+        service = self.project_workspace_service
+        if service is None:
+            return {}
+        try:
+            scope = service.scope_for(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                client_mode=client_mode,
+                actor_stable_id=actor_stable_id,
+                actor_profile_user_id=actor_profile_user_id,
+            )
+            current = service.current(scope=scope)
+        except ProjectWorkspaceError:
+            current = None
+        if current is None:
+            return {"working_directory": "execution_root", "project": "none"}
+        return {
+            "working_directory": "alias:project",
+            "project": str(current.get("display_name") or "unnamed"),
+            "workspace_id": str(current.get("workspace_id") or ""),
+        }
 
     def _unavailable_result(self, reason: str) -> ToolExecutionResult:
         clean_reason = str(reason or "execution_provider_unconfigured")
@@ -389,7 +439,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         return (
             "- exec_run：command 直接由上方宿主事实中的 command_shell 解释，不经过另一层隐式 Shell；它不是 Shell 沙箱。"
             "Windows 默认使用 PowerShell；确需 cmd 语法时显式调用 cmd.exe /c。"
-            "cwd 可为工作区相对路径、alias:project 或真实宿主绝对目录，省略时使用受信任执行根；先从真实输出发现路径。"
+            "cwd 可为工作区相对路径、alias:project 或真实宿主绝对目录；省略时使用当前项目，没有当前项目时使用执行根。"
+            "显式 cwd 只覆盖这一条命令；先从真实输出发现路径。"
             "工具结果只描述这一条命令，不代表整个任务：running 用 exec_status 续读或 exec_cancel 停止；"
             "failed/timed_out 时依据真实输出修正命令或换路，确实无法继续时再说明阻塞。"
             "本机所需程序未运行时，先查找安装位置并启动；Windows 长驻进程用 Start-Process 后验证端口或进程，"
@@ -483,20 +534,30 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return self._unavailable_result("execution_provider_unconfigured")
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
-        if cwd == "alias:project" or cwd.startswith("alias:project/"):
-            service = self.project_workspace_service
-            if service is None:
-                return self._project_rejected("project_workspace_unconfigured")
-            request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        input_resources = call.get("input_resources") or []
+        if not cwd and not input_resources and self.project_workspace_service is not None:
             try:
-                scope = service.scope_for(
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    client_mode=context.client_mode,
-                    actor_stable_id=str(request_context.get("actor_stable_id") or ""),
-                    actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
-                )
-                cwd = service.execution_cwd(
+                scope = self._project_scope(context)
+                if self.project_workspace_service.current(scope=scope) is not None:
+                    cwd = self.project_workspace_service.execution_cwd(
+                        scope=scope,
+                        alias_value="alias:project",
+                        execution_provider=provider,
+                    )
+                    call = {**call, "cwd": cwd}
+            except ProjectWorkspaceError as exc:
+                # A group continuation without a triggering actor has no
+                # conversation-member selection to inherit.  Keep the old
+                # execution-root default instead of turning an unrelated tool
+                # call into group_actor_required.
+                if exc.reason not in {"group_actor_required", "group_actor_profile_required"}:
+                    return self._project_rejected(exc.reason)
+        if cwd == "alias:project" or cwd.startswith("alias:project/"):
+            if self.project_workspace_service is None:
+                return self._project_rejected("project_workspace_unconfigured")
+            try:
+                scope = self._project_scope(context)
+                cwd = self.project_workspace_service.execution_cwd(
                     scope=scope,
                     alias_value=cwd,
                     execution_provider=provider,

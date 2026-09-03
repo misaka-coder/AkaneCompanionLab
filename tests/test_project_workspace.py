@@ -173,6 +173,20 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         physical = self.execution_root / "Projects" / created["workspace_id"] / "src" / "main.js"
         self.assertTrue(physical.is_file())
 
+    def test_close_clears_only_the_conversation_default(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Keep Registered")
+
+        closed = self.service.close(scope=self.private)
+
+        self.assertTrue(closed["closed"])
+        self.assertEqual(closed["previous_workspace_id"], created["workspace_id"])
+        self.assertEqual(closed["working_directory"], "execution_root")
+        self.assertIsNone(self.service.current(scope=self.private))
+        self.assertEqual(
+            self.service.list(scope=self.private)["workspaces"][0]["workspace_id"],
+            created["workspace_id"],
+        )
+
     def test_desktop_host_binding_is_private_idempotent_and_executable(self) -> None:
         desktop = self.service.scope_for(
             profile_user_id="alice",
@@ -760,7 +774,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         spec = handler.tool_spec()
         item_schema = spec.output_schema["properties"]["files"]["items"]
 
-        self.assertEqual(spec.spec_version, "2.0.0")
+        self.assertEqual(spec.spec_version, "2.1.0")
         self.assertEqual(spec.schema_version, 4)
         self.assertEqual(
             item_schema["properties"]["operation"]["enum"],
@@ -1039,8 +1053,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "succeeded")
         self.assertEqual((self.execution_root / "default.txt").read_text(encoding="utf-8"), "ok\n")
 
-    def test_file_tools_default_to_execution_root_even_when_an_old_project_is_selected(self) -> None:
-        self.service.create(scope=self.private, display_name="Old Selected Project")
+    def test_file_tools_default_to_current_selected_project(self) -> None:
+        created = self.service.create(scope=self.private, display_name="Current Project")
         provider = TrustedLocalExecutor(
             workspace_root=self.execution_root,
             run_log_dir=self.root / "runlogs-default-selected",
@@ -1053,9 +1067,11 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         )
 
         state = result.state_updates["project_workspace"]
+        project_file = self.execution_root / "Projects" / created["workspace_id"] / "current-task.txt"
         self.assertEqual(result.stream_events[0]["status"], "succeeded")
-        self.assertEqual(Path(state["cwd"]), self.execution_root.resolve())
-        self.assertEqual((self.execution_root / "current-task.txt").read_text(encoding="utf-8"), "same cwd\n")
+        self.assertEqual(state["workspace_id"], created["workspace_id"])
+        self.assertTrue(project_file.is_file())
+        self.assertFalse((self.execution_root / "current-task.txt").exists())
 
     def test_direct_file_tools_do_not_require_group_actor_identity(self) -> None:
         provider = TrustedLocalExecutor(
@@ -1124,7 +1140,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
 
         self.assertEqual(
             schema["properties"]["action"]["enum"],
-            ["list", "create", "open", "select", "archive", "current"],
+            ["list", "create", "open", "select", "archive", "current", "close"],
         )
         self.assertIn("path", schema["properties"])
 
@@ -1165,6 +1181,70 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
 
         self.assertEqual(result.stream_events[0]["status"], "completed")
         self.assertEqual(captured["cwd"], f"Projects/{created['workspace_id']}")
+
+    def test_exec_run_omitted_cwd_uses_current_project_and_explicit_cwd_is_one_shot(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        created = self.service.create(scope=self.private, display_name="Default Exec Project")
+        provider = SimpleNamespace(provider_id="local")
+        handler = ExecRunToolHandler(
+            execution_provider=provider,
+            project_workspace_service=self.service,
+        )
+        handler._permission_decision = lambda context, preview: SimpleNamespace(allowed=True)
+        captured: list[str] = []
+
+        def fake_execute(provider_arg, **kwargs):
+            captured.append(str(kwargs.get("cwd") or ""))
+            return SimpleNamespace(
+                data={"status": "completed", "run_id": "execrun_" + str(len(captured)) * 32},
+                event_status="completed",
+                reason="",
+                model_feedback="done",
+                event={"type": "capability_execution_result", "status": "completed"},
+            )
+
+        with patch("companion_v01.tool_handlers.execution.execute_exec_run", side_effect=fake_execute):
+            handler.execute(
+                call={"type": "exec_run", "command": "echo default"},
+                context=self._context(),
+            )
+            handler.execute(
+                call={"type": "exec_run", "command": "echo override", "cwd": "scratch"},
+                context=self._context(),
+            )
+            handler.execute(
+                call={"type": "exec_run", "command": "echo default-again"},
+                context=self._context(),
+            )
+
+        project_cwd = f"Projects/{created['workspace_id']}"
+        self.assertEqual(captured, [project_cwd, "scratch", project_cwd])
+
+    def test_exec_run_input_resources_do_not_inherit_current_project(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        self.service.create(scope=self.private, display_name="Resource Isolation")
+        handler = ExecRunToolHandler(
+            execution_provider=SimpleNamespace(provider_id="local"),
+            project_workspace_service=self.service,
+        )
+        handler._permission_decision = lambda context, preview: SimpleNamespace(allowed=True)
+
+        with patch.object(self.service, "execution_cwd") as resolve_project:
+            result = handler.execute(
+                call={
+                    "type": "exec_run",
+                    "command": "echo staged",
+                    "input_resources": [{"handle": "file_001", "as": "input.txt"}],
+                },
+                context=self._context(),
+            )
+
+        resolve_project.assert_not_called()
+        self.assertEqual(result.stream_events[0]["reason"], "execution_resources_unconfigured")
 
     def test_exec_alias_project_without_selection_is_actionable_rejection(self) -> None:
         from types import SimpleNamespace

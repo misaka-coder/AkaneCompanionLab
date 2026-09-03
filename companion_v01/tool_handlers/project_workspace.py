@@ -108,10 +108,23 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
             return {"workspace_id": clean_workspace_id, "operation_root": None, "path": clean_path}
 
         provider = self.execution_provider
-        if not clean_cwd and provider is None:
-            scope = self._scope(context)
-            if self.service.current(scope=scope) is not None:
-                return {"workspace_id": "", "operation_root": None, "path": clean_path}
+        if not clean_cwd:
+            try:
+                scope = self._scope(context)
+                selected = self.service.current(scope=scope)
+            except ProjectWorkspaceError as exc:
+                # A host-triggered group continuation can legitimately have no
+                # member identity.  It has no actor-scoped selection to inherit,
+                # so ordinary file operations keep using the execution root.
+                if exc.reason not in {"group_actor_required", "group_actor_profile_required"}:
+                    raise
+                selected = None
+            if selected is not None:
+                return {
+                    "workspace_id": str(selected["workspace_id"]),
+                    "operation_root": None,
+                    "path": clean_path,
+                }
         resolver = getattr(provider, "resolve_workdir", None)
         if not callable(resolver):
             raise ProjectWorkspaceError("execution_path_authority_unavailable")
@@ -150,10 +163,10 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_project_workspace：仅在项目需要跨会话查找、稳定 alias:project 或目录归属时，管理当前用户共享的持久项目目录；"
-            "它不是读写源码的前置步骤。需要持久项目时可 current/list、create/open/select；create 建宿主管理项目；"
+            "- manage_project_workspace：管理当前会话的默认代码目录。需要持久项目时可 current/list、create/open/select/close；create 建宿主管理项目；"
             "用户指定桌面或其它真实位置时，先用 Shell 确认/创建绝对目录，再用 open（path，可选 display_name）注册。"
-            "当前选择按会话隔离，选中后 Shell 的 cwd 使用 alias:project。"
+            "create/open/select 会立即把该项目设为当前工作目录；之后 project_inspect、workspace_write、workspace_patch 和 exec_run 省略 cwd 时都会使用它。"
+            "显式 cwd 只覆盖当前一次调用；close 仅退出当前目录，不删除文件也不撤销权限。"
             "archive 只归档，不删除项目文件。"
         )
 
@@ -161,7 +174,7 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
         if not isinstance(value, dict) or str(value.get("type") or "") != self.tool_type:
             return None
         action = str(value.get("action") or "").strip()
-        if action not in {"list", "create", "open", "select", "archive", "current"}:
+        if action not in {"list", "create", "open", "select", "archive", "current", "close"}:
             return None
         normalized = {"type": self.tool_type, "action": action}
         if action == "create":
@@ -213,6 +226,13 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
                     "workspace": self.service.current(scope=scope()),
                 }
             )
+        if action == "close":
+            return self._execute(
+                lambda: {
+                    "status": "succeeded",
+                    **self.service.close(scope=scope()),
+                }
+            )
         return self._execute(lambda: self.service.list(scope=scope(), include_archived=bool(call.get("include_archived"))))
 
 
@@ -224,7 +244,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- project_inspect：只读检查源码。path 可相对 cwd、使用真实绝对路径；省略 cwd 时与 exec_run 一样使用受信任执行根；"
+            "- project_inspect：只读检查源码。path 可相对 cwd、使用真实绝对路径；省略 cwd 时使用当前项目，没有当前项目时使用执行根；"
             "list 发现相对路径，search 按文本或正则定位到行号，"
             "read 按行读取 UTF-8 源码并返回 SHA-256。长结果按完整条目或完整代码片段分页；"
             "续读时原样重复 action 与选择参数并带 cursor，源码变化会明确返回 stale_cursor。"
@@ -661,8 +681,8 @@ class WorkspaceWriteToolHandler(_ProjectWorkspaceHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- workspace_write：相对 cwd、真实绝对 path 或当前持久项目原子创建/替换一个 UTF-8 文件。"
-            "省略 cwd/workspace_id 时与 exec_run 一样使用受信任执行工作区根；已有文件优先带 expected_sha256，"
-            "冲突时重新读取再修改。长源码优先用本工具，不必先注册项目；需要已注册项目时显式使用 cwd=alias:project 或 workspace_id。"
+            "省略 cwd/workspace_id 时使用当前项目，没有当前项目时使用执行根；已有文件优先带 expected_sha256，"
+            "冲突时重新读取再修改。长源码优先用本工具；显式 cwd/workspace_id 只覆盖当前调用。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -717,7 +737,7 @@ class WorkspacePatchToolHandler(_ProjectWorkspaceHandler):
             "空格前缀的原文、`-` 删除行、`+` 新增行 → `*** End Patch`；不要填写 unified diff 的行号和行数。"
             "Add File 的每一行以 `+` 开头；Delete File 不附带正文。"
             "支持修改、新建、删除和重命名；所有 hunk 先校验再提交，失败时不会留下半应用结果。"
-            "省略 cwd/workspace_id 时与 exec_run 一样使用受信任执行工作区根；需要已注册项目时显式使用 cwd=alias:project 或 workspace_id。"
+            "省略 cwd/workspace_id 时使用当前项目，没有当前项目时使用执行根；显式 cwd/workspace_id 只覆盖当前调用。"
             "可用 expected_files 绑定既有文件的旧 sha256。"
         )
 
