@@ -31,10 +31,6 @@ APPROVAL_MODE_DISABLED = "disabled"
 APPROVAL_FAMILY_OPERATIONS = "ops"
 APPROVAL_FAMILY_EXTENSIONS = "extensions"
 APPROVAL_POLICY_DEFAULT_MODE = APPROVAL_MODE_ASK_EACH_TIME
-APPROVAL_POLICY_MODES = {
-    APPROVAL_MODE_ASK_EACH_TIME,
-    APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-}
 APPROVAL_MODES = {
     APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
     APPROVAL_MODE_ASK_EACH_TIME,
@@ -103,7 +99,7 @@ MCP_PROFILE_OVERRIDE_FIELDS = {
     "pinnedTools",
     "lowRiskAllowlist",
 }
-PUBLIC_APPROVAL_POLICY_FIELDS = {"defaultMode", "capabilityModes", "updatedAt"}
+PUBLIC_APPROVAL_POLICY_FIELDS = {"capabilityModes", "updatedAt"}
 WORKFLOW_PATH_MAX_LENGTH = 220
 WORKFLOW_SLOT_MAX_LENGTH = 80
 VOICE_PROFILE_TEXT_MAX_LENGTH = 300
@@ -218,9 +214,11 @@ def apply_approval_policy_to_entry(
     policy = normalize_approval_policy_config(approval_policy)
     if public_entry.get("approvalMode") == APPROVAL_MODE_DISABLED:
         return public_entry
+    permission_request = capcore_permission_request_from_mapping(public_entry, default_confirm="never")
     policy_mode = approval_mode_for_capability(
         policy,
         str(public_entry.get("id") or public_entry.get("capabilityId") or ""),
+        family_id=APPROVAL_FAMILY_OPERATIONS if permission_request.required else "",
     )
     decision = _capcore_permission_decision_from_entry(public_entry, policy_mode=policy_mode)
     request = decision.request
@@ -260,15 +258,21 @@ def _normalize_capability_approval_modes(value: Any) -> dict[str, str]:
 
 def normalize_approval_policy_config(raw_policy: Any) -> dict[str, Any]:
     raw = raw_policy if isinstance(raw_policy, Mapping) else {}
-    default_mode = str(raw.get("defaultMode") or raw.get("default_mode") or APPROVAL_POLICY_DEFAULT_MODE).strip()
-    if default_mode not in APPROVAL_POLICY_MODES:
-        default_mode = APPROVAL_POLICY_DEFAULT_MODE
+    capability_modes = _normalize_capability_approval_modes(
+        raw.get("capabilityModes") or raw.get("capability_modes")
+    )
+    # Version-1 profiles used one global default and a synthetic ``mcp``
+    # override.  Translate that persisted data at the storage boundary; the
+    # runtime itself has only concrete capability and family policy now.
+    legacy_default = str(raw.get("defaultMode") or raw.get("default_mode") or "").strip()
+    if legacy_default not in APPROVAL_MODES:
+        legacy_default = APPROVAL_POLICY_DEFAULT_MODE
+    capability_modes.pop("mcp", None)
+    capability_modes.setdefault(APPROVAL_FAMILY_OPERATIONS, legacy_default)
+    capability_modes.setdefault(APPROVAL_FAMILY_EXTENSIONS, legacy_default)
     updated_at = _safe_short_text(raw.get("updatedAt") or raw.get("updated_at"))
     return {
-        "defaultMode": default_mode,
-        "capabilityModes": _normalize_capability_approval_modes(
-            raw.get("capabilityModes") or raw.get("capability_modes")
-        ),
+        "capabilityModes": capability_modes,
         "updatedAt": updated_at,
     }
 
@@ -294,27 +298,18 @@ def approval_mode_for_capability(
     exact_mode = approval_mode_override_for_capability(normalized, capability_id)
     if exact_mode:
         return exact_mode
-    safe_id = _safe_capability_approval_id(capability_id)
     # Family membership is supplied by the call site after it has classified
     # the concrete action.  Inferring it from a capability-name prefix would
     # incorrectly put read-only MCP/plugin actions behind the ops switch.
-    if safe_id.startswith("mcp."):
-        # A legacy /mcp command is an explicit, narrower override. Saving the
-        # new ops family removes this compatibility value, so the latest
-        # user-facing command remains the one source of truth.
-        legacy_family_mode = approval_mode_override_for_capability(normalized, "mcp")
-        if legacy_family_mode:
-            return legacy_family_mode
     safe_family_id = _safe_capability_approval_id(family_id)
     if safe_family_id:
         family_mode = approval_mode_override_for_capability(normalized, safe_family_id)
         if family_mode:
             return family_mode
-    return str(normalized["defaultMode"])
+    return APPROVAL_POLICY_DEFAULT_MODE
 
 def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, Any]:
     normalized = normalize_approval_policy_config(policy)
-    default_mode = normalized["defaultMode"]
     family_modes = (
         (APPROVAL_FAMILY_OPERATIONS, "本机与外部操作", "Shell、浏览器交互和会产生外部影响的 MCP/插件工具。"),
         (APPROVAL_FAMILY_EXTENSIONS, "扩展管理", "安装、发布、启停、更新和移除 Skill、MCP 与插件。"),
@@ -325,16 +320,6 @@ def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, A
         {"id": APPROVAL_MODE_DISABLED, "label": "关闭", "summary": "不允许执行这类动作。"},
     ]
     return {
-        "defaultMode": default_mode,
-        "label": "完全访问" if default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW else "请求批准",
-        "summary": (
-            "高风险能力在执行前自动允许；仍保留 URL、路径、密钥和本地边界校验。"
-            if default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW
-            else "高风险能力在执行前创建审批请求，由用户允许或拒绝。"
-        ),
-        "requiresConfirmationByDefault": default_mode == APPROVAL_MODE_ASK_EACH_TIME,
-        "trustedAutoAllowHighRisk": default_mode == APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-        "capabilityModes": dict(normalized["capabilityModes"]),
         "families": [
             {
                 "id": family_id,
@@ -344,18 +329,6 @@ def build_approval_policy_entry(policy: Mapping[str, Any] | None) -> dict[str, A
                 "availableModes": [dict(item) for item in family_options],
             }
             for family_id, label, summary in family_modes
-        ],
-        "availableModes": [
-            {
-                "id": APPROVAL_MODE_ASK_EACH_TIME,
-                "label": "请求批准",
-                "summary": "高风险动作先进入审批队列。",
-            },
-            {
-                "id": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
-                "label": "完全访问",
-                "summary": "跳过高风险动作的逐次确认，但不跳过硬安全校验。",
-            },
         ],
         "updatedAt": normalized["updatedAt"],
     }
@@ -506,60 +479,6 @@ def get_approval_policy_config(
     }
 
 
-def save_approval_policy_config(
-    *,
-    base_dir: Path | str | None,
-    profile_user_id: str,
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    normalized = normalize_approval_policy_config(payload)
-    if str(payload.get("defaultMode") or payload.get("default_mode") or "").strip() not in APPROVAL_POLICY_MODES:
-        return {
-            "ok": False,
-            "status": "invalid_config",
-            "reason": "approval_policy_mode_invalid",
-            "configScope": _public_config_scope(profile_user_id),
-        }
-    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
-    if config.get("configStatus") == "invalid_config":
-        return {
-            "ok": False,
-            "status": "invalid_config",
-            "reason": config.get("reason") or "provider_config_file_invalid",
-            "configScope": _public_config_scope(profile_user_id),
-        }
-    existing_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
-    capability_modes_supplied = "capabilityModes" in payload or "capability_modes" in payload
-    approval_policy = {
-        "defaultMode": normalized["defaultMode"],
-        "capabilityModes": (
-            normalized["capabilityModes"]
-            if capability_modes_supplied
-            else existing_policy["capabilityModes"]
-        ),
-        "updatedAt": _now_iso(),
-    }
-    write_capability_config(
-        base_dir=base_dir,
-        profile_user_id=profile_user_id,
-        config={
-            "schemaVersion": CONFIG_SCHEMA_VERSION,
-            "approvalPolicy": approval_policy,
-            "providers": config.get("providers", {}),
-            "workflows": config.get("workflows", {}),
-            "voiceProfiles": config.get("voiceProfiles", {}),
-            "mcpServers": config.get("mcpServers", {}),
-        },
-    )
-    return {
-        "ok": True,
-        "status": "saved",
-        "configScope": _public_config_scope(profile_user_id),
-        "approvalPolicy": build_approval_policy_entry(approval_policy),
-        "refresh": True,
-    }
-
-
 def save_capability_approval_mode(
     *,
     base_dir: Path | str | None,
@@ -586,15 +505,8 @@ def save_capability_approval_mode(
         }
     approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
     capability_modes = dict(approval_policy["capabilityModes"])
-    if safe_capability_id == APPROVAL_FAMILY_OPERATIONS:
-        # The old QQ controls wrote these narrower keys. An explicit save of
-        # the new family is a migration point, otherwise an invisible legacy
-        # value could contradict the control-center selection.
-        capability_modes.pop("exec_run", None)
-        capability_modes.pop("mcp", None)
     capability_modes[safe_capability_id] = normalized_mode
     approval_policy = {
-        "defaultMode": approval_policy["defaultMode"],
         "capabilityModes": capability_modes,
         "updatedAt": _now_iso(),
     }
@@ -648,12 +560,8 @@ def save_capability_approval_modes(
         }
     approval_policy = normalize_approval_policy_config(config.get("approvalPolicy"))
     capability_modes = dict(approval_policy["capabilityModes"])
-    if APPROVAL_FAMILY_OPERATIONS in normalized_updates:
-        capability_modes.pop("exec_run", None)
-        capability_modes.pop("mcp", None)
     capability_modes.update(normalized_updates)
     approval_policy = {
-        "defaultMode": approval_policy["defaultMode"],
         "capabilityModes": capability_modes,
         "updatedAt": _now_iso(),
     }

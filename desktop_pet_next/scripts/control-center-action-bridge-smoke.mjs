@@ -192,7 +192,7 @@ await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesMcpRestart, { serverId: 
 assert.match(backendRequests.at(-1).url, /\/capabilities\/mcp-servers\/github\/restart/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
-await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { defaultMode: "full_access" });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/approval-policy/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide, {
   requestId: "request-1",

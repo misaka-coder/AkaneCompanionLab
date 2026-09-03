@@ -107,7 +107,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "character.setOutfit": { available: connected && outfits.length > 0, reason: connected ? "当前角色没有服装资源" : "桌宠尚未连接" },
       "character.previewEmotion": { available: connected && emotions.length > 0, reason: connected ? "当前服装没有表情资源" : "桌宠尚未连接" },
       "character.refresh": { available: connected, reason: "桌宠尚未连接" },
-      "abilities.approvalPolicy.save": { available: connected && abilities.policy.availableModes.length > 0, reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
+      "abilities.approvalPolicy.save": { available: connected && abilities.policy.families.some((family) => family.availableModes.length > 0), reason: connected ? "审批策略暂不可用" : "桌宠尚未连接" },
       "abilities.approvalRequest.decide": { available: connected && abilities.approvalRequests.length > 0, reason: connected ? "当前没有待确认请求" : "桌宠尚未连接" },
       "abilities.skills.openFolder": { available: true, reason: "" },
       "abilities.provider.config.save": capabilityActionAvailability(connected, abilities.providers),
@@ -159,7 +159,7 @@ function deriveSetupReadiness({ connected, packId, displayName, characterWarning
   const hasActiveCharacter = Boolean(packId || (displayName && displayName !== "当前角色"));
   const characterReady = connected && hasActiveCharacter && !characterWarnings.length;
   const modelReady = connected && model.configured && Boolean(model.chatModel);
-  const permissionsReady = connected && abilities.available && Boolean(abilities.policy.defaultMode);
+  const permissionsReady = connected && abilities.available && abilities.policy.families.length === 2;
   const skillsReady = connected && abilities.skills.status === "ready" && abilities.skills.total > 0;
   const voiceReady = connected && Boolean(voice.tts.provider.ready);
   const items = [
@@ -731,27 +731,6 @@ function normalizeAbilitiesRuntime(value, connected) {
   const overview = asObject(source.overview);
   const safety = asObject(source.safety);
   const policy = asObject(safety.approvalPolicy);
-  const defaultMode = ["ask_each_time", "trusted_auto_allow"].includes(text(policy.defaultMode))
-    ? text(policy.defaultMode)
-    : "ask_each_time";
-  const availableModes = (Array.isArray(policy.availableModes) ? policy.availableModes : [])
-    .map((item) => {
-      const entry = asObject(item);
-      const id = text(entry.id);
-      if (!["ask_each_time", "trusted_auto_allow"].includes(id)) return null;
-      return {
-        id,
-        label: text(entry.label) || (id === "trusted_auto_allow" ? "完全访问" : "请求批准"),
-        summary: text(entry.summary)
-      };
-    })
-    .filter(Boolean);
-  if (!availableModes.length && connected) {
-    availableModes.push(
-      { id: "ask_each_time", label: "请求批准", summary: "高风险动作执行前先请求确认。" },
-      { id: "trusted_auto_allow", label: "完全访问", summary: "自动允许高风险能力，但保留路径、密钥和边界校验。" }
-    );
-  }
   const families = (Array.isArray(policy.families) ? policy.families : [])
     .map((item) => {
       const entry = asObject(item);
@@ -777,17 +756,10 @@ function normalizeAbilitiesRuntime(value, connected) {
       };
     })
     .filter(Boolean);
-  if (!families.length && connected) {
-    const familyModes = [
-      { id: "trusted_auto_allow", label: "直接允许", summary: "无需逐次确认。" },
-      { id: "ask_each_time", label: "每次询问", summary: "确认后再执行。" },
-      { id: "disabled", label: "关闭", summary: "不允许执行这类动作。" }
-    ];
-    families.push(
-      { id: "ops", label: "本机与外部操作", summary: "Shell、浏览器交互和有外部影响的工具。", mode: defaultMode, availableModes: familyModes },
-      { id: "extensions", label: "扩展管理", summary: "安装、发布、启停与移除 Skill、MCP 和插件。", mode: defaultMode, availableModes: familyModes }
-    );
-  }
+  const allSameMode = families.length > 0 && families.every((family) => family.mode === families[0].mode);
+  const policyLabel = allSameMode
+    ? ({ trusted_auto_allow: "全部直接允许", ask_each_time: "全部每次询问", disabled: "全部关闭" }[families[0].mode] || "按能力分组设置")
+    : families.length ? "按能力分组设置" : "策略不可用";
   return {
     available: connected && Object.keys(source).length > 0,
     availability: finitePercent(overview.availability),
@@ -806,10 +778,8 @@ function normalizeAbilitiesRuntime(value, connected) {
       };
     }).filter((item) => item.title),
     policy: {
-      defaultMode,
-      label: text(policy.label) || (defaultMode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
-      summary: text(policy.summary),
-      availableModes,
+      label: policyLabel,
+      summary: families.length ? "本机操作与扩展管理分别授权。" : "后端未返回权限分组。",
       families
     },
     safetyStatus: text(safety.status) || (connected ? "已生效" : "待连接"),

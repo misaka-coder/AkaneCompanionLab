@@ -3890,7 +3890,10 @@ class BackendRouteModuleTests(unittest.TestCase):
 
             default_policy = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master")
             self.assertEqual(default_policy.status_code, 200)
-            self.assertEqual(default_policy.json()["approvalPolicy"]["defaultMode"], "ask_each_time")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in default_policy.json()["approvalPolicy"]["families"]},
+                {"ops": "ask_each_time", "extensions": "ask_each_time"},
+            )
 
             client.post(
                 "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
@@ -3900,7 +3903,7 @@ class BackendRouteModuleTests(unittest.TestCase):
 
             catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
             by_id = {item["id"]: item for item in catalog["capabilities"]}
-            self.assertEqual(catalog["approvalPolicy"]["defaultMode"], "ask_each_time")
+            self.assertNotIn("defaultMode", catalog["approvalPolicy"])
             self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
             self.assertTrue(by_id["mcp.browser.browser_click"]["requiresConfirmation"])
             self.assertEqual(by_id["mcp.browser.browser_click"]["approvalMode"], "ask_each_time")
@@ -3908,11 +3911,15 @@ class BackendRouteModuleTests(unittest.TestCase):
 
             saved = client.post(
                 "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
-                json={"defaultMode": "trusted_auto_allow", "api_key": "must-not-leak"},
+                json={"familyId": "ops", "mode": "trusted_auto_allow", "api_key": "must-not-leak"},
             )
             self.assertEqual(saved.status_code, 200)
             self.assertTrue(saved.json()["ok"])
-            self.assertEqual(saved.json()["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in saved.json()["approvalPolicy"]["families"]}["ops"],
+                "trusted_auto_allow",
+            )
+            self.assertNotIn("capabilityModes", saved.json()["approvalPolicy"])
             self.assertNotIn("must-not-leak", saved.text)
 
             config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
@@ -3927,12 +3934,15 @@ class BackendRouteModuleTests(unittest.TestCase):
                 json={"enabled": True, "displayName": "Browser MCP", "command": "browser-mcp"},
             )
             preserved = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master").json()
-            self.assertEqual(preserved["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in preserved["approvalPolicy"]["families"]}["ops"],
+                "trusted_auto_allow",
+            )
 
             trusted_catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
             trusted_by_id = {item["id"]: item for item in trusted_catalog["capabilities"]}
             trusted_click = trusted_by_id["mcp.browser.browser_click"]
-            self.assertEqual(trusted_catalog["approvalPolicy"]["defaultMode"], "trusted_auto_allow")
+            self.assertNotIn("defaultMode", trusted_catalog["approvalPolicy"])
             self.assertEqual(trusted_click["approvalMode"], "trusted_auto_allow")
             self.assertEqual(trusted_click["approvalReason"], "user_policy_trusted_auto_allow")
             self.assertFalse(trusted_click["requiresConfirmation"])
@@ -3949,7 +3959,6 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(family_saved.status_code, 200)
             self.assertTrue(family_saved.json()["ok"])
             family_policy = family_saved.json()["approvalPolicy"]
-            self.assertEqual(family_policy["capabilityModes"]["ops"], "ask_each_time")
             self.assertEqual(
                 {item["id"]: item["mode"] for item in family_policy["families"]}["ops"],
                 "ask_each_time",
@@ -3961,7 +3970,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
             self.assertEqual(invalid.status_code, 400)
             self.assertEqual(invalid.json()["status"], "invalid_config")
-            self.assertEqual(invalid.json()["reason"], "approval_policy_mode_invalid")
+            self.assertEqual(invalid.json()["reason"], "approval_policy_family_and_mode_required")
 
             self.assertIn(("capabilities.approval_policy", True), runtime.observed)
             self.assertIn(("capabilities.approval_policy_save", True), runtime.observed)

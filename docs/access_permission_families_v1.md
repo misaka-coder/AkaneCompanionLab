@@ -17,7 +17,7 @@
 - `ask` / `ask_each_time`：为精确调用创建审批请求；
 - `off` / `disabled`：不执行该组动作，并把原因返回模型。
 
-精确 capability override 优先于分组；分组优先于全局默认值。旧 `/shell`、`/mcp` 写入的窄范围 override 暂时继续生效；用户下一次明确保存 `ops` 时会清掉这两个旧值，避免控制中心显示与实际行为不一致。
+精确 capability override 优先于分组；分组未配置时使用宿主内部的保守默认值 `ask_each_time`。公开配置没有第三套全局开关。
 
 ## 用户入口
 
@@ -32,8 +32,6 @@ QQ 主人命令：
 /approve [request-id 后缀]
 /deny [request-id 后缀]
 ```
-
-`/shell` 与 `/mcp` 暂时保留为主人 profile 上的精确能力兼容入口。新配置以 `/access` 和控制中心的两组开关为主。
 
 控制中心直接展示 `ops` 与 `extensions`，每组可独立选择“直接允许 / 每次询问 / 关闭”。安全的读取能力不展示虚假审批开关。
 

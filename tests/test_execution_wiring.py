@@ -27,8 +27,9 @@ from companion_v01.execution_specs import EXEC_STATUS_RUNNING
 from companion_v01.capcore_runtime import manual_permission_request, resolve_permission_for_profile
 from companion_v01.local_capability_config import (
     get_approval_policy_config,
-    save_approval_policy_config,
+    load_capability_config,
     save_capability_approval_mode,
+    save_capability_approval_modes,
 )
 from companion_v01.tool_handlers.catalog import build_builtin_tool_handlers
 from companion_v01.tool_handlers.execution import (
@@ -96,10 +97,10 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
 
     def _set_policy(self, mode: str) -> None:
-        result = save_approval_policy_config(
+        result = save_capability_approval_modes(
             base_dir=self.base_dir,
             profile_user_id="alice",
-            payload={"defaultMode": mode},
+            modes={"ops": mode, "extensions": mode},
         )
         self.assertTrue(result.get("ok"), result)
 
@@ -323,8 +324,8 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
         self.assertTrue(saved.get("ok"), saved)
         policy = get_approval_policy_config(base_dir=self.base_dir, profile_user_id="alice")["approvalPolicy"]
-        self.assertEqual(policy["defaultMode"], "ask_each_time")
-        self.assertEqual(policy["capabilityModes"], {"exec_run": "trusted_auto_allow"})
+        self.assertNotIn("defaultMode", policy)
+        self.assertNotIn("capabilityModes", policy)
 
         exec_result = self._handler().execute(
             call={"type": "exec_run", "command": "echo hi", "initial_wait_seconds": 1},
@@ -350,20 +351,21 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertFalse(other_decision.allowed)
         self.assertTrue(other_decision.requires_user_decision)
 
-    def test_global_policy_save_preserves_shell_override(self) -> None:
+    def test_family_policy_save_preserves_exact_override(self) -> None:
         save_capability_approval_mode(
             base_dir=self.base_dir,
             profile_user_id="alice",
             capability_id="exec_run",
             mode="disabled",
         )
-        saved = save_approval_policy_config(
+        saved = save_capability_approval_modes(
             base_dir=self.base_dir,
             profile_user_id="alice",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         self.assertTrue(saved.get("ok"), saved)
-        self.assertEqual(saved["approvalPolicy"]["capabilityModes"], {"exec_run": "disabled"})
+        stored = load_capability_config(base_dir=self.base_dir, profile_user_id="alice")["approvalPolicy"]
+        self.assertEqual(stored["capabilityModes"]["exec_run"], "disabled")
 
     def test_exec_run_unconfigured_provider_is_unavailable(self) -> None:
         handler = ExecRunToolHandler(execution_provider=None, config_base_dir=self.base_dir)
@@ -625,10 +627,10 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
             run_log_dir=self.run_log_dir,
             provider_id="local",
         )
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=self.base_dir,
             profile_user_id="alice",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         self.handlers = {
             "exec_run": ExecRunToolHandler(execution_provider=self.provider, config_base_dir=self.base_dir),
@@ -724,10 +726,10 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "failed")
 
     def test_envelope_ask_for_approval_required(self) -> None:
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=self.base_dir,
             profile_user_id="alice",
-            payload={"defaultMode": "ask_each_time"},
+            modes={"ops": "ask_each_time", "extensions": "ask_each_time"},
         )
         result, envelope = self._dispatch(self._invocation("exec_run", {"command": "echo hi", "initial_wait_seconds": 1}))
         self.assertEqual(envelope.status, "ask")

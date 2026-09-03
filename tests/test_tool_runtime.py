@@ -13,7 +13,7 @@ from capcore import CapabilityProtocolError, prepare_invocation
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
 from companion_v01.capability_approval import CapabilityApprovalStore
-from companion_v01.local_capability_config import save_approval_policy_config, save_mcp_server_config
+from companion_v01.local_capability_config import save_capability_approval_modes, save_mcp_server_config
 from companion_v01.browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from companion_v01.tool_runtime import (
     AdapterCapabilityToolHandler,
@@ -533,13 +533,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={
-                    "defaultMode": "ask_each_time",
-                    "capabilityModes": {"mcp.demo.echo": "trusted_auto_allow"},
-                },
+                modes={"mcp.demo.echo": "trusted_auto_allow"},
             )
             self.assertTrue(saved["ok"])
             adapter = FakeAdapter()
@@ -561,7 +558,7 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "ok")
         self.assertIn("done", result.followup_context)
 
-    def test_adapter_capability_inherits_mcp_family_trusted_auto_allow(self) -> None:
+    def test_effectful_adapter_inherits_ops_family_trusted_auto_allow(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
@@ -571,13 +568,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 return CapabilityResult(is_error=False, content={"content": []}, status="ok")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={
-                    "defaultMode": "ask_each_time",
-                    "capabilityModes": {"mcp": "trusted_auto_allow"},
-                },
+                modes={"ops": "trusted_auto_allow"},
             )
             self.assertTrue(saved["ok"])
             adapter = FakeAdapter()
@@ -606,13 +600,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 return CapabilityResult(is_error=False, content={"content": []}, status="ok")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={
-                    "defaultMode": "ask_each_time",
-                    "capabilityModes": {"ops": "disabled"},
-                },
+                modes={"ops": "disabled"},
             )
             self.assertTrue(saved["ok"])
             adapter = FakeAdapter()
@@ -678,13 +669,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 return CapabilityResult(is_error=False, content={"content": []}, status="ok")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={
-                    "defaultMode": "trusted_auto_allow",
-                    "capabilityModes": {"mcp.demo.echo": "disabled"},
-                },
+                modes={"ops": "trusted_auto_allow", "mcp.demo.echo": "disabled"},
             )
             self.assertTrue(saved["ok"])
             adapter = FakeAdapter()
@@ -714,10 +702,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            save_approval_policy_config(
+            save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
             handler = AdapterCapabilityToolHandler(
                 capability_id="akane.finance.quote_snapshot.v1",
@@ -741,10 +729,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                 return CapabilityResult(is_error=False, content="字" * 70_000, status="ok")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            save_approval_policy_config(
+            save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
             handler = AdapterCapabilityToolHandler(
                 capability_id="mcp.demo.echo",
@@ -782,10 +770,10 @@ class AdapterCapabilityToolHandlerTests(unittest.TestCase):
                     raise CapabilityProtocolError("mcp_tool_call_failed") from cause
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            save_approval_policy_config(
+            save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
             result = AdapterCapabilityToolHandler(
                 capability_id="mcp.demo.echo",
@@ -1923,10 +1911,10 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
             self.assertTrue(saved["ok"])
             runner = FakeRunner()
@@ -1961,15 +1949,15 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            save_approval_policy_config(
+            save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
-            save_approval_policy_config(
+            save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="qq_group_shared_123",
-                payload={"defaultMode": "ask_each_time"},
+                modes={"ops": "ask_each_time", "extensions": "ask_each_time"},
             )
             runner = FakeRunner()
             handler = BrowserPageToolHandler(browser_runner=runner, config_base_dir=temp_dir)
@@ -2074,10 +2062,10 @@ class BrowserPageToolHandlerTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
-                payload={"defaultMode": "trusted_auto_allow"},
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
             )
             self.assertTrue(saved["ok"])
             runner = FakeRunner()

@@ -2825,15 +2825,15 @@ Implemented Phase 7C foundation:
   MCP tools. Those actions require a later binding that consumes approval grants
   and revalidates the actual operation.
 
-Implemented Phase 7D profile policy:
+Implemented profile policy:
 
-- The profile-scoped capability config stores `approvalPolicy.defaultMode`.
-  The default is conservative: `ask_each_time`.
-- `GET /capabilities/approval-policy` returns the public policy summary and the
-  two supported global modes: `ask_each_time` ("请求批准") and
-  `trusted_auto_allow` ("完全访问").
-- `POST /capabilities/approval-policy` saves only the selected `defaultMode`.
-  Unknown modes return `invalid_config`; arbitrary extra payload fields are not
+- The profile-scoped capability config stores exact and family modes in
+  `approvalPolicy.capabilityModes`. Missing family policy resolves to the
+  conservative internal default `ask_each_time`.
+- `GET /capabilities/approval-policy` returns only the `ops` and `extensions`
+  family entries needed by the control center.
+- `POST /capabilities/approval-policy` requires `familyId + mode`. Unknown
+  families or modes return `invalid_config`; arbitrary extra fields are not
   persisted.
 - `/capabilities` and `/capabilities/workflows` apply the policy when projecting
   public catalog entries. When the policy is `trusted_auto_allow`, high-risk or
@@ -2844,9 +2844,8 @@ Implemented Phase 7D profile policy:
   policy. "完全访问" skips per-call approval only; it does not bypass public URL
   validation, safe-handle path policy, local/private address restrictions,
   secret redaction, config validation, or missing-runner checks.
-- The control center abilities safety panel exposes the two-mode policy switch
-  through `abilities.approvalPolicy.save`, a dedicated backend-route action for
-  `POST /capabilities/approval-policy`.
+- The control center abilities safety panel exposes one three-mode selector per
+  family through `abilities.approvalPolicy.save`.
 
 Implemented Phase 7E managed browser read V1:
 

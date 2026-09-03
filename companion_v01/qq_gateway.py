@@ -233,14 +233,6 @@ QQ_THINKING_MODE_DISABLE_COMMANDS = {
     "关闭思考模式",
     "禁用思考模式",
 }
-QQ_SHELL_PERMISSION_COMMAND_RE = re.compile(
-    r"^[/／]shell(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
-    re.IGNORECASE,
-)
-QQ_MCP_PERMISSION_COMMAND_RE = re.compile(
-    r"^[/／]mcp(?:\s+(status|on|ask|off|状态|开启|询问|关闭))?$",
-    re.IGNORECASE,
-)
 QQ_ACCESS_PERMISSION_COMMAND_RE = re.compile(
     r"^[/／]access(?:\s+(status|ops|extensions|all))?(?:\s+(on|ask|off))?$",
     re.IGNORECASE,
@@ -1128,8 +1120,6 @@ class NapCatQQGateway:
         chat_model_override = self.resolve_chat_model_override(session_id)
 
         access_permission_command = self.parse_access_permission_command(clean_message)
-        shell_permission_command = self.parse_shell_permission_command(clean_message)
-        mcp_permission_command = self.parse_mcp_permission_command(clean_message)
         capability_approval_command = self.parse_capability_approval_command(clean_message)
         group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_attention_command = self.parse_group_attention_command(clean_message)
@@ -1138,12 +1128,6 @@ class NapCatQQGateway:
             group_reason = "qq_access_permission_command"
         elif is_group and capability_approval_command is not None:
             group_reason = "qq_capability_approval_command"
-        elif is_group and shell_permission_command is not None:
-            # Explicit control-plane commands must reach the authorization
-            # handler even when the group normally requires @/wake-word.
-            group_reason = "qq_shell_permission_command"
-        elif is_group and mcp_permission_command is not None:
-            group_reason = "qq_mcp_permission_command"
         elif is_group and group_emotion_command is not None:
             # Emotion delivery is a group control-plane setting too; it must
             # not require addressing the bot or wake-word admission.
@@ -1712,24 +1696,6 @@ class NapCatQQGateway:
             return {"action": "disable"}
         return None
 
-    def parse_shell_permission_command(self, message: str) -> dict[str, str] | None:
-        text = re.sub(r"\s+", " ", str(message or "").strip())
-        match = QQ_SHELL_PERMISSION_COMMAND_RE.fullmatch(text)
-        if match is None:
-            return None
-        argument = str(match.group(1) or "status").strip().lower()
-        action = {
-            "status": "status",
-            "状态": "status",
-            "on": "on",
-            "开启": "on",
-            "ask": "ask",
-            "询问": "ask",
-            "off": "off",
-            "关闭": "off",
-        }.get(argument)
-        return {"action": action} if action else None
-
     def parse_access_permission_command(self, message: str) -> dict[str, str] | None:
         text = re.sub(r"\s+", " ", str(message or "").strip())
         match = QQ_ACCESS_PERMISSION_COMMAND_RE.fullmatch(text)
@@ -1807,24 +1773,6 @@ class NapCatQQGateway:
             "reply": f"{scope_label}已设为：{labels[target_mode]}。",
             "modes": {**modes, **updates},
         }
-
-    def parse_mcp_permission_command(self, message: str) -> dict[str, str] | None:
-        text = re.sub(r"\s+", " ", str(message or "").strip())
-        match = QQ_MCP_PERMISSION_COMMAND_RE.fullmatch(text)
-        if match is None:
-            return None
-        argument = str(match.group(1) or "status").strip().lower()
-        action = {
-            "status": "status",
-            "状态": "status",
-            "on": "on",
-            "开启": "on",
-            "ask": "ask",
-            "询问": "ask",
-            "off": "off",
-            "关闭": "off",
-        }.get(argument)
-        return {"action": action} if action else None
 
     def parse_capability_approval_command(self, message: str) -> dict[str, str] | None:
         text = re.sub(r"\s+", " ", str(message or "").strip())
@@ -1953,228 +1901,6 @@ class NapCatQQGateway:
             "authorization_profile_user_id": str(
                 resume_binding.get("authorizationProfileUserId") or ""
             ),
-        }
-
-    def handle_shell_permission_command(
-        self,
-        context: QQMessageContext,
-        *,
-        command: dict[str, str] | None = None,
-        current_mode: str = "disabled",
-        supported: bool = True,
-        apply_mode: Callable[[str], str] | None = None,
-    ) -> dict[str, Any] | None:
-        command = command or self.parse_shell_permission_command(context.clean_message)
-        if command is None:
-            return None
-
-        normalized_current = str(current_mode or "").strip().lower()
-        if normalized_current not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
-            normalized_current = "disabled"
-        scope_label = "当前 QQ 账号"
-        action = str(command.get("action") or "")
-        if action == "status":
-            mode_label = {
-                "trusted_auto_allow": "已开启（直接执行）",
-                "ask_each_time": "每次询问",
-                "disabled": "已关闭",
-            }[normalized_current]
-            support_note = "" if supported else "\n宿主的 QQ Shell 总闸或执行提供者当前未启用。"
-            return {
-                "handled": True,
-                "ok": True,
-                "status": "current",
-                "reply": (
-                    f"{scope_label} Shell：{mode_label}。{support_note}\n"
-                    "/shell on 直接执行 · /shell ask 每次审批 · /shell off 关闭"
-                ),
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-
-        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
-        if master_qq <= 0 or int(context.user_id or 0) != master_qq:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "forbidden",
-                "reply": "只有 Akane 主人账号可以调节 Shell 权限。",
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-
-        target_mode = {
-            "on": "trusted_auto_allow",
-            "ask": "ask_each_time",
-            "off": "disabled",
-        }.get(action, "")
-        if not target_mode:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "invalid_action",
-                "reply": "这个 Shell 指令不支持。可用：/shell on、/shell ask、/shell off、/shell status。",
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-        if target_mode != "disabled" and not supported:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "execution_unavailable",
-                "reply": "宿主尚未启用 QQ Shell 或执行提供者不可用，权限没有修改。",
-                "approval_mode": normalized_current,
-                "supported": False,
-            }
-        if apply_mode is None:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_unavailable",
-                "reply": "当前运行环境不能保存 Shell 权限，原配置保持不变。",
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-        try:
-            applied_mode = str(apply_mode(target_mode) or "").strip().lower()
-        except Exception:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_failed",
-                "reply": "Shell 权限保存失败，原配置保持不变。",
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-        if applied_mode != target_mode:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_mismatch",
-                "reply": "Shell 权限没有切换成功，原配置保持不变。",
-                "approval_mode": normalized_current,
-                "supported": supported,
-            }
-
-        if target_mode == "trusted_auto_allow":
-            reply = "当前 QQ 账号的 Shell 已开启：模型可在 Bot 所在机器直接执行，不再逐条审批。"
-            status = "enabled"
-        elif target_mode == "ask_each_time":
-            reply = f"{scope_label} Shell 已改为每次审批；命令获批前不会执行。"
-            status = "ask_each_time"
-        else:
-            reply = f"{scope_label} Shell 已关闭；模型从下一条消息起看不到执行工具。"
-            status = "disabled"
-        return {
-            "handled": True,
-            "ok": True,
-            "status": status,
-            "reply": reply,
-            "approval_mode": applied_mode,
-            "supported": supported,
-            "state_persisted": True,
-        }
-
-    def handle_mcp_permission_command(
-        self,
-        context: QQMessageContext,
-        *,
-        command: dict[str, str] | None = None,
-        current_mode: str = "ask_each_time",
-        apply_mode: Callable[[str], str] | None = None,
-    ) -> dict[str, Any] | None:
-        command = command or self.parse_mcp_permission_command(context.clean_message)
-        if command is None:
-            return None
-
-        normalized_current = str(current_mode or "").strip().lower()
-        if normalized_current not in {"trusted_auto_allow", "ask_each_time", "disabled"}:
-            normalized_current = "ask_each_time"
-        scope_label = "当前 QQ 账号"
-        action = str(command.get("action") or "")
-        if action == "status":
-            mode_label = {
-                "trusted_auto_allow": "已开启（直接执行）",
-                "ask_each_time": "每次询问",
-                "disabled": "已关闭",
-            }[normalized_current]
-            return {
-                "handled": True,
-                "ok": True,
-                "status": "current",
-                "reply": (
-                    f"{scope_label} MCP：{mode_label}。\n"
-                    "/mcp on 直接执行 · /mcp ask 每次审批 · /mcp off 禁止调用"
-                ),
-                "approval_mode": normalized_current,
-            }
-
-        master_qq = self._safe_int(getattr(config, "MASTER_QQ", 0))
-        if master_qq <= 0 or int(context.user_id or 0) != master_qq:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "forbidden",
-                "reply": "只有 Akane 主人账号可以调节 MCP 权限。",
-                "approval_mode": normalized_current,
-            }
-
-        target_mode = {
-            "on": "trusted_auto_allow",
-            "ask": "ask_each_time",
-            "off": "disabled",
-        }.get(action, "")
-        if not target_mode:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "invalid_action",
-                "reply": "这个 MCP 指令不支持。可用：/mcp on、/mcp ask、/mcp off、/mcp status。",
-                "approval_mode": normalized_current,
-            }
-        if apply_mode is None:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_unavailable",
-                "reply": "当前运行环境不能保存 MCP 权限，原配置保持不变。",
-                "approval_mode": normalized_current,
-            }
-        try:
-            applied_mode = str(apply_mode(target_mode) or "").strip().lower()
-        except Exception:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_failed",
-                "reply": "MCP 权限保存失败，原配置保持不变。",
-                "approval_mode": normalized_current,
-            }
-        if applied_mode != target_mode:
-            return {
-                "handled": True,
-                "ok": False,
-                "status": "runtime_update_mismatch",
-                "reply": "MCP 权限没有切换成功，原配置保持不变。",
-                "approval_mode": normalized_current,
-            }
-
-        if target_mode == "trusted_auto_allow":
-            reply = f"{scope_label} MCP 已开启：已启用及以后发现的 MCP 工具可直接执行，不再逐次审批。"
-            status = "enabled"
-        elif target_mode == "ask_each_time":
-            reply = f"{scope_label} MCP 已改为每次审批；工具获批前不会执行。"
-            status = "ask_each_time"
-        else:
-            reply = f"{scope_label} MCP 已关闭；模型从下一条消息起不能调用 MCP 工具。"
-            status = "disabled"
-        return {
-            "handled": True,
-            "ok": True,
-            "status": status,
-            "reply": reply,
-            "approval_mode": applied_mode,
-            "state_persisted": True,
         }
 
     def handle_thinking_mode_command(

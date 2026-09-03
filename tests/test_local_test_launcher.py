@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from companion_v01.instance_profile import resolve_instance_context
-from companion_v01.local_capability_config import get_approval_policy_config, save_approval_policy_config
+from companion_v01.local_capability_config import get_approval_policy_config, save_capability_approval_modes
 from scripts.initialize_akane_local_test_policy import initialize_local_test_policy
 from scripts.seed_akane_local_capabilities import seed_local_capability_profile
 
@@ -186,7 +186,7 @@ class LocalTestLauncherTests(unittest.TestCase):
                 encoding="utf-8",
             )
             destination_path.write_text(
-                "schemaVersion: 1\napprovalPolicy:\n  defaultMode: trusted_auto_allow\nproviders:\n  local:\n    endpoint: http://127.0.0.1:9999\n",
+                "schemaVersion: 1\napprovalPolicy:\n  capabilityModes:\n    ops: trusted_auto_allow\n    extensions: trusted_auto_allow\nproviders:\n  local:\n    endpoint: http://127.0.0.1:9999\n",
                 encoding="utf-8",
             )
 
@@ -196,7 +196,7 @@ class LocalTestLauncherTests(unittest.TestCase):
             )
             self.assertEqual((status, count), ("seeded", 2))
             payload = destination_path.read_text(encoding="utf-8")
-            self.assertIn("defaultMode: trusted_auto_allow", payload)
+            self.assertIn("ops: trusted_auto_allow", payload)
             self.assertIn("local:", payload)
             self.assertIn("dania:", payload)
             self.assertIn("tts:", payload)
@@ -218,15 +218,18 @@ class LocalTestLauncherTests(unittest.TestCase):
                 base_dir=users_data_root,
                 profile_user_id="master",
             )["approvalPolicy"]
-            self.assertEqual(policy["defaultMode"], "trusted_auto_allow")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in policy["families"]},
+                {"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
+            )
 
     def test_existing_local_approval_choice_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             users_data_root = Path(temp_dir) / "users_data"
-            saved = save_approval_policy_config(
+            saved = save_capability_approval_modes(
                 base_dir=users_data_root,
                 profile_user_id="master",
-                payload={"defaultMode": "ask_each_time"},
+                modes={"ops": "ask_each_time", "extensions": "ask_each_time"},
             )
             self.assertTrue(saved["ok"])
 
@@ -237,7 +240,10 @@ class LocalTestLauncherTests(unittest.TestCase):
                 base_dir=users_data_root,
                 profile_user_id="master",
             )["approvalPolicy"]
-            self.assertEqual(policy["defaultMode"], "ask_each_time")
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in policy["families"]},
+                {"ops": "ask_each_time", "extensions": "ask_each_time"},
+            )
 
     def test_policy_initializer_runs_as_a_script_outside_the_repo_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

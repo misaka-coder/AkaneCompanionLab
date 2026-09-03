@@ -2512,11 +2512,11 @@ class CapabilityRegistry:
                 light_hint=(
                     "当前 QQ 会话已由主人开放 Shell；project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
                     "可在 QQ Bot 后端所在机器的已发现真实目录中读取、修改、构建和测试；manage_project_workspace 只为跨会话发现和 alias:project。"
-                    "exec_status 查询长命令进度，exec_cancel 停止命令；/shell status 查看本会话权限。"
+                    "exec_status 查询长命令进度，exec_cancel 停止命令；/access ops 查看当前操作权限。"
                 ),
                 trigger=_execution_qq_enabled,
                 unavailable_reason="当前 QQ 会话的 Shell 没有开放，或执行提供者没有通过可用性检查。",
-                recovery_hint="主人可在当前私聊或群聊发送 /shell on；当前不要假装已经执行命令。",
+                recovery_hint="主人可在当前私聊或群聊发送 /access ops on；当前不要假装已经执行命令。",
             ),
             CapabilityModule(
                 name="extension_management",

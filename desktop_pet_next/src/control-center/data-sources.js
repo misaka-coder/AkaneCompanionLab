@@ -552,9 +552,10 @@ export function createBackendControlCenterSource(options = {}) {
 async function runApprovalPolicyBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
   const familyId = String(payload.familyId || payload.family_id || "").trim();
   const familyMode = String(payload.mode || "").trim();
-  const body = familyId && familyMode
-    ? { familyId, mode: familyMode }
-    : { defaultMode: String(payload.defaultMode || payload.default_mode || payload.value || "").trim() };
+  if (!["ops", "extensions"].includes(familyId) || !["trusted_auto_allow", "ask_each_time", "disabled"].includes(familyMode)) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "familyId and mode are required" };
+  }
+  const body = { familyId, mode: familyMode };
   try {
     const response = await fetchImpl(buildBackendUrl(baseUrl, "/capabilities/approval-policy", params), {
       method: "POST",
@@ -1973,25 +1974,6 @@ function normalizeApprovalRequestsCatalog(catalog) {
 
 function normalizeApprovalPolicyEntry(entry) {
   const payload = asObject(entry);
-  const defaultMode = normalizeApprovalMode(payload.defaultMode || payload.default_mode || "ask_each_time", {
-    requiresConfirmation: true,
-    risk: "high"
-  });
-  const mode = defaultMode === "trusted_auto_allow" ? "trusted_auto_allow" : "ask_each_time";
-  const availableModes = asArray(payload.availableModes).length
-    ? asArray(payload.availableModes)
-    : [
-        {
-          id: "ask_each_time",
-          label: "请求批准",
-          summary: "高风险动作先进入审批队列。"
-        },
-        {
-          id: "trusted_auto_allow",
-          label: "完全访问",
-          summary: "跳过高风险动作的逐次确认，但不跳过硬安全校验。"
-        }
-      ];
   const families = asArray(payload.families)
     .map((item) => asObject(item))
     .map((item) => ({
@@ -2010,28 +1992,8 @@ function normalizeApprovalPolicyEntry(entry) {
     }))
     .filter((item) => ["ops", "extensions"].includes(item.id));
   return {
-    defaultMode: mode,
-    label: stringValue(payload.label) || (mode === "trusted_auto_allow" ? "完全访问" : "请求批准"),
-    summary: stringValue(payload.summary) || (
-      mode === "trusted_auto_allow"
-        ? "高风险能力自动允许；URL、路径、密钥和本地边界校验仍保持开启。"
-        : "高风险能力在执行前创建审批请求，由用户允许或拒绝。"
-    ),
-    trustedAutoAllowHighRisk: mode === "trusted_auto_allow",
-    requiresConfirmationByDefault: mode !== "trusted_auto_allow",
     updatedAt: stringValue(payload.updatedAt),
-    families,
-    availableModes: availableModes
-      .map((item) => asObject(item))
-      .map((item) => {
-        const id = stringValue(item.id);
-        return {
-          id,
-          label: stringValue(item.label) || (id === "trusted_auto_allow" ? "完全访问" : "请求批准"),
-          summary: stringValue(item.summary)
-        };
-      })
-      .filter((item) => ["ask_each_time", "trusted_auto_allow"].includes(item.id))
+    families
   };
 }
 
@@ -2748,11 +2710,10 @@ function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}, appro
   const pendingApprovalCount = positiveNumber(approvalRequests.pendingCount);
   const latestRequest = asArray(approvalRequests.approvalRequests).find((item) => item.status === "pending") || null;
   const policy = approvalPolicy || normalizeApprovalPolicyEntry(null);
-  const approvalRequirementLabel = policy.defaultMode === "trusted_auto_allow" ? "自动允许" : "请求批准";
   const familyModes = asArray(policy.families).map((item) => stringValue(item.mode)).filter(Boolean);
   const familyPolicyLabel = familyModes.length && familyModes.every((mode) => mode === familyModes[0])
-    ? ({ trusted_auto_allow: "全部直接允许", ask_each_time: "全部每次询问", disabled: "全部关闭" }[familyModes[0]] || approvalRequirementLabel)
-    : familyModes.length ? "按能力分组设置" : approvalRequirementLabel;
+    ? ({ trusted_auto_allow: "全部直接允许", ask_each_time: "全部每次询问", disabled: "全部关闭" }[familyModes[0]] || "策略不可用")
+    : familyModes.length ? "按能力分组设置" : "策略不可用";
   return {
     status: pendingApprovalCount ? `${pendingApprovalCount} 项待确认` : serviceOk ? "已生效" : "待连接",
     approvalPolicy: policy,
@@ -2783,7 +2744,7 @@ function buildAbilitySafetyPanel(safety, serviceOk, approvalRequests = {}, appro
       },
       {
         label: "外部网络与危险操作",
-        status: latestRequest ? latestRequest.title : approvalRequirementLabel
+        status: latestRequest ? latestRequest.title : familyPolicyLabel
       }
     ]
   };
@@ -2794,7 +2755,6 @@ function buildSafetyDescription(safety, approvalRequests = {}, approvalPolicy = 
   if (pendingApprovalCount) return `有 ${pendingApprovalCount} 项能力请求等待用户确认`;
   const familyModes = asArray(approvalPolicy?.families).map((item) => stringValue(item.mode)).filter(Boolean);
   if (familyModes.length && familyModes.every((mode) => mode === "trusted_auto_allow")) return "两组有副作用的能力已直接允许，硬安全校验保持开启";
-  if (approvalPolicy?.defaultMode === "trusted_auto_allow" && !familyModes.length) return "高风险能力已按用户策略自动允许，硬安全校验保持开启";
   if (safety?.secrets_exposed) return "检测到敏感信息暴露风险，已进入保护状态";
   if (safety?.full_disk_scan) return "全盘扫描能力需要审批后才可执行";
   return "桌面危险动作保持客户端确认，敏感信息未暴露";

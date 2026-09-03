@@ -128,14 +128,15 @@ def _build(
     is_group: bool = True,
     qq_number: int = 10001,
 ) -> dict:
-    from companion_v01.local_capability_config import save_approval_policy_config
+    from companion_v01.local_capability_config import save_capability_approval_modes
 
-    save_approval_policy_config(
+    save_capability_approval_modes(
         base_dir=engine.capability_config_base_dir,
         profile_user_id=session_id,
-        payload={
-            "defaultMode": "trusted_auto_allow",
-            "capabilityModes": {"exec_run": engine._shell_mode},
+        modes={
+            "ops": "trusted_auto_allow",
+            "extensions": "trusted_auto_allow",
+            "exec_run": engine._shell_mode,
         },
     )
     return build_capability_diagnosis(

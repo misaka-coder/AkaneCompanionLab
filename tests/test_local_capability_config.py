@@ -29,7 +29,6 @@ from companion_v01.local_capability_config import (
 class LocalCapabilityApprovalTests(unittest.TestCase):
     def test_permission_families_override_default_without_hiding_exact_overrides(self) -> None:
         policy = {
-            "defaultMode": APPROVAL_MODE_ASK_EACH_TIME,
             "capabilityModes": {
                 "ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
                 "extensions": APPROVAL_MODE_DISABLED,
@@ -54,16 +53,15 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertEqual(entry["families"][0]["mode"], APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
         self.assertEqual(entry["families"][1]["mode"], APPROVAL_MODE_DISABLED)
 
-    def test_saving_ops_migrates_old_shell_and_mcp_overrides(self) -> None:
+    def test_saving_family_preserves_exact_capability_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            for capability_id in ("exec_run", "mcp"):
-                result = save_capability_approval_mode(
-                    base_dir=temp_dir,
-                    profile_user_id="master",
-                    capability_id=capability_id,
-                    mode=APPROVAL_MODE_DISABLED,
-                )
-                self.assertTrue(result["ok"])
+            result = save_capability_approval_mode(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                capability_id="exec_run",
+                mode=APPROVAL_MODE_DISABLED,
+            )
+            self.assertTrue(result["ok"])
             saved = save_capability_approval_modes(
                 base_dir=temp_dir,
                 profile_user_id="master",
@@ -71,9 +69,15 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
             )
 
         self.assertTrue(saved["ok"])
+        family_modes = {item["id"]: item["mode"] for item in saved["approvalPolicy"]["families"]}
+        self.assertEqual(family_modes["ops"], APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
         self.assertEqual(
-            saved["approvalPolicy"]["capabilityModes"],
-            {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+            approval_mode_for_capability(
+                {"capabilityModes": {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW, "exec_run": APPROVAL_MODE_DISABLED}},
+                "exec_run",
+                family_id="ops",
+            ),
+            APPROVAL_MODE_DISABLED,
         )
 
     def test_mcp_execution_location_is_derived_from_transport(self) -> None:
@@ -287,7 +291,7 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
                 "risk": "high",
                 "requiresConfirmation": True,
             },
-            {"defaultMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+            {"capabilityModes": {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW}},
         )
         disabled = apply_approval_policy_to_entry(
             {
@@ -298,7 +302,7 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
                 "risk": "medium",
                 "requiresConfirmation": True,
             },
-            {"defaultMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+            {"capabilityModes": {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW}},
         )
 
         self.assertEqual(trusted["approvalMode"], APPROVAL_MODE_TRUSTED_AUTO_ALLOW)
@@ -306,14 +310,13 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
         self.assertFalse(trusted["requiresConfirmation"])
         self.assertEqual(disabled["approvalMode"], APPROVAL_MODE_DISABLED)
 
-    def test_mcp_family_approval_mode_applies_without_changing_other_capabilities(self) -> None:
+    def test_family_mode_requires_explicit_runtime_classification(self) -> None:
         policy = {
-            "defaultMode": APPROVAL_MODE_ASK_EACH_TIME,
-            "capabilityModes": {"mcp": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+            "capabilityModes": {"ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
         }
 
         self.assertEqual(
-            approval_mode_for_capability(policy, "mcp.demo.echo"),
+            approval_mode_for_capability(policy, "mcp.demo.echo", family_id="ops"),
             APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
         )
         self.assertEqual(
@@ -329,7 +332,7 @@ class LocalCapabilityApprovalTests(unittest.TestCase):
             },
         }
         self.assertEqual(
-            approval_mode_for_capability(exact_override, "mcp.demo.echo"),
+            approval_mode_for_capability(exact_override, "mcp.demo.echo", family_id="ops"),
             APPROVAL_MODE_DISABLED,
         )
 

@@ -35,7 +35,6 @@ from ..local_capability_config import (
     save_mcp_server_config,
     save_mcp_server_discovery,
     save_capability_approval_mode,
-    save_approval_policy_config,
     save_voice_profile_config,
     validate_workflow_config,
     validate_workflow_runtime_binding,
@@ -178,7 +177,7 @@ def build_capabilities_router(
             log_event,
             "capabilities_approval_policy",
             status=payload.get("status"),
-            defaultMode=payload.get("approvalPolicy", {}).get("defaultMode"),
+            familyCount=len(payload.get("approvalPolicy", {}).get("families") or []),
         )
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
@@ -197,11 +196,11 @@ def build_capabilities_router(
                 mode=family_mode,
             )
         else:
-            result = save_approval_policy_config(
-                base_dir=provider_config_base_dir,
-                profile_user_id=profile_user_id,
-                payload=payload,
-            )
+            result = {
+                "ok": False,
+                "status": "invalid_config",
+                "reason": "approval_policy_family_and_mode_required",
+            }
         ok = bool(result.get("ok"))
         _observe_request(runtime_metrics, "capabilities.approval_policy_save", started_at, ok)
         _log_best_effort(
@@ -209,7 +208,8 @@ def build_capabilities_router(
             "capabilities_approval_policy_save",
             status=result.get("status"),
             reason=result.get("reason"),
-            defaultMode=result.get("approvalPolicy", {}).get("defaultMode"),
+            familyId=family_id,
+            mode=family_mode,
         )
         status_code = 400 if result.get("status") == "invalid_config" else 200
         return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})

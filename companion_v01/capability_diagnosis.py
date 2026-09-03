@@ -13,8 +13,8 @@ import hashlib
 from typing import Any, Callable
 
 from .local_capability_config import (
-    approval_mode_override_for_capability,
-    get_approval_policy_config,
+    approval_mode_for_capability,
+    load_capability_config,
 )
 from .plugin_api import PluginQQCommandHandler, PluginQQCommandRequest, PluginQQCommandResult
 
@@ -75,18 +75,19 @@ def _shell_state(
         getattr(config_module, "DATA_DIR", None),
     )
     try:
-        policy_payload = get_approval_policy_config(
+        policy_payload = load_capability_config(
             base_dir=capability_config_base_dir,
             profile_user_id=profile_user_id,
         )
     except Exception:
         policy_payload = {}
     mode = str(
-        approval_mode_override_for_capability(
+        approval_mode_for_capability(
             policy_payload.get("approvalPolicy"),
             "exec_run",
+            family_id="ops",
         )
-        or "disabled"
+        or "ask_each_time"
     )
     execution_handler = (getattr(engine, "tool_handlers", {}) or {}).get("exec_run")
     execution_supported = bool(
@@ -254,7 +255,7 @@ def build_capability_diagnosis(
             lines.append(f"Satellite：{satellite_status}")
     if unavailable:
         lines.append("当前不可用：" + "；".join(unavailable))
-    lines.append("数据来自当前配置与能力快照，只读；开关请使用 /shell、/识图 等命令。")
+    lines.append("数据来自当前配置与能力快照，只读；访问权限请使用 /access，识图等能力使用各自命令。")
     return {
         "handled": True,
         "ok": True,

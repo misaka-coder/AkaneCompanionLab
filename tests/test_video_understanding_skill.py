@@ -38,7 +38,7 @@ from companion_v01.execution_specs import (
 )
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.image_materials import SessionImageMaterialResolver
-from companion_v01.local_capability_config import save_approval_policy_config
+from companion_v01.local_capability_config import save_capability_approval_modes
 from companion_v01.skill_runtime import SkillRegistry, SKILL_BUNDLED_MOUNT
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.attachments import LoadMaterialToolHandler
@@ -167,10 +167,10 @@ class VideoUnderstandingExecutionLoopTests(unittest.TestCase):
             generated_file_service=self.generated_service,
             workspace_root=self.workspace,
         )
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=root,
             profile_user_id="alice",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         from companion_v01.execution_local import TrustedLocalExecutor
 

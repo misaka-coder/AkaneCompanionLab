@@ -17,7 +17,7 @@ from companion_v01.desktop_satellite_specs import (
     SYSTEM_PROCESS_TERMINATE_TOOL_SPEC,
     desktop_satellite_spec,
 )
-from companion_v01.local_capability_config import save_approval_policy_config
+from companion_v01.local_capability_config import save_capability_approval_modes
 from companion_v01.native_tool_schema import build_openai_native_tool_from_spec
 from companion_v01.tool_invocation import ToolInvocation
 from companion_v01.tool_orchestration_engine import _satellite_permission_gate, execute_tool_invocation
@@ -122,10 +122,10 @@ class SatelliteApprovalGateTests(unittest.TestCase):
         self.base_dir = Path(self._tmp.name)
 
     def _set_policy(self, mode: str) -> None:
-        result = save_approval_policy_config(
+        result = save_capability_approval_modes(
             base_dir=self.base_dir,
             profile_user_id="alice",
-            payload={"defaultMode": mode},
+            modes={"ops": mode, "extensions": mode},
         )
         self.assertTrue(result.get("ok"), result)
 

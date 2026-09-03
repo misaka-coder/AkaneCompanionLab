@@ -288,7 +288,7 @@ class CodingLoopSmokeTests(unittest.TestCase):
         from companion_v01.attachment_inbox import AttachmentInboxService
         from companion_v01.execution_resources import ExecutionResourceBridge
         from companion_v01.generated_files import GeneratedFileService
-        from companion_v01.local_capability_config import save_approval_policy_config
+        from companion_v01.local_capability_config import save_capability_approval_modes
         from companion_v01.store import MemoryStore
         from companion_v01.tool_handlers.execution import ExecRunToolHandler
         from companion_v01.tool_runtime import ToolExecutionContext
@@ -306,10 +306,10 @@ class CodingLoopSmokeTests(unittest.TestCase):
             generated_file_service=generated_service,
             workspace_root=self.workspace,
         )
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=root,
             profile_user_id="alice",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         handler = ExecRunToolHandler(
             execution_provider=self.executor,

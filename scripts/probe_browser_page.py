@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from companion_v01.local_capability_config import save_approval_policy_config
+from companion_v01.local_capability_config import save_capability_approval_modes
 from companion_v01.tool_runtime import BrowserPageToolHandler, ToolExecutionContext
 
 
@@ -94,10 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     handler_kwargs: dict[str, Any] = {}
     if args.trusted_auto_allow:
         temp_policy_dir = tempfile.TemporaryDirectory()
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=temp_policy_dir.name,
             profile_user_id="probe",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         handler_kwargs["config_base_dir"] = temp_policy_dir.name
     handler = BrowserPageToolHandler(**handler_kwargs)

@@ -208,7 +208,6 @@ QQ Shell 还受 `EXECUTION_QQ_ENABLED` 宿主总闸和本轮真实发起人的 `
 
 - `/access ops on|ask|off`：设置 Shell、浏览器交互和有外部副作用工具的默认策略。
 - `/access`：查看 `ops` 与 `extensions` 两组权限。
-- `/shell on|ask|off`：兼容入口，只设置主人 profile 的 `exec_run` 精确 override。
 
 群聊记忆仍按 `qq_group_shared_<group_id>` 共享，但授权身份不共享：主人、普通成员和系统主动
 回合不会互相借用权限。控制命令无需 @ Bot，由路由控制面处理，不进入模型，也不依赖提示词。

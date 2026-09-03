@@ -1380,6 +1380,7 @@ def _satellite_permission_gate(
         request,
         base_dir=base_dir,
         profile_user_id=authorization_profile_user_id(context),
+        family_id="ops",
     )
     if decision.allowed:
         return None

@@ -174,7 +174,6 @@ AND 当前发起人的 ops 权限不是 off
 - 普通 QQ 回合按真实发起人的 profile 读取 `ops`，不把群共享记忆身份当成授权身份。
 - 只有 `MASTER_QQ` 数值身份可以用 `/access ops on|ask|off` 修改访问策略；不凭昵称、群主或管理员身份放权。
 - `ask` 继续使用精确参数的一次性 approval grant，不复用旧批准；审批后宿主自动续接原会话。
-- `/shell on|ask|off` 暂作为主人 profile 上 `exec_run` 精确 override 的兼容入口。
 - 无真实发起人的系统/主动回合不会继承主人的 `ops`。
 
 Schema 稳定性：
@@ -182,7 +181,7 @@ Schema 稳定性：
 - Provider 临时不可用时保留 schema，调用返回结构化 `unavailable`。
 - 不因 readiness 探针变化增删工具。
 - `EXECUTION_QQ_ENABLED=false` 时完全不向 QQ 注入工具或占位提示。
-- 主人显式执行 `/access ops ...` 或兼容 `/shell ...` 属于能力画像配置变更，会在下一轮相应加入或移除
+- 主人显式执行 `/access ops ...` 属于能力画像配置变更，会在下一轮相应加入或移除
   exec schema；同一权限状态下 schema 保持逐字节稳定。
 
 ## 9. 失败场景与下一步

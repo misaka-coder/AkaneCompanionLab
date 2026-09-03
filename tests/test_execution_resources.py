@@ -17,7 +17,7 @@ from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.execution_resources import ExecutionResourceBridge, ExecutionResourceScope
 from companion_v01.execution_run import ExecRunStatus, ExecutionRunOwner
 from companion_v01.generated_files import GeneratedFileService
-from companion_v01.local_capability_config import save_approval_policy_config
+from companion_v01.local_capability_config import save_capability_approval_modes
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.execution import ExecRunToolHandler
 from companion_v01.tool_runtime import ToolExecutionContext
@@ -382,10 +382,10 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.harness = _Harness(Path(self._tmp.name))
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=self.harness.root,
             profile_user_id="alice",
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         from companion_v01.execution_local import TrustedLocalExecutor
 
@@ -549,10 +549,10 @@ class ExecRunResourceWiringTests(unittest.TestCase):
 
     def test_group_run_keeps_member_control_but_uses_shared_resource_scope(self) -> None:
         group_session = "qq_group_shared_872732158"
-        save_approval_policy_config(
+        save_capability_approval_modes(
             base_dir=self.harness.root,
             profile_user_id=group_session,
-            payload={"defaultMode": "trusted_auto_allow"},
+            modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
         )
         item = self.harness.register_input(
             content="GROUP INPUT",

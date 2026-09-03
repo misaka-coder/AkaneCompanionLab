@@ -14,7 +14,7 @@ from capcore import (
 )
 from capcore import resolve_permission as capcore_resolve_permission
 
-from .local_capability_config import approval_mode_for_capability, get_approval_policy_config
+from .local_capability_config import approval_mode_for_capability, load_capability_config
 
 
 APPROVAL_POLICY_MODES = {"ask_each_time", "trusted_auto_allow", "disabled"}
@@ -67,7 +67,7 @@ def approval_policy_for_capability(
     """Resolve Akane's effective host policy before entering CapCore's gate."""
 
     try:
-        payload = get_approval_policy_config(
+        payload = load_capability_config(
             base_dir=base_dir,
             profile_user_id=profile_user_id,
         )

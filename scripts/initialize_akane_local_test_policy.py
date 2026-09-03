@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 from companion_v01.local_capability_config import (
     APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
     get_approval_policy_config,
-    save_approval_policy_config,
+    save_capability_approval_modes,
 )
 
 
@@ -24,17 +24,29 @@ def initialize_local_test_policy(*, users_data_root: Path, profile_user_id: str 
     )
     config_status = str(current.get("configStatus") or "")
     policy = current.get("approvalPolicy") or {}
-    current_mode = str(policy.get("defaultMode") or "")
+    family_modes = {
+        str(item.get("id") or ""): str(item.get("mode") or "")
+        for item in policy.get("families") or []
+        if isinstance(item, dict)
+    }
+    current_mode = (
+        family_modes.get("ops", "ask_each_time")
+        if family_modes.get("ops") == family_modes.get("extensions")
+        else "mixed"
+    )
 
     if config_status == "invalid_config":
         raise RuntimeError("local_test_approval_policy_invalid")
     if config_status != "missing":
         return "preserved", current_mode
 
-    saved = save_approval_policy_config(
+    saved = save_capability_approval_modes(
         base_dir=users_data_root,
         profile_user_id=profile_user_id,
-        payload={"defaultMode": APPROVAL_MODE_TRUSTED_AUTO_ALLOW},
+        modes={
+            "ops": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+            "extensions": APPROVAL_MODE_TRUSTED_AUTO_ALLOW,
+        },
     )
     if not saved.get("ok"):
         raise RuntimeError(str(saved.get("reason") or "local_test_approval_policy_save_failed"))

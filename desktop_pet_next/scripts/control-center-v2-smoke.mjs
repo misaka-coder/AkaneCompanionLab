@@ -241,12 +241,17 @@ const rawSnapshot = {
     safety: {
       status: "已生效",
       approvalPolicy: {
-        defaultMode: "ask_each_time",
-        label: "请求批准",
-        summary: "高风险能力在执行前创建审批请求。",
-        availableModes: [
-          { id: "ask_each_time", label: "请求批准", summary: "高风险动作先确认。" },
-          { id: "trusted_auto_allow", label: "完全访问", summary: "自动允许，但保留硬安全校验。" }
+        families: [
+          { id: "ops", label: "本机与外部操作", summary: "Shell、浏览器交互和有外部影响的工具。", mode: "ask_each_time", availableModes: [
+            { id: "trusted_auto_allow", label: "直接允许", summary: "无需逐次确认。" },
+            { id: "ask_each_time", label: "每次询问", summary: "确认后再执行。" },
+            { id: "disabled", label: "关闭", summary: "不允许执行。" }
+          ] },
+          { id: "extensions", label: "扩展管理", summary: "安装、启停与移除扩展。", mode: "ask_each_time", availableModes: [
+            { id: "trusted_auto_allow", label: "直接允许", summary: "无需逐次确认。" },
+            { id: "ask_each_time", label: "每次询问", summary: "确认后再执行。" },
+            { id: "disabled", label: "关闭", summary: "不允许执行。" }
+          ] }
         ]
       },
       items: [
@@ -367,7 +372,7 @@ assert.equal(viewModel.recentOutputs[0].title, "交付结果.png");
 assert.equal(viewModel.abilities.available, true);
 assert.equal(viewModel.abilities.availability, 86);
 assert.equal(viewModel.abilities.modules.length, 2);
-assert.equal(viewModel.abilities.policy.defaultMode, "ask_each_time");
+assert.deepEqual(viewModel.abilities.policy.families.map((family) => family.mode), ["ask_each_time", "ask_each_time"]);
 assert.equal(viewModel.abilities.integrations.length, 3);
 assert.equal(viewModel.abilities.providers[0].id, "provider.tts.gpt_sovits.local");
 assert.equal(viewModel.abilities.providers[0].voiceProfiles[0].voiceProfileId, "reimu_main");
