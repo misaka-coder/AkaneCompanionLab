@@ -9171,7 +9171,7 @@ class AkaneMemoryEngine:
             f"{credential_context}"
         )
 
-    def _build_tool_prompt_context(
+    def _build_tool_prompt_context_sections(
         self,
         *,
         allow_tool_call: bool,
@@ -9184,9 +9184,14 @@ class AkaneMemoryEngine:
         include_capability_status: bool = True,
         actor_stable_id: str = "",
         actor_profile_user_id: str = "",
-    ) -> str:
+    ) -> dict[str, str]:
         if not allow_tool_call:
-            return "本轮不要调用任何工具；按当前模式的最终回复协议作答。"
+            return {
+                "execution_context": "",
+                "catalog_context": "",
+                "catalog_status": "skipped",
+                "round_context": "本轮不要调用任何工具；按当前模式的最终回复协议作答。",
+            }
 
         selection = capability_selection or self._resolve_capability_selection(
             client_context=client_context,
@@ -9222,6 +9227,7 @@ class AkaneMemoryEngine:
             actor_profile_user_id=actor_profile_user_id,
         )
         skill_catalog = ""
+        catalog_errors: list[str] = []
         if "load_skill" in ready_tool_names:
             try:
                 skill_catalog = str(
@@ -9232,7 +9238,7 @@ class AkaneMemoryEngine:
                 ).strip()
             except Exception as exc:
                 logger.warning("skill catalog projection failed: %s", type(exc).__name__)
-                skill_catalog = "【可按需加载的 Skills】\n- Skill 目录当前读取失败，本轮不要假装已经加载 Skill。"
+                catalog_errors.append("Skill 目录当前读取失败；保留上一版目录。")
         mcp_catalog = ""
         if "load_mcp" in ready_tool_names:
             try:
@@ -9241,7 +9247,16 @@ class AkaneMemoryEngine:
                     mcp_catalog = str(service.prompt_catalog(profile_user_id=profile_user_id) or "").strip()
             except Exception as exc:
                 logger.warning("MCP catalog projection failed: %s", type(exc).__name__)
-                mcp_catalog = "【可按需加载的 MCP】\n- MCP 目录当前读取失败，本轮不要假装已经加载 MCP。"
+                catalog_errors.append("MCP 目录当前读取失败；保留上一版目录。")
+        catalog_parts = [part for part in (skill_catalog, mcp_catalog) if part]
+        if catalog_errors:
+            catalog_context = ""
+            catalog_status = "failed"
+        else:
+            catalog_context = "\n\n".join(catalog_parts).strip()
+            if not catalog_context:
+                catalog_context = "【可按需加载的能力目录】\n- 当前没有可按需加载的 Skill 或 MCP。"
+            catalog_status = "ready"
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]
@@ -9288,29 +9303,39 @@ class AkaneMemoryEngine:
                     "本轮可直接调用的工具及参数以请求中实际附带的工具定义为准；"
                     "不要把这些工具手写进最终 JSON 的兼容 tool_call 字段。"
                 )
-                return "\n\n".join(part for part in (execution_host_context, skill_catalog, mcp_catalog, direct_hint) if part)
+                return {
+                    "execution_context": execution_host_context,
+                    "catalog_context": catalog_context,
+                    "catalog_status": catalog_status,
+                    "round_context": direct_hint,
+                }
             if not disclosures and not capability_hints and not media_routing:
-                return "当前没有可用工具；按当前模式的最终回复协议作答。"
+                round_text = "当前没有可用工具；按当前模式的最终回复协议作答。"
+                if catalog_errors:
+                    round_text = "\n".join([*(f"- {item}" for item in catalog_errors), round_text])
+                return {
+                    "execution_context": execution_host_context,
+                    "catalog_context": catalog_context,
+                    "catalog_status": catalog_status,
+                    "round_context": round_text,
+                }
             parts: list[str] = []
             append_capability_context(parts)
-            if skill_catalog:
-                parts.extend([skill_catalog, ""])
-            if mcp_catalog:
-                parts.extend([mcp_catalog, ""])
+            if catalog_errors:
+                parts.extend(["【能力目录状态】", *(f"- {item}" for item in catalog_errors), ""])
             parts.extend(media_routing)
             parts.append("当前没有需要展开的具体工具；按当前模式的最终回复协议作答。")
-            if execution_host_context:
-                parts.insert(0, execution_host_context)
-            return "\n".join(parts)
+            return {
+                "execution_context": execution_host_context,
+                "catalog_context": catalog_context,
+                "catalog_status": catalog_status,
+                "round_context": "\n".join(parts),
+            }
 
         lines: list[str] = []
-        if execution_host_context:
-            lines.extend([execution_host_context, ""])
         append_capability_context(lines)
-        if skill_catalog:
-            lines.extend([skill_catalog, ""])
-        if mcp_catalog:
-            lines.extend([mcp_catalog, ""])
+        if catalog_errors:
+            lines.extend(["【能力目录状态】", *(f"- {item}" for item in catalog_errors), ""])
         if (
             client_context
             and client_context.effective_mode == ClientMode.DESKTOP_PET
@@ -9337,7 +9362,38 @@ class AkaneMemoryEngine:
             instruction = str(handler.build_prompt_instruction() or "").strip()
             if instruction:
                 lines.append(instruction)
-        return "\n".join(lines)
+        return {
+            "execution_context": execution_host_context,
+            "catalog_context": catalog_context,
+            "catalog_status": catalog_status,
+            "round_context": "\n".join(lines),
+        }
+
+    def _build_tool_prompt_context(
+        self,
+        **kwargs: Any,
+    ) -> str:
+        """Compatibility composition for diagnostics and focused unit tests.
+
+        Production prompt assembly consumes the structured sections so runtime
+        coordinates, the durable capability catalog and per-round guidance do
+        not accidentally acquire one shared lifecycle again.
+        """
+
+        section_builder = getattr(self, "_build_tool_prompt_context_sections", None)
+        if callable(section_builder):
+            sections = section_builder(**kwargs)
+        else:
+            sections = AkaneMemoryEngine._build_tool_prompt_context_sections(self, **kwargs)
+        return "\n\n".join(
+            part
+            for part in (
+                str(sections.get("execution_context") or "").strip(),
+                str(sections.get("catalog_context") or "").strip(),
+                str(sections.get("round_context") or "").strip(),
+            )
+            if part
+        )
 
     def _build_native_tool_round_instruction(self, native_tools: list[dict[str, Any]] | None) -> str:
         from .engine_services.tool_rounds import build_native_tool_round_instruction as _fn

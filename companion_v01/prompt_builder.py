@@ -169,7 +169,8 @@ class PromptBuilder:
         allow_tool_call: bool,
         tool_prompt_context: str,
         debug_enabled: bool,
-        tool_context_snapshot_visible: bool = False,
+        capability_catalog_context: str = "",
+        execution_context: str = "",
         persona_system_context: str = "",
         persona_reference_context: str = "",
         persona_active_id: str = "",
@@ -284,7 +285,9 @@ class PromptBuilder:
         memory_context_text = "\n\n".join(memory_context_blocks)
 
         current_time_text = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M")
-        tool_context_text = str(tool_prompt_context or "").strip() or "当前没有额外能力或工具说明。"
+        capability_catalog_text = str(capability_catalog_context or "").strip()
+        execution_context_text = str(execution_context or "").strip()
+        tool_context_text = str(tool_prompt_context or "").strip()
         tool_context_hash = hashlib.sha256(tool_context_text.encode("utf-8", errors="ignore")).hexdigest()
         stable_user_intro = (
             "如果记忆里出现“记忆情绪”，那是你当时记住这件事时留下的情感余温；"
@@ -304,11 +307,18 @@ class PromptBuilder:
         runtime_context_text = "\n\n".join(
             part for part in (persona_runtime_context_text, stable_extra_context_text) if part
         )
-        stable_user_context = stable_user_intro.strip()
-        if not tool_context_snapshot_visible:
-            stable_user_context = (
-                f"{stable_user_context}\n\n【本轮系统能力与工具上下文】\n{tool_context_text}"
-            ).strip()
+        stable_user_parts = [stable_user_intro.strip()]
+        if capability_catalog_text:
+            stable_user_parts.append(
+                capability_catalog_text
+                if capability_catalog_text.startswith("【能力目录基线】")
+                else f"【当前能力目录】\n{capability_catalog_text}"
+            )
+        if execution_context_text:
+            stable_user_parts.append(f"【当前执行坐标】\n{execution_context_text}")
+        if tool_context_text:
+            stable_user_parts.append(f"【本轮工具说明】\n{tool_context_text}")
+        stable_user_context = "\n\n".join(stable_user_parts).strip()
         structured_history_turns: list[dict[str, Any]] = [{"role": "user", "content": stable_user_context}]
         # Reusable host/persona state belongs before the append-only timeline.
         # Freezing it into every current user turn made a short chat message
@@ -358,10 +368,9 @@ class PromptBuilder:
                 {"name": "user.full", "text": user_prompt},
                 {"name": "user.ephemeral_context", "text": ephemeral_context_text},
                 {"name": "user.stable_context", "text": stable_user_context},
-                {
-                    "name": "user.tool_context",
-                    "text": "" if tool_context_snapshot_visible else tool_context_text,
-                },
+                {"name": "user.capability_catalog", "text": capability_catalog_text},
+                {"name": "user.execution_context", "text": execution_context_text},
+                {"name": "user.tool_context", "text": tool_context_text},
                 {"name": "user.memory_context", "text": memory_context_text},
                 {"name": "user.runtime_context", "text": runtime_context_text},
                 {

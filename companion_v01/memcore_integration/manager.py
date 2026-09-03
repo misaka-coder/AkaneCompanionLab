@@ -51,6 +51,8 @@ _STALE_OPEN_TURN_MAX_AGE_SECONDS = 30 * 60
 _PROMPT_CONTEXT_SOURCE_PREFIX = "prompt-context"
 _PROMPT_CONTEXT_KIND_PREFIX = "material.runtime_context"
 _PROMPT_CONTEXT_RENDERER_ID = "akane.prompt_context_snapshot"
+_CAPABILITY_CATALOG_NAME = "capability-catalog"
+_CAPABILITY_CATALOG_SOURCE_PREFIX = f"{_PROMPT_CONTEXT_SOURCE_PREFIX}:{_CAPABILITY_CATALOG_NAME}:"
 
 
 def _render_prompt_context_snapshot(entry: Any, timezone: str) -> str:
@@ -1518,51 +1520,65 @@ class MemcoreManager:
             logger.warning("memcore %s failed: %s", operation, failed_reason)
             return self._status(operation, False, "failed", source_id=source_id, reason=failed_reason)
 
-    def record_prompt_context_snapshot(
+    def reconcile_capability_catalog(
         self,
         *,
-        snapshot_name: str,
         content: str,
         visible_source_ids: list[str] | tuple[str, ...],
+        compaction_generation: int,
         anchor_source_id: str,
         profile_user_id: str,
         session_id: str,
         character_pack_id: str = "",
         timestamp: int = 0,
     ) -> dict[str, Any]:
-        """Append one trusted runtime-context snapshot only when it changed.
+        """Keep one catalog base per compaction generation plus change updates.
 
-        The caller supplies source ids from the authoritative MemCore surface.
-        This keeps the decision tied to what the model can actually see: an
-        unchanged visible snapshot is reused, while a changed or compacted-away
-        snapshot is appended after the current stimulus.  The entry is prompt
-        visible but never indexed or retrievable as user memory.
+        Catalog entries are prompt-visible operational material, never memory
+        retrieval candidates.  The presentation layer exposes the generation
+        base and at most its latest update; ordinary tool rounds therefore do
+        not create or repeat snapshots.
         """
 
-        operation = "record_prompt_context_snapshot"
-        name = self._kind_segment(snapshot_name, fallback="context")
+        operation = "reconcile_capability_catalog"
         text = str(content or "").strip()
         if not text:
-            return self._status(operation, False, "invalid_request", reason="snapshot_content_required")
+            return self._status(operation, False, "invalid_request", reason="catalog_content_required")
         digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-
-        source_prefix = f"{_PROMPT_CONTEXT_SOURCE_PREFIX}:{name}:"
-        latest_hash = ""
-        latest_source_id = ""
-        for raw_source_id in reversed(list(visible_source_ids or [])):
+        generation = max(0, int(compaction_generation or 0))
+        visible_catalogs: list[tuple[str, int, str, str]] = []
+        for raw_source_id in list(visible_source_ids or []):
             source_id = str(raw_source_id or "").strip()
-            if not source_id.startswith(source_prefix):
+            if not source_id.startswith(_CAPABILITY_CATALOG_SOURCE_PREFIX):
                 continue
-            parts = source_id.split(":", 4)
-            latest_hash = parts[2] if len(parts) >= 3 else ""
-            latest_source_id = source_id
-            break
-        if latest_hash == digest[:24]:
+            parts = source_id.split(":")
+            if len(parts) < 7:
+                continue
+            try:
+                source_generation = max(0, int(parts[2]))
+            except (TypeError, ValueError):
+                continue
+            role = str(parts[3] or "").strip()
+            source_digest = str(parts[4] or "").strip()
+            if role not in {"base", "update"} or not source_digest:
+                continue
+            visible_catalogs.append((source_id, source_generation, role, source_digest))
+
+        current_generation = [item for item in visible_catalogs if item[1] == generation]
+        bases = [item for item in current_generation if item[2] == "base"]
+        latest = current_generation[-1] if current_generation else None
+        if bases and latest is not None and latest[3] == digest[:24]:
             return {
                 **self._status(operation, True, "unchanged"),
                 "changed": False,
-                "snapshot_hash": digest,
+                "catalog_hash": digest,
+                "catalog_role": latest[2],
+                "source_id": latest[0],
+                "compaction_generation": generation,
             }
+
+        catalog_role = "base" if not bases else "update"
+        latest_source_id = latest[0] if latest is not None else ""
 
         system = self._get_system_or_none(
             operation=operation,
@@ -1588,7 +1604,18 @@ class MemcoreManager:
             )
         )
         anchor_hash = hashlib.sha256(anchor_material.encode("utf-8", errors="ignore")).hexdigest()[:16]
-        source_id = f"{source_prefix}{digest[:24]}:{scope_hash}:{anchor_hash}"
+        source_id = (
+            f"{_CAPABILITY_CATALOG_SOURCE_PREFIX}{generation}:{catalog_role}:"
+            f"{digest[:24]}:{scope_hash}:{anchor_hash}"
+        )
+        if catalog_role == "base":
+            rendered_text = f"【能力目录基线】\n{text}"
+        else:
+            rendered_text = (
+                "【能力目录更新】\n"
+                "以下完整目录取代本压缩代更早的能力目录：\n"
+                f"{text}"
+            )
         try:
             memcore = self._memcore_module or self._import_memcore()
             stored = system.append_standalone_entry(
@@ -1597,11 +1624,16 @@ class MemcoreManager:
                     # Runtime context is prompt material, not a user episode.
                     # MemCore therefore compacts it as an operational record
                     # and never lets it become autobiographical memory.
-                    kind=f"{_PROMPT_CONTEXT_KIND_PREFIX}.{name}",
+                    kind=f"{_PROMPT_CONTEXT_KIND_PREFIX}.capability_catalog",
                     origin=memcore.EntryOrigin.ENVIRONMENT,
                     turn_role=None,
-                    semantic_text=text,
-                    payload={"snapshot_name": name, "snapshot_hash": digest},
+                    semantic_text=rendered_text,
+                    payload={
+                        "snapshot_name": "capability_catalog",
+                        "catalog_hash": digest,
+                        "catalog_role": catalog_role,
+                        "compaction_generation": generation,
+                    },
                     timestamp=int(timestamp or time.time()),
                     memory_metadata={},
                     annotation_status=memcore.AnnotationStatus.UNANNOTATED,
@@ -1610,13 +1642,15 @@ class MemcoreManager:
                     semanticize=False,
                     prompt_visible=True,
                     trust=memcore.EntryTrust.TRUSTED_INSTRUCTION,
-                    compatibility_role=f"{_PROMPT_CONTEXT_KIND_PREFIX}.{name}",
+                    compatibility_role=f"{_PROMPT_CONTEXT_KIND_PREFIX}.capability_catalog",
                 )
             )
             return {
                 **self._status(operation, True, "recorded", source_id=stored.source_id),
                 "changed": True,
-                "snapshot_hash": digest,
+                "catalog_hash": digest,
+                "catalog_role": catalog_role,
+                "compaction_generation": generation,
             }
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__

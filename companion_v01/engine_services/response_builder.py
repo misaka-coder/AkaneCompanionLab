@@ -29,18 +29,116 @@ PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
 _EPHEMERAL_PROVIDER_BLOCK_TYPES = frozenset(
     {"image_url", "input_image", "image", "input_audio", "audio", "input_file", "file"}
 )
-_CAPABILITY_CONTEXT_SNAPSHOT_NAME = "capabilities"
+_CAPABILITY_CATALOG_SOURCE_PREFIX = "prompt-context:capability-catalog:"
+_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX = "prompt-context:capabilities:"
 
 
-def _capability_context_snapshot_text(tool_context: str) -> str:
-    text = str(tool_context or "").strip()
-    if not text:
-        return ""
-    return (
-        "【当前系统能力与工具上下文】\n"
-        "这是宿主当前真实提供的能力说明；本快照取代更早的同名能力快照。\n"
-        f"{text}"
-    )
+def _capability_catalog_source(source_ids: list[str] | tuple[str, ...]) -> tuple[str, int, str] | None:
+    normalized = [str(item or "").strip() for item in source_ids if str(item or "").strip()]
+    if not normalized or any(not item.startswith(_CAPABILITY_CATALOG_SOURCE_PREFIX) for item in normalized):
+        return None
+    for source_id in normalized:
+        parts = source_id.split(":")
+        if len(parts) < 7:
+            continue
+        try:
+            generation = max(0, int(parts[2]))
+        except (TypeError, ValueError):
+            continue
+        role = str(parts[3] or "").strip()
+        if role in {"base", "update"}:
+            return source_id, generation, role
+    return None
+
+
+def _catalog_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ).strip()
+    return ""
+
+
+def _shape_capability_catalog_projection(
+    projection: dict[str, Any],
+    *,
+    compaction_generation: int,
+) -> tuple[dict[str, Any], str]:
+    """Expose one early catalog base and only the latest same-generation update."""
+
+    shaped = dict(projection or {})
+    history_turns = [dict(item) for item in list(shaped.get("history_turns") or []) if isinstance(item, dict)]
+    history_groups = [list(group or []) for group in list(shaped.get("history_message_source_ids") or [])]
+    active_turns = [dict(item) for item in list(shaped.get("active_turn_messages") or []) if isinstance(item, dict)]
+    active_groups = [list(group or []) for group in list(shaped.get("active_turn_message_source_ids") or [])]
+
+    records: list[tuple[str, int, str, dict[str, Any], list[str]]] = []
+    for message, source_ids in [*zip(history_turns, history_groups), *zip(active_turns, active_groups)]:
+        parsed = _capability_catalog_source(source_ids)
+        if parsed is not None:
+            records.append((*parsed, message, source_ids))
+
+    generation = max(0, int(compaction_generation or 0))
+    current_records = [record for record in records if record[1] == generation]
+    base_records = [record for record in current_records if record[2] == "base"]
+    update_records = [record for record in current_records if record[2] == "update"]
+    base_context = _catalog_message_text(base_records[-1][3]) if base_records else ""
+    latest_update_source_id = update_records[-1][0] if update_records else ""
+
+    def keep_message(source_ids: list[str]) -> bool:
+        normalized = [str(item or "").strip() for item in source_ids if str(item or "").strip()]
+        if normalized and all(item.startswith(_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX) for item in normalized):
+            return False
+        parsed = _capability_catalog_source(normalized)
+        if parsed is None:
+            return True
+        source_id, source_generation, role = parsed
+        return bool(
+            source_generation == generation
+            and role == "update"
+            and source_id == latest_update_source_id
+        )
+
+    kept_history = [
+        (message, source_ids)
+        for message, source_ids in zip(history_turns, history_groups)
+        if keep_message(source_ids)
+    ]
+    kept_active = [
+        (message, source_ids)
+        for message, source_ids in zip(active_turns, active_groups)
+        if keep_message(source_ids)
+    ]
+    shaped["history_turns"] = [message for message, _source_ids in kept_history]
+    shaped["history_message_source_ids"] = [source_ids for _message, source_ids in kept_history]
+    shaped["active_turn_messages"] = [message for message, _source_ids in kept_active]
+    shaped["active_turn_message_source_ids"] = [source_ids for _message, source_ids in kept_active]
+    return shaped, base_context
+
+
+def _build_effective_post_user_turns(
+    projection: dict[str, Any],
+    prepared_turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay request-only evidence without letting a catalog update break alignment."""
+
+    active_turns = [
+        dict(item) for item in list((projection or {}).get("active_turn_messages") or []) if isinstance(item, dict)
+    ]
+    active_groups = [list(group or []) for group in list((projection or {}).get("active_turn_message_source_ids") or [])]
+    ordinary: list[dict[str, Any]] = []
+    catalog_updates: list[dict[str, Any]] = []
+    for turn, source_ids in zip(active_turns, active_groups):
+        if _capability_catalog_source(source_ids) is not None:
+            catalog_updates.append(turn)
+        else:
+            ordinary.append(turn)
+    return [*_overlay_ephemeral_provider_evidence(ordinary, prepared_turns), *catalog_updates]
 
 
 def _visible_projection_source_ids(projection: dict[str, Any]) -> list[str]:
@@ -656,18 +754,34 @@ def prepare_context(
                         pass
         elif native_plan.status == "unsupported":
             engine.llm.record_metric("native_tool_provider_unsupported")
-    tool_prompt_context = engine._build_tool_prompt_context(
-        allow_tool_call=tool_capability_available,
-        client_context=client_context,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        exclude_tool_types=native_legacy_exclusions,
-        domain_profile_id=domain_profile.id,
-        capability_selection=capability_selection,
-        include_capability_status=not bool(native_tools),
-        actor_stable_id=actor_stable_id,
-        actor_profile_user_id=actor_profile_user_id,
-    )
+    prompt_context_kwargs = {
+        "allow_tool_call": tool_capability_available,
+        "client_context": client_context,
+        "profile_user_id": profile_user_id,
+        "session_id": session_id,
+        "exclude_tool_types": native_legacy_exclusions,
+        "domain_profile_id": domain_profile.id,
+        "capability_selection": capability_selection,
+        "include_capability_status": not bool(native_tools),
+        "actor_stable_id": actor_stable_id,
+        "actor_profile_user_id": actor_profile_user_id,
+    }
+    section_builder = getattr(engine, "_build_tool_prompt_context_sections", None)
+    if callable(section_builder):
+        tool_prompt_sections = dict(section_builder(**prompt_context_kwargs) or {})
+    else:
+        # Lightweight hosts may still expose only the composed diagnostic API.
+        tool_prompt_sections = {
+            "execution_context": "",
+            "catalog_context": "",
+            "catalog_status": "skipped",
+            "round_context": engine._build_tool_prompt_context(**prompt_context_kwargs),
+        }
+    execution_context = str(tool_prompt_sections.get("execution_context") or "").strip()
+    catalog_source_content = str(tool_prompt_sections.get("catalog_context") or "").strip()
+    capability_catalog_context = catalog_source_content
+    capability_catalog_status = str(tool_prompt_sections.get("catalog_status") or "skipped").strip()
+    tool_prompt_context = str(tool_prompt_sections.get("round_context") or "").strip()
     if native_tools:
         tool_prompt_context = "\n\n".join(
             part
@@ -677,34 +791,36 @@ def prepare_context(
             ]
             if part
         )
-    tool_context_snapshot: dict[str, Any] = {
+    capability_catalog_lifecycle: dict[str, Any] = {
         "ok": False,
         "status": "skipped",
         "reason": "projection_not_authoritative",
     }
-    tool_context_snapshot_visible = False
-    snapshot_writer = getattr(getattr(engine, "memcore_manager", None), "record_prompt_context_snapshot", None)
-    capability_snapshot_lifecycle_enabled = bool(
-        callable(snapshot_writer)
+    catalog_writer = getattr(getattr(engine, "memcore_manager", None), "reconcile_capability_catalog", None)
+    capability_catalog_lifecycle_enabled = bool(
+        callable(catalog_writer)
         and normalized_prompt_scope != "plugin_proactive"
-        and str(tool_prompt_context or "").strip()
+        and capability_catalog_status == "ready"
+        and catalog_source_content
     )
-    if (
-        projection_authoritative
-        and projection_read_active
-        and capability_snapshot_lifecycle_enabled
-    ):
-        tool_context_snapshot = snapshot_writer(
-            snapshot_name=_CAPABILITY_CONTEXT_SNAPSHOT_NAME,
-            content=_capability_context_snapshot_text(tool_prompt_context),
+
+    def _synchronize_capability_catalog() -> None:
+        nonlocal provider_projection, current_message_text, capability_catalog_context
+        nonlocal capability_catalog_lifecycle
+        if not (projection_authoritative and projection_read_active and capability_catalog_lifecycle_enabled):
+            return
+        generation = int(provider_projection.get("compaction_generation") or 0)
+        capability_catalog_lifecycle = catalog_writer(
+            content=catalog_source_content,
             visible_source_ids=_visible_projection_source_ids(provider_projection),
+            compaction_generation=generation,
             anchor_source_id=current_source_id,
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
             timestamp=now_ts,
         )
-        if tool_context_snapshot.get("ok") and tool_context_snapshot.get("changed"):
+        if capability_catalog_lifecycle.get("ok") and capability_catalog_lifecycle.get("changed"):
             refreshed_projection = _build_memcore_provider_history(
                 engine,
                 profile_user_id=profile_user_id,
@@ -725,23 +841,28 @@ def prepare_context(
                 if projected_current_message:
                     current_message_text = projected_current_message
             else:
-                tool_context_snapshot = {
-                    **dict(tool_context_snapshot),
+                capability_catalog_lifecycle = {
+                    **dict(capability_catalog_lifecycle),
                     "ok": False,
                     "status": "projection_refresh_failed",
                     "reason": str(refreshed_projection.get("reason") or "projection_build_failed"),
                 }
-        snapshot_source_id = str(tool_context_snapshot.get("source_id") or "").strip()
-        tool_context_snapshot_visible = bool(
-            tool_context_snapshot.get("ok")
-            and (
-                tool_context_snapshot.get("status") == "unchanged"
-                or (
-                    snapshot_source_id
-                    and snapshot_source_id in _visible_projection_source_ids(provider_projection)
-                )
-            )
+        shaped_projection, base_context = _shape_capability_catalog_projection(
+            provider_projection,
+            compaction_generation=generation,
         )
+        provider_projection = shaped_projection
+        if base_context:
+            capability_catalog_context = base_context
+
+    _synchronize_capability_catalog()
+    if not capability_catalog_lifecycle_enabled and projection_authoritative and projection_read_active:
+        provider_projection, visible_catalog_base = _shape_capability_catalog_projection(
+            provider_projection,
+            compaction_generation=int(provider_projection.get("compaction_generation") or 0),
+        )
+        if visible_catalog_base:
+            capability_catalog_context = visible_catalog_base
     effective_post_user_turns = [
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
@@ -749,8 +870,8 @@ def prepare_context(
         dict(turn) for turn in list(provider_projection.get("active_turn_messages") or []) if isinstance(turn, dict)
     ]
     if projection_authoritative and surface_active_turns:
-        effective_post_user_turns = _overlay_ephemeral_provider_evidence(
-            surface_active_turns,
+        effective_post_user_turns = _build_effective_post_user_turns(
+            provider_projection,
             effective_post_user_turns,
         )
     system_prompt_override = prompt_profile.system_prompt_override
@@ -848,8 +969,9 @@ def prepare_context(
             domain_profile_context=domain_profile_context,
             visual_defaults=visual_defaults,
             allow_tool_call=effective_allow_tool_call,
+            capability_catalog_context=capability_catalog_context,
+            execution_context=execution_context,
             tool_prompt_context=tool_prompt_context,
-            tool_context_snapshot_visible=tool_context_snapshot_visible,
             debug_enabled=debug_enabled,
             system_prompt_override=system_prompt_override,
             mode_prompt_override=mode_prompt_override,
@@ -882,11 +1004,14 @@ def prepare_context(
             "event_timeline_authoritative": event_timeline_authoritative,
             "skipped_event_backed": list(materialized_contexts.skipped_event_backed),
         }
-        if capability_snapshot_lifecycle_enabled:
-            prompt_context_lifecycle["capability_snapshot"] = {
-                "status": str(tool_context_snapshot.get("status") or "skipped"),
-                "visible": tool_context_snapshot_visible,
-                "changed": bool(tool_context_snapshot.get("changed")),
+        if capability_catalog_lifecycle_enabled:
+            prompt_context_lifecycle["capability_catalog"] = {
+                "status": str(capability_catalog_lifecycle.get("status") or "skipped"),
+                "role": str(capability_catalog_lifecycle.get("catalog_role") or ""),
+                "changed": bool(capability_catalog_lifecycle.get("changed")),
+                "compaction_generation": int(
+                    capability_catalog_lifecycle.get("compaction_generation") or 0
+                ),
             }
         generation_context["prompt_context_lifecycle"] = prompt_context_lifecycle
         return generation_context
@@ -929,6 +1054,23 @@ def prepare_context(
                 )
                 if projected_current_message:
                     current_message_text = projected_current_message
+                _synchronize_capability_catalog()
+                if not capability_catalog_lifecycle_enabled:
+                    provider_projection, visible_catalog_base = _shape_capability_catalog_projection(
+                        provider_projection,
+                        compaction_generation=int(provider_projection.get("compaction_generation") or 0),
+                    )
+                    if visible_catalog_base:
+                        capability_catalog_context = visible_catalog_base
+                surface_active_turns = [
+                    dict(turn)
+                    for turn in list(provider_projection.get("active_turn_messages") or [])
+                    if isinstance(turn, dict)
+                ]
+                effective_post_user_turns = _build_effective_post_user_turns(
+                    provider_projection,
+                    [dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)],
+                )
                 authoritative_history_turns = _authoritative_history_for_prompt()
             generation_context = _build_generation_context()
 
@@ -1278,10 +1420,12 @@ def _build_memcore_provider_history(
             "reason": "",
             "provider_profile": str(surface.get("provider_profile") or ""),
             "history_turns": history_turns,
+            "history_message_source_ids": [list(group or []) for group in source_ids[: len(history_turns)]],
             "current_turn_id": str(surface.get("current_turn_id") or ""),
             "current_turn_messages": current_turn_messages,
             "current_message": dict(current_payload) if isinstance(current_payload, dict) else None,
             "active_turn_messages": active_payloads,
+            "active_turn_message_source_ids": [list(group or []) for group in active_ids],
             "source_ids": list(dict.fromkeys(history_source_ids)),
             "source_count": len(set(history_source_ids)),
             "message_count": len(history_turns),

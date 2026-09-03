@@ -445,13 +445,15 @@ system = "semantic reinforcement system"
         self.assertEqual(latent["user_prompt"], ready["user_prompt"])
         self.assertNotEqual(latent["history_turns"], ready["history_turns"])
         self.assertNotIn("上传音频后启用媒体处理", latent["system_prompt"])
-        self.assertIn("【本轮系统能力与工具上下文】", _history_text(latent))
+        self.assertIn("【本轮工具说明】", _history_text(latent))
         self.assertEqual(latent["user_prompt"], "User: 请处理这个文件")
         self.assertNotEqual(latent["tool_prompt_context_hash"], ready["tool_prompt_context_hash"])
 
-    def test_visible_capability_snapshot_keeps_tool_catalog_out_of_stable_prefix(self) -> None:
+    def test_capability_catalog_execution_and_round_context_have_distinct_blocks(self) -> None:
         builder = PromptBuilder(load_persona_config())
-        tool_context = "【当前可用能力概览】\n- coding-project：读取后执行编程任务。"
+        catalog_context = "【能力目录基线】\n- coding-project：读取后执行编程任务。"
+        execution_context = "Execution environment:\nworking_directory: F:\\\\Projects\\demo"
+        tool_context = "工具结果返回后继续判断。"
         result = builder.build_final_generation_context(
             now_ts=1_712_400_000,
             raw_text="User: 继续实现",
@@ -471,20 +473,27 @@ system = "semantic reinforcement system"
                 "emotion": "normal",
             },
             allow_tool_call=True,
+            capability_catalog_context=catalog_context,
+            execution_context=execution_context,
             tool_prompt_context=tool_context,
-            tool_context_snapshot_visible=True,
             debug_enabled=False,
         )
 
         history = list(result["history_turns"])
-        self.assertNotIn("【本轮系统能力与工具上下文】", str(history[0].get("content") or ""))
-        self.assertNotIn("coding-project", str(history[0].get("content") or ""))
+        first = str(history[0].get("content") or "")
+        self.assertIn(catalog_context, first)
+        self.assertIn("【当前执行坐标】", first)
+        self.assertIn("【本轮工具说明】", first)
+        self.assertLess(first.index("coding-project"), first.index("working_directory"))
+        self.assertLess(first.index("working_directory"), first.index("工具结果返回后"))
         self.assertEqual(
             result["tool_prompt_context_hash"],
             hashlib.sha256(tool_context.encode("utf-8")).hexdigest(),
         )
         audit = {section["name"]: section["text"] for section in result["prompt_audit_sections"]}
-        self.assertEqual(audit["user.tool_context"], "")
+        self.assertEqual(audit["user.capability_catalog"], catalog_context)
+        self.assertEqual(audit["user.execution_context"], execution_context)
+        self.assertEqual(audit["user.tool_context"], tool_context)
 
     def test_runtime_context_precedes_append_only_history_without_entering_current_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())

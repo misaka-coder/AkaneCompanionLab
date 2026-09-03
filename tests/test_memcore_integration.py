@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -5814,7 +5815,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(projected_text.count("source: workspace_management"), 1)
         self.assertIn("action: purge", projected_text)
 
-    def test_prompt_context_snapshot_appends_only_on_visible_change(self) -> None:
+    def test_capability_catalog_uses_one_base_per_generation_and_change_updates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
                 backend="memcore",
@@ -5826,47 +5827,61 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 embedding_provider=_FakeEmbeddingProvider(),
             )
             try:
-                first_text = "【当前系统能力与工具上下文】\nSkill: coding-project"
-                first = manager.record_prompt_context_snapshot(
-                    snapshot_name="capabilities",
+                first_text = "Skill: coding-project"
+                first = manager.reconcile_capability_catalog(
                     content=first_text,
                     visible_source_ids=[],
+                    compaction_generation=0,
                     anchor_source_id="user-1",
                     profile_user_id="master",
                     session_id="qq_group_1",
                     character_pack_id="akane_v1",
                     timestamp=100,
                 )
-                unchanged = manager.record_prompt_context_snapshot(
-                    snapshot_name="capabilities",
-                    content=first_text,
-                    visible_source_ids=[first["source_id"]],
-                    anchor_source_id="user-2",
-                    profile_user_id="master",
-                    session_id="qq_group_1",
-                    character_pack_id="akane_v1",
-                    timestamp=110,
-                )
-                second_text = "【当前系统能力与工具上下文】\nSkill: coding-project, video-editor"
-                second = manager.record_prompt_context_snapshot(
-                    snapshot_name="capabilities",
+                unchanged_results = [
+                    manager.reconcile_capability_catalog(
+                        content=first_text,
+                        visible_source_ids=[first["source_id"]],
+                        compaction_generation=0,
+                        anchor_source_id=f"user-repeat-{index}",
+                        profile_user_id="master",
+                        session_id="qq_group_1",
+                        character_pack_id="akane_v1",
+                        timestamp=110 + index,
+                    )
+                    for index in range(50)
+                ]
+                unchanged = unchanged_results[-1]
+                second_text = "Skill: coding-project, video-editor"
+                second = manager.reconcile_capability_catalog(
                     content=second_text,
                     visible_source_ids=[first["source_id"]],
+                    compaction_generation=0,
                     anchor_source_id="user-3",
                     profile_user_id="master",
                     session_id="qq_group_1",
                     character_pack_id="akane_v1",
                     timestamp=120,
                 )
-                third = manager.record_prompt_context_snapshot(
-                    snapshot_name="capabilities",
+                third = manager.reconcile_capability_catalog(
                     content=first_text,
                     visible_source_ids=[first["source_id"], second["source_id"]],
+                    compaction_generation=0,
                     anchor_source_id="user-3",
                     profile_user_id="master",
                     session_id="qq_group_1",
                     character_pack_id="akane_v1",
                     timestamp=121,
+                )
+                next_generation = manager.reconcile_capability_catalog(
+                    content=first_text,
+                    visible_source_ids=[first["source_id"], second["source_id"], third["source_id"]],
+                    compaction_generation=1,
+                    anchor_source_id="user-4",
+                    profile_user_id="master",
+                    session_id="qq_group_1",
+                    character_pack_id="akane_v1",
+                    timestamp=130,
                 )
                 projection = manager.build_context_projection(
                     provider_profile="openai_chat",
@@ -5880,14 +5895,20 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         self.assertTrue(first["ok"])
         self.assertTrue(first["changed"])
+        self.assertEqual(first["catalog_role"], "base")
         self.assertEqual(unchanged["status"], "unchanged")
         self.assertFalse(unchanged["changed"])
+        self.assertTrue(all(item["status"] == "unchanged" for item in unchanged_results))
         self.assertTrue(second["changed"])
+        self.assertEqual(second["catalog_role"], "update")
         self.assertTrue(third["changed"])
+        self.assertEqual(third["catalog_role"], "update")
+        self.assertTrue(next_generation["changed"])
+        self.assertEqual(next_generation["catalog_role"], "base")
         self.assertNotEqual(first["source_id"], second["source_id"])
         self.assertNotEqual(first["source_id"], third["source_id"])
         self.assertNotEqual(second["source_id"], third["source_id"])
-        self.assertEqual(first_record["kind"], "material.runtime_context.capabilities")
+        self.assertEqual(first_record["kind"], "material.runtime_context.capability_catalog")
         self.assertEqual(first_record["retrieval_policy"], "never")
         self.assertEqual(first_record["retrieval_visibility"], "never")
         self.assertEqual(first_record["trust"], "trusted_instruction")
@@ -5895,7 +5916,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn(first_text, projected_text)
         self.assertIn(second_text, projected_text)
         self.assertNotIn("material.runtime_context", projected_text)
-        self.assertNotIn("snapshot_hash", projected_text)
+        self.assertNotIn("catalog_hash", projected_text)
 
     def test_failed_material_trace_preserves_structured_failure_evidence(self) -> None:
         item = {
@@ -7256,7 +7277,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertNotIn("actor_relation", repr(engine.prompt_builder.calls[0]["history_turns"]))
         self.assertNotIn("actor_relation", projection_messages[0]["payload"]["content"])
 
-    def test_capability_snapshot_is_refreshed_into_the_current_provider_turn(self) -> None:
+    def test_capability_catalog_base_is_refreshed_and_moved_to_early_context(self) -> None:
         class _SnapshotManager(_PromptContextMemcoreManager):
             def __init__(self) -> None:
                 super().__init__(
@@ -7277,15 +7298,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                         "projection_generation": 1,
                     },
                 )
-                self.snapshot_calls: list[dict[str, object]] = []
+                self.catalog_calls: list[dict[str, object]] = []
 
-            def record_prompt_context_snapshot(self, **kwargs) -> dict[str, object]:
-                self.snapshot_calls.append(dict(kwargs))
-                source_id = "prompt-context:capabilities:abc123"
+            def reconcile_capability_catalog(self, **kwargs) -> dict[str, object]:
+                self.catalog_calls.append(dict(kwargs))
+                source_id = "prompt-context:capability-catalog:0:base:abc123:scope:anchor"
                 self.projection_payload["messages"].append(
                     {
                         "turn_id": "turn-current",
-                        "payload": {"role": "user", "content": str(kwargs.get("content") or "")},
+                        "payload": {
+                            "role": "user",
+                            "content": f"【能力目录基线】\n{str(kwargs.get('content') or '')}",
+                        },
                         "source_ids": [source_id],
                     }
                 )
@@ -7294,11 +7318,18 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "status": "recorded",
                     "changed": True,
                     "source_id": source_id,
+                    "catalog_role": "base",
+                    "compaction_generation": 0,
                 }
 
         class _SnapshotEngine(_PromptContextEngine):
-            def _build_tool_prompt_context(self, **_kwargs) -> str:
-                return "【当前可用能力概览】\n- coding-project：读取后执行编程任务。"
+            def _build_tool_prompt_context_sections(self, **_kwargs) -> dict[str, str]:
+                return {
+                    "execution_context": "Execution environment:\nworking_directory: execution_root",
+                    "catalog_context": "【可按需加载的 Skills】\n- coding-project：读取后执行编程任务。",
+                    "catalog_status": "ready",
+                    "round_context": "按实际工具定义调用。",
+                }
 
         manager = _SnapshotManager()
         engine = _SnapshotEngine(memcore_manager=manager)
@@ -7316,14 +7347,46 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char",
             )
 
-        self.assertEqual(len(manager.snapshot_calls), 1)
-        self.assertIn("current", manager.snapshot_calls[0]["visible_source_ids"])
-        self.assertTrue(engine.prompt_builder.calls[0]["tool_context_snapshot_visible"])
-        self.assertEqual(len(result["post_user_turns"]), 1)
-        self.assertIn("coding-project", result["post_user_turns"][0]["content"])
-        lifecycle = result["prompt_context_lifecycle"]["capability_snapshot"]
+        self.assertEqual(len(manager.catalog_calls), 1)
+        self.assertIn("current", manager.catalog_calls[0]["visible_source_ids"])
+        self.assertEqual(engine.prompt_builder.calls[0]["capability_catalog_context"].count("coding-project"), 1)
+        self.assertEqual(result["post_user_turns"], [])
+        lifecycle = result["prompt_context_lifecycle"]["capability_catalog"]
         self.assertEqual(lifecycle["status"], "recorded")
-        self.assertTrue(lifecycle["visible"])
+        self.assertEqual(lifecycle["role"], "base")
+
+    def test_capability_catalog_projection_keeps_only_base_and_latest_update(self) -> None:
+        projection = {
+            "history_turns": [
+                {"role": "user", "content": "legacy monolith"},
+                {"role": "user", "content": "【能力目录基线】\n- skill-a"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "【能力目录更新】\n- skill-b"},
+                {"role": "user", "content": "【能力目录更新】\n- skill-c"},
+            ],
+            "history_message_source_ids": [
+                ["prompt-context:capabilities:old"],
+                ["prompt-context:capability-catalog:3:base:aaa:scope:one"],
+                ["assistant-1"],
+                ["prompt-context:capability-catalog:3:update:bbb:scope:two"],
+                ["prompt-context:capability-catalog:3:update:ccc:scope:three"],
+            ],
+            "active_turn_messages": [],
+            "active_turn_message_source_ids": [],
+        }
+
+        shaped, base = response_builder._shape_capability_catalog_projection(
+            projection,
+            compaction_generation=3,
+        )
+
+        rendered = "\n".join(str(item.get("content") or "") for item in shaped["history_turns"])
+        self.assertEqual(base, "【能力目录基线】\n- skill-a")
+        self.assertNotIn("legacy monolith", rendered)
+        self.assertNotIn("skill-a", rendered)
+        self.assertNotIn("skill-b", rendered)
+        self.assertIn("skill-c", rendered)
+        self.assertIn("working", rendered)
 
     def test_authoritative_open_turn_keeps_request_only_media_blocks(self) -> None:
         projection_messages = [
