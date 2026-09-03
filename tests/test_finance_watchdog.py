@@ -19,17 +19,20 @@ def test_finance_watchdog_uses_canonical_background_services() -> None:
     payload = {
         "ok": True,
         "status": "active",
-        "background_services": [
+        "background_service_count": 1,
+        "plugins": [
             {
                 "plugin_id": "akane.finance",
-                "service_id": "public-news-push",
-                "status": "running",
+                "status": "active",
+                "contribution_snapshot": {
+                    "background_services": ["public-news-push"],
+                },
             }
         ],
     }
 
     assert watchdog.job_is_healthy(payload)
-    assert watchdog.job_failure_reason(payload) == "service_status=running reason="
+    assert watchdog.job_failure_reason(payload) == "plugin_status=active reason="
 
 
 def test_finance_watchdog_rejects_removed_legacy_job_view() -> None:
@@ -41,4 +44,4 @@ def test_finance_watchdog_rejects_removed_legacy_job_view() -> None:
     }
 
     assert not watchdog.job_is_healthy(payload)
-    assert watchdog.job_failure_reason(payload) == "finance_service_missing"
+    assert watchdog.job_failure_reason(payload) == "finance_plugin_missing"
