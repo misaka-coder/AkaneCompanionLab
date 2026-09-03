@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from companion_v01.plugin_installation import (
     ManagedPluginArtifactStore,
@@ -113,6 +115,106 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertEqual(staged["version"], "0.1.0")
         build_root = self.root / "artifacts" / "source-builds"
         self.assertFalse(build_root.exists() and tuple(build_root.iterdir()))
+
+    def test_source_tests_run_against_real_current_release_sdk(self) -> None:
+        source = self.root / "source"
+        shutil.copytree(SAMPLE_ROOT, source)
+        tests_dir = source / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_sdk_contract.py").write_text(
+            """import unittest
+
+from capcore import CapabilityResult
+from companion_v01.plugin_api import PluginManifest
+from akane_gentle_checkin import create_plugin
+
+
+class CurrentSdkContractTests(unittest.TestCase):
+    def test_plugin_uses_real_sdk_types(self):
+        plugin = create_plugin()
+        self.assertIsInstance(plugin.manifest, PluginManifest)
+        self.assertTrue(hasattr(CapabilityResult, \"__dataclass_fields__\"))
+
+
+if __name__ == \"__main__\":
+    unittest.main()
+""",
+            encoding="utf-8",
+        )
+
+        tested = self.store.test_source(source)
+
+        self.assertTrue(tested["ok"])
+        self.assertEqual(tested["status"], "passed")
+        self.assertEqual(tested["test_framework"], "unittest")
+        self.assertEqual(tested["exit_code"], 0)
+        self.assertIn("Ran 1 test", tested["output"])
+        self.assertFalse(tested["output_truncated"])
+        self.assertEqual(self.store.snapshot()["staged_count"], 0)
+
+    def test_source_test_failure_returns_actionable_real_output(self) -> None:
+        source = self.root / "source"
+        shutil.copytree(SAMPLE_ROOT, source)
+        tests_dir = source / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_failure.py").write_text(
+            """import unittest
+
+
+class FailureTests(unittest.TestCase):
+    def test_failure(self):
+        self.assertEqual(1, 2, \"contract mismatch\")
+""",
+            encoding="utf-8",
+        )
+
+        tested = self.store.test_source(source)
+
+        self.assertFalse(tested["ok"])
+        self.assertEqual(tested["status"], "failed")
+        self.assertEqual(tested["reason"], "plugin_source_tests_failed")
+        self.assertNotEqual(tested["exit_code"], 0)
+        self.assertIn("contract mismatch", tested["output"])
+
+    def test_source_tests_do_not_inherit_host_credentials(self) -> None:
+        source = self.root / "source"
+        shutil.copytree(SAMPLE_ROOT, source)
+        tests_dir = source / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_environment.py").write_text(
+            """import os
+import unittest
+
+
+class EnvironmentTests(unittest.TestCase):
+    def test_host_credentials_are_absent(self):
+        self.assertNotIn("AKANE_TEST_SECRET", os.environ)
+        self.assertNotIn("EXAMPLE_API_TOKEN", os.environ)
+""",
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AKANE_TEST_SECRET": "must-not-leak",
+                "EXAMPLE_API_TOKEN": "must-not-leak",
+            },
+        ):
+            tested = self.store.test_source(source)
+
+        self.assertTrue(tested["ok"])
+        self.assertEqual(tested["status"], "passed")
+
+    def test_source_tests_require_a_real_test_directory(self) -> None:
+        source = self.root / "source"
+        shutil.copytree(SAMPLE_ROOT, source)
+
+        with self.assertRaises(PluginInstallationError) as raised:
+            self.store.test_source(source)
+
+        self.assertEqual(raised.exception.status, "invalid_request")
+        self.assertEqual(raised.exception.reason, "plugin_source_tests_required")
 
     def test_publish_requires_exact_permissions_and_selects_atomically(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)

@@ -48,15 +48,19 @@ artifact lifecycle. This Skill adds no tools or permissions.
 
 ## Test, stage, and activate
 
-1. Run the project's logic tests in the current working directory.
-2. Call `manage_extension(action="stage_source", path=<absolute working_directory>)`.
+1. Write ordinary `unittest` tests against the real SDK imports used by the plugin. Do not
+   replace `capcore`, adapters, or `companion_v01.plugin_api` with `sys.modules` stubs.
+2. Call `manage_extension(action="test_source", path=<absolute working_directory>)`. The host
+   runs `unittest` in a child process against the current release SDK without installing or
+   activating the plugin. Fix failures until this returns `passed`.
+3. Call `manage_extension(action="stage_source", path=<absolute working_directory>)`.
    The host builds a wheel and probes it in isolation; staging does not activate it.
-3. Review the returned plugin id, contributions, and permissions. Fix and stage again if
+4. Review the returned plugin id, contributions, and permissions. Fix and stage again if
    they do not match the intended design.
-4. Call `manage_extension(action="install", stage_id=..., approved_permissions=[...])`,
+5. Call `manage_extension(action="install", stage_id=..., approved_permissions=[...])`,
    copying the exact permissions array returned by that stage. The host publishes and
    activates the immutable stage as one operation.
-5. Call `list`, exercise the real capability, command, event, or background behavior, and
+6. Call `list`, exercise the real capability, command, event, or background behavior, and
    verify the plugin is active. Source tests alone do not prove host integration.
 
 Use `discard_stage` for an unwanted stage, `rollback` for a bad installed update, and

@@ -9,8 +9,9 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_extension",
     display_name="Manage installed extensions",
     description=(
-        "Inspect and manage local Akane plugins. First stage a source project or wheel to build and probe an "
-        "immutable candidate. Then install that stage with the exact returned permission list; the host "
+        "Inspect and manage local Akane plugins. For source development, run its unittest suite against the "
+        "current release SDK, then stage the source project to build and probe an immutable candidate. "
+        "Install that stage with the exact returned permission list; the host "
         "publishes and activates it as one operation. Existing plugins can be enabled, disabled, rolled back, "
         "or uninstalled. Only the trusted desktop or configured owner QQ account may use this tool."
     ),
@@ -22,6 +23,7 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "enum": [
                     "list",
+                    "test_source",
                     "stage_source",
                     "stage_wheel",
                     "install",
@@ -42,7 +44,7 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 2048,
-                "description": "Absolute project directory for stage_source, or absolute .whl path for stage_wheel.",
+                "description": "Absolute project directory for test_source/stage_source, or absolute .whl path for stage_wheel.",
             },
             "stage_id": {
                 "type": "string",

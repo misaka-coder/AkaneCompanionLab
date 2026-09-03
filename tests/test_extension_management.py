@@ -201,6 +201,26 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
             [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}]
         )
 
+    async def test_source_tests_delegate_to_current_artifact_runtime(self) -> None:
+        plugin_runtime = SimpleNamespace()
+        selection_store = Mock()
+        artifact_store = Mock()
+        artifact_store.test_source.return_value = {
+            "ok": True,
+            "status": "passed",
+            "test_framework": "unittest",
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=selection_store,
+            artifact_store=artifact_store,
+        )
+
+        result = await service.test_source(source_path="C:/work/plugin")
+
+        self.assertEqual(result["status"], "passed")
+        artifact_store.test_source.assert_called_once_with(Path("C:/work/plugin"))
+
     async def test_install_stage_removes_new_artifact_when_activation_fails(self) -> None:
         plugin_runtime = SimpleNamespace(
             selections=(),
@@ -479,6 +499,9 @@ class ManageExtensionToolTests(unittest.TestCase):
         source = handler.normalize_call(
             {"type": "manage_extension", "action": "stage_source", "path": "C:/work/plugin"}
         )
+        tests = handler.normalize_call(
+            {"type": "manage_extension", "action": "test_source", "path": "C:/work/plugin"}
+        )
         install = handler.normalize_call(
             {
                 "type": "manage_extension",
@@ -489,6 +512,7 @@ class ManageExtensionToolTests(unittest.TestCase):
         )
 
         self.assertEqual(source["path"], "C:/work/plugin")
+        self.assertEqual(tests["path"], "C:/work/plugin")
         self.assertEqual(install["stage_id"], "stage-1")
         self.assertEqual(install["approved_permissions"], ["storage.write", "job.run"])
         self.assertIsNone(

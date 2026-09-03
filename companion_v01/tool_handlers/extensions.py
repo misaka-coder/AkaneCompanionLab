@@ -55,7 +55,7 @@ class ManageExtensionToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_extension：查看和管理本机插件；先暂存并探测本地源码目录或 wheel，"
+            "- manage_extension：查看和管理本机插件；源码项目先用当前 release 的真实 SDK 跑测试，再暂存并探测，"
             "再用暂存结果的完整权限清单安装。宿主会在一次操作中发布并激活。它不搜索市场或下载代码。"
         )
 
@@ -65,6 +65,7 @@ class ManageExtensionToolHandler(BaseToolHandler):
         action = str(value.get("action") or "").strip().lower()
         if action not in {
             "list",
+            "test_source",
             "stage_source",
             "stage_wheel",
             "install",
@@ -81,7 +82,7 @@ class ManageExtensionToolHandler(BaseToolHandler):
         normalized = {"type": self.tool_type, "action": action}
         if plugin_id:
             normalized["plugin_id"] = plugin_id
-        if action in {"stage_source", "stage_wheel"}:
+        if action in {"test_source", "stage_source", "stage_wheel"}:
             path = str(value.get("path") or "").strip()
             if not path:
                 return None

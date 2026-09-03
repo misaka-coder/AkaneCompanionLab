@@ -24,3 +24,8 @@ fixtures.
 
 Each example documents its permissions, runtime effect, and installation path
 in its own README.
+
+Model-driven source projects should keep ordinary `unittest` tests using these
+real imports. Run them with `manage_extension(test_source)` so the current
+release SDK is supplied by the host; do not copy or fake SDK modules inside a
+plugin project. Then use `stage_source` and `install` for runtime validation.

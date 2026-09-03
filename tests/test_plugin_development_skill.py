@@ -56,6 +56,7 @@ class PluginDevelopmentSkillTests(unittest.TestCase):
             "alias:akane-sdk",
             'cwd="alias:akane-sdk"',
             "add_background_service",
+            'manage_extension(action="test_source"',
             'manage_extension(action="stage_source"',
             'manage_extension(action="install"',
             "copying the exact permissions array",
@@ -65,6 +66,7 @@ class PluginDevelopmentSkillTests(unittest.TestCase):
         self.assertNotIn("add_background_job", content)
         self.assertNotIn("/admin/plugins", content)
         self.assertNotIn("pip install", content)
+        self.assertIn("Do not\n   replace `capcore`", content)
 
 
 if __name__ == "__main__":

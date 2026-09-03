@@ -8,10 +8,11 @@
 
 1. 用 `manage_project_workspace(create/open/select)` 建立当前代码目录。
 2. 从只读 `alias:akane-sdk` 选择最接近需求的当前 release 样例，不搜索宿主物理 release。
-3. 在项目内实现和测试，不修改 release、实例配置或宿主源码。
-4. `manage_extension(stage_source, path)` 从源码构建 wheel，并在隔离进程中探测 manifest、权限和贡献项；暂存不会激活代码。
-5. `manage_extension(install, stage_id, approved_permissions)` 只接受该 stage 返回的完整权限集合，并由宿主一次完成制品发布、selection 更新和 generation 激活。
-6. 最后 `list` 并验证真实用户行为；模型不手工协调 publish、enable、restart 或 reconcile。
+3. 在项目内实现并编写普通 `unittest`，直接引用插件使用的真实公开 SDK，不伪造 CapCore、adapter 或 Plugin API。
+4. `manage_extension(test_source, path)` 在独立子进程中使用当前 release 的真实 SDK 运行项目测试；它不暂存、不安装、不激活插件。
+5. `manage_extension(stage_source, path)` 从源码构建 wheel，并在隔离进程中探测 manifest、权限和贡献项；暂存不会激活代码。
+6. `manage_extension(install, stage_id, approved_permissions)` 只接受该 stage 返回的完整权限集合，并由宿主一次完成制品发布、selection 更新和 generation 激活。
+7. 最后 `list` 并验证真实用户行为；模型不手工协调 publish、enable、restart 或 reconcile。
 
 `stage_wheel` 为已有 wheel 提供同一条审计路径。`discard_stage`、`rollback` 和 `uninstall` 分别处理废弃候选、错误更新和明确卸载。它们不构成第二套安装器。
 
@@ -34,6 +35,11 @@ selection、generation 与 reconcile 不暴露给模型或外部开发者。
 - 工具结果：真实 stage id、贡献项、所需权限、安装/激活状态和失败原因。
 
 插件 API、样例源码和权限解释不进入普通系统提示词。需要时由模型从 `alias:akane-sdk` 精确读取，避免把插件开发注意力成本施加给所有对话。
+
+普通 `exec_run` 不继承 Akane 宿主私有模块。插件测试需要的真实公开契约只通过
+`test_source` 注入：它从当前 release 动态取得 SDK，适用于 capability、命令、事件、后台服务等
+所有插件形态，不绑定某个样例或业务。这样普通项目不会偶然依赖宿主 venv，插件测试也不会通过
+`sys.modules` 假替身制造与生产不一致的成功。
 
 ## 真实闭环要求
 

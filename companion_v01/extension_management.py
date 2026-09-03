@@ -179,6 +179,7 @@ class ExtensionManagementService:
                 "disable",
                 *(
                     [
+                        "test_source",
                         "stage_wheel",
                         "stage_source",
                         "install",
@@ -473,6 +474,25 @@ class ExtensionManagementService:
             except Exception:
                 return _failure("error", "plugin_source_stage_failed")
 
+    async def test_source(self, *, source_path: str) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        normalized = str(source_path or "").strip()
+        if not normalized:
+            return _failure("invalid_request", "plugin_source_path_required")
+        async with self._operation_lock:
+            try:
+                return dict(
+                    await asyncio.to_thread(
+                        self.artifact_store.test_source,
+                        Path(normalized),
+                    )
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_source_test_failed")
+
     async def discard_stage(self, *, stage_id: str) -> dict[str, Any]:
         if self.artifact_store is None:
             return _failure("unavailable", "plugin_artifact_store_unavailable")
@@ -664,7 +684,9 @@ class ExtensionManagementService:
             payload = self.snapshot()
             payload["action"] = "list"
             return payload
-        if normalized_action == "stage_source":
+        if normalized_action == "test_source":
+            coroutine = self.test_source(source_path=path)
+        elif normalized_action == "stage_source":
             coroutine = self.stage_source(source_path=path)
         elif normalized_action == "stage_wheel":
             coroutine = self.stage_wheel(wheel_path=path)

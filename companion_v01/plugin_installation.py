@@ -1,11 +1,12 @@
 """Instance-owned staging and publication for trusted plugin wheels.
 
 This module owns plugin *artifacts*, while the generation runtime remains the only
-runtime contribution authority.  A wheel is installed into an isolated
-staging directory, audited without importing it in the host process, and then
-activated once in a short-lived probe process. After the caller confirms the
-exact permission set, the management service publishes the artifact and
-switches the isolated generation as one operation.
+runtime contribution authority. Source tests can run in a child process against
+the current release SDK without changing installation state. A wheel is installed
+into an isolated staging directory, audited without importing it in the host
+process, and then activated once in a short-lived probe process. After the caller
+confirms the exact permission set, the management service publishes the artifact
+and switches the isolated generation as one operation.
 
 Python code is never reloaded in the host process. Managed artifacts enter only
 through the isolated generation runtime; there is no second installer.
@@ -16,9 +17,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -38,6 +41,9 @@ PLUGIN_STAGE_METADATA_FILENAME = "stage.json"
 PLUGIN_INSTALL_TIMEOUT_SECONDS = 600.0
 PLUGIN_PROBE_TIMEOUT_SECONDS = 45.0
 PLUGIN_SOURCE_BUILD_TIMEOUT_SECONDS = 600.0
+PLUGIN_SOURCE_TEST_TIMEOUT_SECONDS = 300.0
+PLUGIN_SOURCE_TEST_OUTPUT_BYTES = 24 * 1024
+_SENSITIVE_ENV_NAME_RE = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 
 
 class PluginInstallationError(RuntimeError):
@@ -240,7 +246,7 @@ class ManagedPluginArtifactStore:
         build_root.relative_to(self.root)
         wheelhouse = build_root / "wheelhouse"
         wheelhouse.mkdir(parents=True, exist_ok=False)
-        env = dict(os.environ)
+        env = _scrubbed_plugin_subprocess_env()
         env.update(
             {
                 "PIP_NO_INDEX": "1",
@@ -282,6 +288,90 @@ class ManagedPluginArtifactStore:
             return self.stage_wheel(wheels[0])
         finally:
             shutil.rmtree(build_root, ignore_errors=True)
+
+    def test_source(self, source_path: Path) -> dict[str, Any]:
+        """Run source logic tests against this release's real public SDK.
+
+        The project remains an ordinary source tree and is neither staged nor
+        activated.  Tests run in a child process using the same interpreter
+        and public contracts as the plugin probe, so projects never need to
+        fake ``capcore`` or ``companion_v01.plugin_api`` in ``sys.modules``.
+        """
+
+        source = Path(source_path)
+        try:
+            source = source.resolve(strict=True)
+        except OSError as exc:
+            raise PluginInstallationError("plugin_source_unavailable") from exc
+        if not source.is_dir() or not (source / "pyproject.toml").is_file():
+            raise PluginInstallationError(
+                "plugin_source_project_required",
+                status="invalid_request",
+            )
+        tests_dir = source / "tests"
+        if not tests_dir.is_dir():
+            raise PluginInstallationError(
+                "plugin_source_tests_required",
+                status="invalid_request",
+            )
+
+        env = _scrubbed_plugin_subprocess_env()
+        python_paths = [source / "src", source, self.project_root]
+        packaged_dependencies = self.project_root / ".packages"
+        if packaged_dependencies.is_dir():
+            python_paths.append(packaged_dependencies)
+        inherited_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+        if inherited_pythonpath:
+            python_paths.extend(Path(item) for item in inherited_pythonpath.split(os.pathsep) if item)
+        env["PYTHONPATH"] = os.pathsep.join(str(item) for item in python_paths)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        started_at = time.monotonic()
+        try:
+            with tempfile.TemporaryFile() as output:
+                try:
+                    completed = subprocess.run(
+                        [
+                            self.python_executable,
+                            "-m",
+                            "unittest",
+                            "discover",
+                            "-s",
+                            "tests",
+                            "-v",
+                        ],
+                        cwd=str(source),
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                        timeout=PLUGIN_SOURCE_TEST_TIMEOUT_SECONDS,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise PluginInstallationError("plugin_source_test_timeout", status="timeout") from exc
+                except OSError as exc:
+                    raise PluginInstallationError("plugin_source_test_runner_unavailable") from exc
+                output.flush()
+                output.seek(0, os.SEEK_END)
+                output_size = output.tell()
+                output_text, output_truncated = _read_test_output(output, output_size)
+        except PluginInstallationError:
+            raise
+        except OSError as exc:
+            raise PluginInstallationError("plugin_source_test_output_failed") from exc
+
+        passed = completed.returncode == 0
+        return {
+            "ok": passed,
+            "status": "passed" if passed else "failed",
+            "reason": "" if passed else "plugin_source_tests_failed",
+            "test_framework": "unittest",
+            "exit_code": int(completed.returncode),
+            "duration_ms": round((time.monotonic() - started_at) * 1000, 1),
+            "output": output_text,
+            "output_bytes": output_size,
+            "output_truncated": output_truncated,
+        }
 
     def publish_stage(
         self,
@@ -735,6 +825,34 @@ def _copy_and_hash(source: Path, target: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_test_output(handle: Any, output_size: int) -> tuple[str, bool]:
+    """Return useful bounded test evidence, preserving both setup and failure tail."""
+
+    size = max(0, int(output_size))
+    if size <= PLUGIN_SOURCE_TEST_OUTPUT_BYTES:
+        handle.seek(0)
+        return handle.read().decode("utf-8", errors="replace"), False
+    head_bytes = 4 * 1024
+    tail_bytes = PLUGIN_SOURCE_TEST_OUTPUT_BYTES - head_bytes
+    handle.seek(0)
+    head = handle.read(head_bytes)
+    handle.seek(max(0, size - tail_bytes))
+    tail = handle.read(tail_bytes)
+    marker = f"\n... test output omitted ({size - len(head) - len(tail)} bytes) ...\n".encode()
+    return (head + marker + tail).decode("utf-8", errors="replace"), True
+
+
+def _scrubbed_plugin_subprocess_env() -> dict[str, str]:
+    """Keep normal toolchain discovery without exposing host credentials."""
+
+    return {
+        str(name): str(value)
+        for name, value in os.environ.items()
+        if not _SENSITIVE_ENV_NAME_RE.search(str(name))
+        and not str(name).upper().startswith("AKANE_")
+    }
+
+
 def _inspect_installed_site(site_dir: Path) -> tuple[str, str, str]:
     entries: list[tuple[Any, Any]] = []
     for distribution in importlib_metadata.distributions(path=[str(site_dir)]):
@@ -808,6 +926,8 @@ __all__ = [
     "PLUGIN_INSTALL_TIMEOUT_SECONDS",
     "PLUGIN_PROBE_TIMEOUT_SECONDS",
     "PLUGIN_SOURCE_BUILD_TIMEOUT_SECONDS",
+    "PLUGIN_SOURCE_TEST_OUTPUT_BYTES",
+    "PLUGIN_SOURCE_TEST_TIMEOUT_SECONDS",
     "ManagedPluginArtifactStore",
     "PluginGenerationSource",
     "PluginInstallationError",
