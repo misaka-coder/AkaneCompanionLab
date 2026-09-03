@@ -1,5 +1,12 @@
 # Akane plugin examples
 
+This directory is exposed to the execution host as `alias:akane-sdk`. Treat it
+as the current release's read-only reference: inspect or copy an example into
+the selected project, and make changes in that project rather than here. The
+authoritative Python contract is the installed `companion_v01.plugin_api`
+module used by these examples; inspect that exact module when a symbol's
+signature matters instead of relying on remembered APIs.
+
 These packages use the same wheel and `akane.plugins.v1` entry-point contract
 as installed Akane plugins. They are executable examples rather than host-only
 fixtures.

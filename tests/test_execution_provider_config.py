@@ -283,6 +283,27 @@ class ExecEngineProviderTests(unittest.TestCase):
             self.assertEqual(provider.credential_env_names, {"GITHUB_TOKEN", "NPM_TOKEN"})
             self.assertEqual(provider.proxy_url, "http://127.0.0.1:17897")
 
+    def test_provider_exposes_only_the_current_release_plugin_reference_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            release_root = Path(tmp) / "release"
+            sdk_root = release_root / "examples" / "plugins"
+            sdk_root.mkdir(parents=True)
+            (release_root / "skills").mkdir()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            engine = object.__new__(AkaneMemoryEngine)
+            with patch("companion_v01.engine.config.EXECUTION_ENABLED", True), patch(
+                "companion_v01.engine.config.BASE_DIR", release_root
+            ), patch("companion_v01.engine.config.EXECUTION_WORKSPACE_ROOT", str(workspace)), patch(
+                "companion_v01.engine.config.EXECUTION_RUN_LOG_DIR", str(Path(tmp) / "runlogs")
+            ), patch("companion_v01.engine.config.DATA_ROOT", str(Path(tmp) / "data")), patch(
+                "companion_v01.engine.config.STATE_DIR", str(Path(tmp) / "state")
+            ):
+                provider = engine._build_execution_provider()
+
+            self.assertEqual(provider.resolve_workdir("alias:akane-sdk"), sdk_root.resolve())
+            self.assertNotIn("akane-source", provider.mounts)
+
     def _native_schema_dump(self, provider) -> str:
         handlers = {
             "exec_run": ExecRunToolHandler(execution_provider=provider),

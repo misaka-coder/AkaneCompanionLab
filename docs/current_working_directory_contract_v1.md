@@ -34,10 +34,11 @@ When `cwd` and `workspace_id` are omitted:
 4. an explicit `cwd` or `workspace_id` overrides one invocation only and does
    not mutate the conversation selection.
 
-The model-visible host facts expose only `alias:project`, the project label,
-and workspace ID.  Managed physical roots, runtime database paths, and
-host-bound storage paths are not projected.  Tool results still preserve paths
-needed to complete the task.
+The request-tail execution facts expose the exact effective working directory,
+project label, and existing `workspace_id`. Each of the four coding tools also
+returns one `effective_cwd` fact; it does not repeat the complete project
+record. Runtime database, cache, and run-log locations remain outside the
+prompt because they are not coding coordinates.
 
 ## Permission boundary
 
@@ -55,6 +56,15 @@ selection is unchanged and changes only after create/open/select/close or loss
 of the selected directory.  MemCore tool traces continue to store the actual
 tool arguments and results; no workspace-specific history or compression path
 is added.
+
+## Release SDK entry
+
+When present, `alias:akane-sdk` resolves to the current release's public plugin
+examples. It is a reference coordinate, not the active coding project and not a
+permission grant. Generic coding prompts do not advertise it; a later
+plugin-development Skill may disclose it only for plugin work. The exact public
+Python contract remains the installed `companion_v01.plugin_api` module used by
+those examples.
 
 ## Non-goals
 

@@ -8850,13 +8850,20 @@ class AkaneMemoryEngine:
             credential_raw = str(getattr(config, "EXECUTION_CREDENTIAL_ENV_NAMES", "") or "").strip()
             credential_names = [name.strip() for name in credential_raw.split(",") if name.strip()]
             proxy_url = str(getattr(config, "EXECUTION_PROXY_URL", "") or "").strip()
+            mounts = self._get_skill_registry().mount_paths()
+            sdk_root = Path(getattr(config, "BASE_DIR", Path(__file__).resolve().parent.parent)) / "examples" / "plugins"
+            if sdk_root.is_dir():
+                # Stable entry to the release's public plugin examples.  It is
+                # intentionally not advertised by the generic coding prompt;
+                # the plugin-development Skill will disclose it when relevant.
+                mounts["akane-sdk"] = sdk_root
             provider = TrustedLocalExecutor(
                 workspace_root=workspace_root,
                 run_log_dir=run_log_dir,
                 allowed_env_names=allowed_names,
                 credential_env_names=credential_names,
                 proxy_url=proxy_url,
-                mounts=self._get_skill_registry().mount_paths(),
+                mounts=mounts,
             )
         except Exception as exc:
             logger.warning("execution provider disabled: %s", exc)
@@ -9130,10 +9137,10 @@ class AkaneMemoryEngine:
         credential_context = ""
         if credential_refs:
             credential_context = (
-                f" credential_env_refs: {credential_refs}. "
+                f"\ncredential_env_refs: {credential_refs}\n"
                 "命令可按当前 Shell 语法使用 configured 引用；真实值由执行器注入并从输出中遮蔽。"
             )
-        cwd_context = ""
+        cwd_state: dict[str, Any] = {}
         describe_cwd = getattr(handler, "working_directory_context", None)
         if callable(describe_cwd) and profile_user_id and session_id:
             try:
@@ -9149,22 +9156,18 @@ class AkaneMemoryEngine:
                 )
             except Exception:
                 cwd_state = {}
-            working_directory = str(cwd_state.get("working_directory") or "").strip()
-            if working_directory:
-                cwd_context = f" current_cwd={working_directory}"
-                project = str(cwd_state.get("project") or "").strip()
-                workspace_id = str(cwd_state.get("workspace_id") or "").strip()
-                if project:
-                    cwd_context += f"; project={json.dumps(project, ensure_ascii=False)}"
-                if workspace_id:
-                    cwd_context += f"; workspace_id={workspace_id}"
-                cwd_context += "."
+        working_directory = str(cwd_state.get("working_directory") or "execution_root").strip()
+        project = str(cwd_state.get("project") or "none").strip()
+        workspace_id = str(cwd_state.get("workspace_id") or "").strip()
         return (
-            "【执行宿主】"
-            f"platform={platform}; command_shell={command_shell}; script_shell={script_shell}; "
-            f"filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}. "
+            "Execution environment:\n"
+            f"platform: {platform}\n"
+            f"shell: {command_shell}\n"
+            f"working_directory: {json.dumps(working_directory, ensure_ascii=False)}\n"
+            f"project: {json.dumps(project, ensure_ascii=False)}\n"
+            f"workspace_id: {workspace_id or 'none'}\n"
+            f"access: filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}; script_shell={script_shell}\n"
             "普通环境与 PATH 按宿主继承，凭据类和 Akane 内部变量除外；依赖缓存共享，项目依赖遵循清单与锁文件。"
-            f"{cwd_context}"
             f"{credential_context}"
         )
 

@@ -163,11 +163,9 @@ class ManageProjectWorkspaceToolHandler(_ProjectWorkspaceHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_project_workspace：管理当前会话的默认代码目录。需要持久项目时可 current/list、create/open/select/close；create 建宿主管理项目；"
-            "用户指定桌面或其它真实位置时，先用 Shell 确认/创建绝对目录，再用 open（path，可选 display_name）注册。"
-            "create/open/select 会立即把该项目设为当前工作目录；之后 project_inspect、workspace_write、workspace_patch 和 exec_run 省略 cwd 时都会使用它。"
-            "显式 cwd 只覆盖当前一次调用；close 仅退出当前目录，不删除文件也不撤销权限。"
-            "archive 只归档，不删除项目文件。"
+            "- manage_project_workspace：设置当前会话的代码目录。create 新建并切换，open 登记已有绝对目录并切换，"
+            "select 切到已登记项目，current/list 查看，close 退出当前目录，archive 归档但不删除文件。"
+            "create/open/select 后代码工具省略 cwd 时使用该目录；显式 cwd 只覆盖当前一次调用。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -413,9 +411,9 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             used += len(row) + 1
             end += 1
         complete = end >= len(items)
-        location_label = (
-            f"项目：{data['workspace_id']}" if data.get("workspace_id") else f"cwd：{data.get('cwd', '')}"
-        )
+        workspace_id = str(data.get("workspace_id") or "")
+        effective_cwd = str(data.get("effective_cwd") or "")
+        location_label = f"workspace_id：{workspace_id or 'none'}  effective_cwd：{effective_cwd}"
         lines = [f"【{heading}】", f"{location_label}  路径：{data['path']}"]
         if action == "list":
             lines.append(
@@ -451,7 +449,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             continuation=continuation,
             diagnostics={
                 "workspace_id": data["workspace_id"],
-                **({"cwd": data.get("cwd", "")} if data.get("cwd") else {}),
+                "effective_cwd": effective_cwd,
                 "shown": len(rows),
                 "shown_through": end,
                 "total": len(items),
@@ -509,9 +507,9 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             if used >= budget:
                 break
         complete = line_index >= requested_stop
-        location_label = (
-            f"项目：{data['workspace_id']}" if data.get("workspace_id") else f"cwd：{data.get('cwd', '')}"
-        )
+        workspace_id = str(data.get("workspace_id") or "")
+        effective_cwd = str(data.get("effective_cwd") or "")
+        location_label = f"workspace_id：{workspace_id or 'none'}  effective_cwd：{effective_cwd}"
         lines = [
             "【项目源码读取】",
             f"{location_label}  文件：{data['path']}",
@@ -542,7 +540,7 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
             continuation=continuation,
             diagnostics={
                 "workspace_id": data["workspace_id"],
-                **({"cwd": data.get("cwd", "")} if data.get("cwd") else {}),
+                "effective_cwd": effective_cwd,
                 "path": data["path"],
                 "sha256": fingerprint,
                 "start_line": requested_start + 1,
@@ -641,12 +639,17 @@ class ProjectInspectToolHandler(_ProjectWorkspaceHandler):
     def _bind_direct_cwd(call: dict[str, Any], data: Mapping[str, Any]) -> dict[str, Any]:
         """Keep a default-root page pinned if project selection changes later."""
 
-        if call.get("cwd") or call.get("workspace_id") or not data.get("cwd"):
+        if (
+            call.get("cwd")
+            or call.get("workspace_id")
+            or data.get("workspace_id")
+            or not data.get("effective_cwd")
+        ):
             return call
         path = Path(str(call.get("path") or "")).expanduser()
         if path.is_absolute():
             return call
-        return {**call, "cwd": str(data.get("cwd") or "")}
+        return {**call, "cwd": str(data.get("effective_cwd") or "")}
 
     @staticmethod
     def _render_list_entry(item: dict[str, Any]) -> str:

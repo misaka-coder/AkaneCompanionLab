@@ -56,8 +56,7 @@ id = "akane.sample.gentle-checkin"
 enabled = true
 ```
 
-The current lifecycle is restart-only. Set `enabled = false` and restart the
-plugin host to withdraw the capability, events, command, service, and Skill
-together. M67-E now provides staged wheel/source installation, exact permission
-approval, uninstall, and last-good switching. Code updates require one Bot
-process restart until isolated PluginHost generations land in M67-F.
+Use the plugin management interface to stage and validate the wheel. A healthy
+candidate generation replaces the active generation atomically; a failed
+candidate leaves the last-good generation running. Enabling, disabling, updating,
+or removing the plugin does not require restarting the Bot process.

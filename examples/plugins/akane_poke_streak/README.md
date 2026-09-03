@@ -34,7 +34,7 @@ python -m build --wheel examples/plugins/akane_poke_streak
 python -m pip install --no-deps examples/plugins/akane_poke_streak/dist/akane_poke_streak-0.1.0-py3-none-any.whl
 ```
 
-在目标实例的 TOML 中选择插件，然后按当前 restart-only 生命周期重启插件宿主：
+在目标实例中选择插件：
 
 ```toml
 [[plugins]]
@@ -42,6 +42,5 @@ id = "akane.sample.poke-streak"
 enabled = true
 ```
 
-停用时将 `enabled` 改为 `false` 并重启插件宿主。当前阶段尚未把安装和卸载伪装成热重载；
-M67-E 已提供统一的源码/wheel staging、权限确认、卸载与 last-good 切换；在 M67-F
-独立 PluginHost 代次完成前，代码更新后明确需要重启一次 Bot 进程。
+通过插件管理入口暂存并校验 wheel。候选代健康后原子接替当前代；候选失败时继续使用
+last-good。启用、停用、更新和移除都不需要重启 Bot 进程。

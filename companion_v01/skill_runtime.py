@@ -369,6 +369,9 @@ class SkillRegistry:
                 discovered[key] = entry
             self._last_good = discovered
             merged: dict[str, SkillEntry] = {}
+            bundled_names = {
+                entry.name for key, entry in discovered.items() if key[0] == "bundled"
+            }
             for key, entry in discovered.items():
                 if key[0] == "bundled":
                     merged[entry.name] = entry
@@ -377,6 +380,16 @@ class SkillRegistry:
                     merged[entry.name] = entry
             for key, entry in discovered.items():
                 if key[0] == "managed":
+                    if entry.name in bundled_names:
+                        diagnostics.append(
+                            {
+                                "name": entry.name,
+                                "source": "managed",
+                                "reason": "bundled_skill_name_reserved",
+                                "fallback": "ignored",
+                            }
+                        )
+                        continue
                     merged[entry.name] = entry
             entries = tuple(sorted(merged.values(), key=lambda item: item.name.casefold()))
             catalog_material = json.dumps(
@@ -500,6 +513,12 @@ class SkillRegistry:
                 entry = _entry_from_dir(draft, source="managed")
             except SkillError as exc:
                 return SkillPublishResult(status="invalid", reason=exc.reason)
+            if (self.bundled_root / entry.name).is_dir():
+                return SkillPublishResult(
+                    status="invalid",
+                    name=entry.name,
+                    reason="bundled_skill_name_reserved",
+                )
             return SkillPublishResult(status="valid", name=entry.name, revision=entry.revision)
 
     def publish(self, draft_path: str, *, replace: bool = False) -> SkillPublishResult:
@@ -509,6 +528,12 @@ class SkillRegistry:
                 draft_entry = _entry_from_dir(draft, source="managed")
             except SkillError as exc:
                 return SkillPublishResult(status="invalid", reason=exc.reason)
+            if (self.bundled_root / draft_entry.name).is_dir():
+                return SkillPublishResult(
+                    status="conflict",
+                    name=draft_entry.name,
+                    reason="bundled_skill_name_reserved",
+                )
             destination = self.managed_root / draft_entry.name
             existed = destination.exists()
             if existed and not replace:

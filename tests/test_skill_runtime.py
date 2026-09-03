@@ -144,12 +144,26 @@ class SkillRuntimeTests(unittest.TestCase):
             },
         )
 
-    def test_managed_skill_overrides_same_named_bundled_skill(self) -> None:
+    def test_bundled_skill_name_is_reserved_from_managed_shadowing(self) -> None:
         _write_skill(self.bundled, "demo", "Bundled demo.", "bundled body")
         _write_skill(self.managed, "demo", "Managed demo.", "managed body")
-        entry = self.registry.snapshot().by_name()["demo"]
-        self.assertEqual(entry.source, "managed")
-        self.assertEqual(entry.instructions, "managed body")
+        snapshot = self.registry.snapshot()
+        entry = snapshot.by_name()["demo"]
+        self.assertEqual(entry.source, "bundled")
+        self.assertEqual(entry.instructions, "bundled body")
+        self.assertIn("bundled_skill_name_reserved", {item["reason"] for item in snapshot.diagnostics})
+
+    def test_publish_rejects_a_bundled_skill_name_without_touching_either_copy(self) -> None:
+        _write_skill(self.bundled, "demo", "Bundled demo.", "bundled body")
+        _write_skill(self.workspace / "skill_drafts", "demo", "Custom demo.", "custom body")
+
+        validated = self.registry.validate_draft("skill_drafts/demo")
+        published = self.registry.publish("skill_drafts/demo")
+
+        self.assertEqual(validated.reason, "bundled_skill_name_reserved")
+        self.assertEqual(published.reason, "bundled_skill_name_reserved")
+        self.assertFalse((self.managed / "demo").exists())
+        self.assertEqual(self.registry.load("demo").content, "bundled body")
 
     def test_hot_reload_updates_next_snapshot_without_restart(self) -> None:
         skill_dir = _write_skill(self.managed, "demo", "Old description.", "old body")

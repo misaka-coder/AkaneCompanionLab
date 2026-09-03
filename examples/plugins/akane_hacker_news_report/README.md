@@ -36,6 +36,5 @@ id = "akane.sample.hacker-news-report"
 enabled = true
 ```
 
-当前插件生命周期仍是 restart-only。修改选择后应通过现有插件管理入口重启宿主；统一 staging
-M67-E 已提供源码/wheel staging、精确权限确认、卸载和 last-good 切换；在 M67-F
-独立 PluginHost 代次完成前，代码更新后明确需要重启一次 Bot 进程。
+通过插件管理入口暂存并校验 wheel。候选代健康后原子接替当前代；候选失败时继续使用
+last-good。启用、停用、更新和移除都不需要重启 Bot 进程。

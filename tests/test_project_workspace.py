@@ -75,7 +75,10 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual([item["workspace_id"] for item in listed["workspaces"]], [created["workspace_id"]])
         selected = self.service.select(scope=other_session, workspace_id=created["workspace_id"])
         self.assertEqual(selected["alias"], "alias:project")
-        self.assertNotIn(str(self.execution_root), str(selected))
+        self.assertEqual(
+            Path(selected["working_directory"]),
+            self.execution_root / "Projects" / created["workspace_id"],
+        )
         cwd = self.service.execution_cwd(scope=other_session, alias_value="alias:project")
         self.assertEqual(cwd, f"Projects/{created['workspace_id']}")
 
@@ -180,7 +183,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
 
         self.assertTrue(closed["closed"])
         self.assertEqual(closed["previous_workspace_id"], created["workspace_id"])
-        self.assertEqual(closed["working_directory"], "execution_root")
+        self.assertEqual(Path(closed["working_directory"]), self.execution_root.resolve())
         self.assertIsNone(self.service.current(scope=self.private))
         self.assertEqual(
             self.service.list(scope=self.private)["workspaces"][0]["workspace_id"],
@@ -203,7 +206,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertTrue(rebound["already_bound"])
         self.assertEqual(bound["root_kind"], "host_bound")
         self.assertTrue(bound["available"])
-        self.assertNotIn(str(external), str(bound))
+        self.assertEqual(Path(bound["working_directory"]), external.resolve())
         self.assertNotIn("host_root_path", bound)
         self.service.write(scope=desktop, path="src/main.js", content="console.log('bound');\n")
         self.assertEqual(
@@ -228,7 +231,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         external.mkdir()
         opened = self.service.bind_existing(scope=self.private, host_directory=external)
         self.assertEqual(opened["root_kind"], "host_bound")
-        self.assertNotIn(str(external), str(opened))
+        self.assertEqual(Path(opened["working_directory"]), external.resolve())
 
         desktop = self.service.scope_for(
             profile_user_id="alice",
@@ -332,7 +335,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertTrue(searched["scan_complete"])
         self.assertEqual(read["lines"], ["def alpha():", "    return 'Needle'"])
         self.assertEqual(read["sha256"], hashlib.sha256(b"def alpha():\n    return 'Needle'\n").hexdigest())
-        self.assertNotIn(str(project), str(listed))
+        self.assertEqual(Path(listed["effective_cwd"]), project.resolve())
 
     def test_project_inspect_handler_discloses_scan_boundaries(self) -> None:
         created = self.service.create(scope=self.private, display_name="Inspection Disclosure")
@@ -774,8 +777,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         spec = handler.tool_spec()
         item_schema = spec.output_schema["properties"]["files"]["items"]
 
-        self.assertEqual(spec.spec_version, "2.1.0")
-        self.assertEqual(spec.schema_version, 4)
+        self.assertEqual(spec.spec_version, "2.2.0")
+        self.assertEqual(spec.schema_version, 5)
         self.assertEqual(
             item_schema["properties"]["operation"]["enum"],
             ["update", "create", "delete", "rename"],
@@ -1052,6 +1055,10 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
 
         self.assertEqual(result.stream_events[0]["status"], "succeeded")
         self.assertEqual((self.execution_root / "default.txt").read_text(encoding="utf-8"), "ok\n")
+        self.assertEqual(
+            Path(result.state_updates["project_workspace"]["effective_cwd"]),
+            self.execution_root.resolve(),
+        )
 
     def test_file_tools_default_to_current_selected_project(self) -> None:
         created = self.service.create(scope=self.private, display_name="Current Project")
@@ -1070,6 +1077,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         project_file = self.execution_root / "Projects" / created["workspace_id"] / "current-task.txt"
         self.assertEqual(result.stream_events[0]["status"], "succeeded")
         self.assertEqual(state["workspace_id"], created["workspace_id"])
+        self.assertEqual(Path(state["effective_cwd"]), project_file.parent.resolve())
         self.assertTrue(project_file.is_file())
         self.assertFalse((self.execution_root / "current-task.txt").exists())
 
@@ -1129,7 +1137,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(state["display_name"], "Existing Project")
         self.assertEqual(state["root_kind"], "host_bound")
-        self.assertNotIn(str(external), result.followup_context)
+        self.assertEqual(Path(state["working_directory"]), external.resolve())
 
     def test_manage_workspace_schema_exposes_open_path_contract(self) -> None:
         spec = ManageProjectWorkspaceToolHandler(service=self.service).tool_spec()
@@ -1143,6 +1151,8 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
             ["list", "create", "open", "select", "archive", "current", "close"],
         )
         self.assertIn("path", schema["properties"])
+        self.assertIn("working_directory", spec.output_schema["properties"])
+        self.assertNotIn("effective_cwd", spec.output_schema["properties"])
 
     def test_exec_alias_project_resolves_before_provider_dispatch(self) -> None:
         from types import SimpleNamespace

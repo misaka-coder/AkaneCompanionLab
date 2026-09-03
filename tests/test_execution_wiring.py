@@ -160,6 +160,11 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         self.assertTrue(result.followup_envelope.producer_bounded)
         self.assertTrue(result.state_updates["capability_execution"]["run_id"].startswith("execrun_"))
         self.assertEqual(result.state_updates["capability_execution"]["output_ref"].startswith("runlog:"), True)
+        self.assertEqual(
+            Path(result.state_updates["capability_execution"]["effective_cwd"]),
+            self.workspace.resolve(),
+        )
+        self.assertEqual(result.state_updates["capability_execution"]["workspace_id"], "")
 
     def test_exec_run_schema_and_handler_do_not_apply_a_private_command_length_limit(self) -> None:
         self._set_policy("trusted_auto_allow")
@@ -246,9 +251,11 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
 
         for value in (native, legacy):
-            self.assertEqual(value.count("【执行宿主】"), 1)
-            self.assertIn("platform=linux", value)
-            self.assertIn("command_shell=/bin/sh", value)
+            self.assertEqual(value.count("Execution environment:"), 1)
+            self.assertEqual(value.count("working_directory:"), 1)
+            self.assertIn("platform: linux", value)
+            self.assertIn("shell: /bin/sh", value)
+            self.assertNotIn("effective_cwd", value)
             self.assertNotIn("toolchain=", value)
             self.assertNotIn("node=unavailable", value)
         self.assertNotIn("- exec_run：", native)
@@ -326,7 +333,7 @@ class ExecHandlerPermissionTests(unittest.TestCase):
                 }
             ),
             working_directory_context=lambda **_kwargs: {
-                "working_directory": "alias:project",
+                "working_directory": "/workspace/compiler-lab",
                 "project": "Compiler Lab",
                 "workspace_id": "proj_" + "a" * 32,
             },
@@ -339,9 +346,9 @@ class ExecHandlerPermissionTests(unittest.TestCase):
             client_mode="qq_text",
         )
 
-        self.assertIn("current_cwd=alias:project", context)
-        self.assertIn('project="Compiler Lab"', context)
-        self.assertIn("workspace_id=proj_", context)
+        self.assertIn("working_directory: \"/workspace/compiler-lab\"", context)
+        self.assertIn('project: "Compiler Lab"', context)
+        self.assertIn("workspace_id: proj_", context)
         self.assertNotIn("/var/lib", context)
 
     def test_exec_run_capability_override_does_not_unlock_other_high_risk_tools(self) -> None:

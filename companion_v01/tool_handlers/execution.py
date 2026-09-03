@@ -149,11 +149,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
         actor_stable_id: str = "",
         actor_profile_user_id: str = "",
     ) -> dict[str, str]:
-        """Return a prompt-safe description of the conversation cwd.
-
-        Physical managed roots and host-bound paths stay inside the executor;
-        coding tools only need the stable alias and project identity.
-        """
+        """Return the exact execution coordinate for the current request tail."""
 
         service = self.project_workspace_service
         if service is None:
@@ -170,9 +166,13 @@ class _ExecToolHandlerBase(BaseToolHandler):
         except ProjectWorkspaceError:
             current = None
         if current is None:
-            return {"working_directory": "execution_root", "project": "none"}
+            try:
+                root = str(self.execution_provider.resolve_workdir(""))
+            except Exception:
+                root = "execution_root"
+            return {"working_directory": root, "project": "none", "workspace_id": ""}
         return {
-            "working_directory": "alias:project",
+            "working_directory": str(current.get("working_directory") or ""),
             "project": str(current.get("display_name") or "unnamed"),
             "workspace_id": str(current.get("workspace_id") or ""),
         }
@@ -232,6 +232,9 @@ class _ExecToolHandlerBase(BaseToolHandler):
         for key in ("max_chars", "actual_chars"):
             if data.get(key) is not None:
                 state_updates["capability_execution"][key] = data.get(key)
+        for key in ("effective_cwd", "workspace_id"):
+            if data.get(key) is not None:
+                state_updates["capability_execution"][key] = data.get(key)
         if data.get("generated_resources"):
             state_updates["capability_execution"]["generated_resources"] = list(data.get("generated_resources") or [])
         if data.get("artifact_status"):
@@ -252,6 +255,35 @@ class _ExecToolHandlerBase(BaseToolHandler):
             ),
             state_updates=state_updates,
         )
+
+    @staticmethod
+    def _with_execution_location(
+        mapped: Any,
+        *,
+        provider: Any,
+        cwd: str,
+        workspace_id: str,
+    ) -> Any:
+        """Attach the one actual command coordinate without duplicating project state."""
+
+        resolver = getattr(provider, "resolve_workdir", None)
+        if not callable(resolver):
+            return mapped
+        try:
+            effective_cwd = str(resolver(cwd))
+        except Exception:
+            return mapped
+        data = dict(mapped.data or {})
+        data["effective_cwd"] = effective_cwd
+        data["workspace_id"] = str(workspace_id or "")
+        event = dict(mapped.event or {})
+        event["effective_cwd"] = effective_cwd
+        if workspace_id:
+            event["workspace_id"] = str(workspace_id)
+        feedback = str(mapped.model_feedback or "")
+        location = f"effective_cwd={effective_cwd}; workspace_id={workspace_id or 'none'}"
+        feedback = f"{feedback}\n[{location}]" if feedback else f"[{location}]"
+        return replace(mapped, data=data, event=event, model_feedback=feedback)
 
     def _approval_required(
         self,
@@ -534,11 +566,14 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             return self._unavailable_result("execution_provider_unconfigured")
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
+        workspace_id = ""
         input_resources = call.get("input_resources") or []
         if not cwd and not input_resources and self.project_workspace_service is not None:
             try:
                 scope = self._project_scope(context)
-                if self.project_workspace_service.current(scope=scope) is not None:
+                current = self.project_workspace_service.current(scope=scope)
+                if current is not None:
+                    workspace_id = str(current.get("workspace_id") or "")
                     cwd = self.project_workspace_service.execution_cwd(
                         scope=scope,
                         alias_value="alias:project",
@@ -557,6 +592,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 return self._project_rejected("project_workspace_unconfigured")
             try:
                 scope = self._project_scope(context)
+                current = self.project_workspace_service.current(scope=scope)
+                workspace_id = str((current or {}).get("workspace_id") or "")
                 cwd = self.project_workspace_service.execution_cwd(
                     scope=scope,
                     alias_value=cwd,
@@ -566,12 +603,18 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             except ProjectWorkspaceError as exc:
                 return self._project_rejected(exc.reason)
         if not command or len(cwd) > EXEC_CWD_MAX_CHARS:
-            return self._mapped_result(
-                execute_exec_run(
+            mapped = execute_exec_run(
                     provider,
                     owner=self._owner(context),
                     command=command,
                     cwd=cwd,
+                )
+            return self._mapped_result(
+                self._with_execution_location(
+                    mapped,
+                    provider=provider,
+                    cwd=cwd,
+                    workspace_id=workspace_id,
                 )
             )
         input_resources = call.get("input_resources")
@@ -586,11 +629,18 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         decision = self._permission_decision(context, args_preview)
         if not decision.allowed:
             if decision.requires_user_decision:
-                return self._ask_or_redeem(context, decision, call)
+                return self._ask_or_redeem(context, decision, call, workspace_id=workspace_id)
             return self._blocked(str(decision.reason or "capability_disabled_by_policy"))
-        return self._execute_command(provider, call, context)
+        return self._execute_command(provider, call, context, workspace_id=workspace_id)
 
-    def _execute_command(self, provider: Any, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+    def _execute_command(
+        self,
+        provider: Any,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+        *,
+        workspace_id: str = "",
+    ) -> ToolExecutionResult:
         command = str(call.get("command") or "").strip()
         cwd = str(call.get("cwd") or "").strip()
         input_resources = call.get("input_resources") or []
@@ -642,6 +692,12 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                     reason=f"command_{mapped.event_status}",
                 )
                 mapped = self._enrich_resources(mapped, registration)
+        mapped = self._with_execution_location(
+            mapped,
+            provider=provider,
+            cwd=cwd,
+            workspace_id="" if input_resources else workspace_id,
+        )
         return self._mapped_result(mapped)
 
     def _ask_or_redeem(
@@ -649,6 +705,8 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         context: ToolExecutionContext,
         decision: PermissionDecision,
         call: dict[str, Any],
+        *,
+        workspace_id: str = "",
     ) -> ToolExecutionResult:
         """Redeem a previously approved grant, else create an approval request.
 
@@ -671,7 +729,12 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 authorization_profile_user_id=authorization_profile_user_id(context),
             )
             if grant is not None:
-                return self._execute_command(self.execution_provider, call, context)
+                return self._execute_command(
+                    self.execution_provider,
+                    call,
+                    context,
+                    workspace_id=workspace_id,
+                )
         request_id = self._create_approval_request(context, decision, fingerprint, resource, device)
         return self._approval_required(context, decision, request_id=request_id, fingerprint=fingerprint)
 

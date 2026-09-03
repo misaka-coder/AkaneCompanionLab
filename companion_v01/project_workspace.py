@@ -277,7 +277,7 @@ class ProjectWorkspaceService:
         return {
             "closed": bool(workspace_id),
             "previous_workspace_id": str(workspace_id or ""),
-            "working_directory": "execution_root",
+            "working_directory": str(self.execution_workspace_root),
         }
 
     def archive(self, *, scope: ProjectWorkspaceScope, workspace_id: str) -> dict[str, Any]:
@@ -378,7 +378,7 @@ class ProjectWorkspaceService:
         )
         return {
             "workspace_id": str(record["workspace_id"]),
-            **({"cwd": str(root)} if not record["workspace_id"] else {}),
+            "effective_cwd": str(root),
             "path": base_relative,
             "pattern": clean_pattern,
             "max_depth": depth_limit,
@@ -517,7 +517,7 @@ class ProjectWorkspaceService:
         )
         return {
             "workspace_id": str(record["workspace_id"]),
-            **({"cwd": str(root)} if not record["workspace_id"] else {}),
+            "effective_cwd": str(root),
             "path": base_relative,
             "query": clean_query,
             "include": clean_include,
@@ -579,7 +579,7 @@ class ProjectWorkspaceService:
             raise ProjectWorkspaceError("read_failed", path=relative) from exc
         return {
             "workspace_id": str(record["workspace_id"]),
-            **({"cwd": str(root)} if not record["workspace_id"] else {}),
+            "effective_cwd": str(root),
             "path": relative,
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -676,7 +676,7 @@ class ProjectWorkspaceService:
         return {
             "status": "succeeded",
             "workspace_id": str(record["workspace_id"]),
-            **({"cwd": str(root)} if not record["workspace_id"] else {}),
+            "effective_cwd": str(root),
             "path": relative.as_posix(),
             "created": not exists,
             "replaced": exists,
@@ -805,7 +805,7 @@ class ProjectWorkspaceService:
         return {
             "status": "succeeded",
             "workspace_id": str(record["workspace_id"]),
-            **({"cwd": str(root)} if not record["workspace_id"] else {}),
+            "effective_cwd": str(root),
             "files": [
                 {
                     "path": item["relative"].as_posix(),
@@ -1083,24 +1083,24 @@ class ProjectWorkspaceService:
 
     def _public_record(self, record: Mapping[str, Any], *, selected: bool) -> dict[str, Any]:
         root_kind = str(record.get("root_kind") or _ROOT_KIND_MANAGED)
+        root: Path | None = None
         try:
-            available = self._root_from_record(record, require_exists=True).is_dir()
+            root = self._root_from_record(record, require_exists=True)
+            available = root.is_dir()
         except ProjectWorkspaceError:
             available = False
+        workspace_id = str(record.get("workspace_id") or "")
+        is_current = bool(selected and available and str(record.get("state") or "") == "active")
         return {
-            "workspace_id": str(record.get("workspace_id") or ""),
+            "workspace_id": workspace_id,
             "display_name": str(record.get("display_name") or ""),
             "owner_kind": str(record.get("owner_kind") or ""),
             "state": str(record.get("state") or ""),
             "root_kind": root_kind,
             "available": available,
             "selected": bool(selected and available),
-            "alias": "alias:project" if selected and available and str(record.get("state") or "") == "active" else "",
-            "working_directory": (
-                "alias:project"
-                if selected and available and str(record.get("state") or "") == "active"
-                else ""
-            ),
+            "alias": "alias:project" if is_current else "",
+            "working_directory": str(root) if is_current and root is not None else "",
             "created_at": int(record.get("created_at") or 0),
             "updated_at": int(record.get("updated_at") or 0),
         }
