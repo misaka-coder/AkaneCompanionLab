@@ -349,8 +349,8 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
                 "reason": ""
                 if ok
                 else str(
-                    status.get("reason")
-                    or plugin_status.get("reason")
+                    plugin_status.get("reason")
+                    or status.get("reason")
                     or "plugin_probe_failed"
                 ),
                 "plugin_id": plugin_id,

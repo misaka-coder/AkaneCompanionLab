@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from capcore import InvocationContext
 
@@ -15,11 +16,34 @@ from companion_v01.plugin_installation import ManagedPluginArtifactStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_ROOT = PROJECT_ROOT / "examples" / "plugins" / "akane_gentle_checkin"
+DIAGNOSTIC_ROOT = PROJECT_ROOT / "tests" / "fixtures" / "akane_diagnostic_plugin"
 PLUGIN_ID = "akane.sample.gentle-checkin"
 CAPABILITY_ID = f"{PLUGIN_ID}.configure.v1"
 
 
 class PluginInstallationLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stage_reports_specific_plugin_rejection_instead_of_aggregate_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            shutil.copytree(DIAGNOSTIC_ROOT, source)
+            artifact_store = ManagedPluginArtifactStore(
+                root / "artifacts",
+                instance_id="test-instance",
+                project_root=PROJECT_ROOT,
+            )
+            service = ExtensionManagementService(
+                plugin_runtime=Mock(),
+                selection_store=Mock(),
+                artifact_store=artifact_store,
+            )
+
+            staged = await service.stage_source(source_path=str(source))
+
+            self.assertFalse(staged["ok"])
+            self.assertEqual(staged["status"], "failed")
+            self.assertEqual(staged["reason"], "contribution_policy_rejected")
+
     async def test_fresh_source_stage_installs_activates_and_invokes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
