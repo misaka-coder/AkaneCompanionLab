@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Restart the Akane Host when the finance plugin push job is dead.
+"""Restart the Akane Host when the finance plugin push service is dead.
 
-The finance plugin host supervises background jobs with a restart-only
-contract: a job task that exits (cancelled/failed/exited) is never revived
+The finance plugin host supervises background services with a restart-only
+contract: a service task that exits (cancelled/failed/exited) is never revived
 by the host, so proactive QQ pushes silently stop.  This watchdog polls the
 bot-scoped plugin status endpoint and restarts the host unit when the
 ``akane.finance`` job is not running for a sustained window.
@@ -58,26 +58,30 @@ def fetch_plugin_status(url: str, token: str, timeout: float = 10.0) -> tuple[bo
 
 
 def job_is_healthy(payload: dict[str, Any]) -> bool:
-    """The finance job must exist and be running; the host must be active."""
+    """The finance background service must exist and be running."""
     if not payload.get("ok"):
         return False
     if str(payload.get("status") or "") != "active":
         return False
-    jobs = payload.get("jobs") or []
-    finance_jobs = [job for job in jobs if str(job.get("plugin_id") or "") == FINANCE_PLUGIN_ID]
-    if not finance_jobs:
+    services = payload.get("background_services") or []
+    finance_services = [
+        service
+        for service in services
+        if str(service.get("plugin_id") or "") == FINANCE_PLUGIN_ID
+    ]
+    if not finance_services:
         return False
-    return all(str(job.get("status") or "") == "running" for job in finance_jobs)
+    return all(str(service.get("status") or "") == "running" for service in finance_services)
 
 
 def job_failure_reason(payload: dict[str, Any]) -> str:
-    jobs = payload.get("jobs") or []
-    for job in jobs:
-        if str(job.get("plugin_id") or "") == FINANCE_PLUGIN_ID:
-            status = str(job.get("status") or "")
-            reason = str(job.get("reason") or "")
-            return f"job_status={status} reason={reason}"
-    return "finance_job_missing"
+    services = payload.get("background_services") or []
+    for service in services:
+        if str(service.get("plugin_id") or "") == FINANCE_PLUGIN_ID:
+            status = str(service.get("status") or "")
+            reason = str(service.get("reason") or "")
+            return f"service_status={status} reason={reason}"
+    return "finance_service_missing"
 
 
 def load_state(path: Path) -> dict[str, int]:
