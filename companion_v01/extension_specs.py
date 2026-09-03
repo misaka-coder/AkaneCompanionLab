@@ -9,10 +9,10 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_extension",
     display_name="Manage installed extensions",
     description=(
-        "Inspect and manage local Akane plugins. It can build and probe a plugin project, probe a wheel, "
-        "publish an approved stage, enable or disable a plugin, reload the isolated plugin generation, "
-        "roll back, or uninstall. Staging never activates code; publish requires the exact permission list "
-        "returned by staging. Only the trusted desktop or configured owner QQ account may use this tool."
+        "Inspect and manage local Akane plugins. First stage a source project or wheel to build and probe an "
+        "immutable candidate. Then install that stage with the exact returned permission list; the host "
+        "publishes and activates it as one operation. Existing plugins can be enabled, disabled, rolled back, "
+        "or uninstalled. Only the trusted desktop or configured owner QQ account may use this tool."
     ),
     input_schema={
         "type": "object",
@@ -24,11 +24,10 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                     "list",
                     "stage_source",
                     "stage_wheel",
-                    "publish",
+                    "install",
                     "discard_stage",
                     "enable",
                     "disable",
-                    "restart",
                     "rollback",
                     "uninstall",
                 ],
@@ -37,7 +36,7 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "Plugin id for enable, disable, rollback, or uninstall; optional for restart.",
+                "description": "Plugin id for enable, disable, rollback, or uninstall.",
             },
             "path": {
                 "type": "string",
@@ -49,13 +48,13 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "Stage id returned by stage_source/stage_wheel; required for publish or discard_stage.",
+                "description": "Stage id returned by stage_source/stage_wheel; required for install or discard_stage.",
             },
             "approved_permissions": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1, "maxLength": 64},
                 "maxItems": 32,
-                "description": "For publish, copy the exact permissions array returned by staging.",
+                "description": "For install, copy the exact permissions array returned by staging.",
             },
         },
         "required": ["action"],

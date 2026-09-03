@@ -177,12 +177,11 @@ class ExtensionManagementService:
                 "list",
                 "enable",
                 "disable",
-                "restart",
                 *(
                     [
                         "stage_wheel",
                         "stage_source",
-                        "publish",
+                        "install",
                         "discard_stage",
                         "rollback",
                         "uninstall",
@@ -197,11 +196,25 @@ class ExtensionManagementService:
 
     async def restart(self, *, requested_plugin_id: str = "") -> dict[str, Any]:
         plugin_id = str(requested_plugin_id or "").strip()
-        if plugin_id and plugin_id not in {item.plugin_id for item in self.plugin_runtime.selections}:
+        desired = self.selection_store.load()
+        if plugin_id and plugin_id not in {item.plugin_id for item in desired}:
             return _failure("not_found", "plugin_not_configured", plugin_id=plugin_id)
         async with self._operation_lock:
-            result = dict(await self.plugin_runtime.restart())
+            result = dict(await self.plugin_runtime.reconfigure(desired))
             artifact_status = self.reconcile_runtime(result)
+        if plugin_id and result.get("published") is not False:
+            target = _plugin_status(result, plugin_id)
+            expected = "active" if _selection_enabled(desired, plugin_id) else "disabled"
+            if target.get("status") != expected:
+                return {
+                    "ok": False,
+                    "status": "reload_failed",
+                    "reason": "plugin_reload_target_missing",
+                    "action": "restart",
+                    "plugin_id": plugin_id,
+                    "candidate": target,
+                    "artifact_status": artifact_status,
+                }
         result.update(
             {
                 "action": "restart",
@@ -217,11 +230,13 @@ class ExtensionManagementService:
         if not is_valid_plugin_id(normalized_id):
             return _failure("invalid_request", "invalid_plugin_id", plugin_id=normalized_id)
         async with self._operation_lock:
-            previous = self.plugin_runtime.selections
-            if normalized_id not in {item.plugin_id for item in previous}:
+            desired = self.selection_store.load()
+            if normalized_id not in {item.plugin_id for item in desired}:
                 return _failure("not_found", "plugin_not_configured", plugin_id=normalized_id)
-            previous_enabled = next(item.enabled for item in previous if item.plugin_id == normalized_id)
-            if previous_enabled == bool(enabled):
+            previous_live = self.plugin_runtime.selections
+            previous_enabled = _selection_enabled(desired, normalized_id)
+            live_enabled = _selection_enabled(previous_live, normalized_id, missing=None)
+            if previous_enabled == bool(enabled) and live_enabled == bool(enabled):
                 payload = self.snapshot()
                 payload["runtime_status"] = str(payload.get("status") or "unknown")
                 payload.update(
@@ -237,7 +252,7 @@ class ExtensionManagementService:
 
             candidate = tuple(
                 PluginSelection(item.plugin_id, bool(enabled) if item.plugin_id == normalized_id else item.enabled)
-                for item in previous
+                for item in desired
             )
             candidate_status = dict(await self.plugin_runtime.reconfigure(candidate))
             target = _plugin_status(candidate_status, normalized_id)
@@ -245,7 +260,7 @@ class ExtensionManagementService:
             if candidate_status.get("published") is False or target.get("status") != expected_status:
                 rollback_status = "not_required"
                 if candidate_status.get("published") is not False:
-                    rollback = dict(await self.plugin_runtime.reconfigure(previous))
+                    rollback = dict(await self.plugin_runtime.reconfigure(previous_live))
                     rollback_status = str(rollback.get("status") or "unknown")
                 artifact_status = self.reconcile_runtime(candidate_status)
                 return {
@@ -265,7 +280,7 @@ class ExtensionManagementService:
             try:
                 self.selection_store.save(candidate)
             except Exception:
-                rollback = dict(await self.plugin_runtime.reconfigure(previous))
+                rollback = dict(await self.plugin_runtime.reconfigure(previous_live))
                 return {
                     "ok": False,
                     "status": "persist_failed",
@@ -288,6 +303,137 @@ class ExtensionManagementService:
                 }
             )
             return payload
+
+    async def install_stage(
+        self,
+        *,
+        stage_id: str,
+        approved_permissions: Iterable[str],
+    ) -> dict[str, Any]:
+        """Publish one immutable stage and make it effective in one operation.
+
+        Staging is the review boundary.  Once the exact permission set is
+        approved, callers should not have to coordinate the artifact catalog,
+        persisted selections and live generation themselves.
+        """
+
+        if self.artifact_store is None:
+            return _failure("unavailable", "plugin_artifact_store_unavailable")
+        async with self._operation_lock:
+            desired_before = self.selection_store.load()
+            live_before = self.plugin_runtime.selections
+            try:
+                published = dict(
+                    await asyncio.to_thread(
+                        self.artifact_store.publish_stage,
+                        stage_id,
+                        approved_permissions=tuple(approved_permissions),
+                    )
+                )
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_install_failed")
+            if not published.get("ok"):
+                return published
+
+            plugin_id = str(published.get("plugin_id") or "")
+            existed = plugin_id in {item.plugin_id for item in desired_before}
+            enabled = _selection_enabled(desired_before, plugin_id) if existed else True
+            candidate = _upsert_selection(desired_before, plugin_id, enabled=enabled)
+            candidate_status = dict(await self.plugin_runtime.reconfigure(candidate))
+            target = _plugin_status(candidate_status, plugin_id)
+            expected_status = "active" if enabled else "disabled"
+            if candidate_status.get("published") is False or target.get("status") != expected_status:
+                artifact_status = self.reconcile_runtime(candidate_status)
+                rollback_ok = await self._restore_install_state(
+                    plugin_id=plugin_id,
+                    existed=existed,
+                    desired_before=desired_before,
+                    live_before=live_before,
+                )
+                return {
+                    "ok": False,
+                    "status": "activation_failed" if rollback_ok else "rollback_failed",
+                    "reason": str(
+                        (
+                            candidate_status.get("reason")
+                            or target.get("reason")
+                            or "plugin_activation_failed"
+                        )
+                        if rollback_ok
+                        else "plugin_install_rollback_failed"
+                    ),
+                    "action": "install",
+                    "plugin_id": plugin_id,
+                    "candidate": target,
+                    "artifact_status": artifact_status,
+                }
+
+            try:
+                self.selection_store.save(candidate)
+            except Exception:
+                rollback_ok = await self._restore_install_state(
+                    plugin_id=plugin_id,
+                    existed=existed,
+                    desired_before=desired_before,
+                    live_before=live_before,
+                )
+                return {
+                    "ok": False,
+                    "status": "persist_failed" if rollback_ok else "rollback_failed",
+                    "reason": (
+                        "plugin_selection_persist_failed"
+                        if rollback_ok
+                        else "plugin_install_rollback_failed"
+                    ),
+                    "action": "install",
+                    "plugin_id": plugin_id,
+                }
+
+            artifact_status = self.reconcile_runtime(candidate_status)
+            return {
+                "ok": True,
+                "status": expected_status,
+                "action": "install",
+                "plugin_id": plugin_id,
+                "version": str(published.get("version") or ""),
+                "digest": str(published.get("digest") or ""),
+                "permissions": list(published.get("permissions") or ()),
+                "installed_status": str(published.get("status") or "installed"),
+                "runtime": target,
+                "artifact_status": artifact_status,
+                "unchanged": bool(published.get("unchanged")),
+            }
+
+    async def _restore_install_state(
+        self,
+        *,
+        plugin_id: str,
+        existed: bool,
+        desired_before: tuple[PluginSelection, ...],
+        live_before: tuple[PluginSelection, ...],
+    ) -> bool:
+        try:
+            if existed:
+                rollback = await asyncio.to_thread(
+                    self.artifact_store.rollback_to_last_good,
+                    plugin_id,
+                )
+                if not rollback.get("ok") and rollback.get("status") != "unchanged":
+                    return False
+            else:
+                removed = await asyncio.to_thread(self.artifact_store.remove_plugin, plugin_id)
+                if not removed.get("ok"):
+                    return False
+            self.selection_store.save(desired_before)
+            restored = dict(await self.plugin_runtime.reconfigure(live_before))
+            if restored.get("published") is False:
+                return False
+            self.reconcile_runtime(restored)
+            return True
+        except Exception:
+            return False
 
     async def stage_wheel(self, *, wheel_path: str) -> dict[str, Any]:
         if self.artifact_store is None:
@@ -326,47 +472,6 @@ class ExtensionManagementService:
                 return _failure(exc.status, exc.reason)
             except Exception:
                 return _failure("error", "plugin_source_stage_failed")
-
-    async def publish_stage(
-        self,
-        *,
-        stage_id: str,
-        approved_permissions: Iterable[str],
-    ) -> dict[str, Any]:
-        if self.artifact_store is None:
-            return _failure("unavailable", "plugin_artifact_store_unavailable")
-        async with self._operation_lock:
-            try:
-                result = dict(
-                    await asyncio.to_thread(
-                        self.artifact_store.publish_stage,
-                        stage_id,
-                        approved_permissions=tuple(approved_permissions),
-                    )
-                )
-            except PluginInstallationError as exc:
-                return _failure(exc.status, exc.reason)
-            except Exception:
-                return _failure("error", "plugin_publish_failed")
-            if not result.get("ok"):
-                return result
-            plugin_id = str(result.get("plugin_id") or "")
-            persisted = self.selection_store.load()
-            if plugin_id not in {item.plugin_id for item in persisted}:
-                try:
-                    self.selection_store.save((*persisted, PluginSelection(plugin_id, False)))
-                except Exception:
-                    result.update(
-                        {
-                            "ok": False,
-                            "status": "persist_failed",
-                            "reason": "plugin_selection_persist_failed",
-                        }
-                    )
-                    return result
-            result["reload_required"] = bool(result.pop("activation_pending", False))
-            result["reload_scope"] = "plugin_generation"
-            return result
 
     async def discard_stage(self, *, stage_id: str) -> dict[str, Any]:
         if self.artifact_store is None:
@@ -563,8 +668,8 @@ class ExtensionManagementService:
             coroutine = self.stage_source(source_path=path)
         elif normalized_action == "stage_wheel":
             coroutine = self.stage_wheel(wheel_path=path)
-        elif normalized_action == "publish":
-            coroutine = self.publish_stage(
+        elif normalized_action == "install":
+            coroutine = self.install_stage(
                 stage_id=stage_id,
                 approved_permissions=tuple(approved_permissions),
             )
@@ -574,8 +679,6 @@ class ExtensionManagementService:
             coroutine = self.set_enabled(plugin_id=plugin_id, enabled=True)
         elif normalized_action == "disable":
             coroutine = self.set_enabled(plugin_id=plugin_id, enabled=False)
-        elif normalized_action == "restart":
-            coroutine = self.restart(requested_plugin_id=plugin_id)
         elif normalized_action == "rollback":
             coroutine = self.rollback(plugin_id=plugin_id)
         elif normalized_action == "uninstall":
@@ -635,6 +738,33 @@ def _plugin_status(snapshot: Mapping[str, Any], plugin_id: str) -> dict[str, Any
         if isinstance(item, Mapping) and str(item.get("plugin_id") or "") == plugin_id:
             return dict(item)
     return {}
+
+
+def _selection_enabled(
+    selections: Iterable[PluginSelection],
+    plugin_id: str,
+    *,
+    missing: bool | None = False,
+) -> bool | None:
+    for item in selections:
+        if item.plugin_id == plugin_id:
+            return item.enabled
+    return missing
+
+
+def _upsert_selection(
+    selections: Iterable[PluginSelection],
+    plugin_id: str,
+    *,
+    enabled: bool,
+) -> tuple[PluginSelection, ...]:
+    current = tuple(selections)
+    if plugin_id in {item.plugin_id for item in current}:
+        return tuple(
+            PluginSelection(item.plugin_id, enabled if item.plugin_id == plugin_id else item.enabled)
+            for item in current
+        )
+    return (*current, PluginSelection(plugin_id, enabled))
 
 
 def _failure(status: str, reason: str, *, plugin_id: str = "") -> dict[str, Any]:

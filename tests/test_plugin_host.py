@@ -56,6 +56,47 @@ class FakeEntryPoint:
         return self._factory
 
 
+class _ManagementRuntimeAdapter:
+    """Expose the current management protocol around the worker-local test host.
+
+    Production management owns a PluginGenerationRuntime. These route tests
+    intentionally exercise PluginHost internals, so the boundary is explicit
+    here instead of making the worker-local host look like a second production
+    lifecycle implementation.
+    """
+
+    code_reload_mode = "test_in_process_reconfigure"
+
+    def __init__(self, host: PluginHost) -> None:
+        self.host = host
+
+    @property
+    def selections(self) -> tuple[PluginSelection, ...]:
+        return self.host.selections
+
+    @property
+    def runtime_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self.host.runtime_loop
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return self.host.status_snapshot()
+
+    async def restart(self) -> dict[str, Any]:
+        return await self.host.restart()
+
+    async def reconfigure(self, selections: tuple[PluginSelection, ...]) -> dict[str, Any]:
+        return await self.host.reconfigure(selections)
+
+    async def invoke(
+        self,
+        capability_id: str,
+        args: dict[str, Any],
+        *,
+        context: InvocationContext,
+    ) -> CapabilityResult:
+        return await self.host.invoke(capability_id, args, context=context)
+
+
 class FakeAdapter:
     provider_id = "provider.test.diagnostic"
 
@@ -689,7 +730,7 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             instance_id="test-instance",
         )
         self.extension_management = ExtensionManagementService(
-            plugin_runtime=self.host,
+            plugin_runtime=_ManagementRuntimeAdapter(self.host),
             selection_store=self.selection_store,
         )
         self.adapter = self.adapters[0]
@@ -802,7 +843,10 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
             defaults=(PluginSelection(PLUGIN_ID, False),),
             instance_id="test-instance",
         )
-        service = ExtensionManagementService(plugin_runtime=missing_host, selection_store=store)
+        service = ExtensionManagementService(
+            plugin_runtime=_ManagementRuntimeAdapter(missing_host),
+            selection_store=store,
+        )
 
         result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
 

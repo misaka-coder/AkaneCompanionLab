@@ -42,14 +42,14 @@
 
 - `POST /admin/plugins/stages`：`{"wheel_path":"..."}`；
 - `POST /admin/plugins/stages/source`：`{"source_path":"..."}`；
-- `POST /admin/plugins/stages/{stage_id}/publish`：`{"approved_permissions":[...]}`；
+- `POST /admin/plugins/stages/{stage_id}/install`：`{"approved_permissions":[...]}`，一次完成发布和激活；
 - `DELETE /admin/plugins/stages/{stage_id}`：丢弃未发布候选；
 - `PATCH /admin/plugins/{plugin_id}/enabled`：启用或停用；
 - `POST /admin/plugins/{plugin_id}/rollback`：把当前指针切回 last-good；
 - `DELETE /admin/plugins/{plugin_id}`：卸载；
 - `GET /admin/plugins/status`：查看运行时和托管制品状态。
 
-发布权限必须与探针观察到的权限集合完全一致。少确认、多确认或候选在确认前发生变化，都不会发布。
+安装权限必须与探针观察到的权限集合完全一致。少确认、多确认或候选在确认前发生变化，都不会安装。
 
 本地源码构建使用当前 Akane Python 的 `pip wheel --no-deps --no-index --no-build-isolation`。它不会联网解析依赖；缺少构建后端或运行依赖时返回结构化失败，让开发者或模型修正工程后重新 staging。构建产物随后仍经过普通 wheel 的全部检查。
 
@@ -123,7 +123,7 @@ health 动态刷新，不进入 MemCore 或当轮尾部，缓存前缀只在插�
 
 模型可以通过正常 Agent 文件与 Shell 能力创建或修改插件工程，并依据 `plugin_source_build_failed`、`plugin_probe_failed` 等反馈修复代码。模型不能因为“代码由自己写”而绕过安装审批：发布仍需要宿主或用户确认探针得出的确切权限。
 
-当前 `manage_extension` 模型工具复用同一服务，暴露查询、源码或 wheel 暂存、精确权限发布、启停、代次重载、回滚和卸载。插件开发说明由 `plugin-development` Skill 按需加载；普通提示词只保留一句能力路由。它仍不搜索市场或下载代码，也不允许模型绕过 `extensions` 权限与逐次审批。
+当前 `manage_extension` 模型工具复用同一服务，暴露查询、源码或 wheel 暂存、精确权限安装、启停、回滚和卸载。安装由宿主一次协调制品指针、实例选择和原子 generation，不再要求模型手工编排发布与重载。插件开发说明由 `plugin-development` Skill 按需加载；普通提示词只保留一句能力路由。它仍不搜索市场或下载代码，也不允许模型绕过 `extensions` 权限与逐次审批。
 
 ## 7. 不属于本阶段的内容
 

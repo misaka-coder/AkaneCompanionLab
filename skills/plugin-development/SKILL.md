@@ -24,8 +24,8 @@ artifact lifecycle. This Skill adds no tools or permissions.
   existing source directory. Keep all source, tests, and build metadata in that project.
 - Read the SDK index with `project_inspect(action="read", cwd="alias:akane-sdk",
   path="README.md")`, then inspect only the example closest to the requested behavior. The
-  examples and `companion_v01.plugin_api` in the current release are the authority; do not
-  rely on remembered method names or old host source trees.
+  current-release examples are the public contract; do not search physical release paths or
+  rely on remembered method names.
 - Use the `akane.plugins.v1` Python entry point. Declare only permissions exercised by the
   implementation. A capability, Skill, prompt block, background service, notification,
   reasoning turn, QQ command, event observer, hook, or managed artifact is optional; do not
@@ -48,18 +48,17 @@ artifact lifecycle. This Skill adds no tools or permissions.
 
 ## Test, stage, and activate
 
-1. Run the project's real unit or integration tests in the current working directory.
+1. Run the project's logic tests in the current working directory.
 2. Call `manage_extension(action="stage_source", path=<absolute working_directory>)`.
    The host builds a wheel and probes it in isolation; staging does not activate it.
 3. Review the returned plugin id, contributions, and permissions. Fix and stage again if
    they do not match the intended design.
-4. Call `manage_extension(action="publish", stage_id=..., approved_permissions=[...])`,
-   copying the exact permissions array returned by that stage.
-5. For a new plugin, call `enable` with its plugin id. For an enabled update whose publish
-   result says reload is required, call `restart`.
-6. Call `list`, exercise the real capability, command, event, or background behavior, and
+4. Call `manage_extension(action="install", stage_id=..., approved_permissions=[...])`,
+   copying the exact permissions array returned by that stage. The host publishes and
+   activates the immutable stage as one operation.
+5. Call `list`, exercise the real capability, command, event, or background behavior, and
    verify the plugin is active. Source tests alone do not prove host integration.
 
-Use `discard_stage` for an unwanted stage, `rollback` for a bad published update, and
+Use `discard_stage` for an unwanted stage, `rollback` for a bad installed update, and
 `uninstall` only when the user wants the installed artifact removed. Never edit instance
 configuration to simulate installation, and never write into `alias:akane-sdk`.

@@ -57,7 +57,7 @@ class PluginDevelopmentSkillTests(unittest.TestCase):
             'cwd="alias:akane-sdk"',
             "add_background_service",
             'manage_extension(action="stage_source"',
-            'manage_extension(action="publish"',
+            'manage_extension(action="install"',
             "copying the exact permissions array",
             "Source tests alone do not prove host integration",
         ):

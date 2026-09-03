@@ -55,8 +55,8 @@ class ManageExtensionToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_extension：查看和管理本机插件；可从本地源码目录或 wheel 暂存并探测，"
-            "按暂存结果的权限清单发布，再启用或重载。它不搜索市场或下载代码。"
+            "- manage_extension：查看和管理本机插件；先暂存并探测本地源码目录或 wheel，"
+            "再用暂存结果的完整权限清单安装。宿主会在一次操作中发布并激活。它不搜索市场或下载代码。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -67,11 +67,10 @@ class ManageExtensionToolHandler(BaseToolHandler):
             "list",
             "stage_source",
             "stage_wheel",
-            "publish",
+            "install",
             "discard_stage",
             "enable",
             "disable",
-            "restart",
             "rollback",
             "uninstall",
         }:
@@ -87,12 +86,12 @@ class ManageExtensionToolHandler(BaseToolHandler):
             if not path:
                 return None
             normalized["path"] = path
-        if action in {"publish", "discard_stage"}:
+        if action in {"install", "discard_stage"}:
             stage_id = str(value.get("stage_id") or "").strip()
             if not stage_id:
                 return None
             normalized["stage_id"] = stage_id
-        if action == "publish":
+        if action == "install":
             permissions = value.get("approved_permissions")
             if not isinstance(permissions, list) or any(not isinstance(item, str) for item in permissions):
                 return None

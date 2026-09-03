@@ -43,20 +43,10 @@ hold Engine/QQ gateway references, and does not write directly to MemCore.
 No `network.read` permission is requested because local plugin state is not a
 network effect.
 
-## Local build and enable
+## Local validation and installation
 
-```powershell
-python -m build --wheel examples/plugins/akane_gentle_checkin
-python -m pip install --no-deps examples/plugins/akane_gentle_checkin/dist/akane_gentle_checkin-0.1.0-py3-none-any.whl
-```
-
-```toml
-[[plugins]]
-id = "akane.sample.gentle-checkin"
-enabled = true
-```
-
-Use the plugin management interface to stage and validate the wheel. A healthy
-candidate generation replaces the active generation atomically; a failed
-candidate leaves the last-good generation running. Enabling, disabling, updating,
-or removing the plugin does not require restarting the Bot process.
+Use Akane's plugin management interface. Stage this source directory first,
+review the returned contributions and exact permission list, then install that
+immutable stage. Installation publishes and activates one complete candidate
+generation; a failed candidate leaves the last-good generation running. Do not
+pip-install the wheel or edit instance configuration manually.

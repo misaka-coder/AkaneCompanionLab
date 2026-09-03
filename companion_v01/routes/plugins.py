@@ -108,9 +108,9 @@ def build_plugins_router(
         result = await extension_management_service.stage_source(source_path=source_path)
         return _response(result, status_code=_management_status_code(result, success=201))
 
-    @router.post("/admin/plugins/stages/{stage_id}/publish")
-    async def publish_plugin_stage(stage_id: str, request: Request) -> JSONResponse:
-        """Publish only after the caller echoes the exact reviewed permissions."""
+    @router.post("/admin/plugins/stages/{stage_id}/install")
+    async def install_plugin_stage(stage_id: str, request: Request) -> JSONResponse:
+        """Publish and activate after the caller echoes the reviewed permissions."""
 
         authorization = management_auth.authorize(request)
         if not authorization.ok:
@@ -124,7 +124,7 @@ def build_plugins_router(
         permissions = payload.get("approved_permissions")
         if not isinstance(permissions, list) or any(not isinstance(item, str) for item in permissions):
             return _response(_request_error("approved_permissions_array_required"), status_code=400)
-        result = await extension_management_service.publish_stage(
+        result = await extension_management_service.install_stage(
             stage_id=stage_id,
             approved_permissions=tuple(permissions),
         )

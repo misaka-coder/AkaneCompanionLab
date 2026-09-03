@@ -243,6 +243,19 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertFalse(result["reload_required"])
         self.assertTrue(self.store.snapshot()["plugins"][0]["pending_activation"])
 
+    def test_unmentioned_pending_plugin_is_not_reported_as_failed(self) -> None:
+        staged = self.store.stage_wheel(self.wheel_v1)
+        self.store.publish_stage(
+            staged["stage_id"],
+            approved_permissions=staged["permissions"],
+        )
+
+        result = self.store.reconcile_runtime(())
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["failed_plugin_ids"], [])
+        self.assertTrue(self.store.snapshot()["plugins"][0]["pending_activation"])
+
     def test_remove_withdraws_catalog_and_managed_release(self) -> None:
         staged = self.store.stage_wheel(self.wheel_v1)
         self.store.publish_stage(

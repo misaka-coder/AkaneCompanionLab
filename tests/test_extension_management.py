@@ -89,7 +89,7 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         plugin_runtime = SimpleNamespace(
             code_reload_mode="atomic_generation_switch",
             selections=(PluginSelection(PLUGIN_ID, True),),
-            restart=AsyncMock(
+            reconfigure=AsyncMock(
                 return_value={
                     "ok": True,
                     "status": "active",
@@ -103,9 +103,11 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "status": "ready",
             "reload_required": False,
         }
+        selection_store = Mock()
+        selection_store.load.return_value = (PluginSelection(PLUGIN_ID, True),)
         service = ExtensionManagementService(
             plugin_runtime=plugin_runtime,
-            selection_store=Mock(),
+            selection_store=selection_store,
             artifact_store=artifact_store,
         )
 
@@ -113,7 +115,9 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["published"])
         self.assertEqual(result["artifact_status"]["status"], "ready")
-        plugin_runtime.restart.assert_awaited_once()
+        plugin_runtime.reconfigure.assert_awaited_once_with(
+            (PluginSelection(PLUGIN_ID, True),)
+        )
 
     async def test_rejected_generation_candidate_does_not_trigger_redundant_rollback(self) -> None:
         previous = (PluginSelection(PLUGIN_ID, False),)
@@ -135,9 +139,11 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         )
+        selection_store = Mock()
+        selection_store.load.return_value = previous
         service = ExtensionManagementService(
             plugin_runtime=plugin_runtime,
-            selection_store=Mock(),
+            selection_store=selection_store,
         )
 
         result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
@@ -146,6 +152,197 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "plugin_probe_failed")
         self.assertEqual(result["rollback_status"], "not_required")
         plugin_runtime.reconfigure.assert_awaited_once()
+
+    async def test_install_stage_publishes_and_activates_new_plugin_as_one_operation(self) -> None:
+        plugin_runtime = SimpleNamespace(
+            selections=(),
+            reconfigure=AsyncMock(
+                return_value={
+                    "ok": True,
+                    "status": "active",
+                    "published": True,
+                    "plugins": [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}],
+                }
+            ),
+        )
+        selection_store = Mock()
+        selection_store.load.return_value = ()
+        artifact_store = Mock()
+        artifact_store.publish_stage.return_value = {
+            "ok": True,
+            "status": "installed",
+            "plugin_id": PLUGIN_ID,
+            "version": "1.0.0",
+            "digest": "a" * 64,
+            "permissions": ["storage.write"],
+            "unchanged": False,
+        }
+        artifact_store.reconcile_runtime.return_value = {
+            "status": "ready",
+            "reload_required": False,
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=selection_store,
+            artifact_store=artifact_store,
+        )
+
+        result = await service.install_stage(
+            stage_id="stage-1",
+            approved_permissions=("storage.write",),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "active")
+        candidate = (PluginSelection(PLUGIN_ID, True),)
+        plugin_runtime.reconfigure.assert_awaited_once_with(candidate)
+        selection_store.save.assert_called_once_with(candidate)
+        artifact_store.reconcile_runtime.assert_called_once_with(
+            [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}]
+        )
+
+    async def test_install_stage_removes_new_artifact_when_activation_fails(self) -> None:
+        plugin_runtime = SimpleNamespace(
+            selections=(),
+            reconfigure=AsyncMock(
+                side_effect=(
+                    {
+                        "ok": False,
+                        "status": "candidate_rejected",
+                        "reason": "plugin_probe_failed",
+                        "published": False,
+                        "plugins": [
+                            {
+                                "plugin_id": PLUGIN_ID,
+                                "enabled": True,
+                                "status": "unavailable",
+                                "reason": "plugin_probe_failed",
+                            }
+                        ],
+                    },
+                    {"ok": True, "status": "inactive", "published": True, "plugins": []},
+                )
+            ),
+        )
+        selection_store = Mock()
+        selection_store.load.return_value = ()
+        artifact_store = Mock()
+        artifact_store.publish_stage.return_value = {
+            "ok": True,
+            "status": "installed",
+            "plugin_id": PLUGIN_ID,
+            "version": "1.0.0",
+            "digest": "a" * 64,
+            "permissions": [],
+            "unchanged": False,
+        }
+        artifact_store.reconcile_runtime.return_value = {
+            "status": "activation_failed",
+            "reload_required": False,
+        }
+        artifact_store.remove_plugin.return_value = {
+            "ok": True,
+            "status": "removed",
+            "plugin_id": PLUGIN_ID,
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=selection_store,
+            artifact_store=artifact_store,
+        )
+
+        result = await service.install_stage(stage_id="stage-1", approved_permissions=())
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "activation_failed")
+        self.assertEqual(result["reason"], "plugin_probe_failed")
+        artifact_store.remove_plugin.assert_called_once_with(PLUGIN_ID)
+        selection_store.save.assert_called_once_with(())
+        self.assertEqual(plugin_runtime.reconfigure.await_count, 2)
+
+    async def test_install_stage_restores_runtime_when_selection_persistence_fails(self) -> None:
+        plugin_runtime = SimpleNamespace(
+            selections=(),
+            reconfigure=AsyncMock(
+                side_effect=(
+                    {
+                        "ok": True,
+                        "status": "active",
+                        "published": True,
+                        "plugins": [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}],
+                    },
+                    {"ok": True, "status": "inactive", "published": True, "plugins": []},
+                )
+            ),
+        )
+        selection_store = Mock()
+        selection_store.load.return_value = ()
+        selection_store.save.side_effect = (OSError("disk full"), None)
+        artifact_store = Mock()
+        artifact_store.publish_stage.return_value = {
+            "ok": True,
+            "status": "installed",
+            "plugin_id": PLUGIN_ID,
+            "version": "1.0.0",
+            "digest": "a" * 64,
+            "permissions": [],
+            "unchanged": False,
+        }
+        artifact_store.remove_plugin.return_value = {
+            "ok": True,
+            "status": "removed",
+            "plugin_id": PLUGIN_ID,
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=selection_store,
+            artifact_store=artifact_store,
+        )
+
+        result = await service.install_stage(stage_id="stage-1", approved_permissions=())
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "persist_failed")
+        artifact_store.remove_plugin.assert_called_once_with(PLUGIN_ID)
+        self.assertEqual(selection_store.save.call_args_list[0].args, ((PluginSelection(PLUGIN_ID, True),),))
+        self.assertEqual(selection_store.save.call_args_list[1].args, ((),))
+        self.assertEqual(plugin_runtime.reconfigure.await_count, 2)
+
+    async def test_persisted_new_plugin_can_be_enabled_when_live_snapshot_is_stale(self) -> None:
+        desired = (PluginSelection(PLUGIN_ID, False),)
+        plugin_runtime = SimpleNamespace(
+            selections=(),
+            code_reload_mode="atomic_generation_switch",
+            reconfigure=AsyncMock(
+                return_value={
+                    "ok": True,
+                    "status": "active",
+                    "published": True,
+                    "plugins": [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}],
+                }
+            ),
+            status_snapshot=Mock(
+                return_value={
+                    "ok": True,
+                    "status": "active",
+                    "plugins": [{"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"}],
+                }
+            ),
+        )
+        selection_store = Mock()
+        selection_store.load.return_value = desired
+        selection_store.load_reason = ""
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=selection_store,
+        )
+
+        result = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
+
+        candidate = (PluginSelection(PLUGIN_ID, True),)
+        self.assertTrue(result["ok"])
+        plugin_runtime.reconfigure.assert_awaited_once_with(candidate)
+        selection_store.save.assert_called_once_with(candidate)
 
     async def test_uninstall_removes_dynamic_selection_from_live_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -275,28 +472,28 @@ class ManageExtensionToolTests(unittest.TestCase):
                 approved_permissions=(),
             )
 
-    def test_source_stage_and_publish_are_one_progressive_tool_contract(self) -> None:
+    def test_source_stage_and_install_are_one_progressive_tool_contract(self) -> None:
         service = Mock()
         service.execute_sync.return_value = {"ok": True, "status": "staged"}
         handler = ManageExtensionToolHandler(service=service)
         source = handler.normalize_call(
             {"type": "manage_extension", "action": "stage_source", "path": "C:/work/plugin"}
         )
-        publish = handler.normalize_call(
+        install = handler.normalize_call(
             {
                 "type": "manage_extension",
-                "action": "publish",
+                "action": "install",
                 "stage_id": "stage-1",
                 "approved_permissions": ["storage.write", "job.run"],
             }
         )
 
         self.assertEqual(source["path"], "C:/work/plugin")
-        self.assertEqual(publish["stage_id"], "stage-1")
-        self.assertEqual(publish["approved_permissions"], ["storage.write", "job.run"])
+        self.assertEqual(install["stage_id"], "stage-1")
+        self.assertEqual(install["approved_permissions"], ["storage.write", "job.run"])
         self.assertIsNone(
             handler.normalize_call(
-                {"type": "manage_extension", "action": "publish", "stage_id": "stage-1"}
+                {"type": "manage_extension", "action": "install", "stage_id": "stage-1"}
             )
         )
 

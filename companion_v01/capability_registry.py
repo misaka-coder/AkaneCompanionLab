@@ -2525,7 +2525,7 @@ class CapabilityRegistry:
                 layer="extension",
                 modes=(ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT),
                 tools=EXTENSION_MANAGEMENT_TOOL_NAMES,
-                light_hint="manage_extension 查看、暂存、发布、启停、重载或移除本机插件；只有主人可以修改。",
+                light_hint="manage_extension 查看、暂存、安装、启停、回滚或移除本机插件；只有主人可以修改。",
                 trigger=_always,
             ),
             CapabilityModule(

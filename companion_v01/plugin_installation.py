@@ -3,13 +3,12 @@
 This module owns plugin *artifacts*, while the generation runtime remains the only
 runtime contribution authority.  A wheel is installed into an isolated
 staging directory, audited without importing it in the host process, and then
-activated once in a short-lived probe process.  Publication is one atomic
-catalog pointer update after the caller confirms the exact permission set.
+activated once in a short-lived probe process. After the caller confirms the
+exact permission set, the management service publishes the artifact and
+switches the isolated generation as one operation.
 
-M67-E deliberately does not claim in-process Python code hot reload. A newly
-published artifact becomes the selected artifact for the next isolated process
-generation. M67-F reuses this catalog through an atomic generation switch;
-there is no second installer.
+Python code is never reloaded in the host process. Managed artifacts enter only
+through the isolated generation runtime; there is no second installer.
 """
 
 from __future__ import annotations
@@ -508,7 +507,13 @@ class ManagedPluginArtifactStore:
             for plugin_id, pointer in catalog["plugins"].items():
                 if not isinstance(pointer, dict) or not pointer.get("pending_activation"):
                     continue
-                status = statuses.get(plugin_id, {})
+                status = statuses.get(plugin_id)
+                # A runtime snapshot can legitimately omit an artifact that
+                # was not part of that generation.  Absence is not evidence of
+                # a failed activation; only an explicit per-plugin result may
+                # settle or roll back a pending artifact.
+                if status is None:
+                    continue
                 state = str(status.get("status") or "")
                 if state in {"active", "disabled"}:
                     pointer["last_good"] = str(pointer.get("current") or "")
