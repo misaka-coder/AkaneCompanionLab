@@ -76,6 +76,9 @@ def _shape_capability_catalog_projection(
     history_groups = [list(group or []) for group in list(shaped.get("history_message_source_ids") or [])]
     active_turns = [dict(item) for item in list(shaped.get("active_turn_messages") or []) if isinstance(item, dict)]
     active_groups = [list(group or []) for group in list(shaped.get("active_turn_message_source_ids") or [])]
+    current_turn_messages = [
+        dict(item) for item in list(shaped.get("current_turn_messages") or []) if isinstance(item, dict)
+    ]
 
     records: list[tuple[str, int, str, dict[str, Any], list[str]]] = []
     for message, source_ids in [*zip(history_turns, history_groups), *zip(active_turns, active_groups)]:
@@ -118,14 +121,33 @@ def _shape_capability_catalog_projection(
     shaped["history_message_source_ids"] = [source_ids for _message, source_ids in kept_history]
     shaped["active_turn_messages"] = [message for message, _source_ids in kept_active]
     shaped["active_turn_message_source_ids"] = [source_ids for _message, source_ids in kept_active]
+    shaped["current_turn_messages"] = [
+        message
+        for message in current_turn_messages
+        if _capability_catalog_source(list(message.get("source_ids") or [])) is None
+        and not (
+            list(message.get("source_ids") or [])
+            and all(
+                str(source_id or "").strip().startswith(_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX)
+                for source_id in list(message.get("source_ids") or [])
+            )
+        )
+    ]
     return shaped, base_context
 
 
-def _build_effective_post_user_turns(
+def _split_active_projection_turns(
     projection: dict[str, Any],
     prepared_turns: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Overlay request-only evidence without letting a catalog update break alignment."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep durable tool continuations separate from catalog runtime context.
+
+    A catalog update can be stored after the current user entry, but it is not
+    part of that writable user/assistant/tool turn. Returning it as a normal
+    ``post_user_turn`` makes the request observer try to freeze it into the
+    active turn and reject the request on a count mismatch. The caller places
+    catalog updates in request-scoped context instead.
+    """
 
     active_turns = [
         dict(item) for item in list((projection or {}).get("active_turn_messages") or []) if isinstance(item, dict)
@@ -138,7 +160,7 @@ def _build_effective_post_user_turns(
             catalog_updates.append(turn)
         else:
             ordinary.append(turn)
-    return [*_overlay_ephemeral_provider_evidence(ordinary, prepared_turns), *catalog_updates]
+    return _overlay_ephemeral_provider_evidence(ordinary, prepared_turns), catalog_updates
 
 
 def _visible_projection_source_ids(projection: dict[str, Any]) -> list[str]:
@@ -866,11 +888,12 @@ def prepare_context(
     effective_post_user_turns = [
         dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
     ]
+    capability_catalog_update_turns: list[dict[str, Any]] = []
     surface_active_turns = [
         dict(turn) for turn in list(provider_projection.get("active_turn_messages") or []) if isinstance(turn, dict)
     ]
     if projection_authoritative and surface_active_turns:
-        effective_post_user_turns = _build_effective_post_user_turns(
+        effective_post_user_turns, capability_catalog_update_turns = _split_active_projection_turns(
             provider_projection,
             effective_post_user_turns,
         )
@@ -978,6 +1001,15 @@ def prepare_context(
             prompt_scope=normalized_prompt_scope,
             current_message_in_raw=current_message_visible_in_raw,
         )
+        if capability_catalog_update_turns:
+            generation_context["ephemeral_turns"] = [
+                *[
+                    dict(turn)
+                    for turn in list(generation_context.get("ephemeral_turns") or [])
+                    if isinstance(turn, dict)
+                ],
+                *[dict(turn) for turn in capability_catalog_update_turns],
+            ]
         cache_scope_material = "\x00".join(
             (
                 str(profile_user_id or ""),
@@ -1067,7 +1099,7 @@ def prepare_context(
                     for turn in list(provider_projection.get("active_turn_messages") or [])
                     if isinstance(turn, dict)
                 ]
-                effective_post_user_turns = _build_effective_post_user_turns(
+                effective_post_user_turns, capability_catalog_update_turns = _split_active_projection_turns(
                     provider_projection,
                     [dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)],
                 )

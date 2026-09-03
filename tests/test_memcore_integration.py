@@ -7355,6 +7355,80 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(lifecycle["status"], "recorded")
         self.assertEqual(lifecycle["role"], "base")
 
+    def test_capability_catalog_update_is_request_context_not_persistent_turn(self) -> None:
+        class _CatalogManager(_PromptContextMemcoreManager):
+            def reconcile_capability_catalog(self, **_kwargs) -> dict[str, object]:
+                return {
+                    "ok": True,
+                    "status": "unchanged",
+                    "changed": False,
+                    "catalog_role": "update",
+                    "compaction_generation": 3,
+                }
+
+        class _CatalogEngine(_PromptContextEngine):
+            def _build_tool_prompt_context_sections(self, **_kwargs) -> dict[str, str]:
+                return {
+                    "execution_context": "Execution environment:\nworking_directory: /workspace/demo",
+                    "catalog_context": "- skill-c：当前能力",
+                    "catalog_status": "ready",
+                    "round_context": "按实际工具定义调用。",
+                }
+
+        manager = _CatalogManager(
+            {},
+            projection_payload={
+                "ok": True,
+                "status": "ok",
+                "provider_profile": "openai_chat",
+                "messages": [
+                    {
+                        "payload": {"role": "user", "content": "【能力目录基线】\n- skill-a"},
+                        "source_ids": ["prompt-context:capability-catalog:3:base:aaa:scope:one"],
+                    },
+                    {
+                        "turn_id": "turn-current",
+                        "payload": {"role": "user", "content": "继续实现"},
+                        "source_ids": ["current"],
+                    },
+                    {
+                        "payload": {"role": "user", "content": "【能力目录更新】\n- skill-c：当前能力"},
+                        "source_ids": ["prompt-context:capability-catalog:3:update:ccc:scope:three"],
+                    },
+                ],
+                "stable_prefix_hash": "a" * 64,
+                "projection_version": 1,
+                "projection_generation": 4,
+                "compaction_generation": 3,
+            },
+        )
+        engine = _CatalogEngine(memcore_manager=manager)
+
+        with patch.object(config, "MEMORY_BACKEND", "memcore"):
+            result = response_builder.prepare_context(
+                engine,
+                session_id="s1",
+                profile_user_id="u1",
+                user_message="继续实现",
+                recent_raw=[],
+                recent_episodic_summaries=[],
+                recent_semantic_summaries=[],
+                confirmed_snippets=[],
+                now_ts=1712400000,
+                character_pack_id="char",
+                current_user_source_id="current",
+            )
+
+        self.assertEqual(result["post_user_turns"], [])
+        self.assertEqual(
+            len(result["memcore_projection_read"]["current_turn_messages"]),
+            1,
+            result["memcore_projection_read"],
+        )
+        ephemeral = "\n".join(str(item.get("content") or "") for item in result["ephemeral_turns"])
+        self.assertIn("【能力目录更新】", ephemeral)
+        self.assertIn("skill-c", ephemeral)
+
     def test_capability_catalog_projection_keeps_only_base_and_latest_update(self) -> None:
         projection = {
             "history_turns": [
