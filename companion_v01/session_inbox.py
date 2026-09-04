@@ -149,6 +149,7 @@ class SessionInboxStore:
         *,
         worker_id: Any,
         lease_seconds: float = 60.0,
+        expected_item_id: Any = "",
     ) -> dict[str, Any]:
         normalized_key = str(session_key or "").strip()
         normalized_worker = str(worker_id or "").strip()
@@ -157,6 +158,7 @@ class SessionInboxStore:
         now = float(self._clock())
         lease_until = now + max(1.0, float(lease_seconds))
         claim_token = f"claim_{uuid.uuid4().hex}"
+        expected_id = str(expected_item_id or "").strip()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._release_expired_claims(connection, now=now)
@@ -181,6 +183,13 @@ class SessionInboxStore:
             ).fetchone()
             if row is None:
                 return {"ok": False, "status": "idle", "reason": "no_ready_session_item"}
+            if expected_id and str(row["item_id"] or "") != expected_id:
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": "earlier_session_item_waiting",
+                    "next_item_id": str(row["item_id"] or ""),
+                }
             changed = connection.execute(
                 """
                 UPDATE session_inbox_items

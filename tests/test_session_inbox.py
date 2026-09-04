@@ -105,6 +105,23 @@ class SessionInboxStoreTests(unittest.TestCase):
             second_claim = store.claim_next("profile\0session", worker_id="worker-b")
             self.assertEqual(second_claim["item"].item_id, second["item_id"])
 
+    def test_expected_item_claim_cannot_jump_over_an_earlier_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
+            first = self._enqueue(store, source_event_id="event-1")
+            second = self._enqueue(store, source_event_id="event-2")
+
+            blocked = store.claim_next(
+                "profile\0session",
+                worker_id="active-turn",
+                expected_item_id=second["item_id"],
+            )
+
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertEqual(blocked["next_item_id"], first["item_id"])
+            self.assertEqual(store.get(first["item_id"]).status, "queued")
+            self.assertEqual(store.get(second["item_id"]).status, "queued")
+
     def test_different_sessions_can_be_claimed_independently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
@@ -223,6 +240,30 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
             while queue.has_work("profile\0session"):
                 await asyncio.sleep(0.01)
             self.assertEqual(store.get(queued["item_id"]).status, "committed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_unscheduled_item_can_be_claimed_as_active_turn_steer(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            handled: list[str] = []
+
+            async def handler(_key, items) -> None:
+                handled.append(items[0].item_id)
+
+            queue = DurableSessionWorkQueue(store, handler)
+            queued = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="steer-1"),
+                schedule=False,
+            )
+            self.assertEqual(handled, [])
+            self.assertEqual(store.get(queued["item_id"]).status, "queued")
+
+            claim = await queue.claim_for_active_turn("profile\0session", queued["item_id"])
+            self.assertTrue(claim["ok"])
+            self.assertEqual(claim["item"].item_id, queued["item_id"])
+            self.assertEqual(handled, [])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))

@@ -30,13 +30,27 @@ class DurableSessionWorkQueue:
         self._lease_seconds = max(1.0, float(lease_seconds))
         self._workers: dict[str, Any] = {}
 
-    async def enqueue(self, **fields: Any) -> dict[str, Any]:
+    async def enqueue(self, *, schedule: bool = True, **fields: Any) -> dict[str, Any]:
         result = await asyncio.to_thread(self._store.enqueue, **fields)
-        if result.get("ok") and result.get("status") in {"queued", "duplicate"}:
+        if schedule and result.get("ok") and result.get("status") in {"queued", "duplicate"}:
             item = result.get("item")
             if result.get("status") == "queued" or getattr(item, "status", "") == "queued":
                 self._ensure_worker(str(fields.get("session_key") or "").strip())
         return result
+
+    async def claim_for_active_turn(self, session_key: Any, item_id: Any) -> dict[str, Any]:
+        """Claim one just-persisted head item before offering it as a steer."""
+
+        return await asyncio.to_thread(
+            self._store.claim_next,
+            session_key,
+            worker_id=self._worker_id,
+            lease_seconds=self._lease_seconds,
+            expected_item_id=item_id,
+        )
+
+    async def schedule_session(self, session_key: Any) -> None:
+        self._ensure_worker(str(session_key or "").strip())
 
     async def recover(self) -> int:
         await asyncio.to_thread(self._store.recover_abandoned_claims)
