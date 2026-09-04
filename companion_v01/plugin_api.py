@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from capcore import CapabilityAdapter
+from capcore import CapabilityAdapter, InvocationContext
 
 
 AKANE_PLUGIN_API_VERSION = 1
@@ -29,6 +29,7 @@ MODEL_REASONING_PERMISSION = "model.reasoning"
 SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
 SKILL_CONTRIBUTION_PERMISSION = "skill.contribute"
 EVENT_SUBSCRIBE_PERMISSION = "event.subscribe"
+AGENT_EVENT_SUBMIT_PERMISSION = "agent.event.submit"
 HOOK_SUBSCRIBE_PERMISSION = "hook.subscribe"
 DIRECT_CONVERSATION_EVENT = "conversation.direct.inbound"
 GROUP_CONVERSATION_EVENT = "conversation.group.inbound"
@@ -178,7 +179,7 @@ class PluginBackgroundJob(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class NotificationIntent:
-    """A bounded proactive delivery request from a plugin.
+    """A bounded fixed-text delivery request from a plugin.
 
     channel:
         Delivery channel identifier.  "qq_text" is the only built-in channel;
@@ -188,7 +189,7 @@ class NotificationIntent:
             "group:<group_id>"   — QQ group message
             "user:<qq_number>"   — QQ private message
     text:
-        The message text.  It is bounded by the host before delivery; text that
+        The already-final message text.  It is bounded by the host before delivery; text that
         exceeds the limit is truncated and the result reason records that fact.
     idempotency_key:
         A stable, plugin-chosen key for deduplication within one plugin's bounded
@@ -215,7 +216,7 @@ class NotificationResult:
 
 
 class NotificationPort(Protocol):
-    """Host-owned port for proactive delivery from a supervised plugin job.
+    """Host-owned port for fixed-text delivery from a supervised plugin job.
 
     The plugin obtains this port via ``registrar.get_notification_port()``.
     The port does NOT expose the QQ gateway, desktop runtime, or any other
@@ -239,6 +240,59 @@ class PluginExternalEvent:
     event_type: str
     fields: tuple[tuple[str, str], ...]
     source: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PluginAgentEventRequest:
+    """Request for a host-owned Agent turn caused by a plugin event.
+
+    The plugin supplies event facts and the opaque conversation reference
+    captured when the work was created. The host verifies the reference and resolves the active channel context,
+    runs the ordinary Agent turn, and owns all user-visible rendering. This is
+    intentionally separate from ``NotificationIntent`` (fixed text) and
+    ``PluginReasoningRequest`` (internal analysis).
+
+    ``delivery`` is ``timeline`` by default. ``current_turn`` keeps the
+    external fact out of the durable user timeline while still allowing the
+    ordinary Agent turn and its assistant reply to run.
+    """
+
+    trace_id: str
+    conversation_ref: str
+    message: str
+    event: PluginExternalEvent
+    memory_idempotency_key: str = ""
+    delivery: str = "timeline"
+
+
+@dataclass(frozen=True)
+class PluginInvocationContext(InvocationContext):
+    """Capability context enriched with a host-issued opaque conversation ref."""
+
+    conversation_ref: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PluginAgentEventResult:
+    """Authoritative outcome of one host-owned Agent event submission."""
+
+    ok: bool
+    status: str
+    reason: str = ""
+    delivery_status: str = ""
+
+
+class PluginAgentEventPort(Protocol):
+    """Host-owned entry point for contextual plugin events.
+
+    The host resolves identity, memory and presentation. A plugin must not
+    call this port and then send the returned model text through the fixed
+    notification port.
+    """
+
+    async def submit(self, request: PluginAgentEventRequest) -> PluginAgentEventResult:
+        """Submit one event for the ordinary host Agent path."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +466,13 @@ class PluginHookHandler(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PluginReasoningRequest:
-    """Bounded proactive reasoning request using the host's normal model/tool loop."""
+    """Bounded internal-analysis request using the host's model/tool loop.
+
+    This port is not a user-facing delivery path. If an external event should
+    make the active character respond, the event must enter the host's ordinary
+    Agent turn and presentation pipeline instead of being sent through a
+    notification port.
+    """
 
     trace_id: str
     profile_user_id: str
@@ -428,7 +488,11 @@ class PluginReasoningRequest:
 
 @dataclass(frozen=True, slots=True)
 class PluginReasoningResult:
-    """Safe reasoning projection returned to a trusted plugin."""
+    """Safe internal-analysis projection returned to a trusted plugin.
+
+    ``text`` is analysis data for the caller, not proof that Akane rendered or
+    delivered a user-facing response.
+    """
 
     ok: bool
     status: str
@@ -441,7 +505,7 @@ class PluginReasoningPort(Protocol):
     """Host-owned access to Akane's model and registered read-only tools."""
 
     async def analyze(self, request: PluginReasoningRequest) -> PluginReasoningResult:
-        """Run one bounded proactive turn; never expose raw Engine state."""
+        """Run one bounded internal analysis; never expose raw Engine state."""
         ...
 
 
@@ -482,6 +546,7 @@ class PluginQQCommandRequest:
     profile_user_id: str = ""
     session_id: str = ""
     character_pack_id: str = ""
+    conversation_ref: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,20 +629,32 @@ class PluginRegistrar(Protocol):
         ...
 
     def get_notification_port(self) -> "NotificationPort":
-        """Return the host-owned notification port for proactive delivery.
+        """Return the host-owned port for fixed-text delivery.
 
         The plugin must declare ``notification.send`` permission; calling this
         method without that permission raises RuntimeError at activation time.
+        This port does not run the model or render a character response.
+        """
+        ...
+
+    def get_agent_event_port(self) -> "PluginAgentEventPort":
+        """Return the host-owned contextual Agent-event port.
+
+        The plugin must declare ``agent.event.submit``. The port is the only
+        supported way for a background plugin event to request a user-facing
+        character response; it reuses the host's session, memory and output
+        pipeline.
         """
         ...
 
     def get_reasoning_port(self) -> "PluginReasoningPort":
-        """Return the host-owned model/tool reasoning port.
+        """Return the host-owned internal-analysis port.
 
         The plugin must declare ``model.reasoning``.  The port accepts bounded
-        proactive requests and returns only user-facing text plus sanitized
-        evidence metadata; it never exposes Engine, model credentials, or
-        local paths.
+        analysis requests and returns analysis text plus sanitized evidence
+        metadata; it never exposes Engine, model credentials, local paths, or a
+        delivery/rendering operation. It must not be paired with the
+        notification port to emulate a character reply.
         """
         ...
 
@@ -636,6 +713,7 @@ __all__ = [
     "MODEL_REASONING_PERMISSION",
     "NETWORK_READ_PERMISSION",
     "NOTIFICATION_SEND_PERMISSION",
+    "AGENT_EVENT_SUBMIT_PERMISSION",
     "PLUGIN_QQ_COMMAND_PERMISSION",
     "PLUGIN_STORAGE_WRITE_PERMISSION",
     "PLUGIN_STATE_EFFECT",
@@ -649,6 +727,10 @@ __all__ = [
     "NotificationResult",
     "PluginBackgroundJob",
     "PluginExternalEvent",
+    "PluginAgentEventPort",
+    "PluginAgentEventRequest",
+    "PluginAgentEventResult",
+    "PluginInvocationContext",
     "PluginEventEnvelope",
     "PluginEventHandler",
     "PluginEventResult",

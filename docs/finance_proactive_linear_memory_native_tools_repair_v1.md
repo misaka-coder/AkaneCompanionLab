@@ -12,6 +12,11 @@
 
 本轮只写文档，不修改运行代码，不启动 finance 后端，不处理云端 pending delivery。
 
+> 2026-09-04 语义修订：本文早期记录中的“reasoning port 生成角色化正文后再由通知端口投递”
+> 仅代表当时的实现路径，不再是插件主动事件的目标设计。需要角色回应的事件必须进入宿主普通
+> Agent 回合；通知端口仅保留给已经确定文本的固定通知。新的权威契约见
+> `docs/plugin_first_class_host_pipeline_v1.md`。
+
 当前涉及三个仓库：
 
 - Akane 宿主：`AkaneCompanionLab`

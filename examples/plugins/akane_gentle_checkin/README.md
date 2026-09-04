@@ -7,8 +7,8 @@ This installable mixed plugin proves Akane's public plugin contracts together:
 - exposes one honest local-state CapCore capability (no fake network access);
 - contributes a progressively loaded `gentle-checkin` Skill from the wheel;
 - runs one supervised background service;
-- asks Akane's normal reasoning/MemCore loop to compose the check-in;
-- delivers through the host notification port with a stable idempotency key.
+- submits a host-issued conversation reference to Akane's ordinary Agent/MemCore loop;
+- delivers through the same structured QQ rendering path as a normal reply.
 
 The behavior is intentionally small: after a configured conversation has been
 quiet for the selected interval, Akane sends one natural check-in. It will not
@@ -23,8 +23,8 @@ Private QQ conversations can be configured through the model tool or with:
 ```
 
 Group configuration uses the same command and requires QQ owner/admin role.
-The model capability deliberately rejects group enablement because the generic
-CapCore invocation context does not carry group administrator authority.
+The model capability configures the current QQ conversation without asking for
+or guessing a recipient ID. Group command configuration still requires owner/admin authority.
 
 The sample does not access arbitrary paths, does not read the network, does not
 hold Engine/QQ gateway references, and does not write directly to MemCore.
@@ -34,8 +34,7 @@ hold Engine/QQ gateway references, and does not write directly to MemCore.
 - `capability.prompt.invoke`: expose the private-chat configuration tool.
 - `storage.write`: persist only this plugin's configuration and activity ledger.
 - `job.run`: run the supervised quiet-period watcher.
-- `notification.send`: deliver the completed check-in through the host port.
-- `model.reasoning`: enter Akane's normal Engine/MemCore reasoning path.
+- `agent.event.submit`: wake the ordinary Agent path with the captured conversation reference.
 - `qq.command.register`: register `/checkin` for explicit QQ configuration.
 - `event.subscribe`: observe direct/group inbound activity without waking an Agent.
 - `skill.contribute`: publish the bundled Skill through the shared Skill registry.

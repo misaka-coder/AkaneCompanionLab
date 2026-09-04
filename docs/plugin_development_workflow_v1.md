@@ -14,6 +14,10 @@
 6. `manage_extension(install, stage_id, approved_permissions)` 只接受该 stage 返回的完整权限集合，并由宿主一次完成制品发布、selection 更新和 generation 激活。
 7. 最后 `list` 并验证真实用户行为；模型不手工协调 publish、enable、restart 或 reconcile。
 
+需要延迟唤醒当前角色时以 `examples/plugins/akane_timer` 为最小参考；只有还需要观察
+会话活动或贡献 Skill 时才使用更综合的 `akane_gentle_checkin`。两者都保存宿主签发的
+`conversation_ref` 并调用 Agent-event 端口，不保存裸收件人，也不把模型文本转交固定通知端口。
+
 `stage_wheel` 为已有 wheel 提供同一条审计路径。`discard_stage`、`rollback` 和 `uninstall` 分别处理废弃候选、错误更新和明确卸载。它们不构成第二套安装器。
 
 ## 与参考项目的校准

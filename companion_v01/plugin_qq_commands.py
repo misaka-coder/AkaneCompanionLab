@@ -88,6 +88,7 @@ class PluginQQCommandBroker:
         profile_user_id: str = "",
         session_id: str = "",
         character_pack_id: str = "",
+        conversation_ref: str = "",
     ) -> PluginQQCommandResult:
         """Dispatch to the first matching plugin handler.
 
@@ -153,6 +154,7 @@ class PluginQQCommandBroker:
             profile_user_id=_bounded_context_value(profile_user_id, maximum=200),
             session_id=_bounded_context_value(session_id, maximum=200),
             character_pack_id=_bounded_context_value(character_pack_id, maximum=120),
+            conversation_ref=_bounded_context_value(conversation_ref, maximum=1024),
         )
         try:
             result = await asyncio.wait_for(

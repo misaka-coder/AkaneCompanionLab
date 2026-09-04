@@ -21,6 +21,9 @@ from capcore import (
 from .plugin_api import (
     NotificationIntent,
     NotificationResult,
+    PluginAgentEventRequest,
+    PluginAgentEventResult,
+    PluginInvocationContext,
     PluginEventEnvelope,
     PluginExternalEvent,
     PluginDeliverySnapshot,
@@ -99,16 +102,21 @@ def invocation_context_to_wire(context: InvocationContext) -> dict[str, str]:
         "profile_user_id": context.profile_user_id,
         "session_id": context.session_id,
         "client_mode": context.client_mode,
+        "conversation_ref": str(getattr(context, "conversation_ref", "") or ""),
     }
 
 
 def invocation_context_from_wire(value: object) -> InvocationContext:
     record = _mapping(value, "invocation_context_invalid")
-    return InvocationContext(
-        profile_user_id=_string(record.get("profile_user_id"), "invocation_context_invalid"),
-        session_id=_string(record.get("session_id"), "invocation_context_invalid"),
-        client_mode=_string(record.get("client_mode"), "invocation_context_invalid"),
-    )
+    values = {
+        "profile_user_id": _string(record.get("profile_user_id"), "invocation_context_invalid"),
+        "session_id": _string(record.get("session_id"), "invocation_context_invalid"),
+        "client_mode": _string(record.get("client_mode"), "invocation_context_invalid"),
+    }
+    conversation_ref = _string(record.get("conversation_ref"), "invocation_context_invalid")
+    if conversation_ref:
+        return PluginInvocationContext(**values, conversation_ref=conversation_ref)
+    return InvocationContext(**values)
 
 
 def capability_result_to_wire(result: CapabilityResult) -> dict[str, Any]:
@@ -339,6 +347,63 @@ def reasoning_result_from_wire(value: object) -> PluginReasoningResult:
         text=_string(record.get("text"), "reasoning_result_invalid"),
         reason=_string(record.get("reason"), "reasoning_result_invalid"),
         evidence_events=tuple(dict(item) for item in evidence_events),
+    )
+
+
+def agent_event_request_to_wire(request: PluginAgentEventRequest) -> dict[str, Any]:
+    if not isinstance(request, PluginAgentEventRequest):
+        raise PluginGenerationCodecError("agent_event_request_required")
+    return _json_snapshot(
+        {
+            "trace_id": _string(request.trace_id, "agent_event_request_invalid"),
+            "conversation_ref": _string(request.conversation_ref, "agent_event_request_invalid"),
+            "message": _string(request.message, "agent_event_request_invalid"),
+            "event": _external_event_to_wire(request.event, "agent_event_request_invalid"),
+            "memory_idempotency_key": _string(
+                request.memory_idempotency_key,
+                "agent_event_request_invalid",
+            ),
+            "delivery": _string(request.delivery, "agent_event_request_invalid"),
+        }
+    )
+
+
+def agent_event_request_from_wire(value: object) -> PluginAgentEventRequest:
+    record = _mapping(value, "agent_event_request_invalid")
+    return PluginAgentEventRequest(
+        trace_id=_string(record.get("trace_id"), "agent_event_request_invalid"),
+        conversation_ref=_string(record.get("conversation_ref"), "agent_event_request_invalid"),
+        message=_string(record.get("message"), "agent_event_request_invalid"),
+        event=_external_event_from_wire(record.get("event"), "agent_event_request_invalid"),
+        memory_idempotency_key=_string(
+            record.get("memory_idempotency_key"),
+            "agent_event_request_invalid",
+        ),
+        delivery=_string(record.get("delivery") or "timeline", "agent_event_request_invalid"),
+    )
+
+
+def agent_event_result_to_wire(result: PluginAgentEventResult) -> dict[str, Any]:
+    if not isinstance(result, PluginAgentEventResult) or not isinstance(result.ok, bool):
+        raise PluginGenerationCodecError("agent_event_result_invalid")
+    return {
+        "ok": result.ok,
+        "status": _string(result.status, "agent_event_result_invalid"),
+        "reason": _string(result.reason, "agent_event_result_invalid"),
+        "delivery_status": _string(result.delivery_status, "agent_event_result_invalid"),
+    }
+
+
+def agent_event_result_from_wire(value: object) -> PluginAgentEventResult:
+    record = _mapping(value, "agent_event_result_invalid")
+    ok = record.get("ok")
+    if not isinstance(ok, bool):
+        raise PluginGenerationCodecError("agent_event_result_invalid")
+    return PluginAgentEventResult(
+        ok=ok,
+        status=_string(record.get("status"), "agent_event_result_invalid"),
+        reason=_string(record.get("reason"), "agent_event_result_invalid"),
+        delivery_status=_string(record.get("delivery_status"), "agent_event_result_invalid"),
     )
 
 
@@ -678,28 +743,31 @@ def qq_command_dispatch_to_wire(
     profile_user_id: object = "",
     session_id: object = "",
     character_pack_id: object = "",
+    conversation_ref: object = "",
 ) -> dict[str, Any]:
     reason = "plugin_qq_command_request_invalid"
-    return _json_snapshot(
-        {
-            "command": _string(command, reason),
-            "args": _string(args, reason),
-            "qq_number": _integer(qq_number, reason),
-            "group_id": _integer(group_id, reason),
-            "is_group": _boolean_value(is_group, reason),
-            "idempotency_key": _string(idempotency_key, reason),
-            "sender_role": _string(sender_role, reason),
-            "profile_user_id": _string(profile_user_id, reason),
-            "session_id": _string(session_id, reason),
-            "character_pack_id": _string(character_pack_id, reason),
-        }
-    )
+    payload = {
+        "command": _string(command, reason),
+        "args": _string(args, reason),
+        "qq_number": _integer(qq_number, reason),
+        "group_id": _integer(group_id, reason),
+        "is_group": _boolean_value(is_group, reason),
+        "idempotency_key": _string(idempotency_key, reason),
+        "sender_role": _string(sender_role, reason),
+        "profile_user_id": _string(profile_user_id, reason),
+        "session_id": _string(session_id, reason),
+        "character_pack_id": _string(character_pack_id, reason),
+    }
+    normalized_conversation_ref = _string(conversation_ref, reason)
+    if normalized_conversation_ref:
+        payload["conversation_ref"] = normalized_conversation_ref
+    return _json_snapshot(payload)
 
 
 def qq_command_dispatch_from_wire(value: object) -> dict[str, Any]:
     reason = "plugin_qq_command_request_invalid"
     record = _mapping(value, reason)
-    return {
+    payload = {
         "command": _string(record.get("command"), reason),
         "args": _string(record.get("args"), reason),
         "qq_number": _integer(record.get("qq_number"), reason),
@@ -711,6 +779,10 @@ def qq_command_dispatch_from_wire(value: object) -> dict[str, Any]:
         "session_id": _string(record.get("session_id"), reason),
         "character_pack_id": _string(record.get("character_pack_id"), reason),
     }
+    conversation_ref = _string(record.get("conversation_ref") or "", reason)
+    if conversation_ref:
+        payload["conversation_ref"] = conversation_ref
+    return payload
 
 
 def plugin_qq_command_result_to_wire(result: PluginQQCommandResult) -> dict[str, Any]:
@@ -944,6 +1016,10 @@ __all__ = [
     "notification_intent_to_wire",
     "notification_result_from_wire",
     "notification_result_to_wire",
+    "agent_event_request_from_wire",
+    "agent_event_request_to_wire",
+    "agent_event_result_from_wire",
+    "agent_event_result_to_wire",
     "plugin_event_dispatch_result_from_wire",
     "plugin_event_dispatch_result_to_wire",
     "plugin_event_envelope_from_wire",

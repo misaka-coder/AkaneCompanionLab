@@ -21,10 +21,13 @@ from companion_v01.plugin_api import (
     NotificationIntent,
     NotificationResult,
     DIRECT_CONVERSATION_EVENT,
+    PluginAgentEventRequest,
+    PluginAgentEventResult,
     PluginDeliverySnapshot,
     PluginEventEnvelope,
     PluginExternalEvent,
     PluginHookEnvelope,
+    PluginInvocationContext,
     PluginOutboundDecoration,
     PluginOutboundPlanSnapshot,
     PluginQQCommandRequest,
@@ -41,6 +44,10 @@ from companion_v01.plugin_generation import (
 )
 from companion_v01.plugin_generation_codec import (
     PluginGenerationCodecError,
+    agent_event_request_from_wire,
+    agent_event_request_to_wire,
+    agent_event_result_from_wire,
+    agent_event_result_to_wire,
     capability_descriptor_from_wire,
     capability_descriptor_to_wire,
     capability_result_from_wire,
@@ -1026,12 +1033,21 @@ class PluginGenerationCodecTests(unittest.TestCase):
             "profile_user_id": "profile:123456",
             "session_id": "qq:group:654321",
             "character_pack_id": "reimu",
+            "conversation_ref": "acr1.opaque.signature",
         }
         qq_command_result = PluginQQCommandResult(
             handled=True,
             reply_text="完成",
             reason="",
         )
+        agent_event_request = PluginAgentEventRequest(
+            trace_id="timer-1",
+            conversation_ref="acr1.opaque.signature",
+            message="定时事件已到期",
+            event=PluginExternalEvent("timer.fired", (("task", "喝水"),), "test.plugin"),
+            memory_idempotency_key="timer:1",
+        )
+        agent_event_result = PluginAgentEventResult(True, "completed", "", "delivered")
 
         self.assertEqual(
             capability_descriptor_from_wire(capability_descriptor_to_wire(descriptor)),
@@ -1040,6 +1056,16 @@ class PluginGenerationCodecTests(unittest.TestCase):
         self.assertEqual(
             invocation_context_from_wire(invocation_context_to_wire(context)),
             context,
+        )
+        plugin_context = PluginInvocationContext(
+            profile_user_id="profile:123456",
+            session_id="qq:group:654321",
+            client_mode="qq_text",
+            conversation_ref="acr1.opaque.signature",
+        )
+        self.assertEqual(
+            invocation_context_from_wire(invocation_context_to_wire(plugin_context)),
+            plugin_context,
         )
         self.assertEqual(
             capability_result_from_wire(capability_result_to_wire(result)),
@@ -1098,6 +1124,14 @@ class PluginGenerationCodecTests(unittest.TestCase):
                 plugin_qq_command_result_to_wire(qq_command_result)
             ),
             qq_command_result,
+        )
+        self.assertEqual(
+            agent_event_request_from_wire(agent_event_request_to_wire(agent_event_request)),
+            agent_event_request,
+        )
+        self.assertEqual(
+            agent_event_result_from_wire(agent_event_result_to_wire(agent_event_result)),
+            agent_event_result,
         )
 
     def test_non_json_values_are_rejected_without_a_size_policy(self) -> None:

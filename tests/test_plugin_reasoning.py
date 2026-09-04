@@ -459,6 +459,30 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
                 self.assertEqual(event_calls[0]["external_event"]["event_type"], "finance")
                 self.assertEqual(event_calls[0]["external_event"]["fields"], {"title": "结构化事件"})
 
+    def test_plugin_agent_event_uses_normal_turn_scope(self) -> None:
+        engine, store, prepared_payloads = self._build_engine_stopped_after_user_write()
+        payload = {
+            "user_id": "qq-session",
+            "real_user_id": "qq-user",
+            "character_pack_id": "akane_v1",
+            "message": "定时事件已到期",
+            "timestamp": 1_784_016_000,
+            "turn_kind": "plugin_event",
+            "memory_idempotency_key": "timer:event-1",
+            "plugin_external_event": {
+                "event_type": "timer.fired",
+                "source": "timer-plugin",
+                "fields": {"label": "喝水"},
+            },
+        }
+
+        with self.assertRaises(self._StopAfterUserWrite):
+            engine.process_turn(payload)
+
+        self.assertEqual(store.calls[0]["role"], "event.timer.fired")
+        self.assertEqual(store.calls[0]["content"], "定时事件已到期")
+        self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
+
     def test_transient_final_failure_is_not_persisted_as_an_assistant_turn(self) -> None:
         self.assertFalse(
             AkaneMemoryEngine._should_persist_completed_assistant(

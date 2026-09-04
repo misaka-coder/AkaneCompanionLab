@@ -1,4 +1,9 @@
-"""Host-owned bounded model/tool reasoning surface for trusted plugins."""
+"""Host-owned bounded internal-analysis surface for trusted plugins.
+
+This module does not own a user-facing delivery path. Contextual plugin
+events must be submitted to the ordinary host Agent turn and rendered by the
+same client pipeline as a user message.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +65,7 @@ _EVIDENCE_FIELDS = (
 
 
 class EnginePluginReasoningPort:
-    """Translate a public request into one normal Akane proactive turn."""
+    """Translate a public request into one bounded internal analysis turn."""
 
     def __init__(self, engine: Any, *, timeout_seconds: float = DEFAULT_REASONING_TIMEOUT_SECONDS) -> None:
         if not callable(getattr(engine, "process_turn", None)):

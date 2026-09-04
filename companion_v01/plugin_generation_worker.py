@@ -16,6 +16,7 @@ from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_generation_artifacts import GenerationArtifactOutboxSink
 from .plugin_generation_callbacks import (
+    GenerationAgentEventPort,
     GenerationNotificationPort,
     GenerationReasoningPort,
 )
@@ -299,6 +300,13 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
         )
         host.bind_notification_port(
             GenerationNotificationPort(
+                generation_id=generation_id,
+                emit=lambda payload: emit_protocol_message(protocol_stream, payload),
+                pending=callback_responses,
+            )
+        )
+        host.bind_agent_event_port(
+            GenerationAgentEventPort(
                 generation_id=generation_id,
                 emit=lambda payload: emit_protocol_message(protocol_stream, payload),
                 pending=callback_responses,

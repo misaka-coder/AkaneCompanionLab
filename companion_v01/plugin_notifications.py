@@ -1,8 +1,10 @@
-"""Host-owned notification port for proactive delivery from supervised plugin jobs.
+"""Host-owned fixed-text notification port for supervised plugin jobs.
 
 A plugin job obtains this port via registrar.get_notification_port() during
-registration and calls send() to deliver messages to users without holding a
-reference to the QQ gateway or any other concrete channel implementation.
+registration and calls send() to deliver already-final text to users without
+holding a reference to the QQ gateway or any other concrete channel
+implementation. It is not the delivery path for a model-generated character
+reply.
 
 Channel encoding for recipient_id:
   "group:<group_id>"   — QQ group message

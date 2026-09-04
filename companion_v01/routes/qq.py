@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -34,7 +34,15 @@ from ..tts_provider_runtime import (
 from ..runtime_settings import runtime_setting
 from ..turn_coordination import SessionWorkItem, SessionWorkQueue, TurnCoordinator
 from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
-from ..plugin_api import DIRECT_CONVERSATION_EVENT, GROUP_CONVERSATION_EVENT, PluginEventEnvelope
+from ..plugin_api import (
+    DIRECT_CONVERSATION_EVENT,
+    GROUP_CONVERSATION_EVENT,
+    PluginAgentEventRequest,
+    PluginAgentEventResult,
+    PluginEventEnvelope,
+    PluginExternalEvent,
+)
+from ..plugin_agent_events import CallbackAgentEventPort
 from ..plugin_events import record_timeline_events, render_current_turn_events
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
@@ -1899,6 +1907,9 @@ def build_qq_router(
     route_base: str = "/api/qq",
     plugin_command_broker_provider: Callable[[], Any] | None = None,
     plugin_event_broker_provider: Callable[[], Any] | None = None,
+    plugin_agent_event_port_binder: Callable[[Any], None] | None = None,
+    plugin_conversation_ref_resolver: Callable[[str], Mapping[str, str] | None] | None = None,
+    plugin_conversation_ref_issuer: Callable[..., str] | None = None,
     thinking_mode_setter: Callable[[str], str] | None = None,
     turn_coordinator: Any = None,
 ) -> APIRouter:
@@ -2861,6 +2872,180 @@ def build_qq_router(
                 timing["queue_wait_ms"] = round(queue_wait_ms, 1)
                 result["timing"] = timing
             return result
+
+    async def _submit_plugin_agent_event(request: PluginAgentEventRequest) -> PluginAgentEventResult:
+        """Run one plugin event through the ordinary QQ Agent turn path."""
+
+        if not isinstance(request, PluginAgentEventRequest):
+            return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
+        if not isinstance(request.event, PluginExternalEvent):
+            return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
+        resolved_reference = (
+            plugin_conversation_ref_resolver(str(request.conversation_ref or ""))
+            if plugin_conversation_ref_resolver is not None
+            else None
+        )
+        if not isinstance(resolved_reference, Mapping):
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        if str(resolved_reference.get("channel") or "") != "qq":
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        conversation_kind = str(resolved_reference.get("kind") or "").strip().lower()
+        if conversation_kind not in {"direct", "group"}:
+            return PluginAgentEventResult(False, "rejected", "unsupported_conversation_kind")
+        delivery = str(request.delivery or "timeline").strip().lower()
+        if delivery not in {"current_turn", "timeline"}:
+            return PluginAgentEventResult(False, "rejected", "unsupported_event_delivery")
+
+        recipient = str(resolved_reference.get("recipient") or "").strip()
+        session_id = str(resolved_reference.get("session") or "").strip()
+        profile_user_id = str(resolved_reference.get("profile") or "").strip()
+        target_id = 0
+        user_id = 0
+        group_id = 0
+        if conversation_kind == "group":
+            raw_group_id = recipient.removeprefix("group:").strip() if recipient else ""
+            if not raw_group_id and session_id.startswith("qq_group_shared_"):
+                raw_group_id = session_id.removeprefix("qq_group_shared_")
+            if not raw_group_id.isdigit() or int(raw_group_id) <= 0:
+                return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+            group_id = int(raw_group_id)
+            target_id = group_id
+            resolved_session_id, resolved_profile_user_id = qq_gateway.resolve_identity(
+                user_id=0,
+                group_id=group_id,
+            )
+        else:
+            raw_user_id = recipient.removeprefix("user:").strip() if recipient else ""
+            if not raw_user_id and session_id.startswith("qq_pri_"):
+                raw_user_id = session_id.removeprefix("qq_pri_")
+            if not raw_user_id and session_id == "master":
+                raw_user_id = str(getattr(qq_gateway, "master_qq", "") or "").strip()
+            if not raw_user_id.isdigit() or int(raw_user_id) <= 0:
+                return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+            user_id = int(raw_user_id)
+            target_id = user_id
+            resolved_session_id, resolved_profile_user_id = qq_gateway.resolve_identity(
+                user_id=user_id,
+                group_id=0,
+            )
+
+        # The signed reference must still resolve to the same live namespace.
+        if session_id != resolved_session_id:
+            return PluginAgentEventResult(False, "rejected", "event_context_mismatch")
+        if profile_user_id != resolved_profile_user_id:
+            return PluginAgentEventResult(False, "rejected", "event_context_mismatch")
+        character_pack_id = str(resolved_reference.get("character") or "").strip()
+        if not character_pack_id:
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        message = str(request.message or "").strip()
+        if not message:
+            return PluginAgentEventResult(False, "rejected", "agent_event_message_required")
+        event_timestamp = int(time.time())
+        sender_label = "插件事件"
+        synthetic_event = {
+            "time": event_timestamp,
+            "post_type": "message",
+            "message_type": "group" if conversation_kind == "group" else "private",
+            "group_id": group_id,
+            "user_id": user_id,
+            "message_id": "",
+        }
+        extra_context = qq_gateway.build_extra_context(
+            event=synthetic_event,
+            is_group=conversation_kind == "group",
+            user_id=user_id,
+            group_id=group_id,
+            sender_label=sender_label,
+            reply_mode=qq_gateway.resolve_reply_mode(resolved_session_id),
+            session_id=resolved_session_id,
+        )
+        from ..qq_gateway import QQMessageContext
+
+        context = QQMessageContext(
+            should_respond=True,
+            reason="plugin_event",
+            should_record=False,
+            is_group=conversation_kind == "group",
+            target_id=target_id,
+            user_id=user_id,
+            group_id=group_id,
+            session_id=resolved_session_id,
+            profile_user_id=resolved_profile_user_id,
+            clean_message=message,
+            raw_message=message,
+            extra_context=extra_context,
+            sender_label=sender_label,
+            character_pack_id=character_pack_id,
+            reply_mode=qq_gateway.resolve_reply_mode(resolved_session_id),
+            chat_model_override=qq_gateway.resolve_chat_model_override(resolved_session_id),
+        )
+        turn_payload = context.to_turn_payload()
+        turn_payload.update(
+            {
+                "message": message,
+                "memory_message": message,
+                "timestamp": event_timestamp,
+                "turn_kind": "plugin_event",
+                "transient_user_message": delivery == "current_turn",
+                "plugin_external_event": {
+                    "event_type": str(request.event.event_type or "").strip().lower(),
+                    "source": str(request.event.source or "plugin").strip(),
+                    "fields": {
+                        str(key): str(value)
+                        for key, value in request.event.fields
+                        if str(key or "").strip() and str(value or "").strip()
+                    },
+                },
+                "memory_idempotency_key": str(request.memory_idempotency_key or "").strip(),
+                "message_addressing": {
+                    "mode": "host_event",
+                    "trigger": "plugin_event",
+                    "addressed_to_assistant": True,
+                    "explicit_assistant_mention": False,
+                    "primary_target": {"actor_id": "assistant", "display_name": "Akane"},
+                    "mentions": [],
+                },
+            }
+        )
+        try:
+            result = await _run_qq_turn_delivery(
+                context=context,
+                event=synthetic_event,
+                turn_payload=turn_payload,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("plugin Agent event delivery failed")
+            return PluginAgentEventResult(False, "failed", "agent_event_delivery_failed")
+        result_payload = result if isinstance(result, dict) else {}
+        send_result = result_payload.get("send_result")
+        send_payload = send_result if isinstance(send_result, dict) else {}
+        if bool(result_payload.get("_transient_final_failure")) or bool(
+            result_payload.get("frame", {}).get("_transient_final_failure")
+            if isinstance(result_payload.get("frame"), dict)
+            else False
+        ):
+            return PluginAgentEventResult(False, "failed", "agent_event_turn_incomplete", "not_sent")
+        if not bool(send_payload.get("ok")):
+            return PluginAgentEventResult(
+                False,
+                "failed",
+                str(send_payload.get("reason") or "agent_event_delivery_failed"),
+                str(send_payload.get("status") or "not_sent"),
+            )
+        delivery_status = str(send_payload.get("status") or "delivered").strip().lower()
+        if delivery_status not in {"queued", "sent", "delivered", "suppressed"}:
+            delivery_status = "delivered"
+        return PluginAgentEventResult(True, "completed", "", delivery_status)
+
+    if plugin_agent_event_port_binder is not None:
+        plugin_agent_event_port_binder(
+            CallbackAgentEventPort(
+                _submit_plugin_agent_event,
+                availability_provider=lambda: True,
+            )
+        )
 
     async def _resume_qq_after_capability_decision(
         *,
@@ -4118,6 +4303,17 @@ def build_qq_router(
                         profile_user_id=str(context.profile_user_id or ""),
                         session_id=str(context.session_id or ""),
                         character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
+                        conversation_ref=(
+                            str(plugin_conversation_ref_issuer(
+                                profile_user_id=context.profile_user_id,
+                                session_id=context.session_id,
+                                character_pack_id=context.character_pack_id,
+                                user_id=context.user_id,
+                                group_id=context.group_id,
+                            ) or "")
+                            if plugin_conversation_ref_issuer is not None
+                            else ""
+                        ),
                     )
                     if _cmd_result.handled:
                         if _cmd_result.reply_text:

@@ -21,6 +21,9 @@ fixtures.
   configuration, a progressively loaded Skill, a supervised service, normal
   Akane reasoning, and idempotent QQ delivery. It sends at most once per quiet
   period and does not pretend to need network access for local plugin state.
+- `akane_timer`: persists one-shot events for the current conversation and
+  submits due events through the host-owned Agent path instead of creating a
+  second model or delivery pipeline.
 
 Each example documents its permissions, runtime effect, and installation path
 in its own README.

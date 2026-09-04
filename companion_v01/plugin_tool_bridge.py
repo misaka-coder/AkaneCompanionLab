@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext, filter_capabilities
 
 from .client_protocol import ClientMode, ClientProtocolContext
 from .plugin_result_experience import PLUGIN_RESULT_DATA_KEY, PLUGIN_RESULT_EXPERIENCE_KEY
+from .plugin_api import PluginInvocationContext
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
     ToolExecutionContext,
@@ -81,6 +82,19 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
     # values. Keep this defensive rendering limit plugin-owned rather than
     # reviving a generic Adapter/MCP result ceiling.
     MAX_EXPERIENCE_TEXT_CHARS = 64 * 1024
+
+    def __init__(self, *args: Any, conversation_ref_issuer: Callable[[ToolExecutionContext], str] | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._conversation_ref_issuer = conversation_ref_issuer
+
+    def _invocation_context(self, context: ToolExecutionContext) -> InvocationContext:
+        reference = self._conversation_ref_issuer(context) if self._conversation_ref_issuer is not None else ""
+        return PluginInvocationContext(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            client_mode=context.client_mode,
+            conversation_ref=str(reference or ""),
+        )
 
     def tool_metadata(self) -> ToolMetadata:
         base = super().tool_metadata()
@@ -251,9 +265,11 @@ class PluginCapabilityToolBridge:
         host: PluginCapabilityRuntime,
         *,
         config_base_dir: Path | str | None = None,
+        conversation_ref_issuer: Callable[[ToolExecutionContext], str] | None = None,
     ) -> None:
         self._host = host
         self._config_base_dir = config_base_dir
+        self._conversation_ref_issuer = conversation_ref_issuer
         self._proxy = _PluginRuntimeInvocationProxy(host)
 
     def build_tool_handlers(
@@ -273,6 +289,7 @@ class PluginCapabilityToolBridge:
                 adapter=self._proxy,
                 descriptor=descriptor,
                 config_base_dir=self._config_base_dir,
+                conversation_ref_issuer=self._conversation_ref_issuer,
             )
             for descriptor in descriptors
         }

@@ -288,6 +288,11 @@ class PluginGenerationProcess:
             raise RuntimeError("plugin_generation_already_started")
         self._callback_router.bind_reasoning_port(port)
 
+    def bind_agent_event_port(self, port: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        self._callback_router.bind_agent_event_port(port)
+
     def start(self) -> dict[str, Any]:
         if self._process is not None:
             raise PluginGenerationError("plugin_generation_already_started")
@@ -571,6 +576,7 @@ class PluginGenerationProcess:
         profile_user_id: str = "",
         session_id: str = "",
         character_pack_id: str = "",
+        conversation_ref: str = "",
     ) -> PluginQQCommandResult:
         try:
             wire_args = qq_command_dispatch_to_wire(
@@ -584,6 +590,7 @@ class PluginGenerationProcess:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                conversation_ref=conversation_ref,
             )
         except PluginGenerationCodecError:
             return _generation_qq_command_failure("invalid_command_context")

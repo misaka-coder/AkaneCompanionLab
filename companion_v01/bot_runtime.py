@@ -33,6 +33,7 @@ from .extension_management import (
 )
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
+from .plugin_conversation_refs import PluginConversationReferenceAuthority
 from .plugin_reasoning import EnginePluginReasoningPort
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
@@ -100,6 +101,7 @@ class BotRuntime:
     qq_followup_tasks: AsyncTaskSupervisor | None
     config_module: Any = field(repr=False)
     logger: logging.Logger = field(repr=False)
+    plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
     plugin_hook_broker: Any = field(default=None, init=False, repr=False)
@@ -450,6 +452,10 @@ class BotRuntimeFactory:
                 plugin_selection_store.load(),
                 candidate_builder=plugin_candidate_builder,
             )
+            plugin_conversation_refs = PluginConversationReferenceAuthority(
+                runtime_layout.state_dir / "plugin_conversation_ref.key",
+                instance_id=instance_context.instance_id,
+            )
             extension_management_service = ExtensionManagementService(
                 plugin_runtime=plugin_runtime,
                 selection_store=plugin_selection_store,
@@ -458,6 +464,7 @@ class BotRuntimeFactory:
             plugin_capability_source = PluginCapabilityToolBridge(
                 plugin_runtime,
                 config_base_dir=runtime_layout.users_data_dir,
+                conversation_ref_issuer=plugin_conversation_refs.issue,
             )
             engine = AkaneMemoryEngine(
                 runtime_layout.engine_dir,
@@ -511,6 +518,7 @@ class BotRuntimeFactory:
                 settings_override_store=settings_store,
                 desktop_satellite_service=satellite_service,
                 plugin_runtime=plugin_runtime,
+                plugin_conversation_refs=plugin_conversation_refs,
                 extension_management_service=extension_management_service,
                 plugin_capability_source=plugin_capability_source,
                 engine=engine,

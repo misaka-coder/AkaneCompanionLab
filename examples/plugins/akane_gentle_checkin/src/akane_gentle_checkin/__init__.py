@@ -18,25 +18,23 @@ from capcore_adapter_python import PythonCapabilityAdapter, PythonCapabilitySpec
 
 from companion_v01.plugin_api import (
     AKANE_PLUGIN_API_VERSION,
+    AGENT_EVENT_SUBMIT_PERMISSION,
     BACKGROUND_JOB_PERMISSION,
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     DIRECT_CONVERSATION_EVENT,
     EVENT_SUBSCRIBE_PERMISSION,
     GROUP_CONVERSATION_EVENT,
-    MODEL_REASONING_PERMISSION,
-    NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STATE_EFFECT,
     PLUGIN_STORAGE_WRITE_PERMISSION,
     SKILL_CONTRIBUTION_PERMISSION,
-    NotificationIntent,
+    PluginAgentEventRequest,
     PluginEventEnvelope,
     PluginEventResult,
     PluginExternalEvent,
     PluginManifest,
     PluginQQCommandRequest,
     PluginQQCommandResult,
-    PluginReasoningRequest,
     PluginRegistrar,
     PluginResultExperience,
     PluginResultPayload,
@@ -77,11 +75,8 @@ def _positive_int(value: object, *, default: int = 0) -> int:
 @dataclass(frozen=True)
 class DueCheckin:
     key: str
-    profile_user_id: str
     session_id: str
-    character_pack_id: str
-    recipient_id: str
-    conversation_kind: str
+    conversation_ref: str
     idle_seconds: int
     activity_at: int
 
@@ -103,11 +98,8 @@ class CheckinStore:
     def configure(
         self,
         *,
-        profile_user_id: str,
         session_id: str,
-        character_pack_id: str,
-        recipient_id: str,
-        conversation_kind: str,
+        conversation_ref: str,
         idle_seconds: int,
     ) -> dict[str, Any]:
         now = self._clock()
@@ -116,11 +108,8 @@ class CheckinStore:
             state = self._read_locked()
             subscriptions = state.setdefault("subscriptions", {})
             subscriptions[key] = {
-                "profile_user_id": profile_user_id,
                 "session_id": session_id,
-                "character_pack_id": character_pack_id,
-                "recipient_id": recipient_id,
-                "conversation_kind": conversation_kind,
+                "conversation_ref": conversation_ref,
                 "idle_seconds": idle_seconds,
                 "enabled": True,
                 "activity_at": now,
@@ -191,10 +180,9 @@ class CheckinStore:
                 last_attempt_at = _positive_int(item.get("last_attempt_at"))
                 if last_attempt_at and current - last_attempt_at < FAILED_ATTEMPT_RETRY_SECONDS:
                     continue
-                profile_user_id = str(item.get("profile_user_id") or "").strip()
                 session_id = str(item.get("session_id") or "").strip()
-                recipient_id = str(item.get("recipient_id") or "").strip()
-                if not profile_user_id or not session_id or not recipient_id:
+                conversation_ref = str(item.get("conversation_ref") or "").strip()
+                if not session_id or not conversation_ref:
                     continue
                 item["last_attempt_at"] = current
                 item["last_status"] = "reasoning"
@@ -202,11 +190,8 @@ class CheckinStore:
                 due.append(
                     DueCheckin(
                         key=str(key),
-                        profile_user_id=profile_user_id,
                         session_id=session_id,
-                        character_pack_id=str(item.get("character_pack_id") or ""),
-                        recipient_id=recipient_id,
-                        conversation_kind=str(item.get("conversation_kind") or "direct"),
+                        conversation_ref=conversation_ref,
                         idle_seconds=idle_seconds,
                         activity_at=activity_at,
                     )
@@ -292,14 +277,12 @@ class CheckinService:
     def __init__(
         self,
         store: CheckinStore,
-        reasoning_port: Any,
-        notification_port: Any,
+        agent_event_port: Any,
         *,
         poll_seconds: float = POLL_SECONDS,
     ) -> None:
         self._store = store
-        self._reasoning = reasoning_port
-        self._notifications = notification_port
+        self._agent_events = agent_event_port
         self._poll_seconds = max(0.01, float(poll_seconds))
         self._stop = asyncio.Event()
 
@@ -317,48 +300,29 @@ class CheckinService:
 
     async def _process(self, due: DueCheckin) -> None:
         trace = hashlib.sha256(f"{due.key}:{due.activity_at}".encode("utf-8")).hexdigest()[:24]
-        result = await self._reasoning.analyze(
-            PluginReasoningRequest(
+        result = await self._agent_events.submit(
+            PluginAgentEventRequest(
                 trace_id=f"gentle-checkin-{trace}",
-                profile_user_id=due.profile_user_id,
-                session_id=due.session_id,
-                character_pack_id=due.character_pack_id,
-                timestamp=_now(),
+                conversation_ref=due.conversation_ref,
                 message="A configured gentle check-in is due for this quiet conversation.",
-                extra_context=(
-                    "结合这段会话已经存在的记忆，以当前角色自然地发一句简短关心；"
-                    "不要提插件、计时器、配置、系统事件或内部字段。"
-                ),
                 memory_idempotency_key=f"{PLUGIN_ID}:{trace}",
-                external_event=PluginExternalEvent(
+                event=PluginExternalEvent(
                     event_type="companion.gentle_checkin_due",
                     source=PLUGIN_ID,
                     fields=(
-                        ("conversation_kind", due.conversation_kind),
                         ("quiet_seconds", str(due.idle_seconds)),
                         ("delivery_purpose", "gentle_checkin"),
                     ),
                 ),
             )
         )
-        if not result.ok or not result.text.strip():
+        if not result.ok:
             self._store.finish(due, delivered=False, status=result.reason or result.status)
             return
-        if not self._store.is_current(due):
-            self._store.finish(due, delivered=False, status="superseded_by_activity")
-            return
-        delivered = await self._notifications.send(
-            NotificationIntent(
-                channel="qq_text",
-                recipient_id=due.recipient_id,
-                text=result.text.strip(),
-                idempotency_key=f"gentle-checkin:{trace}",
-            )
-        )
         self._store.finish(
             due,
-            delivered=bool(delivered.ok and delivered.status in {"delivered", "queued", "already_delivered"}),
-            status=delivered.reason or delivered.status,
+            delivered=result.delivery_status in {"delivered", "sent", "queued", "suppressed"},
+            status=result.reason or result.delivery_status or result.status,
         )
 
 
@@ -381,14 +345,12 @@ class CheckinCommandHandler:
                 return PluginQQCommandResult(True, "当前群身份不可用，配置没有写入。", "conversation_identity_required")
             if not request.is_group and request.qq_number <= 0:
                 return PluginQQCommandResult(True, "当前私聊身份不可用，配置没有写入。", "conversation_identity_required")
-            recipient_id = f"group:{request.group_id}" if request.is_group else f"user:{request.qq_number}"
+            if not request.conversation_ref:
+                return PluginQQCommandResult(True, "当前会话引用不可用，配置没有写入。", "conversation_reference_required")
             try:
                 self._store.configure(
-                    profile_user_id=request.profile_user_id or str(request.qq_number),
                     session_id=request.session_id,
-                    character_pack_id=request.character_pack_id,
-                    recipient_id=recipient_id,
-                    conversation_kind="group" if request.is_group else "direct",
+                    conversation_ref=request.conversation_ref,
                     idle_seconds=minutes * 60,
                 )
             except CheckinStateError as exc:
@@ -430,13 +392,13 @@ def _configure_capability(store: CheckinStore) -> Callable[..., CapabilityResult
     def configure(
         action: str = "status",
         idle_minutes: int = DEFAULT_IDLE_MINUTES,
-        recipient_qq_number: str = "",
         *,
         ctx: InvocationContext,
     ) -> CapabilityResult:
         clean_action = str(action or "status").strip().lower()
         profile_user_id = str(ctx.profile_user_id or "").strip()
         session_id = str(ctx.session_id or "").strip()
+        conversation_ref = str(getattr(ctx, "conversation_ref", "") or "").strip()
         if not profile_user_id or not session_id:
             return CapabilityResult(is_error=True, status="invalid_context", reason="conversation_identity_required")
         try:
@@ -456,16 +418,12 @@ def _configure_capability(store: CheckinStore) -> Callable[..., CapabilityResult
             return CapabilityResult(is_error=True, status="invalid_input", reason="unsupported_action")
         if isinstance(idle_minutes, bool) or not isinstance(idle_minutes, int) or not MIN_IDLE_MINUTES <= idle_minutes <= MAX_IDLE_MINUTES:
             return CapabilityResult(is_error=True, status="invalid_input", reason="idle_minutes_out_of_range")
-        qq_number = str(recipient_qq_number or "").strip()
-        if not qq_number.isdigit() or qq_number == "0":
-            return CapabilityResult(is_error=True, status="invalid_input", reason="private_qq_number_required")
+        if not conversation_ref:
+            return CapabilityResult(is_error=True, status="invalid_context", reason="conversation_reference_required")
         try:
             item = store.configure(
-                profile_user_id=profile_user_id,
                 session_id=session_id,
-                character_pack_id="",
-                recipient_id=f"user:{qq_number}",
-                conversation_kind="direct",
+                conversation_ref=conversation_ref,
                 idle_seconds=idle_minutes * 60,
             )
         except CheckinStateError as exc:
@@ -484,7 +442,6 @@ def _configuration_result(item: dict[str, Any] | None, *, summary: str) -> Capab
             if item
             else 0
         ),
-        "conversation_kind": str(item.get("conversation_kind") or "") if item else "",
         "last_status": str(item.get("last_status") or "") if item else "",
     }
     return CapabilityResult(
@@ -510,8 +467,7 @@ class GentleCheckinPlugin:
             CAPABILITY_PROMPT_INVOKE_PERMISSION,
             PLUGIN_STORAGE_WRITE_PERMISSION,
             BACKGROUND_JOB_PERMISSION,
-            NOTIFICATION_SEND_PERMISSION,
-            MODEL_REASONING_PERMISSION,
+            AGENT_EVENT_SUBMIT_PERMISSION,
             PLUGIN_QQ_COMMAND_PERMISSION,
             EVENT_SUBSCRIBE_PERMISSION,
             SKILL_CONTRIBUTION_PERMISSION,
@@ -520,8 +476,7 @@ class GentleCheckinPlugin:
 
     def register(self, registrar: PluginRegistrar) -> None:
         store = CheckinStore(registrar.get_storage_dir())
-        reasoning = registrar.get_reasoning_port()
-        notifications = registrar.get_notification_port()
+        agent_events = registrar.get_agent_event_port()
         configure = _configure_capability(store)
         spec = PythonCapabilitySpec.from_callable(
             configure,
@@ -547,12 +502,6 @@ class GentleCheckinPlugin:
                     required=False,
                     raw={"minimum": MIN_IDLE_MINUTES, "maximum": MAX_IDLE_MINUTES, "default": DEFAULT_IDLE_MINUTES},
                 ),
-                CapabilityIOSlot(
-                    name="recipient_qq_number",
-                    kind="string",
-                    required=False,
-                    raw={"description": "Numeric QQ ID of the private-chat recipient; required only for enable."},
-                ),
             ),
             raw={"contract": "akane.sample.gentle-checkin.v1"},
         )
@@ -568,7 +517,7 @@ class GentleCheckinPlugin:
         registrar.add_qq_command("/checkin", CheckinCommandHandler(store))
         registrar.add_background_service(
             SERVICE_ID,
-            CheckinService(store, reasoning, notifications),
+            CheckinService(store, agent_events),
         )
         registrar.add_skill(Path(__file__).resolve().parent / "skills" / "gentle-checkin")
 

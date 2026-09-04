@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "akane-gentle-checkin"
 version = "0.1.0"
-description = "Akane mixed companion plugin example with progressive Skill and proactive reasoning"
+description = "Akane mixed companion plugin example with a host-owned Agent event"
 readme = "README.md"
 requires-python = ">=3.11"
 

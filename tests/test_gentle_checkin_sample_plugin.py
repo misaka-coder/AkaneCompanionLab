@@ -15,9 +15,8 @@ from companion_v01.instance_profile import PluginSelection
 from companion_v01.plugin_api import (
     DIRECT_CONVERSATION_EVENT,
     GROUP_CONVERSATION_EVENT,
-    NotificationResult,
+    PluginAgentEventResult,
     PluginEventEnvelope,
-    PluginReasoningResult,
 )
 from companion_v01.plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from companion_v01.plugin_host import PluginHost
@@ -33,23 +32,16 @@ PLUGIN_ID = "akane.sample.gentle-checkin"
 CAPABILITY_ID = f"{PLUGIN_ID}.configure.v1"
 
 
-class _ReasoningPort:
-    def __init__(self, text: str = "忙完了吗？记得也稍微休息一下。") -> None:
-        self.text = text
-        self.requests: list[Any] = []
-
-    async def analyze(self, request: Any) -> PluginReasoningResult:
-        self.requests.append(request)
-        return PluginReasoningResult(ok=True, status="completed", text=self.text)
-
-
-class _NotificationPort:
+class _AgentEventPort:
     def __init__(self) -> None:
-        self.intents: list[Any] = []
+        self.requests: list[Any] = []
+        self.before_result = None
 
-    async def send(self, intent: Any) -> NotificationResult:
-        self.intents.append(intent)
-        return NotificationResult(ok=True, status="delivered")
+    async def submit(self, request: Any) -> PluginAgentEventResult:
+        self.requests.append(request)
+        if self.before_result is not None:
+            self.before_result(request)
+        return PluginAgentEventResult(ok=True, status="completed", delivery_status="delivered")
 
 
 class _OnePassController:
@@ -119,8 +111,7 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._runtime_temp = tempfile.TemporaryDirectory()
         self.root = Path(self._runtime_temp.name)
-        self.reasoning = _ReasoningPort()
-        self.notifications = _NotificationPort()
+        self.agent_events = _AgentEventPort()
         self.host = PluginHost(
             (PluginSelection(PLUGIN_ID, True),),
             contribution_policy=TrustedStatefulPluginContributionPolicy(),
@@ -128,8 +119,7 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
         self.host.bind_plugin_storage_service(
             InstancePluginStorageService(self.root / "data", "test-instance")
         )
-        self.host.bind_reasoning_port(self.reasoning)
-        self.host.bind_notification_port(self.notifications)
+        self.host.bind_agent_event_port(self.agent_events)
         self.registry = SkillRegistry(
             bundled_root=self.root / "bundled",
             managed_root=self.root / "managed",
@@ -162,7 +152,11 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/checkin on <minutes>", loaded.content)
         self.assertEqual(loaded.source, f"plugin:{PLUGIN_ID}")
 
-        bridge = PluginCapabilityToolBridge(self.host, config_base_dir=self.root)
+        bridge = PluginCapabilityToolBridge(
+            self.host,
+            config_base_dir=self.root,
+            conversation_ref_issuer=lambda _context: "opaque-current-conversation",
+        )
         handlers = bridge.build_tool_handlers(
             client_context=ClientProtocolContext(
                 requested_mode=ClientMode.QQ_TEXT,
@@ -176,7 +170,6 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
                 "arguments": {
                     "action": "enable",
                     "idle_minutes": 12,
-                    "recipient_qq_number": "123456789",
                 },
             },
             context=ToolExecutionContext(
@@ -185,6 +178,8 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
                 now_ts=2_000_000_000,
                 visual_payload={},
                 client_mode="qq_text",
+                character_pack_id="reimu",
+                request_context={"user_id": 123456789},
             ),
         )
         self.assertEqual(configured.state_updates["adapter_capability_status"], "ok")
@@ -206,6 +201,7 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
             sender_role="member",
             profile_user_id="member",
             session_id="qq:group:20002",
+            conversation_ref="opaque-group-ref",
         )
         self.assertTrue(denied.handled)
         self.assertEqual(denied.reason, "group_admin_required")
@@ -220,6 +216,7 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
             profile_user_id="admin",
             session_id="qq:group:20002",
             character_pack_id="reimu",
+            conversation_ref="opaque-group-ref",
         )
         self.assertTrue(enabled.handled)
         self.assertFalse(enabled.reason)
@@ -243,42 +240,30 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
         clock = [100]
         store = self.plugin_module.CheckinStore(self.root / "unit", clock=lambda: clock[0])
         store.configure(
-            profile_user_id="owner",
             session_id="session-1",
-            character_pack_id="reimu",
-            recipient_id="user:12345",
-            conversation_kind="direct",
+            conversation_ref="opaque-session-1",
             idle_seconds=60,
         )
         clock[0] = 160
         service = self.plugin_module.CheckinService(
             store,
-            self.reasoning,
-            self.notifications,
+            self.agent_events,
             poll_seconds=0.01,
         )
         await service.start(_OnePassController())
-        self.assertEqual(len(self.reasoning.requests), 1)
-        self.assertEqual(len(self.notifications.intents), 1)
-        request = self.reasoning.requests[0]
-        self.assertEqual(request.profile_user_id, "owner")
-        self.assertEqual(request.session_id, "session-1")
-        self.assertEqual(request.character_pack_id, "reimu")
-        self.assertEqual(request.external_event.event_type, "companion.gentle_checkin_due")
-        self.assertEqual(request.external_event.source, PLUGIN_ID)
+        self.assertEqual(len(self.agent_events.requests), 1)
+        request = self.agent_events.requests[0]
+        self.assertEqual(request.conversation_ref, "opaque-session-1")
+        self.assertEqual(request.event.event_type, "companion.gentle_checkin_due")
+        self.assertEqual(request.event.source, PLUGIN_ID)
         self.assertTrue(request.memory_idempotency_key.startswith(f"{PLUGIN_ID}:"))
-        self.assertEqual(self.notifications.intents[0].recipient_id, "user:12345")
-        self.assertTrue(
-            self.notifications.intents[0].idempotency_key.startswith("gentle-checkin:")
-        )
 
         await self.plugin_module.CheckinService(
             store,
-            self.reasoning,
-            self.notifications,
+            self.agent_events,
             poll_seconds=0.01,
         ).start(_OnePassController())
-        self.assertEqual(len(self.notifications.intents), 1)
+        self.assertEqual(len(self.agent_events.requests), 1)
 
         await self.plugin_module.CheckinEventHandler(store).handle_event(
             PluginEventEnvelope(
@@ -292,43 +277,34 @@ class InstalledGentleCheckinSampleTests(unittest.IsolatedAsyncioTestCase):
         clock[0] = 230
         await self.plugin_module.CheckinService(
             store,
-            self.reasoning,
-            self.notifications,
+            self.agent_events,
             poll_seconds=0.01,
         ).start(_OnePassController())
-        self.assertEqual(len(self.notifications.intents), 2)
+        self.assertEqual(len(self.agent_events.requests), 2)
 
-    async def test_activity_arriving_during_reasoning_suppresses_stale_delivery(self) -> None:
+    async def test_activity_arriving_during_delivery_rearms_without_duplicate_claim(self) -> None:
         clock = [100]
         store = self.plugin_module.CheckinStore(self.root / "race", clock=lambda: clock[0])
         store.configure(
-            profile_user_id="owner",
             session_id="session-race",
-            character_pack_id="reimu",
-            recipient_id="user:54321",
-            conversation_kind="direct",
+            conversation_ref="opaque-race",
             idle_seconds=60,
         )
         clock[0] = 160
 
-        class _ReasoningWithActivity:
-            async def analyze(_self, request: Any) -> PluginReasoningResult:
-                del request
-                store.mark_activity(session_id="session-race", event_id="new-message", occurred_at=161)
-                return PluginReasoningResult(ok=True, status="completed", text="过时的问候")
+        agent_events = _AgentEventPort()
+        agent_events.before_result = lambda _request: store.mark_activity(
+            session_id="session-race", event_id="new-message", occurred_at=161
+        )
 
         service = self.plugin_module.CheckinService(
             store,
-            _ReasoningWithActivity(),
-            self.notifications,
+            agent_events,
             poll_seconds=0.01,
         )
         await service.start(_OnePassController())
-        self.assertEqual(self.notifications.intents, [])
-        self.assertEqual(
-            store.status(profile_user_id="owner", session_id="session-race")["last_status"],
-            "superseded_by_activity",
-        )
+        self.assertEqual(len(agent_events.requests), 1)
+        self.assertEqual(store.status(profile_user_id="owner", session_id="session-race")["last_status"], "delivered")
 
     async def test_corrupt_state_is_reported_instead_of_becoming_empty_success(self) -> None:
         storage = self.root / "corrupt"

@@ -7,11 +7,11 @@ metadata:
 
 # Gentle Check-in
 
-Use `akane.sample.gentle-checkin.configure.v1` for private QQ conversations.
+Use `akane.sample.gentle-checkin.configure.v1` for the current QQ conversation.
 
 - `status` reads the current conversation setting.
-- `enable` needs the private recipient's numeric QQ ID and an idle interval in minutes.
+- `enable` needs only an idle interval in minutes; the host binds the current conversation.
 - `disable` stops future check-ins for the current conversation.
 - The check-in fires once for each quiet period. A new inbound message starts a new quiet period.
-- In a QQ group, do not guess administrator authority or a recipient ID. Explain that an owner/admin should use `/checkin on <minutes>` in that group.
+- In a QQ group, do not guess administrator authority. Explain that an owner/admin should use `/checkin on <minutes>` in that group.
 - Report the tool's real status. Do not claim a reminder is active when configuration failed.

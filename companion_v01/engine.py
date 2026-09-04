@@ -3327,10 +3327,10 @@ class AkaneMemoryEngine:
     def _pop_plugin_external_event(
         payload: dict[str, Any],
         *,
-        prompt_scope: str,
+        event_allowed: bool,
     ) -> dict[str, Any] | None:
         raw = payload.pop("plugin_external_event", None)
-        if prompt_scope != "plugin_proactive" or not isinstance(raw, dict):
+        if not event_allowed or not isinstance(raw, dict):
             return None
         event_type = str(raw.get("event_type") or "").strip().lower()
         source = str(raw.get("source") or "").strip()
@@ -4127,7 +4127,10 @@ class AkaneMemoryEngine:
         turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
         if prompt_scope != "plugin_proactive":
             plugin_stable_system_context = ""
-        plugin_external_event = self._pop_plugin_external_event(payload, prompt_scope=prompt_scope)
+        plugin_external_event = self._pop_plugin_external_event(
+            payload,
+            event_allowed=turn_kind in {"plugin_proactive", "plugin_event"},
+        )
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
         trace_id = str(payload.get("trace_id") or f"{PERSONA.trace_prefix}_{uuid.uuid4().hex[:12]}")

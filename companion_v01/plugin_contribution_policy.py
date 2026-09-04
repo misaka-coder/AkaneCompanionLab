@@ -14,6 +14,7 @@ from typing import Protocol
 from capcore import CapabilityDescriptor
 
 from .plugin_api import (
+    AGENT_EVENT_SUBMIT_PERMISSION,
     BACKGROUND_JOB_PERMISSION,
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
     DIAGNOSTICS_INVOKE_PERMISSION,
@@ -212,6 +213,7 @@ class TrustedStatefulPluginContributionPolicy:
             SYSTEM_PROMPT_CONTRIBUTION_PERMISSION,
             EVENT_SUBSCRIBE_PERMISSION,
             HOOK_SUBSCRIBE_PERMISSION,
+            AGENT_EVENT_SUBMIT_PERMISSION,
         }
     )
     _CONTRIBUTION_PERMISSIONS = frozenset(

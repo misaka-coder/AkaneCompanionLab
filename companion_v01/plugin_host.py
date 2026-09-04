@@ -30,6 +30,7 @@ from .plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     AKANE_PLUGIN_ENTRYPOINT_GROUP,
     BACKGROUND_JOB_PERMISSION,
+    AGENT_EVENT_SUBMIT_PERMISSION,
     EVENT_SUBSCRIBE_PERMISSION,
     HOOK_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
@@ -69,6 +70,7 @@ from .plugin_managed_artifacts import (
     normalize_managed_artifact_reference,
 )
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
+from .plugin_agent_events import _PluginScopedAgentEventPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
 from .plugin_reasoning import PluginScopedReasoningPort
 from .plugin_storage import PluginStorageService
@@ -250,6 +252,8 @@ class _StagedRegistrar(PluginRegistrar):
         self._job_permission: bool = False
         self._notification_port: Any = None  # NotificationPort | None
         self._notification_permission: bool = False
+        self._agent_event_port: Any = None  # PluginAgentEventPort | None
+        self._agent_event_permission: bool = False
         self._reasoning_port: Any = None  # PluginReasoningPort | None
         self._reasoning_permission: bool = False
         self._qq_commands: list[_PluginCommandRegistration] = []
@@ -352,6 +356,13 @@ class _StagedRegistrar(PluginRegistrar):
             raise RuntimeError("notification_permission_required")
         return self._notification_port
 
+    def get_agent_event_port(self) -> Any:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if not self._agent_event_permission or self._agent_event_port is None:
+            raise RuntimeError("agent_event_port_required")
+        return self._agent_event_port
+
     def get_reasoning_port(self) -> Any:
         if self._sealed:
             raise RuntimeError("plugin_registrar_sealed")
@@ -443,6 +454,10 @@ class _StagedRegistrar(PluginRegistrar):
         self._notification_port = port
         self._notification_permission = port is not None
 
+    def _set_agent_event_port(self, port: Any) -> None:
+        self._agent_event_port = port
+        self._agent_event_permission = port is not None
+
     def _set_reasoning_port(self, port: Any) -> None:
         self._reasoning_port = port
         self._reasoning_permission = port is not None
@@ -533,6 +548,7 @@ class PluginHost:
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._storage_service: PluginStorageService | None = None
         self._notification_port: Any = None  # NotificationPort | None
+        self._agent_event_port: Any = None  # PluginAgentEventPort | None
         self._reasoning_port: Any = None  # PluginReasoningPort | None
         self._notification_ledger = _NotificationDeliveryLedger()
         self._background_service_tasks: dict[
@@ -747,6 +763,15 @@ class PluginHost:
         if not callable(getattr(port, "send", None)):
             raise TypeError("invalid_notification_port")
         self._notification_port = port
+
+    def bind_agent_event_port(self, port: Any) -> None:
+        """Bind the host-owned contextual Agent-event port."""
+
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(port, "submit", None)):
+            raise TypeError("invalid_agent_event_port")
+        self._agent_event_port = port
 
     def bind_reasoning_port(self, port: Any) -> None:
         """Bind host-owned model/tool reasoning before restart-only startup."""
@@ -1315,6 +1340,16 @@ class PluginHost:
                         plugin_id=selection.plugin_id,
                         delegate=self._notification_port,
                         ledger=self._notification_ledger,
+                        availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
+                    )
+                )
+            if AGENT_EVENT_SUBMIT_PERMISSION in manifest.permissions:
+                if self._agent_event_port is None:
+                    raise _ActivationFailure("agent_event_port_unavailable")
+                registrar._set_agent_event_port(
+                    _PluginScopedAgentEventPort(
+                        plugin_id=selection.plugin_id,
+                        delegate=self._agent_event_port,
                         availability_provider=lambda: self._state in _HOST_AVAILABLE_STATES,
                     )
                 )

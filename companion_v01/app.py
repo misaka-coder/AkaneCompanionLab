@@ -231,6 +231,9 @@ for qq_bot_runtime in bot_registry.values():
         "admin_auth": qq_bot_runtime.admin_write_auth,
         "plugin_command_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_command_broker,
         "plugin_event_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_event_broker,
+        "plugin_agent_event_port_binder": lambda port, runtime=qq_bot_runtime: runtime.plugin_runtime.bind_agent_event_port(port),
+        "plugin_conversation_ref_resolver": qq_bot_runtime.plugin_conversation_refs.resolve,
+        "plugin_conversation_ref_issuer": qq_bot_runtime.plugin_conversation_refs.issue_qq,
         "thinking_mode_setter": qq_bot_runtime.set_llm_thinking_mode,
         "turn_coordinator": qq_bot_runtime.turn_coordinator,
     }

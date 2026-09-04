@@ -92,6 +92,9 @@ class PluginGenerationRuntime:
     def bind_reasoning_port(self, port: Any) -> None:
         self._builder.reasoning_port = port
 
+    def bind_agent_event_port(self, port: Any) -> None:
+        self._builder.agent_event_port = port
+
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
             if self._state == "stopped":

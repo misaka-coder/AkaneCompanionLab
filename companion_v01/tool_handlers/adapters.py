@@ -284,11 +284,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 self.adapter.invoke(
                     self.tool_type,
                     normalized_args,
-                    InvocationContext(
-                        profile_user_id=context.profile_user_id,
-                        session_id=context.session_id,
-                        client_mode=context.client_mode,
-                    ),
+                    self._invocation_context(context),
                 )
             )
         except CapabilityProtocolError as exc:
@@ -331,6 +327,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             execution_result,
             capability_result=result,
             context=context,
+        )
+
+    def _invocation_context(self, context: ToolExecutionContext) -> InvocationContext:
+        return InvocationContext(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            client_mode=context.client_mode,
         )
 
     def _ask_or_redeem(
