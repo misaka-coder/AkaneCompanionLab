@@ -30,6 +30,7 @@ from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolD
 from companion_v01.music_lyrics import parse_lrc_segments
 from companion_v01.plugin_api import PluginQQCommandResult
 from companion_v01.routes.capabilities import build_capabilities_router
+from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.routes.control_center import (
     build_control_center_router,
     build_control_center_snapshot_runtime_providers,
@@ -1577,10 +1578,21 @@ class BackendRouteModuleTests(unittest.TestCase):
     def test_qq_router_queues_other_actor_without_holding_webhook_and_keeps_same_actor_steer(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        inbox_store = SessionInboxStore(Path(temp_dir.name) / "akane_memory_v01.db")
+        shared_queue: list[Any] = []
+
+        def register_queue(queue: Any) -> Any:
+            if not shared_queue:
+                shared_queue.append(queue)
+            return shared_queue[0]
+
         scheduled: list[Any] = []
         processed: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
         stop_calls: list[dict[str, Any]] = []
+        steer_calls: list[dict[str, Any]] = []
         steer_mode = {"same_actor": False, "optional_turn": False}
 
         class FakeCoordinator:
@@ -1589,7 +1601,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 return True
 
             @staticmethod
-            def offer_steer(**_kwargs):
+            def offer_steer(**kwargs):
                 if steer_mode["optional_turn"]:
                     return {
                         "ok": False,
@@ -1597,6 +1609,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                         "reason": "addressed_input_preempts_optional_turn",
                     }
                 if steer_mode["same_actor"]:
+                    steer_calls.append(dict(kwargs))
                     return {"ok": True, "status": "accepted", "pending_count": 1}
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
 
@@ -1647,6 +1660,9 @@ class BackendRouteModuleTests(unittest.TestCase):
                 log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
                 async_task_supervisor=FakeSupervisor(),
                 turn_coordinator=FakeCoordinator(),
+                session_inbox_store=inbox_store,
+                session_work_queue_provider=lambda: shared_queue[0] if shared_queue else None,
+                session_work_queue_registrar=register_queue,
             )
         )
         event = {
@@ -1668,9 +1684,14 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(queued.json()["sent_count"], 0)
         self.assertEqual(processed, [])
         self.assertEqual(len(scheduled), 1)
+        pending_keys = inbox_store.pending_session_keys()
+        self.assertEqual(len(pending_keys), 1)
+        queued_session_key = pending_keys[0]
+        self.assertEqual(inbox_store.pending_count(queued_session_key), 1)
         with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
             asyncio.run(scheduled.pop())
         self.assertEqual(len(processed), 1)
+        self.assertEqual(inbox_store.pending_count(queued_session_key), 0)
         queued_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queued"]
         completed_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queue_completed"]
         self.assertEqual(len(queued_logs), 1)
@@ -1688,6 +1709,14 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(steered.status_code, 200)
         self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
         self.assertEqual(len(scheduled), 0)
+        self.assertEqual(len(steer_calls), 1)
+        claimed_steer = inbox_store.get(steer_calls[0]["receipt_item_id"])
+        self.assertIsNotNone(claimed_steer)
+        self.assertEqual(claimed_steer.status, "claimed")
+        inbox_store.commit(
+            steer_calls[0]["receipt_item_id"],
+            claim_token=steer_calls[0]["receipt_claim_token"],
+        )
 
         with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
             stopped = client.post(

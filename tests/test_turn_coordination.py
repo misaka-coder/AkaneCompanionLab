@@ -87,6 +87,27 @@ class TurnCoordinatorTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_same_actor_steer_preserves_durable_receipt_identity(self) -> None:
+        async def exercise() -> None:
+            coordinator = TurnCoordinator()
+            async with coordinator.hold("profile", "session", actor_id="qq:1", channel="qq") as token:
+                accepted = coordinator.offer_steer(
+                    profile_user_id="profile",
+                    session_id="session",
+                    actor_id="qq:1",
+                    content="补一条持久化调整",
+                    source_id="steer_inbox_1",
+                    receipt_item_id="inbox_1",
+                    receipt_claim_token="claim_1",
+                )
+                self.assertTrue(accepted["ok"])
+                self.assertEqual(accepted["source_id"], "steer_inbox_1")
+                steer = coordinator.drain(token)["steers"][0]
+                self.assertEqual(steer.receipt_item_id, "inbox_1")
+                self.assertEqual(steer.receipt_claim_token, "claim_1")
+
+        asyncio.run(exercise())
+
     def test_different_actor_cannot_hijack_active_group_turn(self) -> None:
         async def exercise() -> None:
             coordinator = TurnCoordinator()

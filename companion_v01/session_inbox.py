@@ -162,16 +162,21 @@ class SessionInboxStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._release_expired_claims(connection, now=now)
-            active = connection.execute(
-                """
-                SELECT item_id FROM session_inbox_items
-                WHERE session_key = ? AND status = 'claimed' AND lease_until > ?
-                LIMIT 1
-                """,
-                (normalized_key, now),
-            ).fetchone()
-            if active is not None:
-                return {"ok": False, "status": "busy", "reason": "session_item_already_claimed"}
+            # An expected item is an ordered steer reservation for the model
+            # turn that already owns the session. It may coexist with that
+            # turn's runner claim, but it still cannot jump an earlier queued
+            # item. Ordinary runner claims remain strictly single-owner.
+            if not expected_id:
+                active = connection.execute(
+                    """
+                    SELECT item_id FROM session_inbox_items
+                    WHERE session_key = ? AND status = 'claimed' AND lease_until > ?
+                    LIMIT 1
+                    """,
+                    (normalized_key, now),
+                ).fetchone()
+                if active is not None:
+                    return {"ok": False, "status": "busy", "reason": "session_item_already_claimed"}
             row = connection.execute(
                 """
                 SELECT * FROM session_inbox_items

@@ -1436,6 +1436,62 @@ class AkaneMemoryEngine:
                 failed_source_ids.append(source_id)
         return applied_source_ids, failed_source_ids
 
+    def _settle_turn_steering_receipts(
+        self,
+        *,
+        steers: list[Any],
+        applied_source_ids: list[str],
+        failed_source_ids: list[str],
+    ) -> dict[str, int]:
+        """Finish durable inbox claims only after the turn accepted each steer."""
+
+        inbox_store = getattr(self, "session_inbox_store", None)
+        if inbox_store is None:
+            return {"committed": 0, "failed": 0, "settlement_failed": 0}
+        applied = set(applied_source_ids)
+        failed = set(failed_source_ids)
+        counts = {"committed": 0, "failed": 0, "settlement_failed": 0}
+        for steer in steers:
+            source_id = str(getattr(steer, "source_id", "") or "").strip()
+            item_id = str(getattr(steer, "receipt_item_id", "") or "").strip()
+            claim_token = str(getattr(steer, "receipt_claim_token", "") or "").strip()
+            if not item_id or not claim_token:
+                continue
+            try:
+                if source_id in applied:
+                    result = inbox_store.commit(item_id, claim_token=claim_token)
+                    outcome = "committed"
+                elif source_id in failed:
+                    result = inbox_store.fail(
+                        item_id,
+                        claim_token=claim_token,
+                        error="memcore_turn_user_input_append_failed",
+                        retryable=False,
+                    )
+                    outcome = "failed"
+                else:
+                    continue
+            except Exception as exc:
+                counts["settlement_failed"] += 1
+                logger.warning(
+                    "turn steer inbox settlement raised: item=%s source=%s reason=%s",
+                    item_id,
+                    source_id,
+                    exc.__class__.__name__,
+                )
+                continue
+            if isinstance(result, dict) and result.get("ok"):
+                counts[outcome] += 1
+            else:
+                counts["settlement_failed"] += 1
+                logger.warning(
+                    "turn steer inbox settlement failed: item=%s source=%s status=%s",
+                    item_id,
+                    source_id,
+                    str(result.get("status") if isinstance(result, dict) else "invalid_result"),
+                )
+        return counts
+
     def _chat_provider_protocol_for_memcore(
         self,
         *,
@@ -4445,6 +4501,11 @@ class AkaneMemoryEngine:
                         session_id=session_id,
                         character_pack_id=turn_character_pack_id,
                     )
+                    self._settle_turn_steering_receipts(
+                        steers=pending_steers,
+                        applied_source_ids=recorded_before_stop,
+                        failed_source_ids=failed_before_stop,
+                    )
                     if streaming:
                         yield {
                             "type": "turn_steer_recorded_before_stop",
@@ -4526,6 +4587,11 @@ class AkaneMemoryEngine:
                     profile_user_id=profile_user_id,
                     session_id=session_id,
                     character_pack_id=turn_character_pack_id,
+                )
+                self._settle_turn_steering_receipts(
+                    steers=pending_steers,
+                    applied_source_ids=applied_source_ids,
+                    failed_source_ids=failed_source_ids,
                 )
                 if streaming:
                     yield {

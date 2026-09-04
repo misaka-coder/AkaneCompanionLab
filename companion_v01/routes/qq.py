@@ -32,7 +32,9 @@ from ..tts_provider_runtime import (
     synthesize_tts_resolution,
 )
 from ..runtime_settings import runtime_setting
-from ..turn_coordination import SessionWorkItem, SessionWorkQueue, TurnCoordinator
+from ..durable_session_queue import DurableSessionWorkQueue
+from ..session_inbox import SessionInboxItem
+from ..turn_coordination import SessionWorkQueue, TurnCoordinator
 from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
 from ..plugin_api import (
     DIRECT_CONVERSATION_EVENT,
@@ -1940,6 +1942,9 @@ def build_qq_router(
     plugin_conversation_ref_issuer: Callable[..., str] | None = None,
     thinking_mode_setter: Callable[[str], str] | None = None,
     turn_coordinator: Any = None,
+    session_inbox_store: Any = None,
+    session_work_queue_provider: Callable[[], Any] | None = None,
+    session_work_queue_registrar: Callable[[Any], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
@@ -2561,19 +2566,102 @@ def build_qq_router(
             )
         return payload, metrics, registered_items
 
-    async def _handle_queued_session_work(_key: str, items: list[SessionWorkItem]) -> None:
+    def _durable_qq_work_payload(
+        *,
+        event: dict[str, Any],
+        turn_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        safe_turn_payload = dict(turn_payload)
+        # Native pixels are recreated from the already-managed attachment IDs
+        # when the item is claimed. Keeping base64 in SQLite would duplicate
+        # large artifacts and make ordinary queue operations expensive.
+        safe_turn_payload.pop("native_user_images", None)
+        return {
+            "event": dict(event),
+            "turn_payload": safe_turn_payload,
+        }
+
+    def _restore_queued_context(item: Any, payload: dict[str, Any]) -> Any:
+        legacy_context = payload.get("context")
+        if legacy_context is not None:
+            return legacy_context
+        event = dict(payload.get("event") or {})
+        turn_payload = payload.get("turn_payload") if isinstance(payload.get("turn_payload"), dict) else {}
+        delivery_context = turn_payload.get("qq_delivery_context")
+        resolver = getattr(qq_gateway, "context_from_delivery_context", None)
+        stored_context = (
+            resolver(delivery_context)
+            if callable(resolver) and isinstance(delivery_context, dict)
+            else None
+        )
+        context = stored_context
+        if str(getattr(item, "kind", "") or "") == "passive":
+            builder = getattr(qq_gateway, "build_message_context", None)
+            rebuilt = builder(event) if callable(builder) else None
+            if rebuilt is not None and stored_context is not None:
+                # Preserve the original routing/persona binding while restoring
+                # attachment and forward-reference objects from the raw event.
+                context = replace(
+                    rebuilt,
+                    session_id=stored_context.session_id,
+                    profile_user_id=stored_context.profile_user_id,
+                    actor_profile_user_id=stored_context.actor_profile_user_id,
+                    character_pack_id=stored_context.character_pack_id,
+                    reply_mode=stored_context.reply_mode,
+                    chat_model_override=stored_context.chat_model_override,
+                )
+            elif rebuilt is not None:
+                context = rebuilt
+        if context is None:
+            raise ValueError("queued_context_restore_failed")
+        expected_profile = str(getattr(item, "profile_user_id", "") or "").strip()
+        expected_session = str(getattr(item, "session_id", "") or "").strip()
+        if expected_profile and expected_profile != str(getattr(context, "profile_user_id", "") or "").strip():
+            raise ValueError("queued_context_profile_mismatch")
+        if expected_session and expected_session != str(getattr(context, "session_id", "") or "").strip():
+            raise ValueError("queued_context_session_mismatch")
+        return context
+
+    async def _restore_queued_native_images(context: Any, turn_payload: dict[str, Any]) -> None:
+        if list(turn_payload.get("native_user_images") or []):
+            return
+        attachment_ids = [
+            str(item or "").strip()
+            for item in list(turn_payload.get("qq_current_attachment_ids") or [])[:5]
+            if str(item or "").strip()
+        ]
+        if not attachment_ids:
+            return
+        prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
+        if not callable(prepare):
+            return
+        result = await asyncio.to_thread(
+            prepare,
+            profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+            session_id=str(getattr(context, "session_id", "") or ""),
+            attachment_ids=attachment_ids,
+            chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+            timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
+        )
+        images = [
+            dict(item)
+            for item in list((result or {}).get("images") or [])[:5]
+            if isinstance(item, dict) and str(item.get("data_url") or "").startswith("data:image/")
+        ]
+        if images:
+            turn_payload["native_user_images"] = images
+
+    @staticmethod
+    def _session_item_wait_ms(item: Any) -> float:
+        if isinstance(item, SessionInboxItem):
+            return max(0.0, (time.time() - float(item.created_at or 0)) * 1000)
+        return max(0.0, (time.perf_counter() - float(getattr(item, "enqueued_at", 0) or 0)) * 1000)
+
+    async def _handle_queued_session_work(_key: str, items: list[Any]) -> None:
         if not items:
             return
         first_payload = items[0].payload if isinstance(items[0].payload, dict) else {}
-        context = first_payload.get("context")
-        if context is None:
-            log_event(
-                "qq_session_work_failed",
-                reason="queued_context_missing",
-                work_kind=items[0].kind,
-                batch_count=len(items),
-            )
-            return
+        context = _restore_queued_context(items[0], first_payload)
         profile_user_id = str(getattr(context, "profile_user_id", "") or "")
         session_id = str(getattr(context, "session_id", "") or "")
         group_id = int(getattr(context, "group_id", 0) or 0)
@@ -2589,7 +2677,7 @@ def build_qq_router(
             }
             for item in items:
                 item_payload = item.payload if isinstance(item.payload, dict) else {}
-                item_context = item_payload.get("context") or context
+                item_context = _restore_queued_context(item, item_payload)
                 item_event = dict(item_payload.get("event") or {})
                 base_payload = (
                     dict(item_payload.get("turn_payload") or {})
@@ -2606,7 +2694,7 @@ def build_qq_router(
                 for key in enrichment_totals:
                     enrichment_totals[key] += int(item_metrics.get(key) or 0)
             async with turn_coordinator.hold(profile_user_id, session_id):
-                queue_wait_ms = max(0.0, (time.perf_counter() - items[0].enqueued_at) * 1000)
+                queue_wait_ms = _session_item_wait_ms(items[0])
                 batch_recorder = getattr(engine, "record_passive_qq_messages", None)
                 recorder = getattr(engine, "record_passive_qq_message", None)
                 if callable(batch_recorder):
@@ -2657,7 +2745,7 @@ def build_qq_router(
                 batch_results = list(result_payload.get("results") or [])
                 for index, (item, registered_items) in enumerate(zip(items, registered_items_by_payload)):
                     item_payload = item.payload if isinstance(item.payload, dict) else {}
-                    item_context = item_payload.get("context") or context
+                    item_context = _restore_queued_context(item, item_payload)
                     item_event = dict(item_payload.get("event") or {})
                     item_record_result = (
                         batch_results[index]
@@ -2671,7 +2759,7 @@ def build_qq_router(
                         timeline_source_id=str(item_record_result.get("source_id") or ""),
                     )
                 last_item_payload = items[-1].payload if isinstance(items[-1].payload, dict) else {}
-                last_context = last_item_payload.get("context") or context
+                last_context = _restore_queued_context(items[-1], last_item_payload)
                 last_event = dict(last_item_payload.get("event") or {})
                 last_record_result = (
                     batch_results[-1]
@@ -2695,6 +2783,7 @@ def build_qq_router(
 
         event = dict(first_payload.get("event") or {})
         turn_payload = dict(first_payload.get("turn_payload") or {})
+        await _restore_queued_native_images(context, turn_payload)
         qq_user_id = int(getattr(context, "user_id", 0) or 0)
         actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{profile_user_id}"
         started_at = time.perf_counter()
@@ -2705,7 +2794,7 @@ def build_qq_router(
                 actor_id=actor_id,
                 channel="qq",
             ) as turn_control_id:
-                queue_wait_ms = max(0.0, (time.perf_counter() - items[0].enqueued_at) * 1000)
+                queue_wait_ms = _session_item_wait_ms(items[0])
                 turn_payload["_turn_control_id"] = turn_control_id
                 processing_started_at = time.perf_counter()
                 turn_result = await _run_qq_turn_delivery_unlocked(
@@ -2752,28 +2841,79 @@ def build_qq_router(
                 reason=exc.__class__.__name__,
                 duration_ms=round(duration_ms, 1),
             )
+            raise
 
-    def _session_work_error(_key: str, items: list[SessionWorkItem], exc: BaseException) -> None:
+    def _session_work_error(_key: str, items: list[Any], exc: BaseException) -> None:
         payload = items[0].payload if items and isinstance(items[0].payload, dict) else {}
         context = payload.get("context")
+        turn_payload = payload.get("turn_payload") if isinstance(payload.get("turn_payload"), dict) else {}
+        delivery_context = (
+            turn_payload.get("qq_delivery_context")
+            if isinstance(turn_payload.get("qq_delivery_context"), dict)
+            else {}
+        )
         error_logger = getattr(logger, "error", None)
         if callable(error_logger):
             error_logger("qq session work handler failed: %s", exc.__class__.__name__)
         log_event(
             "qq_session_work_failed",
-            session_id=str(getattr(context, "session_id", "") or ""),
-            profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+            session_id=str(getattr(context, "session_id", "") or delivery_context.get("session_id") or ""),
+            profile_user_id=str(
+                getattr(context, "profile_user_id", "") or delivery_context.get("profile_user_id") or ""
+            ),
             work_kind=items[0].kind if items else "",
             batch_count=len(items),
             reason=exc.__class__.__name__,
         )
 
-    session_work_queue = SessionWorkQueue(
-        _handle_queued_session_work,
-        schedule_task=schedule_followup,
-        batchable_kinds={"passive"},
-        on_error=_session_work_error,
-    )
+    session_work_queue = session_work_queue_provider() if session_work_queue_provider is not None else None
+    if session_work_queue is None:
+        session_work_queue = (
+            DurableSessionWorkQueue(
+                session_inbox_store,
+                _handle_queued_session_work,
+                schedule_task=schedule_followup,
+                on_error=_session_work_error,
+            )
+            if session_inbox_store is not None
+            else SessionWorkQueue(
+                _handle_queued_session_work,
+                schedule_task=schedule_followup,
+                batchable_kinds={"passive"},
+                on_error=_session_work_error,
+            )
+        )
+        if session_work_queue_registrar is not None:
+            session_work_queue = session_work_queue_registrar(session_work_queue)
+
+    async def _enqueue_session_work(
+        *,
+        context: Any,
+        event: dict[str, Any],
+        turn_payload: dict[str, Any],
+        kind: str,
+        schedule: bool = True,
+    ) -> dict[str, Any]:
+        key = _session_work_key(context)
+        if isinstance(session_work_queue, DurableSessionWorkQueue):
+            return await session_work_queue.enqueue(
+                session_key=key,
+                profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+                session_id=str(getattr(context, "session_id", "") or ""),
+                kind=kind,
+                payload=_durable_qq_work_payload(
+                    event=event,
+                    turn_payload=turn_payload,
+                ),
+                source="qq",
+                source_event_id=str(getattr(context, "source_message_id", "") or ""),
+                schedule=schedule,
+            )
+        return session_work_queue.enqueue(
+            key,
+            kind=kind,
+            payload={"context": context, "event": dict(event), "turn_payload": dict(turn_payload)},
+        )
 
     async def _run_qq_turn_delivery(
         *,
@@ -2816,19 +2956,85 @@ def build_qq_router(
                 "reply_messages": [acknowledgement],
                 "send_result": send_result,
             }
-        steer_result = turn_coordinator.offer_steer(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            actor_id=actor_id,
-            content=steer_text,
-            timestamp=int(event.get("time") or time.time()),
-            actor_display_name=str(getattr(context, "sender_label", "") or ""),
-            channel="qq",
-            native_user_images=[
-                dict(item)
-                for item in list(turn_payload.get("native_user_images") or [])[:5]
-                if isinstance(item, dict)
-            ],
+        queue_key = _session_work_key(context)
+        queued_for_later: dict[str, Any] | None = None
+        durable_receipt: dict[str, str] = {}
+        if (
+            isinstance(session_work_queue, DurableSessionWorkQueue)
+            and turn_coordinator.is_busy(context.profile_user_id, context.session_id)
+        ):
+            persisted = await _enqueue_session_work(
+                context=context,
+                event=dict(event),
+                turn_payload=dict(turn_payload),
+                kind="turn",
+                schedule=False,
+            )
+            if not persisted.get("ok"):
+                return {
+                    "frame": {"status": "queue_failed", "speech": ""},
+                    "reply_messages": [],
+                    "send_result": {
+                        "ok": False,
+                        "status": "queue_failed",
+                        "reason": str(persisted.get("reason") or "session_inbox_persist_failed"),
+                        "results": [],
+                    },
+                }
+            persisted_item = persisted.get("item")
+            persisted_status = str(getattr(persisted_item, "status", "") or "")
+            if persisted.get("status") == "duplicate" and persisted_status == "committed":
+                return {
+                    "frame": {"status": "duplicate", "speech": ""},
+                    "reply_messages": [],
+                    "send_result": {
+                        "ok": True,
+                        "status": "suppressed",
+                        "reason": "source_event_already_committed",
+                        "results": [],
+                    },
+                }
+            if persisted.get("status") == "duplicate" and persisted_status == "failed":
+                return {
+                    "frame": {"status": "queue_failed", "speech": ""},
+                    "reply_messages": [],
+                    "send_result": {
+                        "ok": False,
+                        "status": "queue_failed",
+                        "reason": "source_event_previously_failed",
+                        "results": [],
+                    },
+                }
+            item_id = str(persisted.get("item_id") or getattr(persisted_item, "item_id", "") or "")
+            claim = await session_work_queue.claim_for_active_turn(queue_key, item_id)
+            if claim.get("ok"):
+                durable_receipt = {
+                    "source_id": f"steer_{item_id}",
+                    "receipt_item_id": item_id,
+                    "receipt_claim_token": str(claim.get("claim_token") or ""),
+                }
+            else:
+                queued_for_later = persisted
+                await session_work_queue.schedule_session(queue_key)
+
+        steer_result = (
+            turn_coordinator.offer_steer(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                actor_id=actor_id,
+                content=steer_text,
+                timestamp=int(event.get("time") or time.time()),
+                actor_display_name=str(getattr(context, "sender_label", "") or ""),
+                channel="qq",
+                native_user_images=[
+                    dict(item)
+                    for item in list(turn_payload.get("native_user_images") or [])[:5]
+                    if isinstance(item, dict)
+                ],
+                **durable_receipt,
+            )
+            if queued_for_later is None
+            else {"ok": False, "status": "queued", "reason": "session_inbox_waiting"}
         )
         if steer_result.get("ok"):
             return {
@@ -2841,21 +3047,35 @@ def build_qq_router(
                     "results": [],
                 },
             }
-        queue_key = _session_work_key(context)
+        if durable_receipt:
+            await asyncio.to_thread(
+                session_inbox_store.fail,
+                durable_receipt["receipt_item_id"],
+                claim_token=durable_receipt["receipt_claim_token"],
+                error=str(steer_result.get("reason") or "steer_not_accepted"),
+                retryable=True,
+            )
+            await session_work_queue.schedule_session(queue_key)
+            queued_for_later = {
+                "ok": True,
+                "status": "queued",
+                "reason": "steer_not_accepted_requeued",
+                "item_id": durable_receipt["receipt_item_id"],
+            }
         queue_behind_active_turn = str(steer_result.get("status") or "") in {
             "busy_other_actor",
             "finalizing",
             "preempting_optional_turn",
+            "queued",
         }
-        if context.is_group and (queue_behind_active_turn or session_work_queue.has_work(queue_key)):
-            queued = session_work_queue.enqueue(
-                queue_key,
+        if queued_for_later is not None or (
+            context.is_group and (queue_behind_active_turn or session_work_queue.has_work(queue_key))
+        ):
+            queued = queued_for_later or await _enqueue_session_work(
+                context=context,
+                event=dict(event),
+                turn_payload=dict(turn_payload),
                 kind="turn",
-                payload={
-                    "context": context,
-                    "event": dict(event),
-                    "turn_payload": dict(turn_payload),
-                },
             )
             log_event(
                 "qq_group_turn_queued",
@@ -3432,14 +3652,11 @@ def build_qq_router(
                     ) or session_work_queue.has_work(passive_queue_key) or needs_passive_enrichment:
                         deferred_payload = context.to_turn_payload()
                         deferred_payload["timestamp"] = int(event.get("time") or time.time())
-                        queued = session_work_queue.enqueue(
-                            passive_queue_key,
+                        queued = await _enqueue_session_work(
+                            context=context,
+                            event=dict(event),
+                            turn_payload=dict(deferred_payload),
                             kind="passive",
-                            payload={
-                                "context": context,
-                                "event": dict(event),
-                                "turn_payload": dict(deferred_payload),
-                            },
                         )
                         duration_ms = (time.perf_counter() - started_at) * 1000
                         runtime_metrics.observe_request(

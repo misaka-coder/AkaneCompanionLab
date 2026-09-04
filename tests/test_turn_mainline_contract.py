@@ -342,6 +342,12 @@ class TurnMainlineContractTests(unittest.TestCase):
             _speech_output("收到调整，我先补测试。"),
         ])
 
+        receipt_store = SimpleNamespace(
+            commit=_Recorder({"ok": True, "status": "committed"}),
+            fail=_Recorder({"ok": True, "status": "failed"}),
+        )
+        harness.engine.session_inbox_store = receipt_store
+
         class Coordinator:
             drained = False
 
@@ -360,6 +366,8 @@ class TurnMainlineContractTests(unittest.TestCase):
                             actor_id="qq:1",
                             actor_display_name="伙伴",
                             channel="qq",
+                            receipt_item_id="inbox-steer-1",
+                            receipt_claim_token="claim-steer-1",
                         )
                     ],
                 }
@@ -376,6 +384,11 @@ class TurnMainlineContractTests(unittest.TestCase):
         append_call = harness.rec["append_memcore_turn_user_input"].calls[0][1]
         self.assertEqual(append_call["user_record"]["source_id"], "steer-1")
         self.assertEqual(append_call["actor_stable_id"], "qq:1")
+        self.assertEqual(
+            receipt_store.commit.calls,
+            [(('inbox-steer-1',), {"claim_token": "claim-steer-1"})],
+        )
+        self.assertEqual(receipt_store.fail.calls, [])
         self.assertEqual([item.get("role") for item in harness.store.messages[:2]], ["user", "user"])
         self.assertEqual(len(harness.script.generation_kwargs), 2)
         self.assertTrue(harness.script.generation_kwargs[0]["allow_tool_call"])
@@ -383,6 +396,61 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertEqual(
             harness.script.generation_kwargs[1]["post_user_turns"] or [],
             harness.script.generation_kwargs[0]["post_user_turns"] or [],
+        )
+
+    def test_failed_steer_memcore_append_marks_durable_receipt_failed(self) -> None:
+        harness = _Harness([_speech_output("原回复继续。")])
+        harness.engine._append_memcore_turn_user_input = _Recorder(
+            {"ok": False, "status": "failed", "reason": "memcore_write_failed"}
+        )
+        receipt_store = SimpleNamespace(
+            commit=_Recorder({"ok": True, "status": "committed"}),
+            fail=_Recorder({"ok": True, "status": "failed"}),
+        )
+        harness.engine.session_inbox_store = receipt_store
+
+        class Coordinator:
+            drained = False
+
+            def drain(self, _token: str) -> dict[str, object]:
+                if self.drained:
+                    return {"ok": True, "stop_requested": False, "steers": []}
+                self.drained = True
+                return {
+                    "ok": True,
+                    "stop_requested": False,
+                    "steers": [
+                        SteeringInput(
+                            source_id="steer-failed-1",
+                            content="这条落 MemCore 时失败",
+                            timestamp=1_784_016_012,
+                            actor_id="qq:1",
+                            receipt_item_id="inbox-failed-1",
+                            receipt_claim_token="claim-failed-1",
+                        )
+                    ],
+                }
+
+            def begin_finalization(self, _token: str) -> dict[str, object]:
+                return {"ok": True, "status": "finalizing", "stop_requested": False, "steers": []}
+
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(_turn_control_id="control-failed-steer"))
+
+        self.assertTrue(any(event.get("type") == "turn_steer_failed" for event in events))
+        self.assertEqual(receipt_store.commit.calls, [])
+        self.assertEqual(
+            receipt_store.fail.calls,
+            [
+                (
+                    ('inbox-failed-1',),
+                    {
+                        "claim_token": "claim-failed-1",
+                        "error": "memcore_turn_user_input_append_failed",
+                        "retryable": False,
+                    },
+                )
+            ],
         )
 
     def test_image_steer_upgrades_next_existing_round_without_load_material_or_extra_round(self) -> None:

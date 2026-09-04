@@ -268,6 +268,30 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
 
+    def test_active_turn_can_claim_next_steer_while_runner_owns_current_item(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            queue = DurableSessionWorkQueue(store, lambda _key, _items: asyncio.sleep(0))
+            first = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="first"),
+                schedule=False,
+            )
+            second = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="steer"),
+                schedule=False,
+            )
+            running = store.claim_next("profile\0session", worker_id="runner")
+            self.assertTrue(running["ok"])
+            self.assertEqual(running["item"].item_id, first["item_id"])
+
+            steer = await queue.claim_for_active_turn("profile\0session", second["item_id"])
+
+            self.assertTrue(steer["ok"])
+            self.assertEqual(steer["item"].item_id, second["item_id"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
     def test_recover_drains_items_created_before_runner_start(self) -> None:
         async def exercise(database_path: Path) -> None:
             store = SessionInboxStore(database_path)

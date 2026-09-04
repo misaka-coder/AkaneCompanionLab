@@ -333,6 +333,24 @@ class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_recovers_shared_session_inbox_runner_once(self) -> None:
+        runtime, _plugin_host, _engine, _followups = _runtime()
+
+        class RecoverableQueue:
+            recover_count = 0
+
+            async def recover(self) -> int:
+                self.recover_count += 1
+                return 0
+
+        queue = RecoverableQueue()
+        self.assertIs(runtime.bind_qq_session_work_queue(queue), queue)
+
+        await runtime.start()
+        await runtime.start()
+
+        self.assertEqual(queue.recover_count, 1)
+
     async def test_thinking_mode_update_is_persisted_and_applied_to_one_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime, _plugin_host, engine, _followups = _runtime()

@@ -30,6 +30,8 @@ class SteeringInput:
     actor_display_name: str = ""
     channel: str = ""
     native_user_images: tuple[dict[str, Any], ...] = ()
+    receipt_item_id: str = ""
+    receipt_claim_token: str = ""
 
 
 @dataclass(slots=True)
@@ -182,6 +184,9 @@ class TurnCoordinator:
         actor_display_name: Any = "",
         channel: Any = "",
         native_user_images: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        source_id: Any = "",
+        receipt_item_id: Any = "",
+        receipt_claim_token: Any = "",
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         actor = str(actor_id or "").strip()
@@ -216,13 +221,15 @@ class TurnCoordinator:
                 if isinstance(raw, dict) and str(raw.get("data_url") or "").startswith("data:image/")
             )
             item = SteeringInput(
-                source_id=f"steer_{uuid.uuid4().hex}",
+                source_id=str(source_id or "").strip() or f"steer_{uuid.uuid4().hex}",
                 content=text,
                 timestamp=int(timestamp or time.time()),
                 actor_id=actor,
                 actor_display_name=str(actor_display_name or "").strip(),
                 channel=str(channel or "").strip(),
                 native_user_images=safe_images,
+                receipt_item_id=str(receipt_item_id or "").strip(),
+                receipt_claim_token=str(receipt_claim_token or "").strip(),
             )
             active.pending.append(item)
             return {
