@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable
 
 
@@ -51,6 +52,23 @@ def apply_plugin_text_presentation_policy(
             segments[index] = strip_leading_addresses(segment, addresses)
             break
         frame["speech_segments"] = [segment for segment in segments if segment]
+
+    provider_output_raw = frame.get("_provider_output_raw")
+    if isinstance(provider_output_raw, str) and provider_output_raw.strip():
+        try:
+            provider_output = json.loads(provider_output_raw)
+        except (TypeError, ValueError):
+            provider_output = None
+        if isinstance(provider_output, dict):
+            apply_plugin_text_presentation_policy(
+                provider_output,
+                strip_leading_addresses_from=addresses,
+            )
+            frame["_provider_output_raw"] = json.dumps(
+                provider_output,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
     return frame
 
 

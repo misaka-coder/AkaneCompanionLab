@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from companion_v01.plugin_text_presentation import (
@@ -28,6 +29,14 @@ class PluginTextPresentationTests(unittest.TestCase):
         frame = {
             "speech": "主人，这条快讯值得关注。",
             "speech_segments": ["主人，", "这条快讯值得关注。"],
+            "_provider_output_raw": json.dumps(
+                {
+                    "emotion": "thinking",
+                    "speech": "主人，这条快讯值得关注。",
+                    "speech_segments": ["主人，", "这条快讯值得关注。"],
+                },
+                ensure_ascii=False,
+            ),
         }
         apply_plugin_text_presentation_policy(
             frame,
@@ -35,6 +44,9 @@ class PluginTextPresentationTests(unittest.TestCase):
         )
         self.assertEqual(frame["speech"], "这条快讯值得关注。")
         self.assertEqual(frame["speech_segments"], ["这条快讯值得关注。"])
+        provider_output = json.loads(frame["_provider_output_raw"])
+        self.assertEqual(provider_output["speech"], "这条快讯值得关注。")
+        self.assertEqual(provider_output["speech_segments"], ["这条快讯值得关注。"])
 
 
 if __name__ == "__main__":
