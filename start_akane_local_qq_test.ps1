@@ -15,6 +15,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "powershell_7_required: launch with pwsh"
+}
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $instanceId = "local-qq-test"

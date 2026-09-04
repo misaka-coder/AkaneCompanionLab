@@ -41,9 +41,9 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertNotIn("CloudSatellite =", source)
 
     def test_prepare_only_creates_isolated_named_instance_without_leaking_env_values(self) -> None:
-        powershell = shutil.which("powershell")
+        powershell = shutil.which("pwsh")
         if not powershell:
-            self.skipTest("PowerShell is unavailable")
+            self.skipTest("PowerShell 7 is unavailable")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -99,6 +99,15 @@ class LocalTestLauncherTests(unittest.TestCase):
     def test_batch_wrapper_targets_the_dedicated_profile(self) -> None:
         source = (ROOT / "start_akane_local_test.bat").read_text(encoding="utf-8")
         self.assertIn("start_akane_local_test.ps1", source)
+        self.assertIn("where pwsh.exe", source)
+        self.assertIn("pwsh.exe -NoLogo -NoProfile", source)
+        self.assertNotIn("\npowershell -NoProfile", source)
+
+    def test_local_profiles_fail_early_outside_powershell_7(self) -> None:
+        for launcher_name in ("start_akane_local_test.ps1", "start_akane_local_qq_test.ps1"):
+            source = (ROOT / launcher_name).read_text(encoding="utf-8")
+            self.assertIn("$PSVersionTable.PSVersion.Major -lt 7", source, launcher_name)
+            self.assertIn("powershell_7_required: launch with pwsh", source, launcher_name)
         self.assertNotIn("start_akane_cloud_personal", source)
 
     def test_cloud_profile_sync_has_a_narrow_allowlist_and_external_target(self) -> None:
