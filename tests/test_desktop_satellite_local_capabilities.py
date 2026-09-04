@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import unittest
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ def _registration(instance_id: str) -> dict[str, object]:
         "type": "register",
         "protocol_version": 1,
         "instance_id": instance_id,
+        "bot_id": instance_id,
         "offers": [
             {
                 "tool_id": spec.capability_id,
@@ -131,6 +133,54 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
                         receipt = selection.execution_receipts[spec.capability_id]
                         self.assertEqual(receipt["schema_hash"], spec.schema_hash)
                         self.assertEqual(receipt["instance_id"], "instance-a")
+
+    def test_agent_frame_is_queued_and_acknowledged_on_existing_connection(self) -> None:
+        service = DesktopSatelliteService(instance_id="instance-a", token="device-secret")
+        result: dict[str, object] = {}
+        with TestClient(self._app(service)) as client:
+            with client.websocket_connect(
+                "/capabilities/satellite/ws",
+                headers={"Authorization": "Bearer device-secret"},
+            ) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("instance-a"))
+                registered = websocket.receive_json()
+                mismatch = asyncio.run(
+                    service.deliver_agent_frame(
+                        {"speech": "不应投递"},
+                        bot_id="another-bot",
+                    )
+                )
+                self.assertEqual(mismatch["reason"], "desktop_bot_unavailable")
+
+                def deliver() -> None:
+                    result.update(
+                        asyncio.run(
+                            service.deliver_agent_frame(
+                                {"speech": "到点了", "emotion": "happy"},
+                                bot_id="instance-a",
+                                timeout_seconds=2,
+                            )
+                        )
+                    )
+
+                worker = threading.Thread(target=deliver, daemon=True)
+                worker.start()
+                frame = websocket.receive_json()
+                self.assertEqual(frame["type"], "agent_event_frame")
+                self.assertEqual(frame["payload"]["speech"], "到点了")
+                websocket.send_json(
+                    {
+                        "type": "agent_event_result",
+                        "instance_id": "instance-a",
+                        "lease_epoch": registered["lease_epoch"],
+                        "delivery_id": frame["delivery_id"],
+                        "status": "queued",
+                    }
+                )
+                worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, {"ok": True, "status": "queued", "reason": ""})
 
     def test_one_host_connection_dispatches_isolated_invocations_for_two_bots(self) -> None:
         service = DesktopSatelliteService(instance_id="host-a", token="device-secret")

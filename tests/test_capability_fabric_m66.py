@@ -56,6 +56,7 @@ def _registration(instance_id: str, *, schema_hash: str | None = None) -> dict[s
         "type": "register",
         "protocol_version": 1,
         "instance_id": instance_id,
+        "bot_id": instance_id,
         "offers": [
             {
                 "tool_id": OPEN_BROWSER_TOOL_SPEC.capability_id,

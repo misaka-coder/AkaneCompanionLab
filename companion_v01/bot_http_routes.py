@@ -36,6 +36,27 @@ def build_bot_runtime_routers(
     config_module = runtime.config_module
     runtime_metrics = runtime.runtime_metrics
     layout = runtime.runtime_layout
+    satellite_service = getattr(runtime, "desktop_satellite_service", None)
+    agent_event_router = getattr(runtime, "plugin_agent_event_router", None)
+    desktop_delivery = (
+        (
+            lambda frame, service=satellite_service, bot_id=runtime.bot_id: service.deliver_agent_frame(
+                frame,
+                bot_id=bot_id,
+            )
+        )
+        if satellite_service is not None
+        and callable(getattr(satellite_service, "deliver_agent_frame", None))
+        else None
+    )
+
+    def desktop_agent_event_available() -> bool:
+        snapshot = satellite_service.diagnostics()
+        return (
+            bool(snapshot.get("connected"))
+            and str(snapshot.get("activeBotId") or "") == runtime.bot_id
+        )
+
     return (
         build_core_router(
             engine=engine,
@@ -60,6 +81,18 @@ def build_bot_runtime_routers(
             log_event=log_event,
             turn_coordinator=runtime.turn_coordinator,
             plugin_event_broker_provider=lambda runtime=runtime: runtime.plugin_event_broker,
+            plugin_agent_event_handler_registrar=(
+                agent_event_router.register_channel
+                if desktop_delivery is not None
+                and callable(getattr(agent_event_router, "register_channel", None))
+                else None
+            ),
+            desktop_agent_frame_delivery=desktop_delivery,
+            desktop_agent_event_available=(
+                desktop_agent_event_available
+                if desktop_delivery is not None
+                else None
+            ),
         ),
         build_desktop_pet_router(
             engine=engine,

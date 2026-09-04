@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
     WebviewWindowBuilder, Window,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -79,7 +79,10 @@ const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
 ];
 const SUPPORTED_PORTRAIT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 static VERIFIED_BACKEND_URL: OnceLock<Mutex<String>> = OnceLock::new();
+static PLUGIN_AGENT_EVENT_FRAMES: OnceLock<Mutex<VecDeque<(String, serde_json::Value)>>> =
+    OnceLock::new();
 const SATELLITE_PROTOCOL_VERSION: u64 = 1;
+const PLUGIN_AGENT_EVENT_FRAME_EVENT: &str = "akane:plugin-agent-event-frame";
 const OPEN_BROWSER_TOOL_ID: &str = "open_browser";
 const OPEN_BROWSER_SPEC_VERSION: &str = "1.0.0";
 const OPEN_BROWSER_SCHEMA_VERSION: u64 = 1;
@@ -5443,7 +5446,7 @@ fn is_safe_instance_id(value: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
 }
 
-fn start_desktop_satellite() {
+fn start_desktop_satellite(app_handle: AppHandle) {
     let token = std::env::var(SATELLITE_TOKEN_ENV)
         .ok()
         .map(|value| value.trim().to_string())
@@ -5454,13 +5457,23 @@ fn start_desktop_satellite() {
     let Ok(instance_id) = runtime_instance_id() else {
         return;
     };
+    let Ok(bot_id) = runtime_bound_bot_id() else {
+        return;
+    };
     let backend_url = runtime_backend_url();
     tauri::async_runtime::spawn(async move {
         let mut retry_seconds = 2_u64;
         loop {
             let binding = verify_backend_instance_url(&backend_url).await;
             if binding.ok {
-                let _ = run_desktop_satellite_session(&backend_url, &instance_id, &token).await;
+                let _ = run_desktop_satellite_session_with_app(
+                    &backend_url,
+                    &instance_id,
+                    &bot_id,
+                    &token,
+                    Some(&app_handle),
+                )
+                .await;
                 retry_seconds = 2;
             } else {
                 retry_seconds = (retry_seconds.saturating_mul(2)).min(30);
@@ -5500,10 +5513,21 @@ fn is_loopback_backend_host(host: &str) -> bool {
             .unwrap_or(false)
 }
 
+#[cfg(test)]
 async fn run_desktop_satellite_session(
     backend_url: &str,
     instance_id: &str,
     token: &str,
+) -> Result<(), &'static str> {
+    run_desktop_satellite_session_with_app(backend_url, instance_id, instance_id, token, None).await
+}
+
+async fn run_desktop_satellite_session_with_app(
+    backend_url: &str,
+    instance_id: &str,
+    bot_id: &str,
+    token: &str,
+    app_handle: Option<&AppHandle>,
 ) -> Result<(), &'static str> {
     use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
 
@@ -5539,6 +5563,7 @@ async fn run_desktop_satellite_session(
         "type": "register",
         "protocol_version": SATELLITE_PROTOCOL_VERSION,
         "instance_id": instance_id,
+        "bot_id": bot_id,
         "offers": [
             {
                 "tool_id": OPEN_BROWSER_TOOL_ID,
@@ -5626,6 +5651,7 @@ async fn run_desktop_satellite_session(
             .get("instance_id")
             .and_then(serde_json::Value::as_str)
             != Some(instance_id)
+        || registered.get("bot_id").and_then(serde_json::Value::as_str) != Some(bot_id)
         || lease_epoch.is_empty()
         || offer_ids.is_empty()
     {
@@ -5661,6 +5687,51 @@ async fn run_desktop_satellite_session(
                         let Some(payload) = satellite_message_json(other) else {
                             continue;
                         };
+                        if payload.get("type").and_then(serde_json::Value::as_str)
+                            == Some("agent_event_frame")
+                        {
+                            let validated = validate_satellite_agent_event_frame(
+                                &payload,
+                                instance_id,
+                                &lease_epoch,
+                            );
+                            let delivery_id = validated
+                                .as_ref()
+                                .map(|(value, _)| value.as_str())
+                                .unwrap_or("");
+                            let queued = validated
+                                .as_ref()
+                                .filter(|_| app_handle.is_some())
+                                .map(|(delivery_id, frame)| {
+                                    queue_plugin_agent_event_frame(delivery_id, frame.clone())
+                                })
+                                .unwrap_or(false);
+                            if queued {
+                                if let (Some(handle), Some((delivery_id, frame))) =
+                                    (app_handle, validated.as_ref())
+                                {
+                                    let _ = handle.emit_to(
+                                        "main",
+                                        PLUGIN_AGENT_EVENT_FRAME_EVENT,
+                                        serde_json::json!({
+                                            "deliveryId": delivery_id,
+                                            "payload": frame,
+                                        }),
+                                    );
+                                }
+                            }
+                            let result = serde_json::json!({
+                                "type": "agent_event_result",
+                                "instance_id": instance_id,
+                                "lease_epoch": lease_epoch,
+                                "delivery_id": delivery_id,
+                                "status": if queued { "queued" } else { "failed" },
+                                "reason": if queued { "" } else if validated.is_some() { "desktop_view_unavailable" } else { "agent_event_frame_invalid" },
+                            });
+                            socket.send(Message::Text(result.to_string().into())).await
+                                .map_err(|_| "satellite_result_send_failed")?;
+                            continue;
+                        }
                         if payload.get("type").and_then(serde_json::Value::as_str) != Some("invoke") {
                             continue;
                         }
@@ -5724,6 +5795,86 @@ async fn run_desktop_satellite_session(
             }
         }
     }
+}
+
+fn validate_satellite_agent_event_frame(
+    payload: &serde_json::Value,
+    instance_id: &str,
+    lease_epoch: &str,
+) -> Option<(String, serde_json::Value)> {
+    if payload.get("type").and_then(serde_json::Value::as_str) != Some("agent_event_frame")
+        || payload
+            .get("protocol_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(SATELLITE_PROTOCOL_VERSION)
+        || payload
+            .get("instance_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(instance_id)
+        || payload
+            .get("lease_epoch")
+            .and_then(serde_json::Value::as_str)
+            != Some(lease_epoch)
+    {
+        return None;
+    }
+    let delivery_id = payload
+        .get("delivery_id")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    let frame = payload.get("payload")?;
+    if delivery_id.is_empty() || !frame.is_object() {
+        return None;
+    }
+    Some((delivery_id.to_string(), frame.clone()))
+}
+
+fn queue_plugin_agent_event_frame(delivery_id: &str, frame: serde_json::Value) -> bool {
+    let delivery_id = delivery_id.trim();
+    if delivery_id.is_empty() || !frame.is_object() {
+        return false;
+    }
+    let queue = PLUGIN_AGENT_EVENT_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(mut pending) = queue.lock() else {
+        return false;
+    };
+    if pending.iter().any(|(existing, _)| existing == delivery_id) {
+        return true;
+    }
+    if pending.len() >= 64 {
+        return false;
+    }
+    pending.push_back((delivery_id.to_string(), frame));
+    true
+}
+
+#[tauri::command]
+fn list_pending_plugin_agent_event_frames() -> Vec<serde_json::Value> {
+    let queue = PLUGIN_AGENT_EVENT_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(pending) = queue.lock() else {
+        return Vec::new();
+    };
+    pending
+        .iter()
+        .map(|(delivery_id, payload)| {
+            serde_json::json!({"deliveryId": delivery_id, "payload": payload})
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn acknowledge_plugin_agent_event_frame(delivery_id: String) -> bool {
+    let delivery_id = delivery_id.trim();
+    if delivery_id.is_empty() {
+        return false;
+    }
+    let queue = PLUGIN_AGENT_EVENT_FRAMES.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(mut pending) = queue.lock() else {
+        return false;
+    };
+    let before = pending.len();
+    pending.retain(|(existing, _)| existing != delivery_id);
+    pending.len() != before
 }
 
 fn satellite_message_json(
@@ -6523,7 +6674,7 @@ fn main() {
                 .allow_directory(&characters_dir, true)
                 .map_err(|error| error.to_string())?;
 
-            start_desktop_satellite();
+            start_desktop_satellite(app.handle().clone());
 
             #[cfg(windows)]
             {
@@ -6555,6 +6706,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_pet_state,
             get_client_launch_binding,
+            list_pending_plugin_agent_event_frames,
+            acknowledge_plugin_agent_event_frame,
             save_pet_state,
             verify_backend_instance,
             backend_admin_request,
@@ -6796,6 +6949,33 @@ mod tests {
             satellite_websocket_url("http://10.0.0.4:9999"),
             Err("secure_satellite_transport_required")
         );
+    }
+
+    #[test]
+    fn satellite_agent_event_frame_is_bound_to_instance_and_lease() {
+        let value = serde_json::json!({
+            "type": "agent_event_frame",
+            "protocol_version": SATELLITE_PROTOCOL_VERSION,
+            "instance_id": "instance-a",
+            "lease_epoch": "lease-a",
+            "delivery_id": "delivery-a",
+            "payload": {"speech": "到点了", "emotion": "happy"},
+        });
+        let (delivery_id, frame) = validate_satellite_agent_event_frame(
+            &value,
+            "instance-a",
+            "lease-a",
+        )
+        .expect("valid frame");
+        assert_eq!(delivery_id, "delivery-a");
+        assert_eq!(frame.get("speech").and_then(serde_json::Value::as_str), Some("到点了"));
+        assert!(validate_satellite_agent_event_frame(&value, "instance-b", "lease-a").is_none());
+        assert!(validate_satellite_agent_event_frame(&value, "instance-a", "lease-b").is_none());
+        assert!(queue_plugin_agent_event_frame("delivery-test", frame));
+        assert!(list_pending_plugin_agent_event_frames().iter().any(|item| {
+            item.get("deliveryId").and_then(serde_json::Value::as_str) == Some("delivery-test")
+        }));
+        assert!(acknowledge_plugin_agent_event_frame("delivery-test".to_string()));
     }
 
     #[test]
@@ -7045,6 +7225,10 @@ mod tests {
                 .get("offers")
                 .and_then(serde_json::Value::as_array)
                 .expect("registration should contain offers");
+            assert_eq!(
+                registration.get("bot_id").and_then(serde_json::Value::as_str),
+                Some("instance-wire-test")
+            );
             assert_eq!(offers.len(), SATELLITE_OFFER_TOOL_IDS.len());
             for tool_id in SATELLITE_OFFER_TOOL_IDS {
                 assert!(offers.iter().any(|offer| {
@@ -7058,6 +7242,7 @@ mod tests {
                         "type": "registered",
                         "protocol_version": SATELLITE_PROTOCOL_VERSION,
                         "instance_id": "instance-wire-test",
+                        "bot_id": "instance-wire-test",
                         "lease_epoch": "lease-wire-test",
                         "offer_ids": {
                             OPEN_BROWSER_TOOL_ID: "offer-wire-test",

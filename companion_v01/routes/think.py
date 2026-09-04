@@ -11,8 +11,15 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
+from ..client_protocol import ClientMode, default_capabilities_for_mode
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
-from ..plugin_api import DIRECT_CONVERSATION_EVENT, PluginEventEnvelope
+from ..plugin_api import (
+    DIRECT_CONVERSATION_EVENT,
+    PluginAgentEventRequest,
+    PluginAgentEventResult,
+    PluginEventEnvelope,
+    PluginExternalEvent,
+)
 from ..plugin_events import record_timeline_events, render_current_turn_events
 from ..turn_coordination import TurnCoordinator
 
@@ -20,6 +27,55 @@ logger = logging.getLogger("akane.think")
 
 
 LogEvent = Callable[..., None]
+
+_DESKTOP_AGENT_EVENT_PRESENTATION_FIELDS = (
+    "trace_id",
+    "status",
+    "emotion",
+    "speech",
+    "speech_segments",
+    "activity",
+    "care_state",
+    "character",
+    "choices",
+    "tool_events",
+    "client_mode",
+    "client",
+)
+
+
+def _desktop_agent_event_presentation(
+    frame: dict[str, Any],
+    request: PluginAgentEventRequest,
+) -> dict[str, Any]:
+    """Keep the ordinary desktop output contract while excluding internals."""
+
+    presentation = {
+        key: frame[key]
+        for key in _DESKTOP_AGENT_EVENT_PRESENTATION_FIELDS
+        if key in frame
+    }
+    if request.text_delivery != "single_message":
+        return presentation
+    speech = str(frame.get("speech") or "").strip()
+    if not speech:
+        segments = frame.get("speech_segments")
+        if isinstance(segments, (list, tuple)):
+            speech = "\n".join(str(item or "").strip() for item in segments if str(item or "").strip())
+    if not speech:
+        return presentation
+    completed = "\n".join(
+        part
+        for part in (
+            str(request.text_prefix or "").strip(),
+            speech,
+            str(request.text_suffix or "").strip(),
+        )
+        if part
+    )
+    presentation["speech"] = completed
+    presentation["speech_segments"] = [completed]
+    return presentation
 
 
 def build_think_router(
@@ -30,6 +86,9 @@ def build_think_router(
     log_event: LogEvent,
     turn_coordinator: Any = None,
     plugin_event_broker_provider: Callable[[], Any] | None = None,
+    plugin_agent_event_handler_registrar: Callable[[str, Any], None] | None = None,
+    desktop_agent_frame_delivery: Callable[[dict[str, Any]], Any] | None = None,
+    desktop_agent_event_available: Callable[[], bool] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     turn_coordinator = turn_coordinator or TurnCoordinator()
@@ -142,6 +201,118 @@ def build_think_router(
             return
         current = str(payload.get("extra_context") or "").strip()
         payload["extra_context"] = "\n\n".join(part for part in (current, note) if part)
+
+    async def _submit_plugin_agent_event(
+        event_request: PluginAgentEventRequest,
+        resolved_reference: dict[str, str],
+    ) -> PluginAgentEventResult:
+        """Run a plugin event through the ordinary desktop Agent path."""
+
+        if not isinstance(event_request, PluginAgentEventRequest) or not isinstance(
+            event_request.event, PluginExternalEvent
+        ):
+            return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
+        if str(resolved_reference.get("channel") or "") != "desktop_pet":
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        session_id = str(resolved_reference.get("session") or "").strip()
+        profile_user_id = str(resolved_reference.get("profile") or "").strip()
+        character_pack_id = str(resolved_reference.get("character") or "").strip()
+        recipient = str(resolved_reference.get("recipient") or "").strip()
+        if (
+            str(resolved_reference.get("kind") or "") != "direct"
+            or not session_id
+            or not profile_user_id
+            or not character_pack_id
+            or recipient != f"desktop:{session_id}"
+        ):
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        try:
+            desktop_available = (
+                desktop_agent_frame_delivery is not None
+                and (
+                    desktop_agent_event_available is None
+                    or bool(desktop_agent_event_available())
+                )
+            )
+        except Exception:
+            desktop_available = False
+        if not desktop_available:
+            return PluginAgentEventResult(False, "host_unavailable", "desktop_client_unavailable")
+
+        message = str(event_request.message or "").strip()
+        timestamp = int(time.time())
+        payload: dict[str, Any] = {
+            "user_id": session_id,
+            "session_id": session_id,
+            "real_user_id": profile_user_id,
+            "actor_stable_id": "host:plugin_event",
+            "message": message,
+            "memory_message": message,
+            "timestamp": timestamp,
+            "client_mode": ClientMode.DESKTOP_PET.value,
+            "client_capabilities": list(default_capabilities_for_mode(ClientMode.DESKTOP_PET)),
+            "character_pack_id": character_pack_id,
+            "turn_kind": "plugin_event",
+            "transient_user_message": event_request.delivery == "current_turn",
+            "plugin_external_event": {
+                "event_type": str(event_request.event.event_type or "").strip().lower(),
+                "source": str(event_request.event.source or "plugin").strip(),
+                "fields": {
+                    str(key): str(value)
+                    for key, value in event_request.event.fields
+                    if str(key or "").strip() and str(value or "").strip()
+                },
+            },
+            "memory_idempotency_key": str(event_request.memory_idempotency_key or "").strip(),
+            "message_addressing": {
+                "mode": "current_request",
+                "trigger": "plugin_event",
+                "addressed_to_assistant": True,
+                "explicit_assistant_mention": False,
+                "primary_target": {"actor_id": "assistant"},
+                "mentions": [],
+            },
+        }
+        try:
+            async with turn_coordinator.hold(
+                profile_user_id,
+                session_id,
+                actor_id="host:plugin_event",
+                channel="desktop_pet",
+                turn_kind="plugin_event",
+            ) as turn_control_id:
+                payload["_turn_control_id"] = turn_control_id
+                frame = await asyncio.to_thread(engine.process_turn, payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("desktop plugin Agent event failed")
+            return PluginAgentEventResult(False, "failed", "agent_event_turn_failed", "not_sent")
+        if not isinstance(frame, dict) or bool(frame.get("_transient_final_failure")):
+            return PluginAgentEventResult(False, "failed", "agent_event_turn_incomplete", "not_sent")
+
+        presentation = _desktop_agent_event_presentation(frame, event_request)
+        try:
+            delivered = desktop_agent_frame_delivery(presentation)
+            if hasattr(delivered, "__await__"):
+                delivered = await delivered
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("desktop plugin Agent frame delivery failed")
+            return PluginAgentEventResult(False, "failed", "agent_event_delivery_failed", "not_sent")
+        delivery_result = delivered if isinstance(delivered, dict) else {}
+        if delivery_result.get("ok") is not True:
+            return PluginAgentEventResult(
+                False,
+                "failed",
+                str(delivery_result.get("reason") or "agent_event_delivery_failed"),
+                str(delivery_result.get("status") or "not_sent"),
+            )
+        return PluginAgentEventResult(True, "completed", "", str(delivery_result.get("status") or "queued"))
+
+    if plugin_agent_event_handler_registrar is not None:
+        plugin_agent_event_handler_registrar("desktop_pet", _submit_plugin_agent_event)
 
     async def _control_payload(request: Request) -> dict[str, Any] | JSONResponse:
         try:

@@ -11,7 +11,7 @@ import hashlib
 import re
 import time
 from dataclasses import replace
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from .plugin_api import PluginAgentEventRequest, PluginAgentEventResult, PluginExternalEvent
 
@@ -143,37 +143,54 @@ class _PluginScopedAgentEventPort:
                 overflow -= 1
 
 
-class CallbackAgentEventPort:
-    """Small host adapter that keeps the public port independent of a channel.
+AgentEventChannelHandler = Callable[
+    [PluginAgentEventRequest, Mapping[str, str]],
+    Awaitable[PluginAgentEventResult],
+]
 
-    The callback is owned by the channel/router integration and must submit the
-    request through that channel's ordinary Agent delivery path.  This class is
-    intentionally boring: it only validates availability and result shape.
+
+class HostAgentEventRouter:
+    """Resolve one opaque conversation reference and route by source channel.
+
+    Plugin workers bind to this single instance-owned port. Channel adapters
+    register their ordinary delivery path here; they never replace the plugin
+    port or create a second plugin runtime.
     """
 
-    def __init__(
-        self,
-        delegate: Callable[[PluginAgentEventRequest], Awaitable[PluginAgentEventResult]],
-        *,
-        availability_provider: Callable[[], bool] | None = None,
-    ) -> None:
-        if not callable(delegate):
-            raise TypeError("invalid_agent_event_delegate")
-        self._delegate = delegate
-        self._availability_provider = availability_provider or (lambda: True)
+    def __init__(self, resolver: Callable[[str], Mapping[str, str] | None]) -> None:
+        if not callable(resolver):
+            raise TypeError("invalid_conversation_reference_resolver")
+        self._resolver = resolver
+        self._handlers: dict[str, AgentEventChannelHandler] = {}
+
+    def register_channel(self, channel: str, handler: AgentEventChannelHandler) -> None:
+        normalized = str(channel or "").strip().lower()
+        if not normalized or not callable(handler):
+            raise ValueError("invalid_agent_event_channel_handler")
+        self._handlers[normalized] = handler
 
     async def submit(self, request: PluginAgentEventRequest) -> PluginAgentEventResult:
-        try:
-            if not bool(self._availability_provider()):
-                return PluginAgentEventResult(False, "host_unavailable", "host_unavailable")
-        except Exception:
-            return PluginAgentEventResult(False, "host_unavailable", "host_unavailable")
         if not isinstance(request, PluginAgentEventRequest):
             return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
+        reason = _validate_agent_event_request(request)
+        if reason:
+            return PluginAgentEventResult(False, "rejected", reason)
         try:
-            result = await self._delegate(request)
+            resolved = self._resolver(str(request.conversation_ref or ""))
         except Exception:
-            return PluginAgentEventResult(False, "error", "agent_event_delegate_failed")
+            resolved = None
+        if not isinstance(resolved, Mapping):
+            return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
+        channel = str(resolved.get("channel") or "").strip().lower()
+        handler = self._handlers.get(channel)
+        if handler is None:
+            return PluginAgentEventResult(False, "host_unavailable", "agent_event_channel_unavailable")
+        try:
+            result = await handler(request, resolved)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return PluginAgentEventResult(False, "error", "agent_event_channel_failed")
         if not isinstance(result, PluginAgentEventResult):
             return PluginAgentEventResult(False, "error", "invalid_agent_event_result")
         return result
@@ -241,4 +258,4 @@ def _agent_event_task_key(request: PluginAgentEventRequest) -> str:
     return hashlib.sha256(material.encode("utf-8", errors="strict")).hexdigest()
 
 
-__all__ = ["CallbackAgentEventPort", "_PluginScopedAgentEventPort"]
+__all__ = ["HostAgentEventRouter", "_PluginScopedAgentEventPort"]

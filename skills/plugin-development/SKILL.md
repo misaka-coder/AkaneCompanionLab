@@ -33,6 +33,10 @@ artifact lifecycle. This Skill adds no tools or permissions.
   implementation. A capability, Skill, prompt block, background service, fixed notification,
   QQ command, event observer, hook, or managed artifact is optional; do not
   add surfaces the requested behavior does not need.
+- Installation is instance-wide, while each contribution declares its real client surfaces.
+  Use `visible_in=("desktop", "qq")` for a genuinely channel-neutral capability; keep QQ
+  commands on QQ and local-screen capabilities on desktop. Do not create separate desktop and
+  QQ copies of one plugin.
 - Current registrar names are `add_capability_adapter`, `add_skill`, `add_prompt_block`,
   `get_storage_dir`, `add_background_service`, `get_notification_port`,
   `get_agent_event_port`,

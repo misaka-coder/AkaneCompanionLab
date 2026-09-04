@@ -28,6 +28,12 @@ class PluginConversationReferenceAuthority:
         client_mode = str(getattr(context, "client_mode", "") or "").strip().lower()
         request_context = getattr(context, "request_context", None)
         request_context = request_context if isinstance(request_context, Mapping) else {}
+        if client_mode == "desktop_pet":
+            return self.issue_desktop(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
         if client_mode not in {"qq", "qq_text"}:
             return ""
         group_id = _positive_id(request_context.get("group_id"))
@@ -76,6 +82,32 @@ class PluginConversationReferenceAuthority:
         signature = hmac.new(self._key, body, hashlib.sha256).digest()
         return "acr1." + _b64(body) + "." + _b64(signature)
 
+    def issue_desktop(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str,
+    ) -> str:
+        profile_user_id = str(profile_user_id or "").strip()
+        session_id = str(session_id or "").strip()
+        character_pack_id = str(character_pack_id or "").strip()
+        if not profile_user_id or not session_id or not character_pack_id:
+            return ""
+        payload = {
+            "v": 1,
+            "instance": self._instance_id,
+            "channel": "desktop_pet",
+            "kind": "direct",
+            "recipient": f"desktop:{session_id}",
+            "session": session_id,
+            "profile": profile_user_id,
+            "character": character_pack_id,
+        }
+        body = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        signature = hmac.new(self._key, body, hashlib.sha256).digest()
+        return "acr1." + _b64(body) + "." + _b64(signature)
+
     def resolve(self, reference: str) -> dict[str, str] | None:
         parts = str(reference or "").strip().split(".")
         if len(parts) != 3 or parts[0] != "acr1":
@@ -84,6 +116,8 @@ class PluginConversationReferenceAuthority:
             body = _unb64(parts[1])
             signature = _unb64(parts[2])
         except (ValueError, TypeError):
+            return None
+        if _b64(body) != parts[1] or _b64(signature) != parts[2]:
             return None
         expected = hmac.new(self._key, body, hashlib.sha256).digest()
         if not hmac.compare_digest(signature, expected):
@@ -97,7 +131,13 @@ class PluginConversationReferenceAuthority:
         result = {key: str(payload.get(key) or "").strip() for key in (
             "channel", "kind", "recipient", "session", "profile", "character"
         )}
-        if result["channel"] != "qq" or result["kind"] not in {"direct", "group"}:
+        if result["channel"] == "qq":
+            if result["kind"] not in {"direct", "group"}:
+                return None
+        elif result["channel"] == "desktop_pet":
+            if result["kind"] != "direct" or result["recipient"] != f'desktop:{result["session"]}':
+                return None
+        else:
             return None
         if not all(result[key] for key in ("recipient", "session", "profile", "character")):
             return None

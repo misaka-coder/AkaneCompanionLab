@@ -42,7 +42,6 @@ from ..plugin_api import (
     PluginEventEnvelope,
     PluginExternalEvent,
 )
-from ..plugin_agent_events import CallbackAgentEventPort
 from ..plugin_events import record_timeline_events, render_current_turn_events
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
@@ -1928,8 +1927,7 @@ def build_qq_router(
     route_base: str = "/api/qq",
     plugin_command_broker_provider: Callable[[], Any] | None = None,
     plugin_event_broker_provider: Callable[[], Any] | None = None,
-    plugin_agent_event_port_binder: Callable[[Any], None] | None = None,
-    plugin_conversation_ref_resolver: Callable[[str], Mapping[str, str] | None] | None = None,
+    plugin_agent_event_handler_registrar: Callable[[str, Any], None] | None = None,
     plugin_conversation_ref_issuer: Callable[..., str] | None = None,
     thinking_mode_setter: Callable[[str], str] | None = None,
     turn_coordinator: Any = None,
@@ -2894,18 +2892,16 @@ def build_qq_router(
                 result["timing"] = timing
             return result
 
-    async def _submit_plugin_agent_event(request: PluginAgentEventRequest) -> PluginAgentEventResult:
+    async def _submit_plugin_agent_event(
+        request: PluginAgentEventRequest,
+        resolved_reference: Mapping[str, str],
+    ) -> PluginAgentEventResult:
         """Run one plugin event through the ordinary QQ Agent turn path."""
 
         if not isinstance(request, PluginAgentEventRequest):
             return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
         if not isinstance(request.event, PluginExternalEvent):
             return PluginAgentEventResult(False, "rejected", "invalid_agent_event_request")
-        resolved_reference = (
-            plugin_conversation_ref_resolver(str(request.conversation_ref or ""))
-            if plugin_conversation_ref_resolver is not None
-            else None
-        )
         if not isinstance(resolved_reference, Mapping):
             return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
         if str(resolved_reference.get("channel") or "") != "qq":
@@ -3025,11 +3021,11 @@ def build_qq_router(
                 "plugin_text_prefix": str(request.text_prefix or "").strip(),
                 "plugin_text_suffix": str(request.text_suffix or "").strip(),
                 "message_addressing": {
-                    "mode": "host_event",
+                    "mode": "current_request",
                     "trigger": "plugin_event",
                     "addressed_to_assistant": True,
                     "explicit_assistant_mention": False,
-                    "primary_target": {"actor_id": "assistant", "display_name": "Akane"},
+                    "primary_target": {"actor_id": "assistant"},
                     "mentions": [],
                 },
             }
@@ -3068,13 +3064,8 @@ def build_qq_router(
             delivery_status = "delivered"
         return PluginAgentEventResult(True, "completed", "", delivery_status)
 
-    if plugin_agent_event_port_binder is not None:
-        plugin_agent_event_port_binder(
-            CallbackAgentEventPort(
-                _submit_plugin_agent_event,
-                availability_provider=lambda: True,
-            )
-        )
+    if plugin_agent_event_handler_registrar is not None:
+        plugin_agent_event_handler_registrar("qq", _submit_plugin_agent_event)
 
     async def _resume_qq_after_capability_decision(
         *,
@@ -3118,11 +3109,11 @@ def build_qq_router(
                 "turn_kind": "capability_approval_resume",
                 "transient_user_message": True,
                 "message_addressing": {
-                    "mode": "host_event",
+                    "mode": "current_request",
                     "trigger": "capability_approval_resume",
                     "addressed_to_assistant": True,
                     "explicit_assistant_mention": False,
-                    "primary_target": {"actor_id": "assistant", "display_name": "Akane"},
+                    "primary_target": {"actor_id": "assistant"},
                     "mentions": [],
                 },
             }

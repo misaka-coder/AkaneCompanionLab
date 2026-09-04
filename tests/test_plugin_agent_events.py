@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from companion_v01.plugin_agent_events import CallbackAgentEventPort, _PluginScopedAgentEventPort
+from companion_v01.plugin_agent_events import (
+    HostAgentEventRouter,
+    _PluginScopedAgentEventPort,
+)
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.plugin_api import (
     PluginAgentEventRequest,
@@ -15,40 +18,10 @@ from companion_v01.plugin_api import (
     PluginExternalEvent,
 )
 from companion_v01.routes import qq as qq_routes
+from companion_v01.routes import think as think_routes
 
 
-class CallbackAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
-    async def test_delegate_result_is_preserved(self) -> None:
-        expected = PluginAgentEventResult(True, "completed", "", "delivered")
-
-        async def delegate(_request: PluginAgentEventRequest) -> PluginAgentEventResult:
-            return expected
-
-        port = CallbackAgentEventPort(delegate)
-        result = await port.submit(
-            PluginAgentEventRequest(
-                trace_id="trace",
-                conversation_ref="ref",
-                message="event",
-                event=PluginExternalEvent("timer.fired", (("label", "x"),)),
-            )
-        )
-        self.assertEqual(result, expected)
-
-    async def test_unavailable_host_fails_without_calling_delegate(self) -> None:
-        called = False
-
-        async def delegate(_request: PluginAgentEventRequest) -> PluginAgentEventResult:
-            nonlocal called
-            called = True
-            return PluginAgentEventResult(True, "completed")
-
-        port = CallbackAgentEventPort(delegate, availability_provider=lambda: False)
-        result = await port.submit(object())  # type: ignore[arg-type]
-        self.assertFalse(result.ok)
-        self.assertEqual(result.reason, "host_unavailable")
-        self.assertFalse(called)
-
+class PluginScopedAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
     async def test_plugin_scope_owns_source_and_coalesces_idempotent_retries(self) -> None:
         requests: list[PluginAgentEventRequest] = []
         release = asyncio.Event()
@@ -127,7 +100,6 @@ class CallbackAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
 
 class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
     def _build(self):
-        captured: list[object] = []
         references = {
             "ref-master": {
                 "channel": "qq", "kind": "direct", "recipient": "user:1906243651",
@@ -138,6 +110,7 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
                 "session": "qq_pri_123", "profile": "qq_123", "character": "reimu",
             },
         }
+        host_port = HostAgentEventRouter(references.get)
 
         class Gateway:
             master_qq = "1906243651"
@@ -187,12 +160,10 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
             runtime_metrics=types.SimpleNamespace(observe_request=lambda *args, **kwargs: None),
             logger=types.SimpleNamespace(exception=lambda *args, **kwargs: None),
             log_event=lambda *args, **kwargs: None,
-            plugin_agent_event_port_binder=captured.append,
-            plugin_conversation_ref_resolver=references.get,
+            plugin_agent_event_handler_registrar=host_port.register_channel,
         )
         self.assertTrue(router.routes)
-        self.assertEqual(len(captured), 1)
-        return captured[0]
+        return host_port
 
     async def test_event_uses_normal_qq_delivery_and_structured_payload(self) -> None:
         port = self._build()
@@ -222,6 +193,7 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["turn_kind"], "plugin_event")
         self.assertEqual(payload["plugin_external_event"]["event_type"], "timer.fired")
         self.assertEqual(payload["memory_idempotency_key"], "timer:1")
+        self.assertEqual(payload["message_addressing"]["mode"], "current_request")
         self.assertNotEqual(payload["message"], "")
 
     async def test_context_mismatch_is_rejected_before_model(self) -> None:
@@ -295,6 +267,101 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["plugin_text_suffix"], "原文链接：https://example.test")
 
 
+class DesktopPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_event_uses_normal_desktop_turn_and_existing_frame_contract(self) -> None:
+        captured_handlers: dict[str, object] = {}
+        turn_payloads: list[dict[str, object]] = []
+        delivered_frames: list[dict[str, object]] = []
+
+        class Engine:
+            def process_turn(self, payload):
+                turn_payloads.append(dict(payload))
+                return {
+                    "speech": "该喝水啦",
+                    "speech_segments": ["该喝水啦"],
+                    "emotion": "happy",
+                    "activity": {"action": "pause"},
+                    "_debug": {"must_not_reach_desktop": True},
+                }
+
+        async def deliver(frame):
+            delivered_frames.append(dict(frame))
+            return {"ok": True, "status": "queued", "reason": ""}
+
+        think_routes.build_think_router(
+            engine=Engine(),
+            public_guard=types.SimpleNamespace(),
+            runtime_metrics=types.SimpleNamespace(),
+            log_event=lambda *args, **kwargs: None,
+            plugin_agent_event_handler_registrar=captured_handlers.__setitem__,
+            desktop_agent_frame_delivery=deliver,
+            desktop_agent_event_available=lambda: True,
+        )
+        handler = captured_handlers["desktop_pet"]
+        result = await handler(
+            PluginAgentEventRequest(
+                trace_id="trace-desk",
+                conversation_ref="opaque",
+                message="提醒主人喝水",
+                event=PluginExternalEvent("timer.fired", (("label", "喝水"),), "akane.timer"),
+                memory_idempotency_key="timer:desk:1",
+            ),
+            {
+                "channel": "desktop_pet",
+                "kind": "direct",
+                "recipient": "desktop:desk-1",
+                "session": "desk-1",
+                "profile": "master",
+                "character": "reimu",
+            },
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.delivery_status, "queued")
+        self.assertEqual(turn_payloads[0]["turn_kind"], "plugin_event")
+        self.assertEqual(turn_payloads[0]["client_mode"], "desktop_pet")
+        self.assertEqual(turn_payloads[0]["character_pack_id"], "reimu")
+        self.assertEqual(turn_payloads[0]["plugin_external_event"]["source"], "akane.timer")
+        self.assertEqual(turn_payloads[0]["message_addressing"]["mode"], "current_request")
+        self.assertEqual(delivered_frames[0]["speech"], "该喝水啦")
+        self.assertEqual(delivered_frames[0]["emotion"], "happy")
+        self.assertNotIn("_debug", delivered_frames[0])
+
+    async def test_desktop_event_does_not_run_model_without_delivery_channel(self) -> None:
+        captured_handlers: dict[str, object] = {}
+
+        class Engine:
+            def process_turn(self, _payload):
+                raise AssertionError("model_should_not_run")
+
+        think_routes.build_think_router(
+            engine=Engine(),
+            public_guard=types.SimpleNamespace(),
+            runtime_metrics=types.SimpleNamespace(),
+            log_event=lambda *args, **kwargs: None,
+            plugin_agent_event_handler_registrar=captured_handlers.__setitem__,
+            desktop_agent_frame_delivery=None,
+        )
+        handler = captured_handlers["desktop_pet"]
+        result = await handler(
+            PluginAgentEventRequest(
+                trace_id="trace-offline",
+                conversation_ref="opaque",
+                message="event",
+                event=PluginExternalEvent("timer.fired", (("label", "x"),)),
+            ),
+            {
+                "channel": "desktop_pet",
+                "kind": "direct",
+                "recipient": "desktop:desk-1",
+                "session": "desk-1",
+                "profile": "master",
+                "character": "reimu",
+            },
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "desktop_client_unavailable")
+
+
 class ConversationReferenceAuthorityTests(unittest.TestCase):
     def test_reference_survives_restart_and_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -315,11 +382,77 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
             self.assertEqual(resolved["character"], "reimu")
             self.assertIsNone(second.resolve(reference[:-1] + ("A" if reference[-1] != "A" else "B")))
 
-    def test_non_qq_or_incomplete_context_is_not_issued(self) -> None:
+    def test_desktop_reference_is_restart_stable_and_channel_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            authority = PluginConversationReferenceAuthority(Path(temp) / "key", instance_id="personal")
+            key_path = Path(temp) / "key"
+            authority = PluginConversationReferenceAuthority(key_path, instance_id="personal")
             context = types.SimpleNamespace(
                 profile_user_id="master", session_id="master", character_pack_id="reimu",
-                client_mode="desktop", request_context={},
+                client_mode="desktop_pet", request_context={},
             )
-            self.assertEqual(authority.issue(context), "")
+            reference = authority.issue(context)
+            self.assertTrue(reference.startswith("acr1."))
+            resolved = PluginConversationReferenceAuthority(key_path, instance_id="personal").resolve(reference)
+            self.assertEqual(resolved["channel"], "desktop_pet")
+            self.assertEqual(resolved["recipient"], "desktop:master")
+
+    def test_unsupported_or_incomplete_context_is_not_issued(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            authority = PluginConversationReferenceAuthority(Path(temp) / "key", instance_id="personal")
+            unsupported = types.SimpleNamespace(
+                profile_user_id="master", session_id="master", character_pack_id="reimu",
+                client_mode="scene_static", request_context={},
+            )
+            incomplete = types.SimpleNamespace(
+                profile_user_id="master", session_id="", character_pack_id="reimu",
+                client_mode="desktop_pet", request_context={},
+            )
+            self.assertEqual(authority.issue(unsupported), "")
+            self.assertEqual(authority.issue(incomplete), "")
+
+
+class HostAgentEventRouterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_routes_only_to_channel_from_signed_reference(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        async def desktop(request, resolved):
+            calls.append((request.trace_id, resolved["session"]))
+            return PluginAgentEventResult(True, "completed", "", "queued")
+
+        router = HostAgentEventRouter(
+            lambda reference: {
+                "channel": "desktop_pet",
+                "kind": "direct",
+                "recipient": "desktop:desk-1",
+                "session": "desk-1",
+                "profile": "master",
+                "character": "reimu",
+            }
+            if reference == "valid"
+            else None
+        )
+        router.register_channel("desktop_pet", desktop)
+        result = await router.submit(
+            PluginAgentEventRequest(
+                trace_id="trace-desktop",
+                conversation_ref="valid",
+                message="到点了",
+                event=PluginExternalEvent("timer.fired", (("label", "water"),)),
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.delivery_status, "queued")
+        self.assertEqual(calls, [("trace-desktop", "desk-1")])
+
+    async def test_unknown_channel_fails_without_fallback(self) -> None:
+        router = HostAgentEventRouter(lambda _reference: {"channel": "future_channel"})
+        result = await router.submit(
+            PluginAgentEventRequest(
+                trace_id="trace-future",
+                conversation_ref="valid",
+                message="event",
+                event=PluginExternalEvent("timer.fired", (("label", "x"),)),
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "agent_event_channel_unavailable")

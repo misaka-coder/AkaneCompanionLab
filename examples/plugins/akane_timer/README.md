@@ -1,18 +1,18 @@
 # Akane Timer plugin
 
-This installable plugin schedules durable one-shot events for the current QQ
+This installable plugin schedules durable one-shot events for the current desktop or QQ
 conversation. When an event becomes due, the plugin submits the event through
 Akane's host-owned Agent event port. The host then restores the conversation,
 character and MemCore context and uses the same structured reply, emotion,
-TTS, sticker and QQ delivery path as an ordinary turn.
+TTS and channel presentation path as an ordinary turn.
 
 The plugin stores only its own timer ledger and an opaque conversation
-reference issued by the host. It does not reconstruct QQ recipients, invoke a
+reference issued by the host. It does not reconstruct channel recipients, invoke a
 second model loop, parse model JSON or send model text through the fixed-text
 notification port.
 
-The model-facing capability supports `create`, `status` and `cancel`. Explicit
-QQ commands are also available:
+The model-facing capability supports `create`, `status` and `cancel` on desktop and QQ.
+Explicit QQ commands are also available:
 
 ```text
 /timer create 30 提醒我喝水

@@ -128,6 +128,10 @@ class InstalledTimerSampleTests(unittest.IsolatedAsyncioTestCase):
             generation.bind_agent_event_port(agent_events)
             generation.start()
             try:
+                self.assertEqual(
+                    tuple(generation.capability_descriptors[CAPABILITY_ID].visible_in),
+                    ("desktop", "qq"),
+                )
                 command = await generation.dispatch_qq_command(
                     command="/timer",
                     args="create 1 提醒我喝水",

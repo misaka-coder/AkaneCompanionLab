@@ -229,7 +229,7 @@ class NotificationPort(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Model reasoning port contracts
+# Contextual Agent-event contracts
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)

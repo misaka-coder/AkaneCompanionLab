@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import re
@@ -46,7 +47,17 @@ class _SatelliteConnection:
     outbound: asyncio.Queue[dict[str, Any]]
     expires_at: float
     connected_at: float
+    bot_id: str
     tool_ids: frozenset[str]
+
+
+@dataclass
+class _PendingAgentFrame:
+    connection_id: str
+    lease_epoch: str
+    result: concurrent.futures.Future[dict[str, Any]] = field(
+        default_factory=concurrent.futures.Future
+    )
 
 
 class DesktopSatelliteService:
@@ -67,6 +78,7 @@ class DesktopSatelliteService:
         self._lock = threading.RLock()
         self._connection: _SatelliteConnection | None = None
         self._pending: dict[str, _PendingInvocation] = {}
+        self._pending_agent_frames: dict[str, _PendingAgentFrame] = {}
 
     @property
     def enabled(self) -> bool:
@@ -101,10 +113,11 @@ class DesktopSatelliteService:
         except (TimeoutError, WebSocketDisconnect, ValueError):
             await websocket.close(code=4408, reason="satellite_registration_required")
             return
-        supported = self._validate_registration(registration)
-        if not supported:
+        registration_result = self._validate_registration(registration)
+        if registration_result is None:
             await websocket.close(code=4403, reason="satellite_registration_rejected")
             return
+        supported, bot_id = registration_result
 
         now = float(self._clock())
         connection = _SatelliteConnection(
@@ -115,6 +128,7 @@ class DesktopSatelliteService:
             outbound=asyncio.Queue(maxsize=64),
             expires_at=now + self._lease_ttl_seconds,
             connected_at=now,
+            bot_id=bot_id,
             tool_ids=frozenset(supported),
         )
         if not self._install_connection(connection):
@@ -125,6 +139,7 @@ class DesktopSatelliteService:
                 "type": "registered",
                 "protocol_version": SATELLITE_PROTOCOL_VERSION,
                 "instance_id": self.instance_id,
+                "bot_id": connection.bot_id,
                 "lease_epoch": connection.lease_epoch,
                 "offer_ids": {tool_id: connection.offer_id for tool_id in sorted(connection.tool_ids)},
                 "expires_at": connection.expires_at,
@@ -252,7 +267,62 @@ class DesktopSatelliteService:
                 "connected": active,
                 "activeOfferCount": len(connection.tool_ids) if active and connection is not None else 0,
                 "pendingInvocationCount": len(self._pending),
+                "pendingAgentFrameCount": len(self._pending_agent_frames),
+                "activeBotId": connection.bot_id if active and connection is not None else "",
             }
+
+    async def deliver_agent_frame(
+        self,
+        frame: Mapping[str, Any],
+        *,
+        bot_id: str,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        """Queue one ordinary desktop reply frame on the active app session."""
+
+        if not isinstance(frame, Mapping):
+            return {"ok": False, "status": "failed", "reason": "agent_frame_invalid"}
+        expected_bot_id = str(bot_id or "").strip()
+        if _SAFE_DEVICE_SCOPE_ID.fullmatch(expected_bot_id) is None:
+            return {"ok": False, "status": "failed", "reason": "desktop_bot_invalid"}
+        delivery_id = f"agent_{uuid.uuid4().hex}"
+        with self._lock:
+            connection = self._active_connection_any_locked()
+            if connection is None:
+                return {"ok": False, "status": "unavailable", "reason": "desktop_client_unavailable"}
+            if connection.bot_id != expected_bot_id:
+                return {"ok": False, "status": "unavailable", "reason": "desktop_bot_unavailable"}
+            pending = _PendingAgentFrame(
+                connection_id=connection.connection_id,
+                lease_epoch=connection.lease_epoch,
+            )
+            self._pending_agent_frames[delivery_id] = pending
+            queued = self._queue_message_locked(
+                connection,
+                {
+                    "type": "agent_event_frame",
+                    "protocol_version": SATELLITE_PROTOCOL_VERSION,
+                    "instance_id": self.instance_id,
+                    "lease_epoch": connection.lease_epoch,
+                    "delivery_id": delivery_id,
+                    "payload": dict(frame),
+                },
+            )
+            if not queued:
+                self._pending_agent_frames.pop(delivery_id, None)
+                return {"ok": False, "status": "unavailable", "reason": "desktop_queue_unavailable"}
+        try:
+            result = await asyncio.wait_for(
+                asyncio.wrap_future(pending.result),
+                timeout=max(1.0, min(15.0, float(timeout_seconds))),
+            )
+        except TimeoutError:
+            with self._lock:
+                self._pending_agent_frames.pop(delivery_id, None)
+            return {"ok": False, "status": "unavailable", "reason": "desktop_delivery_ack_timeout"}
+        with self._lock:
+            self._pending_agent_frames.pop(delivery_id, None)
+        return result
 
     async def _send_loop(self, websocket: WebSocket, connection: _SatelliteConnection) -> None:
         while True:
@@ -280,6 +350,27 @@ class DesktopSatelliteService:
                     "expires_at": expires_at,
                 }
             )
+            return
+        if message_type == "agent_event_result":
+            delivery_id = str(message.get("delivery_id") or "").strip()
+            with self._lock:
+                pending_frame = self._pending_agent_frames.get(delivery_id)
+                if (
+                    pending_frame is None
+                    or pending_frame.connection_id != connection.connection_id
+                    or str(message.get("instance_id") or "").strip() != self.instance_id
+                    or str(message.get("lease_epoch") or "").strip() != pending_frame.lease_epoch
+                    or pending_frame.result.done()
+                ):
+                    return
+                status = str(message.get("status") or "failed").strip().lower()
+                reason = str(message.get("reason") or "").strip().lower()
+                if status == "queued":
+                    pending_frame.result.set_result({"ok": True, "status": "queued", "reason": ""})
+                else:
+                    pending_frame.result.set_result(
+                        {"ok": False, "status": "failed", "reason": reason or "desktop_event_rejected"}
+                    )
             return
         invocation_id = str(message.get("invocation_id") or "").strip()
         if not invocation_id:
@@ -334,16 +425,19 @@ class DesktopSatelliteService:
                 )
             pending.event.set()
 
-    def _validate_registration(self, value: Any) -> set[str]:
+    def _validate_registration(self, value: Any) -> tuple[set[str], str] | None:
         if not isinstance(value, dict) or str(value.get("type") or "") != "register":
-            return set()
+            return None
         if int(value.get("protocol_version") or 0) != SATELLITE_PROTOCOL_VERSION:
-            return set()
+            return None
         if str(value.get("instance_id") or "").strip() != self.instance_id:
-            return set()
+            return None
+        bot_id = str(value.get("bot_id") or "").strip()
+        if _SAFE_DEVICE_SCOPE_ID.fullmatch(bot_id) is None:
+            return None
         raw_offers = value.get("offers")
         if not isinstance(raw_offers, list):
-            return set()
+            return None
         supported: set[str] = set()
         for raw in raw_offers[:16]:
             if not isinstance(raw, dict):
@@ -362,7 +456,7 @@ class DesktopSatelliteService:
                 and str(raw.get("schema_hash") or "").strip().lower() == spec.schema_hash
             ):
                 supported.add(spec.capability_id)
-        return supported
+        return (supported, bot_id) if supported else None
 
     @staticmethod
     def _success_feedback(tool_id: str) -> str:
@@ -475,17 +569,29 @@ class DesktopSatelliteService:
                             model_feedback="桌面执行器在接受操作前断开，这次没有执行本地能力。",
                         )
                     pending.event.set()
+            for pending in self._pending_agent_frames.values():
+                if pending.connection_id == connection_id and not pending.result.done():
+                    pending.result.set_result(
+                        {"ok": False, "status": "unavailable", "reason": "desktop_client_disconnected"}
+                    )
 
     def _active_connection_locked(self, spec: CapabilityToolSpec) -> _SatelliteConnection | None:
-        connection = self._connection
-        if connection is None or connection.expires_at <= float(self._clock()):
+        connection = self._active_connection_any_locked()
+        if connection is None:
             return None
         if spec.capability_id not in connection.tool_ids:
             return None
         return connection
 
+    def _active_connection_any_locked(self) -> _SatelliteConnection | None:
+        connection = self._connection
+        if connection is None or connection.expires_at <= float(self._clock()):
+            return None
+        return connection
+
     def _queue_message_locked(self, connection: _SatelliteConnection, payload: dict[str, Any]) -> bool:
         invocation_id = str(payload.get("invocation_id") or "").strip()
+        delivery_id = str(payload.get("delivery_id") or "").strip()
 
         def enqueue() -> None:
             try:
@@ -500,6 +606,11 @@ class DesktopSatelliteService:
                             model_feedback="桌面执行器当前无法接受新操作，这次没有执行本地能力。",
                         )
                         pending.event.set()
+                    pending_frame = self._pending_agent_frames.get(delivery_id)
+                    if pending_frame is not None and not pending_frame.result.done():
+                        pending_frame.result.set_result(
+                            {"ok": False, "status": "unavailable", "reason": "desktop_queue_unavailable"}
+                        )
 
         try:
             connection.loop.call_soon_threadsafe(enqueue)

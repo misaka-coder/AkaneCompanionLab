@@ -17,6 +17,7 @@ from companion_v01.model_service_config import ModelServiceConfigStore
 from companion_v01.routes.bots import build_bots_router
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.settings_overrides import SettingsOverrideStore
+from companion_v01.turn_coordination import TurnCoordinator
 
 
 class _GuardDecision:
@@ -87,6 +88,7 @@ class _Runtime:
             characters_dir=characters,
         )
         self.instance_runtime = _Lease(bot_id, self.runtime_layout)
+        self.instance_context = SimpleNamespace(instance_id=bot_id)
         self.desktop_pet_character_resources = DesktopPetCharacterResourceService(
             characters_dir=characters,
             public_prefix=f"/api/bots/{bot_id}/desktop-pet-character-packs",
@@ -99,12 +101,22 @@ class _Runtime:
         )
         self.runtime_metrics = _Metrics()
         self.public_guard = _Guard()
+        self.turn_coordinator = TurnCoordinator()
         self.admin_write_auth = AdminWriteAuth.local_compatibility()
         self.tts_client = None
         self.settings = BotSettingsView()
         self.model_service_config_store = ModelServiceConfigStore(users_data / "model-service.json")
         self.settings_override_store = SettingsOverrideStore(users_data / "settings-overrides.json")
         self.plugin_host = SimpleNamespace()
+        self.plugin_event_broker = None
+        self.plugin_agent_event_router = SimpleNamespace(register_channel=lambda *_args: None)
+        self.desktop_satellite_service = SimpleNamespace(
+            instance_id=bot_id,
+            deliver_agent_frame=lambda _frame, *, bot_id: None,
+            diagnostics=lambda: {"connected": False},
+        )
+        self.extension_management_service = SimpleNamespace()
+        self.voice_runtime_service = None
 
     def reload_model_services(self, _settings: Any) -> dict[str, str]:
         return {"status": "reloaded"}

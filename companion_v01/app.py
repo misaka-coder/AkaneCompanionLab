@@ -231,8 +231,6 @@ for qq_bot_runtime in bot_registry.values():
         "admin_auth": qq_bot_runtime.admin_write_auth,
         "plugin_command_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_command_broker,
         "plugin_event_broker_provider": lambda runtime=qq_bot_runtime: runtime.plugin_event_broker,
-        "plugin_agent_event_port_binder": lambda port, runtime=qq_bot_runtime: runtime.plugin_runtime.bind_agent_event_port(port),
-        "plugin_conversation_ref_resolver": qq_bot_runtime.plugin_conversation_refs.resolve,
         "plugin_conversation_ref_issuer": qq_bot_runtime.plugin_conversation_refs.issue_qq,
         "thinking_mode_setter": qq_bot_runtime.set_llm_thinking_mode,
         "turn_coordinator": qq_bot_runtime.turn_coordinator,
@@ -241,6 +239,7 @@ for qq_bot_runtime in bot_registry.values():
         build_qq_router(
             **qq_route_kwargs,
             route_base=f"/api/bots/{qq_bot_runtime.bot_id}/qq",
+            plugin_agent_event_handler_registrar=qq_bot_runtime.plugin_agent_event_router.register_channel,
         )
     )
     if qq_bot_runtime.bot_id == bot_registry.default_bot_id:

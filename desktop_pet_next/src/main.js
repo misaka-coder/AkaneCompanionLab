@@ -175,6 +175,7 @@ const MENU_VIEWPORT_MARGIN = 8;
 const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
 const SHOP_STATUS_EVENT = "akane-next-shop-status";
 const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
+const PLUGIN_AGENT_EVENT_FRAME_EVENT = "akane:plugin-agent-event-frame";
 const PET_HIT_POLYGON = [
   [32, 0],
   [72, 0],
@@ -668,6 +669,10 @@ let settingsSnapshotTimer = 0;
 let settingsBridgeRegistered = false;
 let lastSettingsCommandResult = null;
 let characterActivationBridgeRegistered = false;
+let pluginAgentEventBridgeRegistered = false;
+const pluginAgentEventFrames = [];
+const queuedPluginAgentEventIds = new Set();
+let pluginAgentEventDrainTimer = 0;
 let menuAnchor = null;
 let characterActivationTask = Promise.resolve();
 let lastAppliedLayoutSignature = "";
@@ -872,6 +877,9 @@ function startTauriRuntimeBridges() {
   });
   void registerSettingsBridge().catch((error) => {
     setStatus(`设置桥接不可用：${formatError(error)}`);
+  });
+  void registerPluginAgentEventBridge().catch((error) => {
+    setRuntimeStatus(`插件事件桥接不可用：${formatError(error)}`, { mode: "error" });
   });
   void registerPanelBridge().catch(() => {});
   void Promise.allSettled([
@@ -1624,6 +1632,7 @@ async function registerWindowListeners() {
     stopScreenVisionCapture({ clearRemote: false });
     window.clearTimeout(backendRetryTimer);
     window.clearTimeout(transientEmotionTimer);
+    window.clearTimeout(pluginAgentEventDrainTimer);
     if (thinkController) thinkController.abort();
     if (asrController) asrController.abort();
     void stopRealtimeVoiceCall({ notice: false, reason: "window_closed" });
@@ -1682,6 +1691,45 @@ async function registerCharacterActivationBridge() {
   });
   unlistenFns.push(unlisten);
   characterActivationBridgeRegistered = true;
+}
+
+async function registerPluginAgentEventBridge() {
+  if (!isTauriRuntime || pluginAgentEventBridgeRegistered) return;
+  const unlisten = await listen(PLUGIN_AGENT_EVENT_FRAME_EVENT, (event) => {
+    enqueuePluginAgentEventFrame(event?.payload);
+  });
+  unlistenFns.push(unlisten);
+  pluginAgentEventBridgeRegistered = true;
+  const pending = await invoke("list_pending_plugin_agent_event_frames");
+  for (const item of Array.isArray(pending) ? pending : []) {
+    enqueuePluginAgentEventFrame(item);
+  }
+}
+
+function enqueuePluginAgentEventFrame(item) {
+  const deliveryId = String(item?.deliveryId || "").trim();
+  const payload = item?.payload;
+  if (!deliveryId || !payload || typeof payload !== "object" || queuedPluginAgentEventIds.has(deliveryId)) return;
+  queuedPluginAgentEventIds.add(deliveryId);
+  pluginAgentEventFrames.push({ deliveryId, payload });
+  drainPluginAgentEventFrames();
+}
+
+function drainPluginAgentEventFrames() {
+  window.clearTimeout(pluginAgentEventDrainTimer);
+  if (!pluginAgentEventFrames.length) return;
+  if (sending || ttsActive || ttsQueue.length > 0) {
+    pluginAgentEventDrainTimer = window.setTimeout(drainPluginAgentEventFrames, 200);
+    return;
+  }
+  const item = pluginAgentEventFrames.shift();
+  renderPayload(item.payload, { source: "live", force: true });
+  scheduleSettingsSnapshot();
+  void invoke("acknowledge_plugin_agent_event_frame", { deliveryId: item.deliveryId })
+    .finally(() => queuedPluginAgentEventIds.delete(item.deliveryId));
+  if (pluginAgentEventFrames.length) {
+    pluginAgentEventDrainTimer = window.setTimeout(drainPluginAgentEventFrames, 250);
+  }
 }
 
 async function registerPanelBridge() {

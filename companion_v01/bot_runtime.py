@@ -33,6 +33,7 @@ from .extension_management import (
 )
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
+from .plugin_agent_events import HostAgentEventRouter
 from .plugin_conversation_refs import PluginConversationReferenceAuthority
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
@@ -88,6 +89,7 @@ class BotRuntime:
     settings_override_store: SettingsOverrideStore
     desktop_satellite_service: DesktopSatelliteService
     plugin_runtime: PluginGenerationRuntime
+    plugin_agent_event_router: HostAgentEventRouter
     extension_management_service: ExtensionManagementService
     plugin_capability_source: PluginCapabilityToolBridge
     engine: AkaneMemoryEngine
@@ -455,6 +457,8 @@ class BotRuntimeFactory:
                 runtime_layout.state_dir / "plugin_conversation_ref.key",
                 instance_id=instance_context.instance_id,
             )
+            plugin_agent_event_router = HostAgentEventRouter(plugin_conversation_refs.resolve)
+            plugin_runtime.bind_agent_event_port(plugin_agent_event_router)
             extension_management_service = ExtensionManagementService(
                 plugin_runtime=plugin_runtime,
                 selection_store=plugin_selection_store,
@@ -516,6 +520,7 @@ class BotRuntimeFactory:
                 settings_override_store=settings_store,
                 desktop_satellite_service=satellite_service,
                 plugin_runtime=plugin_runtime,
+                plugin_agent_event_router=plugin_agent_event_router,
                 plugin_conversation_refs=plugin_conversation_refs,
                 extension_management_service=extension_management_service,
                 plugin_capability_source=plugin_capability_source,
