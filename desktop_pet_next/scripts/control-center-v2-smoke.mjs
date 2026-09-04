@@ -179,7 +179,7 @@ const rawSnapshot = {
     data: {
       management: {
         status: "ready",
-        supports: ["stage_source", "stage_wheel", "install", "discard_stage"]
+        supports: ["stage_source", "stage_wheel", "install", "discard_stage", "uninstall"]
       },
       artifacts: {
         status: "ready",
@@ -1001,11 +1001,32 @@ assert.match(abilitiesHtml, /待确认/);
 assert.match(abilitiesHtml, /data-plugin-stage-install="stage-review-1"/);
 assert.match(abilitiesHtml, /确认权限并安装/);
 assert.match(abilitiesHtml, /发布制品并原子切换插件代次/);
+assert.match(abilitiesHtml, /data-plugin-stage-discard="stage-review-1"/);
+assert.match(abilitiesHtml, /丢弃候选/);
+assert.match(abilitiesHtml, /data-plugin-uninstall="akane\.sample\.gentle-checkin"/);
+assert.match(abilitiesHtml, /确认卸载/);
+assert.match(abilitiesHtml, /移除当前 Bot 的托管制品与贡献/);
 assert.match(abilitiesHtml, /coding-project/);
 assert.match(abilitiesHtml, /personal-workflow/);
 assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);
 assert.match(abilitiesHtml, /只有填写新命令并保存时才会替换现有配置/);
 assert.doesNotMatch(abilitiesHtml, /api_key|cached_path|local_path/);
+
+const bundledPluginHtml = renderAbilities({
+  viewModel: {
+    ...viewModel,
+    abilities: {
+      ...viewModel.abilities,
+      plugins: {
+        ...viewModel.abilities.plugins,
+        entries: viewModel.abilities.plugins.entries.map((entry) => ({ ...entry, source: "bundled" }))
+      }
+    }
+  },
+  actionStates: {},
+  phase: "ready"
+});
+assert.doesNotMatch(bundledPluginHtml, /data-plugin-uninstall=/);
 
 const remoteAbilitiesHtml = renderAbilities({
   viewModel: {

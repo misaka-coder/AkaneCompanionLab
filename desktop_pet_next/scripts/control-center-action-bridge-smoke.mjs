@@ -212,6 +212,12 @@ assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages\/stage-review
 assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), {
   approved_permissions: ["agent.event.submit", "storage.write"]
 });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginDiscardStage, { stageId: "stage-review-1" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages\/stage-review-1(?:\?|$)/);
+assert.equal(backendRequests.at(-1).options.method, "DELETE");
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginUninstall, { pluginId: "akane.sample.gentle-checkin" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/akane\.sample\.gentle-checkin(?:\?|$)/);
+assert.equal(backendRequests.at(-1).options.method, "DELETE");
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });

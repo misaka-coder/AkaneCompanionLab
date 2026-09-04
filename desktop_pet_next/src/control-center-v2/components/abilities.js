@@ -113,7 +113,9 @@ function renderPluginLibrary(state, plugins) {
 function renderPluginStaging(state, plugins) {
   const sourcePending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageSource"));
   const wheelPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageWheel"));
-  const pending = sourcePending || wheelPending;
+  const installPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.install"));
+  const discardPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.discardStage"));
+  const pending = sourcePending || wheelPending || installPending || discardPending;
   const sourceAvailable = state.viewModel?.actions?.["abilities.plugin.stageSource"]?.available;
   const wheelAvailable = state.viewModel?.actions?.["abilities.plugin.stageWheel"]?.available;
   const managementCopy = plugins.managementStatus === "loading"
@@ -136,11 +138,13 @@ function renderPluginStaging(state, plugins) {
 }
 
 function renderPluginStage(state, stage) {
+  const installPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.install"));
+  const discardPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.discardStage"));
+  const discardAvailable = state.viewModel?.actions?.["abilities.plugin.discardStage"]?.available;
   if (!stage.ok) {
-    return `<article class="plugin-stage-item is-invalid"><div><strong>无效暂存候选</strong><small>${escapeHtml(stage.reason || "候选数据不可读取")}</small></div></article>`;
+    return `<article class="plugin-stage-item is-invalid"><div><strong>无效暂存候选</strong><small>${escapeHtml(stage.reason || "候选数据不可读取")}</small></div><div class="plugin-stage-confirm"><small>可以安全移除这份未发布候选。</small>${renderPluginStageDiscardButton(stage, installPending || discardPending, discardAvailable)}</div></article>`;
   }
   const groups = pluginContributionGroups(stage.contributions);
-  const installPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.install"));
   const installAvailable = state.viewModel?.actions?.["abilities.plugin.install"]?.available;
   return `<article class="plugin-stage-item">
     <div class="plugin-stage-heading"><span><strong>${escapeHtml(stage.pluginId)}</strong><small>${stage.version ? `v${escapeHtml(stage.version)}` : escapeHtml(stage.distributionName || "已通过探测")}</small></span><em>待确认</em></div>
@@ -149,14 +153,19 @@ function renderPluginStage(state, stage) {
     <div class="plugin-detail-section"><strong>申请权限</strong>${stage.permissions.length
       ? `<div class="plugin-permission-list">${stage.permissions.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>`
       : `<p>没有申请额外权限。</p>`}</div>
-    <div class="plugin-stage-confirm"><small>确认后宿主才会发布制品并原子切换插件代次。</small><button class="action-button is-primary" type="button" data-plugin-stage-install="${escapeHtml(stage.stageId)}"${installPending || !installAvailable ? " disabled" : ""}><span>✓</span><b>${installPending ? "安装并激活中" : "确认权限并安装"}</b></button></div>
+    <div class="plugin-stage-confirm"><small>确认后宿主才会发布制品并原子切换插件代次。</small><span class="plugin-stage-actions">${renderPluginStageDiscardButton(stage, installPending || discardPending, discardAvailable)}<button class="action-button is-primary" type="button" data-plugin-stage-install="${escapeHtml(stage.stageId)}"${installPending || discardPending || !installAvailable ? " disabled" : ""}><span>✓</span><b>${installPending ? "安装并激活中" : "确认权限并安装"}</b></button></span></div>
   </article>`;
+}
+
+function renderPluginStageDiscardButton(stage, pending, available) {
+  return `<button class="action-button" type="button" data-plugin-stage-discard="${escapeHtml(stage.stageId)}"${pending || !available ? " disabled" : ""}><span>×</span><b>${pending ? "丢弃中" : "丢弃候选"}</b></button>`;
 }
 
 function renderPluginCard(state, plugin) {
   const actionId = plugin.enabled ? "abilities.plugin.disable" : "abilities.plugin.enable";
   const pending = ["pressed", "pending"].includes(actionPhase(state, actionId));
   const rollbackPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.rollback"));
+  const uninstallPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.uninstall"));
   const actionAvailable = plugin.actionsEnabled && state.viewModel?.actions?.[actionId]?.available;
   const rollbackAvailable = plugin.actionsEnabled && plugin.rollbackAvailable && state.viewModel?.actions?.["abilities.plugin.rollback"]?.available;
   const surfaces = plugin.surfaces.length
@@ -177,11 +186,20 @@ function renderPluginCard(state, plugin) {
     </div>
     ${plugin.reason ? `<p class="plugin-card-reason">${escapeHtml(plugin.reason)}</p>` : ""}
     ${renderPluginDetails(plugin)}
+    ${plugin.source === "managed" ? renderPluginUninstall(state, plugin, uninstallPending) : ""}
     <div class="plugin-card-actions">
-      ${plugin.rollbackAvailable ? `<button class="action-button" type="button" data-action="abilities.plugin.rollback" data-action-value="${escapeHtml(plugin.pluginId)}"${rollbackPending || pending || !rollbackAvailable ? " disabled" : ""}><span>↶</span><b>${rollbackPending ? "回滚中" : "回滚版本"}</b></button>` : ""}
-      <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || rollbackPending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
+      ${plugin.rollbackAvailable ? `<button class="action-button" type="button" data-action="abilities.plugin.rollback" data-action-value="${escapeHtml(plugin.pluginId)}"${rollbackPending || pending || uninstallPending || !rollbackAvailable ? " disabled" : ""}><span>↶</span><b>${rollbackPending ? "回滚中" : "回滚版本"}</b></button>` : ""}
+      <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || rollbackPending || uninstallPending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
     </div>
   </article>`;
+}
+
+function renderPluginUninstall(state, plugin, pending) {
+  const available = plugin.actionsEnabled && state.viewModel?.actions?.["abilities.plugin.uninstall"]?.available;
+  return `<details class="plugin-danger-zone" data-capability-key="plugin-uninstall:${escapeHtml(plugin.pluginId)}">
+    <summary>卸载插件</summary>
+    <div><p>卸载会停用该插件，并移除当前 Bot 的托管制品与贡献。</p><button class="action-button is-danger" type="button" data-plugin-uninstall="${escapeHtml(plugin.pluginId)}"${pending || !available ? " disabled" : ""}><span>×</span><b>${pending ? "卸载中" : "确认卸载"}</b></button></div>
+  </details>`;
 }
 
 function renderPluginDetails(plugin) {

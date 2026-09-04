@@ -34,7 +34,9 @@ const pluginBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesPluginRollback,
   CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource,
   CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel,
-  CONTROL_CENTER_ACTIONS.abilitiesPluginInstall
+  CONTROL_CENTER_ACTIONS.abilitiesPluginInstall,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginDiscardStage,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginUninstall
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
@@ -611,6 +613,9 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginInstall) {
     return runPluginInstallBackendAction(fetchImpl, baseUrl, actionId, payload, params);
   }
+  if ([CONTROL_CENTER_ACTIONS.abilitiesPluginDiscardStage, CONTROL_CENTER_ACTIONS.abilitiesPluginUninstall].includes(actionId)) {
+    return runPluginDeleteBackendAction(fetchImpl, baseUrl, actionId, payload, params);
+  }
   const pluginId = String(payload.pluginId || payload.plugin_id || payload.value || "").trim();
   if (!pluginId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "pluginId is required" };
@@ -651,6 +656,58 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
       error: formatDataSourceError(error)
     };
   }
+}
+
+async function runPluginDeleteBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const discardStage = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginDiscardStage;
+  const targetId = String(discardStage
+    ? payload.stageId || payload.stage_id || payload.value || ""
+    : payload.pluginId || payload.plugin_id || payload.value || "").trim();
+  if (!targetId) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: discardStage ? "stageId is required" : "pluginId is required" };
+  }
+  const path = discardStage
+    ? `/admin/plugins/stages/${encodeURIComponent(targetId)}`
+    : `/admin/plugins/${encodeURIComponent(targetId)}`;
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, path, params), {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    const result = await readActionResponse(response);
+    const ok = response.ok && Boolean(result?.ok);
+    return {
+      ...result,
+      ok,
+      status: String(result?.status || (ok ? (discardStage ? "discarded" : "removed") : `http-${response.status}`)),
+      reason: ok ? "" : pluginDeleteFailureDetail(result, response.status, discardStage),
+      actionId,
+      ...(discardStage ? { stageId: targetId } : { pluginId: targetId }),
+      refresh: true
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "request-failed",
+      actionId,
+      ...(discardStage ? { stageId: targetId } : { pluginId: targetId }),
+      refresh: true,
+      error: formatDataSourceError(error)
+    };
+  }
+}
+
+function pluginDeleteFailureDetail(result, httpStatus, discardStage) {
+  const status = String(result?.status || "").trim();
+  const reason = String(result?.reason || "").trim();
+  if (status === "not_found") return discardStage ? "这个暂存候选已经不存在" : "当前 Bot 没有安装这个插件";
+  if (status === "deactivation_failed") return "插件未能安全停用，当前版本保持不变";
+  if (status === "persist_failed") return "卸载状态未能保存，当前版本已经恢复";
+  if (status === "rollback_failed") return "卸载失败且自动恢复未完成，请检查插件运行状态";
+  if (status === "removed_runtime_degraded") return "制品已移除，但插件运行时代次需要重新检查";
+  if (httpStatus === 401 || httpStatus === 403) return "此操作只能从受信控制中心执行";
+  return reason || `http-${httpStatus}`;
 }
 
 async function runPluginInstallBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {

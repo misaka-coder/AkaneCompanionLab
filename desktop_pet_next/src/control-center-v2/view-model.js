@@ -155,6 +155,14 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
         available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("install") && abilities.plugins.stages.some((item) => item.ok),
         reason: connected ? "当前没有可安装的已审查候选" : "桌宠尚未连接"
       },
+      "abilities.plugin.discardStage": {
+        available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("discard_stage") && abilities.plugins.stages.length > 0,
+        reason: connected ? "当前没有可丢弃的暂存候选" : "桌宠尚未连接"
+      },
+      "abilities.plugin.uninstall": {
+        available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("uninstall") && abilities.plugins.entries.some((item) => item.actionsEnabled && item.source === "managed"),
+        reason: connected ? "当前没有可卸载的用户插件" : "桌宠尚未连接"
+      },
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
       "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
       [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },

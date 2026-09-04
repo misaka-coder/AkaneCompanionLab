@@ -106,6 +106,18 @@ root.addEventListener("click", (event) => {
     });
     return;
   }
+  const pluginDiscardButton = event.target.closest("button[data-plugin-stage-discard]");
+  if (pluginDiscardButton && !pluginDiscardButton.disabled) {
+    const stageId = String(pluginDiscardButton.dataset.pluginStageDiscard || "").trim();
+    if (stageId) void runAction("abilities.plugin.discardStage", { stageId });
+    return;
+  }
+  const pluginUninstallButton = event.target.closest("button[data-plugin-uninstall]");
+  if (pluginUninstallButton && !pluginUninstallButton.disabled) {
+    const pluginId = String(pluginUninstallButton.dataset.pluginUninstall || "").trim();
+    if (pluginId) void runAction("abilities.plugin.uninstall", { pluginId });
+    return;
+  }
   const approvalRequestButton = event.target.closest("button[data-approval-request]");
   if (approvalRequestButton && !approvalRequestButton.disabled) {
     void runAction("abilities.approvalRequest.decide", {
