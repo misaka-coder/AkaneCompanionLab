@@ -364,6 +364,9 @@ def agent_event_request_to_wire(request: PluginAgentEventRequest) -> dict[str, A
                 "agent_event_request_invalid",
             ),
             "delivery": _string(request.delivery, "agent_event_request_invalid"),
+            "text_delivery": _string(request.text_delivery, "agent_event_request_invalid"),
+            "text_prefix": _string(request.text_prefix, "agent_event_request_invalid"),
+            "text_suffix": _string(request.text_suffix, "agent_event_request_invalid"),
         }
     )
 
@@ -380,6 +383,9 @@ def agent_event_request_from_wire(value: object) -> PluginAgentEventRequest:
             "agent_event_request_invalid",
         ),
         delivery=_string(record.get("delivery") or "timeline", "agent_event_request_invalid"),
+        text_delivery=_string(record.get("text_delivery") or "default", "agent_event_request_invalid"),
+        text_prefix=_string(record.get("text_prefix") or "", "agent_event_request_invalid"),
+        text_suffix=_string(record.get("text_suffix") or "", "agent_event_request_invalid"),
     )
 
 

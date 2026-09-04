@@ -102,6 +102,28 @@ class CallbackAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "invalid_external_event_fields")
 
+    async def test_plugin_scope_rejects_unsupported_text_delivery(self) -> None:
+        class Delegate:
+            async def submit(self, _request: PluginAgentEventRequest) -> PluginAgentEventResult:
+                raise AssertionError("delegate_should_not_run")
+
+        port = _PluginScopedAgentEventPort(
+            plugin_id="akane.timer",
+            delegate=Delegate(),
+            availability_provider=lambda: True,
+        )
+        result = await port.submit(
+            PluginAgentEventRequest(
+                trace_id="trace",
+                conversation_ref="opaque-ref",
+                message="event",
+                event=PluginExternalEvent("timer.fired", (("label", "water"),)),
+                text_delivery="finance_special",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "unsupported_text_delivery")
+
 
 class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
     def _build(self):
@@ -240,6 +262,37 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertTrue(result.ok)
         self.assertTrue(observed["turn_payload"]["transient_user_message"])
+
+    async def test_single_message_presentation_reaches_ordinary_qq_delivery(self) -> None:
+        port = self._build()
+        observed: dict[str, object] = {}
+
+        def fake_process(**kwargs):
+            observed.update(kwargs)
+            return {
+                "frame": {"speech": "正文", "emotion": "thinking"},
+                "reply_messages": ["【快讯】\n正文\n原文链接：https://example.test"],
+                "send_result": {"ok": True, "status": "sent"},
+                "file_send_result": {"ok": True, "count": 0, "results": []},
+            }
+
+        with patch.object(qq_routes, "_process_qq_turn_streaming", fake_process):
+            result = await port.submit(
+                PluginAgentEventRequest(
+                    trace_id="trace-4",
+                    conversation_ref="ref-master",
+                    message="处理快讯",
+                    event=PluginExternalEvent("news.fired", (("title", "测试"),)),
+                    text_delivery="single_message",
+                    text_prefix="【快讯】",
+                    text_suffix="原文链接：https://example.test",
+                )
+            )
+        self.assertTrue(result.ok)
+        payload = observed["turn_payload"]
+        self.assertEqual(payload["plugin_text_delivery"], "single_message")
+        self.assertEqual(payload["plugin_text_prefix"], "【快讯】")
+        self.assertEqual(payload["plugin_text_suffix"], "原文链接：https://example.test")
 
 
 class ConversationReferenceAuthorityTests(unittest.TestCase):

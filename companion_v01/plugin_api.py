@@ -255,6 +255,12 @@ class PluginAgentEventRequest:
     ``delivery`` is ``timeline`` by default. ``current_turn`` keeps the
     external fact out of the durable user timeline while still allowing the
     ordinary Agent turn and its assistant reply to run.
+
+    ``text_delivery`` only controls the channel presentation after the normal
+    Agent turn. ``single_message`` suppresses incremental text delivery and
+    sends one completed text message. Optional ``text_prefix`` and
+    ``text_suffix`` are applied to that completed text; they are not model
+    instructions and are omitted when the Agent deliberately stays silent.
     """
 
     trace_id: str
@@ -263,6 +269,9 @@ class PluginAgentEventRequest:
     event: PluginExternalEvent
     memory_idempotency_key: str = ""
     delivery: str = "timeline"
+    text_delivery: str = "default"
+    text_prefix: str = ""
+    text_suffix: str = ""
 
 
 @dataclass(frozen=True)

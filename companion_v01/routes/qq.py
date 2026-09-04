@@ -1358,6 +1358,9 @@ def _process_qq_turn_streaming(
     final_streamed_text_delivered = False
     current_stage_streamed_count = 0
     delivery_hint = ""
+    single_message_delivery = (
+        str(turn_payload.get("plugin_text_delivery") or "").strip().lower() == "single_message"
+    )
     active_reply_mode = (
         _normalize_reply_medium(getattr(context, "reply_mode", ""))
         or _normalize_reply_medium(qq_gateway.resolve_reply_mode(getattr(context, "session_id", "")))
@@ -1380,7 +1383,7 @@ def _process_qq_turn_streaming(
     # Streaming enablement and an optional transport quota are separate
     # decisions.  Zero means no quota; it must not silently disable the
     # model-authored progress stream.
-    stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True))
+    stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and not single_message_delivery
 
     engine_started_at = time.perf_counter()
     for stream_event in engine.process_turn_stream(turn_payload):
@@ -1568,6 +1571,15 @@ def _process_qq_turn_streaming(
         if bool(frame.get("_transient_final_failure") or deliberate_silence)
         else qq_gateway.render_reply_messages(frame)
     )
+    if single_message_delivery and final_reply_messages:
+        body = str(frame.get("speech") or "").strip() or "\n".join(final_reply_messages).strip()
+        prefix = str(turn_payload.get("plugin_text_prefix") or "").strip()
+        suffix = str(turn_payload.get("plugin_text_suffix") or "").strip()
+        if prefix and body.startswith(prefix):
+            body = body[len(prefix) :].lstrip()
+        if suffix and body.endswith(suffix):
+            body = body[: -len(suffix)].rstrip()
+        final_reply_messages = ["\n".join(part for part in (prefix, body, suffix) if part)] if body else []
     reply_messages = final_reply_messages
     if streamed_messages and bool(frame.get("_transient_final_failure")):
         # A complete speech field may already have reached QQ before a malformed
@@ -2895,6 +2907,9 @@ def build_qq_router(
         delivery = str(request.delivery or "timeline").strip().lower()
         if delivery not in {"current_turn", "timeline"}:
             return PluginAgentEventResult(False, "rejected", "unsupported_event_delivery")
+        text_delivery = str(request.text_delivery or "default").strip().lower()
+        if text_delivery not in {"default", "single_message"}:
+            return PluginAgentEventResult(False, "rejected", "unsupported_text_delivery")
 
         recipient = str(resolved_reference.get("recipient") or "").strip()
         session_id = str(resolved_reference.get("session") or "").strip()
@@ -2997,6 +3012,9 @@ def build_qq_router(
                     },
                 },
                 "memory_idempotency_key": str(request.memory_idempotency_key or "").strip(),
+                "plugin_text_delivery": text_delivery,
+                "plugin_text_prefix": str(request.text_prefix or "").strip(),
+                "plugin_text_suffix": str(request.text_suffix or "").strip(),
                 "message_addressing": {
                     "mode": "host_event",
                     "trigger": "plugin_event",

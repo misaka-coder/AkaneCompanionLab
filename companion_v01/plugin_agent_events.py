@@ -20,6 +20,7 @@ MAX_AGENT_EVENT_TRACE_CHARS = 160
 MAX_AGENT_EVENT_REFERENCE_CHARS = 4096
 MAX_AGENT_EVENT_MESSAGE_CHARS = 12_000
 MAX_AGENT_EVENT_IDEMPOTENCY_KEY_CHARS = 240
+MAX_AGENT_EVENT_TEXT_AFFIX_CHARS = 2000
 MAX_AGENT_EVENT_FIELDS = 16
 MAX_AGENT_EVENT_FIELD_CHARS = 4000
 MAX_AGENT_EVENT_FIELD_TOTAL_CHARS = 12_000
@@ -189,14 +190,18 @@ def _validate_agent_event_request(request: PluginAgentEventRequest) -> str:
             MAX_AGENT_EVENT_IDEMPOTENCY_KEY_CHARS,
             False,
         ),
+        ("text_prefix", request.text_prefix, MAX_AGENT_EVENT_TEXT_AFFIX_CHARS, False),
+        ("text_suffix", request.text_suffix, MAX_AGENT_EVENT_TEXT_AFFIX_CHARS, False),
     )
     for name, value, maximum, required in fields:
         if not isinstance(value, str) or len(value) > maximum or "\x00" in value:
             return f"invalid_{name}"
         if required and not value.strip():
             return f"{name}_required"
-    if request.delivery not in {"current_turn", "timeline"}:
+    if not isinstance(request.delivery, str) or request.delivery not in {"current_turn", "timeline"}:
         return "unsupported_event_delivery"
+    if not isinstance(request.text_delivery, str) or request.text_delivery not in {"default", "single_message"}:
+        return "unsupported_text_delivery"
     event = request.event
     if not isinstance(event, PluginExternalEvent):
         return "invalid_external_event"

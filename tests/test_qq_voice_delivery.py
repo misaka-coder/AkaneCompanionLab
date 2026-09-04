@@ -74,6 +74,54 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_plugin_single_message_waits_for_final_and_applies_envelope_once(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, _payload: dict):
+                yield {"type": "speech_segment", "text": "第一段。"}
+                yield {"type": "speech_segment", "text": "第二段。"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "reply_medium": "text",
+                        "speech": "第一段。\n\n第二段。",
+                        "speech_segments": ["第一段。", "第二段。"],
+                        "tool_events": [],
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_finance_push",
+                profile_user_id="qq_finance_push",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={
+                "message": "处理财经事件",
+                "plugin_text_delivery": "single_message",
+                "plugin_text_prefix": "【财经快讯｜10:01】",
+                "plugin_text_suffix": "原文链接：https://example.test/news",
+            },
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        expected = "【财经快讯｜10:01】\n第一段。\n\n第二段。\n原文链接：https://example.test/news"
+        self.assertEqual(gateway.text_sends, [[expected]])
+        self.assertEqual(result["reply_messages"], [expected])
+        self.assertNotIn("streamed_count", result["send_result"])
+
     def test_confirmed_stop_does_not_rerun_turn_or_send_missing_final_notice(self) -> None:
         class FakeEngine:
             desktop_pet_character_resources = None
