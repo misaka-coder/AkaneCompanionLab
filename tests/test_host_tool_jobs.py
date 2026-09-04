@@ -14,6 +14,7 @@ from companion_v01.client_protocol import ClientMode
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
 from companion_v01.tool_handlers.core import ToolExecutionContext, ToolExecutionResult
+from companion_v01.tool_handlers.generated_media import GenerateImageToolHandler
 
 
 class _Broker:
@@ -81,6 +82,62 @@ def _context() -> ToolExecutionContext:
 
 
 class HostToolJobRuntimeTests(unittest.TestCase):
+    def test_real_image_handler_publishes_generated_handle_in_completion_job(self) -> None:
+        class ImageService:
+            image_material_resolver = SimpleNamespace(
+                build_model_image_inputs=lambda **_kwargs: {"images": []}
+            )
+
+            @staticmethod
+            def generate(**_kwargs):
+                return {
+                    "ok": True,
+                    "generated": [{"generated_handle": "gen_001", "output_title": "Moon"}],
+                    "handles": ["gen_001"],
+                    "reference_handles": [],
+                    "send_to_user": True,
+                    "followup_context": "已生成图片 gen_001。",
+                }
+
+        handler = GenerateImageToolHandler(image_generation_service=ImageService())
+        runner = BackgroundTaskRunner({"host-jobs": 1})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            completed = []
+
+            class Engine(_Engine):
+                def _resolve_tool_handlers(self, **_kwargs: Any):
+                    return {handler.tool_type: handler}
+
+            def publish(job: Any) -> bool:
+                completed.append(job)
+                return True
+
+            runtime = HostToolJobRuntime(
+                engine=Engine(handler),
+                store=store,
+                background_tasks=runner,
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+                terminal_callback=publish,
+            )
+            try:
+                accepted = runtime.submit(
+                    capability_id="generate_image",
+                    invocation_id="call-image",
+                    call={
+                        "type": "generate_image",
+                        "prompt": "moon",
+                        "send_to_user": True,
+                    },
+                    context=_context(),
+                )
+                self.assertEqual(accepted.stream_events[0]["status"], "accepted")
+                self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertEqual(completed[0].artifacts[0]["handle"], "gen_001")
+                self.assertEqual(completed[0].result_summary, "已生成图片 gen_001。")
+            finally:
+                runner.close(timeout=2.0)
+
     def test_submit_persists_then_returns_accepted_while_handler_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             started = threading.Event()
