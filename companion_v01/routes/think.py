@@ -347,9 +347,6 @@ def build_think_router(
             or recipient != f"desktop:{session_id}"
         ):
             return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
-        if not _desktop_delivery_is_available():
-            return PluginAgentEventResult(False, "host_unavailable", "desktop_client_unavailable")
-
         message = str(event_request.message or "").strip()
         timestamp = int(time.time())
         payload: dict[str, Any] = {
@@ -387,6 +384,32 @@ def build_think_router(
                 "mentions": [],
             },
         }
+        if isinstance(session_work_queue, DurableSessionWorkQueue):
+            source_event_id = str(
+                event_request.memory_idempotency_key or event_request.trace_id or ""
+            ).strip()
+            queued = await session_work_queue.enqueue(
+                session_key=f"{profile_user_id}\0{session_id}",
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                kind="turn",
+                payload={"turn_payload": payload},
+                source="desktop_pet",
+                source_event_id=source_event_id,
+            )
+            if not queued.get("ok"):
+                return PluginAgentEventResult(
+                    False,
+                    "failed",
+                    str(queued.get("reason") or "agent_event_queue_failed"),
+                    "not_sent",
+                )
+            queued_item = queued.get("item")
+            queued_status = str(getattr(queued_item, "status", "") or "")
+            delivery_status = "suppressed" if queued_status == "committed" else "queued"
+            return PluginAgentEventResult(True, "accepted", "", delivery_status)
+        if not _desktop_delivery_is_available():
+            return PluginAgentEventResult(False, "host_unavailable", "desktop_client_unavailable")
         try:
             async with turn_coordinator.hold(
                 profile_user_id,

@@ -12,6 +12,8 @@ from companion_v01.plugin_agent_events import (
     _PluginScopedAgentEventPort,
 )
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
+from companion_v01.durable_session_queue import DurableSessionWorkQueue
+from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.plugin_api import (
     PluginAgentEventRequest,
     PluginAgentEventResult,
@@ -124,7 +126,7 @@ class PluginScopedAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
-    def _build(self):
+    def _build(self, *, session_work_queue=None):
         references = {
             "ref-master": {
                 "channel": "qq", "kind": "direct", "recipient": "user:1906243651",
@@ -186,9 +188,44 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
             logger=types.SimpleNamespace(exception=lambda *args, **kwargs: None),
             log_event=lambda *args, **kwargs: None,
             plugin_agent_event_handler_registrar=host_port.register_channel,
+            session_work_queue=session_work_queue,
         )
         self.assertTrue(router.routes)
         return host_port
+
+    async def test_durable_event_is_handed_to_session_inbox_before_agent_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+
+            def defer(coroutine):
+                coroutine.close()
+                return types.SimpleNamespace(done=lambda: False)
+
+            queue = DurableSessionWorkQueue(store, schedule_task=defer)
+            port = self._build(session_work_queue=queue)
+
+            result = await port.submit(
+                PluginAgentEventRequest(
+                    trace_id="job-completed:1",
+                    conversation_ref="ref-master",
+                    message="图片生成完成",
+                    event=PluginExternalEvent(
+                        "job.succeeded",
+                        (("job_id", "job-1"),),
+                        "host.jobs",
+                    ),
+                    memory_idempotency_key="job-completed:1",
+                )
+            )
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.delivery_status, "queued")
+            claimed = store.claim_next("master\0master", worker_id="test")
+            self.assertTrue(claimed["ok"])
+            self.assertEqual(claimed["item"].source_event_id, "job-completed:1")
+            turn_payload = claimed["item"].payload["turn_payload"]
+            self.assertEqual(turn_payload["source_message_id"], "job-completed:1")
+            self.assertIn("系统事件", turn_payload["qq_delivery_context"]["sender_label"])
 
     async def test_event_uses_normal_qq_delivery_and_structured_payload(self) -> None:
         port = self._build()
@@ -295,6 +332,59 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DesktopPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_durable_event_is_handed_to_desktop_inbox_even_while_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            captured_handlers: dict[str, object] = {}
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+
+            def defer(coroutine):
+                coroutine.close()
+                return types.SimpleNamespace(done=lambda: False)
+
+            queue = DurableSessionWorkQueue(store, schedule_task=defer)
+            think_routes.build_think_router(
+                engine=types.SimpleNamespace(),
+                public_guard=types.SimpleNamespace(),
+                runtime_metrics=types.SimpleNamespace(),
+                log_event=lambda *args, **kwargs: None,
+                session_work_queue=queue,
+                plugin_agent_event_handler_registrar=captured_handlers.__setitem__,
+                desktop_agent_frame_delivery=None,
+            )
+            handler = captured_handlers["desktop_pet"]
+
+            result = await handler(
+                PluginAgentEventRequest(
+                    trace_id="job-completed:desk",
+                    conversation_ref="opaque",
+                    message="图片生成完成",
+                    event=PluginExternalEvent(
+                        "job.succeeded",
+                        (("job_id", "job-desk"),),
+                        "host.jobs",
+                    ),
+                    memory_idempotency_key="job-completed:desk",
+                ),
+                {
+                    "channel": "desktop_pet",
+                    "kind": "direct",
+                    "recipient": "desktop:desk-1",
+                    "session": "desk-1",
+                    "profile": "master",
+                    "character": "reimu",
+                },
+            )
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.delivery_status, "queued")
+            claimed = store.claim_next("master\0desk-1", worker_id="test")
+            self.assertTrue(claimed["ok"])
+            self.assertEqual(claimed["item"].source_event_id, "job-completed:desk")
+            self.assertEqual(
+                claimed["item"].payload["turn_payload"]["character_pack_id"],
+                "reimu",
+            )
+
     async def test_event_uses_normal_desktop_turn_and_existing_frame_contract(self) -> None:
         captured_handlers: dict[str, object] = {}
         turn_payloads: list[dict[str, object]] = []

@@ -3181,6 +3181,9 @@ def build_qq_router(
             return PluginAgentEventResult(False, "rejected", "agent_event_message_required")
         event_timestamp = int(time.time())
         sender_label = "插件事件"
+        if str(request.event.source or "").strip().lower().startswith("host."):
+            sender_label = "系统事件"
+        source_event_id = str(request.memory_idempotency_key or request.trace_id or "").strip()
         synthetic_event = {
             "time": event_timestamp,
             "post_type": "message",
@@ -3217,6 +3220,7 @@ def build_qq_router(
             character_pack_id=character_pack_id,
             reply_mode=qq_gateway.resolve_reply_mode(resolved_session_id),
             chat_model_override=qq_gateway.resolve_chat_model_override(resolved_session_id),
+            source_message_id=source_event_id,
         )
         turn_payload = context.to_turn_payload()
         turn_payload.update(
@@ -3252,6 +3256,30 @@ def build_qq_router(
                 },
             }
         )
+        if isinstance(session_work_queue, DurableSessionWorkQueue):
+            queued = await session_work_queue.enqueue(
+                session_key=_session_work_key(context),
+                profile_user_id=resolved_profile_user_id,
+                session_id=resolved_session_id,
+                kind="turn",
+                payload=_durable_qq_work_payload(
+                    event=synthetic_event,
+                    turn_payload=turn_payload,
+                ),
+                source="qq",
+                source_event_id=source_event_id,
+            )
+            if not queued.get("ok"):
+                return PluginAgentEventResult(
+                    False,
+                    "failed",
+                    str(queued.get("reason") or "agent_event_queue_failed"),
+                    "not_sent",
+                )
+            queued_item = queued.get("item")
+            queued_status = str(getattr(queued_item, "status", "") or "")
+            delivery_status = "suppressed" if queued_status == "committed" else "queued"
+            return PluginAgentEventResult(True, "accepted", "", delivery_status)
         try:
             result = await _run_qq_turn_delivery(
                 context=context,
