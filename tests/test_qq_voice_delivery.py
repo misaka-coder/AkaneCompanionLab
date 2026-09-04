@@ -1004,6 +1004,52 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertTrue(result["final_failure_notice_result"]["ok"])
         self.assertEqual(result["reply_messages"], [gateway.text_sends[0][0]])
 
+    def test_plugin_event_transient_failure_returns_silently_for_durable_retry(self) -> None:
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, _payload: dict):
+                yield {
+                    "type": "final_ui",
+                    "payload": {
+                        "emotion": "concerned",
+                        "speech": "我在认真听你说，要不要再多告诉我一点？",
+                        "speech_segments": ["我在认真听你说，要不要再多告诉我一点？"],
+                        "tool_events": [],
+                        "_transient_final_failure": True,
+                    },
+                }
+
+        gateway = FakeQQGateway()
+        result = _process_qq_turn_streaming(
+            engine=FakeEngine(),
+            qq_gateway=gateway,
+            context=SimpleNamespace(
+                session_id="qq_finance_push",
+                profile_user_id="qq_finance_push",
+                character_pack_id="",
+                reply_mode="text",
+            ),
+            turn_payload={
+                "message": "处理财经事件",
+                "turn_kind": "plugin_event",
+                "plugin_text_delivery": "single_message",
+            },
+            config_module=SimpleNamespace(
+                QQ_STREAM_REPLIES_ENABLED=True,
+                QQ_STREAM_IMMEDIATE_SEGMENTS=8,
+                QQ_REPLY_MAX_SEGMENTS=8,
+                QQ_VOICE_MAX_SEGMENTS=3,
+                QQ_VOICE_MAX_TEXT_CHARS=280,
+            ),
+        )
+
+        self.assertEqual(gateway.text_sends, [])
+        self.assertEqual(result["reply_messages"], [])
+        self.assertFalse(result["send_result"].get("final_failure_notice", False))
+        self.assertEqual(result["final_failure_notice_result"]["status"], "skipped")
+        self.assertTrue(result["final_frame_received"])
+
     def test_same_turn_recovered_final_never_sends_the_failure_notice(self) -> None:
         # A malformed final that recovers in the same turn must be delivered
         # like any normal reply: QQ sends the recovered speech and never the

@@ -1613,7 +1613,15 @@ def _process_qq_turn_streaming(
     visible_text_delivered = bool(streamed_messages or unsent_reply_messages)
     visible_file_delivered = bool(file_send_result.get("count") or 0) and bool(file_send_result.get("ok"))
     final_failure_notice_result = {"ok": True, "status": "skipped", "reason": "visible_delivery_present"}
-    if not bool(frame.get("_turn_stopped") or deliberate_silence) and (
+    # Plugin events are durable, host-initiated work.  Their caller receives
+    # the structured failure below and owns retry/backoff; sending the
+    # interactive "please try again" notice would expose an internal retry as
+    # a user-facing message and can spam the destination on every attempt.
+    # Successful plugin replies still use the exact same rendering path.
+    surface_incomplete_notice = (
+        str(turn_payload.get("turn_kind") or "").strip().lower() != "plugin_event"
+    )
+    if surface_incomplete_notice and not bool(frame.get("_turn_stopped") or deliberate_silence) and (
         (not visible_text_delivered and not visible_file_delivered and not visible_action_delivered)
         or (not final_frame_received and not visible_file_delivered and not visible_action_delivered)
         or (
@@ -1783,6 +1791,7 @@ def _process_qq_turn_streaming(
         "final_failure_notice_result": final_failure_notice_result,
         "sticker_send_result": sticker_send_result,
         "visible_action_delivered": visible_action_delivered,
+        "final_frame_received": bool(final_frame_received),
         "timing": timing,
     }
 
@@ -3039,7 +3048,9 @@ def build_qq_router(
         result_payload = result if isinstance(result, dict) else {}
         send_result = result_payload.get("send_result")
         send_payload = send_result if isinstance(send_result, dict) else {}
-        if bool(result_payload.get("_transient_final_failure")) or bool(
+        if result_payload.get("final_frame_received") is False or bool(
+            result_payload.get("_transient_final_failure")
+        ) or bool(
             result_payload.get("frame", {}).get("_transient_final_failure")
             if isinstance(result_payload.get("frame"), dict)
             else False
