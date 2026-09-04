@@ -14,6 +14,7 @@ from typing import Any, Callable, Generator, Mapping
 
 import config
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
+from memcore import render_external_event_text
 
 from .artifact_system import ArtifactContainerService
 from .artifact_broker import ArtifactBroker
@@ -3368,6 +3369,24 @@ class AkaneMemoryEngine:
         _ = event
         return {}
 
+    @staticmethod
+    def _render_external_event_memory_content(event: dict[str, Any]) -> str:
+        """Return the stable stored identity of one structured external event.
+
+        ``message`` on a plugin Agent-event request is a turn instruction and
+        may improve when the plugin is upgraded.  It must therefore not be the
+        immutable content behind ``memory_idempotency_key``.  The structured
+        event is the durable stimulus; render only those facts here so the same
+        event can be retried with better instructions without colliding, while
+        changed event facts still fail the store's normal idempotency check.
+        """
+
+        event_type = str(event.get("event_type") or "").strip().lower()
+        source = str(event.get("source") or "").strip()
+        fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
+        rendered = render_external_event_text(event_type=event_type, source=source, fields=fields)
+        return f"event_type: {event_type}\n{rendered}" if rendered else f"event_type: {event_type}"
+
     def _build_transient_user_record(
         self,
         *,
@@ -4154,6 +4173,8 @@ class AkaneMemoryEngine:
         )
         user_message = str(payload.get("message") or "").strip()
         memory_user_message = str(payload.get("memory_message") or user_message).strip()
+        if plugin_external_event is not None:
+            memory_user_message = self._render_external_event_memory_content(plugin_external_event)
         now_ts = int(payload.get("timestamp") or time.time())
         payload = self._prepare_care_context_for_turn(
             payload,

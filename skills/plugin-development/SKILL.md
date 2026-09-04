@@ -45,6 +45,8 @@ artifact lifecycle. This Skill adds no tools or permissions.
   structured event facts, a user-facing event message, and `delivery="timeline"` or
   `delivery="current_turn"`. The host then runs the ordinary model and client pipeline;
   the plugin must not send the returned result through `NotificationPort`.
+  Treat the structured event as durable idempotent identity and `message` as the current
+  turn instruction. A prompt improvement must not require a new event identity.
   Keep the default text delivery unless the product requires one complete announcement;
   then use `text_delivery="single_message"` with bounded `text_prefix`/`text_suffix`.
   These fields wrap the completed `speech` at the channel edge and do not replace the Agent turn.

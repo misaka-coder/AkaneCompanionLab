@@ -427,8 +427,48 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
 
         self.assertEqual([call["role"] for call in store.calls], ["event.finance", "event.finance"])
         self.assertTrue(all(call["memory_metadata"] is None for call in store.calls))
-        self.assertTrue(all(call["content"] == message for call in store.calls))
+        expected_memory_content = (
+            "event_type: finance\n"
+            "source: 东方财富\n"
+            "published_at: 2026-07-14T14:30:00+08:00\n"
+            "title: 科创债ETF规模出现新变化\n"
+            "summary: 公开快讯摘要。\n"
+            "url: https://finance.eastmoney.com/example.html"
+        )
+        self.assertTrue(all(call["content"] == expected_memory_content for call in store.calls))
         self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
+
+    def test_external_event_memory_identity_ignores_turn_instruction_but_not_event_facts(self) -> None:
+        event = {
+            "event_type": "finance.news",
+            "source": "akane.finance",
+            "fields": {
+                "title": "同一条快讯",
+                "source_url": "https://example.test/news",
+            },
+        }
+        same_event_after_prompt_upgrade = {
+            "source": "akane.finance",
+            "fields": {
+                "source_url": "https://example.test/news",
+                "title": "同一条快讯",
+            },
+            "event_type": "finance.news",
+        }
+        changed_event = {
+            **event,
+            "fields": {**event["fields"], "title": "另一条快讯"},
+        }
+
+        original = AkaneMemoryEngine._render_external_event_memory_content(event)
+        after_prompt_upgrade = AkaneMemoryEngine._render_external_event_memory_content(
+            same_event_after_prompt_upgrade
+        )
+        changed = AkaneMemoryEngine._render_external_event_memory_content(changed_event)
+
+        self.assertEqual(original, after_prompt_upgrade)
+        self.assertNotEqual(original, changed)
+        self.assertNotIn("只写分析正文", original)
 
     def test_sync_and_stream_paths_open_structured_event_as_memcore_v2_input(self) -> None:
         payload = {
@@ -480,7 +520,10 @@ class PluginReasoningMemoryPathTests(unittest.TestCase):
             engine.process_turn(payload)
 
         self.assertEqual(store.calls[0]["role"], "event.timer.fired")
-        self.assertEqual(store.calls[0]["content"], "定时事件已到期")
+        self.assertEqual(
+            store.calls[0]["content"],
+            "event_type: timer.fired\nsource: timer-plugin\nlabel: 喝水",
+        )
         self.assertTrue(all("plugin_external_event" not in item for item in prepared_payloads))
 
     def test_transient_final_failure_is_not_persisted_as_an_assistant_turn(self) -> None:
