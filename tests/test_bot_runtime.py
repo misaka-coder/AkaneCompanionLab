@@ -333,6 +333,18 @@ class BotRegistryLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_recovers_durable_jobs_before_accepting_runtime_work(self) -> None:
+        runtime, _plugin_host, _engine, _followups = _runtime()
+        recovered: list[str] = []
+        runtime.job_store = SimpleNamespace(
+            recover_abandoned_claims=lambda: recovered.append("jobs") or 2,
+        )
+
+        result = await runtime.start()
+
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(recovered, ["jobs"])
+
     async def test_start_recovers_shared_session_inbox_runner_once(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()
 
@@ -664,6 +676,11 @@ care_enabled = true
                         isinstance(runtime.plugin_runtime, PluginGenerationRuntime)
                         for runtime in runtimes
                     )
+                )
+                self.assertTrue(all(runtime.job_store is not None for runtime in runtimes))
+                self.assertEqual(len({id(runtime.job_store) for runtime in runtimes}), 3)
+                self.assertTrue(
+                    all(runtime.job_store.database_path == runtime.engine.store.db_path for runtime in runtimes)
                 )
                 self.assertTrue(all(runtime.engine.stable_system_blocks_provider() == () for runtime in runtimes))
                 self.assertEqual(

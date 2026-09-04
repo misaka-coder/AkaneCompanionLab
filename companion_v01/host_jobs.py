@@ -1,0 +1,592 @@
+"""Durable authority for host-owned background jobs.
+
+Workers may run in threads, processes, plugins, or desktop satellites.  This
+store is the single source of truth for job identity, ownership, leases,
+cancellation, terminal results, and completion event identity.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterator
+
+
+JOB_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+_COMPLETION_MODES = frozenset({"agent", "direct", "silent"})
+_MEMORY_MODES = frozenset({"current_turn", "timeline"})
+
+
+@dataclass(frozen=True, slots=True)
+class HostJobOwner:
+    profile_user_id: str
+    session_id: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("profile_user_id", "session_id"):
+            normalized = str(getattr(self, field_name) or "").strip()
+            if not normalized:
+                raise ValueError(f"host_job_{field_name}_required")
+            object.__setattr__(self, field_name, normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class HostJob:
+    job_id: str
+    sequence: int
+    owner: HostJobOwner
+    character_pack_id: str
+    channel: str
+    delivery_target: str
+    capability_source: str
+    capability_id: str
+    turn_id: str
+    tool_call_id: str
+    idempotency_key: str
+    argument_fingerprint: str
+    payload: dict[str, Any]
+    completion_mode: str
+    memory_mode: str
+    status: str
+    attempts: int
+    available_at: float
+    created_at: float
+    started_at: float
+    finished_at: float
+    lease_until: float
+    claim_token: str
+    claimed_by: str
+    cancel_requested: bool
+    result_summary: str
+    artifacts: tuple[dict[str, Any], ...]
+    completion_event_id: str
+    last_error: str
+
+
+class HostJobStore:
+    """SQLite-backed job state stored in the bot instance database."""
+
+    def __init__(self, database_path: str | Path, *, clock: Callable[[], float] | None = None) -> None:
+        self.database_path = Path(database_path)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._clock = clock or time.time
+        self._ensure_schema()
+
+    def create(
+        self,
+        *,
+        owner: HostJobOwner,
+        capability_source: Any,
+        capability_id: Any,
+        payload: Any,
+        idempotency_key: Any,
+        argument_fingerprint: Any,
+        character_pack_id: Any = "",
+        channel: Any = "",
+        delivery_target: Any = "",
+        turn_id: Any = "",
+        tool_call_id: Any = "",
+        completion_mode: Any = "agent",
+        memory_mode: Any = "timeline",
+        available_at: float | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(owner, HostJobOwner):
+            return {"ok": False, "status": "invalid", "reason": "host_job_owner_required"}
+        source = str(capability_source or "").strip()
+        capability = str(capability_id or "").strip()
+        idempotency = str(idempotency_key or "").strip()
+        fingerprint = str(argument_fingerprint or "").strip()
+        completion = str(completion_mode or "").strip().lower()
+        memory = str(memory_mode or "").strip().lower()
+        if not all((source, capability, idempotency, fingerprint)):
+            return {"ok": False, "status": "invalid", "reason": "host_job_identity_required"}
+        if completion not in _COMPLETION_MODES or memory not in _MEMORY_MODES:
+            return {"ok": False, "status": "invalid", "reason": "host_job_delivery_policy_invalid"}
+        if not isinstance(payload, dict):
+            return {"ok": False, "status": "invalid", "reason": "host_job_payload_object_required"}
+        payload_json = _json_object(payload)
+        if payload_json is None:
+            return {"ok": False, "status": "invalid", "reason": "host_job_payload_not_json_safe"}
+
+        immutable = {
+            "profile_user_id": owner.profile_user_id,
+            "session_id": owner.session_id,
+            "character_pack_id": str(character_pack_id or "").strip(),
+            "channel": str(channel or "").strip(),
+            "delivery_target": str(delivery_target or "").strip(),
+            "capability_source": source,
+            "capability_id": capability,
+            "turn_id": str(turn_id or "").strip(),
+            "tool_call_id": str(tool_call_id or "").strip(),
+            "idempotency_key": idempotency,
+            "argument_fingerprint": fingerprint,
+            "payload_json": payload_json,
+            "completion_mode": completion,
+            "memory_mode": memory,
+        }
+        now = float(self._clock())
+        job_id = f"job_{uuid.uuid4().hex}"
+        completion_event_id = f"job-completed:{job_id}"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM host_jobs
+                WHERE profile_user_id = ? AND session_id = ?
+                  AND capability_source = ? AND capability_id = ? AND idempotency_key = ?
+                LIMIT 1
+                """,
+                (owner.profile_user_id, owner.session_id, source, capability, idempotency),
+            ).fetchone()
+            if existing is not None:
+                job = self._row_to_job(existing)
+                if not self._immutable_match(job, immutable):
+                    return {
+                        "ok": False,
+                        "status": "collision",
+                        "reason": "host_job_idempotency_collision",
+                        "job_id": job.job_id,
+                    }
+                return {
+                    "ok": True,
+                    "status": "duplicate",
+                    "reason": "host_job_already_registered",
+                    "job_id": job.job_id,
+                    "job": job,
+                }
+            cursor = connection.execute(
+                """
+                INSERT INTO host_jobs (
+                    job_id, profile_user_id, session_id, character_pack_id, channel,
+                    delivery_target, capability_source, capability_id, turn_id,
+                    tool_call_id, idempotency_key, argument_fingerprint, payload_json,
+                    completion_mode, memory_mode, status, attempts, available_at,
+                    created_at, updated_at, completion_event_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    immutable["profile_user_id"],
+                    immutable["session_id"],
+                    immutable["character_pack_id"],
+                    immutable["channel"],
+                    immutable["delivery_target"],
+                    source,
+                    capability,
+                    immutable["turn_id"],
+                    immutable["tool_call_id"],
+                    idempotency,
+                    fingerprint,
+                    payload_json,
+                    completion,
+                    memory,
+                    max(now, float(available_at if available_at is not None else now)),
+                    now,
+                    now,
+                    completion_event_id,
+                ),
+            )
+            sequence = int(cursor.lastrowid or 0)
+        return {
+            "ok": True,
+            "status": "queued",
+            "reason": "host_job_persisted",
+            "job_id": job_id,
+            "sequence": sequence,
+            "completion_event_id": completion_event_id,
+        }
+
+    def claim_next(
+        self,
+        *,
+        worker_id: Any,
+        lease_seconds: float = 300.0,
+        capability_source: Any = "",
+    ) -> dict[str, Any]:
+        worker = str(worker_id or "").strip()
+        source = str(capability_source or "").strip()
+        if not worker:
+            return {"ok": False, "status": "invalid", "reason": "host_job_worker_required"}
+        now = float(self._clock())
+        claim_token = f"job-claim_{uuid.uuid4().hex}"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._release_expired_claims(connection, now=now)
+            source_clause = " AND capability_source = ?" if source else ""
+            arguments: tuple[Any, ...] = (now, source) if source else (now,)
+            row = connection.execute(
+                f"""
+                SELECT * FROM host_jobs
+                WHERE status = 'queued' AND available_at <= ?{source_clause}
+                ORDER BY sequence ASC
+                LIMIT 1
+                """,
+                arguments,
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "idle", "reason": "no_ready_host_job"}
+            job_id = str(row["job_id"] or "")
+            changed = connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = 'running', attempts = attempts + 1, started_at = ?,
+                    lease_until = ?, claim_token = ?, claimed_by = ?, updated_at = ?
+                WHERE job_id = ? AND status = 'queued'
+                """,
+                (now, now + max(1.0, float(lease_seconds)), claim_token, worker, now, job_id),
+            ).rowcount
+            if changed != 1:
+                return {"ok": False, "status": "conflict", "reason": "host_job_claim_conflict"}
+            claimed = connection.execute("SELECT * FROM host_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return {
+            "ok": True,
+            "status": "running",
+            "reason": "host_job_claimed",
+            "claim_token": claim_token,
+            "job": self._row_to_job(claimed),
+        }
+
+    def succeed(
+        self,
+        job_id: Any,
+        *,
+        claim_token: Any,
+        result_summary: Any = "",
+        artifacts: Any = (),
+    ) -> dict[str, Any]:
+        artifacts_json = _json_artifacts(artifacts)
+        if artifacts_json is None:
+            return {"ok": False, "status": "invalid", "reason": "host_job_artifacts_not_json_safe"}
+        return self._finish(
+            job_id,
+            claim_token=claim_token,
+            status="succeeded",
+            result_summary=str(result_summary or "")[:4_000],
+            artifacts_json=artifacts_json,
+            last_error="",
+        )
+
+    def fail(
+        self,
+        job_id: Any,
+        *,
+        claim_token: Any,
+        error: Any,
+        retryable: bool,
+        retry_delay_seconds: float = 0.0,
+    ) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        token = str(claim_token or "").strip()
+        if not normalized_id or not token:
+            return {"ok": False, "status": "invalid", "reason": "job_id_and_claim_token_required"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT cancel_requested FROM host_jobs WHERE job_id = ? AND status = 'running' AND claim_token = ?",
+                (normalized_id, token),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "stale", "reason": "host_job_claim_not_owned"}
+            cancelled = bool(row["cancel_requested"])
+            next_status = "cancelled" if cancelled else ("queued" if retryable else "failed")
+            finished_at = now if next_status in JOB_TERMINAL_STATUSES else 0.0
+            connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = ?, available_at = ?, lease_until = 0, claim_token = '',
+                    claimed_by = '', updated_at = ?, finished_at = ?, last_error = ?
+                WHERE job_id = ? AND status = 'running' AND claim_token = ?
+                """,
+                (
+                    next_status,
+                    now + max(0.0, float(retry_delay_seconds)) if next_status == "queued" else now,
+                    now,
+                    finished_at,
+                    str(error or "")[:500],
+                    normalized_id,
+                    token,
+                ),
+            )
+        return {
+            "ok": True,
+            "status": next_status,
+            "reason": "host_job_requeued" if next_status == "queued" else f"host_job_{next_status}",
+        }
+
+    def request_cancel(self, job_id: Any, *, owner: HostJobOwner) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        if not normalized_id or not isinstance(owner, HostJobOwner):
+            return {"ok": False, "status": "invalid", "reason": "host_job_owner_required"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM host_jobs WHERE job_id = ? AND profile_user_id = ? AND session_id = ?",
+                (normalized_id, owner.profile_user_id, owner.session_id),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "unknown", "reason": "host_job_not_found"}
+            status = str(row["status"] or "")
+            if status in JOB_TERMINAL_STATUSES:
+                return {"ok": True, "status": status, "reason": "host_job_already_terminal"}
+            if status == "queued":
+                connection.execute(
+                    """
+                    UPDATE host_jobs
+                    SET status = 'cancelled', cancel_requested = 1, updated_at = ?, finished_at = ?
+                    WHERE job_id = ? AND status = 'queued'
+                    """,
+                    (now, now, normalized_id),
+                )
+                return {"ok": True, "status": "cancelled", "reason": "host_job_cancelled"}
+            connection.execute(
+                "UPDATE host_jobs SET cancel_requested = 1, updated_at = ? WHERE job_id = ? AND status = 'running'",
+                (now, normalized_id),
+            )
+        return {"ok": True, "status": "cancelling", "reason": "host_job_cancel_requested"}
+
+    def confirm_cancelled(self, job_id: Any, *, claim_token: Any) -> dict[str, Any]:
+        return self._finish(
+            job_id,
+            claim_token=claim_token,
+            status="cancelled",
+            result_summary="",
+            artifacts_json="[]",
+            last_error="cancelled",
+        )
+
+    def get(self, job_id: Any, *, owner: HostJobOwner) -> HostJob | None:
+        normalized_id = str(job_id or "").strip()
+        if not normalized_id or not isinstance(owner, HostJobOwner):
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM host_jobs WHERE job_id = ? AND profile_user_id = ? AND session_id = ?",
+                (normalized_id, owner.profile_user_id, owner.session_id),
+            ).fetchone()
+        return self._row_to_job(row) if row is not None else None
+
+    def recover_abandoned_claims(self) -> int:
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cancelled = connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
+                    updated_at = ?, finished_at = ?, last_error = 'cancelled'
+                WHERE status = 'running' AND cancel_requested = 1
+                """,
+                (now, now),
+            ).rowcount
+            requeued = connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = 'queued', lease_until = 0, claim_token = '', claimed_by = '',
+                    available_at = ?, updated_at = ?, last_error = 'worker_recovered'
+                WHERE status = 'running'
+                """,
+                (now, now),
+            ).rowcount
+        return int(cancelled or 0) + int(requeued or 0)
+
+    def _finish(
+        self,
+        job_id: Any,
+        *,
+        claim_token: Any,
+        status: str,
+        result_summary: str,
+        artifacts_json: str,
+        last_error: str,
+    ) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        token = str(claim_token or "").strip()
+        if not normalized_id or not token or status not in JOB_TERMINAL_STATUSES:
+            return {"ok": False, "status": "invalid", "reason": "host_job_finish_invalid"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = ?, lease_until = 0, claim_token = '', claimed_by = '',
+                    updated_at = ?, finished_at = ?, result_summary = ?, artifacts_json = ?, last_error = ?
+                WHERE job_id = ? AND status = 'running' AND claim_token = ?
+                """,
+                (
+                    status,
+                    now,
+                    now,
+                    result_summary,
+                    artifacts_json,
+                    last_error,
+                    normalized_id,
+                    token,
+                ),
+            ).rowcount
+        if changed != 1:
+            return {"ok": False, "status": "stale", "reason": "host_job_claim_not_owned"}
+        return {"ok": True, "status": status, "reason": f"host_job_{status}"}
+
+    @staticmethod
+    def _immutable_match(job: HostJob, immutable: dict[str, str]) -> bool:
+        return (
+            job.owner.profile_user_id == immutable["profile_user_id"]
+            and job.owner.session_id == immutable["session_id"]
+            and job.character_pack_id == immutable["character_pack_id"]
+            and job.channel == immutable["channel"]
+            and job.delivery_target == immutable["delivery_target"]
+            and job.capability_source == immutable["capability_source"]
+            and job.capability_id == immutable["capability_id"]
+            and job.turn_id == immutable["turn_id"]
+            and job.tool_call_id == immutable["tool_call_id"]
+            and job.idempotency_key == immutable["idempotency_key"]
+            and job.argument_fingerprint == immutable["argument_fingerprint"]
+            and _json_object(job.payload) == immutable["payload_json"]
+            and job.completion_mode == immutable["completion_mode"]
+            and job.memory_mode == immutable["memory_mode"]
+        )
+
+    @staticmethod
+    def _release_expired_claims(connection: sqlite3.Connection, *, now: float) -> int:
+        cancelled = connection.execute(
+            """
+            UPDATE host_jobs
+            SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
+                updated_at = ?, finished_at = ?, last_error = 'cancelled'
+            WHERE status = 'running' AND lease_until <= ? AND cancel_requested = 1
+            """,
+            (now, now, now),
+        ).rowcount
+        requeued = connection.execute(
+            """
+            UPDATE host_jobs
+            SET status = 'queued', lease_until = 0, claim_token = '', claimed_by = '',
+                available_at = ?, updated_at = ?, last_error = 'lease_expired'
+            WHERE status = 'running' AND lease_until <= ?
+            """,
+            (now, now, now),
+        ).rowcount
+        return int(cancelled or 0) + int(requeued or 0)
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS host_jobs (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL UNIQUE,
+                    profile_user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    character_pack_id TEXT NOT NULL DEFAULT '',
+                    channel TEXT NOT NULL DEFAULT '',
+                    delivery_target TEXT NOT NULL DEFAULT '',
+                    capability_source TEXT NOT NULL,
+                    capability_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL DEFAULT '',
+                    tool_call_id TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT NOT NULL,
+                    argument_fingerprint TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    completion_mode TEXT NOT NULL,
+                    memory_mode TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    available_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    started_at REAL NOT NULL DEFAULT 0,
+                    finished_at REAL NOT NULL DEFAULT 0,
+                    lease_until REAL NOT NULL DEFAULT 0,
+                    claim_token TEXT NOT NULL DEFAULT '',
+                    claimed_by TEXT NOT NULL DEFAULT '',
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    result_summary TEXT NOT NULL DEFAULT '',
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    completion_event_id TEXT NOT NULL,
+                    last_error TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_host_jobs_idempotency
+                ON host_jobs(profile_user_id, session_id, capability_source, capability_id, idempotency_key);
+
+                CREATE INDEX IF NOT EXISTS idx_host_jobs_ready
+                ON host_jobs(status, available_at, sequence);
+                """
+            )
+
+    @staticmethod
+    def _row_to_job(row: sqlite3.Row) -> HostJob:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+        artifacts = json.loads(str(row["artifacts_json"] or "[]"))
+        return HostJob(
+            job_id=str(row["job_id"] or ""),
+            sequence=int(row["sequence"] or 0),
+            owner=HostJobOwner(str(row["profile_user_id"] or ""), str(row["session_id"] or "")),
+            character_pack_id=str(row["character_pack_id"] or ""),
+            channel=str(row["channel"] or ""),
+            delivery_target=str(row["delivery_target"] or ""),
+            capability_source=str(row["capability_source"] or ""),
+            capability_id=str(row["capability_id"] or ""),
+            turn_id=str(row["turn_id"] or ""),
+            tool_call_id=str(row["tool_call_id"] or ""),
+            idempotency_key=str(row["idempotency_key"] or ""),
+            argument_fingerprint=str(row["argument_fingerprint"] or ""),
+            payload=payload if isinstance(payload, dict) else {},
+            completion_mode=str(row["completion_mode"] or ""),
+            memory_mode=str(row["memory_mode"] or ""),
+            status=str(row["status"] or ""),
+            attempts=int(row["attempts"] or 0),
+            available_at=float(row["available_at"] or 0),
+            created_at=float(row["created_at"] or 0),
+            started_at=float(row["started_at"] or 0),
+            finished_at=float(row["finished_at"] or 0),
+            lease_until=float(row["lease_until"] or 0),
+            claim_token=str(row["claim_token"] or ""),
+            claimed_by=str(row["claimed_by"] or ""),
+            cancel_requested=bool(row["cancel_requested"]),
+            result_summary=str(row["result_summary"] or ""),
+            artifacts=tuple(dict(item) for item in artifacts if isinstance(item, dict)),
+            completion_event_id=str(row["completion_event_id"] or ""),
+            last_error=str(row["last_error"] or ""),
+        )
+
+
+def _json_object(value: dict[str, Any]) -> str | None:
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_artifacts(value: Any) -> str | None:
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item, dict) for item in value):
+        return None
+    try:
+        return json.dumps(list(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+__all__ = ["HostJob", "HostJobOwner", "HostJobStore", "JOB_TERMINAL_STATUSES"]

@@ -21,6 +21,7 @@ from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .desktop_satellite import DesktopSatelliteService
 from .durable_session_queue import DurableSessionWorkQueue
 from .session_inbox import SessionInboxStore
+from .host_jobs import HostJobStore
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
 from .instance_runtime import InstanceRuntimeLease, bind_instance_runtime
@@ -106,6 +107,7 @@ class BotRuntime:
     logger: logging.Logger = field(repr=False)
     session_inbox_store: SessionInboxStore | None = field(default=None, repr=False)
     session_work_queue: DurableSessionWorkQueue | None = field(default=None, repr=False)
+    job_store: HostJobStore | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
@@ -236,6 +238,9 @@ class BotRuntime:
         recover_queue = getattr(self.session_work_queue, "recover", None)
         if callable(recover_queue):
             await recover_queue()
+        recover_jobs = getattr(self.job_store, "recover_abandoned_claims", None)
+        if callable(recover_jobs):
+            await asyncio.to_thread(recover_jobs)
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
             bind_hook_broker(self.plugin_hook_broker)
@@ -519,6 +524,8 @@ class BotRuntimeFactory:
             session_inbox_store = SessionInboxStore(engine.store.db_path)
             engine.session_inbox_store = session_inbox_store
             session_work_queue = DurableSessionWorkQueue(session_inbox_store)
+            job_store = HostJobStore(engine.store.db_path)
+            engine.job_store = job_store
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -565,6 +572,7 @@ class BotRuntimeFactory:
                 turn_coordinator=turn_coordinator,
                 session_inbox_store=session_inbox_store,
                 session_work_queue=session_work_queue,
+                job_store=job_store,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,
