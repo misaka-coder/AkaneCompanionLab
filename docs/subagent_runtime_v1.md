@@ -1,6 +1,6 @@
 # 子代理运行时 V1
 
-状态：设计已确认，待按切片实施。旧 `delegate_task` / `TaskWorkerService` 不恢复。
+状态：实施中。provider/result 契约与 Host Job 接线已完成；真实 child 回合驱动、工作区/Resolver 接线和模型工具尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
 
 ## 1. 目标
 
@@ -137,8 +137,8 @@ child 的终态结果包含：
 
 ## 10. 实施切片
 
-1. 建立 provider/result 契约和 in-process child 驱动，不对模型暴露。
-2. 接入 Host Job，验证持久化、取消、重启失败语义和恰好一次完成事件。
+1. 建立 provider/result 契约。（已完成；in-process child 驱动在第 3 项接入）
+2. 接入 Host Job，验证持久化、取消、重启失败语义和恰好一次完成事件。（已完成）
 3. 让 child 使用正常 Resolver/Broker 与父工作区快照，删除任何直调 handler 的路径。
 4. 增加 `spawn_subagent` ToolSpec/handler，并只在真实可用时暴露。
 5. 以一个读代码并产出审计报告的任务完成父 → child → 父纵向验收。

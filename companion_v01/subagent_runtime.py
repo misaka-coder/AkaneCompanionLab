@@ -76,6 +76,12 @@ class SubagentProviderRegistry:
     def available(self, name: str) -> bool:
         return str(name or "").strip() in self._providers
 
+    def validate(self, name: str, request: SubagentStartRequest) -> str:
+        provider = self._providers.get(str(name or "").strip())
+        if provider is None:
+            return "subagent_provider_unavailable"
+        return validate_subagent_request(request, capabilities=provider.capabilities)
+
     def execute(
         self,
         name: str,
@@ -84,9 +90,7 @@ class SubagentProviderRegistry:
         cancelled: Callable[[], bool],
     ) -> SubagentRunResult:
         provider = self._providers.get(str(name or "").strip())
-        if provider is None:
-            return _failure(request, "subagent_provider_unavailable")
-        reason = validate_subagent_request(request, capabilities=provider.capabilities)
+        reason = self.validate(name, request)
         if reason:
             return _failure(request, reason)
         if cancelled():
