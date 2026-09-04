@@ -106,6 +106,20 @@ root.addEventListener("click", (event) => {
     });
     return;
   }
+  const pluginPathPicker = event.target.closest("button[data-plugin-path-picker]");
+  if (pluginPathPicker && !pluginPathPicker.disabled) {
+    const actionId = String(pluginPathPicker.dataset.pluginPathPicker || "").trim();
+    void runAction(actionId).then((result) => {
+      const path = String(result?.path || "").trim();
+      const input = root.querySelector('[data-capability-form="plugin-stage"] [name="pluginPath"]');
+      if (result?.ok && path && input) {
+        input.value = path;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+      }
+    });
+    return;
+  }
   const pluginDiscardButton = event.target.closest("button[data-plugin-stage-discard]");
   if (pluginDiscardButton && !pluginDiscardButton.disabled) {
     const stageId = String(pluginDiscardButton.dataset.pluginStageDiscard || "").trim();

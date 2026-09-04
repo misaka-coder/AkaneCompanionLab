@@ -109,6 +109,7 @@ assert.notEqual(liveCharacterPatch.emotions[0].image, liveCharacterPatch.emotion
 const rawSnapshot = {
   sourceKind: "backend",
   fallbackReason: null,
+  backendUrl: "http://127.0.0.1:9999",
   controlCenterV2: { liveSnapshotStatus: "connected" },
   generatedAt: "2026-08-20T08:00:00.000Z",
   controlCenterRuntime: {
@@ -575,6 +576,11 @@ assert.deepEqual(normalizeActionPresentation({ ok: true, status: "executed" }), 
   label: "已完成",
   detail: ""
 });
+assert.deepEqual(normalizeActionPresentation({ ok: false, status: "cancelled", reason: "picker_cancelled" }), {
+  phase: "confirmed",
+  label: "已取消",
+  detail: ""
+});
 assert.deepEqual(normalizeActionPresentation({ ok: false, status: "execution_unknown", reason: "state_not_confirmed" }), {
   phase: "unknown",
   label: "已发送，未确认",
@@ -992,6 +998,10 @@ assert.match(abilitiesHtml, /akane\.sample\.gentle-checkin\.schedule/);
 assert.match(abilitiesHtml, /agent\.event\.submit/);
 assert.match(abilitiesHtml, /安装本地插件/);
 assert.match(abilitiesHtml, /data-capability-form="plugin-stage"/);
+assert.match(abilitiesHtml, /data-plugin-path-picker="abilities\.plugin\.pickSource"/);
+assert.match(abilitiesHtml, /data-plugin-path-picker="abilities\.plugin\.pickWheel"/);
+assert.match(abilitiesHtml, /选择源码目录/);
+assert.match(abilitiesHtml, /选择 wheel/);
 assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageSource"/);
 assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageWheel"/);
 assert.match(abilitiesHtml, /akane\.sample\.timer/);
@@ -1027,6 +1037,23 @@ const bundledPluginHtml = renderAbilities({
   phase: "ready"
 });
 assert.doesNotMatch(bundledPluginHtml, /data-plugin-uninstall=/);
+
+const remotePluginHtml = renderAbilities({
+  viewModel: {
+    ...viewModel,
+    abilities: {
+      ...viewModel.abilities,
+      plugins: {
+        ...viewModel.abilities.plugins,
+        localPickerAvailable: false
+      }
+    }
+  },
+  actionStates: {},
+  phase: "ready"
+});
+assert.match(remotePluginHtml, /远端宿主路径/);
+assert.doesNotMatch(remotePluginHtml, /data-plugin-path-picker=/);
 
 const remoteAbilitiesHtml = renderAbilities({
   viewModel: {

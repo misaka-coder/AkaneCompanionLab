@@ -115,18 +115,26 @@ function renderPluginStaging(state, plugins) {
   const wheelPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageWheel"));
   const installPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.install"));
   const discardPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.discardStage"));
-  const pending = sourcePending || wheelPending || installPending || discardPending;
+  const pickSourcePending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.pickSource"));
+  const pickWheelPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.pickWheel"));
+  const pending = sourcePending || wheelPending || installPending || discardPending || pickSourcePending || pickWheelPending;
   const sourceAvailable = state.viewModel?.actions?.["abilities.plugin.stageSource"]?.available;
   const wheelAvailable = state.viewModel?.actions?.["abilities.plugin.stageWheel"]?.available;
+  const pickerAvailable = plugins.localPickerAvailable;
   const managementCopy = plugins.managementStatus === "loading"
     ? "正在连接插件管理服务…"
     : plugins.managementAvailable
-      ? "路径由当前 Bot 所在宿主读取；暂存只构建并隔离探测，不会启用代码。"
+      ? pickerAvailable
+        ? "选择本机源码目录或 wheel；暂存只构建并隔离探测，不会启用代码。"
+        : "当前连接远端 Bot，请填写远端宿主可以读取的路径。"
       : "插件管理服务当前不可用，已安装插件仍可正常查看。";
   return `<details class="plugin-stage-panel" data-capability-key="plugin:installer">
     <summary><span><strong>安装本地插件</strong><small>${escapeHtml(managementCopy)}</small></span><i aria-hidden="true">⌄</i></summary>
     <form class="capability-config-form" data-capability-form="plugin-stage">
-      <label class="capability-field"><span>宿主路径</span><input name="pluginPath" value="" placeholder="插件源码目录或 .whl 文件" autocomplete="off"></label>
+      <div class="plugin-path-entry">
+        <label class="capability-field"><span>${pickerAvailable ? "本机路径" : "远端宿主路径"}</span><input name="pluginPath" value="" placeholder="插件源码目录或 .whl 文件" autocomplete="off"></label>
+        ${pickerAvailable ? `<div class="plugin-path-pickers"><button class="action-button" type="button" data-plugin-path-picker="abilities.plugin.pickSource"${pending ? " disabled" : ""}><span>▱</span><b>${pickSourcePending ? "选择中" : "选择源码目录"}</b></button><button class="action-button" type="button" data-plugin-path-picker="abilities.plugin.pickWheel"${pending ? " disabled" : ""}><span>◫</span><b>${pickWheelPending ? "选择中" : "选择 wheel"}</b></button></div>` : ""}
+      </div>
       <p class="plugin-stage-note">源码目录需要包含 pyproject.toml 和可独立运行的测试；wheel 与源码最终经过同一套探测。</p>
       <div class="capability-form-actions">
         <button class="action-button" type="submit" data-action="abilities.plugin.stageWheel"${pending || !wheelAvailable ? " disabled" : ""}><span>◫</span><b>${wheelPending ? "探测中" : "检查 wheel"}</b></button>

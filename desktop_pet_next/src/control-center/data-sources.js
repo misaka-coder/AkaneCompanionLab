@@ -50,7 +50,9 @@ const qqBackendActionIds = new Set([
 const tauriInvokeOnlyActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
-  CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder
+  CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginPickSource,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginPickWheel
 ]);
 const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot",
@@ -1216,6 +1218,18 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
     }
     if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter) {
       return await runTauriCharacterVoiceProfileClear(payload, context, options, bridge);
+    }
+    if ([CONTROL_CENTER_ACTIONS.abilitiesPluginPickSource, CONTROL_CENTER_ACTIONS.abilitiesPluginPickWheel].includes(actionId)) {
+      if (typeof bridge.invoke !== "function") return createNotImplementedActionResult(actionId);
+      const kind = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginPickSource ? "source" : "wheel";
+      const result = await bridge.invoke("pick_local_plugin_path", { kind });
+      return {
+        ...(result && typeof result === "object" ? result : {}),
+        ok: Boolean(result?.ok),
+        status: String(result?.status || (result?.ok ? "selected" : "failed")),
+        actionId,
+        refresh: false
+      };
     }
 
     if (command && typeof bridge.invoke === "function") {

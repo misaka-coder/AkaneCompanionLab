@@ -31,6 +31,14 @@ const source = createBackendControlCenterSource({
     },
     async invoke(command, payload) {
       invokeLog.push({ command, payload });
+      if (command === "pick_local_plugin_path") {
+        return {
+          ok: true,
+          status: "selected",
+          kind: payload.kind,
+          path: payload.kind === "source" ? "C:/plugins/sample" : "C:/plugins/sample.whl",
+        };
+      }
       if (command === "set_character_voice_profile" || command === "clear_character_voice_profile") {
         return { profile: { identity: { name: "Akane" } } };
       }
@@ -128,6 +136,24 @@ for (const [actionId, command] of [
   assert.equal(result.ok, true, `${actionId} should invoke Tauri`);
   assert.equal(invokeLog.at(-1).command, command);
 }
+
+const pickedPluginSource = await router.run(CONTROL_CENTER_ACTIONS.abilitiesPluginPickSource);
+assert.equal(pickedPluginSource.ok, true);
+assert.equal(pickedPluginSource.status, "selected");
+assert.equal(pickedPluginSource.path, "C:/plugins/sample");
+assert.equal(pickedPluginSource.refresh, false);
+assert.deepEqual(invokeLog.at(-1), {
+  command: "pick_local_plugin_path",
+  payload: { kind: "source" },
+});
+
+const pickedPluginWheel = await router.run(CONTROL_CENTER_ACTIONS.abilitiesPluginPickWheel);
+assert.equal(pickedPluginWheel.ok, true);
+assert.equal(pickedPluginWheel.path, "C:/plugins/sample.whl");
+assert.deepEqual(invokeLog.at(-1), {
+  command: "pick_local_plugin_path",
+  payload: { kind: "wheel" },
+});
 
 await router.run(CONTROL_CENTER_ACTIONS.windowMinimize);
 await router.run(CONTROL_CENTER_ACTIONS.windowMaximize);

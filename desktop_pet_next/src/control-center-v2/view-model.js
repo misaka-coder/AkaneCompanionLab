@@ -28,6 +28,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
   abilities.plugins = normalizePluginRuntime(raw.pluginRuntime, raw.pluginManagementRuntime, connected);
+  abilities.plugins.localPickerAvailable = connected && liveSnapshotStatus !== "not-applicable" && isLoopbackBackendUrl(raw.backendUrl);
   abilities.available = abilities.available || abilities.plugins.available;
   const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
   const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
@@ -163,6 +164,14 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
         available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("uninstall") && abilities.plugins.entries.some((item) => item.actionsEnabled && item.source === "managed"),
         reason: connected ? "当前没有可卸载的用户插件" : "桌宠尚未连接"
       },
+      "abilities.plugin.pickSource": {
+        available: abilities.plugins.localPickerAvailable,
+        reason: abilities.plugins.localPickerAvailable ? "" : "远端 Bot 需要填写远端宿主路径"
+      },
+      "abilities.plugin.pickWheel": {
+        available: abilities.plugins.localPickerAvailable,
+        reason: abilities.plugins.localPickerAvailable ? "" : "远端 Bot 需要填写远端宿主路径"
+      },
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
       "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
       [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
@@ -259,6 +268,9 @@ function deriveSetupReadiness({ connected, packId, displayName, characterWarning
 export function normalizeActionPresentation(result) {
   const value = asObject(result);
   const status = text(value.status) || (value.ok ? "executed" : "failed");
+  if (status === "cancelled") {
+    return { phase: "confirmed", label: "已取消", detail: "" };
+  }
   if (value.ok && status === "executed" && text(value.actionId) === "advanced.resetWindow") {
     return { phase: "unknown", label: "重置请求已发送", detail: "请观察桌宠窗口是否已经恢复" };
   }
@@ -926,6 +938,15 @@ function normalizePluginContributions(value) {
     normalized[key] = (Array.isArray(contributions[key]) ? contributions[key] : []).map(text).filter(Boolean);
   }
   return normalized;
+}
+
+function isLoopbackBackendUrl(value) {
+  try {
+    const hostname = new URL(text(value)).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return hostname === "localhost" || hostname.startsWith("127.") || hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 function pluginStatusPresentation(status, enabled, pendingActivation) {
