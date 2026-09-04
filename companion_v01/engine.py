@@ -4942,6 +4942,7 @@ class AkaneMemoryEngine:
                 tool_result=tool_result,
             )
         if external_event_turn:
+            final_output["_provider_output_raw"] = provider_output_raw
             apply_plugin_text_presentation_policy(
                 final_output,
                 strip_leading_addresses_from=payload.get(
