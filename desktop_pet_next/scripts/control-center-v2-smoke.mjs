@@ -20,6 +20,7 @@ import {
   MODEL_SERVICE_ACTIONS,
   runModelServiceBridgeAction
 } from "../src/control-center-v2/model-service.js";
+import { shouldUseInstanceAdminProxy } from "../src/control-center-v2/bridge.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
   resolveActiveMediaControl,
@@ -44,6 +45,12 @@ import {
   SETTINGS_COMMAND_EVENT,
   createTargetedEventEmitter
 } from "../src/control-center/event-bridge.js";
+
+assert.equal(shouldUseInstanceAdminProxy("http://127.0.0.1:9999/plugins/catalog", "GET"), false);
+assert.equal(shouldUseInstanceAdminProxy("http://127.0.0.1:9999/admin/plugins/status", "GET"), true);
+assert.equal(shouldUseInstanceAdminProxy("http://127.0.0.1:9999/api/bots/personal/admin/plugins/status", "GET"), true);
+assert.equal(shouldUseInstanceAdminProxy("http://127.0.0.1:9999/admin/plugins/stages/one", "DELETE"), true);
+assert.equal(shouldUseInstanceAdminProxy("http://127.0.0.1:9999/admin/plugins/stages", "PATCH"), false);
 
 const targetedEvents = [];
 const fallbackEvents = [];

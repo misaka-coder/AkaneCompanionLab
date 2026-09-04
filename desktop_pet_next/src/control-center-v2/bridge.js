@@ -467,10 +467,11 @@ function formatError(error) {
 
 async function instanceBoundFetch(input, init = {}) {
   const method = String(init?.method || "GET").trim().toUpperCase();
-  if (method !== "POST") return tauriFetch(input, init);
   const url = typeof input === "string" ? input : String(input?.url || input || "");
+  const usesAdminProxy = shouldUseInstanceAdminProxy(url, method);
+  if (!usesAdminProxy) return tauriFetch(input, init);
   const body = typeof init?.body === "string" ? init.body : "{}";
-  const result = await invoke("backend_admin_request", { request: { url, body } });
+  const result = await invoke("backend_admin_request", { request: { url, method, body } });
   return new Response(String(result?.body || ""), {
     status: Number(result?.httpStatus || 502),
     headers: {
@@ -478,6 +479,18 @@ async function instanceBoundFetch(input, init = {}) {
       "Cache-Control": "no-store"
     }
   });
+}
+
+export function shouldUseInstanceAdminProxy(rawUrl, rawMethod = "GET") {
+  const method = String(rawMethod || "GET").trim().toUpperCase();
+  if (method === "POST" || method === "DELETE") return true;
+  if (method !== "GET") return false;
+  try {
+    const path = new URL(rawUrl).pathname;
+    return path.startsWith("/admin/") || /^\/api\/bots\/[^/]+\/admin\//.test(path);
+  } catch {
+    return false;
+  }
 }
 
 const emitMainEvent = createTargetedEventEmitter({

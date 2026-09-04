@@ -319,6 +319,8 @@ struct ClientLaunchBinding {
 #[serde(rename_all = "camelCase")]
 struct BackendAdminRequest {
     url: String,
+    #[serde(default = "default_backend_admin_method")]
+    method: String,
     #[serde(default)]
     body: String,
 }
@@ -734,6 +736,11 @@ async fn backend_admin_request(
         return admin_failure("instance_mismatch", "client_state_instance_mismatch", 409);
     }
 
+    let method = match parse_backend_admin_method(&request.method) {
+        Ok(value) => value,
+        Err(reason) => return admin_failure("invalid_request", reason, 405),
+    };
+
     let target = match reqwest::Url::parse(request.url.trim()) {
         Ok(value) => value,
         Err(_) => return admin_failure("invalid_request", "invalid_admin_url", 400),
@@ -775,10 +782,12 @@ async fn backend_admin_request(
         Err(_) => return admin_failure("unavailable", "http_client_unavailable", 503),
     };
     let mut builder = client
-        .post(target)
+        .request(method.clone(), target)
         .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(request.body);
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if method != reqwest::Method::GET {
+        builder = builder.body(request.body);
+    }
     if let Some(token) = admin_token {
         builder = builder.bearer_auth(token);
     }
@@ -905,6 +914,7 @@ async fn post_project_workspace_admin(
         app,
         BackendAdminRequest {
             url: target.to_string(),
+            method: "POST".to_string(),
             body: payload.to_string(),
         },
     )
@@ -6434,6 +6444,19 @@ fn admin_failure(status: &str, reason: &str, http_status: u16) -> BackendAdminRe
     }
 }
 
+fn default_backend_admin_method() -> String {
+    "POST".to_string()
+}
+
+fn parse_backend_admin_method(raw: &str) -> Result<reqwest::Method, &'static str> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "" | "POST" => Ok(reqwest::Method::POST),
+        "GET" => Ok(reqwest::Method::GET),
+        "DELETE" => Ok(reqwest::Method::DELETE),
+        _ => Err("admin_method_not_allowed"),
+    }
+}
+
 fn resolve_admin_token(
     instance_id: &str,
     configured_token: Option<String>,
@@ -6832,6 +6855,20 @@ mod tests {
         assert_eq!(
             scoped_admin_bot_id("/api/bots/../control-center/model-service"),
             None
+        );
+    }
+
+    #[test]
+    fn admin_proxy_accepts_only_required_http_methods() {
+        assert_eq!(parse_backend_admin_method(""), Ok(reqwest::Method::POST));
+        assert_eq!(parse_backend_admin_method("get"), Ok(reqwest::Method::GET));
+        assert_eq!(
+            parse_backend_admin_method("DELETE"),
+            Ok(reqwest::Method::DELETE)
+        );
+        assert_eq!(
+            parse_backend_admin_method("PATCH"),
+            Err("admin_method_not_allowed")
         );
     }
 
