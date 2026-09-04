@@ -93,6 +93,27 @@ class HostJobStoreTests(unittest.TestCase):
             completed = store.get(created["job_id"], owner=self.owner)
             self.assertEqual(completed.status, "succeeded")
             self.assertEqual(completed.artifacts, ({"artifact_id": "image-1"},))
+            self.assertEqual(completed.completion_status, "pending")
+
+            pending = store.pending_completions()
+            self.assertEqual([item.job_id for item in pending], [created["job_id"]])
+            delivered = store.mark_completion_delivered(
+                created["job_id"],
+                completion_event_id=completed.completion_event_id,
+            )
+            self.assertTrue(delivered["ok"])
+            self.assertEqual(store.pending_completions(), [])
+
+    def test_exact_claim_and_pending_list_do_not_take_another_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            first = self._create(store, key="call-1")
+            second = self._create(store, key="call-2")
+
+            claimed = store.claim(second["job_id"], worker_id="worker-b")
+
+            self.assertEqual(claimed["job"].job_id, second["job_id"])
+            self.assertEqual(store.pending_job_ids(), [first["job_id"]])
 
     def test_retry_delay_prevents_early_reclaim(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

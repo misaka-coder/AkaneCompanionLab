@@ -462,6 +462,61 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.model_feedback, "query=天气")
         self.assertEqual(envelope.data["tool_type"], "web_search")
 
+    def test_long_task_is_acknowledged_by_host_job_runtime_before_handler_execution(self) -> None:
+        class LongHandler:
+            tool_type = "generate_image"
+
+            @staticmethod
+            def tool_spec():
+                return tool_orchestration_engine.GENERATE_IMAGE_TOOL_SPEC
+
+            @staticmethod
+            def normalize_call(value):
+                return dict(value) if str(value.get("prompt") or "").strip() else None
+
+            @staticmethod
+            def execute(**_kwargs):
+                raise AssertionError("long handler must not execute in the foreground turn")
+
+        class JobRuntime:
+            def __init__(self) -> None:
+                self.submissions = []
+
+            @staticmethod
+            def accepts(**_kwargs):
+                return True
+
+            def submit(self, **kwargs):
+                self.submissions.append(kwargs)
+                return ToolExecutionResult(
+                    tool_type="generate_image",
+                    stream_events=[{"type": "background_job_accepted", "status": "accepted", "job_id": "job-1"}],
+                    followup_context="accepted job-1",
+                )
+
+        handler = LongHandler()
+        engine = FakeEngine(RecordingHandler())
+        engine._resolve_tool_handlers = lambda **_kwargs: {handler.tool_type: handler}
+        engine.host_tool_jobs = JobRuntime()
+
+        result, envelope = tool_orchestration_engine.execute_tool_invocation(
+            engine,
+            invocation=ToolInvocation(
+                name="generate_image",
+                arguments={"prompt": "moon"},
+                id="call-long",
+            ),
+            profile_user_id="alice",
+            session_id="s1",
+            character_pack_id="reimu",
+            visual_payload={},
+            now_ts=123,
+        )
+
+        self.assertEqual(result.stream_events[0]["job_id"], "job-1")
+        self.assertEqual(envelope.status, "ok")
+        self.assertEqual(engine.host_tool_jobs.submissions[0]["invocation_id"], "call-long")
+
     def test_validation_failure_can_be_shaped_as_error_envelope(self) -> None:
         invocation = ToolInvocation(name="make_coffee", id="call_bad")
         validation = ValidationResult.fail("unknown_tool", "工具不存在")

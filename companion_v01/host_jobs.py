@@ -65,6 +65,9 @@ class HostJob:
     result_summary: str
     artifacts: tuple[dict[str, Any], ...]
     completion_event_id: str
+    completion_status: str
+    completion_attempts: int
+    completion_last_error: str
     last_error: str
 
 
@@ -251,6 +254,71 @@ class HostJobStore:
             "job": self._row_to_job(claimed),
         }
 
+    def claim(
+        self,
+        job_id: Any,
+        *,
+        worker_id: Any,
+        lease_seconds: float = 300.0,
+    ) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        worker = str(worker_id or "").strip()
+        if not normalized_id or not worker:
+            return {"ok": False, "status": "invalid", "reason": "job_id_and_worker_required"}
+        now = float(self._clock())
+        claim_token = f"job-claim_{uuid.uuid4().hex}"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._release_expired_claims(connection, now=now)
+            row = connection.execute(
+                "SELECT status, available_at FROM host_jobs WHERE job_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "unknown", "reason": "host_job_not_found"}
+            status = str(row["status"] or "")
+            if status != "queued":
+                return {"ok": False, "status": status, "reason": "host_job_not_claimable"}
+            if float(row["available_at"] or 0) > now:
+                return {"ok": False, "status": "waiting", "reason": "host_job_not_ready"}
+            changed = connection.execute(
+                """
+                UPDATE host_jobs
+                SET status = 'running', attempts = attempts + 1, started_at = ?,
+                    lease_until = ?, claim_token = ?, claimed_by = ?, updated_at = ?
+                WHERE job_id = ? AND status = 'queued'
+                """,
+                (now, now + max(1.0, float(lease_seconds)), claim_token, worker, now, normalized_id),
+            ).rowcount
+            if changed != 1:
+                return {"ok": False, "status": "conflict", "reason": "host_job_claim_conflict"}
+            claimed = connection.execute("SELECT * FROM host_jobs WHERE job_id = ?", (normalized_id,)).fetchone()
+        return {
+            "ok": True,
+            "status": "running",
+            "reason": "host_job_claimed",
+            "claim_token": claim_token,
+            "job": self._row_to_job(claimed),
+        }
+
+    def pending_job_ids(self, *, capability_source: Any = "") -> list[str]:
+        source = str(capability_source or "").strip()
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._release_expired_claims(connection, now=now)
+            source_clause = " AND capability_source = ?" if source else ""
+            arguments: tuple[Any, ...] = (now, source) if source else (now,)
+            rows = connection.execute(
+                f"""
+                SELECT job_id FROM host_jobs
+                WHERE status = 'queued' AND available_at <= ?{source_clause}
+                ORDER BY sequence ASC
+                """,
+                arguments,
+            ).fetchall()
+        return [str(row["job_id"] or "") for row in rows if str(row["job_id"] or "")]
+
     def succeed(
         self,
         job_id: Any,
@@ -300,7 +368,11 @@ class HostJobStore:
                 """
                 UPDATE host_jobs
                 SET status = ?, available_at = ?, lease_until = 0, claim_token = '',
-                    claimed_by = '', updated_at = ?, finished_at = ?, last_error = ?
+                    claimed_by = '', updated_at = ?, finished_at = ?, last_error = ?,
+                    completion_status = CASE
+                        WHEN ? = 'queued' THEN completion_status
+                        WHEN completion_mode = 'silent' THEN 'silent'
+                        ELSE 'pending' END
                 WHERE job_id = ? AND status = 'running' AND claim_token = ?
                 """,
                 (
@@ -309,6 +381,7 @@ class HostJobStore:
                     now,
                     finished_at,
                     str(error or "")[:500],
+                    next_status,
                     normalized_id,
                     token,
                 ),
@@ -339,7 +412,9 @@ class HostJobStore:
                 connection.execute(
                     """
                     UPDATE host_jobs
-                    SET status = 'cancelled', cancel_requested = 1, updated_at = ?, finished_at = ?
+                    SET status = 'cancelled', cancel_requested = 1, updated_at = ?, finished_at = ?,
+                        completion_status = CASE
+                            WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
                     WHERE job_id = ? AND status = 'queued'
                     """,
                     (now, now, normalized_id),
@@ -380,7 +455,9 @@ class HostJobStore:
                 """
                 UPDATE host_jobs
                 SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
-                    updated_at = ?, finished_at = ?, last_error = 'cancelled'
+                    updated_at = ?, finished_at = ?, last_error = 'cancelled',
+                    completion_status = CASE
+                        WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
                 WHERE status = 'running' AND cancel_requested = 1
                 """,
                 (now, now),
@@ -395,6 +472,72 @@ class HostJobStore:
                 (now, now),
             ).rowcount
         return int(cancelled or 0) + int(requeued or 0)
+
+    def pending_completions(self, *, capability_source: Any = "") -> list[HostJob]:
+        source = str(capability_source or "").strip()
+        source_clause = " AND capability_source = ?" if source else ""
+        arguments: tuple[Any, ...] = (source,) if source else ()
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM host_jobs
+                WHERE status IN ('succeeded', 'failed', 'cancelled')
+                  AND completion_status = 'pending'{source_clause}
+                ORDER BY sequence ASC
+                """,
+                arguments,
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    def mark_completion_delivered(self, job_id: Any, *, completion_event_id: Any) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        event_id = str(completion_event_id or "").strip()
+        if not normalized_id or not event_id:
+            return {"ok": False, "status": "invalid", "reason": "completion_identity_required"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT completion_status, completion_event_id FROM host_jobs WHERE job_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "unknown", "reason": "host_job_not_found"}
+            if str(row["completion_event_id"] or "") != event_id:
+                return {"ok": False, "status": "rejected", "reason": "completion_event_mismatch"}
+            status = str(row["completion_status"] or "")
+            if status == "delivered":
+                return {"ok": True, "status": "delivered", "reason": "completion_already_delivered"}
+            if status != "pending":
+                return {"ok": False, "status": status, "reason": "completion_not_pending"}
+            connection.execute(
+                """
+                UPDATE host_jobs
+                SET completion_status = 'delivered', completion_last_error = '', updated_at = ?
+                WHERE job_id = ? AND completion_status = 'pending'
+                """,
+                (now, normalized_id),
+            )
+        return {"ok": True, "status": "delivered", "reason": "completion_delivered"}
+
+    def record_completion_failure(self, job_id: Any, *, error: Any) -> dict[str, Any]:
+        normalized_id = str(job_id or "").strip()
+        if not normalized_id:
+            return {"ok": False, "status": "invalid", "reason": "job_id_required"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            changed = connection.execute(
+                """
+                UPDATE host_jobs
+                SET completion_attempts = completion_attempts + 1,
+                    completion_last_error = ?, updated_at = ?
+                WHERE job_id = ? AND completion_status = 'pending'
+                """,
+                (str(error or "completion_delivery_failed")[:500], now, normalized_id),
+            ).rowcount
+        if changed != 1:
+            return {"ok": False, "status": "stale", "reason": "completion_not_pending"}
+        return {"ok": True, "status": "pending", "reason": "completion_failure_recorded"}
 
     def _finish(
         self,
@@ -417,7 +560,9 @@ class HostJobStore:
                 """
                 UPDATE host_jobs
                 SET status = ?, lease_until = 0, claim_token = '', claimed_by = '',
-                    updated_at = ?, finished_at = ?, result_summary = ?, artifacts_json = ?, last_error = ?
+                    updated_at = ?, finished_at = ?, result_summary = ?, artifacts_json = ?, last_error = ?,
+                    completion_status = CASE
+                        WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
                 WHERE job_id = ? AND status = 'running' AND claim_token = ?
                 """,
                 (
@@ -460,7 +605,9 @@ class HostJobStore:
             """
             UPDATE host_jobs
             SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
-                updated_at = ?, finished_at = ?, last_error = 'cancelled'
+                updated_at = ?, finished_at = ?, last_error = 'cancelled',
+                completion_status = CASE
+                    WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
             WHERE status = 'running' AND lease_until <= ? AND cancel_requested = 1
             """,
             (now, now, now),
@@ -525,6 +672,9 @@ class HostJobStore:
                     result_summary TEXT NOT NULL DEFAULT '',
                     artifacts_json TEXT NOT NULL DEFAULT '[]',
                     completion_event_id TEXT NOT NULL,
+                    completion_status TEXT NOT NULL DEFAULT 'waiting',
+                    completion_attempts INTEGER NOT NULL DEFAULT 0,
+                    completion_last_error TEXT NOT NULL DEFAULT '',
                     last_error TEXT NOT NULL DEFAULT ''
                 );
 
@@ -533,6 +683,33 @@ class HostJobStore:
 
                 CREATE INDEX IF NOT EXISTS idx_host_jobs_ready
                 ON host_jobs(status, available_at, sequence);
+                """
+            )
+            existing_columns = {
+                str(row["name"] or "")
+                for row in connection.execute("PRAGMA table_info(host_jobs)").fetchall()
+            }
+            migrations = {
+                "completion_status": "TEXT NOT NULL DEFAULT 'waiting'",
+                "completion_attempts": "INTEGER NOT NULL DEFAULT 0",
+                "completion_last_error": "TEXT NOT NULL DEFAULT ''",
+            }
+            for name, declaration in migrations.items():
+                if name not in existing_columns:
+                    connection.execute(f"ALTER TABLE host_jobs ADD COLUMN {name} {declaration}")
+            connection.execute(
+                """
+                UPDATE host_jobs
+                SET completion_status = CASE
+                    WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
+                WHERE status IN ('succeeded', 'failed', 'cancelled')
+                  AND completion_status = 'waiting'
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_host_jobs_completion
+                ON host_jobs(completion_status, sequence)
                 """
             )
 
@@ -569,6 +746,9 @@ class HostJobStore:
             result_summary=str(row["result_summary"] or ""),
             artifacts=tuple(dict(item) for item in artifacts if isinstance(item, dict)),
             completion_event_id=str(row["completion_event_id"] or ""),
+            completion_status=str(row["completion_status"] or ""),
+            completion_attempts=int(row["completion_attempts"] or 0),
+            completion_last_error=str(row["completion_last_error"] or ""),
             last_error=str(row["last_error"] or ""),
         )
 

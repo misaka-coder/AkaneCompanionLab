@@ -21,7 +21,8 @@ from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .desktop_satellite import DesktopSatelliteService
 from .durable_session_queue import DurableSessionWorkQueue
 from .session_inbox import SessionInboxStore
-from .host_jobs import HostJobStore
+from .host_jobs import HostJob, HostJobStore
+from .host_tool_jobs import HostToolJobRuntime
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
 from .instance_runtime import InstanceRuntimeLease, bind_instance_runtime
@@ -37,6 +38,7 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_agent_events import HostAgentEventRouter
+from .plugin_api import PluginAgentEventRequest, PluginExternalEvent
 from .plugin_conversation_refs import PluginConversationReferenceAuthority
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
@@ -108,6 +110,7 @@ class BotRuntime:
     session_inbox_store: SessionInboxStore | None = field(default=None, repr=False)
     session_work_queue: DurableSessionWorkQueue | None = field(default=None, repr=False)
     job_store: HostJobStore | None = field(default=None, repr=False)
+    host_tool_jobs: HostToolJobRuntime | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
@@ -241,6 +244,22 @@ class BotRuntime:
         recover_jobs = getattr(self.job_store, "recover_abandoned_claims", None)
         if callable(recover_jobs):
             await asyncio.to_thread(recover_jobs)
+        if self.host_tool_jobs is not None:
+            host_loop = asyncio.get_running_loop()
+
+            def submit_completion(job: HostJob) -> Any:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.plugin_agent_event_router.submit(_host_job_completion_request(job)),
+                    host_loop,
+                )
+                try:
+                    return future.result(timeout=900.0)
+                except Exception:
+                    future.cancel()
+                    raise
+
+            self.host_tool_jobs.bind_terminal_callback(submit_completion)
+            self.host_tool_jobs.recover()
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
             bind_hook_broker(self.plugin_hook_broker)
@@ -266,6 +285,9 @@ class BotRuntime:
         plugin_status: dict[str, Any] = {"status": "not_started"}
         voice_status: dict[str, Any] = {"status": "not_configured"}
         engine_status: dict[str, Any] = {"status": "not_started"}
+
+        if self.host_tool_jobs is not None:
+            self.host_tool_jobs.bind_terminal_callback(None)
 
         request_engine_shutdown = getattr(self.engine, "request_shutdown", None)
         if callable(request_engine_shutdown):
@@ -526,6 +548,13 @@ class BotRuntimeFactory:
             session_work_queue = DurableSessionWorkQueue(session_inbox_store)
             job_store = HostJobStore(engine.store.db_path)
             engine.job_store = job_store
+            host_tool_jobs = HostToolJobRuntime(
+                engine=engine,
+                store=job_store,
+                background_tasks=engine.background_tasks,
+                conversation_ref_issuer=plugin_conversation_refs.issue,
+            )
+            engine.host_tool_jobs = host_tool_jobs
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -573,6 +602,7 @@ class BotRuntimeFactory:
                 session_inbox_store=session_inbox_store,
                 session_work_queue=session_work_queue,
                 job_store=job_store,
+                host_tool_jobs=host_tool_jobs,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,
@@ -615,6 +645,55 @@ class BotRuntimeFactory:
             if instance_runtime is not None:
                 instance_runtime.release()
             raise
+
+
+def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
+    """Project one durable Job terminal fact into the normal Agent event port."""
+
+    status = str(job.status or "failed").strip().lower()
+    succeeded = status == "succeeded"
+    summary = str(job.result_summary or "").strip()[:3_000]
+    error = str(job.last_error or "").strip()[:500]
+    handles = [
+        str(item.get("handle") or "").strip()
+        for item in job.artifacts
+        if isinstance(item, dict) and str(item.get("handle") or "").strip()
+    ]
+    handle_text = ", ".join(handles)[:2_000]
+    fields: list[tuple[str, str]] = [
+        ("job_id", job.job_id),
+        ("capability_id", job.capability_id),
+        ("status", status),
+    ]
+    if summary:
+        fields.append(("result_summary", summary))
+    if handle_text:
+        fields.append(("artifact_handles", handle_text))
+    if error:
+        fields.append(("error", error))
+    lines = [
+        f"后台任务 {job.capability_id} 已{'完成' if succeeded else '结束'}。",
+        f"job_id: {job.job_id}",
+        f"status: {status}",
+    ]
+    if summary:
+        lines.append(f"结果摘要：{summary}")
+    if handle_text:
+        lines.append(f"可用产物：{handle_text}")
+    if error:
+        lines.append(f"失败原因：{error}")
+    return PluginAgentEventRequest(
+        trace_id=job.completion_event_id,
+        conversation_ref=job.delivery_target,
+        message="\n".join(lines),
+        event=PluginExternalEvent(
+            event_type=f"job.{status}",
+            fields=tuple(fields),
+            source="host.jobs",
+        ),
+        memory_idempotency_key=job.completion_event_id,
+        delivery=job.memory_mode,
+    )
 
 
 def log_runtime_start_status(runtime: BotRuntime, status: dict[str, Any]) -> None:

@@ -1120,6 +1120,19 @@ def execute_tool_invocation(
             client_mode=client_mode,
             request_context=dict(request_context or {}),
         )
+    host_tool_jobs = getattr(engine, "host_tool_jobs", None)
+    if host_tool_jobs is not None and host_tool_jobs.accepts(
+        handler=handler,
+        context=execution_context,
+    ):
+        result = host_tool_jobs.submit(
+            capability_id=invocation.name,
+            invocation_id=invocation.id,
+            call=normalized_call,
+            context=execution_context,
+            domain_profile_id=domain_profile_id,
+        )
+        return result, _final_exec_envelope(invocation=invocation, result=result)
     broker = getattr(engine, "executor_broker", None)
     if broker is None:
         broker = ExecutorBroker(None)

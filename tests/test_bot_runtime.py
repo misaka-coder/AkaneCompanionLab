@@ -14,7 +14,8 @@ from unittest.mock import Mock
 import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
 from companion_v01.bot_profile import BotConfig, BotQQChannelConfig
-from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory
+from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory, _host_job_completion_request
+from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_bot_bootstrap import build_host_bot_registry
 from companion_v01.instance_profile import instance_context_from_bot_config
 from companion_v01.instance_runtime import bind_instance_runtime
@@ -344,6 +345,62 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "active")
         self.assertEqual(recovered, ["jobs"])
+
+    async def test_start_binds_and_recovers_host_tool_jobs(self) -> None:
+        runtime, _plugin_host, _engine, _followups = _runtime()
+
+        class RecoverableToolJobs:
+            callback = None
+            recover_count = 0
+
+            def bind_terminal_callback(self, callback) -> None:
+                self.callback = callback
+
+            def recover(self) -> int:
+                self.recover_count += 1
+                return 0
+
+        jobs = RecoverableToolJobs()
+        runtime.host_tool_jobs = jobs
+
+        await runtime.start()
+
+        self.assertTrue(callable(jobs.callback))
+        self.assertEqual(jobs.recover_count, 1)
+
+    async def test_terminal_host_job_becomes_contextual_agent_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            created = store.create(
+                owner=HostJobOwner("profile-a", "session-a"),
+                capability_source="tool",
+                capability_id="generate_image",
+                payload={"call": {"prompt": "moon"}},
+                idempotency_key="call-a",
+                argument_fingerprint="sha256:test",
+                character_pack_id="reimu",
+                channel="qq_text",
+                delivery_target="signed-conversation-ref",
+            )
+            claimed = store.claim(created["job_id"], worker_id="worker-a")
+            store.succeed(
+                created["job_id"],
+                claim_token=claimed["claim_token"],
+                result_summary="图片生成完成。",
+                artifacts=[{"handle": "generated-file:image-1"}],
+            )
+            job = store.get(
+                created["job_id"],
+                owner=HostJobOwner("profile-a", "session-a"),
+            )
+
+            request = _host_job_completion_request(job)
+
+            self.assertEqual(request.conversation_ref, "signed-conversation-ref")
+            self.assertEqual(request.event.event_type, "job.succeeded")
+            self.assertEqual(request.event.source, "host.jobs")
+            self.assertEqual(request.memory_idempotency_key, job.completion_event_id)
+            self.assertIn("generated-file:image-1", request.message)
 
     async def test_start_recovers_shared_session_inbox_runner_once(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()

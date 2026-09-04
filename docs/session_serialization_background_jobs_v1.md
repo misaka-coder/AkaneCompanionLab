@@ -1,6 +1,6 @@
 # 会话串行与后台任务 V1
 
-状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储内核已完成幂等、租约、恢复、重试和取消。现有长任务尚待逐条迁移到这一权威。
+状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置 `execution_class=long_task` 已通过统一适配层返回可靠 acknowledgment，并将完成事实送回现有 QQ/桌宠 Agent-event 主链；生图的真实渠道纵向验收、Shell 与插件后台工作迁移仍待完成。
 
 ## 1. 目标
 
@@ -221,8 +221,8 @@ needs_model_followup: false
 1. 写不变量测试，锁定当前会话串行、工具配对和 MemCore 顺序。
 2. 建立持久化会话 inbox，并让 `TurnCoordinator` 从中领取。
 3. 建立唯一 Job 存储、租约、恢复、幂等和取消。
-4. 让现有 `execution_class=long_task` 真正返回可靠 Job acknowledgment。
-5. 将 Job 完成事件接入普通 Agent 主链。
+4. 让现有 `execution_class=long_task` 真正返回可靠 Job acknowledgment。（已完成）
+5. 将 Job 完成事件接入普通 Agent 主链。（已完成，真实渠道验收归入下一项）
 6. 以生图完成第一条 QQ + 桌宠纵向验收。
 7. 将现有 Shell run 状态接入 Job 权威和完成通知。
 8. 迁移 ComfyUI、媒体处理和插件后台工作。

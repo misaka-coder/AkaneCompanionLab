@@ -425,6 +425,7 @@ class AkaneMemoryEngine:
             {
                 "attachment": int(getattr(config, "BACKGROUND_ATTACHMENT_WORKERS", 3) or 3),
                 "timeline": int(getattr(config, "BACKGROUND_TIMELINE_WORKERS", 1) or 1),
+                "host-jobs": int(getattr(config, "BACKGROUND_HOST_JOB_WORKERS", 2) or 2),
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
