@@ -516,6 +516,24 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .plugin-card-actions { display: flex; justify-content: flex-end; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); }
 .plugin-card-actions .action-button { min-height: 30px; }
 .plugin-library-empty { display: grid; place-items: center; min-height: 72px; margin-top: 12px; border: 1px dashed var(--line); border-radius: 12px; color: var(--text-faint); font-size: 7px; text-align: center; }
+.plugin-stage-panel { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgb(255 255 255 / 0.018); }
+.plugin-stage-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 9px 11px; cursor: pointer; list-style: none; }
+.plugin-stage-panel > summary::-webkit-details-marker { display: none; }
+.plugin-stage-panel > summary > span { display: grid; gap: 3px; }
+.plugin-stage-panel > summary strong { font-size: 8px; }
+.plugin-stage-panel > summary small { color: var(--text-faint); font-size: 6px; font-weight: 400; line-height: 1.45; }
+.plugin-stage-panel > summary > i { color: var(--text-faint); font-style: normal; transition: transform 180ms ease; }
+.plugin-stage-panel[open] > summary > i { transform: rotate(180deg); }
+.plugin-stage-panel > .capability-config-form { margin: 0 11px 11px; padding-top: 10px; border-top: 1px solid var(--line); }
+.plugin-stage-note { margin: 0; color: var(--text-faint); font-size: 6px; line-height: 1.55; }
+.plugin-stage-list { display: grid; gap: 8px; margin: 0 11px 11px; }
+.plugin-stage-item { display: grid; gap: 8px; padding: 10px; border: 1px solid rgb(var(--accent-rgb) / 0.2); border-radius: 10px; background: rgb(var(--accent-rgb) / 0.05); }
+.plugin-stage-item.is-invalid { border-color: rgb(240 105 105 / 0.26); background: rgb(240 105 105 / 0.05); }
+.plugin-stage-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.plugin-stage-heading > span { display: grid; gap: 2px; min-width: 0; }
+.plugin-stage-heading strong { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-stage-heading small, .plugin-stage-item > p, .plugin-stage-item.is-invalid small { margin: 0; color: var(--text-faint); font-size: 6px; line-height: 1.45; }
+.plugin-stage-heading em { flex: 0 0 auto; padding: 3px 6px; border-radius: 999px; color: #ffd093; background: rgb(214 155 69 / 0.12); font-size: 6px; font-style: normal; }
 .plugin-library-empty.is-unavailable { color: #ffd093; border-color: rgb(211 148 69 / 0.22); }
 .skill-library-card { margin-top: 15px; padding: 14px; border: 1px solid rgb(var(--accent-rgb) / 0.18); border-radius: 17px; background: linear-gradient(135deg, rgb(var(--accent-rgb) / 0.065), var(--surface-soft)); }
 .skill-library-head { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 11px; }

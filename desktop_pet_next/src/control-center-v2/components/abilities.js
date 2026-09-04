@@ -103,10 +103,51 @@ function renderPluginLibrary(state, plugins) {
       <div><small>INSTALLED PLUGINS</small><strong>插件</strong><p>安装与适用渠道分离；这里只展示宿主确认过的运行状态和贡献。</p></div>
       <span class="plugin-library-count"><strong>${plugins.active}</strong><small>运行中 / ${plugins.total}</small></span>
     </div>
+    ${renderPluginStaging(state, plugins)}
     ${plugins.entries.length
       ? `<div class="plugin-library-list">${plugins.entries.map((plugin) => renderPluginCard(state, plugin)).join("")}</div>`
       : `<div class="plugin-library-empty is-${escapeHtml(plugins.status)}">${statusCopy}</div>`}
   </section>`;
+}
+
+function renderPluginStaging(state, plugins) {
+  const sourcePending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageSource"));
+  const wheelPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageWheel"));
+  const pending = sourcePending || wheelPending;
+  const sourceAvailable = state.viewModel?.actions?.["abilities.plugin.stageSource"]?.available;
+  const wheelAvailable = state.viewModel?.actions?.["abilities.plugin.stageWheel"]?.available;
+  const managementCopy = plugins.managementStatus === "loading"
+    ? "正在连接插件管理服务…"
+    : plugins.managementAvailable
+      ? "路径由当前 Bot 所在宿主读取；暂存只构建并隔离探测，不会启用代码。"
+      : "插件管理服务当前不可用，已安装插件仍可正常查看。";
+  return `<details class="plugin-stage-panel" data-capability-key="plugin:installer">
+    <summary><span><strong>安装本地插件</strong><small>${escapeHtml(managementCopy)}</small></span><i aria-hidden="true">⌄</i></summary>
+    <form class="capability-config-form" data-capability-form="plugin-stage">
+      <label class="capability-field"><span>宿主路径</span><input name="pluginPath" value="" placeholder="插件源码目录或 .whl 文件" autocomplete="off"></label>
+      <p class="plugin-stage-note">源码目录需要包含 pyproject.toml 和可独立运行的测试；wheel 与源码最终经过同一套探测。</p>
+      <div class="capability-form-actions">
+        <button class="action-button" type="submit" data-action="abilities.plugin.stageWheel"${pending || !wheelAvailable ? " disabled" : ""}><span>◫</span><b>${wheelPending ? "探测中" : "检查 wheel"}</b></button>
+        <button class="action-button is-primary" type="submit" data-action="abilities.plugin.stageSource"${pending || !sourceAvailable ? " disabled" : ""}><span>⌁</span><b>${sourcePending ? "构建并探测中" : "检查源码"}</b></button>
+      </div>
+    </form>
+    ${plugins.stages.length ? `<div class="plugin-stage-list">${plugins.stages.map(renderPluginStage).join("")}</div>` : ""}
+  </details>`;
+}
+
+function renderPluginStage(stage) {
+  if (!stage.ok) {
+    return `<article class="plugin-stage-item is-invalid"><div><strong>无效暂存候选</strong><small>${escapeHtml(stage.reason || "候选数据不可读取")}</small></div></article>`;
+  }
+  const groups = pluginContributionGroups(stage.contributions);
+  return `<article class="plugin-stage-item">
+    <div class="plugin-stage-heading"><span><strong>${escapeHtml(stage.pluginId)}</strong><small>${stage.version ? `v${escapeHtml(stage.version)}` : escapeHtml(stage.distributionName || "已通过探测")}</small></span><em>待确认</em></div>
+    <p>${stage.contributionCount ? `${stage.contributionCount} 项贡献已通过隔离探测` : "插件没有声明面向模型或渠道的贡献"}</p>
+    ${groups.length ? `<div class="plugin-contribution-list">${renderPluginContributionGroups(groups, stage.contributions)}</div>` : ""}
+    <div class="plugin-detail-section"><strong>申请权限</strong>${stage.permissions.length
+      ? `<div class="plugin-permission-list">${stage.permissions.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>`
+      : `<p>没有申请额外权限。</p>`}</div>
+  </article>`;
 }
 
 function renderPluginCard(state, plugin) {
@@ -141,15 +182,7 @@ function renderPluginCard(state, plugin) {
 }
 
 function renderPluginDetails(plugin) {
-  const contributionGroups = [
-    ["capabilities", "模型能力"],
-    ["commands", "QQ 指令"],
-    ["event_handlers", "事件处理"],
-    ["hooks", "宿主钩子"],
-    ["background_services", "后台服务"],
-    ["prompt_blocks", "提示片段"],
-    ["skills", "Skill"]
-  ].filter(([key]) => plugin.contributions[key]?.length);
+  const contributionGroups = pluginContributionGroups(plugin.contributions);
   const channelLabels = { desktop: "桌宠", qq: "QQ" };
   const channelNames = plugin.surfaces.length
     ? plugin.surfaces.map((surface) => channelLabels[surface] || surface).join("、")
@@ -164,7 +197,7 @@ function renderPluginDetails(plugin) {
       </dl>
       <section class="plugin-detail-section"><strong>运行贡献</strong>
         ${contributionGroups.length
-          ? `<div class="plugin-contribution-list">${contributionGroups.map(([key, label]) => `<div><small>${label}</small><span>${plugin.contributions[key].map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</span></div>`).join("")}</div>`
+          ? `<div class="plugin-contribution-list">${renderPluginContributionGroups(contributionGroups, plugin.contributions)}</div>`
           : `<p>${plugin.declaredOnly ? "插件尚未激活，当前显示安装阶段的声明。" : "插件没有注册面向模型或渠道的贡献。"}</p>`}
       </section>
       <section class="plugin-detail-section"><strong>权限声明</strong>
@@ -174,6 +207,22 @@ function renderPluginDetails(plugin) {
       </section>
     </div>
   </details>`;
+}
+
+function pluginContributionGroups(contributions) {
+  return [
+    ["capabilities", "模型能力"],
+    ["commands", "QQ 指令"],
+    ["event_handlers", "事件处理"],
+    ["hooks", "宿主钩子"],
+    ["background_services", "后台服务"],
+    ["prompt_blocks", "提示片段"],
+    ["skills", "Skill"]
+  ].filter(([key]) => contributions[key]?.length);
+}
+
+function renderPluginContributionGroups(groups, contributions) {
+  return groups.map(([key, label]) => `<div><small>${label}</small><span>${contributions[key].map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</span></div>`).join("");
 }
 
 function renderSkillLibrary(state, skills) {

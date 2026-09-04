@@ -351,6 +351,24 @@ function capabilityFormPayload(form, actionId) {
       outputImageSlot: String(data.get("outputImageSlot") || "").trim()
     };
   }
+  if (form.dataset.capabilityForm === "plugin-stage") {
+    const path = String(data.get("pluginPath") || "").trim();
+    if (!path) {
+      const input = form.elements.namedItem("pluginPath");
+      input?.setCustomValidity("请填写当前宿主可以读取的插件路径。");
+      input?.reportValidity();
+      input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+      return null;
+    }
+    if (actionId === "abilities.plugin.stageWheel" && !path.toLowerCase().endsWith(".whl")) {
+      const input = form.elements.namedItem("pluginPath");
+      input?.setCustomValidity("wheel 文件路径需要以 .whl 结尾。");
+      input?.reportValidity();
+      input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
+      return null;
+    }
+    return { path };
+  }
   if (form.dataset.capabilityForm === "voice-profile") {
     const providerId = form.dataset.providerId || "";
     if (actionId === "abilities.provider.voiceProfile.inspectFolder") {

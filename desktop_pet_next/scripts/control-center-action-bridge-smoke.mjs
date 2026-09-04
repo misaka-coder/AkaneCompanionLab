@@ -198,6 +198,12 @@ await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginRollback, { plugin
 assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/akane\.sample\.gentle-checkin\/rollback/);
 assert.equal(backendRequests.at(-1).options.method, "POST");
 assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), {});
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource, { path: "C:/work/timer-plugin" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages\/source/);
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { source_path: "C:/work/timer-plugin" });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel, { path: "C:/work/timer-plugin.whl" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages(?:\?|$)/);
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { wheel_path: "C:/work/timer-plugin.whl" });
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });
@@ -224,6 +230,24 @@ const failedPluginResult = await failedPluginSource.runAction(
 assert.equal(failedPluginResult.ok, false);
 assert.equal(failedPluginResult.refresh, true);
 assert.equal(failedPluginResult.reason, "插件未能切换，宿主已恢复上一有效版本");
+
+const managementSource = createBackendControlCenterSource({
+  baseUrl: "http://control-center-route-smoke",
+  expectedInstanceId: "local-default",
+  fetchImpl: async (url) => {
+    if (String(url).includes("/health")) {
+      return jsonResponse({ status: "ok", root_binding: "valid", instance_id: "local-default" });
+    }
+    return jsonResponse({
+      status: "active",
+      management: { status: "ready", supports: ["stage_source", "stage_wheel"] },
+      artifacts: { status: "ready", stages: [{ stage_id: "stage-1" }] }
+    });
+  }
+});
+const managementSnapshot = await managementSource.readPluginManagement();
+assert.equal(managementSnapshot.ok, true);
+assert.equal(managementSnapshot.data.artifacts.stages[0].stage_id, "stage-1");
 
 assert.ok(afterActionLog.length >= settingsCases.length);
 console.log(

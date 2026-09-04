@@ -174,6 +174,31 @@ const rawSnapshot = {
       }]
     }
   },
+  pluginManagementRuntime: {
+    status: "available",
+    data: {
+      management: {
+        status: "ready",
+        supports: ["stage_source", "stage_wheel", "install", "discard_stage"]
+      },
+      artifacts: {
+        status: "ready",
+        stages: [{
+          ok: true,
+          status: "staged",
+          stage_id: "stage-review-1",
+          plugin_id: "akane.sample.timer",
+          distribution_name: "akane-sample-timer",
+          version: "1.0.0",
+          permissions: ["agent.event.submit", "storage.write"],
+          contribution_snapshot: {
+            capabilities: ["akane.sample.timer.schedule"],
+            background_services: ["timer-scheduler"]
+          }
+        }]
+      }
+    }
+  },
   overviewRuntime: {
     shell: { status: "在线" },
     emotion: { name: "开心", image: "https://127.0.0.1/assets/happy.png" },
@@ -965,6 +990,14 @@ assert.match(abilitiesHtml, /data-action="abilities\.plugin\.rollback"/);
 assert.match(abilitiesHtml, /回滚版本/);
 assert.match(abilitiesHtml, /akane\.sample\.gentle-checkin\.schedule/);
 assert.match(abilitiesHtml, /agent\.event\.submit/);
+assert.match(abilitiesHtml, /安装本地插件/);
+assert.match(abilitiesHtml, /data-capability-form="plugin-stage"/);
+assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageSource"/);
+assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageWheel"/);
+assert.match(abilitiesHtml, /akane\.sample\.timer/);
+assert.match(abilitiesHtml, /akane\.sample\.timer\.schedule/);
+assert.match(abilitiesHtml, /storage\.write/);
+assert.match(abilitiesHtml, /待确认/);
 assert.match(abilitiesHtml, /coding-project/);
 assert.match(abilitiesHtml, /personal-workflow/);
 assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);

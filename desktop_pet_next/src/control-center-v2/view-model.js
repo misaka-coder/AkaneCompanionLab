@@ -27,7 +27,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
-  abilities.plugins = normalizePluginRuntime(raw.pluginRuntime, connected);
+  abilities.plugins = normalizePluginRuntime(raw.pluginRuntime, raw.pluginManagementRuntime, connected);
   abilities.available = abilities.available || abilities.plugins.available;
   const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
   const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
@@ -142,6 +142,14 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "abilities.plugin.rollback": {
         available: connected && abilities.plugins.entries.some((item) => item.actionsEnabled && item.rollbackAvailable),
         reason: connected ? "当前没有可回滚的插件版本" : "桌宠尚未连接"
+      },
+      "abilities.plugin.stageSource": {
+        available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("stage_source"),
+        reason: connected ? "当前宿主不支持从源码暂存插件" : "桌宠尚未连接"
+      },
+      "abilities.plugin.stageWheel": {
+        available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("stage_wheel"),
+        reason: connected ? "当前宿主不支持暂存 wheel" : "桌宠尚未连接"
       },
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
       "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
@@ -817,10 +825,16 @@ function normalizeAbilitiesRuntime(value, connected) {
   };
 }
 
-function normalizePluginRuntime(value, connected) {
+function normalizePluginRuntime(value, managementValue, connected) {
   const runtime = asObject(value);
   const payload = asObject(runtime.data);
   const status = text(runtime.status) || "not-requested";
+  const managementRuntime = asObject(managementValue);
+  const managementPayload = asObject(managementRuntime.data);
+  const management = asObject(managementPayload.management);
+  const artifacts = asObject(managementPayload.artifacts);
+  const managementStatus = text(managementRuntime.status) || "not-requested";
+  const supports = (Array.isArray(management.supports) ? management.supports : []).map(text).filter(Boolean);
   const entries = (Array.isArray(payload.plugins) ? payload.plugins : [])
     .map((item) => {
       const entry = asObject(item);
@@ -830,13 +844,7 @@ function normalizePluginRuntime(value, connected) {
       const enabled = Boolean(entry.enabled);
       const pendingActivation = Boolean(entry.pending_activation);
       const presentation = pluginStatusPresentation(runtimeStatus, enabled, pendingActivation);
-      const contributions = asObject(entry.contributions);
-      const normalizedContributions = {};
-      for (const key of ["capabilities", "commands", "event_handlers", "hooks", "background_services", "prompt_blocks", "skills"]) {
-        normalizedContributions[key] = (Array.isArray(contributions[key]) ? contributions[key] : [])
-          .map(text)
-          .filter(Boolean);
-      }
+      const normalizedContributions = normalizePluginContributions(entry.contributions);
       return {
         pluginId,
         version: text(entry.version),
@@ -870,10 +878,42 @@ function normalizePluginRuntime(value, connected) {
     status,
     reason: text(runtime.reason) || text(payload.reason),
     generation: Number(payload.generation || 0),
+    managementAvailable: connected && managementStatus === "available" && text(management.status) === "ready",
+    managementStatus,
+    managementReason: text(managementRuntime.reason) || text(managementPayload.reason),
+    supports,
+    stages: (Array.isArray(artifacts.stages) ? artifacts.stages : []).map((item) => {
+      const entry = asObject(item);
+      const pluginId = text(entry.plugin_id);
+      const stageId = text(entry.stage_id);
+      if (!stageId) return null;
+      const contributions = normalizePluginContributions(entry.contribution_snapshot);
+      return {
+        ok: entry.ok === true,
+        stageId,
+        pluginId,
+        version: text(entry.version),
+        distributionName: text(entry.distribution_name),
+        status: text(entry.status),
+        reason: text(entry.reason),
+        permissions: (Array.isArray(entry.permissions) ? entry.permissions : []).map(text).filter(Boolean),
+        contributions,
+        contributionCount: Object.values(contributions).reduce((total, values) => total + values.length, 0)
+      };
+    }).filter(Boolean),
     total: entries.length,
     active: entries.filter((item) => item.enabled && item.runtimeStatus === "active").length,
     entries
   };
+}
+
+function normalizePluginContributions(value) {
+  const contributions = asObject(value);
+  const normalized = {};
+  for (const key of ["capabilities", "commands", "event_handlers", "hooks", "background_services", "prompt_blocks", "skills"]) {
+    normalized[key] = (Array.isArray(contributions[key]) ? contributions[key] : []).map(text).filter(Boolean);
+  }
+  return normalized;
 }
 
 function pluginStatusPresentation(status, enabled, pendingActivation) {

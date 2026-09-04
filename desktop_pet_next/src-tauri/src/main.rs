@@ -66,6 +66,8 @@ const DEFAULT_PROFILE_USER_ID: &str = "master";
 const DEFAULT_CHARACTER_PACK_ID: &str = "akane_v1";
 const DEFAULT_OUTFIT: &str = "default";
 const DEFAULT_EMOTION: &str = "normal";
+const DEFAULT_ADMIN_REQUEST_TIMEOUT_SECONDS: u64 = 45;
+const PLUGIN_INSTALL_ADMIN_REQUEST_TIMEOUT_SECONDS: u64 = 12 * 60;
 const MAX_AUDIO_FILE_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_LYRIC_FILE_BYTES: u64 = 512 * 1024;
 const MAX_CHARACTER_PACK_ZIP_BYTES: usize = 300 * 1024 * 1024;
@@ -774,8 +776,9 @@ async fn backend_admin_request(
         Err(reason) => return admin_failure("unauthorized", reason, 401),
     };
 
+    let request_timeout = backend_admin_request_timeout(target.path(), &method);
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(45))
+        .timeout(request_timeout)
         .build()
     {
         Ok(value) => value,
@@ -6457,6 +6460,21 @@ fn parse_backend_admin_method(raw: &str) -> Result<reqwest::Method, &'static str
     }
 }
 
+fn backend_admin_request_timeout(path: &str, method: &reqwest::Method) -> Duration {
+    let plugin_path = path
+        .split_once("/admin/plugins/")
+        .map(|(_, suffix)| suffix.trim_matches('/'))
+        .unwrap_or_default();
+    let is_installation = method == reqwest::Method::POST
+        && (matches!(plugin_path, "stages" | "stages/source")
+            || (plugin_path.starts_with("stages/") && plugin_path.ends_with("/install")));
+    Duration::from_secs(if is_installation {
+        PLUGIN_INSTALL_ADMIN_REQUEST_TIMEOUT_SECONDS
+    } else {
+        DEFAULT_ADMIN_REQUEST_TIMEOUT_SECONDS
+    })
+}
+
 fn resolve_admin_token(
     instance_id: &str,
     configured_token: Option<String>,
@@ -6869,6 +6887,25 @@ mod tests {
         assert_eq!(
             parse_backend_admin_method("PATCH"),
             Err("admin_method_not_allowed")
+        );
+    }
+
+    #[test]
+    fn plugin_installation_proxy_allows_backend_build_timeout() {
+        assert_eq!(
+            backend_admin_request_timeout("/admin/plugins/stages/source", &reqwest::Method::POST),
+            Duration::from_secs(PLUGIN_INSTALL_ADMIN_REQUEST_TIMEOUT_SECONDS)
+        );
+        assert_eq!(
+            backend_admin_request_timeout(
+                "/api/bots/personal/admin/plugins/stages/abc/install",
+                &reqwest::Method::POST
+            ),
+            Duration::from_secs(PLUGIN_INSTALL_ADMIN_REQUEST_TIMEOUT_SECONDS)
+        );
+        assert_eq!(
+            backend_admin_request_timeout("/admin/plugins/status", &reqwest::Method::GET),
+            Duration::from_secs(DEFAULT_ADMIN_REQUEST_TIMEOUT_SECONDS)
         );
     }
 

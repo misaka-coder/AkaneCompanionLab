@@ -75,6 +75,7 @@ export function createControlCenterBridge(options = {}) {
   let chatHistoryLoadPromise = null;
   let chatRefreshTimer = 0;
   let pluginCatalogRefreshSequence = 0;
+  let pluginManagementRefreshSequence = 0;
   let publishedSource = null;
   let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
@@ -154,8 +155,17 @@ export function createControlCenterBridge(options = {}) {
       }
       const requestSource = source;
       const pluginCatalogSequence = ++pluginCatalogRefreshSequence;
+      const pluginManagementSequence = ++pluginManagementRefreshSequence;
       const pluginCatalogPromise = typeof requestSource.readPluginCatalog === "function"
         ? requestSource.readPluginCatalog().catch((error) => ({
+            ok: false,
+            status: "request-failed",
+            data: null,
+            error: formatError(error)
+          }))
+        : Promise.resolve({ ok: false, status: "not-supported", data: null });
+      const pluginManagementPromise = typeof requestSource.readPluginManagement === "function"
+        ? requestSource.readPluginManagement().catch((error) => ({
             ok: false,
             status: "request-failed",
             data: null,
@@ -182,12 +192,16 @@ export function createControlCenterBridge(options = {}) {
         pluginRuntime: publishedSource === requestSource
           ? rawSnapshot?.pluginRuntime || { status: "loading", reason: "", data: null }
           : { status: "loading", reason: "", data: null },
+        pluginManagementRuntime: publishedSource === requestSource
+          ? rawSnapshot?.pluginManagementRuntime || { status: "loading", reason: "", data: null }
+          : { status: "loading", reason: "", data: null },
         ...(rawSnapshot?.chatSession ? { chatSession: rawSnapshot.chatSession } : {}),
         ...(rawSnapshot?.chatRuntime ? { chatRuntime: rawSnapshot.chatRuntime } : {})
       };
       publishedSource = requestSource;
       publish();
       void publishPluginCatalog(requestSource, pluginCatalogPromise, pluginCatalogSequence);
+      void publishPluginManagement(requestSource, pluginManagementPromise, pluginManagementSequence);
       await refreshChatSession();
       return createControlCenterViewModel(withBridgeStatus(
         withLiveRuntime(rawSnapshot, runtimeSnapshot),
@@ -259,6 +273,7 @@ export function createControlCenterBridge(options = {}) {
 
   function stop() {
     pluginCatalogRefreshSequence += 1;
+    pluginManagementRefreshSequence += 1;
     window.clearTimeout(chatRefreshTimer);
     chatRefreshTimer = 0;
     disposeRuntimeListener?.();
@@ -278,6 +293,22 @@ export function createControlCenterBridge(options = {}) {
         : {
             status: "unavailable",
             reason: String(result?.error || result?.status || "plugin-catalog-unavailable"),
+            data: null
+          }
+    };
+    publish();
+  }
+
+  async function publishPluginManagement(requestSource, request, sequence) {
+    const result = await request;
+    if (sequence !== pluginManagementRefreshSequence || source !== requestSource || !rawSnapshot) return;
+    rawSnapshot = {
+      ...rawSnapshot,
+      pluginManagementRuntime: result?.ok && result.data && typeof result.data === "object"
+        ? { status: "available", reason: "", data: result.data }
+        : {
+            status: "unavailable",
+            reason: String(result?.error || result?.status || "plugin-management-unavailable"),
             data: null
           }
     };

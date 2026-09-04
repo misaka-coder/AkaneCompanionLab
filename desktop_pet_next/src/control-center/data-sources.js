@@ -31,7 +31,9 @@ const mcpBackendActionIds = new Set([
 const pluginBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesPluginEnable,
   CONTROL_CENTER_ACTIONS.abilitiesPluginDisable,
-  CONTROL_CENTER_ACTIONS.abilitiesPluginRollback
+  CONTROL_CENTER_ACTIONS.abilitiesPluginRollback,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
@@ -150,6 +152,7 @@ export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
     musicRuntime: raw.musicRuntime || {},
     abilitiesRuntime: raw.abilitiesRuntime || {},
     pluginRuntime: raw.pluginRuntime || {},
+    pluginManagementRuntime: raw.pluginManagementRuntime || {},
     advancedRuntime: raw.advancedRuntime || {}
   };
 }
@@ -447,6 +450,28 @@ export function createBackendControlCenterSource(options = {}) {
       }
       return { ok: true, status: "available", data: payload };
     },
+    async readPluginManagement() {
+      if (typeof fetchImpl !== "function") {
+        return { ok: false, status: "not-available", data: null };
+      }
+      if (!(await ensureVerifiedBackend())) {
+        return { ok: false, status: "backend-unavailable", data: null };
+      }
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(botBaseUrl, "/admin/plugins/status", { t: String(Date.now()) })
+      );
+      const payload = result?.data && typeof result.data === "object" ? result.data : null;
+      if (!result.ok || !payload || !payload.management || !payload.artifacts) {
+        return {
+          ok: false,
+          status: result.status || "invalid-plugin-management",
+          data: null,
+          error: result.error || null
+        };
+      }
+      return { ok: true, status: "available", data: payload };
+    },
     async updateSetting(key, value) {
       if (typeof fetchImpl !== "function") return { ok: false, status: "not-available" };
       try {
@@ -579,6 +604,9 @@ function backendActionRunner(actionId) {
 }
 
 async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  if ([CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource, CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel].includes(actionId)) {
+    return runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload, params);
+  }
   const pluginId = String(payload.pluginId || payload.plugin_id || payload.value || "").trim();
   if (!pluginId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "pluginId is required" };
@@ -619,6 +647,59 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
       error: formatDataSourceError(error)
     };
   }
+}
+
+async function runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const sourcePath = String(payload.path || payload.sourcePath || payload.source_path || payload.wheelPath || payload.wheel_path || "").trim();
+  if (!sourcePath) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "plugin path is required" };
+  }
+  const sourceStage = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource;
+  const path = sourceStage ? "/admin/plugins/stages/source" : "/admin/plugins/stages";
+  const body = sourceStage ? { source_path: sourcePath } : { wheel_path: sourcePath };
+  try {
+    const response = await fetchImpl(buildBackendUrl(baseUrl, path, params), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    const result = await readActionResponse(response);
+    const ok = response.ok && Boolean(result?.ok);
+    return {
+      ...result,
+      ok,
+      status: String(result?.status || (ok ? "staged" : `http-${response.status}`)),
+      reason: ok ? "" : pluginStageFailureDetail(result, response.status),
+      actionId,
+      refresh: true
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "request-failed",
+      actionId,
+      refresh: true,
+      error: formatDataSourceError(error)
+    };
+  }
+}
+
+function pluginStageFailureDetail(result, httpStatus) {
+  const reason = String(result?.reason || "").trim();
+  const messages = {
+    plugin_source_unavailable: "找不到这个宿主目录",
+    plugin_source_project_required: "目录中缺少可构建的 pyproject.toml",
+    plugin_source_build_failed: "插件源码构建失败，请先修正项目",
+    plugin_source_tests_required: "插件源码项目需要提供可运行的测试",
+    plugin_source_test_failed: "插件项目测试没有通过",
+    plugin_probe_failed: "插件未通过隔离激活探测",
+    plugin_wheel_unavailable: "找不到这个 wheel 文件",
+    plugin_wheel_required: "请选择有效的 .whl 文件"
+  };
+  if (messages[reason]) return messages[reason];
+  if (httpStatus === 401 || httpStatus === 403) return "此操作只能从受信控制中心执行";
+  return reason || `http-${httpStatus}`;
 }
 
 function pluginActionFailureDetail(result, httpStatus) {
