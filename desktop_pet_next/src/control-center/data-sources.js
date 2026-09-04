@@ -30,7 +30,8 @@ const mcpBackendActionIds = new Set([
 ]);
 const pluginBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesPluginEnable,
-  CONTROL_CENTER_ACTIONS.abilitiesPluginDisable
+  CONTROL_CENTER_ACTIONS.abilitiesPluginDisable,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginRollback
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
@@ -582,14 +583,18 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
   if (!pluginId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "pluginId is required" };
   }
+  const rollback = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginRollback;
   const enabled = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginEnable;
+  const path = rollback
+    ? `/admin/plugins/${encodeURIComponent(pluginId)}/rollback`
+    : `/admin/plugins/${encodeURIComponent(pluginId)}/enabled`;
   try {
     const response = await fetchImpl(
-      buildBackendUrl(baseUrl, `/admin/plugins/${encodeURIComponent(pluginId)}/enabled`, params),
+      buildBackendUrl(baseUrl, path, params),
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify(rollback ? {} : { enabled }),
         cache: "no-store"
       }
     );
@@ -598,7 +603,7 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
     return {
       ...result,
       ok,
-      status: String(result?.status || (ok ? (enabled ? "enabled" : "disabled") : `http-${response.status}`)),
+      status: String(result?.status || (ok ? (rollback ? "rolled_back" : enabled ? "enabled" : "disabled") : `http-${response.status}`)),
       reason: ok ? "" : pluginActionFailureDetail(result, response.status),
       actionId,
       pluginId,

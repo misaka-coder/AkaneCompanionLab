@@ -194,6 +194,10 @@ await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginDisable, { pluginI
 assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/akane\.sample\.gentle-checkin\/enabled/);
 assert.equal(backendRequests.at(-1).options.method, "POST");
 assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { enabled: false });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginRollback, { pluginId: "akane.sample.gentle-checkin" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/akane\.sample\.gentle-checkin\/rollback/);
+assert.equal(backendRequests.at(-1).options.method, "POST");
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), {});
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });

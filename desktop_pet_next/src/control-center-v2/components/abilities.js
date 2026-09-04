@@ -112,7 +112,9 @@ function renderPluginLibrary(state, plugins) {
 function renderPluginCard(state, plugin) {
   const actionId = plugin.enabled ? "abilities.plugin.disable" : "abilities.plugin.enable";
   const pending = ["pressed", "pending"].includes(actionPhase(state, actionId));
+  const rollbackPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.rollback"));
   const actionAvailable = plugin.actionsEnabled && state.viewModel?.actions?.[actionId]?.available;
+  const rollbackAvailable = plugin.actionsEnabled && plugin.rollbackAvailable && state.viewModel?.actions?.["abilities.plugin.rollback"]?.available;
   const surfaces = plugin.surfaces.length
     ? plugin.surfaces.map((surface) => `<span class="plugin-surface is-${escapeHtml(surface)}">${surface === "desktop" ? "桌宠" : "QQ"}</span>`).join("")
     : `<span class="plugin-surface is-internal">后台</span>`;
@@ -132,7 +134,8 @@ function renderPluginCard(state, plugin) {
     ${plugin.reason ? `<p class="plugin-card-reason">${escapeHtml(plugin.reason)}</p>` : ""}
     ${renderPluginDetails(plugin)}
     <div class="plugin-card-actions">
-      <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
+      ${plugin.rollbackAvailable ? `<button class="action-button" type="button" data-action="abilities.plugin.rollback" data-action-value="${escapeHtml(plugin.pluginId)}"${rollbackPending || pending || !rollbackAvailable ? " disabled" : ""}><span>↶</span><b>${rollbackPending ? "回滚中" : "回滚版本"}</b></button>` : ""}
+      <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || rollbackPending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
     </div>
   </article>`;
 }

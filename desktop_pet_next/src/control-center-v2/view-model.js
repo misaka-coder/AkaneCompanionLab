@@ -139,6 +139,10 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
         available: connected && abilities.plugins.entries.some((item) => item.actionsEnabled && item.enabled),
         reason: connected ? "当前没有可停用的插件" : "桌宠尚未连接"
       },
+      "abilities.plugin.rollback": {
+        available: connected && abilities.plugins.entries.some((item) => item.actionsEnabled && item.rollbackAvailable),
+        reason: connected ? "当前没有可回滚的插件版本" : "桌宠尚未连接"
+      },
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
       "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
       [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },

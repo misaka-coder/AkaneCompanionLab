@@ -954,6 +954,8 @@ assert.match(abilitiesHtml, /查看贡献与权限/);
 assert.match(abilitiesHtml, /data-capability-key="plugin:akane\.sample\.gentle-checkin"/);
 assert.match(abilitiesHtml, /运行代次/);
 assert.match(abilitiesHtml, /可回滚至有效版本/);
+assert.match(abilitiesHtml, /data-action="abilities\.plugin\.rollback"/);
+assert.match(abilitiesHtml, /回滚版本/);
 assert.match(abilitiesHtml, /akane\.sample\.gentle-checkin\.schedule/);
 assert.match(abilitiesHtml, /agent\.event\.submit/);
 assert.match(abilitiesHtml, /coding-project/);
