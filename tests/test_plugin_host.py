@@ -791,6 +791,7 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plugin["plugin_id"], PLUGIN_ID)
         self.assertEqual(plugin["runtime_status"], "active")
         self.assertEqual(plugin["source"], "bundled")
+        self.assertTrue(plugin["manageable"])
         self.assertEqual(plugin["surfaces"], ["desktop", "qq"])
         self.assertEqual(plugin["contributions"]["capabilities"], [CAPABILITY_ID])
         self.assertNotIn("artifacts", payload)
@@ -817,12 +818,12 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_enable_route_persists_and_reconfigures_the_real_host(self) -> None:
         async with await self._request() as client:
-            disabled = await client.patch(
+            disabled = await client.post(
                 f"/admin/plugins/{PLUGIN_ID}/enabled",
                 json={"enabled": False},
             )
             after_disable = await client.get("/admin/plugins/status")
-            enabled = await client.patch(
+            enabled = await client.post(
                 f"/admin/plugins/{PLUGIN_ID}/enabled",
                 json={"enabled": True},
             )

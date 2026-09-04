@@ -145,6 +145,7 @@ const rawSnapshot = {
         plugin_id: "akane.sample.gentle-checkin",
         version: "0.2.0",
         source: "managed",
+        manageable: true,
         enabled: true,
         runtime_status: "active",
         reason: "",
@@ -947,6 +948,8 @@ assert.match(abilitiesHtml, /akane\.sample\.gentle-checkin/);
 assert.match(abilitiesHtml, /桌宠/);
 assert.match(abilitiesHtml, /QQ/);
 assert.match(abilitiesHtml, /运行中/);
+assert.match(abilitiesHtml, /data-action="abilities\.plugin\.disable"/);
+assert.match(abilitiesHtml, /data-action-value="akane\.sample\.gentle-checkin"/);
 assert.match(abilitiesHtml, /coding-project/);
 assert.match(abilitiesHtml, /personal-workflow/);
 assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);

@@ -81,7 +81,7 @@ function renderCapabilityCenter(state, abilities) {
   return `<section class="abilities-panel capability-center glass-panel">
     <div class="abilities-panel-head"><div><p class="eyebrow">CAPABILITY CONNECTIONS</p><h3>服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
     <p class="capability-center-intro">常用状态一眼确认，地址、命令与工作流绑定按需展开；保存后会重新读取真实运行状态。</p>
-    ${hasPluginCatalog ? renderPluginLibrary(abilities.plugins) : ""}
+    ${hasPluginCatalog ? renderPluginLibrary(state, abilities.plugins) : ""}
     ${hasSkills ? renderSkillLibrary(state, abilities.skills) : ""}
     <div class="capability-config-stack">
       ${abilities.providers.map((item) => renderProviderConfig(state, item)).join("")}
@@ -91,7 +91,7 @@ function renderCapabilityCenter(state, abilities) {
   </section>`;
 }
 
-function renderPluginLibrary(plugins) {
+function renderPluginLibrary(state, plugins) {
   const statusCopy = plugins.status === "loading"
     ? "正在同步已安装插件…"
     : plugins.status === "unavailable"
@@ -104,12 +104,15 @@ function renderPluginLibrary(plugins) {
       <span class="plugin-library-count"><strong>${plugins.active}</strong><small>运行中 / ${plugins.total}</small></span>
     </div>
     ${plugins.entries.length
-      ? `<div class="plugin-library-list">${plugins.entries.map(renderPluginCard).join("")}</div>`
+      ? `<div class="plugin-library-list">${plugins.entries.map((plugin) => renderPluginCard(state, plugin)).join("")}</div>`
       : `<div class="plugin-library-empty is-${escapeHtml(plugins.status)}">${statusCopy}</div>`}
   </section>`;
 }
 
-function renderPluginCard(plugin) {
+function renderPluginCard(state, plugin) {
+  const actionId = plugin.enabled ? "abilities.plugin.disable" : "abilities.plugin.enable";
+  const pending = ["pressed", "pending"].includes(actionPhase(state, actionId));
+  const actionAvailable = plugin.actionsEnabled && state.viewModel?.actions?.[actionId]?.available;
   const surfaces = plugin.surfaces.length
     ? plugin.surfaces.map((surface) => `<span class="plugin-surface is-${escapeHtml(surface)}">${surface === "desktop" ? "桌宠" : "QQ"}</span>`).join("")
     : `<span class="plugin-surface is-internal">后台</span>`;
@@ -127,6 +130,9 @@ function renderPluginCard(plugin) {
       <span class="plugin-surfaces">${surfaces}</span>
     </div>
     ${plugin.reason ? `<p class="plugin-card-reason">${escapeHtml(plugin.reason)}</p>` : ""}
+    <div class="plugin-card-actions">
+      <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
+    </div>
   </article>`;
 }
 

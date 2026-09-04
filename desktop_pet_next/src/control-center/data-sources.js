@@ -28,6 +28,10 @@ const mcpBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesMcpRestart,
   CONTROL_CENTER_ACTIONS.abilitiesMcpRemove
 ]);
+const pluginBackendActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.abilitiesPluginEnable,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginDisable
+]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
 ]);
@@ -510,21 +514,11 @@ export function createBackendControlCenterSource(options = {}) {
         return createNotImplementedActionResult(normalizedActionId);
       }
 
-      if (providerBackendActionIds.has(normalizedActionId) || workflowBackendActionIds.has(normalizedActionId) || mcpBackendActionIds.has(normalizedActionId) || approvalPolicyBackendActionIds.has(normalizedActionId) || approvalRequestBackendActionIds.has(normalizedActionId) || qqBackendActionIds.has(normalizedActionId)) {
+      const routeAction = backendActionRunner(normalizedActionId);
+      if (routeAction) {
         if (typeof fetchImpl !== "function") {
           return createNotImplementedActionResult(normalizedActionId);
         }
-        const routeAction = providerBackendActionIds.has(normalizedActionId)
-          ? runProviderBackendAction
-          : workflowBackendActionIds.has(normalizedActionId)
-            ? runWorkflowBackendAction
-            : mcpBackendActionIds.has(normalizedActionId)
-              ? runMcpBackendAction
-              : approvalRequestBackendActionIds.has(normalizedActionId)
-                ? runApprovalRequestBackendAction
-                : qqBackendActionIds.has(normalizedActionId)
-                  ? runQqBackendAction
-                  : runApprovalPolicyBackendAction;
         return routeAction(fetchImpl, botBaseUrl, normalizedActionId, payload, {
           user_id: sessionId,
           real_user_id: profileUserId,
@@ -570,6 +564,69 @@ export function createBackendControlCenterSource(options = {}) {
     }
   };
   return source;
+}
+
+function backendActionRunner(actionId) {
+  if (providerBackendActionIds.has(actionId)) return runProviderBackendAction;
+  if (workflowBackendActionIds.has(actionId)) return runWorkflowBackendAction;
+  if (mcpBackendActionIds.has(actionId)) return runMcpBackendAction;
+  if (pluginBackendActionIds.has(actionId)) return runPluginBackendAction;
+  if (approvalRequestBackendActionIds.has(actionId)) return runApprovalRequestBackendAction;
+  if (qqBackendActionIds.has(actionId)) return runQqBackendAction;
+  if (approvalPolicyBackendActionIds.has(actionId)) return runApprovalPolicyBackendAction;
+  return null;
+}
+
+async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const pluginId = String(payload.pluginId || payload.plugin_id || payload.value || "").trim();
+  if (!pluginId) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "pluginId is required" };
+  }
+  const enabled = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginEnable;
+  try {
+    const response = await fetchImpl(
+      buildBackendUrl(baseUrl, `/admin/plugins/${encodeURIComponent(pluginId)}/enabled`, params),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ enabled }),
+        cache: "no-store"
+      }
+    );
+    const result = await readActionResponse(response);
+    const ok = response.ok && Boolean(result?.ok);
+    return {
+      ...result,
+      ok,
+      status: String(result?.status || (ok ? (enabled ? "enabled" : "disabled") : `http-${response.status}`)),
+      reason: ok ? "" : pluginActionFailureDetail(result, response.status),
+      actionId,
+      pluginId,
+      refresh: true
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "request-failed",
+      actionId,
+      pluginId,
+      refresh: true,
+      error: formatDataSourceError(error)
+    };
+  }
+}
+
+function pluginActionFailureDetail(result, httpStatus) {
+  const status = String(result?.status || "").trim();
+  if (status === "activation_failed") {
+    return result?.rollback_status && result.rollback_status !== "not_required"
+      ? "插件未能切换，宿主已恢复上一有效版本"
+      : "插件未能通过激活检查，当前有效版本保持不变";
+  }
+  if (status === "persist_failed") return "插件状态未能保存，宿主已恢复原状态";
+  if (status === "not_found") return "当前 Bot 没有安装这个插件";
+  if (httpStatus === 401 || httpStatus === 403) return "此操作只能从受信控制中心执行";
+  return String(result?.reason || `http-${httpStatus}`);
 }
 
 async function runApprovalPolicyBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {

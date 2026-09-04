@@ -131,6 +131,14 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "abilities.mcp.disable": capabilityActionAvailability(connected, abilities.mcpServers),
       "abilities.mcp.restart": capabilityActionAvailability(connected, abilities.mcpServers),
       "abilities.mcp.remove": capabilityActionAvailability(connected, abilities.mcpServers),
+      "abilities.plugin.enable": {
+        available: connected && abilities.plugins.entries.some((item) => item.actionsEnabled && !item.enabled),
+        reason: connected ? "当前没有可启用的插件" : "桌宠尚未连接"
+      },
+      "abilities.plugin.disable": {
+        available: connected && abilities.plugins.entries.some((item) => item.actionsEnabled && item.enabled),
+        reason: connected ? "当前没有可停用的插件" : "桌宠尚未连接"
+      },
       "abilities.workflow.config.save": capabilityActionAvailability(connected, abilities.workflows),
       "abilities.workflow.validate": capabilityActionAvailability(connected, abilities.workflows),
       [MODEL_SERVICE_ACTIONS.models]: { available: model.available, reason: model.connected ? "模型配置接口暂不可用" : "桌宠尚未连接" },
@@ -829,6 +837,7 @@ function normalizePluginRuntime(value, connected) {
         pluginId,
         version: text(entry.version),
         source: text(entry.source) === "managed" ? "managed" : "bundled",
+        manageable: entry.manageable === true,
         enabled,
         runtimeStatus,
         statusLabel: presentation.label,
@@ -847,7 +856,11 @@ function normalizePluginRuntime(value, connected) {
         rollbackAvailable: Boolean(entry.rollback_available)
       };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((entry) => ({
+      ...entry,
+      actionsEnabled: connected && status === "available" && entry.manageable && !entry.pendingActivation
+    }));
   return {
     available: connected && status === "available" && payload.ok === true,
     status,

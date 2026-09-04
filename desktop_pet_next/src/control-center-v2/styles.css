@@ -493,6 +493,8 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .plugin-surface.is-desktop { color: #b7adff; background: rgb(var(--accent-rgb) / 0.12); }
 .plugin-surface.is-qq { color: #9fd2ff; background: rgb(61 137 205 / 0.12); }
 .plugin-card-reason { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: #ffd093; font-size: 6px; line-height: 1.5; }
+.plugin-card-actions { display: flex; justify-content: flex-end; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); }
+.plugin-card-actions .action-button { min-height: 30px; }
 .plugin-library-empty { display: grid; place-items: center; min-height: 72px; margin-top: 12px; border: 1px dashed var(--line); border-radius: 12px; color: var(--text-faint); font-size: 7px; text-align: center; }
 .plugin-library-empty.is-unavailable { color: #ffd093; border-color: rgb(211 148 69 / 0.22); }
 .skill-library-card { margin-top: 15px; padding: 14px; border: 1px solid rgb(var(--accent-rgb) / 0.18); border-radius: 17px; background: linear-gradient(135deg, rgb(var(--accent-rgb) / 0.065), var(--surface-soft)); }

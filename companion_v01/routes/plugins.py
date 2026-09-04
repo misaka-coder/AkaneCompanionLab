@@ -56,7 +56,7 @@ def build_plugins_router(
         status_code = 200 if result.get("status") == "active" else 503
         return _response(result, status_code=status_code)
 
-    @router.patch("/admin/plugins/{plugin_id}/enabled")
+    @router.post("/admin/plugins/{plugin_id}/enabled")
     async def set_plugin_enabled(plugin_id: str, request: Request) -> JSONResponse:
         authorization = management_auth.authorize(request)
         if not authorization.ok:

@@ -190,6 +190,10 @@ await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesProviderHealthCheck, { p
 assert.match(backendRequests.at(-1).url, /\/capabilities\/providers\/edge\/health-check/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesMcpRestart, { serverId: "github" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/mcp-servers\/github\/restart/);
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginDisable, { pluginId: "akane.sample.gentle-checkin" });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/akane\.sample\.gentle-checkin\/enabled/);
+assert.equal(backendRequests.at(-1).options.method, "POST");
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { enabled: false });
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });
@@ -199,6 +203,23 @@ await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalRequestDecide, {
   decision: "approved",
 });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/approval-requests\/request-1\/decision/);
+
+const failedPluginSource = createBackendControlCenterSource({
+  baseUrl: "http://control-center-route-smoke",
+  fetchImpl: async () => jsonResponse({
+    ok: false,
+    status: "activation_failed",
+    reason: "plugin_probe_failed",
+    rollback_status: "active"
+  }, 409)
+});
+const failedPluginResult = await failedPluginSource.runAction(
+  CONTROL_CENTER_ACTIONS.abilitiesPluginEnable,
+  { pluginId: "akane.sample.gentle-checkin" }
+);
+assert.equal(failedPluginResult.ok, false);
+assert.equal(failedPluginResult.refresh, true);
+assert.equal(failedPluginResult.reason, "插件未能切换，宿主已恢复上一有效版本");
 
 assert.ok(afterActionLog.length >= settingsCases.length);
 console.log(

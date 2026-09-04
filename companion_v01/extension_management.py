@@ -238,6 +238,7 @@ class ExtensionManagementService:
                     "plugin_id": plugin_id,
                     "version": version,
                     "source": "managed" if artifact else "bundled",
+                    "manageable": True,
                     "enabled": bool(raw.get("enabled")),
                     "runtime_status": status,
                     "reason": str(raw.get("reason") or "").strip(),

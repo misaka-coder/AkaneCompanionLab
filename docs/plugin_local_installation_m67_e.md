@@ -47,7 +47,7 @@
 - `POST /admin/plugins/stages/source`：`{"source_path":"..."}`；
 - `POST /admin/plugins/stages/{stage_id}/install`：`{"approved_permissions":[...]}`，一次完成发布和激活；
 - `DELETE /admin/plugins/stages/{stage_id}`：丢弃未发布候选；
-- `PATCH /admin/plugins/{plugin_id}/enabled`：启用或停用；
+- `POST /admin/plugins/{plugin_id}/enabled`：启用或停用；
 - `POST /admin/plugins/{plugin_id}/rollback`：把当前指针切回 last-good；
 - `DELETE /admin/plugins/{plugin_id}`：卸载；
 - `GET /admin/plugins/status`：查看运行时和托管制品状态。
