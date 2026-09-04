@@ -225,7 +225,7 @@ needs_model_followup: false
 3. 建立唯一 Job 存储、租约、恢复、幂等和取消。
 4. 让现有 `execution_class=long_task` 真正返回可靠 Job acknowledgment。（已完成）
 5. 将 Job 完成事件接入普通 Agent 主链。（已完成，真实渠道验收归入下一项）
-6. 以生图完成第一条 QQ + 桌宠纵向验收。
+6. 以生图完成第一条 QQ + 桌宠纵向验收。（进程内主链已通过；真实客户端 smoke 待部署）
 7. 将现有 Shell run 状态接入 Job 权威和完成通知。（已完成，真实渠道验收归入下一轮 smoke）
 8. 迁移 ComfyUI、媒体处理和插件后台工作。（已完成；真实渠道 smoke 仍待执行）
 9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。（已完成）
@@ -239,6 +239,8 @@ needs_model_followup: false
 当前第 8 项的能力调用链已完成：内置生图和媒体工具沿用稳定 `ToolSpec.execution_class`；插件能力可在 `CapabilityDescriptor.raw` 中声明 `execution_class`、`completion_mode` 与 `memory_mode`，无需新工具或提示词段。所有长任务先复用处理器自身的参数归一化、权限和一次性审批，再持久化已准入调用；后台执行不会二次消费审批，也不会在审批前返回假 `accepted`。目前支持 `agent` 和 `silent` 完成方式；`direct` 尚无独立渠道交付契约，因此会在插件审查阶段明确拒绝，不静默映射为 Agent。后台完成只登记 artifact，完成事件明确标记尚未确认发送，由正常 Agent/渠道发送能力负责交付。
 
 当前第 9 项已完成：控制中心工作流不再由路由内字典保存状态和图片字节，而是使用实例级 `HostJobStore`。工作流输入、输出放在受管资产目录，数据库只保存状态、句柄和公开元数据；重启后可以恢复排队任务并继续读取已完成产物。控制中心通过轮询消费结果，因此该类 Job 使用 `silent` 结算，不为 UI 操作错误唤醒角色 Agent。路由只负责身份校验和 HTTP 投影，不再成为第二套 Job 权威。
+
+第 6 项的进程内纵向主链也已锁定：BotRuntime 启动后会把待投递 Job 完成事实送入实例自己的 `HostAgentEventRouter`，保留会话、角色、MemCore 投影方式和 artifact 句柄；QQ 与桌宠适配测试分别验证该事件继续走普通回复渲染/发送和桌宠 frame 合同。外部 NapCat 与真实桌宠卫星的 smoke 必须在部署环境执行，不能由单元测试伪装成已完成。
 
 ## 14. 删除条件
 

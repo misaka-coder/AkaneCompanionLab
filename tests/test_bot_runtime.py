@@ -15,11 +15,15 @@ import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
 from companion_v01.bot_profile import BotConfig, BotQQChannelConfig
 from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory, _host_job_completion_request
+from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
+from companion_v01.host_tool_jobs import HostToolJobRuntime
 from companion_v01.host_bot_bootstrap import build_host_bot_registry
 from companion_v01.instance_profile import instance_context_from_bot_config
 from companion_v01.instance_runtime import bind_instance_runtime
 from companion_v01.plugin_generation_runtime import PluginGenerationRuntime
+from companion_v01.plugin_agent_events import HostAgentEventRouter
+from companion_v01.plugin_api import PluginAgentEventResult
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.settings_overrides import RuntimeConfigView, SettingsOverrideStore
 from companion_v01.turn_coordination import TurnCoordinator
@@ -430,6 +434,72 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 ("artifact_delivery_status", "available_not_delivered"),
                 request.event.fields,
             )
+
+    async def test_start_delivers_pending_job_through_the_instance_agent_event_router(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime, _plugin_host, engine, _followups = _runtime()
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            created = store.create(
+                owner=HostJobOwner("profile-a", "session-a"),
+                capability_source="tool",
+                capability_id="generate_image",
+                payload={"call": {"prompt": "moon"}},
+                idempotency_key="call-a",
+                argument_fingerprint="sha256:test",
+                character_pack_id="reimu",
+                channel="qq_text",
+                delivery_target="conversation-ref",
+                completion_mode="agent",
+                memory_mode="timeline",
+            )
+            claimed = store.claim(created["job_id"], worker_id="worker-a")
+            store.succeed(
+                created["job_id"],
+                claim_token=claimed["claim_token"],
+                result_summary="图片生成完成。",
+                artifacts=[{"handle": "generated-file:image-1"}],
+            )
+            observed: list[tuple] = []
+            agent_router = HostAgentEventRouter(
+                lambda reference: {
+                    "channel": "qq",
+                    "kind": "direct",
+                    "recipient": "user:1",
+                    "session": "session-a",
+                    "profile": "profile-a",
+                    "character": "reimu",
+                }
+                if reference == "conversation-ref"
+                else None
+            )
+
+            async def deliver(request, resolved):
+                observed.append((request, dict(resolved)))
+                return PluginAgentEventResult(True, "completed", "", "delivered")
+
+            agent_router.register_channel("qq", deliver)
+            background = BackgroundTaskRunner({"host-jobs": 1})
+            self.addCleanup(background.close)
+            runtime.job_store = store
+            runtime.plugin_agent_event_router = agent_router
+            runtime.host_tool_jobs = HostToolJobRuntime(
+                engine=engine,
+                store=store,
+                background_tasks=background,
+            )
+
+            await runtime.start()
+            self.assertTrue(await asyncio.to_thread(background.wait_idle, lane="host-jobs", timeout=2.0))
+
+            completed = store.get(created["job_id"], owner=HostJobOwner("profile-a", "session-a"))
+            self.assertEqual(completed.completion_status, "delivered")
+            self.assertEqual(len(observed), 1)
+            request, resolved = observed[0]
+            self.assertEqual(request.trace_id, completed.completion_event_id)
+            self.assertEqual(request.event.event_type, "job.succeeded")
+            self.assertEqual(request.delivery, "timeline")
+            self.assertEqual(resolved["character"], "reimu")
+            self.assertIn("generated-file:image-1", request.message)
 
     async def test_start_recovers_shared_session_inbox_runner_once(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()
