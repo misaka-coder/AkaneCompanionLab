@@ -123,6 +123,28 @@ class TurnCoordinatorTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_addressed_input_preempts_plugin_event(self) -> None:
+        async def exercise() -> None:
+            coordinator = TurnCoordinator()
+            async with coordinator.hold(
+                "shared",
+                "group",
+                actor_id="qq-profile:shared",
+                channel="qq",
+                turn_kind="plugin_event",
+            ) as token:
+                result = coordinator.offer_steer(
+                    profile_user_id="shared",
+                    session_id="group",
+                    actor_id="qq:2",
+                    content="现在先回答我",
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], "preempting_optional_turn")
+                self.assertTrue(coordinator.drain(token)["stop_requested"])
+
+        asyncio.run(exercise())
+
     def test_stop_is_requested_then_observed_at_safe_boundary(self) -> None:
         async def exercise() -> None:
             coordinator = TurnCoordinator()
