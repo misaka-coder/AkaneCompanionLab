@@ -23,6 +23,7 @@ from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.care_runtime import CareModulePort
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
 from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
@@ -1581,12 +1582,6 @@ class BackendRouteModuleTests(unittest.TestCase):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         inbox_store = SessionInboxStore(Path(temp_dir.name) / "akane_memory_v01.db")
-        shared_queue: list[Any] = []
-
-        def register_queue(queue: Any) -> Any:
-            if not shared_queue:
-                shared_queue.append(queue)
-            return shared_queue[0]
 
         scheduled: list[Any] = []
         processed: list[dict[str, Any]] = []
@@ -1640,6 +1635,11 @@ class BackendRouteModuleTests(unittest.TestCase):
                 processed.append(dict(payload))
                 yield {"type": "final_ui", "payload": {"speech": "排队任务完成", "emotion": "normal"}}
 
+        session_work_queue = DurableSessionWorkQueue(
+            inbox_store,
+            schedule_task=FakeSupervisor.create_task,
+        )
+
         class FakeResponse:
             @staticmethod
             def raise_for_status() -> None:
@@ -1660,9 +1660,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
                 async_task_supervisor=FakeSupervisor(),
                 turn_coordinator=FakeCoordinator(),
-                session_inbox_store=inbox_store,
-                session_work_queue_provider=lambda: shared_queue[0] if shared_queue else None,
-                session_work_queue_registrar=register_queue,
+                session_work_queue=session_work_queue,
             )
         )
         event = {

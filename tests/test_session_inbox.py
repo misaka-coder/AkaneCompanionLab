@@ -292,6 +292,35 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
 
+    def test_one_runner_dispatches_mixed_sources_in_session_order(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            handled: list[tuple[str, str]] = []
+            queue = DurableSessionWorkQueue(store)
+
+            async def handle_qq(_key, items) -> None:
+                handled.append(("qq", items[0].source_event_id))
+
+            async def handle_desktop(_key, items) -> None:
+                handled.append(("desktop_pet", items[0].source_event_id))
+
+            queue.register_handler("qq", handle_qq)
+            queue.register_handler("desktop_pet", handle_desktop)
+            qq_fields = self._fields(session_key="profile\0session", event_id="first")
+            desktop_fields = self._fields(session_key="profile\0session", event_id="second")
+            desktop_fields["source"] = "desktop_pet"
+            await queue.enqueue(**qq_fields, schedule=False)
+            await queue.enqueue(**desktop_fields, schedule=False)
+
+            await queue.schedule_session("profile\0session")
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(handled, [("qq", "first"), ("desktop_pet", "second")])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
     def test_recover_drains_items_created_before_runner_start(self) -> None:
         async def exercise(database_path: Path) -> None:
             store = SessionInboxStore(database_path)

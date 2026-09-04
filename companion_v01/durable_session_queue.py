@@ -15,7 +15,7 @@ class DurableSessionWorkQueue:
     def __init__(
         self,
         store: SessionInboxStore,
-        handler: Callable[[str, list[SessionInboxItem]], Awaitable[None]],
+        handler: Callable[[str, list[SessionInboxItem]], Awaitable[None]] | None = None,
         *,
         schedule_task: Callable[[Awaitable[None]], Any] | None = None,
         on_error: Callable[[str, list[SessionInboxItem], BaseException], None] | None = None,
@@ -23,12 +23,51 @@ class DurableSessionWorkQueue:
         lease_seconds: float = 300.0,
     ) -> None:
         self._store = store
-        self._handler = handler
+        self._fallback_handler = handler
+        self._source_handlers: dict[
+            str,
+            Callable[[str, list[SessionInboxItem]], Awaitable[None]],
+        ] = {}
+        self._source_error_handlers: dict[
+            str,
+            Callable[[str, list[SessionInboxItem], BaseException], None],
+        ] = {}
         self._schedule_task = schedule_task or asyncio.create_task
         self._on_error = on_error
         self._worker_id = str(worker_id or "").strip() or f"inbox_worker_{uuid.uuid4().hex}"
         self._lease_seconds = max(1.0, float(lease_seconds))
         self._workers: dict[str, Any] = {}
+
+    def register_handler(
+        self,
+        source: Any,
+        handler: Callable[[str, list[SessionInboxItem]], Awaitable[None]],
+        *,
+        on_error: Callable[[str, list[SessionInboxItem], BaseException], None] | None = None,
+    ) -> None:
+        normalized = str(source or "").strip()
+        if not normalized or not callable(handler):
+            raise ValueError("session_work_source_and_handler_required")
+        self._source_handlers[normalized] = handler
+        if on_error is None:
+            self._source_error_handlers.pop(normalized, None)
+        else:
+            self._source_error_handlers[normalized] = on_error
+
+    async def requeue_claim(
+        self,
+        item_id: Any,
+        *,
+        claim_token: Any,
+        error: Any,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._store.fail,
+            item_id,
+            claim_token=claim_token,
+            error=error,
+            retryable=True,
+        )
 
     async def enqueue(self, *, schedule: bool = True, **fields: Any) -> dict[str, Any]:
         result = await asyncio.to_thread(self._store.enqueue, **fields)
@@ -94,7 +133,10 @@ class DurableSessionWorkQueue:
                 if not isinstance(item, SessionInboxItem):
                     return
                 try:
-                    await self._handler(key, [item])
+                    handler = self._source_handlers.get(item.source) or self._fallback_handler
+                    if handler is None:
+                        raise LookupError("session_work_handler_unavailable")
+                    await handler(key, [item])
                 except asyncio.CancelledError:
                     await asyncio.shield(
                         asyncio.to_thread(
@@ -114,8 +156,9 @@ class DurableSessionWorkQueue:
                         error=exc.__class__.__name__,
                         retryable=False,
                     )
-                    if self._on_error is not None:
-                        self._on_error(key, [item], exc)
+                    error_handler = self._source_error_handlers.get(item.source) or self._on_error
+                    if error_handler is not None:
+                        error_handler(key, [item], exc)
                     continue
                 await asyncio.to_thread(
                     self._store.commit,

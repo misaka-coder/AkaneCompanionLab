@@ -19,6 +19,7 @@ from .deployment_security import InstanceDeploymentSecurity, resolve_instance_de
 from .capability_diagnosis import build_host_command_registrations
 from .desktop_pet_character_resources import DesktopPetCharacterResourceService
 from .desktop_satellite import DesktopSatelliteService
+from .durable_session_queue import DurableSessionWorkQueue
 from .session_inbox import SessionInboxStore
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
@@ -104,6 +105,7 @@ class BotRuntime:
     config_module: Any = field(repr=False)
     logger: logging.Logger = field(repr=False)
     session_inbox_store: SessionInboxStore | None = field(default=None, repr=False)
+    session_work_queue: DurableSessionWorkQueue | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
@@ -115,7 +117,6 @@ class BotRuntime:
     )
     _started: bool = field(default=False, init=False, repr=False)
     _stop_status: dict[str, Any] | None = field(default=None, init=False, repr=False)
-    _qq_session_work_queue: Any = field(default=None, init=False, repr=False)
 
     @property
     def bot_id(self) -> str:
@@ -187,14 +188,6 @@ class BotRuntime:
         app.state.akane_desktop_satellite = self.desktop_satellite_service
         app.state.akane_plugin_runtime = self.plugin_runtime
 
-    def qq_session_work_queue(self) -> Any:
-        return self._qq_session_work_queue
-
-    def bind_qq_session_work_queue(self, queue: Any) -> Any:
-        if self._qq_session_work_queue is None:
-            self._qq_session_work_queue = queue
-        return self._qq_session_work_queue
-
     async def start(self) -> dict[str, Any]:
         if self._stop_status is not None:
             return {"status": "unavailable", "reason": "bot_runtime_stopped", "bot_id": self.bot_id}
@@ -240,7 +233,7 @@ class BotRuntime:
         self.plugin_event_broker = self.plugin_runtime.build_event_broker()
         build_hook_broker = getattr(self.plugin_runtime, "build_hook_broker", None)
         self.plugin_hook_broker = build_hook_broker() if callable(build_hook_broker) else None
-        recover_queue = getattr(self._qq_session_work_queue, "recover", None)
+        recover_queue = getattr(self.session_work_queue, "recover", None)
         if callable(recover_queue):
             await recover_queue()
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
@@ -525,6 +518,7 @@ class BotRuntimeFactory:
             engine.turn_coordinator = turn_coordinator
             session_inbox_store = SessionInboxStore(engine.store.db_path)
             engine.session_inbox_store = session_inbox_store
+            session_work_queue = DurableSessionWorkQueue(session_inbox_store)
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -570,6 +564,7 @@ class BotRuntimeFactory:
                 ),
                 turn_coordinator=turn_coordinator,
                 session_inbox_store=session_inbox_store,
+                session_work_queue=session_work_queue,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,

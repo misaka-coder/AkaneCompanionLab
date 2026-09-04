@@ -1942,9 +1942,7 @@ def build_qq_router(
     plugin_conversation_ref_issuer: Callable[..., str] | None = None,
     thinking_mode_setter: Callable[[str], str] | None = None,
     turn_coordinator: Any = None,
-    session_inbox_store: Any = None,
-    session_work_queue_provider: Callable[[], Any] | None = None,
-    session_work_queue_registrar: Callable[[Any], Any] | None = None,
+    session_work_queue: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     qq_route_base = _normalize_qq_route_base(route_base)
@@ -2866,25 +2864,19 @@ def build_qq_router(
             reason=exc.__class__.__name__,
         )
 
-    session_work_queue = session_work_queue_provider() if session_work_queue_provider is not None else None
     if session_work_queue is None:
-        session_work_queue = (
-            DurableSessionWorkQueue(
-                session_inbox_store,
-                _handle_queued_session_work,
-                schedule_task=schedule_followup,
-                on_error=_session_work_error,
-            )
-            if session_inbox_store is not None
-            else SessionWorkQueue(
-                _handle_queued_session_work,
-                schedule_task=schedule_followup,
-                batchable_kinds={"passive"},
-                on_error=_session_work_error,
-            )
+        session_work_queue = SessionWorkQueue(
+            _handle_queued_session_work,
+            schedule_task=schedule_followup,
+            batchable_kinds={"passive"},
+            on_error=_session_work_error,
         )
-        if session_work_queue_registrar is not None:
-            session_work_queue = session_work_queue_registrar(session_work_queue)
+    elif isinstance(session_work_queue, DurableSessionWorkQueue):
+        session_work_queue.register_handler(
+            "qq",
+            _handle_queued_session_work,
+            on_error=_session_work_error,
+        )
 
     async def _enqueue_session_work(
         *,
@@ -3048,12 +3040,10 @@ def build_qq_router(
                 },
             }
         if durable_receipt:
-            await asyncio.to_thread(
-                session_inbox_store.fail,
+            await session_work_queue.requeue_claim(
                 durable_receipt["receipt_item_id"],
                 claim_token=durable_receipt["receipt_claim_token"],
                 error=str(steer_result.get("reason") or "steer_not_accepted"),
-                retryable=True,
             )
             await session_work_queue.schedule_session(queue_key)
             queued_for_later = {

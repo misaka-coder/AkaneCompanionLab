@@ -344,7 +344,7 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return 0
 
         queue = RecoverableQueue()
-        self.assertIs(runtime.bind_qq_session_work_queue(queue), queue)
+        runtime.session_work_queue = queue
 
         await runtime.start()
         await runtime.start()

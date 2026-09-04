@@ -234,9 +234,7 @@ for qq_bot_runtime in bot_registry.values():
         "plugin_conversation_ref_issuer": qq_bot_runtime.plugin_conversation_refs.issue_qq,
         "thinking_mode_setter": qq_bot_runtime.set_llm_thinking_mode,
         "turn_coordinator": qq_bot_runtime.turn_coordinator,
-        "session_inbox_store": qq_bot_runtime.session_inbox_store,
-        "session_work_queue_provider": qq_bot_runtime.qq_session_work_queue,
-        "session_work_queue_registrar": qq_bot_runtime.bind_qq_session_work_queue,
+        "session_work_queue": qq_bot_runtime.session_work_queue,
     }
     app.include_router(
         build_qq_router(
