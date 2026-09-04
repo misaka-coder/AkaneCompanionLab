@@ -130,10 +130,47 @@ function renderPluginCard(state, plugin) {
       <span class="plugin-surfaces">${surfaces}</span>
     </div>
     ${plugin.reason ? `<p class="plugin-card-reason">${escapeHtml(plugin.reason)}</p>` : ""}
+    ${renderPluginDetails(plugin)}
     <div class="plugin-card-actions">
       <button class="action-button${plugin.enabled ? "" : " is-primary"}" type="button" data-action="${actionId}" data-action-value="${escapeHtml(plugin.pluginId)}"${pending || !actionAvailable ? " disabled" : ""}><span>${plugin.enabled ? "Ⅱ" : "▷"}</span><b>${pending ? "处理中" : plugin.enabled ? "停用" : "启用"}</b></button>
     </div>
   </article>`;
+}
+
+function renderPluginDetails(plugin) {
+  const contributionGroups = [
+    ["capabilities", "模型能力"],
+    ["commands", "QQ 指令"],
+    ["event_handlers", "事件处理"],
+    ["hooks", "宿主钩子"],
+    ["background_services", "后台服务"],
+    ["prompt_blocks", "提示片段"],
+    ["skills", "Skill"]
+  ].filter(([key]) => plugin.contributions[key]?.length);
+  const channelLabels = { desktop: "桌宠", qq: "QQ" };
+  const channelNames = plugin.surfaces.length
+    ? plugin.surfaces.map((surface) => channelLabels[surface] || surface).join("、")
+    : "仅后台";
+  return `<details class="plugin-card-details" data-capability-key="plugin:${escapeHtml(plugin.pluginId)}">
+    <summary><span>查看贡献与权限</span><i aria-hidden="true">⌄</i></summary>
+    <div class="plugin-detail-body">
+      <dl class="plugin-runtime-facts">
+        <div><dt>适用渠道</dt><dd>${escapeHtml(channelNames)}</dd></div>
+        <div><dt>运行代次</dt><dd>${plugin.generation || "—"}</dd></div>
+        <div><dt>失败回退</dt><dd>${plugin.rollbackAvailable ? "可回滚至有效版本" : "暂无可用回滚"}</dd></div>
+      </dl>
+      <section class="plugin-detail-section"><strong>运行贡献</strong>
+        ${contributionGroups.length
+          ? `<div class="plugin-contribution-list">${contributionGroups.map(([key, label]) => `<div><small>${label}</small><span>${plugin.contributions[key].map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</span></div>`).join("")}</div>`
+          : `<p>${plugin.declaredOnly ? "插件尚未激活，当前显示安装阶段的声明。" : "插件没有注册面向模型或渠道的贡献。"}</p>`}
+      </section>
+      <section class="plugin-detail-section"><strong>权限声明</strong>
+        ${plugin.permissions.length
+          ? `<div class="plugin-permission-list">${plugin.permissions.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>`
+          : `<p>没有声明额外权限。</p>`}
+      </section>
+    </div>
+  </details>`;
 }
 
 function renderSkillLibrary(state, skills) {

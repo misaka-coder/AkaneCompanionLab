@@ -493,6 +493,26 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .plugin-surface.is-desktop { color: #b7adff; background: rgb(var(--accent-rgb) / 0.12); }
 .plugin-surface.is-qq { color: #9fd2ff; background: rgb(61 137 205 / 0.12); }
 .plugin-card-reason { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: #ffd093; font-size: 6px; line-height: 1.5; }
+.plugin-card-details { margin-top: 8px; border-top: 1px solid var(--line); }
+.plugin-card-details > summary { display: flex; align-items: center; justify-content: space-between; min-height: 31px; color: var(--text-soft); cursor: pointer; font-size: 7px; list-style: none; }
+.plugin-card-details > summary::-webkit-details-marker { display: none; }
+.plugin-card-details > summary:hover { color: var(--text); }
+.plugin-card-details > summary i { color: var(--text-faint); font-style: normal; transition: transform 180ms ease; }
+.plugin-card-details[open] > summary i { transform: rotate(180deg); }
+.plugin-detail-body { display: grid; gap: 10px; padding: 2px 0 8px; }
+.plugin-runtime-facts { display: grid; margin: 0; }
+.plugin-runtime-facts > div { display: flex; justify-content: space-between; gap: 10px; min-height: 27px; padding: 6px 0; border-top: 1px solid var(--line); }
+.plugin-runtime-facts dt, .plugin-runtime-facts dd { font-size: 6px; }
+.plugin-runtime-facts dt { color: var(--text-faint); }
+.plugin-runtime-facts dd { margin: 0; color: var(--text-soft); text-align: right; }
+.plugin-detail-section > strong { display: block; font-size: 7px; }
+.plugin-detail-section > p { margin: 6px 0 0; color: var(--text-faint); font-size: 6px; line-height: 1.5; }
+.plugin-contribution-list { display: grid; gap: 7px; margin-top: 7px; }
+.plugin-contribution-list > div { display: grid; gap: 4px; }
+.plugin-contribution-list small { color: var(--text-faint); font-size: 6px; }
+.plugin-contribution-list span, .plugin-permission-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.plugin-contribution-list code, .plugin-permission-list code { max-width: 100%; padding: 4px 6px; overflow: hidden; border-radius: 7px; color: var(--text-soft); background: rgb(var(--accent-rgb) / 0.08); font: 6px var(--font-ui); text-overflow: ellipsis; white-space: nowrap; }
+.plugin-permission-list { margin-top: 7px; }
 .plugin-card-actions { display: flex; justify-content: flex-end; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); }
 .plugin-card-actions .action-button { min-height: 30px; }
 .plugin-library-empty { display: grid; place-items: center; min-height: 72px; margin-top: 12px; border: 1px dashed var(--line); border-radius: 12px; color: var(--text-faint); font-size: 7px; text-align: center; }
