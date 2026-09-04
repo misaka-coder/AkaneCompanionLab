@@ -204,6 +204,14 @@ assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { source_path:
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel, { path: "C:/work/timer-plugin.whl" });
 assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages(?:\?|$)/);
 assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { wheel_path: "C:/work/timer-plugin.whl" });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginInstall, {
+  stageId: "stage-review-1",
+  approvedPermissions: ["agent.event.submit", "storage.write"]
+});
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages\/stage-review-1\/install/);
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), {
+  approved_permissions: ["agent.event.submit", "storage.write"]
+});
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate, { workflowId: "portrait" });
 assert.match(backendRequests.at(-1).url, /\/capabilities\/workflows\/portrait\/validate/);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave, { familyId: "ops", mode: "trusted_auto_allow" });
@@ -230,6 +238,21 @@ const failedPluginResult = await failedPluginSource.runAction(
 assert.equal(failedPluginResult.ok, false);
 assert.equal(failedPluginResult.refresh, true);
 assert.equal(failedPluginResult.reason, "插件未能切换，宿主已恢复上一有效版本");
+
+const changedStageSource = createBackendControlCenterSource({
+  baseUrl: "http://control-center-route-smoke",
+  fetchImpl: async () => jsonResponse({
+    ok: false,
+    status: "approval_required",
+    reason: "plugin_permissions_not_approved"
+  }, 409)
+});
+const changedStageResult = await changedStageSource.runAction(
+  CONTROL_CENTER_ACTIONS.abilitiesPluginInstall,
+  { stageId: "stage-review-1", approvedPermissions: ["storage.write"] }
+);
+assert.equal(changedStageResult.ok, false);
+assert.equal(changedStageResult.reason, "候选权限已经变化，请重新审查后再安装");
 
 const managementSource = createBackendControlCenterSource({
   baseUrl: "http://control-center-route-smoke",

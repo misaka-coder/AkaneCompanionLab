@@ -131,15 +131,17 @@ function renderPluginStaging(state, plugins) {
         <button class="action-button is-primary" type="submit" data-action="abilities.plugin.stageSource"${pending || !sourceAvailable ? " disabled" : ""}><span>⌁</span><b>${sourcePending ? "构建并探测中" : "检查源码"}</b></button>
       </div>
     </form>
-    ${plugins.stages.length ? `<div class="plugin-stage-list">${plugins.stages.map(renderPluginStage).join("")}</div>` : ""}
+    ${plugins.stages.length ? `<div class="plugin-stage-list">${plugins.stages.map((stage) => renderPluginStage(state, stage)).join("")}</div>` : ""}
   </details>`;
 }
 
-function renderPluginStage(stage) {
+function renderPluginStage(state, stage) {
   if (!stage.ok) {
     return `<article class="plugin-stage-item is-invalid"><div><strong>无效暂存候选</strong><small>${escapeHtml(stage.reason || "候选数据不可读取")}</small></div></article>`;
   }
   const groups = pluginContributionGroups(stage.contributions);
+  const installPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.install"));
+  const installAvailable = state.viewModel?.actions?.["abilities.plugin.install"]?.available;
   return `<article class="plugin-stage-item">
     <div class="plugin-stage-heading"><span><strong>${escapeHtml(stage.pluginId)}</strong><small>${stage.version ? `v${escapeHtml(stage.version)}` : escapeHtml(stage.distributionName || "已通过探测")}</small></span><em>待确认</em></div>
     <p>${stage.contributionCount ? `${stage.contributionCount} 项贡献已通过隔离探测` : "插件没有声明面向模型或渠道的贡献"}</p>
@@ -147,6 +149,7 @@ function renderPluginStage(stage) {
     <div class="plugin-detail-section"><strong>申请权限</strong>${stage.permissions.length
       ? `<div class="plugin-permission-list">${stage.permissions.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}</div>`
       : `<p>没有申请额外权限。</p>`}</div>
+    <div class="plugin-stage-confirm"><small>确认后宿主才会发布制品并原子切换插件代次。</small><button class="action-button is-primary" type="button" data-plugin-stage-install="${escapeHtml(stage.stageId)}"${installPending || !installAvailable ? " disabled" : ""}><span>✓</span><b>${installPending ? "安装并激活中" : "确认权限并安装"}</b></button></div>
   </article>`;
 }
 

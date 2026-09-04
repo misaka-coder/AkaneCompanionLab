@@ -95,6 +95,17 @@ root.addEventListener("click", (event) => {
     if (operation === "clear") void runAction("abilities.provider.voiceProfile.clearCurrentCharacter", payload);
     return;
   }
+  const pluginInstallButton = event.target.closest("button[data-plugin-stage-install]");
+  if (pluginInstallButton && !pluginInstallButton.disabled) {
+    const stageId = String(pluginInstallButton.dataset.pluginStageInstall || "").trim();
+    const stage = store.getState().viewModel?.abilities?.plugins?.stages?.find((item) => item.stageId === stageId && item.ok);
+    if (!stage) return;
+    void runAction("abilities.plugin.install", {
+      stageId,
+      approvedPermissions: [...stage.permissions]
+    });
+    return;
+  }
   const approvalRequestButton = event.target.closest("button[data-approval-request]");
   if (approvalRequestButton && !approvalRequestButton.disabled) {
     void runAction("abilities.approvalRequest.decide", {

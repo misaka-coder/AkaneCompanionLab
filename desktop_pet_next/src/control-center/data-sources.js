@@ -33,7 +33,8 @@ const pluginBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesPluginDisable,
   CONTROL_CENTER_ACTIONS.abilitiesPluginRollback,
   CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource,
-  CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel
+  CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginInstall
 ]);
 const approvalPolicyBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesApprovalPolicySave
@@ -607,6 +608,9 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
   if ([CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource, CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel].includes(actionId)) {
     return runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload, params);
   }
+  if (actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginInstall) {
+    return runPluginInstallBackendAction(fetchImpl, baseUrl, actionId, payload, params);
+  }
   const pluginId = String(payload.pluginId || payload.plugin_id || payload.value || "").trim();
   if (!pluginId) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "pluginId is required" };
@@ -647,6 +651,63 @@ async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}
       error: formatDataSourceError(error)
     };
   }
+}
+
+async function runPluginInstallBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const stageId = String(payload.stageId || payload.stage_id || payload.value || "").trim();
+  const approvedPermissions = Array.isArray(payload.approvedPermissions)
+    ? payload.approvedPermissions.map((item) => String(item || "").trim()).filter(Boolean)
+    : Array.isArray(payload.approved_permissions)
+      ? payload.approved_permissions.map((item) => String(item || "").trim()).filter(Boolean)
+      : null;
+  if (!stageId || approvedPermissions === null) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "stageId and approvedPermissions are required" };
+  }
+  try {
+    const response = await fetchImpl(
+      buildBackendUrl(baseUrl, `/admin/plugins/stages/${encodeURIComponent(stageId)}/install`, params),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ approved_permissions: approvedPermissions }),
+        cache: "no-store"
+      }
+    );
+    const result = await readActionResponse(response);
+    const ok = response.ok && Boolean(result?.ok);
+    return {
+      ...result,
+      ok,
+      status: String(result?.status || (ok ? "active" : `http-${response.status}`)),
+      reason: ok ? "" : pluginInstallFailureDetail(result, response.status),
+      actionId,
+      stageId,
+      refresh: true
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "request-failed",
+      actionId,
+      stageId,
+      refresh: true,
+      error: formatDataSourceError(error)
+    };
+  }
+}
+
+function pluginInstallFailureDetail(result, httpStatus) {
+  const status = String(result?.status || "").trim();
+  const reason = String(result?.reason || "").trim();
+  if (status === "approval_required" || reason === "plugin_permissions_not_approved") {
+    return "候选权限已经变化，请重新审查后再安装";
+  }
+  if (status === "activation_failed") return "新版本未能激活，原有插件状态已经恢复";
+  if (status === "persist_failed") return "安装状态未能保存，原有插件状态已经恢复";
+  if (status === "rollback_failed") return "安装失败且自动恢复未完成，请检查插件运行状态";
+  if (status === "not_found") return "这个暂存候选已经不存在，请重新探测";
+  if (httpStatus === 401 || httpStatus === 403) return "此操作只能从受信控制中心执行";
+  return reason || `http-${httpStatus}`;
 }
 
 async function runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
