@@ -961,6 +961,7 @@ class PluginGenerationCodecTests(unittest.TestCase):
             message="定时事件已到期",
             event=PluginExternalEvent("timer.fired", (("task", "喝水"),), "test.plugin"),
             memory_idempotency_key="timer:1",
+            text_strip_leading_addresses=("主人", "亲爱的主人"),
         )
         agent_event_result = PluginAgentEventResult(True, "completed", "", "delivered")
 

@@ -259,6 +259,9 @@ class PluginAgentEventRequest:
     sends one completed text message. Optional ``text_prefix`` and
     ``text_suffix`` are applied to that completed text; they are not model
     instructions and are omitted when the Agent deliberately stays silent.
+    ``text_strip_leading_addresses`` lets the plugin declare direct-address
+    phrases that the host removes from the start of this event's completed
+    reply before persistence and delivery. It does not affect ordinary turns.
     """
 
     trace_id: str
@@ -270,6 +273,7 @@ class PluginAgentEventRequest:
     text_delivery: str = "default"
     text_prefix: str = ""
     text_suffix: str = ""
+    text_strip_leading_addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

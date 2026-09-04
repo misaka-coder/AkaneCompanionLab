@@ -97,6 +97,31 @@ class PluginScopedAgentEventPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "unsupported_text_delivery")
 
+    async def test_leading_address_policy_requires_single_message_delivery(self) -> None:
+        class Delegate:
+            async def submit(self, _request: PluginAgentEventRequest) -> PluginAgentEventResult:
+                raise AssertionError("delegate_should_not_run")
+
+        port = _PluginScopedAgentEventPort(
+            plugin_id="akane.timer",
+            delegate=Delegate(),
+            availability_provider=lambda: True,
+        )
+        result = await port.submit(
+            PluginAgentEventRequest(
+                trace_id="trace",
+                conversation_ref="opaque-ref",
+                message="event",
+                event=PluginExternalEvent("timer.fired", (("label", "water"),)),
+                text_strip_leading_addresses=("主人",),
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.reason,
+            "text_strip_leading_addresses_requires_single_message",
+        )
+
 
 class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
     def _build(self):
@@ -258,6 +283,7 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
                     text_delivery="single_message",
                     text_prefix="【快讯】",
                     text_suffix="原文链接：https://example.test",
+                    text_strip_leading_addresses=("主人",),
                 )
             )
         self.assertTrue(result.ok)
@@ -265,6 +291,7 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["plugin_text_delivery"], "single_message")
         self.assertEqual(payload["plugin_text_prefix"], "【快讯】")
         self.assertEqual(payload["plugin_text_suffix"], "原文链接：https://example.test")
+        self.assertEqual(payload["plugin_text_strip_leading_addresses"], ["主人"])
 
 
 class DesktopPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):

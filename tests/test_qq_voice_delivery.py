@@ -86,8 +86,8 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                     "type": "final_ui",
                     "payload": {
                         "reply_medium": "text",
-                        "speech": "第一段。\n\n第二段。",
-                        "speech_segments": ["第一段。", "第二段。"],
+                        "speech": "主人，第一段。\n\n第二段。",
+                        "speech_segments": ["主人，第一段。", "第二段。"],
                         "tool_events": [],
                     },
                 }
@@ -107,6 +107,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 "plugin_text_delivery": "single_message",
                 "plugin_text_prefix": "【财经快讯｜10:01】",
                 "plugin_text_suffix": "原文链接：https://example.test/news",
+                "plugin_text_strip_leading_addresses": ["主人"],
             },
             config_module=SimpleNamespace(
                 QQ_STREAM_REPLIES_ENABLED=True,

@@ -21,6 +21,8 @@ MAX_AGENT_EVENT_REFERENCE_CHARS = 4096
 MAX_AGENT_EVENT_MESSAGE_CHARS = 12_000
 MAX_AGENT_EVENT_IDEMPOTENCY_KEY_CHARS = 240
 MAX_AGENT_EVENT_TEXT_AFFIX_CHARS = 2000
+MAX_AGENT_EVENT_STRIP_ADDRESSES = 8
+MAX_AGENT_EVENT_STRIP_ADDRESS_CHARS = 40
 MAX_AGENT_EVENT_FIELDS = 16
 MAX_AGENT_EVENT_FIELD_CHARS = 4000
 MAX_AGENT_EVENT_FIELD_TOTAL_CHARS = 12_000
@@ -219,6 +221,22 @@ def _validate_agent_event_request(request: PluginAgentEventRequest) -> str:
         return "unsupported_event_delivery"
     if not isinstance(request.text_delivery, str) or request.text_delivery not in {"default", "single_message"}:
         return "unsupported_text_delivery"
+    addresses = request.text_strip_leading_addresses
+    if not isinstance(addresses, tuple) or len(addresses) > MAX_AGENT_EVENT_STRIP_ADDRESSES:
+        return "invalid_text_strip_leading_addresses"
+    seen_addresses: set[str] = set()
+    for address in addresses:
+        if (
+            not isinstance(address, str)
+            or not address.strip()
+            or len(address) > MAX_AGENT_EVENT_STRIP_ADDRESS_CHARS
+            or "\x00" in address
+            or address in seen_addresses
+        ):
+            return "invalid_text_strip_leading_addresses"
+        seen_addresses.add(address)
+    if addresses and request.text_delivery != "single_message":
+        return "text_strip_leading_addresses_requires_single_message"
     event = request.event
     if not isinstance(event, PluginExternalEvent):
         return "invalid_external_event"

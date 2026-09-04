@@ -79,6 +79,7 @@ from .plugin_api import (
     PluginToolCallSnapshot,
     PluginToolResultSnapshot,
 )
+from .plugin_text_presentation import apply_plugin_text_presentation_policy
 from . import final_output_engine
 from .local_capability_config import load_capability_config
 from .retrieval_service import RetrievalService
@@ -4873,6 +4874,14 @@ class AkaneMemoryEngine:
                 now_ts=now_ts,
                 source_id=turn_projection_source_id,
                 tool_result=tool_result,
+            )
+        if external_event_turn:
+            apply_plugin_text_presentation_policy(
+                final_output,
+                strip_leading_addresses_from=payload.get(
+                    "plugin_text_strip_leading_addresses",
+                    (),
+                ),
             )
         self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
         final_output["tool_events"] = tool_events

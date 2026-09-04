@@ -43,6 +43,7 @@ from ..plugin_api import (
     PluginExternalEvent,
 )
 from ..plugin_events import record_timeline_events, render_current_turn_events
+from ..plugin_text_presentation import apply_plugin_text_presentation_policy
 from ..workspace_management import clear_workspace_files, list_workspace_files
 from ..qq_route_helpers import (
     apply_qq_current_outfit_visual as _apply_qq_current_outfit_visual,
@@ -1497,6 +1498,14 @@ def _process_qq_turn_streaming(
     # QQ sends performed while it yields. Keep the label honest: this is not a
     # provider-only latency measurement.
     timing["turn_processing_ms"] = round((time.perf_counter() - engine_started_at) * 1000, 1)
+
+    apply_plugin_text_presentation_policy(
+        frame,
+        strip_leading_addresses_from=turn_payload.get(
+            "plugin_text_strip_leading_addresses",
+            (),
+        ),
+    )
 
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
     visible_action_delivered = _qq_has_visible_action_receipt(frame_delivery_events)
@@ -3020,6 +3029,9 @@ def build_qq_router(
                 "plugin_text_delivery": text_delivery,
                 "plugin_text_prefix": str(request.text_prefix or "").strip(),
                 "plugin_text_suffix": str(request.text_suffix or "").strip(),
+                "plugin_text_strip_leading_addresses": list(
+                    request.text_strip_leading_addresses
+                ),
                 "message_addressing": {
                     "mode": "current_request",
                     "trigger": "plugin_event",

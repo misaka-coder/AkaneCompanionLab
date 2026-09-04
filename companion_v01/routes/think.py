@@ -21,6 +21,7 @@ from ..plugin_api import (
     PluginExternalEvent,
 )
 from ..plugin_events import record_timeline_events, render_current_turn_events
+from ..plugin_text_presentation import apply_plugin_text_presentation_policy
 from ..turn_coordination import TurnCoordinator
 
 logger = logging.getLogger("akane.think")
@@ -50,6 +51,10 @@ def _desktop_agent_event_presentation(
 ) -> dict[str, Any]:
     """Keep the ordinary desktop output contract while excluding internals."""
 
+    frame = apply_plugin_text_presentation_policy(
+        dict(frame),
+        strip_leading_addresses_from=request.text_strip_leading_addresses,
+    )
     presentation = {
         key: frame[key]
         for key in _DESKTOP_AGENT_EVENT_PRESENTATION_FIELDS
@@ -264,6 +269,9 @@ def build_think_router(
                 },
             },
             "memory_idempotency_key": str(event_request.memory_idempotency_key or "").strip(),
+            "plugin_text_strip_leading_addresses": list(
+                event_request.text_strip_leading_addresses
+            ),
             "message_addressing": {
                 "mode": "current_request",
                 "trigger": "plugin_event",
