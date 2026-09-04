@@ -182,6 +182,13 @@ FINAL_RESPONSE_RECOVERY_FEEDBACK = (
     "不要重复已完成的工具，不要讨论这次格式错误。"
 )
 
+FINAL_RESPONSE_EXTERNAL_TEXT_FEEDBACK = (
+    "【宿主反馈】\n"
+    "上一条回复在 JSON 对象外还有用户可见文字；只提取 speech 会丢失那部分内容，因此本次没有交付。\n"
+    "请保留完整答案，但只输出一个 JSON 对象，并把所有要发给用户的文字都放进 speech。"
+    "不要重复已完成的工具，不要讨论这次格式修正。"
+)
+
 # Some OpenAI-compatible gateways serialize an intended tool call into their
 # private text protocol instead of returning a structured tool_calls field.
 # That text is neither user-facing speech nor an executable decision. Keep the
@@ -5600,7 +5607,11 @@ class AkaneMemoryEngine:
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
             return normalized
-        if self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
+        if (
+            self._is_retryable_final_output(normalized)
+            or self._raw_tool_call_is_pending(provider_output_raw)
+            or retry_feedback == "json_external_text"
+        ):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,
@@ -5647,6 +5658,8 @@ class AkaneMemoryEngine:
     ) -> str:
         if previous_feedback == "text_tool_protocol":
             return FINAL_TOOL_PROTOCOL_RECOVERY_FEEDBACK
+        if previous_feedback == "json_external_text":
+            return FINAL_RESPONSE_EXTERNAL_TEXT_FEEDBACK
         return FINAL_RESPONSE_RECOVERY_FEEDBACK
 
     @staticmethod
@@ -5662,6 +5675,8 @@ class AkaneMemoryEngine:
             provider_output_raw=provider_output_raw,
         ):
             return "text_tool_protocol"
+        if AkaneMemoryEngine._raw_json_has_external_text(provider_output_raw):
+            return "json_external_text"
         if parse_fallback:
             return "json_parse_fallback"
         if not isinstance(raw_result, dict):
@@ -5691,6 +5706,38 @@ class AkaneMemoryEngine:
         return AkaneMemoryEngine._text_contains_tool_protocol(speech) or (
             AkaneMemoryEngine._text_contains_tool_protocol(provider_output_raw)
         )
+
+    @staticmethod
+    def _raw_json_has_external_text(raw: Any) -> bool:
+        """Return true when valid JSON is surrounded by model-authored prose.
+
+        Silently extracting the object is lossy: the surrounding prose can be
+        the real task report while ``speech`` is only a short summary. A plain
+        object, or an object wrapped only in a Markdown JSON fence, is valid.
+        Other prefix/suffix content gets one same-context repair turn.
+        """
+
+        text = str(raw or "").strip()
+        if not text:
+            return False
+        try:
+            return not isinstance(json.loads(text), dict)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{", text):
+            start = match.start()
+            try:
+                payload, consumed = decoder.raw_decode(text[start:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            prefix = text[:start].strip().lower()
+            suffix = text[start + consumed :].strip().lower()
+            return prefix not in {"", "```", "```json"} or suffix not in {"", "```"}
+        return False
 
     def _build_final_response_request_kwargs(
         self,
@@ -5808,6 +5855,10 @@ class AkaneMemoryEngine:
         if self._output_contains_text_tool_protocol(
             normalized,
             provider_output_raw=provider_output_raw,
+        ):
+            return None
+        if not self._final_output_has_tool_call(normalized) and self._raw_json_has_external_text(
+            provider_output_raw
         ):
             return None
         if not self._final_output_has_tool_call(normalized):
@@ -6804,7 +6855,11 @@ class AkaneMemoryEngine:
             # A legal tool call still continues the ordinary tool loop.
             if provider_output_raw:
                 normalized["_provider_output_raw"] = provider_output_raw
-        elif self._is_retryable_final_output(normalized) or self._raw_tool_call_is_pending(provider_output_raw):
+        elif (
+            self._is_retryable_final_output(normalized)
+            or self._raw_tool_call_is_pending(provider_output_raw)
+            or retry_feedback == "json_external_text"
+        ):
             recovered = self._recover_final_response_plain_text(
                 generation_context=generation_context,
                 request_projection_state=request_projection_state,

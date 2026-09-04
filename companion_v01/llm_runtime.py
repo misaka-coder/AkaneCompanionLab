@@ -431,11 +431,16 @@ class _TopLevelJSONStreamTap:
         )
         self._speech_stream_finished = False
         self._delivered_speech_segments: list[str] = []
+        self._root_seen = False
+        self._root_prefix: list[str] = []
+        self._external_prefix = False
 
     def feed(self, text: Any) -> list[dict[str, Any]]:
         source = str(text or "")
         events: list[dict[str, Any]] = []
         for char in source:
+            if not self._root_seen and self.depth == 0 and char != "{":
+                self._root_prefix.append(char)
             if self.in_string:
                 self._consume_string_char(char, events)
                 continue
@@ -459,6 +464,10 @@ class _TopLevelJSONStreamTap:
                 continue
 
             if char == "{":
+                if not self._root_seen:
+                    self._root_seen = True
+                    prefix = "".join(self._root_prefix).strip().lower()
+                    self._external_prefix = prefix not in {"", "```", "```json"}
                 self.depth += 1
                 if self.depth == 1:
                     self.expecting_key = True
@@ -516,11 +525,11 @@ class _TopLevelJSONStreamTap:
             event_type = str(event.get("type") or "")
             if event_type == "speech_chunk":
                 self.latest_speech += str(event.get("text") or "")
-            if event_type in {"speech_chunk", "speech_segment"}:
+            if not self._external_prefix and event_type in {"speech_chunk", "speech_segment"}:
                 events.append(event)
-            if event_type == "speech_segment":
+            if not self._external_prefix and event_type == "speech_segment":
                 self._delivered_speech_segments.append(str(event.get("text") or "").strip())
-        return events
+        return [] if self._external_prefix else events
 
     def finish(self, *, include_incomplete_remainder: bool = True) -> list[dict[str, Any]]:
         if self._speech_stream_finished:
@@ -533,6 +542,8 @@ class _TopLevelJSONStreamTap:
             for event in self._speech_stream.finish()
             if str(event.get("type") or "") == "speech_segment"
         ]
+        if self._external_prefix:
+            return []
         if not include_incomplete_remainder:
             events = [event for event in events if _speech_segment_has_terminal_boundary(event.get("text"))]
         self._delivered_speech_segments.extend(

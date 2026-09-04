@@ -91,6 +91,19 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(tap.latest_emotion, "happy")
         self.assertEqual(tap.latest_speech, "喵呜，主人欢迎回来……课上辛苦啦！")
 
+    def test_external_report_before_json_is_not_streamed_as_shortened_speech(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        events = tap.feed(
+            '项目路径：/work/plugin；测试 7/7。\n'
+            '{"emotion":"happy","speech":"验收通过。","tool_call":null}'
+        )
+        events.extend(tap.finish())
+
+        self.assertEqual(events, [])
+        self.assertEqual(tap.latest_speech, "验收通过。")
+        self.assertEqual(tap.delivered_speech, "")
+
     def test_ignores_legacy_speech_segments_array_without_speech(self) -> None:
         tap = _TopLevelJSONStreamTap()
 

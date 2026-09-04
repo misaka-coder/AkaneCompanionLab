@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext, default_capabilities_for_mode
 from companion_v01.engine import (
+    FINAL_RESPONSE_EXTERNAL_TEXT_FEEDBACK,
     FINAL_RESPONSE_PLAIN_TEXT_FEEDBACK,
     FINAL_RESPONSE_RECOVERY_FEEDBACK,
     AkaneMemoryEngine,
@@ -54,6 +55,58 @@ def _default_context(**overrides) -> dict:
 
 
 class FinalRecoveryTests(unittest.TestCase):
+    def test_external_report_before_json_retries_without_losing_report(self) -> None:
+        complete_report = "项目路径：/work/plugin；测试 7/7；安装 active；真实调用返回 22。"
+
+        class FakeLLM:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            @staticmethod
+            def snapshot_metrics() -> dict:
+                return {}
+
+            @staticmethod
+            def record_metric(_name: str) -> None:
+                return None
+
+            def call_chat_json_result(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    return ChatJSONResult(
+                        parsed={"speech": "验收通过。", "tool_call": None},
+                        raw_text=(
+                            complete_report
+                            + '\n{"emotion":"happy","speech":"验收通过。","tool_call":null}'
+                        ),
+                    )
+                return ChatJSONResult(
+                    parsed={"emotion": "happy", "speech": complete_report, "tool_call": None},
+                    raw_text=json.dumps(
+                        {"emotion": "happy", "speech": complete_report, "tool_call": None},
+                        ensure_ascii=False,
+                    ),
+                )
+
+        llm = FakeLLM()
+        result = self._run_nonstream(self._engine(llm))
+
+        self.assertEqual(result["speech"], complete_report)
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["system_prompt"], llm.calls[1]["system_prompt"])
+        self.assertEqual(llm.calls[0]["prompt_cache_key"], llm.calls[1]["prompt_cache_key"])
+        self.assertEqual(
+            llm.calls[0]["user_prompt"] + "\n\n" + FINAL_RESPONSE_EXTERNAL_TEXT_FEEDBACK,
+            llm.calls[1]["user_prompt"],
+        )
+
+    def test_json_fence_is_not_treated_as_external_user_text(self) -> None:
+        self.assertFalse(
+            AkaneMemoryEngine._raw_json_has_external_text(
+                '```json\n{"emotion":"normal","speech":"完整回复。"}\n```'
+            )
+        )
+
     def test_hard_budget_keeps_native_schema_and_changes_only_tool_choice(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         tools = [
