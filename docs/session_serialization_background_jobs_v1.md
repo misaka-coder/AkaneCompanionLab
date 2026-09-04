@@ -184,6 +184,8 @@ needs_model_followup: false
 
 子代理内部轨迹不整段灌入父上下文。普通聊天角色不常驻子代理控制说明；只有相关编程 Skill/模式暴露简短指导和必要工具。
 
+当前权威方案见 `docs/subagent_runtime_v1.md`。provider/result 契约已经建立但尚未向模型暴露；只有 Host Job、父工作区、正常 Resolver/Broker 和父会话完成事件全部接通后，才会发布 `spawn_subagent`。
+
 ## 11. Responses 原生异步
 
 在通用 Job 与 inbox 稳定后，最后增加可选 Provider 适配：

@@ -181,7 +181,7 @@ MCP discovery is therefore currently both provider metadata and, after opt-in, m
 
 ### 4.4 Background worker and workflow side paths
 
-`delegate_task` calls `TaskWorkerService.delegate_task()`, which schedules `run_task_sync()` through `BackgroundTaskRunner`. `TaskWorkerService._allowed_handlers()` filters the static `engine.tool_handlers` map using `AGENT_ALLOWED_TOOLS`, then `_execute_worker_tool()` calls:
+The retired `delegate_task` called `TaskWorkerService.delegate_task()`, scheduled `run_task_sync()` through `BackgroundTaskRunner`, filtered the static `engine.tool_handlers` map, and then invoked handlers directly. That implementation has been removed because it bypassed the shared resolver/broker and dynamic plugin/MCP surface. The replacement design is `docs/subagent_runtime_v1.md`; the following sketch is retained only as historical failure evidence:
 
 ```text
 handler.normalize_call()

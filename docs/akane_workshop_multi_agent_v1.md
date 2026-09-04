@@ -1,5 +1,7 @@
 # Akane Workshop Multi-Agent Blueprint V1
 
+> 历史设计，已退役。本文记录的 `delegate_task`、`TaskWorkerService` 和 task workspace 实现已经删除，不得作为当前开发指南。新的唯一权威设计见 `docs/subagent_runtime_v1.md`。
+
 ## 1. Goal
 
 Akane Workshop is a future architecture for long-running, multi-step tasks.
