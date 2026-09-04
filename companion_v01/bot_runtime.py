@@ -684,6 +684,7 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
         fields.append(("result_summary", summary))
     if handle_text:
         fields.append(("artifact_handles", handle_text))
+        fields.append(("artifact_delivery_status", "available_not_delivered"))
     if error:
         fields.append(("error", error))
     lines = [
@@ -695,6 +696,7 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
         lines.append(f"结果摘要：{summary}")
     if handle_text:
         lines.append(f"可用产物：{handle_text}")
+        lines.append("这些产物已登记但尚未由本完成事件确认发送；需要交付时使用当前渠道的正常发送能力。")
     if error:
         lines.append(f"失败原因：{error}")
     return PluginAgentEventRequest(

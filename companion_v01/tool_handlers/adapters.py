@@ -35,6 +35,7 @@ from ..tool_invocation import (
 )
 from .core import (
     BaseToolHandler,
+    ToolExecutionAdmission,
     ToolExecutionContext,
     ToolExecutionResult,
     ToolFollowupEnvelope,
@@ -239,6 +240,17 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         return {"type": self.tool_type, "arguments": args}
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        admission = self.admit_execution(call=call, context=context)
+        if admission.result is not None:
+            return admission.result
+        return self.execute_admitted(call=dict(admission.call or {}), context=context)
+
+    def admit_execution(
+        self,
+        *,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionAdmission:
         raw_args = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {}
         invocation_context = capcore_invocation_context_from_execution(context)
         permission_request = capcore_build_permission_request(
@@ -258,20 +270,32 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             ),
         )
         if not prepared.validation.ok:
-            return self._validation_failed(prepared.validation)
+            return ToolExecutionAdmission.stop(self._validation_failed(prepared.validation))
         normalized_args = dict(prepared.normalized_args)
         decision = prepared.permission_decision
         if not prepared.ok:
             if decision is None:
-                return self._blocked_by_policy("permission_decision_missing")
+                return ToolExecutionAdmission.stop(self._blocked_by_policy("permission_decision_missing"))
             if decision.requires_user_decision:
-                return self._ask_or_redeem(
+                result = self._approval_result_or_none(
                     decision=decision,
                     context=context,
                     normalized_args=normalized_args,
                 )
-            return self._blocked_by_policy(decision.reason)
-        return self._invoke(normalized_args=normalized_args, context=context)
+                if result is not None:
+                    return ToolExecutionAdmission.stop(result)
+            else:
+                return ToolExecutionAdmission.stop(self._blocked_by_policy(decision.reason))
+        return ToolExecutionAdmission.allow({"type": self.tool_type, "arguments": normalized_args})
+
+    def execute_admitted(
+        self,
+        *,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        normalized_args = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {}
+        return self._invoke(normalized_args=dict(normalized_args), context=context)
 
     def _invoke(
         self,
@@ -336,13 +360,13 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             client_mode=context.client_mode,
         )
 
-    def _ask_or_redeem(
+    def _approval_result_or_none(
         self,
         *,
         decision: Any,
         context: ToolExecutionContext,
         normalized_args: dict[str, Any],
-    ) -> ToolExecutionResult:
+    ) -> ToolExecutionResult | None:
         fingerprint = build_approval_request_fingerprint(normalized_args)
         resource = self._safe_public_text(getattr(self.adapter, "server_id", ""), limit=160)
         device = self._safe_public_text(getattr(self.adapter, "provider_id", ""), limit=160)
@@ -358,7 +382,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
                 authorization_profile_user_id=capcore_authorization_profile_user_id(context),
             )
             if grant is not None:
-                return self._invoke(normalized_args=normalized_args, context=context)
+                return None
         request_id = self._create_approval_request(
             decision=decision,
             context=context,

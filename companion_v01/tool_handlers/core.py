@@ -109,6 +109,27 @@ class ToolExecutionResult:
     model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ToolExecutionAdmission:
+    """Host-side admission result for a durable background invocation.
+
+    ``call`` is the exact, normalized call that may be persisted and executed
+    later.  ``result`` is an ordinary tool result when validation or approval
+    stops submission in the foreground turn.
+    """
+
+    call: Mapping[str, Any] | None = None
+    result: ToolExecutionResult | None = None
+
+    @classmethod
+    def allow(cls, call: Mapping[str, Any]) -> "ToolExecutionAdmission":
+        return cls(call=dict(call))
+
+    @classmethod
+    def stop(cls, result: ToolExecutionResult) -> "ToolExecutionAdmission":
+        return cls(result=result)
+
+
 def operation_tool_result(
     *,
     tool_type: str,
@@ -867,3 +888,29 @@ class BaseToolHandler:
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         raise NotImplementedError
+
+    def admit_execution(
+        self,
+        *,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionAdmission:
+        """Validate and normalize a call before an execution is committed."""
+
+        del context
+        return ToolExecutionAdmission.allow(call)
+
+    def execute_admitted(
+        self,
+        *,
+        call: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        """Execute a call already admitted by :meth:`admit_execution`."""
+
+        return self.execute(call=call, context=context)
+
+    def background_job_policy(self) -> tuple[str, str]:
+        """Return host completion and memory modes for a detached invocation."""
+
+        return "agent", "timeline"

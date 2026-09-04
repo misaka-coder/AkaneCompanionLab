@@ -28,7 +28,7 @@ from companion_v01.plugin_api import (
 )
 from companion_v01.plugin_contribution_policy import TrustedReadNetworkContributionPolicy
 from companion_v01.plugin_host import PluginHost
-from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
+from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge, PluginCapabilityToolHandler
 from companion_v01.tool_invocation import (
     TOOL_INVOCATION_ID_FIELD,
     TOOL_MODEL_NAME_FIELD,
@@ -482,6 +482,34 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TrustedReadNetworkPolicyTests(unittest.TestCase):
+    def test_reviewed_plugin_background_metadata_controls_host_job_semantics(self) -> None:
+        descriptor = asyncio.run(RecordingAdapter().list_capabilities())[0]
+        long_descriptor = replace(
+            descriptor,
+            raw={
+                **dict(descriptor.raw),
+                "execution_class": "long_task",
+                "completion_mode": "agent",
+                "memory_mode": "current_turn",
+            },
+        )
+        handler = PluginCapabilityToolHandler(
+            capability_id=long_descriptor.id,
+            adapter=RecordingAdapter(),
+            descriptor=long_descriptor,
+        )
+        policy = TrustedReadNetworkContributionPolicy()
+
+        self.assertTrue(policy.validate_capability(plugin_id="any.plugin", descriptor=long_descriptor).accepted)
+        self.assertEqual(handler.tool_spec().execution_class, "long_task")
+        self.assertEqual(handler.background_job_policy(), ("agent", "current_turn"))
+
+        unsupported = replace(
+            long_descriptor,
+            raw={**dict(long_descriptor.raw), "completion_mode": "direct"},
+        )
+        self.assertFalse(policy.validate_capability(plugin_id="any.plugin", descriptor=unsupported).accepted)
+
     def test_policy_uses_permission_and_descriptor_shape_not_plugin_id(self) -> None:
         policy = TrustedReadNetworkContributionPolicy()
         manifest = ReadPlugin(RecordingAdapter()).manifest

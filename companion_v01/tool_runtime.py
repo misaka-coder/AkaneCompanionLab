@@ -72,6 +72,7 @@ from .workspace_files import WorkspaceFileService
 
 from .tool_handlers.core import (
     BaseToolHandler,
+    ToolExecutionAdmission,
     ToolExecutionContext,
     ToolExecutionResult,
     ToolFollowupEnvelope,

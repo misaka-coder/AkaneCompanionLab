@@ -66,6 +66,7 @@ class HostToolJobRuntime:
         context: ToolExecutionContext,
         domain_profile_id: str = "",
         turn_id: str = "",
+        handler: Any = None,
     ) -> ToolExecutionResult:
         conversation_ref = ""
         if self.conversation_ref_issuer is not None:
@@ -81,6 +82,35 @@ class HostToolJobRuntime:
             for key, value in dict(call or {}).items()
             if not str(key).startswith("_tool_")
         }
+        try:
+            selected_handler = handler or self._resolve_handler(
+                capability_id=capability_id,
+                context=context,
+                domain_profile_id=domain_profile_id,
+            )
+        except Exception:
+            logger.exception("failed to resolve long tool before admission: %s", capability_id)
+            return _job_failure_result(capability_id, "long_tool_handler_resolution_failed")
+        if selected_handler is None:
+            return _job_failure_result(capability_id, "long_tool_handler_unavailable")
+        admit = getattr(selected_handler, "admit_execution", None)
+        if callable(admit):
+            try:
+                admission = admit(call=normalized_call, context=context)
+            except Exception:
+                logger.exception("long tool admission failed: %s", capability_id)
+                return _job_failure_result(capability_id, "long_tool_admission_failed")
+            blocked = getattr(admission, "result", None)
+            if isinstance(blocked, ToolExecutionResult):
+                return blocked
+            admitted_call = getattr(admission, "call", None)
+            if not isinstance(admitted_call, Mapping):
+                return _job_failure_result(capability_id, "long_tool_admission_invalid")
+            normalized_call = dict(admitted_call)
+        policy = self._background_policy(selected_handler)
+        if policy is None:
+            return _job_failure_result(capability_id, "long_tool_policy_invalid")
+        completion_mode, memory_mode = policy
         payload = {
             "call": normalized_call,
             "client_mode": str(context.client_mode or ""),
@@ -101,8 +131,8 @@ class HostToolJobRuntime:
             delivery_target=conversation_ref,
             turn_id=str(turn_id or ""),
             tool_call_id=str(invocation_id or ""),
-            completion_mode="agent",
-            memory_mode="timeline",
+            completion_mode=completion_mode,
+            memory_mode=memory_mode,
         )
         if not created.get("ok"):
             return _job_failure_result(capability_id, str(created.get("reason") or "host_job_create_failed"))
@@ -285,16 +315,53 @@ class HostToolJobRuntime:
             client_mode=str(payload.get("client_mode") or job.channel),
             request_context=dict(payload.get("request_context") or {}),
         )
+        execute = getattr(handler, "execute_admitted", None)
+        if not callable(execute):
+            execute = handler.execute
         broker_result = self.engine.executor_broker.execute_server_local(
             tool_id=job.capability_id,
             invocation_id=job.tool_call_id or job.job_id,
-            dispatch=lambda: handler.execute(call=call, context=context),
+            dispatch=lambda: execute(call=call, context=context),
             ledger_scope=f"{job.owner.profile_user_id}\x1f{job.owner.session_id}",
             request_data={"arguments": call},
         )
         if broker_result.status != "succeeded" or not isinstance(broker_result.result, ToolExecutionResult):
             raise RuntimeError(str(broker_result.reason or "long_tool_execution_failed"))
         return broker_result.result
+
+    def _resolve_handler(
+        self,
+        *,
+        capability_id: str,
+        context: ToolExecutionContext,
+        domain_profile_id: str,
+    ) -> Any:
+        client_payload = {"client_mode": str(context.client_mode or "")}
+        client_context = self.engine._resolve_client_protocol_context(client_payload)
+        handlers = self.engine._resolve_tool_handlers(
+            client_context=client_context,
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            domain_profile_id=str(domain_profile_id or ""),
+        )
+        return handlers.get(str(capability_id or ""))
+
+    @staticmethod
+    def _background_policy(handler: Any) -> tuple[str, str] | None:
+        getter = getattr(handler, "background_job_policy", None)
+        try:
+            policy = getter() if callable(getter) else ("agent", "timeline")
+        except Exception:
+            return None
+        if not isinstance(policy, tuple) or len(policy) != 2:
+            return None
+        completion = str(policy[0] or "agent").strip().lower()
+        memory = str(policy[1] or "timeline").strip().lower()
+        if completion not in {"agent", "silent"}:
+            return None
+        if memory not in {"current_turn", "timeline"}:
+            return None
+        return completion, memory
 
     def _publish_terminal(self, job_id: str, owner: HostJobOwner) -> None:
         callback = self.terminal_callback

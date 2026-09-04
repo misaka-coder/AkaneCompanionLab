@@ -9,7 +9,7 @@ rules from becoming permanent PluginHost behavior.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from capcore import CapabilityDescriptor
 
@@ -86,6 +86,24 @@ def _validate_trusted_read_capability(
     expected_effects = ("network", "filesystem") if artifact_outputs else ("network",)
     if descriptor.effects != expected_effects:
         return ContributionPolicyDecision.reject()
+    return _validate_background_semantics(descriptor)
+
+
+def _validate_background_semantics(
+    descriptor: CapabilityDescriptor,
+) -> ContributionPolicyDecision:
+    raw = descriptor.raw if isinstance(descriptor.raw, Mapping) else {}
+    execution_class = str(raw.get("execution_class") or "sync").strip().lower()
+    completion_mode = str(raw.get("completion_mode") or "agent").strip().lower()
+    memory_mode = str(raw.get("memory_mode") or "timeline").strip().lower()
+    if execution_class not in {"sync", "long_task"}:
+        return ContributionPolicyDecision.reject()
+    # Direct delivery needs an explicit channel payload contract. Do not map it
+    # to an Agent completion until that separate path actually exists.
+    if completion_mode not in {"agent", "silent"}:
+        return ContributionPolicyDecision.reject()
+    if memory_mode not in {"current_turn", "timeline"}:
+        return ContributionPolicyDecision.reject()
     return ContributionPolicyDecision.allow()
 
 
@@ -105,7 +123,7 @@ def _validate_trusted_stateful_capability(
     artifact_outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file")
     if artifact_outputs and "filesystem" not in descriptor.effects:
         return ContributionPolicyDecision.reject()
-    return ContributionPolicyDecision.allow()
+    return _validate_background_semantics(descriptor)
 
 
 @dataclass(frozen=True, slots=True)

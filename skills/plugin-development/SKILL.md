@@ -42,6 +42,13 @@ artifact lifecycle. This Skill adds no tools or permissions.
   `get_agent_event_port`,
   `add_qq_command`, `add_event_handler`, and `add_hook_handler`.
   Read the nearest example for the exact argument and result types you actually use.
+- A prompt-invoked capability that may take long enough to block chat can opt into the host Job
+  path through its descriptor `raw` mapping:
+  `{"execution_class":"long_task","completion_mode":"agent","memory_mode":"timeline"}`.
+  The host validates and authorizes the call before acknowledging it, then returns a durable Job
+  id and wakes the same character conversation after completion. Use `completion_mode="silent"`
+  only when the plugin exposes another honest way to read the result. Ordinary quick capabilities
+  should omit these keys and stay synchronous.
 
 - Use `get_agent_event_port().submit(...)` for a background event that should make the
   active character respond. Store `ctx.conversation_ref` when configuring delayed work;
@@ -66,6 +73,8 @@ artifact lifecycle. This Skill adds no tools or permissions.
 - Background work registers with `add_background_service(service_id, service)`, observes the
   shutdown controller, and uses stable idempotency keys for external delivery. The notification
   port is only for fixed text that does not need a model turn; it is not the character-response path.
+- A supervised background service is a plugin lifecycle component; a `long_task` capability is one
+  user invocation detached by the host. Do not wrap each capability call in a new background service.
 - Return structured capability results and truthful status/reason values. Do not turn a
   failed probe, queued notification, or pending reload into a success claim.
 

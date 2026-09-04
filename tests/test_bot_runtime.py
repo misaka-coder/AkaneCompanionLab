@@ -422,6 +422,11 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.event.source, "host.jobs")
             self.assertEqual(request.memory_idempotency_key, job.completion_event_id)
             self.assertIn("generated-file:image-1", request.message)
+            self.assertIn("尚未由本完成事件确认发送", request.message)
+            self.assertIn(
+                ("artifact_delivery_status", "available_not_delivered"),
+                request.event.fields,
+            )
 
     async def test_start_recovers_shared_session_inbox_runner_once(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()

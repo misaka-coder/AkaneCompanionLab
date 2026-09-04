@@ -1131,6 +1131,7 @@ def execute_tool_invocation(
             call=normalized_call,
             context=execution_context,
             domain_profile_id=domain_profile_id,
+            handler=handler,
         )
         return result, _final_exec_envelope(invocation=invocation, result=result)
     broker = getattr(engine, "executor_broker", None)

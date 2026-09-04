@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -95,6 +96,22 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             client_mode=context.client_mode,
             conversation_ref=str(reference or ""),
         )
+
+    def tool_spec(self):
+        base = super().tool_spec()
+        if base is None:
+            return None
+        raw = self.descriptor.raw if isinstance(self.descriptor.raw, Mapping) else {}
+        execution_class = str(raw.get("execution_class") or "sync").strip().lower()
+        if execution_class not in {"sync", "long_task"}:
+            execution_class = "sync"
+        return replace(base, execution_class=execution_class)
+
+    def background_job_policy(self) -> tuple[str, str]:
+        raw = self.descriptor.raw if isinstance(self.descriptor.raw, Mapping) else {}
+        completion = str(raw.get("completion_mode") or "agent").strip().lower()
+        memory = str(raw.get("memory_mode") or "timeline").strip().lower()
+        return completion, memory
 
     def tool_metadata(self) -> ToolMetadata:
         base = super().tool_metadata()

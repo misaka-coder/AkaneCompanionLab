@@ -9,10 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult
+
 from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.capability_approval import CapabilityApprovalStore
 from companion_v01.client_protocol import ClientMode
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
+from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 from companion_v01.tool_handlers.core import ToolExecutionContext, ToolExecutionResult
 from companion_v01.tool_handlers.generated_media import GenerateImageToolHandler
 
@@ -82,6 +86,157 @@ def _context() -> ToolExecutionContext:
 
 
 class HostToolJobRuntimeTests(unittest.TestCase):
+    def test_plugin_long_task_is_admitted_before_job_creation_and_executes_once(self) -> None:
+        class Adapter:
+            provider_id = "plugin-test"
+            server_id = "plugin-test"
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            async def invoke(self, capability_id: str, args: dict[str, Any], _context: Any) -> CapabilityResult:
+                self.calls.append({"capability_id": capability_id, "args": dict(args)})
+                return CapabilityResult(is_error=False, status="ok", content={"value": "done"})
+
+        descriptor = CapabilityDescriptor(
+            id="akane.test.long.run",
+            display_name="Long plugin task",
+            short_hint="Run one slow plugin operation.",
+            visible_in=("qq", "desktop"),
+            prompt_exposed=True,
+            risk="high",
+            confirm="always",
+            effects=("filesystem",),
+            trigger=None,
+            inputs=(CapabilityIOSlot(name="value", kind="string", required=True),),
+            outputs=(),
+            raw={
+                "execution_class": "long_task",
+                "completion_mode": "agent",
+                "memory_mode": "timeline",
+            },
+        )
+        adapter = Adapter()
+        approvals = CapabilityApprovalStore()
+        runner = BackgroundTaskRunner({"host-jobs": 1})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            handler = PluginCapabilityToolHandler(
+                capability_id=descriptor.id,
+                adapter=adapter,
+                descriptor=descriptor,
+                config_base_dir=Path(temp_dir),
+                approval_store=approvals,
+            )
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+
+            class Engine(_Engine):
+                def _resolve_tool_handlers(self, **_kwargs: Any):
+                    return {handler.tool_type: handler}
+
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=Engine(handler),
+                store=store,
+                background_tasks=runner,
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            call = {"type": descriptor.id, "arguments": {"value": "  hello  "}}
+            try:
+                blocked = runtime.submit(
+                    capability_id=descriptor.id,
+                    invocation_id="call-plugin-long",
+                    call=call,
+                    context=_context(),
+                    handler=handler,
+                )
+                self.assertEqual(blocked.stream_events[0]["type"], "capability_approval_required")
+                self.assertEqual(store.pending_job_ids(), [])
+                self.assertEqual(adapter.calls, [])
+
+                approvals.decide_request(
+                    profile_user_id="profile-a",
+                    request_id=blocked.stream_events[0]["requestId"],
+                    payload={"decision": "approved"},
+                )
+                accepted = runtime.submit(
+                    capability_id=descriptor.id,
+                    invocation_id="call-plugin-long",
+                    call=call,
+                    context=_context(),
+                    handler=handler,
+                )
+                self.assertEqual(accepted.stream_events[0]["type"], "background_job_accepted")
+                self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertEqual(len(adapter.calls), 1)
+                self.assertEqual(adapter.calls[0]["args"], {"value": "  hello  "})
+                self.assertEqual(len(completed), 1)
+            finally:
+                runner.close(timeout=2.0)
+
+    def test_silent_long_task_settles_without_agent_completion(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        release.set()
+        handler = _Handler(started=started, release=release)
+        handler.background_job_policy = lambda: ("silent", "current_turn")  # type: ignore[attr-defined]
+        runner = BackgroundTaskRunner({"host-jobs": 1})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=_Engine(handler),
+                store=store,
+                background_tasks=runner,
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            try:
+                accepted = runtime.submit(
+                    capability_id=handler.tool_type,
+                    invocation_id="call-silent",
+                    call={"type": handler.tool_type, "prompt": "moon"},
+                    context=_context(),
+                    handler=handler,
+                )
+                self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                job = store.get(
+                    accepted.stream_events[0]["job_id"],
+                    owner=HostJobOwner("profile-a", "session-a"),
+                )
+                self.assertEqual(job.status, "succeeded")
+                self.assertEqual(job.completion_status, "silent")
+                self.assertEqual(completed, [])
+            finally:
+                runner.close(timeout=2.0)
+
+    def test_admission_failure_is_structured_and_creates_no_job(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        handler = _Handler(started=started, release=release)
+        handler.admit_execution = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("secret"))  # type: ignore[attr-defined]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            runtime = HostToolJobRuntime(
+                engine=_Engine(handler),
+                store=store,
+                background_tasks=SimpleNamespace(),
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+            )
+
+            with self.assertLogs("akane.host_tool_jobs", level="ERROR"):
+                result = runtime.submit(
+                    capability_id=handler.tool_type,
+                    invocation_id="call-broken-admission",
+                    call={"type": handler.tool_type, "prompt": "moon"},
+                    context=_context(),
+                    handler=handler,
+                )
+
+            self.assertEqual(result.stream_events[0]["reason"], "long_tool_admission_failed")
+            self.assertNotIn("secret", result.followup_context)
+            self.assertEqual(store.pending_job_ids(), [])
+
     def test_real_image_handler_publishes_generated_handle_in_completion_job(self) -> None:
         class ImageService:
             image_material_resolver = SimpleNamespace(
