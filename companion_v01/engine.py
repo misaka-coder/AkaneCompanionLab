@@ -7493,9 +7493,66 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
                 capability_selection=frozen_capability_selection,
             )
+        recovered_native_aliases: dict[str, str] | None = None
         for raw_tool_call in raw_tool_calls:
             raw_tool_name = str(raw_tool_call.get("type") or "").strip()
             call_capability_selection = frozen_capability_selection
+            declared_native_names = {
+                str(name or "").strip()
+                for name in getattr(frozen_capability_selection, "native_tool_names", ()) or ()
+                if str(name or "").strip()
+            }
+            native_aliases = getattr(frozen_capability_selection, "native_tool_aliases", {}) or {}
+            canonical_native_name = str(native_aliases.get(raw_tool_name) or "").strip()
+            if (
+                native_carrier_present
+                and raw_tool_name not in resolved_round_handlers
+                and raw_tool_name not in declared_native_names
+                and not canonical_native_name
+            ):
+                if recovered_native_aliases is None:
+                    from .native_tool_schema import build_openai_native_tool_specs, native_tool_model_name_map
+
+                    selected_native_names = set(declared_native_names)
+                    alias_handlers = dict(resolved_round_handlers)
+                    if not alias_handlers:
+                        try:
+                            alias_handlers = self._resolve_tool_handlers(
+                                client_context=client_context,
+                                profile_user_id=profile_user_id,
+                                session_id=session_id,
+                                domain_profile_id=domain_profile_id,
+                            )
+                        except Exception:
+                            alias_handlers = {}
+                    if not selected_native_names:
+                        selected_native_names = {
+                            str(name or "").strip()
+                            for name, handler in alias_handlers.items()
+                            if str(name or "").strip()
+                            and bool(getattr(handler, "policy_accepted_native_tool", False))
+                        }
+                    selected_native_handlers = {
+                        name: handler
+                        for name, handler in alias_handlers.items()
+                        if name in selected_native_names
+                    }
+                    recovered_native_aliases = native_tool_model_name_map(
+                        build_openai_native_tool_specs(
+                            selected_native_handlers,
+                            allowed_tool_names=selected_native_names,
+                        )
+                    )
+                canonical_native_name = str(recovered_native_aliases.get(raw_tool_name) or "").strip()
+            recovered_native_name = str((recovered_native_aliases or {}).get(raw_tool_name) or "").strip()
+            if canonical_native_name and (
+                canonical_native_name in resolved_round_handlers
+                or recovered_native_name == canonical_native_name
+            ):
+                raw_tool_call = dict(raw_tool_call)
+                raw_tool_call["type"] = canonical_native_name
+                raw_tool_call.setdefault(TOOL_MODEL_NAME_FIELD, raw_tool_name)
+                raw_tool_name = canonical_native_name
             if raw_tool_name == "invoke_mcp":
                 from .engine_services.tool_rounds import resolve_mcp_router_target
 

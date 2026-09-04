@@ -17,7 +17,7 @@ from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services.tool_rounds import resolve_capability_selection, resolve_tool_handlers
 from companion_v01.instance_profile import PluginSelection
-from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, native_tool_model_name_map
 from companion_v01.plugin_api import (
     AKANE_PLUGIN_API_VERSION,
     CAPABILITY_PROMPT_INVOKE_PERMISSION,
@@ -216,18 +216,17 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompt.count(f"- {CAPABILITY_ID}："), 1)
         self.assertEqual(len(native_tools), 1)
         self.assertEqual(native_tools[0][NATIVE_TOOL_CAPABILITY_ID_FIELD], CAPABILITY_ID)
+        self.assertEqual(
+            native_tool_model_name_map(native_tools),
+            {native_tools[0]["function"]["name"]: CAPABILITY_ID},
+        )
         self.assertIn("Nikkei 225", result.followup_context)
         self.assertEqual(result.state_updates["adapter_capability_status"], "ok")
-        self.assertEqual(
-            self.adapter.contexts,
-            [
-                InvocationContext(
-                    profile_user_id="user-42",
-                    session_id="session-7",
-                    client_mode="qq_text",
-                )
-            ],
-        )
+        self.assertEqual(len(self.adapter.contexts), 1)
+        self.assertEqual(self.adapter.contexts[0].profile_user_id, "user-42")
+        self.assertEqual(self.adapter.contexts[0].session_id, "session-7")
+        self.assertEqual(self.adapter.contexts[0].client_mode, "qq_text")
+        self.assertEqual(getattr(self.adapter.contexts[0], "conversation_ref", ""), "")
 
         self.assertNotIn("FINANCE_ASSISTANT_ENABLED", config.Settings.model_fields)
         handlers_with_legacy_profile = self.engine._resolve_tool_handlers(

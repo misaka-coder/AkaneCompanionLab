@@ -1967,6 +1967,7 @@ class CapabilitySelection:
     module_names: tuple[str, ...]
     schema_tool_names: tuple[str, ...] = ()
     native_tool_names: tuple[str, ...] = ()
+    native_tool_aliases: Mapping[str, str] = field(default_factory=dict)
     layer_names: tuple[str, ...] = ()
     disclosures: tuple[CapabilityDisclosure, ...] = ()
     tool_specs: tuple[CapabilityToolSpec, ...] = ()

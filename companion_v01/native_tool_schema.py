@@ -9,6 +9,24 @@ from capcore_provider_openai import build_openai_chat_tool_set
 NATIVE_TOOL_CAPABILITY_ID_FIELD = "_akane_capability_id"
 
 
+def native_tool_model_name_map(native_tools: list[dict[str, Any]] | None) -> dict[str, str]:
+    """Map provider-safe function names back to canonical capability ids."""
+
+    mapping: dict[str, str] = {}
+    for raw in native_tools or []:
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function")
+        if not isinstance(function, dict):
+            continue
+        model_name = str(function.get("name") or "").strip()
+        if not model_name:
+            continue
+        capability_id = str(raw.get(NATIVE_TOOL_CAPABILITY_ID_FIELD) or "").strip() or model_name
+        mapping[model_name] = capability_id
+    return mapping
+
+
 def build_openai_native_tool_specs(
     handlers: Mapping[str, Any] | None,
     *,

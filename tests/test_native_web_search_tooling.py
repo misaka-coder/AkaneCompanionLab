@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import unittest
+from dataclasses import replace
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
@@ -729,6 +730,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 context[TOOL_CAPABILITY_SELECTION_FIELD].native_tool_names,
                 ("retrieve_memory",),
             )
+            self.assertEqual(
+                context[TOOL_CAPABILITY_SELECTION_FIELD].native_tool_aliases,
+                {"retrieve_memory": "retrieve_memory"},
+            )
             self.assertEqual(context["native_tool_choice"], "auto")
             self.assertNotIn("retrieve_memory", context["system_prompt"])
             self.assertIn("【本轮直接工具入口】", context["tool_prompt_context"])
@@ -1146,6 +1151,106 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["type"], "send_file")
         self.assertEqual(tool_calls[0][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(rejections, [])
+
+    def test_engine_recovers_provider_safe_name_from_frozen_native_surface(self) -> None:
+        capability_id = "akane.selftest.csv-summary.v1"
+
+        class DynamicPluginHandler:
+            tool_type = capability_id
+
+            @staticmethod
+            def tool_spec():
+                return replace(WEB_SEARCH_TOOL_SPEC, capability_id=capability_id)
+
+        handler = DynamicPluginHandler()
+        provider_tool = build_openai_native_tool_from_spec(handler.tool_spec())
+        model_name = provider_tool["function"]["name"]
+        self.assertNotEqual(model_name, capability_id)
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._promote_narrated_tool_call = lambda final_output, **_kwargs: final_output
+        engine._normalize_tool_call = lambda value, **_kwargs: dict(value or {})
+        engine._describe_tool_call_rejection = lambda *_args, **_kwargs: "unexpected"
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(capability_id,),
+            module_names=("extension_tools",),
+            schema_tool_names=(capability_id,),
+            native_tool_names=(capability_id,),
+            resolved_handlers=MappingProxyType({capability_id: handler}),
+        )
+
+        _final_output, tool_calls, rejections = engine._prepare_tool_round_decisions(
+            final_output={
+                "speech": "",
+                "tool_call": None,
+                NATIVE_TOOL_CALL_FIELD: {
+                    "type": model_name,
+                    "csv_text": "name,score\nAkane,98",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call_dynamic_plugin",
+                },
+                TOOL_CAPABILITY_SELECTION_FIELD: selection,
+            },
+            user_message="汇总 CSV",
+            client_context=client_context,
+            profile_user_id="u",
+            session_id="s",
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["type"], capability_id)
+        self.assertEqual(tool_calls[0][TOOL_MODEL_NAME_FIELD], model_name)
+        self.assertEqual(tool_calls[0]["csv_text"], "name,score\nAkane,98")
+        self.assertEqual(rejections, [])
+
+    def test_engine_recovers_dynamic_native_alias_when_provider_carrier_loses_selection(self) -> None:
+        capability_id = "akane.selftest.csv-summary.v1"
+
+        class DynamicPluginHandler:
+            tool_type = capability_id
+            policy_accepted_native_tool = True
+
+            @staticmethod
+            def tool_spec():
+                return replace(WEB_SEARCH_TOOL_SPEC, capability_id=capability_id)
+
+        handler = DynamicPluginHandler()
+        model_name = build_openai_native_tool_from_spec(handler.tool_spec())["function"]["name"]
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine._promote_narrated_tool_call = lambda final_output, **_kwargs: final_output
+        engine._resolve_tool_handlers = lambda **_kwargs: {capability_id: handler}
+        engine._normalize_tool_call = lambda value, **_kwargs: dict(value or {})
+        engine._describe_tool_call_rejection = lambda *_args, **_kwargs: "unexpected"
+        client_context = ClientProtocolContext(
+            requested_mode=ClientMode.QQ_TEXT,
+            effective_mode=ClientMode.QQ_TEXT,
+        )
+
+        _final_output, tool_calls, rejections = engine._prepare_tool_round_decisions(
+            final_output={
+                "speech": "",
+                "tool_call": None,
+                NATIVE_TOOL_CALL_FIELD: {
+                    "type": model_name,
+                    "csv_text": "name,score\nAkane,98",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call_dynamic_plugin",
+                },
+            },
+            user_message="汇总 CSV",
+            client_context=client_context,
+            profile_user_id="u",
+            session_id="s",
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["type"], capability_id)
+        self.assertEqual(tool_calls[0][TOOL_MODEL_NAME_FIELD], model_name)
         self.assertEqual(rejections, [])
 
     def test_public_final_tool_call_strips_internal_native_metadata(self) -> None:

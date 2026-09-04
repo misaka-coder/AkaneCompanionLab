@@ -27,7 +27,7 @@ from memcore import StreamingSpeechParser
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
 from .model_service_config import normalize_provider_model_id
-from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from .native_tool_schema import native_tool_model_name_map
 from .runtime_settings import BotSettingsView, normalize_reasoning_effort, normalize_thinking_mode
 from .tool_invocation import NATIVE_ANTHROPIC
 from .tool_invocation import NATIVE_OPENAI
@@ -2790,7 +2790,7 @@ class LLMRuntime:
         model_name = str(getattr(invocation, "model_name", "") or "").strip()
         if not model_name or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", model_name):
             return None
-        name_map = self._native_tool_model_name_map(native_tools)
+        name_map = native_tool_model_name_map(native_tools)
         capability_id = name_map.get(model_name, str(getattr(invocation, "capability_id", "") or model_name).strip())
         if not capability_id:
             return None
@@ -2846,23 +2846,6 @@ class LLMRuntime:
                 except Exception:
                     return response
             return response
-
-    def _native_tool_model_name_map(self, native_tools: list[dict[str, Any]] | None) -> dict[str, str]:
-        mapping: dict[str, str] = {}
-        if not isinstance(native_tools, list):
-            return mapping
-        for raw in native_tools:
-            if not isinstance(raw, dict):
-                continue
-            function = raw.get("function")
-            if not isinstance(function, dict):
-                continue
-            model_name = str(function.get("name") or "").strip()
-            if not model_name:
-                continue
-            capability_id = str(raw.get(NATIVE_TOOL_CAPABILITY_ID_FIELD) or "").strip() or model_name
-            mapping[model_name] = capability_id
-        return mapping
 
     def _decode_native_tool_arguments(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):

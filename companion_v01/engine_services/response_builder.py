@@ -718,6 +718,7 @@ def prepare_context(
     )
     if enable_native_tools:
         from .. import tool_orchestration_engine as _toe
+        from ..native_tool_schema import native_tool_model_name_map
 
         ready_handlers = engine._resolve_tool_handlers(
             client_context=client_context,
@@ -766,12 +767,18 @@ def prepare_context(
                     capability_selection = replace(
                         capability_selection,
                         native_tool_names=resolved_native_names,
+                        native_tool_aliases=native_tool_model_name_map(native_tools),
                     )
                 except TypeError:
                     # Lightweight host/test projections may expose the same
                     # attribute contract without being dataclasses.
                     try:
                         setattr(capability_selection, "native_tool_names", resolved_native_names)
+                        setattr(
+                            capability_selection,
+                            "native_tool_aliases",
+                            native_tool_model_name_map(native_tools),
+                        )
                     except (AttributeError, TypeError):
                         pass
         elif native_plan.status == "unsupported":
