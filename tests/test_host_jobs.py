@@ -165,6 +165,34 @@ class HostJobStoreTests(unittest.TestCase):
             self.assertEqual(recovered["job"].completion_event_id, event_id)
             self.assertEqual(recovered["job"].attempts, 2)
 
+    def test_silent_running_job_can_arm_agent_completion_after_terminal_race(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            created = store.create(
+                owner=self.owner,
+                capability_source="execution",
+                capability_id="exec_run",
+                payload={"run_id": "execrun_test"},
+                idempotency_key="execrun_test",
+                argument_fingerprint="sha256:test",
+                completion_mode="silent",
+            )
+            claimed = store.claim(created["job_id"], worker_id="execution")
+            store.succeed(
+                created["job_id"],
+                claim_token=claimed["claim_token"],
+                result_summary="done",
+            )
+            silent = store.get(created["job_id"], owner=self.owner)
+            self.assertEqual(silent.completion_status, "silent")
+
+            armed = store.arm_agent_completion(created["job_id"], owner=self.owner)
+
+            self.assertTrue(armed["ok"])
+            pending = store.get(created["job_id"], owner=self.owner)
+            self.assertEqual(pending.completion_mode, "agent")
+            self.assertEqual(pending.completion_status, "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

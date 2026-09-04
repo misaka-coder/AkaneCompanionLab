@@ -436,6 +436,64 @@ class HostJobStore:
             last_error="cancelled",
         )
 
+    def arm_agent_completion(self, job_id: Any, *, owner: HostJobOwner) -> dict[str, Any]:
+        """Promote a provisionally silent Job after its caller observes async work.
+
+        Shell commands are persisted before process spawn, but short commands
+        still finish inside the initiating tool call and must not produce a
+        duplicate Agent reply. The execution bridge calls this only after
+        ``exec_run`` has returned ``running``. If the process wins that small
+        race and has already ended, its silent terminal fact becomes pending
+        atomically instead of being lost.
+        """
+
+        normalized_id = str(job_id or "").strip()
+        if not normalized_id or not isinstance(owner, HostJobOwner):
+            return {"ok": False, "status": "invalid", "reason": "host_job_owner_required"}
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, completion_mode, completion_status
+                FROM host_jobs
+                WHERE job_id = ? AND profile_user_id = ? AND session_id = ?
+                """,
+                (normalized_id, owner.profile_user_id, owner.session_id),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "unknown", "reason": "host_job_not_found"}
+            status = str(row["status"] or "")
+            completion_mode = str(row["completion_mode"] or "")
+            completion_status = str(row["completion_status"] or "")
+            if status not in {"running", *JOB_TERMINAL_STATUSES}:
+                return {"ok": False, "status": status, "reason": "host_job_not_started"}
+            if completion_mode == "agent":
+                return {"ok": True, "status": status, "reason": "host_job_completion_already_armed"}
+            if completion_mode != "silent":
+                return {"ok": False, "status": status, "reason": "host_job_completion_mode_conflict"}
+            next_completion_status = (
+                "pending"
+                if status in JOB_TERMINAL_STATUSES and completion_status == "silent"
+                else completion_status
+            )
+            connection.execute(
+                """
+                UPDATE host_jobs
+                SET completion_mode = 'agent', completion_status = ?, updated_at = ?
+                WHERE job_id = ? AND profile_user_id = ? AND session_id = ?
+                  AND completion_mode = 'silent'
+                """,
+                (
+                    next_completion_status,
+                    now,
+                    normalized_id,
+                    owner.profile_user_id,
+                    owner.session_id,
+                ),
+            )
+        return {"ok": True, "status": status, "reason": "host_job_completion_armed"}
+
     def get(self, job_id: Any, *, owner: HostJobOwner) -> HostJob | None:
         normalized_id = str(job_id or "").strip()
         if not normalized_id or not isinstance(owner, HostJobOwner):

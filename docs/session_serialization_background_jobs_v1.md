@@ -1,6 +1,6 @@
 # 会话串行与后台任务 V1
 
-状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置 `execution_class=long_task` 已通过统一适配层返回可靠 acknowledgment，并将完成事实送回现有 QQ/桌宠 Agent-event 主链；生图的真实渠道纵向验收、Shell 与插件后台工作迁移仍待完成。
+状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置 `execution_class=long_task` 与长时 Shell run 均已接入统一 Job 和 Agent-event 主链；生图与 Shell 的真实渠道纵向验收、插件后台工作迁移仍待完成。
 
 ## 1. 目标
 
@@ -224,13 +224,15 @@ needs_model_followup: false
 4. 让现有 `execution_class=long_task` 真正返回可靠 Job acknowledgment。（已完成）
 5. 将 Job 完成事件接入普通 Agent 主链。（已完成，真实渠道验收归入下一项）
 6. 以生图完成第一条 QQ + 桌宠纵向验收。
-7. 将现有 Shell run 状态接入 Job 权威和完成通知。
+7. 将现有 Shell run 状态接入 Job 权威和完成通知。（已完成，真实渠道验收归入下一轮 smoke）
 8. 迁移 ComfyUI、媒体处理和插件后台工作。
 9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。
 10. 再设计并接入子代理。
 11. 最后实现经过能力门控的 Responses 原生异步。
 
 每一项单独验证和提交，不在同一切片同时重写 UI、MemCore 与 Provider 适配。
+
+当前第 7 项已完成代码接线：`exec_run` 在进程启动前登记并领取 Job；只有首个等待窗口结束后仍为 `running` 才武装一次 Agent 完成事件，短命令保持原有单回合结果。执行器终态是唯一触发点，`exec_status`/`exec_cancel` 和输出游标协议没有变化。群聊延迟事件通过宿主签名的会话引用恢复原发起成员的授权与工作区身份，不把身份选择交给插件或模型。宿主重启后无法安全接管的旧进程会明确结算为 `host_restart_process_unavailable`，不会伪造成功或重复执行命令。
 
 ## 14. 删除条件
 

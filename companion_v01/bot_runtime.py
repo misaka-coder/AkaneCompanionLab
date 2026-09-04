@@ -22,6 +22,7 @@ from .desktop_satellite import DesktopSatelliteService
 from .durable_session_queue import DurableSessionWorkQueue
 from .session_inbox import SessionInboxStore
 from .host_jobs import HostJob, HostJobStore
+from .host_execution_jobs import HostExecutionJobRuntime
 from .host_tool_jobs import HostToolJobRuntime
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
@@ -111,6 +112,7 @@ class BotRuntime:
     session_work_queue: DurableSessionWorkQueue | None = field(default=None, repr=False)
     job_store: HostJobStore | None = field(default=None, repr=False)
     host_tool_jobs: HostToolJobRuntime | None = field(default=None, repr=False)
+    host_execution_jobs: HostExecutionJobRuntime | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
@@ -259,6 +261,8 @@ class BotRuntime:
                     raise
 
             self.host_tool_jobs.bind_terminal_callback(submit_completion)
+            if self.host_execution_jobs is not None:
+                await asyncio.to_thread(self.host_execution_jobs.recover)
             self.host_tool_jobs.recover()
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
@@ -555,6 +559,16 @@ class BotRuntimeFactory:
                 conversation_ref_issuer=plugin_conversation_refs.issue,
             )
             engine.host_tool_jobs = host_tool_jobs
+            host_execution_jobs = HostExecutionJobRuntime(
+                store=job_store,
+                conversation_ref_issuer=plugin_conversation_refs.issue,
+                completion_publisher=host_tool_jobs.publish_completion,
+            )
+            exec_run_handler = engine.tool_handlers.get("exec_run")
+            if exec_run_handler is not None:
+                exec_run_handler.bind_job_runtime(host_execution_jobs)
+                host_execution_jobs.bind_provider(exec_run_handler.execution_provider)
+            engine.host_execution_jobs = host_execution_jobs
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -603,6 +617,7 @@ class BotRuntimeFactory:
                 session_work_queue=session_work_queue,
                 job_store=job_store,
                 host_tool_jobs=host_tool_jobs,
+                host_execution_jobs=host_execution_jobs,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,

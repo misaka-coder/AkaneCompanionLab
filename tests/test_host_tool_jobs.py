@@ -264,6 +264,46 @@ class HostToolJobRuntimeTests(unittest.TestCase):
             finally:
                 runner.close(timeout=2.0)
 
+    def test_shared_completion_delivery_recovers_execution_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BackgroundTaskRunner({"host-jobs": 1})
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            created = store.create(
+                owner=HostJobOwner("profile-a", "session-a"),
+                capability_source="execution",
+                capability_id="exec_run",
+                payload={"run_id": "execrun_" + "a" * 32},
+                idempotency_key="execrun_" + "a" * 32,
+                argument_fingerprint="sha256:test",
+                channel=ClientMode.QQ_TEXT.value,
+                delivery_target="conversation-ref",
+                completion_mode="agent",
+            )
+            claimed = store.claim(created["job_id"], worker_id="execution")
+            store.succeed(
+                created["job_id"],
+                claim_token=claimed["claim_token"],
+                result_summary="command done",
+            )
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=SimpleNamespace(),
+                store=store,
+                background_tasks=runner,
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            try:
+                self.assertEqual(runtime.recover(), 1)
+                self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertEqual([job.job_id for job in completed], [created["job_id"]])
+                delivered = store.get(
+                    created["job_id"],
+                    owner=HostJobOwner("profile-a", "session-a"),
+                )
+                self.assertEqual(delivered.completion_status, "delivered")
+            finally:
+                runner.close(timeout=2.0)
+
     def test_only_supported_channel_long_tasks_are_detached(self) -> None:
         started = threading.Event()
         release = threading.Event()

@@ -137,13 +137,22 @@ class HostToolJobRuntime:
         for job_id in self.store.pending_job_ids(capability_source=HOST_TOOL_JOB_SOURCE):
             if self._schedule(job_id).get("ok"):
                 scheduled += 1
-        for job in self.store.pending_completions(capability_source=HOST_TOOL_JOB_SOURCE):
-            if self._schedule_completion(job).get("ok"):
+        # Completion delivery is one host concern regardless of whether the
+        # worker was a built-in long tool, Shell, or a plugin generation.
+        for job in self.store.pending_completions():
+            if self.publish_completion(job).get("ok"):
                 scheduled += 1
         return scheduled
 
     def bind_terminal_callback(self, callback: Callable[[HostJob], Any] | None) -> None:
         self.terminal_callback = callback
+
+    def publish_completion(self, job: HostJob) -> dict[str, Any]:
+        """Schedule one already-durable terminal fact through the shared route."""
+
+        if not isinstance(job, HostJob) or job.completion_status != "pending":
+            return {"ok": False, "status": "ignored", "reason": "completion_not_pending"}
+        return self._schedule_completion(job)
 
     def _schedule(self, job_id: str) -> dict[str, Any]:
         normalized = str(job_id or "").strip()

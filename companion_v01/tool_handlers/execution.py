@@ -464,6 +464,13 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
 
     tool_type = "exec_run"
 
+    def bind_job_runtime(self, runtime: Any | None) -> None:
+        """Bind host lifecycle tracking without changing the public tool."""
+
+        if runtime is not None and not callable(getattr(runtime, "begin", None)):
+            raise TypeError("invalid_execution_job_runtime")
+        self.execution_job_runtime = runtime
+
     def tool_spec(self):
         return EXEC_RUN_TOOL_SPEC
 
@@ -646,12 +653,15 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         input_resources = call.get("input_resources") or []
         output_globs = call.get("output_globs") or []
         bridge = self.resource_bridge
+        job_runtime = getattr(self, "execution_job_runtime", None)
+        track_job = bool(job_runtime is not None and job_runtime.accepts(context))
         staged = None
         run_id = ""
+        if input_resources or output_globs or track_job:
+            run_id = new_run_id()
         if input_resources or output_globs:
             if bridge is None:
                 return self._resource_rejected("execution_resources_unconfigured")
-            run_id = new_run_id()
             if output_globs and cwd and not input_resources:
                 staged = bridge.bind_workspace_outputs(
                     run_id=run_id,
@@ -671,6 +681,23 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             if not bool(staged.get("ok")):
                 return self._resource_rejected(str(staged.get("reason") or "execution_resources_staging_failed"))
             cwd = str(staged.get("cwd_relpath") or cwd)
+        if track_job:
+            started = job_runtime.begin(
+                run_id=run_id,
+                run_owner=self._owner(context),
+                context=context,
+                argument_fingerprint=self._fingerprint({**call, "cwd": cwd}),
+            )
+            if not started.get("ok"):
+                if staged is not None and bridge is not None:
+                    bridge.finalize_without_outputs(
+                        run_id=run_id,
+                        owner=self._owner(context),
+                        reason="command_not_started",
+                    )
+                return self._job_tracking_rejected(
+                    str(started.get("reason") or "host_job_create_failed")
+                )
         mapped = execute_exec_run(
             provider,
             owner=self._owner(context),
@@ -680,6 +707,20 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             initial_wait_seconds=call.get("initial_wait_seconds"),
             run_id=run_id,
         )
+        if track_job:
+            tracking = job_runtime.observe_start(
+                run_id,
+                status=mapped.event_status,
+                exit_code=mapped.data.get("exit_code"),
+                reason=mapped.reason,
+            )
+            if mapped.event_status == EXEC_STATUS_RUNNING and not tracking.get("ok"):
+                feedback = str(mapped.model_feedback or "")
+                marker = "[completion notification unavailable; continue with exec_status]"
+                mapped = replace(
+                    mapped,
+                    model_feedback=f"{feedback}\n{marker}" if feedback else marker,
+                )
         if staged is not None and run_id:
             owner = self._owner(context)
             if mapped.event_status == EXEC_STATUS_COMPLETED:
@@ -699,6 +740,29 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             workspace_id="" if input_resources else workspace_id,
         )
         return self._mapped_result(mapped)
+
+    def _job_tracking_rejected(self, reason: str) -> ToolExecutionResult:
+        clean_reason = str(reason or "host_job_unavailable")[:160]
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{
+                "type": "capability_execution_result",
+                "tool_type": self.tool_type,
+                "status": "failed",
+                "reason": clean_reason,
+            }],
+            followup_context=(
+                f"<tool_use_error>命令没有开始：后台执行状态未能可靠登记（{clean_reason}）。"
+                "请如实说明失败，不要声称命令正在运行。</tool_use_error>"
+            ),
+            state_updates={
+                "capability_execution": {
+                    "tool_type": self.tool_type,
+                    "status": "failed",
+                    "reason": clean_reason,
+                }
+            },
+        )
 
     def _ask_or_redeem(
         self,

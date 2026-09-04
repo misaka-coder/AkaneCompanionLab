@@ -136,6 +136,11 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
                 "channel": "qq", "kind": "direct", "recipient": "user:456",
                 "session": "qq_pri_123", "profile": "qq_123", "character": "reimu",
             },
+            "ref-group": {
+                "channel": "qq", "kind": "group", "recipient": "group:87",
+                "session": "qq_group_shared_87", "profile": "qq_group_shared_87",
+                "character": "reimu", "actor": "qq:123", "actor_profile": "qq_user_123",
+            },
         }
         host_port = HostAgentEventRouter(references.get)
 
@@ -257,6 +262,40 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["memory_idempotency_key"], "timer:1")
         self.assertEqual(payload["message_addressing"]["mode"], "current_request")
         self.assertNotEqual(payload["message"], "")
+
+    async def test_group_event_restores_signed_causal_actor_for_run_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+
+            def defer(coroutine):
+                coroutine.close()
+                return types.SimpleNamespace(done=lambda: False)
+
+            queue = DurableSessionWorkQueue(store, schedule_task=defer)
+            port = self._build(session_work_queue=queue)
+            result = await port.submit(
+                PluginAgentEventRequest(
+                    trace_id="job-completed:group",
+                    conversation_ref="ref-group",
+                    message="命令已结束",
+                    event=PluginExternalEvent(
+                        "job.succeeded",
+                        (("job_id", "job-group"),),
+                        "host.jobs",
+                    ),
+                    memory_idempotency_key="job-completed:group",
+                )
+            )
+
+            self.assertTrue(result.ok)
+            claimed = store.claim_next(
+                "qq_group_shared_87\0qq_group_shared_87",
+                worker_id="test",
+            )
+            payload = claimed["item"].payload["turn_payload"]
+            self.assertEqual(payload["actor_stable_id"], "qq:123")
+            self.assertEqual(payload["actor_profile_user_id"], "qq_user_123")
+            self.assertIn("系统事件", payload["qq_delivery_context"]["sender_label"])
 
     async def test_context_mismatch_is_rejected_before_model(self) -> None:
         port = self._build()
@@ -498,6 +537,24 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
             self.assertEqual(resolved["session"], "master")
             self.assertEqual(resolved["character"], "reimu")
             self.assertIsNone(second.resolve(reference[:-1] + ("A" if reference[-1] != "A" else "B")))
+
+    def test_group_reference_preserves_host_verified_causal_actor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            key_path = Path(temp) / "conversation-ref.key"
+            authority = PluginConversationReferenceAuthority(key_path, instance_id="personal")
+            reference = authority.issue_qq(
+                profile_user_id="qq_group_shared_87",
+                session_id="qq_group_shared_87",
+                character_pack_id="reimu",
+                group_id=87,
+                actor_stable_id="qq:123",
+                actor_profile_user_id="qq_user_123",
+            )
+
+            resolved = authority.resolve(reference)
+
+            self.assertEqual(resolved["actor"], "qq:123")
+            self.assertEqual(resolved["actor_profile"], "qq_user_123")
 
     def test_desktop_reference_is_restart_stable_and_channel_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

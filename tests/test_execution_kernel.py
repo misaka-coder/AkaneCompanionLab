@@ -158,6 +158,21 @@ class ExecutionRunStoreTests(unittest.TestCase):
         self.assertEqual(store.evict_expired(), 1)
         self.assertEqual(store.read(run_id, owner=OWNER).status, EXEC_STATUS_UNKNOWN)
 
+    def test_terminal_observer_receives_only_committed_transition(self) -> None:
+        store = self._store()
+        observed = []
+        store.bind_terminal_observer(observed.append)
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+
+        self.assertTrue(store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0))
+        self.assertFalse(store.mark_terminal(run_id, EXEC_STATUS_FAILED, owner=OWNER, exit_code=1))
+
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0].run_id, run_id)
+        self.assertEqual(observed[0].owner, OWNER)
+        self.assertEqual(observed[0].status, EXEC_STATUS_COMPLETED)
+
     def test_wrong_owner_cannot_read_cancel_or_mutate(self) -> None:
         store = self._store()
         run_id = new_run_id()

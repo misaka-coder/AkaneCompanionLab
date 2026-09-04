@@ -368,6 +368,27 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(callable(jobs.callback))
         self.assertEqual(jobs.recover_count, 1)
 
+    async def test_start_recovers_orphaned_execution_jobs_before_completion_delivery(self) -> None:
+        runtime, _plugin_host, _engine, _followups = _runtime()
+        order = []
+
+        class RecoverableToolJobs:
+            def bind_terminal_callback(self, _callback) -> None:
+                order.append("bind-delivery")
+
+            def recover(self) -> int:
+                order.append("deliver")
+                return 0
+
+        runtime.host_tool_jobs = RecoverableToolJobs()
+        runtime.host_execution_jobs = SimpleNamespace(
+            recover=lambda: order.append("settle-execution") or 1,
+        )
+
+        await runtime.start()
+
+        self.assertEqual(order, ["bind-delivery", "settle-execution", "deliver"])
+
     async def test_terminal_host_job_becomes_contextual_agent_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = HostJobStore(Path(temp_dir) / "jobs.db")

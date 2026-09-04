@@ -44,6 +44,8 @@ class PluginConversationReferenceAuthority:
             character_pack_id=character_pack_id,
             user_id=user_id,
             group_id=group_id,
+            actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+            actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
         )
 
     def issue_qq(
@@ -54,6 +56,8 @@ class PluginConversationReferenceAuthority:
         character_pack_id: str,
         user_id: int = 0,
         group_id: int = 0,
+        actor_stable_id: str = "",
+        actor_profile_user_id: str = "",
     ) -> str:
         profile_user_id = str(profile_user_id or "").strip()
         session_id = str(session_id or "").strip()
@@ -78,6 +82,12 @@ class PluginConversationReferenceAuthority:
             "profile": profile_user_id,
             "character": character_pack_id,
         }
+        actor = _qq_actor_id(actor_stable_id)
+        actor_profile = _bounded_identity(actor_profile_user_id)
+        if kind == "group" and actor:
+            payload["actor"] = actor
+            if actor_profile:
+                payload["actor_profile"] = actor_profile
         body = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac.new(self._key, body, hashlib.sha256).digest()
         return "acr1." + _b64(body) + "." + _b64(signature)
@@ -129,7 +139,8 @@ class PluginConversationReferenceAuthority:
         if not isinstance(payload, dict) or payload.get("v") != 1 or payload.get("instance") != self._instance_id:
             return None
         result = {key: str(payload.get(key) or "").strip() for key in (
-            "channel", "kind", "recipient", "session", "profile", "character"
+            "channel", "kind", "recipient", "session", "profile", "character",
+            "actor", "actor_profile",
         )}
         if result["channel"] == "qq":
             if result["kind"] not in {"direct", "group"}:
@@ -140,6 +151,12 @@ class PluginConversationReferenceAuthority:
         else:
             return None
         if not all(result[key] for key in ("recipient", "session", "profile", "character")):
+            return None
+        if result["actor"] and _qq_actor_id(result["actor"]) != result["actor"]:
+            return None
+        if result["actor_profile"] and _bounded_identity(result["actor_profile"]) != result["actor_profile"]:
+            return None
+        if result["actor_profile"] and not result["actor"]:
             return None
         return result
 
@@ -178,6 +195,17 @@ def _positive_id(value: object) -> int:
     except (TypeError, ValueError, OverflowError):
         return 0
     return parsed if 0 < parsed < 10**20 else 0
+
+
+def _qq_actor_id(value: object) -> str:
+    text = str(value or "").strip()
+    number = _positive_id(text.removeprefix("qq:")) if text.startswith("qq:") else 0
+    return f"qq:{number}" if number else ""
+
+
+def _bounded_identity(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text and len(text) <= 160 and "\x00" not in text else ""
 
 
 def _b64(value: bytes) -> str:

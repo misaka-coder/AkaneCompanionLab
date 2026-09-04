@@ -166,6 +166,37 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
         self.assertEqual(result.state_updates["capability_execution"]["workspace_id"], "")
 
+    def test_exec_run_uses_same_run_id_for_durable_lifecycle_tracking(self) -> None:
+        self._set_policy("trusted_auto_allow")
+        observed = {}
+
+        class JobRuntime:
+            @staticmethod
+            def accepts(_context):
+                return True
+
+            @staticmethod
+            def begin(**kwargs):
+                observed["begin"] = kwargs
+                return {"ok": True, "tracked": True}
+
+            @staticmethod
+            def observe_start(run_id, **kwargs):
+                observed["start"] = {"run_id": run_id, **kwargs}
+                return {"ok": True}
+
+        handler = self._handler()
+        handler.bind_job_runtime(JobRuntime())
+        result = handler.execute(
+            call={"type": "exec_run", "command": "echo hi", "initial_wait_seconds": 1},
+            context=_context(),
+        )
+
+        run_id = result.state_updates["capability_execution"]["run_id"]
+        self.assertEqual(observed["begin"]["run_id"], run_id)
+        self.assertEqual(observed["start"]["run_id"], run_id)
+        self.assertEqual(observed["start"]["status"], "completed")
+
     def test_exec_run_schema_and_handler_do_not_apply_a_private_command_length_limit(self) -> None:
         self._set_policy("trusted_auto_allow")
         handler = self._handler()

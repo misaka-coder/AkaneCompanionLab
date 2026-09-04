@@ -7,6 +7,7 @@ lifecycle; this module owns the contracts that keep their results honest.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -48,6 +49,7 @@ _RUN_ID_PREFIX = "execrun_"
 _RUN_ID_RE = re.compile(r"^execrun_[a-f0-9]{32}$")
 _CURSOR_RE = re.compile(r"^c1\.([a-f0-9]{16})\.([a-f0-9]+)$")
 _READY_AVAILABILITY_STATUSES = frozenset({"ready", "available", "degraded", "ok"})
+logger = logging.getLogger("akane.execution_run")
 
 
 def _sanitize_model_text(value: Any) -> str:
@@ -168,6 +170,18 @@ class ExecMappedResult:
     event: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionRunTerminalEvent:
+    """One provider-confirmed terminal transition, emitted exactly once."""
+
+    run_id: str
+    owner: ExecutionRunOwner
+    status: str
+    exit_code: int | None
+    reason: str
+    finished_at: float
+
+
 @runtime_checkable
 class ExecutionProvider(Protocol):
     def availability(self) -> ExecutionAvailability: ...
@@ -243,6 +257,15 @@ class ExecutionRunStore:
         self._now = now or time.time
         self._lock = threading.RLock()
         self._runs: dict[str, _RunRecord] = {}
+        self._terminal_observer: Any = None
+
+    def bind_terminal_observer(self, observer: Any = None) -> None:
+        """Bind one host lifecycle observer without changing run authority."""
+
+        if observer is not None and not callable(observer):
+            raise TypeError("execution_terminal_observer_not_callable")
+        with self._lock:
+            self._terminal_observer = observer
 
     def register(
         self,
@@ -303,6 +326,7 @@ class ExecutionRunStore:
     ) -> bool:
         if status not in EXEC_TERMINAL_STATUSES:
             raise ValueError(f"invalid_terminal_status:{status}")
+        event: ExecutionRunTerminalEvent | None = None
         with self._lock:
             record = self._owned_record_locked(run_id, owner)
             if record is None or record.status != EXEC_STATUS_RUNNING:
@@ -312,7 +336,9 @@ class ExecutionRunStore:
             record.reason = str(reason or "")
             record.updated_at = self._now()
             record.finished_at = record.updated_at
-            return True
+            event = self._terminal_event(record)
+        self._notify_terminal(event)
+        return True
 
     def request_cancel(self, run_id: str, *, owner: ExecutionRunOwner) -> str:
         """Record intent only; the provider must terminate and confirm it."""
@@ -351,6 +377,7 @@ class ExecutionRunStore:
             return bool(record and record.cancel_requested)
 
     def confirm_cancelled(self, run_id: str, *, owner: ExecutionRunOwner) -> bool:
+        event: ExecutionRunTerminalEvent | None = None
         with self._lock:
             record = self._owned_record_locked(run_id, owner)
             if record is None or record.status != EXEC_STATUS_RUNNING or not record.cancel_requested:
@@ -359,7 +386,32 @@ class ExecutionRunStore:
             record.reason = "cancelled"
             record.updated_at = self._now()
             record.finished_at = record.updated_at
-            return True
+            event = self._terminal_event(record)
+        self._notify_terminal(event)
+        return True
+
+    @staticmethod
+    def _terminal_event(record: _RunRecord) -> ExecutionRunTerminalEvent:
+        return ExecutionRunTerminalEvent(
+            run_id=record.run_id,
+            owner=record.owner,
+            status=record.status,
+            exit_code=record.exit_code,
+            reason=record.reason,
+            finished_at=record.finished_at,
+        )
+
+    def _notify_terminal(self, event: ExecutionRunTerminalEvent) -> None:
+        with self._lock:
+            observer = self._terminal_observer
+        if observer is None:
+            return
+        try:
+            observer(event)
+        except Exception:
+            # Process truth is already committed. A failed completion wake-up
+            # remains recoverable through the durable Host Job on restart.
+            logger.exception("execution terminal observer failed: %s", event.run_id)
 
     def get(self, run_id: str, *, owner: ExecutionRunOwner) -> _RunRecord | None:
         with self._lock:

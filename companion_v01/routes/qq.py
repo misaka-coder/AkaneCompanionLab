@@ -3223,6 +3223,12 @@ def build_qq_router(
             source_message_id=source_event_id,
         )
         turn_payload = context.to_turn_payload()
+        causal_actor = str(resolved_reference.get("actor") or "").strip()
+        causal_actor_profile = str(resolved_reference.get("actor_profile") or "").strip()
+        if conversation_kind == "group" and causal_actor.startswith("qq:"):
+            turn_payload["actor_stable_id"] = causal_actor
+            if causal_actor_profile:
+                turn_payload["actor_profile_user_id"] = causal_actor_profile
         turn_payload.update(
             {
                 "message": message,
@@ -4577,6 +4583,8 @@ def build_qq_router(
                                 character_pack_id=context.character_pack_id,
                                 user_id=context.user_id,
                                 group_id=context.group_id,
+                                actor_stable_id=f"qq:{context.user_id}" if context.is_group else "",
+                                actor_profile_user_id=str(context.actor_profile_user_id or ""),
                             ) or "")
                             if plugin_conversation_ref_issuer is not None
                             else ""
